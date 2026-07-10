@@ -1,0 +1,12 @@
+[package]
+name = "titan_lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_lexer = { path = "../titan_lexer" }
+titan_parser = { path = "../titan_parser" }
+titan_ast = { path = "../titan_ast" }
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/titan_lexer",
+    "crates/titan_ast",
+    "crates/titan_parser",
+    "crates/titan_typechecker",
+    "crates/titan_hir",
+    "crates/titan_mir",
+    "crates/titan_codegen",
+    "crates/titan_vm",
+    "crates/titan_gc",
+    "crates/titan_macros",
+    "crates/titan_runtime",
+    "crates/titan_stdlib",
+    "crates/titan_cli",
+    "crates/titan_lsp",
+    "crates/titan_pkg",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+semver = "1"

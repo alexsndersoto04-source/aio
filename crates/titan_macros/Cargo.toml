@@ -1,0 +1,11 @@
+[package]
+name = "titan_macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_ast = { path = "../titan_ast" }
+titan_lexer = { path = "../titan_lexer" }
+titan_parser = { path = "../titan_parser" }
+thiserror.workspace = true

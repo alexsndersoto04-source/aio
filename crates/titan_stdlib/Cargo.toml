@@ -1,0 +1,11 @@
+[package]
+name = "titan_stdlib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_vm = { path = "../titan_vm" }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "titan_runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_vm = { path = "../titan_vm" }
+thiserror.workspace = true

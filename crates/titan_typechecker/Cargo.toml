@@ -1,0 +1,9 @@
+[package]
+name = "titan_typechecker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_ast = { path = "../titan_ast" }
+thiserror.workspace = true

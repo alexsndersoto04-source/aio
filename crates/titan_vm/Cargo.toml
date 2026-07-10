@@ -1,0 +1,13 @@
+[package]
+name = "titan_vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_codegen = { path = "../titan_codegen" }
+thiserror.workspace = true
+
+[dev-dependencies]
+titan_lexer = { path = "../titan_lexer" }
+titan_parser = { path = "../titan_parser" }
