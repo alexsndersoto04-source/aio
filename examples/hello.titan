@@ -1,0 +1,4 @@
+fn main() {
+    let name = "TITAN"
+    print("Hello, {name}!")
+}
