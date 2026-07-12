@@ -11,6 +11,7 @@ titan_ast = { path = "../titan_ast" }
 titan_typechecker = { path = "../titan_typechecker" }
 titan_codegen = { path = "../titan_codegen" }
 titan_vm = { path = "../titan_vm" }
+titan_pkg = { path = "../titan_pkg" }
 clap.workspace = true
 thiserror.workspace = true
 

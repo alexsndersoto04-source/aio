@@ -114,7 +114,9 @@ trait Display { fn display(self) -> string; }
 impl Display for Point { ... }
 ```
 
-Nested module declarations and impl methods are collected by the current single-file compiler. Cross-file import resolution, trait dispatch and generic monomorphization are **reserved features**: valid syntax is preserved, but code requiring unavailable linker/runtime behavior receives a compile error. This is preferable to silently miscompiling it.
+Nested module declarations and impl methods are collected by the compiler. Cross-file imports resolve `.titan` files, directory `mod.titan` files, and local path dependencies from `Titan.toml`; imports are canonicalized, loaded once, constrained to authorized source roots, and checked for cycles. Declarations currently enter one executable namespace, so duplicate names are rejected rather than silently shadowed.
+
+Trait dispatch, qualified symbol namespaces and generic monomorphization remain **reserved features**: valid syntax is preserved, but code requiring unavailable runtime behavior receives an explicit compile error. This is preferable to silently miscompiling it.
 
 ## 10. Concurrency, closures and references
 

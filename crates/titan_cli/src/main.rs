@@ -1,195 +1,186 @@
-//! Titan CLI — Full pipeline: lex → parse → typecheck → codegen → VM run
+//! Titan command-line compiler and project tooling.
 
 use clap::{Parser, Subcommand};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "titan", version, about = "Titan Language Compiler")]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Command,
-}
+#[command(name = "titan", version, about = "Titan language compiler")]
+pub struct Cli { #[command(subcommand)] pub command: Command }
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Compile a Titan source file to bytecode
-    Build {
-        #[arg(default_value = "main.titan")]
-        input: String,
-        #[arg(short, long)]
-        output: Option<String>,
-    },
-    /// Compile and run a Titan program
+    /// Create a project with Titan.toml and src/main.titan
+    New { path: String },
+    /// Parse and type-check a file or project without producing an artifact
+    Check { #[arg(default_value = ".")] input: String },
+    /// Compile a file or project to inspectable bytecode
+    Build { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
+    /// Compile and run a file or project
     Run {
-        #[arg(default_value = "main.titan")]
-        input: String,
+        #[arg(default_value = ".")] input: String,
         /// Deny filesystem, process, network, and environment native functions
-        #[arg(long)]
-        sandbox: bool,
-        #[arg(last = true)]
-        args: Vec<String>,
+        #[arg(long)] sandbox: bool,
+        #[arg(last = true)] args: Vec<String>,
     },
-    /// Start interactive REPL
+    /// Execute every .titan test program under tests/
+    Test { #[arg(default_value = ".")] input: String, #[arg(long)] sandbox: bool },
+    /// Start the interactive REPL
     Repl,
     /// Print version
     Version,
 }
 
 fn main() {
-    let cli = Cli::parse();
-    match cli.command {
+    match Cli::parse().command {
+        Command::New { path } => cmd_new(&path),
+        Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
-        Command::Run { input, sandbox, args: _ } => cmd_run(&input, sandbox),
+        Command::Run { input, sandbox, args } => cmd_run(&input, sandbox, args),
+        Command::Test { input, sandbox } => cmd_test(&input, sandbox),
         Command::Repl => cmd_repl(),
         Command::Version => cmd_version(),
     }
 }
 
-fn cmd_build(input: &str, output: Option<String>) {
-    let source = fs::read_to_string(input).unwrap_or_else(|e| {
-        eprintln!("ERROR: Cannot read '{}': {}", input, e);
-        std::process::exit(1);
-    });
-
-    // Full pipeline
-    let module = compile_titan(&source).unwrap_or_else(|e| {
-        eprintln!("Compilation failed:\n{}", e);
-        std::process::exit(1);
-    });
-
-    let target = output.unwrap_or_else(|| {
-        let path = std::path::Path::new(input);
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("program");
-        format!("{}.tbc", stem)
-    });
-
-    // The textual bytecode format is deterministic, inspectable and useful for
-    // tooling. A stable binary container can be added without pretending that
-    // merely printing a target path created an artifact.
-    let artifact = format!("TITAN-BYTECODE 1\n{:#?}\n", module);
-    fs::write(&target, artifact).unwrap_or_else(|e| {
-        eprintln!("ERROR: Cannot write '{}': {}", target, e);
-        std::process::exit(1);
-    });
-
-    println!("BUILD: {} → {}", input, target);
-    println!("  Functions: {}", module.functions.len());
-    for f in &module.functions {
-        println!("  fn {} ({} ops, {} locals)", f.name, f.code.len(), f.locals);
+fn cmd_new(path: &str) {
+    let root = Path::new(path);
+    let name = root.file_name().and_then(|name| name.to_str()).unwrap_or(path);
+    match titan_pkg::create_project(root, name) {
+        Ok(root) => println!("Created Titan project '{}' at {}", name, root.display()),
+        Err(error) => fatal("PROJECT ERROR", error),
     }
+}
+
+fn cmd_check(input: &str) {
+    match load_and_compile(input) {
+        Ok((project, module)) => println!("CHECK OK: {} files, {} functions", project.load_order.len(), module.functions.len()),
+        Err(error) => fatal_message("CHECK FAILED", &error),
+    }
+}
+
+fn cmd_build(input: &str, output: Option<String>) {
+    let (project, module) = load_and_compile(input).unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
+    let target = output.map(PathBuf::from).unwrap_or_else(|| default_artifact(&project));
+    if let Some(parent) = target.parent() { fs::create_dir_all(parent).unwrap_or_else(|error| fatal("BUILD ERROR", error)); }
+    let artifact = format!("TITAN-BYTECODE 1\n{:#?}\n", module);
+    fs::write(&target, artifact).unwrap_or_else(|error| fatal("BUILD ERROR", error));
+    println!("BUILD: {} → {}", project.entry.display(), target.display());
+    println!("  Sources: {}", project.load_order.len());
+    println!("  Functions: {}", module.functions.len());
+    for function in &module.functions { println!("  fn {} ({} ops, {} locals)", function.name, function.code.len(), function.locals); }
     println!("  Entry: fn[{}]", module.entry);
 }
 
-fn cmd_run(input: &str, sandbox: bool) {
-    let source = fs::read_to_string(input).unwrap_or_else(|e| {
-        eprintln!("ERROR: Cannot read '{}': {}", input, e);
-        std::process::exit(1);
-    });
+fn cmd_run(input: &str, sandbox: bool, _args: Vec<String>) {
+    let (_, module) = load_and_compile(input).unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
+    match run_module(module, sandbox) {
+        Ok(Some(value)) if !matches!(value, titan_vm::Value::Nil) => println!("=> {}", titan_vm::val_to_string(&value)),
+        Ok(_) => {}
+        Err(error) => fatal("RUNTIME ERROR", error),
+    }
+}
 
-    match compile_and_run_with_capabilities(&source, sandbox) {
-        Ok(result) => {
-            if let Some(v) = result {
-                println!("=> {}", titan_vm::val_to_string(&v));
-            }
-        }
-        Err(e) => {
-            eprintln!("RUNTIME ERROR:\n{}", e);
-            std::process::exit(1);
+fn cmd_test(input: &str, sandbox: bool) {
+    let input = Path::new(input);
+    let root = titan_pkg::find_project_root(input).unwrap_or_else(|| input.to_path_buf());
+    let tests_root = root.join("tests");
+    let files = discover_titan_files(&tests_root).unwrap_or_else(|error| fatal("TEST DISCOVERY ERROR", error));
+    if files.is_empty() { fatal_message("TEST ERROR", &format!("no .titan tests found under {}", tests_root.display())); }
+    let mut passed = 0usize;
+    for file in &files {
+        print!("test {} ... ", file.strip_prefix(&root).unwrap_or(file).display());
+        match load_and_compile_path(file).and_then(|(_, module)| run_module(module, sandbox).map_err(|error| error.to_string())) {
+            Ok(_) => { passed += 1; println!("ok"); }
+            Err(error) => println!("FAILED\n  {error}"),
         }
     }
+    println!("\ntest result: {}. {} passed; {} failed", if passed == files.len() { "ok" } else { "FAILED" }, passed, files.len() - passed);
+    if passed != files.len() { std::process::exit(1); }
 }
 
 fn cmd_repl() {
-    println!("⚔️  TITAN REPL v{}", env!("CARGO_PKG_VERSION"));
-    println!("   Type Titan code. Type :q to quit, :h for help.");
-    println!();
-
+    println!("TITAN REPL v{}", env!("CARGO_PKG_VERSION"));
+    println!("Type Titan code. :q quits; :h shows help.");
     loop {
         print!("titan> ");
         use std::io::Write;
-        std::io::stdout().flush().unwrap();
-
+        if std::io::stdout().flush().is_err() { break; }
         let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-
+        match std::io::stdin().read_line(&mut line) { Ok(0) | Err(_) => break, Ok(_) => {} }
         let line = line.trim();
         if line.is_empty() { continue; }
-
-        if line.starts_with(':') {
-            match line {
-                ":q" | ":quit" => { println!("Goodbye."); break; }
-                ":h" | ":help" => {
-                    println!("Commands:");
-                    println!("  :q, :quit  — Exit REPL");
-                    println!("  :h, :help  — Help");
-                    println!("  :v         — Version");
-                    println!();
-                    println!("Any other input is compiled and executed as Titan code.");
-                }
-                ":v" => println!("TITAN v{}", env!("CARGO_PKG_VERSION")),
-                _ => println!("Unknown: {} (:h for help)", line),
-            }
-            continue;
+        match line {
+            ":q" | ":quit" => break,
+            ":h" | ":help" => { println!(":q quit  :h help  :v version"); continue; }
+            ":v" => { cmd_version(); continue; }
+            value if value.starts_with(':') => { println!("Unknown command: {value}"); continue; }
+            _ => {}
         }
-
-        // Wrap expression/statement in a function
-        let source = format!("fn main() {{ {} }}", line);
-        match compile_and_run(&source) {
-            Ok(result) => {
-                if let Some(v) = result {
-                    let s = titan_vm::val_to_string(&v);
-                    if s != "nil" { println!("  => {}", s); }
-                }
-            }
-            Err(e) => eprintln!("  Error: {}", e),
+        let source = format!("fn main() {{ {line} }}");
+        match compile_source(&source).and_then(|module| run_module(module, false).map_err(|error| error.to_string())) {
+            Ok(Some(value)) if !matches!(value, titan_vm::Value::Nil) => println!("=> {}", titan_vm::val_to_string(&value)),
+            Ok(_) => {}
+            Err(error) => eprintln!("Error: {error}"),
         }
     }
 }
 
-fn cmd_version() {
-    println!("TITAN Language Compiler v{}", env!("CARGO_PKG_VERSION"));
-    println!("The Executioner of Programming Languages");
+fn cmd_version() { println!("TITAN Language Compiler v{}", env!("CARGO_PKG_VERSION")); }
+
+fn load_and_compile(input: &str) -> Result<(titan_pkg::SourceProject, titan_codegen::CompiledModule), String> {
+    let entry = titan_pkg::default_entry(input);
+    load_and_compile_path(&entry)
 }
 
-// ─── Full compilation pipeline ───
+fn load_and_compile_path(entry: &Path) -> Result<(titan_pkg::SourceProject, titan_codegen::CompiledModule), String> {
+    let project = titan_pkg::SourceProject::load(entry).map_err(|error| error.to_string())?;
+    if project.manifest.is_some() {
+        titan_pkg::Lockfile::from_dependencies(&project.dependencies).and_then(|lock| lock.write(&project.root.join("Titan.lock"))).map_err(|error| error.to_string())?;
+    }
+    let module = compile_program(&project.program)?;
+    Ok((project, module))
+}
 
-fn compile_titan(source: &str) -> Result<titan_codegen::CompiledModule, String> {
-    // 1. Lex
+fn compile_source(source: &str) -> Result<titan_codegen::CompiledModule, String> {
     let mut lexer = titan_lexer::Lexer::new(source);
-    let (tokens, lex_errors) = lexer.tokenize();
-    if !lex_errors.is_empty() {
-        return Err(format!("Lexer errors: {:?}", lex_errors));
-    }
-
-    // 2. Parse
+    let (tokens, errors) = lexer.tokenize();
+    if !errors.is_empty() { return Err(errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")); }
     let mut parser = titan_parser::Parser::new(tokens.to_vec());
-    let program = parser.parse_program().map_err(|e| {
-        let mut s = e.to_string();
-        for err in parser.errors() { s.push_str(&format!("\n  {}", err)); }
-        s
-    })?;
-
-    // 3. Type check
-    let mut env = titan_typechecker::TypeEnv::new();
-    env.check_program(&program).map_err(|errors| {
-        errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n")
-    })?;
-
-    // 4. Codegen
-    let mut compiler = titan_codegen::AstCompiler::new();
-    compiler.compile_program(&program).map_err(|e| e.to_string())
+    let program = parser.parse_program().map_err(|error| error.to_string())?;
+    compile_program(&program)
 }
 
-fn compile_and_run(source: &str) -> Result<Option<titan_vm::Value>, String> {
-    compile_and_run_with_capabilities(source, false)
+fn compile_program(program: &titan_ast::Program) -> Result<titan_codegen::CompiledModule, String> {
+    let mut types = titan_typechecker::TypeEnv::new();
+    types.check_program(program).map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"))?;
+    titan_codegen::AstCompiler::new().compile_program(program).map_err(|error| error.to_string())
 }
 
-fn compile_and_run_with_capabilities(source: &str, sandbox: bool) -> Result<Option<titan_vm::Value>, String> {
-    let module = compile_titan(source)?;
+fn run_module(module: titan_codegen::CompiledModule, sandbox: bool) -> Result<Option<titan_vm::Value>, titan_vm::VmError> {
     let mut vm = if sandbox { titan_vm::Vm::sandboxed(module) } else { titan_vm::Vm::new(module) };
-    vm.run().map_err(|error| error.to_string())
+    vm.run()
 }
+
+fn default_artifact(project: &titan_pkg::SourceProject) -> PathBuf {
+    let name = project.root.file_name().and_then(|name| name.to_str()).unwrap_or("program");
+    project.root.join("target").join(format!("{name}.tbc"))
+}
+
+fn discover_titan_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    fn visit(path: &Path, output: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        if !path.exists() { return Ok(()); }
+        let mut entries: Vec<_> = fs::read_dir(path)?.collect::<std::io::Result<_>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if entry.file_type()?.is_dir() { visit(&path, output)?; }
+            else if path.extension().and_then(|value| value.to_str()) == Some("titan") { output.push(path); }
+        }
+        Ok(())
+    }
+    let mut output = Vec::new(); visit(root, &mut output)?; Ok(output)
+}
+
+fn fatal(label: &str, error: impl std::fmt::Display) -> ! { fatal_message(label, &error.to_string()) }
+fn fatal_message(label: &str, message: &str) -> ! { eprintln!("{label}:\n{message}"); std::process::exit(1) }

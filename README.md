@@ -21,10 +21,16 @@ Install the CLI locally:
 ```bash
 cargo install --path crates/titan_cli
 
-titan run examples/hello.titan
-titan build examples/hello.titan       # writes hello.tbc
+titan new hello
+cd hello
+titan check
+titan run
+titan test
+titan build                             # writes target/hello.tbc
 titan repl
 ```
+
+Single-file programs remain supported with `titan run examples/hello.titan`. Projects use `Titan.toml`, recursive source imports, deterministic local path dependencies and `Titan.lock`; see [`docs/PROJECTS.md`](docs/PROJECTS.md).
 
 ## The language
 
@@ -66,9 +72,12 @@ Traits, impl blocks, imports, references, slices, generic type syntax, `spawn`, 
 ## Commands
 
 ```text
-titan run <file.titan>       Compile, type-check and execute
-titan run --sandbox <file>   Execute while denying filesystem/process/network/environment
-titan build <file.titan>     Write inspectable .tbc bytecode
+titan new <directory>        Create Titan.toml and src/main.titan
+titan check [file|project]   Resolve imports and type-check
+titan run [file|project]     Compile, type-check and execute
+titan run --sandbox [path]   Deny filesystem/process/network/environment
+titan build [file|project]   Write inspectable .tbc bytecode
+titan test [project]         Run all tests/*.titan programs
 titan repl                   Interactive expressions/statements
 titan version                Print compiler version
 ```

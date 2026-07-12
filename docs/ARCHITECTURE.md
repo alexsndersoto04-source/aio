@@ -12,7 +12,7 @@
   → titan_vm             checked frame-based interpreter
 ```
 
-The CLI runs this exact pipeline. It stops at the first failed phase and never executes a partial program.
+For project commands, `titan_pkg::SourceProject` first discovers `Titan.toml`, resolves canonical local dependencies and recursively loads imports. It rejects missing files, path escapes, duplicate dependency traversal, import cycles and dependency cycles. The resulting unified `Program` enters the pipeline above. The CLI stops at the first failed phase and never executes a partial program.
 
 ## Workspace crates
 

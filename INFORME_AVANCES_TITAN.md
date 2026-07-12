@@ -765,3 +765,24 @@ En una actualización posterior se implementó el puente general entre `.titan` 
 - Ejemplo integral en `examples/stdlib.titan`.
 
 Como el entorno continúa sin toolchain Rust, esta integración está implementada pero pendiente de compilación y ejecución de tests.
+
+### Proyectos multiarchivo y dependencias locales
+
+La siguiente fase conectó el sistema de proyectos:
+
+- `titan new`, `check`, `build`, `run` y `test` aceptando proyectos.
+- Descubrimiento ascendente de `Titan.toml`.
+- Entrada predeterminada `src/main.titan`.
+- Imports recursivos de archivos y directorios `mod.titan`.
+- Carga única y orden de dependencias determinista.
+- Diagnósticos con la ruta del archivo para lexer/parser/imports.
+- Detección de ciclos de imports con la cadena completa.
+- Canonicalización y bloqueo de imports que escapen roots autorizados.
+- Dependencias locales y transitivas declaradas con `[dependencies.alias] path = ...`.
+- Detección de ciclos entre paquetes.
+- Validación SemVer del manifiesto.
+- `Titan.lock` determinista con alias, versión y fuente `path+...`.
+- Test runner recursivo: cada `tests/*.titan` es un programa y puede usar `std::testing`.
+- Documentación específica en `docs/PROJECTS.md`.
+
+Las declaraciones importadas comparten todavía el namespace ejecutable; codegen rechaza duplicados. La calificación completa de símbolos requiere una fase posterior de resolución HIR y no se presenta falsamente como terminada.
