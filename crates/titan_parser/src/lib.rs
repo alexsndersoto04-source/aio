@@ -402,6 +402,7 @@ impl Parser {
                 Ok(Expr::Array { elements, span })
             }
             Some(TokenKind::LBrace) => { self.advance(); Ok(Expr::Block(Box::new(self.parse_block_after_open(span)?))) }
+            Some(TokenKind::Pipe) | Some(TokenKind::LazyOr) => self.parse_closure(),
             Some(TokenKind::If) => self.parse_if(),
             Some(TokenKind::While) => self.parse_while(),
             Some(TokenKind::For) => self.parse_for(),
@@ -420,6 +421,27 @@ impl Parser {
             Some(TokenKind::Continue) => { self.advance(); Ok(Expr::Continue { span }) }
             _ => Err(self.expected("an expression")),
         }
+    }
+
+    fn parse_closure(&mut self) -> Result<Expr> {
+        let span = self.span();
+        if self.eat(TokenKind::LazyOr) {
+            let return_type = if self.eat(TokenKind::ThinArrow) { Some(self.parse_type()?) } else { None };
+            return Ok(Expr::Closure { params: Vec::new(), return_type, body: Box::new(self.parse_expr()?), span });
+        }
+        self.expect(TokenKind::Pipe)?;
+        let mut params = Vec::new();
+        while !self.at(TokenKind::Pipe) {
+            let param_span = self.span();
+            let name = self.expect_ident()?;
+            let type_ann = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
+            params.push(Param { name, type_ann, default: None, span: param_span });
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::Pipe)?;
+        let return_type = if self.eat(TokenKind::ThinArrow) { Some(self.parse_type()?) } else { None };
+        let body = Box::new(self.parse_expr()?);
+        Ok(Expr::Closure { params, return_type, body, span })
     }
 
     fn parse_if(&mut self) -> Result<Expr> {
@@ -563,6 +585,12 @@ mod tests {
     fn parses_declarations_and_match() {
         let source = "struct Point { x: int, y: int } enum Maybe { None, Some(int) } fn main() { match true { true => 1, _ => 0 } }";
         assert_eq!(parse(source).unwrap().items.len(), 3);
+    }
+
+    #[test]
+    fn parses_closures_and_try_operator() {
+        assert!(parse("fn main() { let add = |x: int, y: int| -> int x + y add(1, 2) }").is_ok());
+        assert!(parse("fn unwrap(value: Result) { value? }").is_ok());
     }
 
     #[test]

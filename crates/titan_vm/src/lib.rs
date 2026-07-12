@@ -12,6 +12,7 @@ pub enum Value {
     Array(Vec<Value>), Tuple(Vec<Value>), Map(BTreeMap<String, Value>),
     Struct { name: String, fields: BTreeMap<String, Value> },
     Enum { name: String, variant: String, payload: Option<Box<Value>> },
+    Closure { function: usize, captures: Vec<Value> },
 }
 
 pub fn val_to_string(value: &Value) -> String {
@@ -24,6 +25,7 @@ pub fn val_to_string(value: &Value) -> String {
         Value::Map(values) => format!("{{{}}}", values.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Struct { name, fields } => format!("{} {{ {} }}", name, fields.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Enum { name, variant, payload } => match payload { Some(value) => format!("{}::{}({})", name, variant, val_to_string(value)), None => format!("{}::{}", name, variant) },
+        Value::Closure { function, .. } => format!("<closure:{function}>"),
     }
 }
 
@@ -86,16 +88,17 @@ impl Vm {
 
     pub fn run(&mut self) -> Result<Option<Value>, VmError> {
         self.instructions = 0;
-        let result = self.execute(self.module.entry, Vec::new(), 0)?;
+        let result = self.execute(self.module.entry, Vec::new(), Vec::new(), 0)?;
         Ok(Some(result))
     }
 
-    fn execute(&mut self, function_id: usize, args: Vec<Value>, depth: usize) -> Result<Value, VmError> {
+    fn execute(&mut self, function_id: usize, args: Vec<Value>, captures: Vec<Value>, depth: usize) -> Result<Value, VmError> {
         if depth >= self.max_call_depth { return Err(VmError::CallDepth); }
         let function = self.module.functions.get(function_id).cloned().ok_or(VmError::InvalidFunction(function_id))?;
         if args.len() != function.arity { return Err(VmError::Arity { function: function.name, expected: function.arity, found: args.len() }); }
-        let mut locals = vec![Value::Nil; function.locals.max(args.len())];
-        for (slot, value) in locals.iter_mut().zip(args) { *slot = value; }
+        if captures.len() != function.captures { return Err(VmError::Type(format!("closure expected {} captures, found {}", function.captures, captures.len()))); }
+        let mut locals = vec![Value::Nil; function.locals.max(args.len() + captures.len())];
+        for (slot, value) in locals.iter_mut().zip(captures.into_iter().chain(args)) { *slot = value; }
         let mut stack = Vec::with_capacity(function.max_stack);
         let mut ip = 0usize;
         while ip < function.code.len() {
@@ -127,7 +130,45 @@ impl Vm {
                 Op::Call { function: callee, argc } => {
                     let args = take_args(&mut stack, argc, &function.name)?;
                     if callee == usize::MAX { stack.push(make_range(args)?); }
-                    else { stack.push(self.execute(callee, args, depth + 1)?); }
+                    else { stack.push(self.execute(callee, args, Vec::new(), depth + 1)?); }
+                }
+                Op::MakeClosure { function: closure_function, captures } => {
+                    let captured = captures.into_iter().map(|slot| locals.get(slot).cloned().ok_or_else(|| VmError::InvalidLocal { function: function.name.clone(), index: slot })).collect::<Result<Vec<_>, _>>()?;
+                    stack.push(Value::Closure { function: closure_function, captures: captured });
+                }
+                Op::CallValue(argc) => {
+                    let args = take_args(&mut stack, argc, &function.name)?;
+                    let callable = pop(&mut stack, &function.name)?;
+                    if let Value::Closure { function: closure_function, captures } = callable { stack.push(self.execute(closure_function, args, captures, depth + 1)?); }
+                    else { return Err(VmError::Type("attempted to call a non-function value".into())); }
+                }
+                Op::ArrayMap => {
+                    let callable = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
+                    let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("map requires a function".into())); };
+                    let mut output = Vec::with_capacity(values.len());
+                    for value in values { output.push(self.execute(closure_function, vec![value], captures.clone(), depth + 1)?); }
+                    stack.push(Value::Array(output));
+                }
+                Op::ArrayFilter => {
+                    let callable = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
+                    let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("filter requires a function".into())); };
+                    let mut output = Vec::new();
+                    for value in values { let keep = self.execute(closure_function, vec![value.clone()], captures.clone(), depth + 1)?; if keep == Value::Bool(true) { output.push(value); } else if keep != Value::Bool(false) { return Err(VmError::Type("filter predicate must return bool".into())); } }
+                    stack.push(Value::Array(output));
+                }
+                Op::ArrayFold => {
+                    let callable = pop(&mut stack, &function.name)?; let mut accumulator = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
+                    let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("fold requires a function".into())); };
+                    for value in values { accumulator = self.execute(closure_function, vec![accumulator, value], captures.clone(), depth + 1)?; }
+                    stack.push(accumulator);
+                }
+                Op::Try => {
+                    let value = pop(&mut stack, &function.name)?;
+                    match value {
+                        Value::Enum { name, variant, payload: Some(payload) } if (name == "Result" && variant == "Ok") || (name == "Option" && variant == "Some") => stack.push(*payload),
+                        Value::Enum { name, variant, payload } if (name == "Result" && variant == "Err") || (name == "Option" && variant == "None") => return Ok(Value::Enum { name, variant, payload }),
+                        _ => return Err(VmError::Type("operator ? requires Result or Option".into())),
+                    }
                 }
                 Op::CallNative { name, argc } => {
                     let args = take_args(&mut stack, argc, &function.name)?;
@@ -196,6 +237,7 @@ impl Vm {
     }
 }
 
+fn array_value(value: Value) -> Result<Vec<Value>, VmError> { match value { Value::Array(values) | Value::Tuple(values) => Ok(values), _ => Err(VmError::Type("operation requires an array".into())) } }
 fn pop(stack: &mut Vec<Value>, function: &str) -> Result<Value, VmError> { stack.pop().ok_or_else(|| VmError::StackUnderflow(function.into())) }
 fn take_args(stack: &mut Vec<Value>, count: usize, function: &str) -> Result<Vec<Value>, VmError> {
     if stack.len() < count { return Err(VmError::StackUnderflow(function.into())); }
@@ -250,6 +292,13 @@ mod tests {
     #[test] fn enum_matching_works() { assert_eq!(run("enum Maybe { None, Some(int) } fn main() { let x = Maybe::Some(7) match x { Maybe::Some(n) => n, Maybe::None => 0 } }").unwrap(), Value::Int(7)); }
     #[test] fn native_text_and_encoding_work() { assert_eq!(run("fn main() { std::text::reverse(\"Titan\") }").unwrap(), Value::Str("natiT".into())); assert_eq!(run("fn main() { std::encoding::utf8_decode(std::encoding::base64_decode(\"VGl0YW4=\")) }").unwrap(), Value::Str("Titan".into())); }
     #[test] fn native_json_maps_support_fields() { assert_eq!(run(r#"fn main() { std::json::parse("{\"answer\":42}").answer }"#).unwrap(), Value::Int(42)); }
+    #[test] fn closures_capture_lexical_values() { assert_eq!(run("fn main() { let base = 10 let add = |value: int| -> int value + base add(5) }").unwrap(), Value::Int(15)); }
+    #[test] fn named_functions_are_first_class() { assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let operation = double operation(21) }").unwrap(), Value::Int(42)); }
+    #[test] fn functional_array_pipeline_works() { assert_eq!(run("fn main() { [1, 2, 3, 4].map(|x: int| x * 2).filter(|x: int| x > 4).fold(0, |sum: int, x: int| sum + x) }").unwrap(), Value::Int(14)); }
+    #[test] fn try_unwraps_success_and_propagates_failure() {
+        assert_eq!(run("fn answer() -> Result { let value = Result::Ok(41)? Result::Ok(value + 1) } fn main() { match answer() { Result::Ok(value) => value, Result::Err(error) => 0 } }").unwrap(), Value::Int(42));
+        assert_eq!(run("fn answer() -> Result { let value = Result::Err(\"no\")? Result::Ok(value) } fn main() { match answer() { Result::Ok(value) => 0, Result::Err(error) => 7 } }").unwrap(), Value::Int(7));
+    }
     #[test] fn sandbox_blocks_effectful_natives() {
         let source = "fn main() { std::fs::read_text(\"secret\") }"; let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec();
         let program = Parser::new(tokens).parse_program().unwrap(); let module = AstCompiler::new().compile_program(&program).unwrap();

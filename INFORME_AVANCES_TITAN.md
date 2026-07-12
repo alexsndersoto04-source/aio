@@ -786,3 +786,22 @@ La siguiente fase conectó el sistema de proyectos:
 - Documentación específica en `docs/PROJECTS.md`.
 
 Las declaraciones importadas comparten todavía el namespace ejecutable; codegen rechaza duplicados. La calificación completa de símbolos requiere una fase posterior de resolución HIR y no se presenta falsamente como terminada.
+
+### Funciones de primera clase, closures y propagación
+
+Se añadió otra fase vertical al lenguaje:
+
+- Funciones nombradas convertibles en valores.
+- Sintaxis de closures tipadas `|x: int| -> int x + 1` y closures vacías `|| expresión`.
+- Captura léxica por valor de todos los bindings visibles, ordenada determinísticamente por nombre.
+- Bytecode `MakeClosure` y `CallValue`.
+- Frames de closures con separación entre captures y argumentos.
+- Aridad comprobada para llamadas dinámicas.
+- Closures anidadas compatibles con el mismo mecanismo de captura.
+- Pipelines funcionales de arrays `map`, `filter` y `fold`, tanto globales como métodos, ejecutando closures en frames controlados.
+- Prelude de `Option::None`, `Option::Some`, `Result::Ok` y `Result::Err`.
+- Operador postfix `?` real en bytecode: desempaqueta éxito y retorna anticipadamente fallos.
+- Error semántico/runtime si `?` se aplica a otro tipo.
+- Tests declarados para captura, funciones nombradas como valores y propagación de `Result` tanto exitosa como fallida.
+
+Los valores función no se serializan silenciosamente a JSON: la conversión genera un error explícito.

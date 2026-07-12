@@ -35,6 +35,8 @@ pub enum TypeError {
     NonExhaustiveMatch,
     #[error("break/continue used outside a loop")]
     OutsideLoop,
+    #[error("operator ? requires an Option or Result value")]
+    InvalidTry,
 }
 
 #[derive(Clone)]
@@ -56,7 +58,14 @@ impl TypeEnv {
         functions.insert("print".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Nil });
         functions.insert("println".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Nil });
         functions.insert("len".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Int });
-        Self { scopes: vec![HashMap::new()], functions, structs: HashMap::new(), enum_variants: HashMap::new(), errors: Vec::new(), return_type: Type::Unknown, loop_depth: 0 }
+        functions.insert("map".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
+        functions.insert("filter".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
+        functions.insert("fold".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown, Type::Unknown], result: Type::Unknown });
+        let enum_variants = HashMap::from([
+            ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
+            ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),
+        ]);
+        Self { scopes: vec![HashMap::new()], functions, structs: HashMap::new(), enum_variants, errors: Vec::new(), return_type: Type::Unknown, loop_depth: 0 }
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<TypeError>> {
@@ -183,7 +192,15 @@ impl TypeEnv {
                 match op { UnaryOp::Not => { self.require_compatible(&Type::Bool, &ty); Type::Bool }, UnaryOp::Neg | UnaryOp::BitNot => ty, _ => ty }
             }
             Expr::Call { callee, args, .. } => self.check_call(callee, args),
-            Expr::MethodCall { receiver, args, .. } => { self.check_expr(receiver); for arg in args { self.check_expr(arg); } Type::Unknown }
+            Expr::MethodCall { receiver, method, args, .. } => {
+                let receiver_type = self.check_expr(receiver); for arg in args { self.check_expr(arg); }
+                match (method.as_str(), args.len(), receiver_type) {
+                    ("len", 0, _) => Type::Int,
+                    ("map", 1, Type::Array(_)) | ("filter", 1, Type::Array(_)) => Type::Array(Box::new(Type::Unknown)),
+                    ("fold", 2, Type::Array(_)) => Type::Unknown,
+                    _ => Type::Unknown,
+                }
+            }
             Expr::Index { target, index, .. } => {
                 let target = self.check_expr(target); let index = self.check_expr(index);
                 match target {
@@ -231,11 +248,16 @@ impl TypeEnv {
             Expr::Let { name, type_ann, value, .. } => { let found = self.check_expr(value); let ty = type_ann.as_ref().map(type_from_ast).unwrap_or(found); self.define(name.clone(), ty.clone()); ty }
             Expr::Assign { target, value, .. } => { let a = self.check_expr(target); let b = self.check_expr(value); self.require_compatible(&a, &b); a }
             Expr::Block(block) => self.check_block(block),
-            Expr::Spawn { expr, .. } | Expr::Try { expr, .. } => self.check_expr(expr),
+            Expr::Spawn { expr, .. } => self.check_expr(expr),
+            Expr::Try { expr, .. } => match self.check_expr(expr) {
+                Type::Named(name) if name == "Option" || name == "Result" => Type::Unknown,
+                Type::Unknown => Type::Unknown,
+                _ => { self.errors.push(TypeError::InvalidTry); Type::Unknown }
+            },
             Expr::Closure { params, return_type, body, .. } => {
                 self.push_scope(); let p: Vec<Type> = params.iter().map(|x| x.type_ann.as_ref().map(type_from_ast).unwrap_or(Type::Unknown)).collect();
                 for (param, ty) in params.iter().zip(&p) { self.define(param.name.clone(), ty.clone()); }
-                let actual = self.check_expr(body); let result = return_type.as_ref().map(type_from_ast).unwrap_or(actual); self.pop_scope(); Type::Function(p, Box::new(result))
+                let actual = self.check_expr(body); let result = return_type.as_ref().map(type_from_ast).unwrap_or_else(|| actual.clone()); self.require_compatible(&result, &actual); self.pop_scope(); Type::Function(p, Box::new(result))
             }
         }
     }

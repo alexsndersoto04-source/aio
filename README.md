@@ -53,6 +53,9 @@ fn main() {
 
 - `int`, `float`, `bool`, `char`, `string`, `nil`, arrays and tuples.
 - Typed functions, default parameter syntax, recursion and checked arity.
+- First-class named functions and closures with deterministic lexical capture.
+- Functional array pipelines through `map`, `filter`, and `fold` (function or method syntax).
+- Built-in `Option::Some`/`None`, `Result::Ok`/`Err`, and propagating `?` execution.
 - Lexical variables, assignment and compound arithmetic assignment.
 - Arithmetic, comparison, logical and integer bitwise operators.
 - `if`/`else`, `while`, `loop`, `for` over arrays/ranges, `break`, `continue`, `return`.
@@ -67,7 +70,7 @@ fn main() {
 
 ### Parsed/checked language surface
 
-Traits, impl blocks, imports, references, slices, generic type syntax, `spawn`, closures and advanced destructuring exist in the AST or parser. Some require runtime/linker work and produce an explicit “unsupported construct” error instead of silently generating incorrect code. See [the specification](docs/SPEC.md) for exact status.
+Traits, impl blocks, references, slices, generic type syntax, `spawn` and advanced destructuring exist in the AST or parser. Some require runtime/linker work and produce an explicit “unsupported construct” error instead of silently generating incorrect code. See [the specification](docs/SPEC.md) for exact status.
 
 ## Commands
 

@@ -25,7 +25,9 @@ pub enum Op {
     Add, Sub, Mul, Div, Mod, Neg, Not, BitNot,
     Eq, Neq, Lt, Gt, Lte, Gte, BitAnd, BitOr, BitXor,
     Jump(usize), JumpIfFalse(usize),
-    Call { function: usize, argc: usize }, CallNative { name: String, argc: usize }, Ret,
+    Call { function: usize, argc: usize }, CallNative { name: String, argc: usize },
+    MakeClosure { function: usize, captures: Vec<usize> }, CallValue(usize), Try,
+    ArrayMap, ArrayFilter, ArrayFold, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -38,6 +40,7 @@ pub enum Op {
 pub struct BytecodeFunc {
     pub name: String,
     pub arity: usize,
+    pub captures: usize,
     pub locals: usize,
     pub max_stack: usize,
     pub code: Vec<Op>,
@@ -77,6 +80,7 @@ impl AstCompiler {
     pub fn compile_program(&mut self, program: &Program) -> Result<CompiledModule, CodegenError> {
         self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new() };
         self.strings.clear(); self.function_ids.clear(); self.enum_variants.clear(); self.constants.clear();
+        self.enum_variants.extend([("Option::None".into(), false), ("Option::Some".into(), true), ("Result::Ok".into(), true), ("Result::Err".into(), true)]);
         let mut functions = Vec::new();
         collect_items(&program.items, &mut functions, &mut self.constants, &mut self.enum_variants);
         for (index, function) in functions.iter().enumerate() {
@@ -86,15 +90,16 @@ impl AstCompiler {
         }
         let Some(entry) = self.function_ids.get("main").copied() else { return Err(CodegenError::UnknownFunction("main".into())); };
         self.module.entry = entry;
-        for function in functions {
+        self.module.functions = vec![empty_function(); functions.len()];
+        for (index, function) in functions.into_iter().enumerate() {
             let compiled = self.compile_function(function)?;
-            self.module.functions.push(compiled);
+            self.module.functions[index] = compiled;
         }
         Ok(self.module.clone())
     }
 
     fn compile_function(&mut self, function: &FunctionDecl) -> Result<BytecodeFunc, CodegenError> {
-        self.current = BytecodeFunc { name: function.name.clone(), arity: function.params.len(), locals: 0, max_stack: 256, code: Vec::new() };
+        self.current = BytecodeFunc { name: function.name.clone(), arity: function.params.len(), captures: 0, locals: 0, max_stack: 256, code: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0; self.loops.clear();
         for param in &function.params { self.add_local(&param.name); }
         if let Some(body) = &function.body { self.compile_block(body, true)?; } else { self.emit(Op::PushNil); }
@@ -140,6 +145,7 @@ impl AstCompiler {
                     let (enum_name, variant) = split_variant(name)?;
                     self.emit(Op::NewEnum { name: enum_name.into(), variant: variant.into(), has_payload: false });
                 }
+                else if let Some(function) = self.function_ids.get(name).copied() { self.emit(Op::MakeClosure { function, captures: Vec::new() }); }
                 else { return Err(CodegenError::UnknownVariable(name.clone())); }
             }
             Expr::Array { elements, .. } => { for element in elements { self.compile_expr(element)?; } self.emit(Op::NewArray(elements.len())); }
@@ -156,8 +162,13 @@ impl AstCompiler {
             }
             Expr::Call { callee, args, .. } => self.compile_call(callee, args)?,
             Expr::MethodCall { receiver, method, args, .. } => {
-                if method == "len" && args.is_empty() { self.compile_expr(receiver)?; self.emit(Op::Len); }
-                else { return Err(CodegenError::Unsupported(format!("method call .{method}()"))); }
+                self.compile_expr(receiver)?;
+                for arg in args { self.compile_expr(arg)?; }
+                match (method.as_str(), args.len()) {
+                    ("len", 0) => self.emit(Op::Len), ("map", 1) => self.emit(Op::ArrayMap),
+                    ("filter", 1) => self.emit(Op::ArrayFilter), ("fold", 2) => self.emit(Op::ArrayFold),
+                    _ => return Err(CodegenError::Unsupported(format!("method call .{method}()"))),
+                }
             }
             Expr::Index { target, index, .. } => { self.compile_expr(target)?; self.compile_expr(index)?; self.emit(Op::Index); }
             Expr::FieldAccess { target, field, .. } => { self.compile_expr(target)?; self.emit(Op::GetField(field.clone())); }
@@ -188,8 +199,8 @@ impl AstCompiler {
             Expr::Block(block) => self.compile_block(block, true)?,
             Expr::Match { scrutinee, arms, .. } => self.compile_match(scrutinee, arms)?,
             Expr::Spawn { .. } => return Err(CodegenError::Unsupported("spawn requires the concurrency runtime".into())),
-            Expr::Try { expr, .. } => self.compile_expr(expr)?,
-            Expr::Closure { .. } => return Err(CodegenError::Unsupported("closures with captures".into())),
+            Expr::Try { expr, .. } => { self.compile_expr(expr)?; self.emit(Op::Try); }
+            Expr::Closure { params, body, .. } => self.compile_closure(params, body)?,
         }
         Ok(())
     }
@@ -216,22 +227,36 @@ impl AstCompiler {
     }
 
     fn compile_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<(), CodegenError> {
-        let Expr::Ident { name, .. } = callee else { return Err(CodegenError::Unsupported("calling a non-named value".into())); };
-        for arg in args { self.compile_expr(arg)?; }
-        match name.as_str() {
-            "print" | "println" => self.emit(Op::Print(args.len())),
-            "len" if args.len() == 1 => self.emit(Op::Len),
-            _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
-            _ if self.enum_variants.contains_key(name) => {
-                let has_payload = self.enum_variants[name];
-                if args.len() != usize::from(has_payload) { return Err(CodegenError::Unsupported(format!("wrong payload count for enum variant '{name}'"))); }
-                let (enum_name, variant) = split_variant(name)?;
-                self.emit(Op::NewEnum { name: enum_name.into(), variant: variant.into(), has_payload });
+        if let Expr::Ident { name, .. } = callee {
+            if let Some(local) = self.find_local(name) {
+                self.emit(Op::PushLocal(local));
+                for arg in args { self.compile_expr(arg)?; }
+                self.emit(Op::CallValue(args.len()));
+                return Ok(());
             }
-            _ => {
-                let function = self.function_ids.get(name).copied().ok_or_else(|| CodegenError::UnknownFunction(name.clone()))?;
-                self.emit(Op::Call { function, argc: args.len() });
+            for arg in args { self.compile_expr(arg)?; }
+            match name.as_str() {
+                "print" | "println" => self.emit(Op::Print(args.len())),
+                "len" if args.len() == 1 => self.emit(Op::Len),
+                "map" if args.len() == 2 => self.emit(Op::ArrayMap),
+                "filter" if args.len() == 2 => self.emit(Op::ArrayFilter),
+                "fold" if args.len() == 3 => self.emit(Op::ArrayFold),
+                _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
+                _ if self.enum_variants.contains_key(name) => {
+                    let has_payload = self.enum_variants[name];
+                    if args.len() != usize::from(has_payload) { return Err(CodegenError::Unsupported(format!("wrong payload count for enum variant '{name}'"))); }
+                    let (enum_name, variant) = split_variant(name)?;
+                    self.emit(Op::NewEnum { name: enum_name.into(), variant: variant.into(), has_payload });
+                }
+                _ => {
+                    let function = self.function_ids.get(name).copied().ok_or_else(|| CodegenError::UnknownFunction(name.clone()))?;
+                    self.emit(Op::Call { function, argc: args.len() });
+                }
             }
+        } else {
+            self.compile_expr(callee)?;
+            for arg in args { self.compile_expr(arg)?; }
+            self.emit(Op::CallValue(args.len()));
         }
         Ok(())
     }
@@ -346,6 +371,31 @@ impl AstCompiler {
         Ok(())
     }
 
+    fn compile_closure(&mut self, params: &[Param], body: &Expr) -> Result<(), CodegenError> {
+        let mut visible = std::collections::BTreeMap::new();
+        for scope in &self.locals { for (name, slot) in scope { visible.insert(name.clone(), *slot); } }
+        let captures: Vec<_> = visible.into_iter().collect();
+        let function = self.module.functions.len();
+        self.module.functions.push(empty_function());
+
+        let outer_function = std::mem::replace(&mut self.current, empty_function());
+        let outer_locals = std::mem::take(&mut self.locals);
+        let outer_next = self.next_local;
+        let outer_loops = std::mem::take(&mut self.loops);
+
+        self.current = BytecodeFunc { name: format!("<closure:{function}>"), arity: params.len(), captures: captures.len(), locals: 0, max_stack: 256, code: Vec::new() };
+        self.locals = vec![HashMap::new()]; self.next_local = 0;
+        for (name, _) in &captures { self.add_local(name); }
+        for param in params { self.add_local(&param.name); }
+        let result = self.compile_expr(body);
+        if result.is_ok() { self.emit(Op::Ret); self.current.locals = self.next_local; self.module.functions[function] = self.current.clone(); }
+
+        self.current = outer_function; self.locals = outer_locals; self.next_local = outer_next; self.loops = outer_loops;
+        result?;
+        self.emit(Op::MakeClosure { function, captures: captures.into_iter().map(|(_, slot)| slot).collect() });
+        Ok(())
+    }
+
     fn finish_loop(&mut self, end: usize) {
         if let Some(context) = self.loops.pop() {
             for jump in context.breaks { self.patch(jump, end); }
@@ -367,7 +417,7 @@ impl AstCompiler {
     fn find_local(&self, name: &str) -> Option<usize> { self.locals.iter().rev().find_map(|scope| scope.get(name).copied()) }
 }
 
-fn empty_function() -> BytecodeFunc { BytecodeFunc { name: String::new(), arity: 0, locals: 0, max_stack: 0, code: Vec::new() } }
+fn empty_function() -> BytecodeFunc { BytecodeFunc { name: String::new(), arity: 0, captures: 0, locals: 0, max_stack: 0, code: Vec::new() } }
 fn is_terminal(expr: &Expr) -> bool { matches!(expr, Expr::Return { .. } | Expr::Break { .. } | Expr::Continue { .. }) }
 fn binary_instruction(op: BinaryOp) -> Result<Op, CodegenError> {
     Ok(match op { BinaryOp::Add => Op::Add, BinaryOp::Sub => Op::Sub, BinaryOp::Mul => Op::Mul, BinaryOp::Div => Op::Div, BinaryOp::Mod => Op::Mod, _ => return Err(CodegenError::Unsupported(format!("compound assignment {op:?}"))) })

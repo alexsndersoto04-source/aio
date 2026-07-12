@@ -118,9 +118,21 @@ Nested module declarations and impl methods are collected by the compiler. Cross
 
 Trait dispatch, qualified symbol namespaces and generic monomorphization remain **reserved features**: valid syntax is preserved, but code requiring unavailable runtime behavior receives an explicit compile error. This is preferable to silently miscompiling it.
 
-## 10. Concurrency, closures and references
+## 10. Closures, Option, Result, and reserved concurrency
 
-`spawn`, closure, reference and advanced generic syntax have AST representation for forward compatibility. Their ownership/runtime semantics are not standardized in language version 0.2 and executable use is rejected. They must not be treated as stable features yet.
+Closures are expression values and capture visible lexical bindings by value in deterministic name order:
+
+```titan
+let offset = 10
+let add = |value: int| -> int value + offset
+print(add(5))
+```
+
+Named functions are also first-class and can be assigned or passed as values. Closure calls use checked arity and isolated VM frames.
+
+The prelude provides `Option::None`, `Option::Some(value)`, `Result::Ok(value)`, and `Result::Err(error)`. Postfix `?` unwraps `Some`/`Ok`; `None`/`Err` immediately returns the failure value from the current function. Applying `?` to another runtime value is an error.
+
+`spawn`, references and advanced generic syntax remain reserved. Their runtime/ownership semantics are not standardized and executable use is rejected explicitly.
 
 ## 11. Native standard-library calls
 
