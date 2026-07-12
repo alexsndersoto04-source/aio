@@ -10,7 +10,7 @@ pub fn file_name(path: impl AsRef<Path>) -> Option<String> { path.as_ref().file_
 pub fn stem(path: impl AsRef<Path>) -> Option<String> { path.as_ref().file_stem().map(|s| s.to_string_lossy().into()) }
 pub fn extension(path: impl AsRef<Path>) -> Option<String> { path.as_ref().extension().map(|s| s.to_string_lossy().into()) }
 pub fn with_extension(path: impl AsRef<Path>, value: &str) -> PathBuf { path.as_ref().with_extension(value) }
-pub fn absolute(path: impl AsRef<Path>) -> io::Result<PathBuf> { let path = path.as_ref(); if path.is_absolute() { Ok(normalize(path)) } else { Ok(normalize(&std::env::current_dir()?.join(path))) } }
+pub fn absolute(path: impl AsRef<Path>) -> io::Result<PathBuf> { let path = path.as_ref(); if path.is_absolute() { Ok(normalize(path)) } else { Ok(normalize(std::env::current_dir()?.join(path))) } }
 pub fn canonical(path: impl AsRef<Path>) -> io::Result<PathBuf> { std::fs::canonicalize(path) }
 pub fn normalize(path: impl AsRef<Path>) -> PathBuf {
     let mut output = PathBuf::new();

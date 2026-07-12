@@ -14,7 +14,7 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 
 pub fn hex_encode(bytes: &[u8]) -> String { const H: &[u8; 16] = b"0123456789abcdef"; let mut out = String::with_capacity(bytes.len() * 2); for b in bytes { out.push(H[(b >> 4) as usize] as char); out.push(H[(b & 15) as usize] as char); } out }
 pub fn hex_decode(text: &str) -> Result<Vec<u8>, EncodingError> {
-    if text.len() % 2 != 0 { return Err(EncodingError::InvalidHexLength); }
+    if !text.len().is_multiple_of(2) { return Err(EncodingError::InvalidHexLength); }
     text.as_bytes().chunks_exact(2).enumerate().map(|(i, pair)| Ok((hex(pair[0]).ok_or(EncodingError::InvalidHex(i * 2))? << 4) | hex(pair[1]).ok_or(EncodingError::InvalidHex(i * 2 + 1))?)).collect()
 }
 fn hex(value: u8) -> Option<u8> { match value { b'0'..=b'9' => Some(value - b'0'), b'a'..=b'f' => Some(value - b'a' + 10), b'A'..=b'F' => Some(value - b'A' + 10), _ => None } }
@@ -29,7 +29,7 @@ pub fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 pub fn base64_decode(text: &str) -> Result<Vec<u8>, EncodingError> {
-    let bytes = text.as_bytes(); if bytes.len() % 4 != 0 { return Err(EncodingError::InvalidBase64(bytes.len())); }
+    let bytes = text.as_bytes(); if !bytes.len().is_multiple_of(4) { return Err(EncodingError::InvalidBase64(bytes.len())); }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
     for (block, chunk) in bytes.chunks_exact(4).enumerate() {
         let last = block + 1 == bytes.len() / 4; let pad = usize::from(chunk[3] == b'=') + usize::from(chunk[2] == b'=');
@@ -37,7 +37,9 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>, EncodingError> {
         let mut values = [0u8; 4]; for i in 0..4 { values[i] = if chunk[i] == b'=' { 0 } else { b64_value(chunk[i]).ok_or(EncodingError::InvalidBase64(block * 4 + i))? }; }
         if (pad == 2 && values[1] & 0x0f != 0) || (pad == 1 && values[2] & 0x03 != 0) { return Err(EncodingError::InvalidBase64(block * 4 + 1)); }
         let bits = (u32::from(values[0]) << 18) | (u32::from(values[1]) << 12) | (u32::from(values[2]) << 6) | u32::from(values[3]);
-        out.push((bits >> 16) as u8); if pad < 2 { out.push((bits >> 8) as u8); } if pad == 0 { out.push(bits as u8); }
+        out.push((bits >> 16) as u8);
+        if pad < 2 { out.push((bits >> 8) as u8); }
+        if pad == 0 { out.push(bits as u8); }
     }
     Ok(out)
 }

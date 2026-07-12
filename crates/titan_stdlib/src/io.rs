@@ -29,5 +29,5 @@ pub fn walk(path: impl AsRef<Path>, max_depth: usize) -> io::Result<Vec<PathBuf>
 pub fn file_size(path: impl AsRef<Path>) -> io::Result<u64> { fs::metadata(path).map(|m| m.len()) }
 pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<u64> { fs::copy(from, to) }
 pub fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> { fs::rename(from, to) }
-pub fn stdin_line() -> io::Result<String> { let mut line = String::new(); io::stdin().read_line(&mut line)?; Ok(line.trim_end_matches(|c| c == '\r' || c == '\n').into()) }
+pub fn stdin_line() -> io::Result<String> { let mut line = String::new(); io::stdin().read_line(&mut line)?; Ok(line.trim_end_matches(['\r', '\n']).into()) }
 pub fn stdout_line(value: &str) { println!("{value}"); }

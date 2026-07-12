@@ -272,8 +272,7 @@ impl Parser {
 
     fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr> {
         let mut left = self.parse_unary()?;
-        loop {
-            let Some((op, precedence)) = self.binary_op() else { break };
+        while let Some((op, precedence)) = self.binary_op() {
             if precedence < min_precedence { break; }
             self.advance();
             let right = self.parse_binary(precedence + 1)?;
@@ -355,8 +354,8 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr> {
         let span = self.span();
         match self.peek_kind().cloned() {
-            Some(TokenKind::IntLit(value)) => { self.advance(); Ok(Expr::Int { value: parse_int(&value, span, self)?, span }) }
-            Some(TokenKind::FloatLit(value)) => { self.advance(); Ok(Expr::Float { value: parse_float(&value, span, self)?, span }) }
+            Some(TokenKind::IntLit(value)) => { self.advance(); Ok(Expr::Int { value: parse_int(&value, span)?, span }) }
+            Some(TokenKind::FloatLit(value)) => { self.advance(); Ok(Expr::Float { value: parse_float(&value, span)?, span }) }
             Some(TokenKind::StringLit(value)) => {
                 self.advance();
                 if contains_interpolation(&value) { Ok(Expr::StringTemplate { value, span }) } else { Ok(Expr::String { value, span }) }
@@ -514,7 +513,7 @@ impl Parser {
                     Pattern::Enum { name, variant, inner, span }
                 } else { Pattern::Ident { name, span } }
             }
-            Some(TokenKind::IntLit(value)) => { self.advance(); Pattern::Literal { value: Box::new(Expr::Int { value: parse_int(&value, span, self)?, span }), span } }
+            Some(TokenKind::IntLit(value)) => { self.advance(); Pattern::Literal { value: Box::new(Expr::Int { value: parse_int(&value, span)?, span }), span } }
             Some(TokenKind::StringLit(value)) => { self.advance(); Pattern::Literal { value: Box::new(Expr::String { value, span }), span } }
             Some(TokenKind::True) => { self.advance(); Pattern::Literal { value: Box::new(Expr::Bool { value: true, span }), span } }
             Some(TokenKind::False) => { self.advance(); Pattern::Literal { value: Box::new(Expr::Bool { value: false, span }), span } }
@@ -581,11 +580,11 @@ fn valid_identifier(value: &str) -> bool {
 
 fn same_variant(a: &TokenKind, b: &TokenKind) -> bool { std::mem::discriminant(a) == std::mem::discriminant(b) }
 
-fn parse_int(value: &str, span: Span, parser: &Parser) -> Result<i64> {
-    value.replace('_', "").parse().map_err(|_| ParseError::Message { message: format!("integer literal out of range: {value}"), line: span.line, column: span.column }).or_else(|e| { let _ = parser; Err(e) })
+fn parse_int(value: &str, span: Span) -> Result<i64> {
+    value.replace('_', "").parse().map_err(|_| ParseError::Message { message: format!("integer literal out of range: {value}"), line: span.line, column: span.column })
 }
-fn parse_float(value: &str, span: Span, parser: &Parser) -> Result<f64> {
-    value.replace('_', "").parse().map_err(|_| ParseError::Message { message: format!("invalid float literal: {value}"), line: span.line, column: span.column }).or_else(|e| { let _ = parser; Err(e) })
+fn parse_float(value: &str, span: Span) -> Result<f64> {
+    value.replace('_', "").parse().map_err(|_| ParseError::Message { message: format!("invalid float literal: {value}"), line: span.line, column: span.column })
 }
 
 #[cfg(test)]

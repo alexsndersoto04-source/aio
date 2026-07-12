@@ -34,7 +34,7 @@ pub fn http_get(url: &str) -> io::Result<HttpResponse> {
     if url.starts_with("https://") { return Err(io::Error::new(io::ErrorKind::InvalidInput, "HTTPS requires a TLS-enabled client")); }
     let raw = url.strip_prefix("http://").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "URL must start with http://"))?;
     let (authority, path) = raw.split_once('/').map(|(a, p)| (a, format!("/{p}"))).unwrap_or((raw, "/".into()));
-    let (host, port) = authority.rsplit_once(':').map(|(h, p)| (h, p)).unwrap_or((authority, "80"));
+    let (host, port) = authority.rsplit_once(':').unwrap_or((authority, "80"));
     if host.is_empty() { return Err(io::Error::new(io::ErrorKind::InvalidInput, "URL has no host")); }
 
     use std::io::{Read, Write};

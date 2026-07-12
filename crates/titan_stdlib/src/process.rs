@@ -22,7 +22,14 @@ impl CommandSpec {
     pub fn args<I, S>(mut self, values: I) -> Self where I: IntoIterator<Item = S>, S: Into<String> { self.args.extend(values.into_iter().map(Into::into)); self }
     pub fn current_dir(mut self, path: impl Into<PathBuf>) -> Self { self.cwd = Some(path.into()); self }
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self { self.env.insert(key.into(), value.into()); self }
-    fn command(&self) -> Command { let mut command = Command::new(&self.program); command.args(&self.args); if let Some(cwd) = &self.cwd { command.current_dir(cwd); } if self.clear_env { command.env_clear(); } command.envs(&self.env); command }
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        if let Some(cwd) = &self.cwd { command.current_dir(cwd); }
+        if self.clear_env { command.env_clear(); }
+        command.envs(&self.env);
+        command
+    }
     pub fn status(&self) -> io::Result<std::process::ExitStatus> { self.command().status() }
     pub fn output(&self) -> io::Result<ProcessOutput> { let output = self.command().output()?; Ok(ProcessOutput { status: output.status.code(), success: output.status.success(), stdout: output.stdout, stderr: output.stderr, timed_out: false }) }
     pub fn output_timeout(&self, timeout: Duration) -> io::Result<ProcessOutput> {
