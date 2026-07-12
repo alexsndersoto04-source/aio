@@ -242,7 +242,11 @@ impl TypeEnv {
             }
             Expr::While { condition, body, .. } => { let c = self.check_expr(condition); self.require_compatible(&Type::Bool, &c); self.loop_depth += 1; self.check_block(body); self.loop_depth -= 1; Type::Unit }
             Expr::Loop { body, .. } => { self.loop_depth += 1; self.check_block(body); self.loop_depth -= 1; Type::Unit }
-            Expr::Break { value, .. } => { if self.loop_depth == 0 { self.errors.push(TypeError::OutsideLoop); } if let Some(v) = value { self.check_expr(v); } Type::Never }
+            Expr::Break { value, .. } => {
+                if self.loop_depth == 0 { self.errors.push(TypeError::OutsideLoop); }
+                if let Some(value) = value { self.check_expr(value); }
+                Type::Never
+            }
             Expr::Continue { .. } => { if self.loop_depth == 0 { self.errors.push(TypeError::OutsideLoop); } Type::Never }
             Expr::Return { value, .. } => { let found = value.as_ref().map(|v| self.check_expr(v)).unwrap_or(Type::Unit); self.require_compatible(&self.return_type.clone(), &found); Type::Never }
             Expr::Let { name, type_ann, value, .. } => { let found = self.check_expr(value); let ty = type_ann.as_ref().map(type_from_ast).unwrap_or(found); self.define(name.clone(), ty.clone()); ty }
