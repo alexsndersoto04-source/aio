@@ -87,6 +87,8 @@ The build artifact currently uses a versioned, inspectable textual bytecode form
 
 Additional crates provide HIR/MIR data structures, tracing GC metadata, scheduling, package manifests, standard-library host functions, macros, and editor services. They are kept separate so the executable core does not depend on unfinished optimization passes.
 
+The host standard library now includes checked binary I/O, LRU caching, collections algorithms, CSV, strict hex/Base64/percent encoding, bounded and atomic filesystem operations, JSON querying/merge, paths, process execution with timeouts, streaming statistics, worker pools/channels, Unicode-scalar text operations, clocks/deadlines, checksums, TCP and HTTP/1.1. See [`docs/STDLIB.md`](docs/STDLIB.md) for APIs and security boundaries.
+
 ## Development quality gates
 
 ```bash

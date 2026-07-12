@@ -723,3 +723,26 @@ Sin embargo, la condición para declarar TITAN estable sigue siendo objetiva: **
 > **Reconstrucción funcional implementada en código, pendiente de compilación y validación.**
 
 El usuario no tiene que realizar cambios manuales en GitHub. La siguiente necesidad técnica es disponer de un entorno con Rust para validar lo ya construido antes de ampliar nuevas fases.
+
+---
+
+## 11. Actualización posterior — Standard library avanzada
+
+Después de este informe inicial se amplió `titan_stdlib` de 7 a 18 módulos fuente. Se añadieron implementaciones host concretas para:
+
+- Lectura y escritura binaria bounds-checked y con endian explícito.
+- Cache LRU con capacidad y expulsión determinista.
+- FNV-1a, CRC-32 y comparación de bytes con tiempo independiente del primer byte diferente.
+- Algoritmos de colecciones: frecuencias, deduplicación, agrupación, partición, chunks, ventanas, zip y búsqueda binaria.
+- Parser y serializador CSV con comillas, escapes, Unicode, saltos de línea y acceso por headers.
+- Hex, Base64 canónico y percent encoding con validación estricta.
+- I/O de texto y bytes, lecturas limitadas, append, escritura atómica, recorrido de directorios con profundidad limitada y resultados ordenados.
+- JSON pretty, JSON Pointer, rutas, merge y flatten.
+- Rutas normalizadas/canónicas y comprobación de contención.
+- Procesos sin shell, cwd/env, captura concurrente de stdout/stderr y timeout con terminación.
+- Estadística streaming mediante Welford, varianza, desviación, mediana y cuantiles.
+- Thread pool acotado, aislamiento de panic, cierre con join, channels y estado compartido poison-aware.
+- Texto Unicode-scalar, codepoints, truncado, padding, escape HTML, slug y distancia Levenshtein.
+- Relojes monotónicos, deadlines, stopwatch y timestamps Unix.
+
+La documentación detallada y sus límites de seguridad están en `docs/STDLIB.md`. Estas APIs son actualmente capacidades host de Rust; el puente general para llamarlas desde `.titan` sigue siendo una fase separada. Como el entorno continúa sin toolchain Rust, esta actualización también está implementada pero pendiente de compilación y ejecución de tests.

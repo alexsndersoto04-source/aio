@@ -1,11 +1,22 @@
 //! Titan Standard Library.
 
-pub mod io;
-pub mod net;
-pub mod json;
+pub mod bytes;
+pub mod cache;
+pub mod checksum;
 pub mod collections;
+pub mod csv;
+pub mod encoding;
+pub mod io;
+pub mod json;
 pub mod math;
+pub mod net;
+pub mod path;
+pub mod process;
+pub mod stats;
+pub mod sync;
 pub mod testing;
+pub mod text;
+pub mod time;
 
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
