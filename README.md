@@ -1,192 +1,106 @@
-# ⚔️ TITAN — The Executioner of Programming Languages
+# TITAN
 
-> *"The executioner does not ask permission. It executes."*
+TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM.
 
----
+> Project status: active language implementation. The supported core below is executable end to end; experimental syntax is identified separately rather than advertised as complete.
 
-## 📊 Project Status
+## Quick start
 
-| | |
-|---|---|
-| **Crates** | 15 |
-| **Rust Lines** | ~2,600 |
-| **Compilation** | ✅ Verified (Termux, Rust 1.96) |
-| **License** | MIT |
+Prerequisite: current stable Rust from <https://rustup.rs>.
 
----
-
-## 🧬 What is TITAN?
-
-TITAN is a **systems programming language** that combines:
-
-- **Rust-level safety** — no null, no undefined behavior, exhaustive pattern matching
-- **Go-level simplicity** — clean syntax, fast compilation, minimal keywords
-- **C-level performance** — AOT compilation, zero-cost abstractions, stack by default
-
-Titan compiles to **bytecode** that runs on its own **stack-based VM**, with an optional **generational garbage collector**.
-
----
-
-## 🏗️ Architecture
-
-```
-Source (.tt)
-  → Lexer      (titan_lexer)
-  → Parser     (titan_parser) — recursive descent + Pratt
-  → Type Checker (titan_typechecker)
-  → HIR        (titan_hir)
-  → MIR + Opt  (titan_mir)
-  → Codegen    (titan_codegen)
-  → Bytecode
-  → VM         (titan_vm) — stack-based interpreter
-  → GC         (titan_gc) — generational mark-and-sweep
+```bash
+git clone https://github.com/alexsndersoto04-source/aio
+cd aio
+cargo test --workspace --all-targets
+cargo run -p titan_cli -- run examples/hello.titan
+cargo run -p titan_cli -- run examples/fibonacci.titan
 ```
 
----
+Install the CLI locally:
 
-## 📦 15 Crates
+```bash
+cargo install --path crates/titan_cli
 
-| # | Crate | Purpose |
-|---|-------|---------|
-| 1 | `titan_lexer` | Tokenizer |
-| 2 | `titan_ast` | Abstract Syntax Tree |
-| 3 | `titan_parser` | Recursive descent + Pratt parser |
-| 4 | `titan_typechecker` | Type inference & checking |
-| 5 | `titan_hir` | High-level IR |
-| 6 | `titan_mir` | Mid-level IR + optimizations |
-| 7 | `titan_codegen` | Bytecode compiler |
-| 8 | `titan_vm` | Stack-based virtual machine |
-| 9 | `titan_gc` | Generational garbage collector |
-| 10 | `titan_macros` | Macro expansion engine |
-| 11 | `titan_runtime` | Fiber scheduler + channels |
-| 12 | `titan_stdlib` | Standard library |
-| 13 | `titan_cli` | CLI: build, run, repl, version |
-| 14 | `titan_lsp` | Language Server Protocol |
-| 15 | `titan_pkg` | Package manager |
+titan run examples/hello.titan
+titan build examples/hello.titan       # writes hello.tbc
+titan repl
+```
 
----
-
-## 📝 Quick Example
+## The language
 
 ```titan
-// Hello World in Titan
-fn main() {
-    let name = "Developer"
-    print("Hello, {name} from TITAN!")
-}
-```
-
-```titan
-// Fibonacci
-fn fib(n: int) -> int {
-    if n <= 1 { return n }
-    fib(n - 1) + fib(n - 2)
+fn factorial(n: int) -> int {
+    if n <= 1 { return 1 }
+    n * factorial(n - 1)
 }
 
 fn main() {
-    for i in 0..20 {
-        print("fib({i}) = {fib(i)}")
+    let total = 0
+    for i in 1..=5 {
+        total += factorial(i)
     }
+    print("total = {total}")
 }
 ```
 
----
+### Supported end-to-end
 
-## 🔨 How to Compile
+- `int`, `float`, `bool`, `char`, `string`, `nil`, arrays and tuples.
+- Typed functions, default parameter syntax, recursion and checked arity.
+- Lexical variables, assignment and compound arithmetic assignment.
+- Arithmetic, comparison, logical and integer bitwise operators.
+- `if`/`else`, `while`, `loop`, `for` over arrays/ranges, `break`, `continue`, `return`.
+- Struct construction and field reads.
+- Enums with zero or one payload and matching enum variants.
+- Literal, binding and wildcard `match` arms; boolean exhaustiveness checking.
+- Constants and nested module declarations.
+- String interpolation for variables and simple named calls, such as `{fib(i)}`.
+- Runtime errors for bad types, divide-by-zero, overflow, bounds, runaway execution and excessive recursion.
+- A CLI with `run`, `build`, `repl`, and `version`.
+- Editor diagnostics through the `titan_lsp` language-service crate.
 
-### Prerequisites
-- **Rust** (install from https://rustup.rs)
+### Parsed/checked language surface
 
-### Build
+Traits, impl blocks, imports, references, slices, generic type syntax, `spawn`, closures and advanced destructuring exist in the AST or parser. Some require runtime/linker work and produce an explicit “unsupported construct” error instead of silently generating incorrect code. See [the specification](docs/SPEC.md) for exact status.
+
+## Commands
+
+```text
+titan run <file.titan>       Compile, type-check and execute
+titan build <file.titan>     Write inspectable .tbc bytecode
+titan repl                   Interactive expressions/statements
+titan version                Print compiler version
+```
+
+The build artifact currently uses a versioned, inspectable textual bytecode format. `run` compiles from source; loading precompiled artifacts is planned for the binary bytecode container.
+
+## Architecture
+
+```text
+.titan source
+  → titan_lexer
+  → titan_parser / titan_ast
+  → titan_typechecker
+  → titan_codegen
+  → titan_vm
+```
+
+Additional crates provide HIR/MIR data structures, tracing GC metadata, scheduling, package manifests, standard-library host functions, macros, and editor services. They are kept separate so the executable core does not depend on unfinished optimization passes.
+
+## Development quality gates
+
 ```bash
-git clone https://github.com/alexsndersoto04-source/aio
-cd aio
-git checkout arena/019f4510-aio
-cargo build --workspace --lib
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
 ```
 
-### On Android (Termux)
-```bash
-pkg install rust git
-git clone https://github.com/alexsndersoto04-source/aio
-cd aio
-git checkout arena/019f4510-aio
-cargo build --workspace --lib
-```
+The repository includes tests for malformed lexer input, parsing, semantic errors, recursion, loops/ranges, VM runtime failures, GC tracing and editor diagnostics.
 
-### On GitHub Codespaces
-1. Open your repo on GitHub
-2. Click **Code → Codespaces → Create codespace**
-3. Run: `cargo build --workspace --lib`
+## Safety and limits
 
----
+The VM does not execute native pointers or Rust `unsafe`. It enforces instruction, recursion and range-allocation limits. Titan's dependency-free HTTP helper supports plain `http://` and rejects `https://` rather than sending insecure plaintext; use a TLS-enabled host integration where HTTPS is required.
 
-## 📁 Project Structure
+## License
 
-```
-aio/
-├── Cargo.toml              # Workspace root
-├── LICENSE                 # MIT
-├── README.md
-├── crates/
-│   ├── titan_lexer/        # Tokenizer
-│   ├── titan_ast/          # AST types
-│   ├── titan_parser/       # Parser
-│   ├── titan_typechecker/  # Type system
-│   ├── titan_hir/          # High IR
-│   ├── titan_mir/          # Mid IR
-│   ├── titan_codegen/      # Bytecode compiler
-│   ├── titan_vm/           # Virtual machine
-│   ├── titan_gc/           # Garbage collector
-│   ├── titan_macros/       # Macro engine
-│   ├── titan_runtime/      # Concurrency runtime
-│   ├── titan_stdlib/       # Standard library
-│   ├── titan_cli/          # Command-line interface
-│   ├── titan_lsp/          # LSP server
-│   └── titan_pkg/          # Package manager
-```
-
----
-
-## ⚡ Features
-
-- Full type inference
-- Algebraic data types (enums with payloads)
-- Pattern matching (exhaustive by default)
-- Zero-cost abstractions
-- Generational garbage collector (optional)
-- Fiber-based concurrency
-- Channel communication (Go-style)
-- Standard library: IO, networking, JSON, crypto, math
-- Package manager with Titan.toml manifests
-- Language Server Protocol for IDE integration
-- Compiles on Linux, macOS, Android (Termux)
-
----
-
-## 🎯 Language Level
-
-TITAN is a **systems programming language** — same category as Rust, Go, Zig, and C. It is NOT a scripting language. It is designed for building:
-
-- Web servers
-- APIs and microservices
-- CLI tools
-- Game engines
-- Databases
-- Infrastructure software
-
----
-
-## 📄 License
-
-MIT — Free for everyone. Forever.
-
----
-
-<div align="center">
-
-**⚔️ TITAN — The Executioner**
-
-*"All other languages fall."*
-
-</div>
+MIT. See [LICENSE](LICENSE).

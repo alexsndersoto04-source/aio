@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use std::fs;
 
 #[derive(Parser)]
-#[command(name = "titan", version = "1.0.0", about = "Titan Language Compiler")]
+#[command(name = "titan", version, about = "Titan Language Compiler")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -56,7 +56,17 @@ fn cmd_build(input: &str, output: Option<String>) {
 
     let target = output.unwrap_or_else(|| {
         let path = std::path::Path::new(input);
-        format!("{}.bc", path.file_stem().unwrap().to_string_lossy())
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("program");
+        format!("{}.tbc", stem)
+    });
+
+    // The textual bytecode format is deterministic, inspectable and useful for
+    // tooling. A stable binary container can be added without pretending that
+    // merely printing a target path created an artifact.
+    let artifact = format!("TITAN-BYTECODE 1\n{:#?}\n", module);
+    fs::write(&target, artifact).unwrap_or_else(|e| {
+        eprintln!("ERROR: Cannot write '{}': {}", target, e);
+        std::process::exit(1);
     });
 
     println!("BUILD: {} → {}", input, target);
@@ -87,7 +97,7 @@ fn cmd_run(input: &str) {
 }
 
 fn cmd_repl() {
-    println!("⚔️  TITAN REPL v1.0.0");
+    println!("⚔️  TITAN REPL v{}", env!("CARGO_PKG_VERSION"));
     println!("   Type Titan code. Type :q to quit, :h for help.");
     println!();
 
@@ -117,7 +127,7 @@ fn cmd_repl() {
                     println!();
                     println!("Any other input is compiled and executed as Titan code.");
                 }
-                ":v" => println!("TITAN v1.0.0"),
+                ":v" => println!("TITAN v{}", env!("CARGO_PKG_VERSION")),
                 _ => println!("Unknown: {} (:h for help)", line),
             }
             continue;
@@ -138,7 +148,7 @@ fn cmd_repl() {
 }
 
 fn cmd_version() {
-    println!("TITAN Language Compiler v1.0.0");
+    println!("TITAN Language Compiler v{}", env!("CARGO_PKG_VERSION"));
     println!("The Executioner of Programming Languages");
 }
 
@@ -174,5 +184,5 @@ fn compile_titan(source: &str) -> Result<titan_codegen::CompiledModule, String> 
 fn compile_and_run(source: &str) -> Result<Option<titan_vm::Value>, String> {
     let module = compile_titan(source)?;
     let mut vm = titan_vm::Vm::new(module);
-    Ok(vm.run())
+    vm.run().map_err(|error| error.to_string())
 }

@@ -1,1 +1,570 @@
-//! Titan Parser — Recursive descent with Pratt expression parsing.\n//! Handles: let, return, if/else, while, function calls, arithmetic, structs, enums.\n\nuse std::collections::VecDeque;\nuse thiserror::Error;\nuse titan_ast::*;\nuse titan_lexer::{Token, TokenKind, Span};\n\n#[derive(Error, Debug)]\npub enum ParseError {\n    #[error(\"Expected {expected}, got {found} at line {line}\")]\n    Expected { expected: String, found: String, line: usize },\n    #[error(\"Unexpected {kind} at line {line}\")]\n    Unexpected { kind: String, line: usize },\n}\n\npub type Result<T> = std::result::Result<T, ParseError>;\n\npub struct Parser {\n    tokens: VecDeque<Token>,\n    pos: usize,\n    errors: Vec<ParseError>,\n}\n\nimpl Parser {\n    pub fn new(tokens: Vec<Token>) -> Self {\n        Parser { tokens: tokens.into(), pos: 0, errors: Vec::new() }\n    }\n\n    pub fn parse_program(&mut self) -> Result<Program> {\n        let mut items = Vec::new();\n        while !self.is_eof() {\n            match self.parse_item() {\n                Ok(item) => items.push(item),\n                Err(e) => { self.errors.push(e); self.sync(); }\n            }\n        }\n        Ok(Program { items })\n    }\n\n    pub fn errors(&self) -> &[ParseError] { &self.errors }\n\n    fn parse_item(&mut self) -> Result<Item> {\n        if self.eat_ident(\"fn\") {\n            let name = self.expect_ident()?;\n            self.expect(TokenKind::LParen)?;\n            self.expect(TokenKind::RParen)?;\n            self.expect(TokenKind::LBrace)?;\n            let body = self.parse_block()?;\n            Ok(Item::Function(FunctionDecl {\n                name, params: vec![],\n                return_type: None, body: Some(body),\n                span: Span::new(0, 0, 0, 0),\n            }))\n        } else if self.eat_ident(\"struct\") {\n            let name = self.expect_ident()?;\n            self.expect(TokenKind::LBrace)?;\n            let mut fields = Vec::new();\n            while !self.check(TokenKind::RBrace) && !self.is_eof() {\n                let fname = self.expect_ident()?;\n                self.expect(TokenKind::Colon)?;\n                let typ = self.parse_type()?;\n                fields.push(StructField { name: fname, type_ann: typ, span: Span::new(0, 0, 0, 0) });\n                if !self.eat(TokenKind::Comma) { break; }\n            }\n            self.expect(TokenKind::RBrace)?;\n            Ok(Item::Struct(StructDecl { name, fields, span: Span::new(0, 0, 0, 0) }))\n        } else if self.eat_ident(\"enum\") {\n            let name = self.expect_ident()?;\n            self.expect(TokenKind::LBrace)?;\n            let mut variants = Vec::new();\n            while !self.check(TokenKind::RBrace) && !self.is_eof() {\n                let vname = self.expect_ident()?;\n                variants.push(EnumVariant { name: vname, payload: None, span: Span::new(0, 0, 0, 0) });\n                if !self.eat(TokenKind::Comma) { break; }\n            }\n            self.expect(TokenKind::RBrace)?;\n            Ok(Item::Enum(EnumDecl { name, variants, span: Span::new(0, 0, 0, 0) }))\n        } else {\n            Err(self.err(\"expected declaration\"))\n        }\n    }\n\n    fn parse_block(&mut self) -> Result<Block> {\n        let mut stmts = Vec::new();\n        let mut final_expr = None;\n        while !self.check(TokenKind::RBrace) && !self.is_eof() {\n            // Handle return; statement\n            if self.eat_kw(\"return\") {\n                let ret_expr = if self.check(TokenKind::Semicolon) || self.check(TokenKind::RBrace) {\n                    None\n                } else {\n                    Some(Box::new(self.parse_expr()?))\n                };\n                self.eat(TokenKind::Semicolon);\n                return Err(ParseError::Expected {\n                    expected: \"EndRet\".into(),\n                    found: \"\".into(),\n                    line: 0\n                });\n            }\n            // Handle if statement\n            if self.eat_ident(\"if\") {\n                let cond = self.parse_expr()?;\n                self.expect(TokenKind::LBrace)?;\n                let then_body = self.parse_block()?;\n                let else_body = if self.eat_ident(\"else\") {\n                    if self.check(TokenKind::LBrace) {\n                        self.expect(TokenKind::LBrace)?;\n                        Some(self.parse_block()?)\n                    } else {\n                        None\n                    }\n                } else { None };\n                final_expr = Some(Box::new(Expr::If {\n                    condition: Box::new(cond),\n                    then_branch: then_body,\n                    else_branch: else_body,\n                    span: Span::new(0, 0, 0, 0),\n                }));\n                break;\n            }\n            // Handle while statement\n            if self.eat_ident(\"while\") {\n                let cond = self.parse_expr()?;\n                self.expect(TokenKind::LBrace)?;\n                let body = self.parse_block()?;\n                final_expr = Some(Box::new(Expr::While {\n                    condition: Box::new(cond),\n                    body,\n                    span: Span::new(0, 0, 0, 0),\n                }));\n                break;\n            }\n            // Handle let statement\n            if self.eat_ident(\"let\") {\n                let name = self.expect_ident()?;\n                let typ = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };\n                self.expect(TokenKind::Eq)?;\n                let val = self.parse_expr()?;\n                stmts.push(Stmt::Let { name, type_ann: typ, value: val, span: Span::new(0, 0, 0, 0) });\n                self.eat(TokenKind::Semicolon);\n                continue;\n            }\n            // Handle return expression\n            if self.eat_kw(\"return\") {\n                let val = if self.check(TokenKind::Semicolon) || self.check(TokenKind::RBrace) {\n                    None\n                } else {\n                    Some(Box::new(self.parse_expr()?))\n                };\n                self.eat(TokenKind::Semicolon);\n                final_expr = Some(Box::new(Expr::Return { value: val, span: Span::new(0, 0, 0, 0) }));\n                break;\n            }\n            // Regular expression\n            let expr = self.parse_expr()?;\n            if self.check(TokenKind::RBrace) {\n                final_expr = Some(Box::new(expr));\n                break;\n            }\n            self.eat(TokenKind::Semicolon);\n            stmts.push(Stmt::Expr(expr));\n        }\n        self.expect(TokenKind::RBrace)?;\n        Ok(Block { stmts, final_expr, span: Span::new(0, 0, 0, 0) })\n    }\n\n    fn parse_expr(&mut self) -> Result<Expr> { self.parse_comparison() }\n\n    fn parse_comparison(&mut self) -> Result<Expr> {\n        let mut left = self.parse_additive()?;\n        loop {\n            let op = if self.eat(TokenKind::EqEq) { Some(BinaryOp::Eq) }\n                else if self.eat(TokenKind::NotEq) { Some(BinaryOp::Neq) }\n                else if self.eat(TokenKind::Lt) { Some(BinaryOp::Lt) }\n                else if self.eat(TokenKind::Gt) { Some(BinaryOp::Gt) }\n                else { None };\n            if let Some(op) = op {\n                let right = self.parse_additive()?;\n                left = Expr::Binary { left: Box::new(left), op, right: Box::new(right), span: Span::new(0, 0, 0, 0) };\n            } else { break; }\n        }\n        Ok(left)\n    }\n\n    fn parse_additive(&mut self) -> Result<Expr> {\n        let mut left = self.parse_multiplicative()?;\n        loop {\n            let op = if self.eat(TokenKind::Plus) { Some(BinaryOp::Add) }\n                else if self.eat(TokenKind::Minus) { Some(BinaryOp::Sub) }\n                else { None };\n            if let Some(op) = op {\n                let right = self.parse_multiplicative()?;\n                left = Expr::Binary { left: Box::new(left), op, right: Box::new(right), span: Span::new(0, 0, 0, 0) };\n            } else { break; }\n        }\n        Ok(left)\n    }\n\n    fn parse_multiplicative(&mut self) -> Result<Expr> {\n        let mut left = self.parse_unary()?;\n        loop {\n            let op = if self.eat(TokenKind::Star) { Some(BinaryOp::Mul) }\n                else if self.eat(TokenKind::Slash) { Some(BinaryOp::Div) }\n                else { None };\n            if let Some(op) = op {\n                let right = self.parse_unary()?;\n                left = Expr::Binary { left: Box::new(left), op, right: Box::new(right), span: Span::new(0, 0, 0, 0) };\n            } else { break; }\n        }\n        Ok(left)\n    }\n\n    fn parse_unary(&mut self) -> Result<Expr> {\n        if self.eat(TokenKind::Minus) {\n            let expr = self.parse_unary()?;\n            Ok(Expr::Unary { op: UnaryOp::Neg, expr: Box::new(expr), span: Span::new(0, 0, 0, 0) })\n        } else if self.eat(TokenKind::Bang) {\n            let expr = self.parse_unary()?;\n            Ok(Expr::Unary { op: UnaryOp::Not, expr: Box::new(expr), span: Span::new(0, 0, 0, 0) })\n        } else { self.parse_call() }\n    }\n\n    fn parse_call(&mut self) -> Result<Expr> {\n        let mut expr = self.parse_primary()?;\n        loop {\n            if self.eat(TokenKind::LParen) {\n                let mut args = Vec::new();\n                while !self.check(TokenKind::RParen) && !self.is_eof() {\n                    args.push(self.parse_expr()?);\n                    if !self.eat(TokenKind::Comma) { break; }\n                }\n                self.expect(TokenKind::RParen)?;\n                expr = Expr::Call { callee: Box::new(expr), args, span: Span::new(0, 0, 0, 0) };\n            } else if self.eat(TokenKind::Dot) {\n                let field = self.expect_ident()?;\n                expr = Expr::FieldAccess { target: Box::new(expr), field, span: Span::new(0, 0, 0, 0) };\n            } else { break; }\n        }\n        Ok(expr)\n    }\n\n    fn parse_primary(&mut self) -> Result<Expr> {\n        let sp = Span::new(0, 0, 0, 0);\n        if self.eat(TokenKind::LParen) {\n            let expr = self.parse_expr()?;\n            self.expect(TokenKind::RParen)?;\n            Ok(expr)\n        } else if self.eat(TokenKind::LBrace) {\n            let block = self.parse_block()?;\n            Ok(Expr::Block(Box::new(block)))\n        } else if self.eat_ident(\"if\") {\n            let cond = self.parse_expr()?;\n            self.expect(TokenKind::LBrace)?;\n            let then_body = self.parse_block()?;\n            let else_body = if self.eat_ident(\"else\") {\n                self.expect(TokenKind::LBrace)?;\n                Some(self.parse_block()?)\n            } else { None };\n            Ok(Expr::If { condition: Box::new(cond), then_branch: then_body, else_branch: else_body, span: sp })\n        } else if self.eat_ident(\"while\") {\n            let cond = self.parse_expr()?;\n            self.expect(TokenKind::LBrace)?;\n            let body = self.parse_block()?;\n            Ok(Expr::While { condition: Box::new(cond), body, span: sp })\n        } else if self.eat_ident(\"return\") {\n            let val = if self.check(TokenKind::Semicolon) || self.check(TokenKind::RBrace) || self.is_eof() {\n                None\n            } else {\n                Some(Box::new(self.parse_expr()?))\n            };\n            Ok(Expr::Return { value: val, span: sp })\n        } else if let Some(tok) = self.advance() {\n            match tok.kind {\n                TokenKind::IntLit(v) => Ok(Expr::Int { value: v.parse().unwrap_or(0), span: sp }),\n                TokenKind::FloatLit(v) => Ok(Expr::Float { value: v.parse().unwrap_or(0.0), span: sp }),\n                TokenKind::StringLit(v) => Ok(Expr::String { value: v, span: sp }),\n                TokenKind::True => Ok(Expr::Bool { value: true, span: sp }),\n                TokenKind::False => Ok(Expr::Bool { value: false, span: sp }),\n                TokenKind::Nil => Ok(Expr::Nil { span: sp }),\n                TokenKind::Ident(n) => Ok(Expr::Ident { name: n, span: sp }),\n                _ => Err(self.err(\"expected expression\")),\n            }\n        } else { Err(self.err(\"expected expression\")) }\n    }\n\n    fn parse_type(&mut self) -> Result<TypeExpr> {\n        let name = self.expect_ident()?;\n        Ok(TypeExpr::Named { name, generics: vec![] })\n    }\n\n    fn peek(&self) -> Option<&Token> { self.tokens.get(self.pos) }\n    fn advance(&mut self) -> Option<Token> {\n        if let Some(t) = self.tokens.get(self.pos).cloned() { self.pos += 1; Some(t) } else { None }\n    }\n    fn check(&self, k: TokenKind) -> bool {\n        self.peek().map_or(false, |t| std::mem::discriminant(&t.kind) == std::mem::discriminant(&k))\n    }\n    fn eat(&mut self, k: TokenKind) -> bool {\n        if self.check(k) { self.advance(); true } else { false }\n    }\n    fn eat_ident(&mut self, s: &str) -> bool {\n        self.peek().map_or(false, |t| matches!(&t.kind, TokenKind::Ident(n) if n == s))\n            .then(|| { self.advance(); }).is_some()\n    }\n    fn eat_kw(&mut self, s: &str) -> bool {\n        self.eat_ident(s)\n    }\n    fn is_eof(&self) -> bool { self.peek().map_or(true, |t| matches!(t.kind, TokenKind::Eof)) }\n    fn expect(&mut self, k: TokenKind) -> Result<()> {\n        if self.eat(k) { Ok(()) } else { Err(self.err(\"expected token\")) }\n    }\n    fn expect_ident(&mut self) -> Result<String> {\n        match self.peek().map(|t| t.kind.clone()) {\n            Some(TokenKind::Ident(s)) => { self.advance(); Ok(s) }\n            _ => Err(self.err(\"expected identifier\")),\n        }\n    }\n    fn sync(&mut self) {\n        while !self.is_eof() { if self.eat(TokenKind::Semicolon) { return; } self.advance(); }\n    }\n    fn err(&self, msg: &str) -> ParseError {\n        ParseError::Expected { expected: msg.into(), found: \"?\".into(), line: 0 }\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use titan_lexer::Lexer;\n    #[test]\n    fn test_parse_arithmetic() {\n        let mut lex = Lexer::new(\"fn main() { 1 + 2 * 3 }\");\n        let (tokens, _) = lex.tokenize();\n        let mut p = Parser::new(tokens.to_vec());\n        let prog = p.parse_program().unwrap();\n        assert!(prog.items.len() >= 1);\n    }\n    #[test]\n    fn test_parse_if() {\n        let mut lex = Lexer::new(\"fn main() { if true { 42 } else { 0 } }\");\n        let (tokens, _) = lex.tokenize();\n        let mut p = Parser::new(tokens.to_vec());\n        let prog = p.parse_program().unwrap();\n        assert!(prog.items.len() >= 1);\n    }\n    #[test]\n    fn test_parse_return() {\n        let mut lex = Lexer::new(\"fn main() { return 42 }\");\n        let (tokens, _) = lex.tokenize();\n        let mut p = Parser::new(tokens.to_vec());\n        let prog = p.parse_program().unwrap();\n        assert!(prog.items.len() >= 1);\n    }\n}"}
+//! Recursive-descent and Pratt parser for Titan.
+
+use thiserror::Error;
+use titan_ast::*;
+use titan_lexer::{Span, Token, TokenKind};
+
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum ParseError {
+    #[error("expected {expected}, found {found} at {line}:{column}")]
+    Expected { expected: String, found: String, line: usize, column: usize },
+    #[error("{message} at {line}:{column}")]
+    Message { message: String, line: usize, column: usize },
+}
+
+pub type Result<T> = std::result::Result<T, ParseError>;
+
+pub struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+    errors: Vec<ParseError>,
+}
+
+impl Parser {
+    pub fn new(tokens: Vec<Token>) -> Self { Self { tokens, pos: 0, errors: Vec::new() } }
+    pub fn errors(&self) -> &[ParseError] { &self.errors }
+
+    pub fn parse_program(&mut self) -> Result<Program> {
+        let mut items = Vec::new();
+        while !self.at(TokenKind::Eof) {
+            match self.parse_item() {
+                Ok(item) => items.push(item),
+                Err(error) => {
+                    self.errors.push(error);
+                    self.synchronize_item();
+                }
+            }
+        }
+        if let Some(error) = self.errors.first().cloned() { Err(error) } else { Ok(Program { items }) }
+    }
+
+    fn parse_item(&mut self) -> Result<Item> {
+        self.eat(TokenKind::Pub);
+        match self.peek_kind() {
+            Some(TokenKind::Fn) => self.parse_function().map(Item::Function),
+            Some(TokenKind::Struct) => self.parse_struct().map(Item::Struct),
+            Some(TokenKind::Enum) => self.parse_enum().map(Item::Enum),
+            Some(TokenKind::Trait) => self.parse_trait().map(Item::Trait),
+            Some(TokenKind::Impl) => self.parse_impl().map(Item::Impl),
+            Some(TokenKind::Module) => self.parse_module().map(Item::Module),
+            Some(TokenKind::Import) => self.parse_import().map(Item::Import),
+            Some(TokenKind::Const) => self.parse_const().map(Item::Const),
+            _ => Err(self.expected("a declaration (fn, struct, enum, trait, impl, mod, import or const)")),
+        }
+    }
+
+    fn parse_function(&mut self) -> Result<FunctionDecl> {
+        let start = self.expect(TokenKind::Fn)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.at(TokenKind::RParen) {
+            let pspan = self.span();
+            self.eat(TokenKind::Mut);
+            let pname = if self.eat(TokenKind::Self_) { "self".into() } else { self.expect_ident()? };
+            let type_ann = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
+            let default = if self.eat(TokenKind::Eq) { Some(Box::new(self.parse_expr()?)) } else { None };
+            params.push(Param { name: pname, type_ann, default, span: pspan });
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::RParen)?;
+        let return_type = if self.eat(TokenKind::ThinArrow) { Some(self.parse_type()?) } else { None };
+        let body = if self.eat(TokenKind::Semicolon) { None } else {
+            self.expect(TokenKind::LBrace)?;
+            Some(self.parse_block_after_open(start)?)
+        };
+        Ok(FunctionDecl { name, params, return_type, body, span: start })
+    }
+
+    fn parse_struct(&mut self) -> Result<StructDecl> {
+        let span = self.expect(TokenKind::Struct)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            self.eat(TokenKind::Pub);
+            let fspan = self.span();
+            let field_name = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let type_ann = self.parse_type()?;
+            fields.push(StructField { name: field_name, type_ann, span: fspan });
+            if !self.eat(TokenKind::Comma) { self.eat(TokenKind::Semicolon); }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(StructDecl { name, fields, span })
+    }
+
+    fn parse_enum(&mut self) -> Result<EnumDecl> {
+        let span = self.expect(TokenKind::Enum)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut variants = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            let vspan = self.span();
+            let variant = self.expect_ident()?;
+            let payload = if self.eat(TokenKind::LParen) {
+                let ty = self.parse_type()?;
+                self.expect(TokenKind::RParen)?;
+                Some(ty)
+            } else { None };
+            variants.push(EnumVariant { name: variant, payload, span: vspan });
+            if !self.eat(TokenKind::Comma) { self.eat(TokenKind::Semicolon); }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(EnumDecl { name, variants, span })
+    }
+
+    fn parse_trait(&mut self) -> Result<TraitDecl> {
+        let span = self.expect(TokenKind::Trait)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            let function = self.parse_function()?;
+            methods.push(TraitMethod { name: function.name, params: function.params, return_type: function.return_type, span: function.span });
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(TraitDecl { name, methods, span })
+    }
+
+    fn parse_impl(&mut self) -> Result<ImplBlock> {
+        let span = self.expect(TokenKind::Impl)?;
+        let first = self.parse_type()?;
+        let (trait_name, target_type) = if self.eat(TokenKind::For) {
+            let trait_name = match first { TypeExpr::Named { name, .. } => Some(name), _ => return Err(self.message("trait name must be a named type")) };
+            (trait_name, self.parse_type()?)
+        } else { (None, first) };
+        self.expect(TokenKind::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.at(TokenKind::RBrace) { methods.push(self.parse_function()?); }
+        self.expect(TokenKind::RBrace)?;
+        Ok(ImplBlock { trait_name, target_type, methods, span })
+    }
+
+    fn parse_module(&mut self) -> Result<ModuleDecl> {
+        let span = self.expect(TokenKind::Module)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut items = Vec::new();
+        while !self.at(TokenKind::RBrace) { items.push(self.parse_item()?); }
+        self.expect(TokenKind::RBrace)?;
+        Ok(ModuleDecl { name, items, span })
+    }
+
+    fn parse_import(&mut self) -> Result<ImportDecl> {
+        let span = self.expect(TokenKind::Import)?;
+        let mut path = vec![self.expect_ident()?];
+        while self.eat(TokenKind::ColonColon) { path.push(self.expect_ident()?); }
+        self.eat(TokenKind::Semicolon);
+        Ok(ImportDecl { path, span })
+    }
+
+    fn parse_const(&mut self) -> Result<ConstDecl> {
+        let span = self.expect(TokenKind::Const)?;
+        let name = self.expect_ident()?;
+        let type_ann = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
+        self.expect(TokenKind::Eq)?;
+        let value = Box::new(self.parse_expr()?);
+        self.eat(TokenKind::Semicolon);
+        Ok(ConstDecl { name, type_ann, value, span })
+    }
+
+    fn parse_type(&mut self) -> Result<TypeExpr> {
+        if self.eat(TokenKind::Bang) { return Ok(TypeExpr::Never); }
+        if self.eat(TokenKind::Ampersand) {
+            let is_mut = self.eat(TokenKind::Mut);
+            return Ok(TypeExpr::Reference { inner: Box::new(self.parse_type()?), is_mut });
+        }
+        if self.eat(TokenKind::LBracket) {
+            let inner = Box::new(self.parse_type()?);
+            if self.eat(TokenKind::Semicolon) {
+                let size = Box::new(self.parse_expr()?);
+                self.expect(TokenKind::RBracket)?;
+                return Ok(TypeExpr::Array { inner, size });
+            }
+            self.expect(TokenKind::RBracket)?;
+            return Ok(TypeExpr::Slice { inner });
+        }
+        if self.eat(TokenKind::LParen) {
+            if self.eat(TokenKind::RParen) { return Ok(TypeExpr::Unit); }
+            let mut elements = vec![self.parse_type()?];
+            while self.eat(TokenKind::Comma) { if self.at(TokenKind::RParen) { break; } elements.push(self.parse_type()?); }
+            self.expect(TokenKind::RParen)?;
+            return Ok(TypeExpr::Tuple { elements });
+        }
+        let name = self.expect_ident()?;
+        let mut generics = Vec::new();
+        if self.eat(TokenKind::Lt) {
+            loop {
+                generics.push(self.parse_type()?);
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.expect(TokenKind::Gt)?;
+        }
+        Ok(TypeExpr::Named { name, generics })
+    }
+
+    fn parse_block_after_open(&mut self, start: Span) -> Result<Block> {
+        let mut stmts = Vec::new();
+        let mut final_expr = None;
+        while !self.at(TokenKind::RBrace) {
+            if self.at(TokenKind::Eof) { return Err(self.expected("'}'")); }
+            if self.eat(TokenKind::Let) {
+                let span = self.previous_span();
+                self.eat(TokenKind::Mut);
+                let name = self.expect_ident()?;
+                let type_ann = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
+                self.expect(TokenKind::Eq)?;
+                let value = self.parse_expr()?;
+                self.eat(TokenKind::Semicolon);
+                stmts.push(Stmt::Let { name, type_ann, value, span });
+                continue;
+            }
+            if self.at_any(&[TokenKind::Fn, TokenKind::Struct, TokenKind::Enum, TokenKind::Const]) {
+                stmts.push(Stmt::Item(self.parse_item()?));
+                continue;
+            }
+            let expr = self.parse_expr()?;
+            if self.eat(TokenKind::Semicolon) {
+                stmts.push(Stmt::Expr(expr));
+            } else if self.at(TokenKind::RBrace) {
+                final_expr = Some(Box::new(expr));
+                break;
+            } else {
+                // Titan permits newline-separated statements. Expression parsing naturally
+                // stops when the following token cannot continue the expression.
+                stmts.push(Stmt::Expr(expr));
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(Block { stmts, final_expr, span: start })
+    }
+
+    fn parse_expr(&mut self) -> Result<Expr> { self.parse_assignment() }
+
+    fn parse_assignment(&mut self) -> Result<Expr> {
+        let left = self.parse_range()?;
+        let op = match self.peek_kind() {
+            Some(TokenKind::Eq) => { self.advance(); Some(None) },
+            Some(TokenKind::PlusEq) => { self.advance(); Some(Some(BinaryOp::Add)) },
+            Some(TokenKind::MinusEq) => { self.advance(); Some(Some(BinaryOp::Sub)) },
+            Some(TokenKind::StarEq) => { self.advance(); Some(Some(BinaryOp::Mul)) },
+            Some(TokenKind::SlashEq) => { self.advance(); Some(Some(BinaryOp::Div)) },
+            Some(TokenKind::PercentEq) => { self.advance(); Some(Some(BinaryOp::Mod)) },
+            _ => None,
+        };
+        if let Some(op) = op {
+            let span = left.span();
+            let value = self.parse_assignment()?;
+            Ok(Expr::Assign { target: Box::new(left), op, value: Box::new(value), span })
+        } else { Ok(left) }
+    }
+
+    fn parse_range(&mut self) -> Result<Expr> {
+        let left = self.parse_binary(0)?;
+        if self.eat(TokenKind::Range) || self.eat(TokenKind::RangeInclusive) {
+            let inclusive = matches!(self.tokens[self.pos - 1].kind, TokenKind::RangeInclusive);
+            let span = left.span();
+            let end = self.parse_binary(0)?;
+            Ok(Expr::Range { start: Box::new(left), end: Box::new(end), inclusive, span })
+        } else { Ok(left) }
+    }
+
+    fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr> {
+        let mut left = self.parse_unary()?;
+        loop {
+            let Some((op, precedence)) = self.binary_op() else { break };
+            if precedence < min_precedence { break; }
+            self.advance();
+            let right = self.parse_binary(precedence + 1)?;
+            let span = left.span();
+            left = Expr::Binary { left: Box::new(left), op, right: Box::new(right), span };
+        }
+        Ok(left)
+    }
+
+    fn binary_op(&self) -> Option<(BinaryOp, u8)> {
+        Some(match self.peek_kind()? {
+            TokenKind::LazyOr => (BinaryOp::LazyOr, 1), TokenKind::LazyAnd => (BinaryOp::LazyAnd, 2),
+            TokenKind::Pipe => (BinaryOp::Or, 3), TokenKind::Caret => (BinaryOp::Xor, 4),
+            TokenKind::Ampersand => (BinaryOp::And, 5),
+            TokenKind::EqEq => (BinaryOp::Eq, 6), TokenKind::NotEq => (BinaryOp::Neq, 6),
+            TokenKind::Lt => (BinaryOp::Lt, 7), TokenKind::Gt => (BinaryOp::Gt, 7),
+            TokenKind::LtEq => (BinaryOp::Lte, 7), TokenKind::GtEq => (BinaryOp::Gte, 7),
+            TokenKind::Plus => (BinaryOp::Add, 8), TokenKind::Minus => (BinaryOp::Sub, 8),
+            TokenKind::Star => (BinaryOp::Mul, 9), TokenKind::Slash => (BinaryOp::Div, 9),
+            TokenKind::Percent => (BinaryOp::Mod, 9), _ => return None,
+        })
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr> {
+        let span = self.span();
+        let op = match self.peek_kind() {
+            Some(TokenKind::Minus) => Some(UnaryOp::Neg), Some(TokenKind::Bang) => Some(UnaryOp::Not),
+            Some(TokenKind::Tilde) => Some(UnaryOp::BitNot), Some(TokenKind::Star) => Some(UnaryOp::Deref),
+            Some(TokenKind::Ampersand) => Some(UnaryOp::Ref), _ => None,
+        };
+        if let Some(op) = op {
+            self.advance();
+            let op = if op == UnaryOp::Ref && self.eat(TokenKind::Mut) { UnaryOp::RefMut } else { op };
+            return Ok(Expr::Unary { op, expr: Box::new(self.parse_unary()?), span });
+        }
+        if self.eat(TokenKind::Spawn) || self.eat(TokenKind::Go) {
+            return Ok(Expr::Spawn { expr: Box::new(self.parse_unary()?), span });
+        }
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_primary()?;
+        loop {
+            if self.eat(TokenKind::LParen) {
+                let mut args = Vec::new();
+                while !self.at(TokenKind::RParen) {
+                    args.push(self.parse_expr()?);
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
+                self.expect(TokenKind::RParen)?;
+                let span = expr.span();
+                expr = Expr::Call { callee: Box::new(expr), args, span };
+            } else if self.eat(TokenKind::LBracket) {
+                let index = self.parse_expr()?;
+                self.expect(TokenKind::RBracket)?;
+                let span = expr.span();
+                expr = Expr::Index { target: Box::new(expr), index: Box::new(index), span };
+            } else if self.eat(TokenKind::Dot) {
+                let name = self.expect_ident()?;
+                let span = expr.span();
+                if self.eat(TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    while !self.at(TokenKind::RParen) {
+                        args.push(self.parse_expr()?);
+                        if !self.eat(TokenKind::Comma) { break; }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    expr = Expr::MethodCall { receiver: Box::new(expr), method: name, args, span };
+                } else { expr = Expr::FieldAccess { target: Box::new(expr), field: name, span }; }
+            } else if self.eat(TokenKind::Question) {
+                let span = expr.span();
+                expr = Expr::Try { expr: Box::new(expr), span };
+            } else { break; }
+        }
+        Ok(expr)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr> {
+        let span = self.span();
+        match self.peek_kind().cloned() {
+            Some(TokenKind::IntLit(value)) => { self.advance(); Ok(Expr::Int { value: parse_int(&value, span, self)?, span }) }
+            Some(TokenKind::FloatLit(value)) => { self.advance(); Ok(Expr::Float { value: parse_float(&value, span, self)?, span }) }
+            Some(TokenKind::StringLit(value)) => {
+                self.advance();
+                if value.contains('{') { Ok(Expr::StringTemplate { value, span }) } else { Ok(Expr::String { value, span }) }
+            }
+            Some(TokenKind::CharLit(value)) => { self.advance(); Ok(Expr::Char { value, span }) }
+            Some(TokenKind::True) => { self.advance(); Ok(Expr::Bool { value: true, span }) }
+            Some(TokenKind::False) => { self.advance(); Ok(Expr::Bool { value: false, span }) }
+            Some(TokenKind::Nil) => { self.advance(); Ok(Expr::Nil { span }) }
+            Some(TokenKind::Self_) => { self.advance(); Ok(Expr::Ident { name: "self".into(), span }) }
+            Some(TokenKind::Ident(name)) => {
+                self.advance();
+                let mut qualified = name;
+                while self.eat(TokenKind::ColonColon) { qualified.push_str("::"); qualified.push_str(&self.expect_ident()?); }
+                if self.at(TokenKind::LBrace) && qualified.chars().next().is_some_and(char::is_uppercase) {
+                    self.advance();
+                    let mut fields = Vec::new();
+                    while !self.at(TokenKind::RBrace) {
+                        let field = self.expect_ident()?;
+                        let value = if self.eat(TokenKind::Colon) { self.parse_expr()? } else { Expr::Ident { name: field.clone(), span } };
+                        fields.push((field, value));
+                        if !self.eat(TokenKind::Comma) { break; }
+                    }
+                    self.expect(TokenKind::RBrace)?;
+                    Ok(Expr::StructLit { name: qualified, fields, span })
+                } else { Ok(Expr::Ident { name: qualified, span }) }
+            }
+            Some(TokenKind::LParen) => {
+                self.advance();
+                if self.eat(TokenKind::RParen) { return Ok(Expr::Tuple { elements: Vec::new(), span }); }
+                let first = self.parse_expr()?;
+                if self.eat(TokenKind::Comma) {
+                    let mut elements = vec![first];
+                    while !self.at(TokenKind::RParen) { elements.push(self.parse_expr()?); if !self.eat(TokenKind::Comma) { break; } }
+                    self.expect(TokenKind::RParen)?;
+                    Ok(Expr::Tuple { elements, span })
+                } else { self.expect(TokenKind::RParen)?; Ok(first) }
+            }
+            Some(TokenKind::LBracket) => {
+                self.advance();
+                let mut elements = Vec::new();
+                while !self.at(TokenKind::RBracket) { elements.push(self.parse_expr()?); if !self.eat(TokenKind::Comma) { break; } }
+                self.expect(TokenKind::RBracket)?;
+                Ok(Expr::Array { elements, span })
+            }
+            Some(TokenKind::LBrace) => { self.advance(); Ok(Expr::Block(Box::new(self.parse_block_after_open(span)?))) }
+            Some(TokenKind::If) => self.parse_if(),
+            Some(TokenKind::While) => self.parse_while(),
+            Some(TokenKind::For) => self.parse_for(),
+            Some(TokenKind::Loop) => self.parse_loop(),
+            Some(TokenKind::Match) => self.parse_match(),
+            Some(TokenKind::Return) => {
+                self.advance();
+                let value = if self.at_any(&[TokenKind::RBrace, TokenKind::Semicolon, TokenKind::Eof]) { None } else { Some(Box::new(self.parse_expr()?)) };
+                Ok(Expr::Return { value, span })
+            }
+            Some(TokenKind::Break) => {
+                self.advance();
+                let value = if self.at_any(&[TokenKind::RBrace, TokenKind::Semicolon, TokenKind::Eof]) { None } else { Some(Box::new(self.parse_expr()?)) };
+                Ok(Expr::Break { value, span })
+            }
+            Some(TokenKind::Continue) => { self.advance(); Ok(Expr::Continue { span }) }
+            _ => Err(self.expected("an expression")),
+        }
+    }
+
+    fn parse_if(&mut self) -> Result<Expr> {
+        let span = self.expect(TokenKind::If)?;
+        let condition = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::LBrace)?;
+        let then_branch = self.parse_block_after_open(span)?;
+        let else_branch = if self.eat(TokenKind::Else) {
+            if self.at(TokenKind::If) {
+                let nested = self.parse_if()?;
+                Some(Block { stmts: Vec::new(), final_expr: Some(Box::new(nested)), span })
+            } else { self.expect(TokenKind::LBrace)?; Some(self.parse_block_after_open(span)?) }
+        } else { None };
+        Ok(Expr::If { condition, then_branch, else_branch, span })
+    }
+
+    fn parse_while(&mut self) -> Result<Expr> {
+        let span = self.expect(TokenKind::While)?;
+        let condition = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::LBrace)?;
+        let body = self.parse_block_after_open(span)?;
+        Ok(Expr::While { condition, body, span })
+    }
+
+    fn parse_for(&mut self) -> Result<Expr> {
+        let span = self.expect(TokenKind::For)?;
+        let pattern = Box::new(self.parse_pattern()?);
+        self.expect(TokenKind::In)?;
+        let iterator = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::LBrace)?;
+        let body = self.parse_block_after_open(span)?;
+        Ok(Expr::For { pattern, iterator, body, span })
+    }
+
+    fn parse_loop(&mut self) -> Result<Expr> {
+        let span = self.expect(TokenKind::Loop)?;
+        self.expect(TokenKind::LBrace)?;
+        Ok(Expr::Loop { body: self.parse_block_after_open(span)?, span })
+    }
+
+    fn parse_match(&mut self) -> Result<Expr> {
+        let span = self.expect(TokenKind::Match)?;
+        let scrutinee = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            let arm_span = self.span();
+            let pattern = self.parse_pattern()?;
+            let guard = if self.eat(TokenKind::If) { Some(Box::new(self.parse_expr()?)) } else { None };
+            self.expect(TokenKind::FatArrow)?;
+            let body = if self.eat(TokenKind::LBrace) { self.parse_block_after_open(arm_span)? } else {
+                Block { stmts: Vec::new(), final_expr: Some(Box::new(self.parse_expr()?)), span: arm_span }
+            };
+            arms.push(MatchArm { pattern, guard, body, span: arm_span });
+            self.eat(TokenKind::Comma);
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(Expr::Match { scrutinee, arms, span })
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern> {
+        let span = self.span();
+        let mut pattern = match self.peek_kind().cloned() {
+            Some(TokenKind::Underscore) => { self.advance(); Pattern::Wildcard { span } }
+            Some(TokenKind::Ident(name)) => {
+                self.advance();
+                if self.eat(TokenKind::ColonColon) {
+                    let variant = self.expect_ident()?;
+                    let inner = if self.eat(TokenKind::LParen) { let p = self.parse_pattern()?; self.expect(TokenKind::RParen)?; Some(Box::new(p)) } else { None };
+                    Pattern::Enum { name, variant, inner, span }
+                } else { Pattern::Ident { name, span } }
+            }
+            Some(TokenKind::IntLit(value)) => { self.advance(); Pattern::Literal { value: Box::new(Expr::Int { value: parse_int(&value, span, self)?, span }), span } }
+            Some(TokenKind::StringLit(value)) => { self.advance(); Pattern::Literal { value: Box::new(Expr::String { value, span }), span } }
+            Some(TokenKind::True) => { self.advance(); Pattern::Literal { value: Box::new(Expr::Bool { value: true, span }), span } }
+            Some(TokenKind::False) => { self.advance(); Pattern::Literal { value: Box::new(Expr::Bool { value: false, span }), span } }
+            _ => return Err(self.expected("a pattern")),
+        };
+        while self.eat(TokenKind::Pipe) { pattern = Pattern::Or { left: Box::new(pattern), right: Box::new(self.parse_pattern()?), span }; }
+        Ok(pattern)
+    }
+
+    fn peek_kind(&self) -> Option<&TokenKind> { self.tokens.get(self.pos).map(|t| &t.kind) }
+    fn span(&self) -> Span { self.tokens.get(self.pos).map(|t| t.span).unwrap_or_default() }
+    fn previous_span(&self) -> Span { self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or_default() }
+    fn advance(&mut self) -> Option<Token> { let token = self.tokens.get(self.pos).cloned()?; self.pos += 1; Some(token) }
+    fn at(&self, kind: TokenKind) -> bool { self.peek_kind().is_some_and(|k| same_variant(k, &kind)) }
+    fn at_any(&self, kinds: &[TokenKind]) -> bool { kinds.iter().any(|k| self.at(k.clone())) }
+    fn eat(&mut self, kind: TokenKind) -> bool { if self.at(kind) { self.advance(); true } else { false } }
+    fn expect(&mut self, kind: TokenKind) -> Result<Span> {
+        if self.at(kind.clone()) { Ok(self.advance().unwrap().span) } else { Err(self.expected(&format!("{:?}", kind))) }
+    }
+    fn expect_ident(&mut self) -> Result<String> {
+        if let Some(TokenKind::Ident(name)) = self.peek_kind().cloned() { self.advance(); Ok(name) } else { Err(self.expected("an identifier")) }
+    }
+    fn expected(&self, expected: &str) -> ParseError {
+        let token = self.tokens.get(self.pos);
+        ParseError::Expected {
+            expected: expected.into(),
+            found: token.map(|t| format!("{:?}", t.kind)).unwrap_or_else(|| "end of input".into()),
+            line: token.map_or(0, |t| t.span.line), column: token.map_or(0, |t| t.span.column),
+        }
+    }
+    fn message(&self, message: &str) -> ParseError { let s = self.span(); ParseError::Message { message: message.into(), line: s.line, column: s.column } }
+    fn synchronize_item(&mut self) {
+        while !self.at(TokenKind::Eof) {
+            if self.at_any(&[TokenKind::Fn, TokenKind::Struct, TokenKind::Enum, TokenKind::Trait, TokenKind::Impl, TokenKind::Module, TokenKind::Import, TokenKind::Const]) { return; }
+            self.advance();
+        }
+    }
+}
+
+fn same_variant(a: &TokenKind, b: &TokenKind) -> bool { std::mem::discriminant(a) == std::mem::discriminant(b) }
+
+fn parse_int(value: &str, span: Span, parser: &Parser) -> Result<i64> {
+    value.replace('_', "").parse().map_err(|_| ParseError::Message { message: format!("integer literal out of range: {value}"), line: span.line, column: span.column }).or_else(|e| { let _ = parser; Err(e) })
+}
+fn parse_float(value: &str, span: Span, parser: &Parser) -> Result<f64> {
+    value.replace('_', "").parse().map_err(|_| ParseError::Message { message: format!("invalid float literal: {value}"), line: span.line, column: span.column }).or_else(|e| { let _ = parser; Err(e) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use titan_lexer::Lexer;
+
+    fn parse(source: &str) -> Result<Program> {
+        let mut lexer = Lexer::new(source);
+        let (tokens, errors) = lexer.tokenize();
+        assert!(errors.is_empty(), "{errors:?}");
+        Parser::new(tokens.to_vec()).parse_program()
+    }
+
+    #[test]
+    fn parses_functions_types_and_control_flow() {
+        let program = parse("fn fib(n: int) -> int { if n <= 1 { return n } fib(n-1) + fib(n-2) }").unwrap();
+        assert_eq!(program.items.len(), 1);
+    }
+
+    #[test]
+    fn parses_declarations_and_match() {
+        let source = "struct Point { x: int, y: int } enum Maybe { None, Some(int) } fn main() { match true { true => 1, _ => 0 } }";
+        assert_eq!(parse(source).unwrap().items.len(), 3);
+    }
+
+    #[test]
+    fn rejects_invalid_programs() { assert!(parse("fn broken( {").is_err()); }
+}

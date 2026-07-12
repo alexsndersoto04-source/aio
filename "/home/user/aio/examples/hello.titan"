@@ -1,1 +1,0 @@
-"fn main() {\n    let name = \"TITAN\"\n    print(\"Hello, {name}!\")\n}\n"

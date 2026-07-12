@@ -8,5 +8,6 @@ license.workspace = true
 titan_lexer = { path = "../titan_lexer" }
 titan_parser = { path = "../titan_parser" }
 titan_ast = { path = "../titan_ast" }
+titan_typechecker = { path = "../titan_typechecker" }
 serde.workspace = true
 serde_json.workspace = true

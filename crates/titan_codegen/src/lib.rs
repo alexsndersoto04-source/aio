@@ -1,24 +1,37 @@
-//! Titan Codegen — Bytecode compiler from AST.
+//! AST to portable Titan bytecode compiler.
+
+use std::collections::HashMap;
 use thiserror::Error;
 use titan_ast::*;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone, PartialEq)]
 pub enum CodegenError {
-    #[error("Codegen: {0}")]
-    Generic(String),
+    #[error("unknown function '{0}'")]
+    UnknownFunction(String),
+    #[error("unknown variable '{0}'")]
+    UnknownVariable(String),
+    #[error("unsupported construct: {0}")]
+    Unsupported(String),
+    #[error("break or continue outside a loop")]
+    OutsideLoop,
+    #[error("invalid interpolation expression '{0}'")]
+    InvalidInterpolation(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    PushInt(i64), PushFloat(f64), PushBool(bool), PushNil,
-    PushStr(usize), PushLocal(usize), PushGlobal(usize),
-    StoreLocal(usize), StoreGlobal(usize),
-    Add, Sub, Mul, Div, Neg,
-    Eq, Neq, Lt, Gt,
-    Jump(usize), JumpIfFalse(usize), Loop(usize),
-    Call(usize), Ret, RetVoid,
-    Pop, NewArray(usize), NewTuple(usize),
-    Print, Nop, Halt,
+    PushInt(i64), PushFloat(f64), PushBool(bool), PushChar(char), PushNil,
+    PushStr(usize), PushLocal(usize), StoreLocal(usize), Pop, Dup,
+    Add, Sub, Mul, Div, Mod, Neg, Not, BitNot,
+    Eq, Neq, Lt, Gt, Lte, Gte, BitAnd, BitOr, BitXor,
+    Jump(usize), JumpIfFalse(usize),
+    Call { function: usize, argc: usize }, Ret,
+    Print(usize), Len, ToString,
+    NewArray(usize), NewTuple(usize), Index,
+    NewStruct { name: String, fields: Vec<String> }, GetField(String),
+    NewEnum { name: String, variant: String, has_payload: bool },
+    EnumIs { name: String, variant: String }, EnumPayload,
+    Nop, Halt,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,12 +41,6 @@ pub struct BytecodeFunc {
     pub locals: usize,
     pub max_stack: usize,
     pub code: Vec<Op>,
-    pub const_pool: Vec<Constant>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Constant {
-    Int(i64), Float(f64), Bool(bool), Str(String), Nil,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,329 +48,342 @@ pub struct CompiledModule {
     pub functions: Vec<BytecodeFunc>,
     pub entry: usize,
     pub string_table: Vec<String>,
-    pub global_names: Vec<String>,
 }
 
 pub struct AstCompiler {
     module: CompiledModule,
-    func: BytecodeFunc,
-    locals: std::collections::HashMap<String, usize>,
+    current: BytecodeFunc,
+    locals: Vec<HashMap<String, usize>>,
     next_local: usize,
-    strings: std::collections::HashMap<String, usize>,
-    break_targets: Vec<usize>,
-    continue_targets: Vec<usize>,
+    strings: HashMap<String, usize>,
+    function_ids: HashMap<String, usize>,
+    enum_variants: HashMap<String, bool>,
+    constants: HashMap<String, Expr>,
+    loops: Vec<LoopContext>,
 }
+
+#[derive(Default)]
+struct LoopContext { breaks: Vec<usize>, continues: Vec<usize>, continue_target: usize }
 
 impl AstCompiler {
     pub fn new() -> Self {
-        AstCompiler {
-            module: CompiledModule {
-                functions: Vec::new(), entry: 0,
-                string_table: vec!["".into()], global_names: Vec::new(),
-            },
-            func: BytecodeFunc {
-                name: String::new(), arity: 0, locals: 0, max_stack: 32,
-                code: Vec::new(), const_pool: Vec::new(),
-            },
-            locals: std::collections::HashMap::new(),
-            next_local: 0,
-            strings: std::collections::HashMap::new(),
-            break_targets: Vec::new(), continue_targets: Vec::new(),
+        Self {
+            module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new() },
+            current: empty_function(), locals: Vec::new(), next_local: 0,
+            strings: HashMap::new(), function_ids: HashMap::new(), enum_variants: HashMap::new(), constants: HashMap::new(), loops: Vec::new(),
         }
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Result<CompiledModule, CodegenError> {
-        let mut compiled = Vec::new();
-        let mut entry = 0;
-        for item in &program.items {
-            if let Item::Function(f) = item {
-                let bc = self.compile_function(f)?;
-                let idx = compiled.len();
-                if f.name == "main" { entry = idx; }
-                compiled.push(bc);
+        self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new() };
+        self.strings.clear(); self.function_ids.clear(); self.enum_variants.clear(); self.constants.clear();
+        let mut functions = Vec::new();
+        collect_items(&program.items, &mut functions, &mut self.constants, &mut self.enum_variants);
+        for (index, function) in functions.iter().enumerate() {
+            if self.function_ids.insert(function.name.clone(), index).is_some() {
+                return Err(CodegenError::Unsupported(format!("duplicate function '{}'", function.name)));
             }
         }
-        self.module.functions = compiled;
+        let Some(entry) = self.function_ids.get("main").copied() else { return Err(CodegenError::UnknownFunction("main".into())); };
         self.module.entry = entry;
+        for function in functions {
+            let compiled = self.compile_function(function)?;
+            self.module.functions.push(compiled);
+        }
         Ok(self.module.clone())
     }
 
-    fn compile_function(&mut self, func: &FunctionDecl) -> Result<BytecodeFunc, CodegenError> {
-        self.func = BytecodeFunc {
-            name: func.name.clone(), arity: func.params.len(),
-            locals: func.params.len(), max_stack: 64,
-            code: Vec::new(), const_pool: Vec::new(),
-        };
-        self.locals.clear();
-        self.next_local = 0;
-        self.break_targets.clear();
-        self.continue_targets.clear();
-        for p in &func.params {
-            self.add_local(&p.name);
-        }
-        if let Some(body) = &func.body {
-            self.compile_block(body)?;
-        }
-        self.func.code.push(Op::RetVoid);
-        self.func.locals = self.next_local;
-        Ok(self.func.clone())
+    fn compile_function(&mut self, function: &FunctionDecl) -> Result<BytecodeFunc, CodegenError> {
+        self.current = BytecodeFunc { name: function.name.clone(), arity: function.params.len(), locals: 0, max_stack: 256, code: Vec::new() };
+        self.locals = vec![HashMap::new()]; self.next_local = 0; self.loops.clear();
+        for param in &function.params { self.add_local(&param.name); }
+        if let Some(body) = &function.body { self.compile_block(body, true)?; } else { self.emit(Op::PushNil); }
+        if !matches!(self.current.code.last(), Some(Op::Ret)) { self.emit(Op::Ret); }
+        self.current.locals = self.next_local;
+        Ok(self.current.clone())
     }
 
-    fn compile_block(&mut self, block: &Block) -> Result<(), CodegenError> {
-        for stmt in &block.stmts {
-            self.compile_stmt(stmt)?;
-        }
+    fn compile_block(&mut self, block: &Block, value_needed: bool) -> Result<(), CodegenError> {
+        self.push_scope();
+        for stmt in &block.stmts { self.compile_stmt(stmt)?; }
         if let Some(expr) = &block.final_expr {
             self.compile_expr(expr)?;
-        }
+            if !value_needed { self.emit(Op::Pop); }
+        } else if value_needed { self.emit(Op::PushNil); }
+        self.pop_scope();
         Ok(())
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
         match stmt {
-            Stmt::Expr(e) => {
-                self.compile_expr(e)?;
-                self.func.code.push(Op::Pop);
-            }
-            Stmt::Let { name, value, .. } => {
-                self.compile_expr(value)?;
-                let idx = self.add_local(name);
-                self.func.code.push(Op::StoreLocal(idx));
-            }
-            Stmt::Assign { target, value, .. } => {
-                self.compile_expr(value)?;
-                if let Expr::Ident { name, .. } = target {
-                    if let Some(&idx) = self.locals.get(name) {
-                        self.func.code.push(Op::StoreLocal(idx));
-                    }
-                }
-            }
-            _ => {}
+            Stmt::Expr(expr) => { self.compile_expr(expr)?; if !is_terminal(expr) { self.emit(Op::Pop); } }
+            Stmt::Let { name, value, .. } => { self.compile_expr(value)?; let local = self.add_local(name); self.emit(Op::StoreLocal(local)); }
+            Stmt::Assign { target, op, value, .. } => { self.compile_assignment(target, *op, value, false)?; }
+            Stmt::Item(_) => return Err(CodegenError::Unsupported("nested declarations are not executable yet".into())),
         }
         Ok(())
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CodegenError> {
         match expr {
-            Expr::Int { value, .. } => self.func.code.push(Op::PushInt(*value)),
-            Expr::Float { value, .. } => self.func.code.push(Op::PushFloat(*value)),
-            Expr::Bool { value, .. } => self.func.code.push(Op::PushBool(*value)),
-            Expr::String { value, .. } => {
-                let idx = self.string_intern(value);
-                self.func.code.push(Op::PushStr(idx));
-            }
-            Expr::Nil { .. } => self.func.code.push(Op::PushNil),
+            Expr::Int { value, .. } => self.emit(Op::PushInt(*value)),
+            Expr::Float { value, .. } => self.emit(Op::PushFloat(*value)),
+            Expr::Bool { value, .. } => self.emit(Op::PushBool(*value)),
+            Expr::Char { value, .. } => self.emit(Op::PushChar(*value)),
+            Expr::Nil { .. } => self.emit(Op::PushNil),
+            Expr::String { value, .. } => { let id = self.intern(value); self.emit(Op::PushStr(id)); }
+            Expr::StringTemplate { value, .. } => self.compile_template(value)?,
             Expr::Ident { name, .. } => {
-                if let Some(&idx) = self.locals.get(name) {
-                    self.func.code.push(Op::PushLocal(idx));
-                } else {
-                    let gidx = self.global_intern(name);
-                    self.func.code.push(Op::PushGlobal(gidx));
+                if let Some(local) = self.find_local(name) { self.emit(Op::PushLocal(local)); }
+                else if let Some(value) = self.constants.get(name).cloned() { self.compile_expr(&value)?; }
+                else if self.enum_variants.get(name) == Some(&false) {
+                    let (enum_name, variant) = split_variant(name)?;
+                    self.emit(Op::NewEnum { name: enum_name.into(), variant: variant.into(), has_payload: false });
                 }
+                else { return Err(CodegenError::UnknownVariable(name.clone())); }
             }
-            Expr::Binary { left, op, right, .. } => {
-                self.compile_expr(left)?;
-                self.compile_expr(right)?;
-                match op {
-                    BinaryOp::Add => self.func.code.push(Op::Add),
-                    BinaryOp::Sub => self.func.code.push(Op::Sub),
-                    BinaryOp::Mul => self.func.code.push(Op::Mul),
-                    BinaryOp::Div => self.func.code.push(Op::Div),
-                    BinaryOp::Eq => self.func.code.push(Op::Eq),
-                    BinaryOp::Neq => self.func.code.push(Op::Neq),
-                    BinaryOp::Lt => self.func.code.push(Op::Lt),
-                    BinaryOp::Gt => self.func.code.push(Op::Gt),
-                    _ => {}
-                }
+            Expr::Array { elements, .. } => { for element in elements { self.compile_expr(element)?; } self.emit(Op::NewArray(elements.len())); }
+            Expr::Tuple { elements, .. } => { for element in elements { self.compile_expr(element)?; } self.emit(Op::NewTuple(elements.len())); }
+            Expr::StructLit { name, fields, .. } => {
+                for (_, value) in fields { self.compile_expr(value)?; }
+                self.emit(Op::NewStruct { name: name.clone(), fields: fields.iter().map(|(n, _)| n.clone()).collect() });
             }
-            Expr::Unary { op: UnaryOp::Neg, expr: inner, .. } => {
-                self.compile_expr(inner)?;
-                self.func.code.push(Op::Neg);
+            Expr::Binary { left, op, right, .. } => self.compile_binary(left, *op, right)?,
+            Expr::Range { start, end, inclusive, .. } => self.compile_range(start, end, *inclusive)?,
+            Expr::Unary { op, expr, .. } => {
+                self.compile_expr(expr)?;
+                self.emit(match op { UnaryOp::Neg => Op::Neg, UnaryOp::Not => Op::Not, UnaryOp::BitNot => Op::BitNot, _ => Op::Nop });
             }
-            Expr::Unary { op: UnaryOp::Not, expr: inner, .. } => {
-                self.compile_expr(inner)?;
-                self.compile_expr(&Expr::Bool { value: false, span: titan_lexer::Span::new(0,0,0,0) })?;
-                self.func.code.push(Op::Eq);
+            Expr::Call { callee, args, .. } => self.compile_call(callee, args)?,
+            Expr::MethodCall { receiver, method, args, .. } => {
+                if method == "len" && args.is_empty() { self.compile_expr(receiver)?; self.emit(Op::Len); }
+                else { return Err(CodegenError::Unsupported(format!("method call .{method}()"))); }
             }
-            Expr::Call { callee, args, .. } => {
-                // Check if callee is a builtin function like print()
-                let is_print = matches!(callee.as_ref(), Expr::Ident { name, .. } if name == "print");
-                
-                for arg in args.iter().rev() {
-                    self.compile_expr(arg)?;
-                }
-                
-                if is_print {
-                    // print() — pop one arg and print it
-                    self.func.code.push(Op::Print);
-                    // pop remaining args
-                    for _ in 0..args.len().saturating_sub(1) {
-                        self.func.code.push(Op::Pop);
-                    }
-                    if args.is_empty() {
-                        self.func.code.push(Op::PushNil);
-                    } else {
-                        self.func.code.push(Op::PushNil);
-                    }
-                } else {
-                    self.compile_expr(callee)?;
-                    self.func.code.push(Op::Call(args.len()));
-                    // Clean up
-                    for _ in 0..args.len() { self.func.code.push(Op::Pop); }
-                    self.func.code.push(Op::PushNil);
-                }
-            }
+            Expr::Index { target, index, .. } => { self.compile_expr(target)?; self.compile_expr(index)?; self.emit(Op::Index); }
+            Expr::FieldAccess { target, field, .. } => { self.compile_expr(target)?; self.emit(Op::GetField(field.clone())); }
             Expr::If { condition, then_branch, else_branch, .. } => {
                 self.compile_expr(condition)?;
-                // Jump to else if false
-                let jump_else = self.emit_jump(Op::JumpIfFalse(0));
-                self.compile_block(then_branch)?;
-                let jump_end = self.emit_jump(Op::Jump(0));
-                let else_pos = self.func.code.len();
-                self.patch_jump(jump_else, else_pos);
-                if let Some(else_blk) = else_branch {
-                    self.compile_block(else_blk)?;
-                } else {
-                    self.func.code.push(Op::PushNil);
-                }
-                let end_pos = self.func.code.len();
-                self.patch_jump(jump_end, end_pos);
+                let else_jump = self.jump_if_false();
+                self.compile_block(then_branch, true)?;
+                let end_jump = self.jump();
+                self.patch(else_jump, self.position());
+                if let Some(other) = else_branch { self.compile_block(other, true)?; } else { self.emit(Op::PushNil); }
+                self.patch(end_jump, self.position());
             }
-            Expr::While { condition, body, .. } => {
-                let loop_start = self.func.code.len();
-                self.compile_expr(condition)?;
-                let jump_exit = self.emit_jump(Op::JumpIfFalse(0));
-                // Save old break/continue targets
-                let saved_breaks = std::mem::take(&mut self.break_targets);
-                let saved_continues = std::mem::take(&mut self.continue_targets);
-                
-                self.compile_block(body)?;
-                self.func.code.push(Op::Loop(loop_start));
-                let exit_pos = self.func.code.len();
-                self.patch_jump(jump_exit, exit_pos);
-                
-                // Patch all break jumps - clone to avoid borrow conflict
-                let breaks: Vec<usize> = self.break_targets.iter().copied().collect();
-                for j in breaks {
-                    self.patch_jump(j, exit_pos);
-                }
-                // Restore
-                self.break_targets = saved_breaks;
-                self.continue_targets = saved_continues;
-                
-                self.func.code.push(Op::PushNil);
-            }
-            Expr::Return { value, .. } => {
-                if let Some(v) = value {
-                    self.compile_expr(v)?;
-                    self.func.code.push(Op::Ret);
-                } else {
-                    self.func.code.push(Op::RetVoid);
-                }
-            }
-            Expr::Break { .. } => {
-                let j = self.emit_jump(Op::Jump(0));
-                self.break_targets.push(j);
+            Expr::While { condition, body, .. } => self.compile_while(condition, body)?,
+            Expr::For { pattern, iterator, body, .. } => self.compile_for(pattern, iterator, body)?,
+            Expr::Loop { body, .. } => self.compile_loop(body)?,
+            Expr::Break { value, .. } => {
+                if let Some(value) = value { self.compile_expr(value)?; self.emit(Op::Pop); }
+                let jump = self.jump();
+                self.loops.last_mut().ok_or(CodegenError::OutsideLoop)?.breaks.push(jump);
             }
             Expr::Continue { .. } => {
-                let j = self.emit_jump(Op::Jump(0));
-                self.continue_targets.push(j);
+                let jump = self.jump();
+                self.loops.last_mut().ok_or(CodegenError::OutsideLoop)?.continues.push(jump);
             }
-            Expr::Let { name, value, .. } => {
-                self.compile_expr(value)?;
-                let idx = self.add_local(name);
-                self.func.code.push(Op::StoreLocal(idx));
-                self.func.code.push(Op::PushLocal(idx));
-            }
-            Expr::Assign { target, value, .. } => {
-                self.compile_expr(value)?;
-                self.func.code.push(Op::Nop);
-                if let Expr::Ident { name, .. } = target.as_ref() {
-                    if let Some(&idx) = self.locals.get(name) {
-                        self.func.code.push(Op::StoreLocal(idx));
-                    }
-                }
-            }
-            Expr::Block(inner) => {
-                self.compile_block(inner)?;
-            }
-            Expr::Array { elements, .. } => {
-                let count = elements.len();
-                for el in elements.iter().rev() {
-                    self.compile_expr(el)?;
-                }
-                self.func.code.push(Op::NewArray(count));
-            }
-            Expr::Tuple { elements, .. } => {
-                let count = elements.len();
-                for el in elements.iter().rev() {
-                    self.compile_expr(el)?;
-                }
-                self.func.code.push(Op::NewTuple(count));
-            }
-            Expr::FieldAccess { target, field, .. } => {
-                self.compile_expr(target)?;
-                let _fidx = self.string_intern(field);
-                // Simplified field access
-            }
-            Expr::MethodCall { receiver, method, args, .. } => {
-                self.compile_expr(receiver)?;
-                for arg in args.iter().rev() {
-                    self.compile_expr(arg)?;
-                }
-                let _midx = self.string_intern(method);
-                for _ in 0..args.len() { self.func.code.push(Op::Pop); }
-                self.func.code.push(Op::PushNil);
-            }
-            _ => self.func.code.push(Op::PushNil),
+            Expr::Return { value, .. } => { if let Some(value) = value { self.compile_expr(value)?; } else { self.emit(Op::PushNil); } self.emit(Op::Ret); }
+            Expr::Let { name, value, .. } => { self.compile_expr(value)?; self.emit(Op::Dup); let local = self.add_local(name); self.emit(Op::StoreLocal(local)); }
+            Expr::Assign { target, op, value, .. } => self.compile_assignment(target, *op, value, true)?,
+            Expr::Block(block) => self.compile_block(block, true)?,
+            Expr::Match { scrutinee, arms, .. } => self.compile_match(scrutinee, arms)?,
+            Expr::Spawn { .. } => return Err(CodegenError::Unsupported("spawn requires the concurrency runtime".into())),
+            Expr::Try { expr, .. } => self.compile_expr(expr)?,
+            Expr::Closure { .. } => return Err(CodegenError::Unsupported("closures with captures".into())),
         }
         Ok(())
     }
 
-    fn add_local(&mut self, name: &str) -> usize {
-        let idx = self.next_local;
-        self.next_local += 1;
-        self.locals.insert(name.into(), idx);
-        idx
-    }
-
-    fn string_intern(&mut self, s: &str) -> usize {
-        if let Some(&idx) = self.strings.get(s) { idx }
-        else {
-            let idx = self.module.string_table.len();
-            self.module.string_table.push(s.into());
-            self.strings.insert(s.into(), idx);
-            idx
+    fn compile_binary(&mut self, left: &Expr, op: BinaryOp, right: &Expr) -> Result<(), CodegenError> {
+        if matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr) {
+            self.compile_expr(left)?;
+            self.emit(Op::Dup);
+            let jump = self.jump_if_false();
+            if op == BinaryOp::LazyOr { let evaluate = self.jump(); self.patch(jump, self.position()); self.emit(Op::Pop); self.compile_expr(right)?; let end = self.jump(); self.patch(evaluate, self.position()); self.patch(end, self.position()); }
+            else { self.emit(Op::Pop); self.compile_expr(right)?; self.patch(jump, self.position()); }
+            return Ok(());
         }
+        self.compile_expr(left)?; self.compile_expr(right)?;
+        self.emit(match op {
+            BinaryOp::Add => Op::Add, BinaryOp::Sub => Op::Sub, BinaryOp::Mul => Op::Mul,
+            BinaryOp::Div => Op::Div, BinaryOp::Mod => Op::Mod, BinaryOp::Eq => Op::Eq,
+            BinaryOp::Neq => Op::Neq, BinaryOp::Lt => Op::Lt, BinaryOp::Gt => Op::Gt,
+            BinaryOp::Lte => Op::Lte, BinaryOp::Gte => Op::Gte, BinaryOp::And => Op::BitAnd,
+            BinaryOp::Or => Op::BitOr, BinaryOp::Xor => Op::BitXor,
+            BinaryOp::LazyAnd | BinaryOp::LazyOr => unreachable!(),
+        });
+        Ok(())
     }
 
-    fn global_intern(&mut self, name: &str) -> usize {
-        if let Some(pos) = self.module.global_names.iter().position(|n| n == name) { pos }
-        else {
-            let pos = self.module.global_names.len();
-            self.module.global_names.push(name.into());
-            pos
-        }
-    }
-
-    fn emit_jump(&mut self, placeholder: Op) -> usize {
-        let pos = self.func.code.len();
-        self.func.code.push(placeholder);
-        pos
-    }
-
-    fn patch_jump(&mut self, jump_pos: usize, target: usize) {
-        if jump_pos < self.func.code.len() {
-            match &mut self.func.code[jump_pos] {
-                Op::Jump(ref mut dest) => *dest = target,
-                Op::JumpIfFalse(ref mut dest) => *dest = target,
-                Op::Loop(ref mut dest) => *dest = target,
-                _ => {}
+    fn compile_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<(), CodegenError> {
+        let Expr::Ident { name, .. } = callee else { return Err(CodegenError::Unsupported("calling a non-named value".into())); };
+        for arg in args { self.compile_expr(arg)?; }
+        match name.as_str() {
+            "print" | "println" => self.emit(Op::Print(args.len())),
+            "len" if args.len() == 1 => self.emit(Op::Len),
+            _ if self.enum_variants.contains_key(name) => {
+                let has_payload = self.enum_variants[name];
+                if args.len() != usize::from(has_payload) { return Err(CodegenError::Unsupported(format!("wrong payload count for enum variant '{name}'"))); }
+                let (enum_name, variant) = split_variant(name)?;
+                self.emit(Op::NewEnum { name: enum_name.into(), variant: variant.into(), has_payload });
+            }
+            _ => {
+                let function = self.function_ids.get(name).copied().ok_or_else(|| CodegenError::UnknownFunction(name.clone()))?;
+                self.emit(Op::Call { function, argc: args.len() });
             }
         }
+        Ok(())
     }
+
+    fn compile_assignment(&mut self, target: &Expr, op: Option<BinaryOp>, value: &Expr, keep: bool) -> Result<(), CodegenError> {
+        let Expr::Ident { name, .. } = target else { return Err(CodegenError::Unsupported("assignment target must currently be a variable".into())); };
+        let local = self.find_local(name).ok_or_else(|| CodegenError::UnknownVariable(name.clone()))?;
+        if let Some(op) = op { self.emit(Op::PushLocal(local)); self.compile_expr(value)?; self.emit(binary_instruction(op)?); }
+        else { self.compile_expr(value)?; }
+        if keep { self.emit(Op::Dup); }
+        self.emit(Op::StoreLocal(local));
+        Ok(())
+    }
+
+    fn compile_while(&mut self, condition: &Expr, body: &Block) -> Result<(), CodegenError> {
+        let start = self.position(); self.compile_expr(condition)?; let exit = self.jump_if_false();
+        self.loops.push(LoopContext { continue_target: start, ..Default::default() });
+        self.compile_block(body, false)?; self.emit(Op::Jump(start));
+        let end = self.position(); self.patch(exit, end); self.finish_loop(end); self.emit(Op::PushNil); Ok(())
+    }
+
+    fn compile_loop(&mut self, body: &Block) -> Result<(), CodegenError> {
+        let start = self.position(); self.loops.push(LoopContext { continue_target: start, ..Default::default() });
+        self.compile_block(body, false)?; self.emit(Op::Jump(start));
+        let end = self.position(); self.finish_loop(end); self.emit(Op::PushNil); Ok(())
+    }
+
+    fn compile_for(&mut self, pattern: &Pattern, iterator: &Expr, body: &Block) -> Result<(), CodegenError> {
+        let Pattern::Ident { name, .. } = pattern else { return Err(CodegenError::Unsupported("for currently requires an identifier pattern".into())); };
+        // General arrays use an index and len; ranges are optimized but share the same representation.
+        self.compile_expr(iterator)?; let array = self.add_temp("$iter"); self.emit(Op::StoreLocal(array));
+        self.emit(Op::PushInt(0)); let index = self.add_temp("$index"); self.emit(Op::StoreLocal(index));
+        self.push_scope(); let item = self.add_local(name);
+        let start = self.position(); self.emit(Op::PushLocal(index)); self.emit(Op::PushLocal(array)); self.emit(Op::Len); self.emit(Op::Lt); let exit = self.jump_if_false();
+        self.emit(Op::PushLocal(array)); self.emit(Op::PushLocal(index)); self.emit(Op::Index); self.emit(Op::StoreLocal(item));
+        self.loops.push(LoopContext { continue_target: 0, ..Default::default() });
+        self.compile_block(body, false)?;
+        let increment = self.position(); if let Some(context) = self.loops.last_mut() { context.continue_target = increment; }
+        self.emit(Op::PushLocal(index)); self.emit(Op::PushInt(1)); self.emit(Op::Add); self.emit(Op::StoreLocal(index)); self.emit(Op::Jump(start));
+        let end = self.position(); self.patch(exit, end); self.finish_loop(end); self.pop_scope(); self.emit(Op::PushNil); Ok(())
+    }
+
+    fn compile_range(&mut self, start: &Expr, end: &Expr, inclusive: bool) -> Result<(), CodegenError> {
+        // Runtime helper encoded as an intrinsic function index sentinel.
+        self.compile_expr(start)?; self.compile_expr(end)?; self.emit(Op::PushBool(inclusive));
+        self.emit(Op::Call { function: usize::MAX, argc: 3 }); Ok(())
+    }
+
+    fn compile_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Result<(), CodegenError> {
+        self.compile_expr(scrutinee)?; let subject = self.add_temp("$match"); self.emit(Op::StoreLocal(subject));
+        let mut ends = Vec::new();
+        for arm in arms {
+            self.push_scope();
+            let failure = match &arm.pattern {
+                Pattern::Wildcard { .. } => None,
+                Pattern::Ident { name, .. } => { self.emit(Op::PushLocal(subject)); let local = self.add_local(name); self.emit(Op::StoreLocal(local)); None }
+                Pattern::Literal { value, .. } => { self.emit(Op::PushLocal(subject)); self.compile_expr(value)?; self.emit(Op::Eq); Some(self.jump_if_false()) }
+                Pattern::Enum { name, variant, inner, .. } => {
+                    self.emit(Op::PushLocal(subject));
+                    self.emit(Op::EnumIs { name: name.clone(), variant: variant.clone() });
+                    let failure = self.jump_if_false();
+                    if let Some(inner) = inner {
+                        self.emit(Op::PushLocal(subject)); self.emit(Op::EnumPayload);
+                        match inner.as_ref() {
+                            Pattern::Ident { name, .. } => { let local = self.add_local(name); self.emit(Op::StoreLocal(local)); }
+                            Pattern::Wildcard { .. } => self.emit(Op::Pop),
+                            _ => return Err(CodegenError::Unsupported("nested enum destructuring pattern".into())),
+                        }
+                    }
+                    Some(failure)
+                }
+                Pattern::Or { .. } => return Err(CodegenError::Unsupported("or-pattern bytecode".into())),
+                Pattern::Tuple { .. } | Pattern::Struct { .. } => return Err(CodegenError::Unsupported("destructuring pattern bytecode".into())), 
+            };
+            let guard_failure = if let Some(guard) = &arm.guard { self.compile_expr(guard)?; Some(self.jump_if_false()) } else { None };
+            self.compile_block(&arm.body, true)?; ends.push(self.jump());
+            let next = self.position(); if let Some(jump) = failure { self.patch(jump, next); } if let Some(jump) = guard_failure { self.patch(jump, next); }
+            self.pop_scope();
+        }
+        self.emit(Op::PushNil); let end = self.position(); for jump in ends { self.patch(jump, end); } Ok(())
+    }
+
+    fn compile_template(&mut self, template: &str) -> Result<(), CodegenError> {
+        let mut rest = template; let mut pieces = 0usize;
+        while let Some(open) = rest.find('{') {
+            let literal = &rest[..open]; if !literal.is_empty() { let id = self.intern(literal); self.emit(Op::PushStr(id)); pieces += 1; }
+            let after = &rest[open + 1..]; let close = after.find('}').ok_or_else(|| CodegenError::InvalidInterpolation(template.into()))?;
+            self.compile_interpolation(after[..close].trim())?; self.emit(Op::ToString); pieces += 1;
+            if pieces > 1 { self.emit(Op::Add); pieces = 1; }
+            rest = &after[close + 1..];
+        }
+        if !rest.is_empty() { let id = self.intern(rest); self.emit(Op::PushStr(id)); if pieces > 0 { self.emit(Op::Add); } pieces += 1; }
+        if pieces == 0 { let id = self.intern(""); self.emit(Op::PushStr(id)); }
+        Ok(())
+    }
+
+    fn compile_interpolation(&mut self, source: &str) -> Result<(), CodegenError> {
+        if let Some(open) = source.find('(') {
+            if !source.ends_with(')') { return Err(CodegenError::InvalidInterpolation(source.into())); }
+            let name = source[..open].trim(); let args_source = &source[open + 1..source.len() - 1];
+            let mut argc = 0;
+            for arg in args_source.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+                if let Ok(value) = arg.parse::<i64>() { self.emit(Op::PushInt(value)); }
+                else { let local = self.find_local(arg).ok_or_else(|| CodegenError::UnknownVariable(arg.into()))?; self.emit(Op::PushLocal(local)); }
+                argc += 1;
+            }
+            let function = self.function_ids.get(name).copied().ok_or_else(|| CodegenError::UnknownFunction(name.into()))?;
+            self.emit(Op::Call { function, argc });
+        } else {
+            let local = self.find_local(source).ok_or_else(|| CodegenError::UnknownVariable(source.into()))?; self.emit(Op::PushLocal(local));
+        }
+        Ok(())
+    }
+
+    fn finish_loop(&mut self, end: usize) {
+        if let Some(context) = self.loops.pop() {
+            for jump in context.breaks { self.patch(jump, end); }
+            for jump in context.continues { self.patch(jump, context.continue_target); }
+        }
+    }
+    fn emit(&mut self, op: Op) { self.current.code.push(op); }
+    fn position(&self) -> usize { self.current.code.len() }
+    fn jump(&mut self) -> usize { let p = self.position(); self.emit(Op::Jump(usize::MAX)); p }
+    fn jump_if_false(&mut self) -> usize { let p = self.position(); self.emit(Op::JumpIfFalse(usize::MAX)); p }
+    fn patch(&mut self, at: usize, target: usize) { match &mut self.current.code[at] { Op::Jump(to) | Op::JumpIfFalse(to) => *to = target, _ => {} } }
+    fn intern(&mut self, value: &str) -> usize {
+        if let Some(id) = self.strings.get(value) { *id } else { let id = self.module.string_table.len(); self.module.string_table.push(value.into()); self.strings.insert(value.into(), id); id }
+    }
+    fn push_scope(&mut self) { self.locals.push(HashMap::new()); }
+    fn pop_scope(&mut self) { self.locals.pop(); }
+    fn add_local(&mut self, name: &str) -> usize { let id = self.next_local; self.next_local += 1; self.locals.last_mut().unwrap().insert(name.into(), id); id }
+    fn add_temp(&mut self, prefix: &str) -> usize { let name = format!("{prefix}{}", self.next_local); self.add_local(&name) }
+    fn find_local(&self, name: &str) -> Option<usize> { self.locals.iter().rev().find_map(|scope| scope.get(name).copied()) }
 }
 
-impl Default for AstCompiler {
-    fn default() -> Self { Self::new() }
+fn empty_function() -> BytecodeFunc { BytecodeFunc { name: String::new(), arity: 0, locals: 0, max_stack: 0, code: Vec::new() } }
+fn is_terminal(expr: &Expr) -> bool { matches!(expr, Expr::Return { .. } | Expr::Break { .. } | Expr::Continue { .. }) }
+fn binary_instruction(op: BinaryOp) -> Result<Op, CodegenError> {
+    Ok(match op { BinaryOp::Add => Op::Add, BinaryOp::Sub => Op::Sub, BinaryOp::Mul => Op::Mul, BinaryOp::Div => Op::Div, BinaryOp::Mod => Op::Mod, _ => return Err(CodegenError::Unsupported(format!("compound assignment {op:?}"))) })
 }
+fn collect_items<'a>(items: &'a [Item], functions: &mut Vec<&'a FunctionDecl>, constants: &mut HashMap<String, Expr>, variants: &mut HashMap<String, bool>) {
+    for item in items {
+        match item {
+            Item::Function(f) => functions.push(f),
+            Item::Const(c) => { constants.insert(c.name.clone(), (*c.value).clone()); }
+            Item::Enum(e) => for variant in &e.variants { variants.insert(format!("{}::{}", e.name, variant.name), variant.payload.is_some()); },
+            Item::Module(m) => collect_items(&m.items, functions, constants, variants),
+            Item::Impl(i) => functions.extend(i.methods.iter()), _ => {}
+        }
+    }
+}
+fn split_variant(name: &str) -> Result<(&str, &str), CodegenError> {
+    name.split_once("::").ok_or_else(|| CodegenError::Unsupported(format!("invalid enum variant '{name}'")))
+}
+
+impl Default for AstCompiler { fn default() -> Self { Self::new() } }

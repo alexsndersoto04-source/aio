@@ -9,6 +9,8 @@ pub enum Expr {
     Int { value: i64, span: Span },
     Float { value: f64, span: Span },
     String { value: String, span: Span },
+    /// A string containing `{expression}` interpolation placeholders.
+    StringTemplate { value: String, span: Span },
     Char { value: char, span: Span },
     Bool { value: bool, span: Span },
     Nil { span: Span },
@@ -17,6 +19,7 @@ pub enum Expr {
     Tuple { elements: Vec<Expr>, span: Span },
     StructLit { name: String, fields: Vec<(String, Expr)>, span: Span },
     Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr>, span: Span },
+    Range { start: Box<Expr>, end: Box<Expr>, inclusive: bool, span: Span },
     Unary { op: UnaryOp, expr: Box<Expr>, span: Span },
     Call { callee: Box<Expr>, args: Vec<Expr>, span: Span },
     MethodCall { receiver: Box<Expr>, method: String, args: Vec<Expr>, span: Span },
@@ -87,11 +90,12 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Int { span, .. } | Expr::Float { span, .. }
-            | Expr::String { span, .. } | Expr::Char { span, .. }
-            | Expr::Bool { span, .. } | Expr::Nil { span }
+            | Expr::String { span, .. } | Expr::StringTemplate { span, .. }
+            | Expr::Char { span, .. } | Expr::Bool { span, .. } | Expr::Nil { span }
             | Expr::Ident { span, .. } | Expr::Array { span, .. }
             | Expr::Tuple { span, .. } | Expr::StructLit { span, .. }
-            | Expr::Binary { span, .. } | Expr::Unary { span, .. }
+            | Expr::Binary { span, .. } | Expr::Range { span, .. }
+            | Expr::Unary { span, .. }
             | Expr::Call { span, .. } | Expr::MethodCall { span, .. }
             | Expr::Index { span, .. } | Expr::FieldAccess { span, .. }
             | Expr::If { span, .. } | Expr::Match { span, .. }

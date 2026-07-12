@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 titan_ast = { path = "../titan_ast" }
 thiserror.workspace = true
+
+[dev-dependencies]
+titan_lexer = { path = "../titan_lexer" }
+titan_parser = { path = "../titan_parser" }
