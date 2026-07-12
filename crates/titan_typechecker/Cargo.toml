@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 titan_ast = { path = "../titan_ast" }
+titan_stdlib = { path = "../titan_stdlib" }
 thiserror.workspace = true
 
 [dev-dependencies]

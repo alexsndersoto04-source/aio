@@ -1,0 +1,18 @@
+fn main() {
+    let message = "Titan standard library"
+    let encoded = std::encoding::base64_encode(
+        std::encoding::utf8_encode(message)
+    )
+    let decoded = std::encoding::utf8_decode(
+        std::encoding::base64_decode(encoded)
+    )
+
+    let document = std::json::parse("{\"language\":\"Titan\",\"version\":2}")
+    let values = [10, 20, 30, 40]
+
+    print("encoded: {encoded}")
+    print("decoded: {decoded}")
+    print(document.language)
+    print(std::stats::mean(values))
+    print(std::text::slugify("Titan Standard Library"))
+}

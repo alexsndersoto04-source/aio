@@ -1,13 +1,16 @@
 //! Safe stack-based virtual machine for Titan bytecode.
 
+mod native;
+
 use std::collections::BTreeMap;
 use thiserror::Error;
 use titan_codegen::{CompiledModule, Op};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    Int(i64), Float(f64), Bool(bool), Char(char), Str(String), Nil,
-    Array(Vec<Value>), Tuple(Vec<Value>), Struct { name: String, fields: BTreeMap<String, Value> },
+    Int(i64), Float(f64), Bool(bool), Char(char), Str(String), Bytes(Vec<u8>), Nil,
+    Array(Vec<Value>), Tuple(Vec<Value>), Map(BTreeMap<String, Value>),
+    Struct { name: String, fields: BTreeMap<String, Value> },
     Enum { name: String, variant: String, payload: Option<Box<Value>> },
 }
 
@@ -15,9 +18,10 @@ pub fn val_to_string(value: &Value) -> String {
     match value {
         Value::Int(v) => v.to_string(), Value::Float(v) => v.to_string(),
         Value::Bool(v) => v.to_string(), Value::Char(v) => v.to_string(),
-        Value::Str(v) => v.clone(), Value::Nil => "nil".into(),
+        Value::Str(v) => v.clone(), Value::Bytes(v) => format!("bytes[{}]", v.len()), Value::Nil => "nil".into(),
         Value::Array(values) => format!("[{}]", values.iter().map(val_to_string).collect::<Vec<_>>().join(", ")),
         Value::Tuple(values) => format!("({})", values.iter().map(val_to_string).collect::<Vec<_>>().join(", ")),
+        Value::Map(values) => format!("{{{}}}", values.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Struct { name, fields } => format!("{} {{ {} }}", name, fields.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Enum { name, variant, payload } => match payload { Some(value) => format!("{}::{}({})", name, variant, val_to_string(value)), None => format!("{}::{}", name, variant) },
     }
@@ -47,18 +51,38 @@ pub enum VmError {
     InstructionLimit,
     #[error("call depth limit exceeded")]
     CallDepth,
+    #[error("native function '{function}' failed: {message}")]
+    Native { function: String, message: String },
+    #[error("native function '{function}' requires capability '{capability}'")]
+    PermissionDenied { function: String, capability: String },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeCapabilities {
+    pub filesystem: bool,
+    pub process: bool,
+    pub network: bool,
+    pub environment: bool,
+}
+impl RuntimeCapabilities {
+    pub const fn all() -> Self { Self { filesystem: true, process: true, network: true, environment: true } }
+    pub const fn sandboxed() -> Self { Self { filesystem: false, process: false, network: false, environment: false } }
+}
+impl Default for RuntimeCapabilities { fn default() -> Self { Self::all() } }
 
 pub struct Vm {
     module: CompiledModule,
     instruction_limit: usize,
     instructions: usize,
     max_call_depth: usize,
+    capabilities: RuntimeCapabilities,
 }
 
 impl Vm {
-    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096 } }
+    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all() } }
+    pub fn sandboxed(module: CompiledModule) -> Self { Self { capabilities: RuntimeCapabilities::sandboxed(), ..Self::new(module) } }
     pub fn with_instruction_limit(mut self, limit: usize) -> Self { self.instruction_limit = limit; self }
+    pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
 
     pub fn run(&mut self) -> Result<Option<Value>, VmError> {
         self.instructions = 0;
@@ -105,6 +129,10 @@ impl Vm {
                     if callee == usize::MAX { stack.push(make_range(args)?); }
                     else { stack.push(self.execute(callee, args, depth + 1)?); }
                 }
+                Op::CallNative { name, argc } => {
+                    let args = take_args(&mut stack, argc, &function.name)?;
+                    stack.push(native::invoke(&name, args, self.capabilities)?);
+                }
                 Op::Ret => return Ok(stack.pop().unwrap_or(Value::Nil)),
                 Op::Print(argc) => {
                     let args = take_args(&mut stack, argc, &function.name)?;
@@ -113,20 +141,26 @@ impl Vm {
                 }
                 Op::Len => {
                     let value = pop(&mut stack, &function.name)?;
-                    let length = match value { Value::Array(v) | Value::Tuple(v) => v.len(), Value::Str(v) => v.chars().count(), _ => return Err(VmError::Type("len requires an array, tuple, or string".into())) };
+                    let length = match value { Value::Array(v) | Value::Tuple(v) => v.len(), Value::Str(v) => v.chars().count(), Value::Bytes(v) => v.len(), Value::Map(v) => v.len(), _ => return Err(VmError::Type("len requires an array, tuple, string, bytes, or map".into())) };
                     stack.push(Value::Int(length as i64));
                 }
                 Op::ToString => { let value = pop(&mut stack, &function.name)?; stack.push(Value::Str(val_to_string(&value))); }
                 Op::NewArray(count) => { let values = take_args(&mut stack, count, &function.name)?; stack.push(Value::Array(values)); }
                 Op::NewTuple(count) => { let values = take_args(&mut stack, count, &function.name)?; stack.push(Value::Tuple(values)); }
                 Op::Index => {
-                    let index = pop(&mut stack, &function.name)?; let target = pop(&mut stack, &function.name)?;
-                    let Value::Int(index) = index else { return Err(VmError::Type("index must be int".into())); };
-                    let index = usize::try_from(index).map_err(|_| VmError::IndexOutOfBounds { index: usize::MAX, length: 0 })?;
-                    let value = match target {
-                        Value::Array(v) | Value::Tuple(v) => v.get(index).cloned().ok_or(VmError::IndexOutOfBounds { index, length: v.len() })?,
-                        Value::Str(v) => v.chars().nth(index).map(Value::Char).ok_or(VmError::IndexOutOfBounds { index, length: v.chars().count() })?,
-                        _ => return Err(VmError::Type("value is not indexable".into())),
+                    let index_value = pop(&mut stack, &function.name)?; let target = pop(&mut stack, &function.name)?;
+                    let value = match (target, index_value) {
+                        (Value::Map(values), Value::Str(key)) => values.get(&key).cloned().ok_or(VmError::UnknownField(key))?,
+                        (target, Value::Int(index)) => {
+                            let index = usize::try_from(index).map_err(|_| VmError::IndexOutOfBounds { index: usize::MAX, length: 0 })?;
+                            match target {
+                                Value::Array(v) | Value::Tuple(v) => v.get(index).cloned().ok_or(VmError::IndexOutOfBounds { index, length: v.len() })?,
+                                Value::Str(v) => v.chars().nth(index).map(Value::Char).ok_or(VmError::IndexOutOfBounds { index, length: v.chars().count() })?,
+                                Value::Bytes(v) => v.get(index).map(|value| Value::Int(i64::from(*value))).ok_or(VmError::IndexOutOfBounds { index, length: v.len() })?,
+                                _ => return Err(VmError::Type("value is not indexable by integer".into())),
+                            }
+                        }
+                        _ => return Err(VmError::Type("index must be int, or string for maps".into())),
                     }; stack.push(value);
                 }
                 Op::NewStruct { name, fields } => {
@@ -135,8 +169,10 @@ impl Vm {
                 }
                 Op::GetField(field) => {
                     let value = pop(&mut stack, &function.name)?;
-                    if let Value::Struct { fields, .. } = value { stack.push(fields.get(&field).cloned().ok_or(VmError::UnknownField(field))?); }
-                    else { return Err(VmError::Type("field access requires a struct".into())); }
+                    match value {
+                        Value::Struct { fields, .. } | Value::Map(fields) => stack.push(fields.get(&field).cloned().ok_or(VmError::UnknownField(field))?),
+                        _ => return Err(VmError::Type("field access requires a struct or map".into())),
+                    }
                 }
                 Op::NewEnum { name, variant, has_payload } => {
                     let payload = if has_payload { Some(Box::new(pop(&mut stack, &function.name)?)) } else { None };
@@ -212,5 +248,12 @@ mod tests {
     #[test] fn loops_and_ranges_work() { assert_eq!(run("fn main() { let x = 0 for i in 0..5 { x += i } x }").unwrap(), Value::Int(10)); }
     #[test] fn structs_work() { assert_eq!(run("struct Point { x: int, y: int } fn main() { let p = Point { x: 2, y: 3 } p.x + p.y }").unwrap(), Value::Int(5)); }
     #[test] fn enum_matching_works() { assert_eq!(run("enum Maybe { None, Some(int) } fn main() { let x = Maybe::Some(7) match x { Maybe::Some(n) => n, Maybe::None => 0 } }").unwrap(), Value::Int(7)); }
+    #[test] fn native_text_and_encoding_work() { assert_eq!(run("fn main() { std::text::reverse(\"Titan\") }").unwrap(), Value::Str("natiT".into())); assert_eq!(run("fn main() { std::encoding::utf8_decode(std::encoding::base64_decode(\"VGl0YW4=\")) }").unwrap(), Value::Str("Titan".into())); }
+    #[test] fn native_json_maps_support_fields() { assert_eq!(run(r#"fn main() { std::json::parse("{\"answer\":42}").answer }"#).unwrap(), Value::Int(42)); }
+    #[test] fn sandbox_blocks_effectful_natives() {
+        let source = "fn main() { std::fs::read_text(\"secret\") }"; let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec();
+        let program = Parser::new(tokens).parse_program().unwrap(); let module = AstCompiler::new().compile_program(&program).unwrap();
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { .. })));
+    }
     #[test] fn runtime_errors_are_reported() { assert!(run("fn main() { 1 / 0 }").is_err()); }
 }

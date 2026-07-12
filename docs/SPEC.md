@@ -120,7 +120,24 @@ Nested module declarations and impl methods are collected by the current single-
 
 `spawn`, closure, reference and advanced generic syntax have AST representation for forward compatibility. Their ownership/runtime semantics are not standardized in language version 0.2 and executable use is rejected. They must not be treated as stable features yet.
 
-## 11. Execution model
+## 11. Native standard-library calls
+
+Registered host functions use qualified names:
+
+```titan
+let bytes = std::encoding::utf8_encode("Titan")
+let encoded = std::encoding::base64_encode(bytes)
+let data = std::json::parse("{\"ok\":true}")
+print(data.ok)
+```
+
+The compiler resolves these names through a shared registry. Arity and parameter types are checked before code generation. Native failures become runtime errors that include the function name. Values exchanged with natives include strings, arrays, tuples, bytes, maps and scalar values.
+
+Filesystem, process, network and environment calls require VM capabilities. Normal CLI execution enables them; `titan run --sandbox` denies them. Pure text, encoding, JSON, collection, math and statistics calls remain available in sandbox mode.
+
+The complete registered API is documented in `STDLIB.md`.
+
+## 12. Execution model
 
 Titan compiles to versioned stack bytecode. The VM has:
 

@@ -10,6 +10,7 @@ pub mod io;
 pub mod json;
 pub mod math;
 pub mod net;
+pub mod native;
 pub mod path;
 pub mod process;
 pub mod stats;

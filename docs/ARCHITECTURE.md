@@ -42,6 +42,12 @@ Each call creates an isolated vector of locals and an operand stack. `Call` cont
 
 The VM reports errors for stack corruption, invalid locals/functions, arity, bad operand types, division by zero, overflow, bounds, missing fields, instruction exhaustion and excessive call depth.
 
+## Native standard library
+
+`titan_stdlib::native::NATIVES` is the authoritative registry of qualified names, parameter types, return types and required capabilities. The type checker consumes this metadata, codegen emits `CallNative`, and `titan_vm::native` dispatches the call. This avoids treating host calls as unresolved globals and keeps all compiler stages aligned.
+
+The VM adds `Bytes` and `Map` runtime values for binary I/O, JSON, processes and HTTP. Effectful native calls are guarded by `RuntimeCapabilities`; embedders can construct a sandboxed VM while the CLI offers `titan run --sandbox`.
+
 ## Artifact model
 
 `build` writes an inspectable `TITAN-BYTECODE 1` artifact. It is currently intended for diagnostics and tooling; source execution remains the stable interface. A future binary container must include format versioning, integrity validation and a loader before artifacts are advertised as independently executable.

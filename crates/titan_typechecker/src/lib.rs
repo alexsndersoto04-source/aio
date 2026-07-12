@@ -185,11 +185,19 @@ impl TypeEnv {
             Expr::Call { callee, args, .. } => self.check_call(callee, args),
             Expr::MethodCall { receiver, args, .. } => { self.check_expr(receiver); for arg in args { self.check_expr(arg); } Type::Unknown }
             Expr::Index { target, index, .. } => {
-                let target = self.check_expr(target); let index = self.check_expr(index); self.require_compatible(&Type::Int, &index);
-                match target { Type::Array(inner) => *inner, Type::String => Type::Char, _ => Type::Unknown }
+                let target = self.check_expr(target); let index = self.check_expr(index);
+                match target {
+                    Type::Array(inner) => { self.require_compatible(&Type::Int, &index); *inner }
+                    Type::String => { self.require_compatible(&Type::Int, &index); Type::Char }
+                    Type::Named(name) if name == "bytes" => { self.require_compatible(&Type::Int, &index); Type::Int }
+                    Type::Named(name) if name == "map" => { self.require_compatible(&Type::String, &index); Type::Unknown }
+                    Type::Unknown => Type::Unknown,
+                    _ => Type::Unknown,
+                }
             }
             Expr::FieldAccess { target, field, .. } => {
                 match self.check_expr(target) {
+                    Type::Named(name) if name == "map" => Type::Unknown,
                     Type::Named(name) => self.structs.get(&name).and_then(|s| s.get(field)).cloned().unwrap_or_else(|| { self.errors.push(TypeError::UnknownField { structure: name, field: field.clone() }); Type::Unknown }),
                     _ => Type::Unknown,
                 }
@@ -235,6 +243,16 @@ impl TypeEnv {
     fn check_call(&mut self, callee: &Expr, args: &[Expr]) -> Type {
         let name = if let Expr::Ident { name, .. } = callee { Some(name.clone()) } else { None };
         if let Some(name) = &name {
+            if let Some(signature) = titan_stdlib::native::lookup(name) {
+                if args.len() != signature.params.len() { self.errors.push(TypeError::Arity { expected: signature.params.len(), found: args.len() }); }
+                for (argument, expected) in args.iter().zip(signature.params) {
+                    let found = self.check_expr(argument);
+                    let expected = native_type(*expected);
+                    if !native_compatible(&expected, &found) { self.errors.push(TypeError::Mismatch { expected, found }); }
+                }
+                for argument in args.iter().skip(signature.params.len()) { self.check_expr(argument); }
+                return native_type(signature.result);
+            }
             if let Some(payload) = self.enum_variants.get(name).cloned() {
                 let expected = usize::from(payload.is_some());
                 if args.len() != expected { self.errors.push(TypeError::Arity { expected, found: args.len() }); }
@@ -303,6 +321,20 @@ fn type_from_ast(ty: &TypeExpr) -> Type {
         TypeExpr::Reference { inner, .. } => type_from_ast(inner),
     }
 }
+fn native_type(ty: titan_stdlib::native::NativeType) -> Type {
+    use titan_stdlib::native::NativeType;
+    match ty {
+        NativeType::Any => Type::Unknown, NativeType::Int => Type::Int,
+        NativeType::Float => Type::Float, NativeType::Bool => Type::Bool,
+        NativeType::String => Type::String, NativeType::Bytes => Type::Named("bytes".into()),
+        NativeType::Array => Type::Array(Box::new(Type::Unknown)),
+        NativeType::Map => Type::Named("map".into()), NativeType::Nil => Type::Nil,
+    }
+}
+fn native_compatible(expected: &Type, found: &Type) -> bool {
+    compatible(expected, found) || (expected == &Type::Float && found == &Type::Int)
+        || (matches!(expected, Type::Array(_)) && matches!(found, Type::Tuple(_)))
+}
 fn compatible(a: &Type, b: &Type) -> bool { a == b || matches!(a, Type::Unknown | Type::Never) || matches!(b, Type::Unknown | Type::Never) || (matches!(a, Type::Unit) && matches!(b, Type::Nil)) }
 fn is_numeric(ty: &Type) -> bool { matches!(ty, Type::Int | Type::Float | Type::Unknown) }
 
@@ -321,4 +353,5 @@ mod tests {
     #[test] fn accepts_recursive_typed_function() { assert!(check("fn fib(n: int) -> int { if n <= 1 { return n } fib(n-1) + fib(n-2) }").is_ok()); }
     #[test] fn rejects_unknown_names() { assert!(check("fn main() { missing + 1 }").is_err()); }
     #[test] fn rejects_wrong_return() { assert!(check("fn bad() -> int { return true }").is_err()); }
+    #[test] fn checks_registered_native_signatures() { assert!(check("fn main() { std::text::reverse(\"Titan\") }").is_ok()); assert!(check("fn main() { std::text::reverse(42) }").is_err()); }
 }

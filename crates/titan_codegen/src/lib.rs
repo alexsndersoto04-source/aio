@@ -25,7 +25,7 @@ pub enum Op {
     Add, Sub, Mul, Div, Mod, Neg, Not, BitNot,
     Eq, Neq, Lt, Gt, Lte, Gte, BitAnd, BitOr, BitXor,
     Jump(usize), JumpIfFalse(usize),
-    Call { function: usize, argc: usize }, Ret,
+    Call { function: usize, argc: usize }, CallNative { name: String, argc: usize }, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -221,6 +221,7 @@ impl AstCompiler {
         match name.as_str() {
             "print" | "println" => self.emit(Op::Print(args.len())),
             "len" if args.len() == 1 => self.emit(Op::Len),
+            _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
             _ if self.enum_variants.contains_key(name) => {
                 let has_payload = self.enum_variants[name];
                 if args.len() != usize::from(has_payload) { return Err(CodegenError::Unsupported(format!("wrong payload count for enum variant '{name}'"))); }

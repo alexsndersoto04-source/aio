@@ -2,7 +2,7 @@
 
 The `titan_stdlib` crate provides memory-safe host capabilities for the compiler, VM embedders, and future native builtin bridge. APIs return `Result`/`Option` where operations can fail; malformed input is not silently accepted.
 
-> Current boundary: these Rust modules are implemented as host APIs. Only `print`, `println`, and `len` are directly emitted as VM intrinsics today. Exposing every module to `.titan` source requires the planned native-function registry and type signatures.
+> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry currently contains 104 functions; the type checker validates their arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors.
 
 ## Modules
 
@@ -57,14 +57,30 @@ let output = CommandSpec::new("git")
     .output_timeout(Duration::from_secs(2))?;
 ```
 
-## Planned `.titan` bridge
+## Calling from `.titan`
 
-The next integration layer should expose these modules through a native registry rather than hard-coding every function in the VM. Each native entry needs:
+```titan
+fn main() {
+    let encoded = std::encoding::base64_encode(
+        std::encoding::utf8_encode("Titan")
+    )
+    let document = std::json::parse("{\"answer\":42}")
+    print(std::text::uppercase(encoded))
+    print(document.answer)
+}
+```
 
-1. module-qualified name;
-2. Titan function signature;
-3. arity/type validation;
-4. conversion between VM and host values;
-5. structured errors;
-6. capability policy for filesystem, process and network access;
-7. deterministic tests from `.titan` source.
+Native results include regular values plus VM `bytes` and `map` values. Map entries can be read with field syntax (`result.stdout`, `document.name`). Bytes can be created with `std::encoding::utf8_encode`, decoded from hex/Base64, or read from files/network.
+
+### Effects and capabilities
+
+Pure functions need no capability. The registry marks effectful calls as one of:
+
+- `Filesystem`: `std::fs::*` and canonical/absolute path operations;
+- `Process`: `std::process::*`;
+- `Network`: `std::net::*`;
+- `Environment`: `std::env::*`.
+
+`Vm::new` enables standard desktop capabilities so CLI programs can use the complete library. Embedders can use `Vm::sandboxed` or `with_capabilities` to deny effects. A denied call returns `PermissionDenied`; it is never silently executed.
+
+The authoritative metadata is `titan_stdlib::native::NATIVES`. Every registered name has a VM dispatch implementation, and registry/dispatch parity is checked during development.

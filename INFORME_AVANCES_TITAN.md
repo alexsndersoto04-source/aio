@@ -745,4 +745,23 @@ Después de este informe inicial se amplió `titan_stdlib` de 7 a 18 módulos fu
 - Texto Unicode-scalar, codepoints, truncado, padding, escape HTML, slug y distancia Levenshtein.
 - Relojes monotónicos, deadlines, stopwatch y timestamps Unix.
 
-La documentación detallada y sus límites de seguridad están en `docs/STDLIB.md`. Estas APIs son actualmente capacidades host de Rust; el puente general para llamarlas desde `.titan` sigue siendo una fase separada. Como el entorno continúa sin toolchain Rust, esta actualización también está implementada pero pendiente de compilación y ejecución de tests.
+La documentación detallada y sus límites de seguridad están en `docs/STDLIB.md`.
+
+### Registro nativo integrado
+
+En una actualización posterior se implementó el puente general entre `.titan` y la biblioteca host:
+
+- Registro autoritativo de 104 funciones en `titan_stdlib::native::NATIVES`.
+- Nombres calificados `std::módulo::función` reconocidos por el parser existente.
+- Firmas y aridad comprobadas por `titan_typechecker`.
+- Instrucción de bytecode `CallNative` generada por `titan_codegen`.
+- Dispatcher completo en `titan_vm`, con paridad entre los 104 registros y 104 implementaciones.
+- Valores VM nuevos `Bytes` y `Map`.
+- Conversión bidireccional entre JSON y valores TITAN.
+- Acceso a mapas con sintaxis de campo.
+- Errores nativos estructurados.
+- Capacidades separadas para filesystem, procesos, red y entorno.
+- `Vm::sandboxed` para denegar efectos y `Vm::with_capabilities` para configuración explícita.
+- Ejemplo integral en `examples/stdlib.titan`.
+
+Como el entorno continúa sin toolchain Rust, esta integración está implementada pero pendiente de compilación y ejecución de tests.

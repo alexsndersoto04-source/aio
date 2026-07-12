@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }
+titan_stdlib = { path = "../titan_stdlib" }
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

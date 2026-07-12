@@ -14,15 +14,18 @@ pub struct Cli {
 pub enum Command {
     /// Compile a Titan source file to bytecode
     Build {
-        #[arg(default_value = "main.tt")]
+        #[arg(default_value = "main.titan")]
         input: String,
         #[arg(short, long)]
         output: Option<String>,
     },
     /// Compile and run a Titan program
     Run {
-        #[arg(default_value = "main.tt")]
+        #[arg(default_value = "main.titan")]
         input: String,
+        /// Deny filesystem, process, network, and environment native functions
+        #[arg(long)]
+        sandbox: bool,
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -36,7 +39,7 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Build { input, output } => cmd_build(&input, output),
-        Command::Run { input, args: _ } => cmd_run(&input),
+        Command::Run { input, sandbox, args: _ } => cmd_run(&input, sandbox),
         Command::Repl => cmd_repl(),
         Command::Version => cmd_version(),
     }
@@ -77,13 +80,13 @@ fn cmd_build(input: &str, output: Option<String>) {
     println!("  Entry: fn[{}]", module.entry);
 }
 
-fn cmd_run(input: &str) {
+fn cmd_run(input: &str, sandbox: bool) {
     let source = fs::read_to_string(input).unwrap_or_else(|e| {
         eprintln!("ERROR: Cannot read '{}': {}", input, e);
         std::process::exit(1);
     });
 
-    match compile_and_run(&source) {
+    match compile_and_run_with_capabilities(&source, sandbox) {
         Ok(result) => {
             if let Some(v) = result {
                 println!("=> {}", titan_vm::val_to_string(&v));
@@ -182,7 +185,11 @@ fn compile_titan(source: &str) -> Result<titan_codegen::CompiledModule, String> 
 }
 
 fn compile_and_run(source: &str) -> Result<Option<titan_vm::Value>, String> {
+    compile_and_run_with_capabilities(source, false)
+}
+
+fn compile_and_run_with_capabilities(source: &str, sandbox: bool) -> Result<Option<titan_vm::Value>, String> {
     let module = compile_titan(source)?;
-    let mut vm = titan_vm::Vm::new(module);
+    let mut vm = if sandbox { titan_vm::Vm::sandboxed(module) } else { titan_vm::Vm::new(module) };
     vm.run().map_err(|error| error.to_string())
 }

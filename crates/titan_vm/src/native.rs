@@ -1,0 +1,176 @@
+use std::collections::BTreeMap;
+use std::time::Duration;
+use titan_stdlib::{self as stdlib, native::Capability};
+use crate::{RuntimeCapabilities, Value, VmError, val_to_string};
+
+pub fn invoke(name: &str, args: Vec<Value>, capabilities: RuntimeCapabilities) -> Result<Value, VmError> {
+    let signature = stdlib::native::lookup(name).ok_or_else(|| failure(name, "function is not registered"))?;
+    if args.len() != signature.params.len() { return Err(failure(name, &format!("expected {} arguments, found {}", signature.params.len(), args.len()))); }
+    require_capability(name, signature.capability, capabilities)?;
+    dispatch(name, args).map_err(|message| failure(name, &message))
+}
+
+fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
+    macro_rules! take { () => { args.remove(0) }; }
+    macro_rules! string { () => { expect_string(take!())? }; }
+    macro_rules! bytes { () => { expect_bytes(take!())? }; }
+    macro_rules! int { () => { expect_int(take!())? }; }
+    macro_rules! float { () => { expect_float(take!())? }; }
+    macro_rules! array { () => { expect_array(take!())? }; }
+    Ok(match name {
+        "std::text::length" => Value::Int(to_i64(stdlib::text::length(&string!()))?),
+        "std::text::reverse" => Value::Str(stdlib::text::reverse(&string!())),
+        "std::text::uppercase" => Value::Str(string!().to_uppercase()),
+        "std::text::lowercase" => Value::Str(string!().to_lowercase()),
+        "std::text::trim" => Value::Str(string!().trim().into()),
+        "std::text::capitalize" => Value::Str(stdlib::text::capitalize(&string!())),
+        "std::text::escape_html" => Value::Str(stdlib::text::escape_html(&string!())),
+        "std::text::slugify" => Value::Str(stdlib::text::slugify(&string!())),
+        "std::text::levenshtein" => { let a = string!(); let b = string!(); Value::Int(to_i64(stdlib::text::levenshtein(&a, &b))?) }
+        "std::text::contains" => { let text = string!(); Value::Bool(text.contains(&string!())) }
+        "std::text::starts_with" => { let text = string!(); Value::Bool(text.starts_with(&string!())) }
+        "std::text::ends_with" => { let text = string!(); Value::Bool(text.ends_with(&string!())) }
+        "std::text::replace" => { let text = string!(); let from = string!(); Value::Str(text.replace(&from, &string!())) }
+        "std::text::truncate" => { let text = string!(); let max = nonnegative(int!())?; Value::Str(stdlib::text::truncate(&text, max, &string!())) }
+        "std::text::words" => Value::Array(string!().split_whitespace().map(|v| Value::Str(v.into())).collect()),
+        "std::text::lines" => Value::Array(string!().lines().map(|v| Value::Str(v.into())).collect()),
+
+        "std::encoding::hex_encode" => Value::Str(stdlib::encoding::hex_encode(&bytes!())),
+        "std::encoding::hex_decode" => Value::Bytes(stdlib::encoding::hex_decode(&string!()).map_err(error)?),
+        "std::encoding::base64_encode" => Value::Str(stdlib::encoding::base64_encode(&bytes!())),
+        "std::encoding::base64_decode" => Value::Bytes(stdlib::encoding::base64_decode(&string!()).map_err(error)?),
+        "std::encoding::percent_encode" => Value::Str(stdlib::encoding::percent_encode(&string!())),
+        "std::encoding::percent_decode" => Value::Str(stdlib::encoding::percent_decode(&string!()).map_err(error)?),
+        "std::encoding::utf8_encode" => Value::Bytes(string!().into_bytes()),
+        "std::encoding::utf8_decode" => Value::Str(String::from_utf8(bytes!()).map_err(error)?),
+
+        "std::checksum::fnv1a64" => Value::Int(stdlib::checksum::fnv1a_64(&bytes!()) as i64),
+        "std::checksum::crc32" => Value::Int(i64::from(stdlib::checksum::crc32(&bytes!()))),
+        "std::checksum::constant_time_eq" => { let a = bytes!(); Value::Bool(stdlib::checksum::constant_time_eq(&a, &bytes!())) }
+        "std::bytes::from_array" => Value::Bytes(array!().into_iter().map(|value| { let value = expect_int(value)?; u8::try_from(value).map_err(|_| "byte values must be between 0 and 255".into()) }).collect::<Result<Vec<_>, String>>()?),
+        "std::bytes::to_array" => Value::Array(bytes!().into_iter().map(|value| Value::Int(i64::from(value))).collect()),
+        "std::bytes::length" => Value::Int(to_i64(bytes!().len())?),
+        "std::bytes::concat" => { let mut left = bytes!(); left.extend(bytes!()); Value::Bytes(left) }
+        "std::bytes::slice" => { let values = bytes!(); let start = nonnegative(int!())?; let end = nonnegative(int!())?; if start > end || end > values.len() { return Err("invalid byte slice bounds".into()); } Value::Bytes(values[start..end].to_vec()) }
+        "std::bytes::read_u32_le" => { let values = bytes!(); let offset = nonnegative(int!())?; let end = offset.checked_add(4).ok_or("byte offset overflow")?; let data: [u8; 4] = values.get(offset..end).ok_or("not enough bytes for u32")?.try_into().map_err(|_| "not enough bytes for u32")?; Value::Int(i64::from(u32::from_le_bytes(data))) }
+        "std::bytes::write_u32_le" => { let value = u32::try_from(int!()).map_err(|_| "u32 value out of range")?; Value::Bytes(value.to_le_bytes().to_vec()) }
+
+        "std::csv::parse" => Value::Array(stdlib::csv::parse(&string!()).map_err(error)?.into_iter().map(|row| Value::Array(row.into_iter().map(Value::Str).collect())).collect()),
+        "std::csv::serialize" => { let rows = array!().into_iter().map(expect_string_array).collect::<Result<Vec<_>, _>>()?; Value::Str(stdlib::csv::serialize(&rows)) }
+        "std::json::parse" => from_json(stdlib::json::parse(&string!()).map_err(error)?)?,
+        "std::json::stringify" => Value::Str(stdlib::json::stringify(&to_json(take!())?)),
+        "std::json::pretty" => Value::Str(stdlib::json::stringify_pretty(&to_json(take!())?).map_err(error)?),
+        "std::json::pointer" => { let value = to_json(take!())?; let pointer = string!(); value.pointer(&pointer).cloned().map(from_json).transpose()?.unwrap_or(Value::Nil) }
+        "std::json::merge" => { let mut target = to_json(take!())?; let patch = to_json(take!())?; stdlib::json::merge(&mut target, patch); from_json(target)? }
+        "std::json::flatten" => Value::Array(stdlib::json::flatten(&to_json(take!())?).into_iter().map(|(path, value)| Ok(Value::Tuple(vec![Value::Str(path), from_json(value)?]))).collect::<Result<Vec<_>, String>>()?),
+
+        "std::collections::length" => Value::Int(to_i64(value_length(&take!())?)?),
+        "std::collections::contains" => { let values = array!(); Value::Bool(values.contains(&take!())) }
+        "std::collections::reverse" => { let mut values = array!(); values.reverse(); Value::Array(values) }
+        "std::collections::deduplicate" => { let mut output = Vec::new(); for value in array!() { if !output.contains(&value) { output.push(value); } } Value::Array(output) }
+        "std::collections::join" => { let values = array!(); let separator = string!(); Value::Str(values.iter().map(val_to_string).collect::<Vec<_>>().join(&separator)) }
+        "std::collections::chunk" => { let values = array!(); let size = nonnegative(int!())?; if size == 0 { return Err("chunk size must be positive".into()); } Value::Array(values.chunks(size).map(|part| Value::Array(part.to_vec())).collect()) }
+        "std::map::keys" => Value::Array(expect_map(take!())?.into_keys().map(Value::Str).collect()),
+        "std::map::values" => Value::Array(expect_map(take!())?.into_values().collect()),
+        "std::map::contains" => { let values = expect_map(take!())?; Value::Bool(values.contains_key(&string!())) }
+        "std::map::get" => { let values = expect_map(take!())?; values.get(&string!()).cloned().unwrap_or(Value::Nil) }
+        "std::map::insert" => { let mut values = expect_map(take!())?; let key = string!(); values.insert(key, take!()); Value::Map(values) }
+        "std::map::remove" => { let mut values = expect_map(take!())?; values.remove(&string!()); Value::Map(values) }
+
+        "std::math::sqrt" => checked_float(float!().sqrt(), "sqrt domain error")?,
+        "std::math::pow" => { let base = float!(); checked_float(base.powf(float!()), "pow domain error")? }
+        "std::math::sin" => Value::Float(float!().sin()), "std::math::cos" => Value::Float(float!().cos()),
+        "std::math::tan" => checked_float(float!().tan(), "tan produced a non-finite result")?,
+        "std::math::ln" => checked_float(float!().ln(), "ln domain error")?,
+        "std::math::abs" => Value::Float(float!().abs()), "std::math::floor" => Value::Float(float!().floor()),
+        "std::math::ceil" => Value::Float(float!().ceil()), "std::math::round" => Value::Float(float!().round()),
+        "std::stats::mean" => { let values = numbers(array!())?; if values.is_empty() { return Err("mean requires at least one number".into()); } Value::Float(values.iter().sum::<f64>() / values.len() as f64) }
+        "std::stats::median" => { let mut values = numbers(array!())?; Value::Float(stdlib::stats::median(&mut values).ok_or("median requires finite numbers")?) }
+        "std::stats::quantile" => { let mut values = numbers(array!())?; let q = float!(); Value::Float(stdlib::stats::quantile(&mut values, q).ok_or("invalid quantile or input")?) }
+        "std::stats::variance" => { let values = numbers(array!())?; let mut summary = stdlib::stats::Summary::new(); summary.extend(values); Value::Float(summary.variance_population().ok_or("variance requires numbers")?) }
+        "std::stats::stddev" => { let values = numbers(array!())?; let mut summary = stdlib::stats::Summary::new(); summary.extend(values); Value::Float(summary.standard_deviation().ok_or("standard deviation requires numbers")?) }
+
+        "std::time::unix_seconds" => Value::Int(i64::try_from(stdlib::time::unix_seconds().map_err(error)?).map_err(error)?),
+        "std::time::unix_millis" => Value::Int(i64::try_from(stdlib::time::unix_millis().map_err(error)?).map_err(error)?),
+        "std::time::sleep_ms" => { stdlib::time::sleep(Duration::from_millis(u64::try_from(int!()).map_err(|_| "milliseconds must be nonnegative")?)); Value::Nil }
+
+        "std::path::join" => Value::Str(stdlib::path::join(string!(), string!()).to_string_lossy().into()),
+        "std::path::normalize" => Value::Str(stdlib::path::normalize(string!()).to_string_lossy().into()),
+        "std::path::parent" => optional_path(stdlib::path::parent(string!())),
+        "std::path::file_name" => optional_string(stdlib::path::file_name(string!())),
+        "std::path::stem" => optional_string(stdlib::path::stem(string!())),
+        "std::path::extension" => optional_string(stdlib::path::extension(string!())),
+        "std::path::absolute" => Value::Str(stdlib::path::absolute(string!()).map_err(error)?.to_string_lossy().into()),
+        "std::path::canonical" => Value::Str(stdlib::path::canonical(string!()).map_err(error)?.to_string_lossy().into()),
+
+        "std::fs::read_text" => Value::Str(stdlib::io::read_file(string!()).map_err(error)?),
+        "std::fs::read_bytes" => Value::Bytes(stdlib::io::read_bytes(string!()).map_err(error)?),
+        "std::fs::write_text" => { let path = string!(); stdlib::io::write_file(path, &string!()).map_err(error)?; Value::Nil }
+        "std::fs::write_bytes" => { let path = string!(); stdlib::io::write_bytes(path, &bytes!()).map_err(error)?; Value::Nil }
+        "std::fs::atomic_write" => { let path = string!(); stdlib::io::atomic_write(path, &bytes!()).map_err(error)?; Value::Nil }
+        "std::fs::append" => { let path = string!(); stdlib::io::append(path, &bytes!()).map_err(error)?; Value::Nil }
+        "std::fs::exists" => Value::Bool(stdlib::io::exists(string!())), "std::fs::is_file" => Value::Bool(stdlib::io::is_file(string!())),
+        "std::fs::is_dir" => Value::Bool(stdlib::io::is_dir(string!())),
+        "std::fs::create_dir" => { stdlib::io::create_dir(string!()).map_err(error)?; Value::Nil }
+        "std::fs::remove_file" => { stdlib::io::remove_file(string!()).map_err(error)?; Value::Nil }
+        "std::fs::remove_dir" => { stdlib::io::remove_dir(string!()).map_err(error)?; Value::Nil }
+        "std::fs::list_dir" => Value::Array(stdlib::io::list_dir(string!()).map_err(error)?.into_iter().map(|p| Value::Str(p.to_string_lossy().into())).collect()),
+        "std::fs::file_size" => Value::Int(i64::try_from(stdlib::io::file_size(string!()).map_err(error)?).map_err(error)?),
+        "std::fs::copy" => { let from = string!(); Value::Int(i64::try_from(stdlib::io::copy(from, string!()).map_err(error)?).map_err(error)?) }
+        "std::fs::rename" => { let from = string!(); stdlib::io::rename(from, string!()).map_err(error)?; Value::Nil }
+
+        "std::process::run" => { let program = string!(); process_output(stdlib::process::CommandSpec::new(program).args(strings(array!())?).output().map_err(error)?) }
+        "std::process::run_timeout" => { let program = string!(); let arguments = strings(array!())?; let timeout = u64::try_from(int!()).map_err(|_| "timeout must be nonnegative")?; process_output(stdlib::process::CommandSpec::new(program).args(arguments).output_timeout(Duration::from_millis(timeout)).map_err(error)?) }
+        "std::env::get" => std::env::var(string!()).map(Value::Str).unwrap_or(Value::Nil),
+        "std::env::args" => Value::Array(std::env::args().map(Value::Str).collect()),
+        "std::env::current_dir" => Value::Str(std::env::current_dir().map_err(error)?.to_string_lossy().into()),
+        "std::net::http_get" => { let response = stdlib::net::http_get(&string!()).map_err(error)?; let mut map = BTreeMap::new(); map.insert("status".into(), Value::Int(i64::from(response.status))); map.insert("body".into(), Value::Bytes(response.body)); map.insert("headers".into(), Value::Array(response.headers.into_iter().map(|(k,v)| Value::Tuple(vec![Value::Str(k), Value::Str(v)])).collect())); Value::Map(map) }
+        "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
+        "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
+        _ => return Err("registered function has no VM implementation".into()),
+    })
+}
+
+fn require_capability(name: &str, capability: Capability, caps: RuntimeCapabilities) -> Result<(), VmError> {
+    let allowed = match capability { Capability::None => true, Capability::Filesystem => caps.filesystem, Capability::Process => caps.process, Capability::Network => caps.network, Capability::Environment => caps.environment };
+    if allowed { Ok(()) } else { Err(VmError::PermissionDenied { function: name.into(), capability: format!("{capability:?}") }) }
+}
+fn failure(function: &str, message: &str) -> VmError { VmError::Native { function: function.into(), message: message.into() } }
+fn error(error: impl std::fmt::Display) -> String { error.to_string() }
+fn expect_string(value: Value) -> Result<String, String> { if let Value::Str(v) = value { Ok(v) } else { Err("expected string".into()) } }
+fn expect_bytes(value: Value) -> Result<Vec<u8>, String> { match value { Value::Bytes(v) => Ok(v), Value::Str(v) => Ok(v.into_bytes()), _ => Err("expected bytes or string".into()) } }
+fn expect_int(value: Value) -> Result<i64, String> { if let Value::Int(v) = value { Ok(v) } else { Err("expected int".into()) } }
+fn expect_float(value: Value) -> Result<f64, String> { match value { Value::Float(v) => Ok(v), Value::Int(v) => Ok(v as f64), _ => Err("expected number".into()) } }
+fn expect_array(value: Value) -> Result<Vec<Value>, String> { match value { Value::Array(v) | Value::Tuple(v) => Ok(v), _ => Err("expected array".into()) } }
+fn expect_map(value: Value) -> Result<BTreeMap<String, Value>, String> { if let Value::Map(values) = value { Ok(values) } else { Err("expected map".into()) } }
+fn expect_string_array(value: Value) -> Result<Vec<String>, String> { expect_array(value)?.into_iter().map(expect_string).collect() }
+fn strings(values: Vec<Value>) -> Result<Vec<String>, String> { values.into_iter().map(expect_string).collect() }
+fn numbers(values: Vec<Value>) -> Result<Vec<f64>, String> { values.into_iter().map(expect_float).collect() }
+fn nonnegative(value: i64) -> Result<usize, String> { usize::try_from(value).map_err(|_| "expected nonnegative integer".into()) }
+fn to_i64(value: usize) -> Result<i64, String> { i64::try_from(value).map_err(error) }
+fn checked_float(value: f64, message: &str) -> Result<Value, String> { if value.is_finite() { Ok(Value::Float(value)) } else { Err(message.into()) } }
+fn optional_string(value: Option<String>) -> Value { value.map(Value::Str).unwrap_or(Value::Nil) }
+fn optional_path(value: Option<std::path::PathBuf>) -> Value { value.map(|p| Value::Str(p.to_string_lossy().into())).unwrap_or(Value::Nil) }
+fn value_length(value: &Value) -> Result<usize, String> { match value { Value::Str(v) => Ok(v.chars().count()), Value::Bytes(v) => Ok(v.len()), Value::Array(v) | Value::Tuple(v) => Ok(v.len()), Value::Map(v) => Ok(v.len()), _ => Err("value has no length".into()) } }
+fn process_output(output: stdlib::process::ProcessOutput) -> Value { let mut map = BTreeMap::new(); map.insert("status".into(), output.status.map(|v| Value::Int(i64::from(v))).unwrap_or(Value::Nil)); map.insert("success".into(), Value::Bool(output.success)); map.insert("stdout".into(), Value::Bytes(output.stdout)); map.insert("stderr".into(), Value::Bytes(output.stderr)); map.insert("timed_out".into(), Value::Bool(output.timed_out)); Value::Map(map) }
+
+fn to_json(value: Value) -> Result<serde_json::Value, String> {
+    Ok(match value {
+        Value::Nil => serde_json::Value::Null, Value::Bool(v) => v.into(), Value::Int(v) => v.into(),
+        Value::Float(v) => serde_json::Number::from_f64(v).map(serde_json::Value::Number).ok_or("non-finite JSON number")?,
+        Value::Char(v) => v.to_string().into(), Value::Str(v) => v.into(),
+        Value::Bytes(v) => serde_json::Value::Array(v.into_iter().map(|x| serde_json::Value::from(u64::from(x))).collect()),
+        Value::Array(v) | Value::Tuple(v) => serde_json::Value::Array(v.into_iter().map(to_json).collect::<Result<_, _>>()?),
+        Value::Map(v) | Value::Struct { fields: v, .. } => serde_json::Value::Object(v.into_iter().map(|(k,v)| Ok((k, to_json(v)?))).collect::<Result<_, String>>()?),
+        Value::Enum { name, variant, payload } => { let mut map = serde_json::Map::new(); map.insert("type".into(), name.into()); map.insert("variant".into(), variant.into()); if let Some(value) = payload { map.insert("payload".into(), to_json(*value)?); } serde_json::Value::Object(map) }
+    })
+}
+fn from_json(value: serde_json::Value) -> Result<Value, String> {
+    Ok(match value {
+        serde_json::Value::Null => Value::Nil, serde_json::Value::Bool(v) => Value::Bool(v),
+        serde_json::Value::Number(v) => if let Some(i) = v.as_i64() { Value::Int(i) } else { Value::Float(v.as_f64().ok_or("invalid JSON number")?) },
+        serde_json::Value::String(v) => Value::Str(v),
+        serde_json::Value::Array(v) => Value::Array(v.into_iter().map(from_json).collect::<Result<_, _>>()?),
+        serde_json::Value::Object(v) => Value::Map(v.into_iter().map(|(k,v)| Ok((k, from_json(v)?))).collect::<Result<_, String>>()?),
+    })
+}
