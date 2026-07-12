@@ -188,11 +188,12 @@ pub fn create_project(path: impl AsRef<Path>, name: &str) -> Result<PathBuf, Pro
     }
     let root = path.as_ref();
     if root.exists() && root.read_dir().map(|mut entries| entries.next().is_some()).unwrap_or(true) { return Err(ProjectError::AlreadyExists(root.to_path_buf())); }
-    let source = root.join("src");
-    std::fs::create_dir_all(&source).map_err(|source| ProjectError::Create { path: root.to_path_buf(), source })?;
+    let source_dir = root.join("src");
+    std::fs::create_dir_all(&source_dir).map_err(|error| ProjectError::Create { path: root.to_path_buf(), source: error })?;
     let manifest = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n\n[dependencies]\n");
-    std::fs::write(root.join("Titan.toml"), manifest).map_err(|source| ProjectError::Create { path: root.join("Titan.toml"), source })?;
-    std::fs::write(source.join("main.titan"), "fn main() {\n    print(\"Hello from Titan!\")\n}\n").map_err(|source| ProjectError::Create { path: source.join("main.titan"), source })?;
+    std::fs::write(root.join("Titan.toml"), manifest).map_err(|error| ProjectError::Create { path: root.join("Titan.toml"), source: error })?;
+    let main_source = source_dir.join("main.titan");
+    std::fs::write(&main_source, "fn main() {\n    print(\"Hello from Titan!\")\n}\n").map_err(|error| ProjectError::Create { path: main_source, source: error })?;
     Ok(root.to_path_buf())
 }
 
