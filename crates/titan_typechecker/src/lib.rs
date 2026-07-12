@@ -354,8 +354,12 @@ fn native_type(ty: titan_stdlib::native::NativeType) -> Type {
     }
 }
 fn native_compatible(expected: &Type, found: &Type) -> bool {
-    compatible(expected, found) || (expected == &Type::Float && found == &Type::Int)
-        || (matches!(expected, Type::Array(_)) && matches!(found, Type::Tuple(_)))
+    if compatible(expected, found) || (expected == &Type::Float && found == &Type::Int) { return true; }
+    match (expected, found) {
+        (Type::Array(expected), Type::Array(found)) => native_compatible(expected, found),
+        (Type::Array(expected), Type::Tuple(found)) => found.iter().all(|item| native_compatible(expected, item)),
+        _ => false,
+    }
 }
 fn compatible(a: &Type, b: &Type) -> bool { a == b || matches!(a, Type::Unknown | Type::Never) || matches!(b, Type::Unknown | Type::Never) || (matches!(a, Type::Unit) && matches!(b, Type::Nil)) }
 fn is_numeric(ty: &Type) -> bool { matches!(ty, Type::Int | Type::Float | Type::Unknown) }
@@ -376,4 +380,5 @@ mod tests {
     #[test] fn rejects_unknown_names() { assert!(check("fn main() { missing + 1 }").is_err()); }
     #[test] fn rejects_wrong_return() { assert!(check("fn bad() -> int { return true }").is_err()); }
     #[test] fn checks_registered_native_signatures() { assert!(check("fn main() { std::text::reverse(\"Titan\") }").is_ok()); assert!(check("fn main() { std::text::reverse(42) }").is_err()); }
+    #[test] fn generic_native_arrays_accept_concrete_elements() { assert!(check("fn main() { std::stats::mean([10, 20, 30, 40]) }").is_ok()); }
 }

@@ -340,16 +340,25 @@ impl AstCompiler {
     }
 
     fn compile_template(&mut self, template: &str) -> Result<(), CodegenError> {
-        let mut rest = template; let mut pieces = 0usize;
+        let mut rest = template;
+        let mut has_output = false;
         while let Some(open) = rest.find('{') {
-            let literal = &rest[..open]; if !literal.is_empty() { let id = self.intern(literal); self.emit(Op::PushStr(id)); pieces += 1; }
-            let after = &rest[open + 1..]; let close = after.find('}').ok_or_else(|| CodegenError::InvalidInterpolation(template.into()))?;
-            self.compile_interpolation(after[..close].trim())?; self.emit(Op::ToString); pieces += 1;
-            if pieces > 1 { self.emit(Op::Add); pieces = 1; }
+            let literal = &rest[..open];
+            if !literal.is_empty() {
+                let id = self.intern(literal); self.emit(Op::PushStr(id));
+                if has_output { self.emit(Op::Add); } else { has_output = true; }
+            }
+            let after = &rest[open + 1..];
+            let close = after.find('}').ok_or_else(|| CodegenError::InvalidInterpolation(template.into()))?;
+            self.compile_interpolation(after[..close].trim())?; self.emit(Op::ToString);
+            if has_output { self.emit(Op::Add); } else { has_output = true; }
             rest = &after[close + 1..];
         }
-        if !rest.is_empty() { let id = self.intern(rest); self.emit(Op::PushStr(id)); if pieces > 0 { self.emit(Op::Add); } pieces += 1; }
-        if pieces == 0 { let id = self.intern(""); self.emit(Op::PushStr(id)); }
+        if !rest.is_empty() {
+            let id = self.intern(rest); self.emit(Op::PushStr(id));
+            if has_output { self.emit(Op::Add); } else { has_output = true; }
+        }
+        if !has_output { let id = self.intern(""); self.emit(Op::PushStr(id)); }
         Ok(())
     }
 

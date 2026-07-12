@@ -292,6 +292,8 @@ mod tests {
     #[test] fn enum_matching_works() { assert_eq!(run("enum Maybe { None, Some(int) } fn main() { let x = Maybe::Some(7) match x { Maybe::Some(n) => n, Maybe::None => 0 } }").unwrap(), Value::Int(7)); }
     #[test] fn native_text_and_encoding_work() { assert_eq!(run("fn main() { std::text::reverse(\"Titan\") }").unwrap(), Value::Str("natiT".into())); assert_eq!(run("fn main() { std::encoding::utf8_decode(std::encoding::base64_decode(\"VGl0YW4=\")) }").unwrap(), Value::Str("Titan".into())); }
     #[test] fn native_json_maps_support_fields() { assert_eq!(run(r#"fn main() { std::json::parse("{\"answer\":42}").answer }"#).unwrap(), Value::Int(42)); }
+    #[test] fn interpolation_concatenates_every_segment() { assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let i = 3 \"value({i}) = {double(i)}!\" }").unwrap(), Value::Str("value(3) = 6!".into())); }
+    #[test] fn native_generic_arrays_accept_concrete_elements() { assert_eq!(run("fn main() { std::stats::mean([10, 20, 30, 40]) }").unwrap(), Value::Float(25.0)); }
     #[test] fn closures_capture_lexical_values() { assert_eq!(run("fn main() { let base = 10 let add = |value: int| -> int value + base add(5) }").unwrap(), Value::Int(15)); }
     #[test] fn named_functions_are_first_class() { assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let operation = double operation(21) }").unwrap(), Value::Int(42)); }
     #[test] fn functional_array_pipeline_works() { assert_eq!(run("fn main() { [1, 2, 3, 4].map(|x: int| x * 2).filter(|x: int| x > 4).fold(0, |sum: int, x: int| sum + x) }").unwrap(), Value::Int(14)); }
