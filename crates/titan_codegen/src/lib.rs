@@ -329,7 +329,7 @@ impl AstCompiler {
                     Some(failure)
                 }
                 Pattern::Or { .. } => return Err(CodegenError::Unsupported("or-pattern bytecode".into())),
-                Pattern::Tuple { .. } | Pattern::Struct { .. } => return Err(CodegenError::Unsupported("destructuring pattern bytecode".into())), 
+                Pattern::Tuple { .. } | Pattern::Struct { .. } => return Err(CodegenError::Unsupported("destructuring pattern bytecode".into())),
             };
             let guard_failure = if let Some(guard) = &arm.guard { self.compile_expr(guard)?; Some(self.jump_if_false()) } else { None };
             self.compile_block(&arm.body, true)?; ends.push(self.jump());

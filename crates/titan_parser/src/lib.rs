@@ -359,7 +359,7 @@ impl Parser {
             Some(TokenKind::FloatLit(value)) => { self.advance(); Ok(Expr::Float { value: parse_float(&value, span, self)?, span }) }
             Some(TokenKind::StringLit(value)) => {
                 self.advance();
-                if value.contains('{') { Ok(Expr::StringTemplate { value, span }) } else { Ok(Expr::String { value, span }) }
+                if contains_interpolation(&value) { Ok(Expr::StringTemplate { value, span }) } else { Ok(Expr::String { value, span }) }
             }
             Some(TokenKind::CharLit(value)) => { self.advance(); Ok(Expr::Char { value, span }) }
             Some(TokenKind::True) => { self.advance(); Ok(Expr::Bool { value: true, span }) }
@@ -554,6 +554,31 @@ impl Parser {
     }
 }
 
+fn contains_interpolation(value: &str) -> bool {
+    let mut remainder = value;
+    while let Some(open) = remainder.find('{') {
+        let after_open = &remainder[open + 1..];
+        let Some(close) = after_open.find('}') else { return false };
+        if valid_interpolation(after_open[..close].trim()) { return true; }
+        remainder = &after_open[close + 1..];
+    }
+    false
+}
+
+fn valid_interpolation(value: &str) -> bool {
+    if valid_identifier(value) { return true; }
+    let Some((function, arguments)) = value.split_once('(') else { return false };
+    if !value.ends_with(')') || !valid_identifier(function.trim()) { return false; }
+    let arguments = &arguments[..arguments.len().saturating_sub(1)];
+    arguments.trim().is_empty() || arguments.split(',').map(str::trim).all(|argument| !argument.is_empty() && (valid_identifier(argument) || argument.parse::<i64>().is_ok()))
+}
+
+fn valid_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|first| first == '_' || first.is_alphabetic())
+        && chars.all(|character| character == '_' || character.is_alphanumeric())
+}
+
 fn same_variant(a: &TokenKind, b: &TokenKind) -> bool { std::mem::discriminant(a) == std::mem::discriminant(b) }
 
 fn parse_int(value: &str, span: Span, parser: &Parser) -> Result<i64> {
@@ -591,6 +616,15 @@ mod tests {
     fn parses_closures_and_try_operator() {
         assert!(parse("fn main() { let add = |x: int, y: int| -> int x + y add(1, 2) }").is_ok());
         assert!(parse("fn unwrap(value: Result) { value? }").is_ok());
+    }
+
+    #[test]
+    fn distinguishes_json_braces_from_interpolation() {
+        let program = parse(r#"fn main() { "{\"answer\":42}" }"#).unwrap();
+        let Item::Function(function) = &program.items[0] else { panic!("expected function") };
+        let expression = function.body.as_ref().and_then(|body| body.final_expr.as_deref()).unwrap();
+        assert!(matches!(expression, Expr::String { .. }));
+        assert!(contains_interpolation("answer={answer}"));
     }
 
     #[test]
