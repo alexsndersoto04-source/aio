@@ -16,6 +16,16 @@ pub enum Command {
     Check { #[arg(default_value = ".")] input: String },
     /// Compile a file or project to inspectable bytecode
     Build { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
+    /// Debug a file or project with source breakpoints and stepping
+    Debug {
+        #[arg(default_value = ".")]
+        input: String,
+        /// Breakpoint as path:line; repeat for multiple breakpoints
+        #[arg(short = 'b', long = "break")]
+        breakpoints: Vec<String>,
+        #[arg(long)]
+        sandbox: bool,
+    },
     /// Execute a previously built .tbc artifact without source compilation
     Exec {
         input: String,
@@ -43,6 +53,7 @@ fn main() {
         Command::New { path } => cmd_new(&path),
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
+        Command::Debug { input, breakpoints, sandbox } => cmd_debug(&input, &breakpoints, sandbox),
         Command::Exec { input, sandbox } => cmd_exec(&input, sandbox),
         Command::Run { input, sandbox, args } => cmd_run(&input, sandbox, args),
         Command::Test { input, sandbox } => cmd_test(&input, sandbox),
@@ -78,6 +89,48 @@ fn cmd_build(input: &str, output: Option<String>) {
     println!("  Functions: {}", module.functions.len());
     for function in &module.functions { println!("  fn {} ({} ops, {} locals)", function.name, function.code.len(), function.locals); }
     println!("  Entry: fn[{}]", module.entry);
+}
+
+fn cmd_debug(input: &str, breakpoint_specs: &[String], sandbox: bool) {
+    use std::io::Write;
+    use titan_vm::{Breakpoint, DebugCommand, DebugEvent, Debugger};
+
+    let (project, module) = load_and_compile(input).unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
+    let mut breakpoints = Vec::new();
+    for specification in breakpoint_specs {
+        let (path, line) = specification.rsplit_once(':').unwrap_or_else(|| fatal_message("DEBUG ERROR", "breakpoints must use path:line"));
+        let line = line.parse::<usize>().ok().filter(|line| *line > 0).unwrap_or_else(|| fatal_message("DEBUG ERROR", "breakpoint line must be a positive integer"));
+        let path = Path::new(path); let path = if path.is_absolute() { path.to_path_buf() } else { project.root.join(path) };
+        let canonical = path.canonicalize().unwrap_or_else(|error| fatal("DEBUG ERROR", error));
+        breakpoints.push(Breakpoint::SourceLine { source_file: canonical.to_string_lossy().into_owned(), line });
+    }
+    if breakpoints.is_empty() { breakpoints.push(Breakpoint::Instruction { function: module.entry, instruction: 0 }); }
+
+    let (controller, mut debugger) = Debugger::channel(breakpoints);
+    let worker = std::thread::spawn(move || {
+        let mut vm = if sandbox { titan_vm::Vm::sandboxed(module) } else { titan_vm::Vm::new(module) };
+        vm.run_debug(&mut debugger)
+    });
+
+    loop {
+        match controller.recv().unwrap_or_else(|error| fatal_message("DEBUG ERROR", &error)) {
+            DebugEvent::Stopped(frame) => {
+                let location = frame.location.map(|location| format!("{}:{}:{}", frame.source_file.as_deref().unwrap_or("<source>"), location.line, location.column)).unwrap_or_else(|| format!("{}:ip{}", frame.function_name, frame.instruction));
+                println!("\nstopped at {location} [depth {}]", frame.depth);
+                println!("function: {} (id {})", frame.function_name, frame.function_id);
+                println!("locals:"); for (index, value) in frame.locals.iter().enumerate() { println!("  [{index}] = {}", titan_vm::val_to_string(value)); }
+                println!("stack:"); for (index, value) in frame.stack.iter().enumerate() { println!("  [{index}] = {}", titan_vm::val_to_string(value)); }
+                loop {
+                    print!("debug [c=continue s=step n=next o=out p=print q=quit]> "); std::io::stdout().flush().unwrap_or_else(|error| fatal("DEBUG ERROR", error));
+                    let mut command = String::new(); std::io::stdin().read_line(&mut command).unwrap_or_else(|error| fatal("DEBUG ERROR", error));
+                    let command = match command.trim() { "c" | "continue" => Some(DebugCommand::Continue), "s" | "step" => Some(DebugCommand::StepIn), "n" | "next" => Some(DebugCommand::StepOver), "o" | "out" => Some(DebugCommand::StepOut), "q" | "quit" => Some(DebugCommand::Terminate), "p" | "print" => { println!("locals={:?}\nstack={:?}", frame.locals, frame.stack); None } _ => { println!("unknown debugger command"); None } };
+                    if let Some(command) = command { controller.command(command).unwrap_or_else(|error| fatal_message("DEBUG ERROR", &error)); break; }
+                }
+            }
+            DebugEvent::Terminated { error } => { if let Some(error) = error { println!("debuggee terminated: {error}"); } else { println!("debuggee exited successfully"); } break; }
+        }
+    }
+    if worker.join().is_err() { fatal_message("DEBUG ERROR", "debuggee worker panicked"); }
 }
 
 fn cmd_exec(input: &str, sandbox: bool) {

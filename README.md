@@ -80,6 +80,7 @@ titan check [file|project]   Resolve imports and type-check
 titan run [file|project]     Compile, type-check and execute
 titan run --sandbox [path]   Deny filesystem/process/network/environment
 titan build [file|project]   Write validated .tbc bytecode
+titan debug [path] -b file:line  Interactive source debugger
 titan exec <file.tbc>        Validate and execute bytecode without source
 titan test [project]         Run all tests/*.titan programs
 titan repl                   Interactive expressions/statements
