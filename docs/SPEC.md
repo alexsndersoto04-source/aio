@@ -161,4 +161,4 @@ Titan compiles to versioned stack bytecode. The VM has:
 - bounded range materialization;
 - no native pointer instructions or Rust `unsafe` execution.
 
-`build` emits inspectable `TITAN-BYTECODE 1` text. `run` compiles and executes source. A portable binary loader is not part of version 0.2.
+`build` emits a portable `TITAN-BYTECODE 1` container. The payload records its format/compiler versions, module data and CRC-32 integrity checksum. `exec` validates limits and every function, local, string, jump, call, closure capture and native signature before execution; malformed or incompatible artifacts never enter the VM. `run` remains the compile-and-execute source path.

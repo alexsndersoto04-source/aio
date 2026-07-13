@@ -1,5 +1,9 @@
 //! AST to portable Titan bytecode compiler.
 
+mod artifact;
+pub use artifact::{ArtifactError, BytecodeArtifact};
+
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 use titan_ast::*;
@@ -18,7 +22,7 @@ pub enum CodegenError {
     InvalidInterpolation(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Op {
     PushInt(i64), PushFloat(f64), PushBool(bool), PushChar(char), PushNil,
     PushStr(usize), PushLocal(usize), StoreLocal(usize), Pop, Dup,
@@ -36,7 +40,7 @@ pub enum Op {
     Nop, Halt,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeFunc {
     pub name: String,
     pub arity: usize,
@@ -46,7 +50,7 @@ pub struct BytecodeFunc {
     pub code: Vec<Op>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompiledModule {
     pub functions: Vec<BytecodeFunc>,
     pub entry: usize,

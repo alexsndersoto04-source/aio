@@ -16,6 +16,13 @@ pub enum Command {
     Check { #[arg(default_value = ".")] input: String },
     /// Compile a file or project to inspectable bytecode
     Build { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
+    /// Execute a previously built .tbc artifact without source compilation
+    Exec {
+        input: String,
+        /// Deny filesystem, process, network, and environment native functions
+        #[arg(long)]
+        sandbox: bool,
+    },
     /// Compile and run a file or project
     Run {
         #[arg(default_value = ".")] input: String,
@@ -36,6 +43,7 @@ fn main() {
         Command::New { path } => cmd_new(&path),
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
+        Command::Exec { input, sandbox } => cmd_exec(&input, sandbox),
         Command::Run { input, sandbox, args } => cmd_run(&input, sandbox, args),
         Command::Test { input, sandbox } => cmd_test(&input, sandbox),
         Command::Repl => cmd_repl(),
@@ -63,13 +71,23 @@ fn cmd_build(input: &str, output: Option<String>) {
     let (project, module) = load_and_compile(input).unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
     let target = output.map(PathBuf::from).unwrap_or_else(|| default_artifact(&project));
     if let Some(parent) = target.parent() { fs::create_dir_all(parent).unwrap_or_else(|error| fatal("BUILD ERROR", error)); }
-    let artifact = format!("TITAN-BYTECODE 1\n{:#?}\n", module);
+    let artifact = titan_codegen::BytecodeArtifact::encode(&module).unwrap_or_else(|error| fatal("BUILD ERROR", error));
     fs::write(&target, artifact).unwrap_or_else(|error| fatal("BUILD ERROR", error));
     println!("BUILD: {} → {}", project.entry.display(), target.display());
     println!("  Sources: {}", project.load_order.len());
     println!("  Functions: {}", module.functions.len());
     for function in &module.functions { println!("  fn {} ({} ops, {} locals)", function.name, function.code.len(), function.locals); }
     println!("  Entry: fn[{}]", module.entry);
+}
+
+fn cmd_exec(input: &str, sandbox: bool) {
+    let bytes = fs::read(input).unwrap_or_else(|error| fatal("ARTIFACT READ ERROR", error));
+    let module = titan_codegen::BytecodeArtifact::decode(&bytes).unwrap_or_else(|error| fatal("INVALID ARTIFACT", error));
+    match run_module(module, sandbox) {
+        Ok(Some(value)) if !matches!(value, titan_vm::Value::Nil) => println!("=> {}", titan_vm::val_to_string(&value)),
+        Ok(_) => {}
+        Err(error) => fatal("RUNTIME ERROR", error),
+    }
 }
 
 fn cmd_run(input: &str, sandbox: bool, _args: Vec<String>) {

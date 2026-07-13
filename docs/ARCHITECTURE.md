@@ -50,4 +50,4 @@ The VM adds `Bytes` and `Map` runtime values for binary I/O, JSON, processes and
 
 ## Artifact model
 
-`build` writes an inspectable `TITAN-BYTECODE 1` artifact. It is currently intended for diagnostics and tooling; source execution remains the stable interface. A future binary container must include format versioning, integrity validation and a loader before artifacts are advertised as independently executable.
+`build` writes a `TITAN-BYTECODE 1` artifact containing a versioned JSON envelope, compiler version and CRC-32 checksum. `BytecodeArtifact::decode` applies size limits and structural validation to functions, strings, locals, jumps, calls, closures and natives. `titan exec` executes only after that validation, so precompiled artifacts no longer require their source files.

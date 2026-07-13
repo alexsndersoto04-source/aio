@@ -79,13 +79,14 @@ titan new <directory>        Create Titan.toml and src/main.titan
 titan check [file|project]   Resolve imports and type-check
 titan run [file|project]     Compile, type-check and execute
 titan run --sandbox [path]   Deny filesystem/process/network/environment
-titan build [file|project]   Write inspectable .tbc bytecode
+titan build [file|project]   Write validated .tbc bytecode
+titan exec <file.tbc>        Validate and execute bytecode without source
 titan test [project]         Run all tests/*.titan programs
 titan repl                   Interactive expressions/statements
 titan version                Print compiler version
 ```
 
-The build artifact currently uses a versioned, inspectable textual bytecode format. `run` compiles from source; loading precompiled artifacts is planned for the binary bytecode container.
+The build artifact uses a portable, versioned JSON bytecode container with a magic header and CRC-32 integrity check. `titan exec` loads it without source compilation and rejects incompatible versions, corruption, invalid jumps/locals/functions, unknown natives, wrong arity, excessive metadata and unsafe references before VM execution.
 
 ## Architecture
 
