@@ -37,7 +37,10 @@ pub fn run<R: BufRead, W: Write>(mut input: R, mut output: W) -> Result<(), Serv
                 "workspace/symbol" => Ok(Value::Array(service.workspace_symbols(params.get("query").and_then(Value::as_str).unwrap_or("")).into_iter().map(|symbol| json!({"name":symbol.name,"kind":symbol.kind,"location":{"uri":symbol.uri,"range":symbol.selection_range}})).collect())),
                 _ => Err("method not found".into()),
             };
-            match result { Ok(value) => write_message(&mut output, &json!({"jsonrpc":"2.0","id":id,"result":value}))?, Err(message) => write_message(&mut output, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":message}}))?; }
+            match result {
+                Ok(value) => write_message(&mut output, &json!({"jsonrpc":"2.0","id":id,"result":value}))?,
+                Err(message) => write_message(&mut output, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":message}}))?,
+            }
         } else {
             match method {
                 "exit" => break,
