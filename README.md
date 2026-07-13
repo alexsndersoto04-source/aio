@@ -2,7 +2,7 @@
 
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM.
 
-> Project status: active language implementation. The supported core below is executable end to end; experimental syntax is identified separately rather than advertised as complete.
+> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 15 crates pass `cargo check`, Clippy passes with `-D warnings`, and all 53 tests pass. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
 
 ## Quick start
 

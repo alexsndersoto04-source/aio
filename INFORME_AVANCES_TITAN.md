@@ -805,3 +805,22 @@ Se añadió otra fase vertical al lenguaje:
 - Tests declarados para captura, funciones nombradas como valores y propagación de `Result` tanto exitosa como fallida.
 
 Los valores función no se serializan silenciosamente a JSON: la conversión genera un error explícito.
+
+---
+
+## 12. Validación real completada en Termux ARM
+
+La condición pendiente de compilación quedó resuelta el 12 de julio de 2026:
+
+- Rust/Cargo 1.96.1 en Android/Termux ARM.
+- `cargo check --workspace --all-targets`: correcto para los 15 crates.
+- `cargo clippy --workspace --all-targets -- -D warnings`: correcto, cero advertencias.
+- `cargo test --workspace --all-targets`: 53 aprobados, 0 fallidos.
+- `hello.titan`, `fibonacci.titan` y `stdlib.titan`: ejecutados correctamente.
+- Creación, check, run, build y tests de un proyecto real: correctos.
+- Artefacto físico `.tbc` con header `TITAN-BYTECODE 1`: confirmado.
+- Import multiarchivo manual (`math.titan`): 2 fuentes, 3 funciones y ejecución correcta.
+
+Durante la validación se corrigieron un sombreado de ruta/error, la clasificación de llaves JSON frente a interpolación, la concatenación de múltiples segmentos interpolados y la compatibilidad de arrays concretos con firmas nativas genéricas. El registro completo está en `docs/VALIDATION.md`.
+
+Esta validación demuestra el entorno Termux ARM; no equivale todavía a certificación multiplataforma ni a auditoría de seguridad para producción.
