@@ -40,6 +40,17 @@ pub enum Op {
     Nop, Halt,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceLocation {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
+}
+impl From<titan_lexer::Span> for SourceLocation {
+    fn from(span: titan_lexer::Span) -> Self { Self { start: span.start, end: span.end, line: span.line, column: span.column } }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeFunc {
     pub name: String,
@@ -48,6 +59,8 @@ pub struct BytecodeFunc {
     pub locals: usize,
     pub max_stack: usize,
     pub code: Vec<Op>,
+    #[serde(default)]
+    pub debug_locations: Vec<Option<SourceLocation>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +80,7 @@ pub struct AstCompiler {
     enum_variants: HashMap<String, bool>,
     constants: HashMap<String, Expr>,
     loops: Vec<LoopContext>,
+    current_location: Option<SourceLocation>,
 }
 
 #[derive(Default)]
@@ -77,7 +91,7 @@ impl AstCompiler {
         Self {
             module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new() },
             current: empty_function(), locals: Vec::new(), next_local: 0,
-            strings: HashMap::new(), function_ids: HashMap::new(), enum_variants: HashMap::new(), constants: HashMap::new(), loops: Vec::new(),
+            strings: HashMap::new(), function_ids: HashMap::new(), enum_variants: HashMap::new(), constants: HashMap::new(), loops: Vec::new(), current_location: None,
         }
     }
 
@@ -103,7 +117,7 @@ impl AstCompiler {
     }
 
     fn compile_function(&mut self, function: &FunctionDecl) -> Result<BytecodeFunc, CodegenError> {
-        self.current = BytecodeFunc { name: function.name.clone(), arity: function.params.len(), captures: 0, locals: 0, max_stack: 256, code: Vec::new() };
+        self.current = BytecodeFunc { name: function.name.clone(), arity: function.params.len(), captures: 0, locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0; self.loops.clear();
         for param in &function.params { self.add_local(&param.name); }
         if let Some(body) = &function.body { self.compile_block(body, true)?; } else { self.emit(Op::PushNil); }
@@ -134,6 +148,13 @@ impl AstCompiler {
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CodegenError> {
+        let previous = self.current_location.replace(expr.span().into());
+        let result = self.compile_expr_inner(expr);
+        self.current_location = previous;
+        result
+    }
+
+    fn compile_expr_inner(&mut self, expr: &Expr) -> Result<(), CodegenError> {
         match expr {
             Expr::Int { value, .. } => self.emit(Op::PushInt(*value)),
             Expr::Float { value, .. } => self.emit(Op::PushFloat(*value)),
@@ -398,7 +419,7 @@ impl AstCompiler {
         let outer_next = self.next_local;
         let outer_loops = std::mem::take(&mut self.loops);
 
-        self.current = BytecodeFunc { name: format!("<closure:{function}>"), arity: params.len(), captures: captures.len(), locals: 0, max_stack: 256, code: Vec::new() };
+        self.current = BytecodeFunc { name: format!("<closure:{function}>"), arity: params.len(), captures: captures.len(), locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0;
         for (name, _) in &captures { self.add_local(name); }
         for param in params { self.add_local(&param.name); }
@@ -417,7 +438,7 @@ impl AstCompiler {
             for jump in context.continues { self.patch(jump, context.continue_target); }
         }
     }
-    fn emit(&mut self, op: Op) { self.current.code.push(op); }
+    fn emit(&mut self, op: Op) { self.current.code.push(op); self.current.debug_locations.push(self.current_location); }
     fn position(&self) -> usize { self.current.code.len() }
     fn jump(&mut self) -> usize { let p = self.position(); self.emit(Op::Jump(usize::MAX)); p }
     fn jump_if_false(&mut self) -> usize { let p = self.position(); self.emit(Op::JumpIfFalse(usize::MAX)); p }
@@ -432,7 +453,7 @@ impl AstCompiler {
     fn find_local(&self, name: &str) -> Option<usize> { self.locals.iter().rev().find_map(|scope| scope.get(name).copied()) }
 }
 
-fn empty_function() -> BytecodeFunc { BytecodeFunc { name: String::new(), arity: 0, captures: 0, locals: 0, max_stack: 0, code: Vec::new() } }
+fn empty_function() -> BytecodeFunc { BytecodeFunc { name: String::new(), arity: 0, captures: 0, locals: 0, max_stack: 0, code: Vec::new(), debug_locations: Vec::new() } }
 fn is_terminal(expr: &Expr) -> bool { matches!(expr, Expr::Return { .. } | Expr::Break { .. } | Expr::Continue { .. }) }
 fn binary_instruction(op: BinaryOp) -> Result<Op, CodegenError> {
     Ok(match op { BinaryOp::Add => Op::Add, BinaryOp::Sub => Op::Sub, BinaryOp::Mul => Op::Mul, BinaryOp::Div => Op::Div, BinaryOp::Mod => Op::Mod, _ => return Err(CodegenError::Unsupported(format!("compound assignment {op:?}"))) })
