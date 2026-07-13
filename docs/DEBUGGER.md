@@ -4,13 +4,16 @@ The compiler now emits an instruction-aligned source map in every `BytecodeFunc`
 
 Source maps are serialized in `.tbc` artifacts and validated on load: a non-empty map must contain exactly one entry per instruction. Older version-1 artifacts with no map remain loadable through the serde default, while newly built artifacts carry maps.
 
-This is the foundation for the debugger currently being integrated. The next debugger block consumes these maps to provide:
+The VM debugger consumes these maps during real execution. `Vm::run_debug` invokes a hook before every instruction and emits immutable frame snapshots. `Debugger::channel` provides a thread-safe controller/event pair with:
 
 - function/instruction and source-line breakpoints;
-- pause/continue;
-- step in/over/out;
-- call-stack frames;
-- locals, captures and operand-stack inspection;
-- structured stopped/continued/terminated events.
+- breakpoints added or removed while paused/running;
+- continue and terminate;
+- step in, over and out using call depth;
+- function ID/name, instruction pointer and source location;
+- locals, captures (stored in local slots) and operand-stack inspection;
+- structured stopped and terminated events, including runtime errors.
+
+The execution thread blocks while stopped and resumes only after a debugger command, so pause state is real rather than reconstructed after execution.
 
 Current multi-file limitation: AST nodes preserve spans but not source-file IDs after project merging. Bytecode maps are exact within each source buffer; attaching canonical source IDs to declarations is the next schema extension before cross-file source breakpoints are advertised as complete.

@@ -1,6 +1,8 @@
 //! Safe stack-based virtual machine for Titan bytecode.
 
+mod debug;
 mod native;
+pub use debug::{Breakpoint, DebugCommand, DebugController, DebugEvent, DebugFrame, DebugHook, DebugMode, Debugger};
 
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -57,6 +59,8 @@ pub enum VmError {
     Native { function: String, message: String },
     #[error("native function '{function}' requires capability '{capability}'")]
     PermissionDenied { function: String, capability: String },
+    #[error("execution terminated by debugger")]
+    DebugTerminated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,12 +91,19 @@ impl Vm {
     pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
 
     pub fn run(&mut self) -> Result<Option<Value>, VmError> {
+        self.run_internal(&mut None)
+    }
+    pub fn run_debug(&mut self, hook: &mut dyn DebugHook) -> Result<Option<Value>, VmError> {
+        self.run_internal(&mut Some(hook))
+    }
+    fn run_internal(&mut self, debugger: &mut Option<&mut dyn DebugHook>) -> Result<Option<Value>, VmError> {
         self.instructions = 0;
-        let result = self.execute(self.module.entry, Vec::new(), Vec::new(), 0)?;
-        Ok(Some(result))
+        let result = self.execute(self.module.entry, Vec::new(), Vec::new(), 0, debugger);
+        if let Some(hook) = debugger.as_deref_mut() { hook.terminated(result.as_ref().err()); }
+        result.map(Some)
     }
 
-    fn execute(&mut self, function_id: usize, args: Vec<Value>, captures: Vec<Value>, depth: usize) -> Result<Value, VmError> {
+    fn execute(&mut self, function_id: usize, args: Vec<Value>, captures: Vec<Value>, depth: usize, debugger: &mut Option<&mut dyn DebugHook>) -> Result<Value, VmError> {
         if depth >= self.max_call_depth { return Err(VmError::CallDepth); }
         let function = self.module.functions.get(function_id).cloned().ok_or(VmError::InvalidFunction(function_id))?;
         if args.len() != function.arity { return Err(VmError::Arity { function: function.name, expected: function.arity, found: args.len() }); }
@@ -104,6 +115,17 @@ impl Vm {
         while ip < function.code.len() {
             self.instructions += 1;
             if self.instructions > self.instruction_limit { return Err(VmError::InstructionLimit); }
+            if let Some(hook) = debugger.as_deref_mut() {
+                hook.before_instruction(&DebugFrame {
+                    function_id,
+                    function_name: function.name.clone(),
+                    instruction: ip,
+                    depth,
+                    location: function.debug_locations.get(ip).copied().flatten(),
+                    locals: locals.clone(),
+                    stack: stack.clone(),
+                })?;
+            }
             match function.code[ip].clone() {
                 Op::PushInt(v) => stack.push(Value::Int(v)), Op::PushFloat(v) => stack.push(Value::Float(v)),
                 Op::PushBool(v) => stack.push(Value::Bool(v)), Op::PushChar(v) => stack.push(Value::Char(v)),
@@ -130,7 +152,7 @@ impl Vm {
                 Op::Call { function: callee, argc } => {
                     let args = take_args(&mut stack, argc, &function.name)?;
                     if callee == usize::MAX { stack.push(make_range(args)?); }
-                    else { stack.push(self.execute(callee, args, Vec::new(), depth + 1)?); }
+                    else { stack.push(self.execute(callee, args, Vec::new(), depth + 1, debugger)?); }
                 }
                 Op::MakeClosure { function: closure_function, captures } => {
                     let captured = captures.into_iter().map(|slot| locals.get(slot).cloned().ok_or_else(|| VmError::InvalidLocal { function: function.name.clone(), index: slot })).collect::<Result<Vec<_>, _>>()?;
@@ -139,27 +161,27 @@ impl Vm {
                 Op::CallValue(argc) => {
                     let args = take_args(&mut stack, argc, &function.name)?;
                     let callable = pop(&mut stack, &function.name)?;
-                    if let Value::Closure { function: closure_function, captures } = callable { stack.push(self.execute(closure_function, args, captures, depth + 1)?); }
+                    if let Value::Closure { function: closure_function, captures } = callable { stack.push(self.execute(closure_function, args, captures, depth + 1, debugger)?); }
                     else { return Err(VmError::Type("attempted to call a non-function value".into())); }
                 }
                 Op::ArrayMap => {
                     let callable = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
                     let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("map requires a function".into())); };
                     let mut output = Vec::with_capacity(values.len());
-                    for value in values { output.push(self.execute(closure_function, vec![value], captures.clone(), depth + 1)?); }
+                    for value in values { output.push(self.execute(closure_function, vec![value], captures.clone(), depth + 1, debugger)?); }
                     stack.push(Value::Array(output));
                 }
                 Op::ArrayFilter => {
                     let callable = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
                     let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("filter requires a function".into())); };
                     let mut output = Vec::new();
-                    for value in values { let keep = self.execute(closure_function, vec![value.clone()], captures.clone(), depth + 1)?; if keep == Value::Bool(true) { output.push(value); } else if keep != Value::Bool(false) { return Err(VmError::Type("filter predicate must return bool".into())); } }
+                    for value in values { let keep = self.execute(closure_function, vec![value.clone()], captures.clone(), depth + 1, debugger)?; if keep == Value::Bool(true) { output.push(value); } else if keep != Value::Bool(false) { return Err(VmError::Type("filter predicate must return bool".into())); } }
                     stack.push(Value::Array(output));
                 }
                 Op::ArrayFold => {
                     let callable = pop(&mut stack, &function.name)?; let mut accumulator = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
                     let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("fold requires a function".into())); };
-                    for value in values { accumulator = self.execute(closure_function, vec![accumulator, value], captures.clone(), depth + 1)?; }
+                    for value in values { accumulator = self.execute(closure_function, vec![accumulator, value], captures.clone(), depth + 1, debugger)?; }
                     stack.push(accumulator);
                 }
                 Op::Try => {
@@ -305,6 +327,16 @@ mod tests {
         let source = "fn main() { std::fs::read_text(\"secret\") }"; let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec();
         let program = Parser::new(tokens).parse_program().unwrap(); let module = AstCompiler::new().compile_program(&program).unwrap();
         assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { .. })));
+    }
+    #[test] fn debugger_breaks_steps_and_reports_state() {
+        let mut lexer = Lexer::new("fn main() { let value = 40 value + 2 }"); let tokens = lexer.tokenize().0.to_vec();
+        let program = Parser::new(tokens).parse_program().unwrap(); let module = AstCompiler::new().compile_program(&program).unwrap();
+        let (controller, mut debugger) = Debugger::channel([Breakpoint::Instruction { function: module.entry, instruction: 0 }]);
+        let thread = std::thread::spawn(move || { let mut vm = Vm::new(module); vm.run_debug(&mut debugger) });
+        let DebugEvent::Stopped(first) = controller.recv().unwrap() else { panic!("expected breakpoint") }; assert_eq!(first.instruction, 0);
+        controller.command(DebugCommand::StepIn).unwrap(); let DebugEvent::Stopped(second) = controller.recv().unwrap() else { panic!("expected step") }; assert!(second.instruction > first.instruction);
+        controller.command(DebugCommand::Continue).unwrap(); assert!(matches!(controller.recv().unwrap(), DebugEvent::Terminated { error: None }));
+        assert_eq!(thread.join().unwrap().unwrap(), Some(Value::Int(42)));
     }
     #[test] fn runtime_errors_are_reported() { assert!(run("fn main() { 1 / 0 }").is_err()); }
 }
