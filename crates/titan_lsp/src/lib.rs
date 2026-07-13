@@ -95,7 +95,40 @@ impl TitanLsp {
         if let Some(native) = titan_stdlib::native::lookup(&name) { return Some(format!("`{}`\n\nNative `{:?} -> {:?}`; capability: `{:?}`", name, native.params, native.result, native.capability)); }
         self.workspace_symbols(&name).into_iter().find(|symbol| symbol.name == name).map(|symbol| format!("`{}`\n\n{}", symbol.name, symbol.detail))
     }
+    pub fn signature_help(&self, uri: &str, position: Position) -> Option<(String, Vec<String>, usize)> {
+        let text = self.text(uri)?; let offset = position_to_offset(text, position)?; let prefix = &text[..offset];
+        let open = prefix.rfind('(')?; let name = prefix[..open].trim_end().chars().rev().take_while(|character| character.is_alphanumeric() || *character == '_' || *character == ':').collect::<String>().chars().rev().collect::<String>();
+        if name.is_empty() { return None; }
+        let active = prefix[open + 1..].chars().filter(|character| *character == ',').count();
+        if let Some(native) = titan_stdlib::native::lookup(&name) { let params: Vec<_> = native.params.iter().enumerate().map(|(index, ty)| format!("arg{index}: {ty:?}")).collect(); return Some((format!("{}({}) -> {:?}", name, params.join(", "), native.result), params, active)); }
+        self.workspace_symbols(&name).into_iter().find(|symbol| symbol.name == name).map(|symbol| (format!("{}(…)", symbol.name), Vec::new(), active))
+    }
+    pub fn semantic_tokens(&self, uri: &str) -> Vec<u32> {
+        let Some(source) = self.text(uri) else { return Vec::new() }; let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec();
+        let mut data = Vec::new(); let mut previous_line = 0u32; let mut previous_start = 0u32;
+        for (index, token) in tokens.iter().enumerate() {
+            let token_type = semantic_kind(&token.kind, index.checked_sub(1).and_then(|previous| tokens.get(previous)).map(|token| &token.kind));
+            let Some(token_type) = token_type else { continue }; let range = span_range(source, token.span); if range.start.line != range.end.line { continue; }
+            let delta_line = range.start.line - previous_line; let delta_start = if delta_line == 0 { range.start.character - previous_start } else { range.start.character };
+            let length = range.end.character.saturating_sub(range.start.character); if length == 0 { continue; }
+            data.extend([delta_line, delta_start, length, token_type, 0]); previous_line = range.start.line; previous_start = range.start.character;
+        }
+        data
+    }
     fn word_at(&self, uri: &str, position: Position) -> Option<String> { let text = self.text(uri)?; let offset = position_to_offset(text, position)?; token_at(text, offset) }
+}
+
+fn semantic_kind(kind: &TokenKind, previous: Option<&TokenKind>) -> Option<u32> {
+    Some(match kind {
+        TokenKind::Fn | TokenKind::Let | TokenKind::Mut | TokenKind::Return | TokenKind::If | TokenKind::Else | TokenKind::Match | TokenKind::For | TokenKind::While | TokenKind::Loop | TokenKind::Break | TokenKind::Continue | TokenKind::In | TokenKind::Struct | TokenKind::Enum | TokenKind::Trait | TokenKind::Impl | TokenKind::Module | TokenKind::Import | TokenKind::Pub | TokenKind::Const | TokenKind::Unsafe | TokenKind::Spawn | TokenKind::Go | TokenKind::As => 0,
+        TokenKind::Ident(_) if matches!(previous, Some(TokenKind::Fn)) => 1,
+        TokenKind::Ident(_) if matches!(previous, Some(TokenKind::Struct) | Some(TokenKind::Enum) | Some(TokenKind::Trait)) => 2,
+        TokenKind::Ident(_) | TokenKind::Self_ => 3,
+        TokenKind::StringLit(_) | TokenKind::CharLit(_) => 4,
+        TokenKind::IntLit(_) | TokenKind::FloatLit(_) => 5,
+        TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash | TokenKind::Percent | TokenKind::Eq | TokenKind::EqEq | TokenKind::NotEq | TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq | TokenKind::LazyAnd | TokenKind::LazyOr | TokenKind::Ampersand | TokenKind::Pipe | TokenKind::Caret | TokenKind::Bang | TokenKind::Tilde | TokenKind::Question | TokenKind::Range | TokenKind::RangeInclusive | TokenKind::ThinArrow | TokenKind::FatArrow => 6,
+        _ => return None,
+    })
 }
 
 fn index_symbols(uri: &str, source: &str) -> Vec<Symbol> {
@@ -119,5 +152,6 @@ fn lexer_error_position(error: &LexerError) -> (usize, usize) { match error { Le
     use super::*;
     #[test] fn provides_symbols_navigation_and_utf16_positions() { let mut lsp = TitanLsp::new(); lsp.open_document("file:///x.titan", "fn double(x: int) -> int { x * 2 }\nfn main() { double(21) }", 1); assert_eq!(lsp.symbols("file:///x.titan").len(), 2); let definition = lsp.definition("file:///x.titan", Position { line: 1, character: 13 }).unwrap(); assert_eq!(definition.name, "double"); assert_eq!(lsp.references("file:///x.titan", Position { line: 0, character: 4 }).len(), 2); }
     #[test] fn applies_incremental_utf16_changes_and_renames() { let mut lsp = TitanLsp::new(); lsp.open_document("file:///x.titan", "fn café() { 1 }", 1); lsp.apply_change("file:///x.titan", Some(Range { start: Position { line: 0, character: 3 }, end: Position { line: 0, character: 7 } }), "tea", 2).unwrap(); assert!(lsp.text("file:///x.titan").unwrap().contains("tea")); assert!(lsp.rename("file:///x.titan", Position { line: 0, character: 4 }, "brew").is_ok()); }
+    #[test] fn provides_semantic_tokens_and_native_signatures() { let mut lsp = TitanLsp::new(); lsp.open_document("file:///x.titan", "fn main() { std::stats::mean([1, 2]) }", 1); let tokens = lsp.semantic_tokens("file:///x.titan"); assert!(!tokens.is_empty()); assert_eq!(tokens.len() % 5, 0); let signature = lsp.signature_help("file:///x.titan", Position { line: 0, character: 33 }).unwrap(); assert!(signature.0.contains("std::stats::mean")); }
     #[test] fn reports_invalid_document() { let mut lsp = TitanLsp::new(); lsp.open_document("file:///x.titan", "fn main( {", 1); assert!(!lsp.diagnostics("file:///x.titan").is_empty()); }
 }
