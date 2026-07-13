@@ -63,12 +63,53 @@ fn parse_range(value: &Value) -> Result<Range, String> { Ok(Range { start: parse
 fn string<'a>(value: &'a Value, name: &str) -> Result<&'a str, ServerError> { value.get(name).and_then(Value::as_str).ok_or_else(|| ServerError::Frame(format!("missing {name}"))) }
 
 fn read_message(input: &mut impl BufRead) -> Result<Option<Value>, ServerError> {
-    let mut content_length = None; let mut line = String::new();
-    loop { line.clear(); if input.read_line(&mut line)? == 0 { return if content_length.is_none() { Ok(None) } else { Err(ServerError::Frame("unexpected EOF in headers".into())) }; } if line == "\r\n" || line == "\n" { break; } if let Some(value) = line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")) { content_length = Some(value.trim().parse::<usize>().map_err(|_| ServerError::Frame("invalid Content-Length".into()))?); } }
-    let length = content_length.ok_or_else(|| ServerError::Frame("missing Content-Length".into()))?; if length > 16 * 1024 * 1024 { return Err(ServerError::Frame("message exceeds 16 MiB".into())); }
-    let mut body = vec![0; length]; input.read_exact(&mut body)?; Ok(Some(serde_json::from_slice(&body)?))
+    let mut content_length = None;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if input.read_line(&mut line)? == 0 {
+            return if content_length.is_none() {
+                Ok(None)
+            } else {
+                Err(ServerError::Frame("unexpected EOF in headers".into()))
+            };
+        }
+
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+
+        if let Some(value) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("content-length:"))
+        {
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| ServerError::Frame("invalid Content-Length".into()))?,
+            );
+        }
+    }
+
+    let length = content_length
+        .ok_or_else(|| ServerError::Frame("missing Content-Length".into()))?;
+    if length > 16 * 1024 * 1024 {
+        return Err(ServerError::Frame("message exceeds 16 MiB".into()));
+    }
+
+    let mut body = vec![0; length];
+    input.read_exact(&mut body)?;
+    Ok(Some(serde_json::from_slice(&body)?))
 }
-fn write_message(output: &mut impl Write, value: &Value) -> Result<(), ServerError> { let body = serde_json::to_vec(value)?; write!(output, "Content-Length: {}\r\n\r\n", body.len())?; output.write_all(&body)?; output.flush()?; Ok(()) }
+
+fn write_message(output: &mut impl Write, value: &Value) -> Result<(), ServerError> {
+    let body = serde_json::to_vec(value)?;
+    write!(output, "Content-Length: {}\r\n\r\n", body.len())?;
+    output.write_all(&body)?;
+    output.flush()?;
+    Ok(())
+}
 
 #[cfg(test)] mod tests {
     use super::*;
