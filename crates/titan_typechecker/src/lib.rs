@@ -62,9 +62,13 @@ impl TypeEnv {
         functions.insert("filter".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
         functions.insert("fold".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown, Type::Unknown], result: Type::Unknown });
         functions.insert("join".into(), FunctionSig { params: vec![Type::Named("Task".into())], result: Type::Unknown });
+        functions.insert("join_timeout".into(), FunctionSig { params: vec![Type::Named("Task".into()), Type::Int], result: Type::Named("Option".into()) });
+        functions.insert("cancel".into(), FunctionSig { params: vec![Type::Named("Task".into())], result: Type::Bool });
         functions.insert("channel".into(), FunctionSig { params: vec![Type::Int], result: Type::Tuple(vec![Type::Named("Sender".into()), Type::Named("Receiver".into())]) });
         functions.insert("send".into(), FunctionSig { params: vec![Type::Named("Sender".into()), Type::Unknown], result: Type::Nil });
         functions.insert("recv".into(), FunctionSig { params: vec![Type::Named("Receiver".into())], result: Type::Unknown });
+        functions.insert("recv_timeout".into(), FunctionSig { params: vec![Type::Named("Receiver".into()), Type::Int], result: Type::Named("Option".into()) });
+        functions.insert("select".into(), FunctionSig { params: vec![Type::Unknown, Type::Int], result: Type::Named("Option".into()) });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

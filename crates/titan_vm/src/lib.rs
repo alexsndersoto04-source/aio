@@ -5,7 +5,8 @@ mod native;
 pub use debug::{Breakpoint, DebugCommand, DebugController, DebugEvent, DebugFrame, DebugHook, DebugMode, Debugger};
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}, mpsc::{self, Receiver, SyncSender}};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}, mpsc::{self, Receiver, SyncSender}};
+use std::time::{Duration, Instant};
 use std::thread::JoinHandle;
 use thiserror::Error;
 use titan_codegen::{CompiledModule, Op};
@@ -69,6 +70,10 @@ pub enum VmError {
     UnknownTask(u64),
     #[error("task {0} panicked")]
     TaskPanicked(u64),
+    #[error("task cancelled")]
+    TaskCancelled,
+    #[error("timeout must be a nonnegative integer")]
+    InvalidTimeout,
     #[error("unknown channel {0}")]
     UnknownChannel(u64),
     #[error("channel {0} is disconnected")]
@@ -89,10 +94,11 @@ impl RuntimeCapabilities {
 impl Default for RuntimeCapabilities { fn default() -> Self { Self::all() } }
 
 struct Channel { sender: SyncSender<Value>, receiver: Mutex<Receiver<Value>> }
+struct TaskRecord { handle: JoinHandle<()>, result: Receiver<Result<Value, VmError>>, cancelled: Arc<AtomicBool> }
 struct RuntimeState {
     next_task: AtomicU64,
     next_channel: AtomicU64,
-    tasks: Mutex<HashMap<u64, JoinHandle<Result<Value, VmError>>>>,
+    tasks: Mutex<HashMap<u64, TaskRecord>>,
     channels: Mutex<HashMap<u64, Arc<Channel>>>,
 }
 impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()) } } }
@@ -105,10 +111,11 @@ pub struct Vm {
     capabilities: RuntimeCapabilities,
     output: Option<std::sync::mpsc::Sender<String>>,
     runtime: Arc<RuntimeState>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl Vm {
-    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()) } }
+    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()), cancellation: None } }
     pub fn sandboxed(module: CompiledModule) -> Self { Self { capabilities: RuntimeCapabilities::sandboxed(), ..Self::new(module) } }
     pub fn with_instruction_limit(mut self, limit: usize) -> Self { self.instruction_limit = limit; self }
     pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
@@ -137,6 +144,7 @@ impl Vm {
         let mut stack = Vec::with_capacity(function.max_stack);
         let mut ip = 0usize;
         while ip < function.code.len() {
+            if self.cancellation.as_ref().is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) { return Err(VmError::TaskCancelled); }
             self.instructions += 1;
             if self.instructions > self.instruction_limit { return Err(VmError::InstructionLimit); }
             if let Some(hook) = debugger.as_deref_mut() {
@@ -214,14 +222,24 @@ impl Vm {
                     let Value::Closure { function: task_function, captures } = callable else { return Err(VmError::Type("spawn requires a closure".into())); };
                     let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
                     let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
-                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime }; child.execute(task_function, Vec::new(), captures, 0, &mut None) });
-                    self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, handle);
+                    let cancelled = Arc::new(AtomicBool::new(false)); let task_cancelled = Arc::clone(&cancelled); let (result_tx, result_rx) = mpsc::sync_channel(1);
+                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled) }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
+                    self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
                     stack.push(Value::Task(task_id));
                 }
                 Op::JoinTask => {
                     let Value::Task(task_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("join requires a task".into())); };
-                    let handle = self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.remove(&task_id).ok_or(VmError::UnknownTask(task_id))?;
-                    stack.push(handle.join().map_err(|_| VmError::TaskPanicked(task_id))??);
+                    let record = self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.remove(&task_id).ok_or(VmError::UnknownTask(task_id))?;
+                    let result = record.result.recv().map_err(|_| VmError::TaskPanicked(task_id))?; record.handle.join().map_err(|_| VmError::TaskPanicked(task_id))?; stack.push(result?);
+                }
+                Op::JoinTaskTimeout => {
+                    let timeout = timeout_value(pop(&mut stack, &function.name)?)?; let Value::Task(task_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("join_timeout requires a task".into())); };
+                    let record = self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.remove(&task_id).ok_or(VmError::UnknownTask(task_id))?;
+                    match record.result.recv_timeout(timeout) { Ok(result) => { record.handle.join().map_err(|_| VmError::TaskPanicked(task_id))?; stack.push(Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(result?)) }); } Err(mpsc::RecvTimeoutError::Timeout) => { self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, record); stack.push(Value::Enum { name: "Option".into(), variant: "None".into(), payload: None }); } Err(mpsc::RecvTimeoutError::Disconnected) => return Err(VmError::TaskPanicked(task_id)) }
+                }
+                Op::CancelTask => {
+                    let Value::Task(task_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("cancel requires a task".into())); };
+                    let cancelled = self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.get(&task_id).map(|record| { record.cancelled.store(true, Ordering::Release); true }).unwrap_or(false); stack.push(Value::Bool(cancelled));
                 }
                 Op::NewChannel => {
                     let capacity = pop(&mut stack, &function.name)?; let Value::Int(capacity) = capacity else { return Err(VmError::Type("channel capacity must be int".into())); };
@@ -239,6 +257,17 @@ impl Vm {
                     let Value::ChannelReceiver(channel_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("recv requires a channel receiver".into())); };
                     let channel = self.runtime.channels.lock().map_err(|_| VmError::Type("channel registry poisoned".into()))?.get(&channel_id).cloned().ok_or(VmError::UnknownChannel(channel_id))?;
                     let value = channel.receiver.lock().map_err(|_| VmError::Type("channel receiver poisoned".into()))?.recv().map_err(|_| VmError::ChannelDisconnected(channel_id))?; stack.push(value);
+                }
+                Op::ChannelRecvTimeout => {
+                    let timeout = timeout_value(pop(&mut stack, &function.name)?)?; let Value::ChannelReceiver(channel_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("recv_timeout requires a receiver".into())); };
+                    let channel = self.runtime.channels.lock().map_err(|_| VmError::Type("channel registry poisoned".into()))?.get(&channel_id).cloned().ok_or(VmError::UnknownChannel(channel_id))?;
+                    let result = channel.receiver.lock().map_err(|_| VmError::Type("channel receiver poisoned".into()))?.recv_timeout(timeout);
+                    match result { Ok(value) => stack.push(option_some(value)), Err(mpsc::RecvTimeoutError::Timeout) => stack.push(option_none()), Err(mpsc::RecvTimeoutError::Disconnected) => return Err(VmError::ChannelDisconnected(channel_id)) }
+                }
+                Op::ChannelSelect => {
+                    let timeout = timeout_value(pop(&mut stack, &function.name)?)?; let receivers = array_value(pop(&mut stack, &function.name)?)?; let deadline = Instant::now() + timeout;
+                    let ids: Vec<u64> = receivers.into_iter().map(|value| if let Value::ChannelReceiver(id) = value { Ok(id) } else { Err(VmError::Type("select requires an array of receivers".into())) }).collect::<Result<_, _>>()?;
+                    'select: loop { for (index, channel_id) in ids.iter().enumerate() { let channel = self.runtime.channels.lock().map_err(|_| VmError::Type("channel registry poisoned".into()))?.get(channel_id).cloned().ok_or(VmError::UnknownChannel(*channel_id))?; match channel.receiver.lock().map_err(|_| VmError::Type("channel receiver poisoned".into()))?.try_recv() { Ok(value) => { stack.push(option_some(Value::Tuple(vec![Value::Int(index as i64), value]))); break 'select; } Err(mpsc::TryRecvError::Disconnected) => return Err(VmError::ChannelDisconnected(*channel_id)), Err(mpsc::TryRecvError::Empty) => {} } } if Instant::now() >= deadline { stack.push(option_none()); break; } std::thread::sleep(Duration::from_millis(1)); }
                 }
                 Op::Try => {
                     let value = pop(&mut stack, &function.name)?;
@@ -316,6 +345,9 @@ impl Vm {
     }
 }
 
+fn option_some(value: Value) -> Value { Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(value)) } }
+fn option_none() -> Value { Value::Enum { name: "Option".into(), variant: "None".into(), payload: None } }
+fn timeout_value(value: Value) -> Result<Duration, VmError> { if let Value::Int(milliseconds) = value { Ok(Duration::from_millis(u64::try_from(milliseconds).map_err(|_| VmError::InvalidTimeout)?)) } else { Err(VmError::InvalidTimeout) } }
 fn array_value(value: Value) -> Result<Vec<Value>, VmError> { match value { Value::Array(values) | Value::Tuple(values) => Ok(values), _ => Err(VmError::Type("operation requires an array".into())) } }
 fn pop(stack: &mut Vec<Value>, function: &str) -> Result<Value, VmError> { stack.pop().ok_or_else(|| VmError::StackUnderflow(function.into())) }
 fn take_args(stack: &mut Vec<Value>, count: usize, function: &str) -> Result<Vec<Value>, VmError> {
@@ -397,5 +429,8 @@ mod tests {
     }
     #[test] fn tasks_execute_on_threads_and_join() { assert_eq!(run("fn main() { let task = spawn || 40 + 2 join(task) }").unwrap(), Value::Int(42)); }
     #[test] fn channels_communicate_between_tasks() { assert_eq!(run("fn main() { let pair = channel(1) let tx = pair[0] let rx = pair[1] let task = spawn || { send(tx, 42) } let value = recv(rx) join(task) value }").unwrap(), Value::Int(42)); }
+    #[test] fn task_and_channel_timeouts_are_explicit_options() { assert_eq!(run("fn main() { let pair = channel(1) let result = recv_timeout(pair[1], 1) match result { Option::None => 1, Option::Some(value) => 0 } }").unwrap(), Value::Int(1)); }
+    #[test] fn select_returns_channel_index_and_value() { assert_eq!(run("fn main() { let a = channel(1) let b = channel(1) let task = spawn || { send(b[0], 77) } let selected = select([a[1], b[1]], 1000)? join(task) selected[1] }").unwrap(), Value::Int(77)); }
+    #[test] fn cancellation_stops_cooperative_tasks() { assert!(run("fn main() { let task = spawn || loop {} let pending = join_timeout(task, 1) cancel(task) join(task) }").is_err()); }
     #[test] fn runtime_errors_are_reported() { assert!(run("fn main() { 1 / 0 }").is_err()); }
 }
