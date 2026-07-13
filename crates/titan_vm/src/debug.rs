@@ -4,11 +4,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use titan_codegen::SourceLocation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Breakpoint { Instruction { function: usize, instruction: usize }, Line { function: usize, line: usize } }
+pub enum Breakpoint { Instruction { function: usize, instruction: usize }, Line { function: usize, line: usize }, SourceLine { source_file: String, line: usize } }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DebugMode { Continue, StepIn, StepOver { depth: usize }, StepOut { depth: usize } }
 #[derive(Debug, Clone, PartialEq)]
-pub struct DebugFrame { pub function_id: usize, pub function_name: String, pub instruction: usize, pub depth: usize, pub location: Option<SourceLocation>, pub locals: Vec<Value>, pub stack: Vec<Value> }
+pub struct DebugFrame { pub function_id: usize, pub function_name: String, pub source_file: Option<String>, pub instruction: usize, pub depth: usize, pub location: Option<SourceLocation>, pub locals: Vec<Value>, pub stack: Vec<Value> }
 #[derive(Debug, Clone, PartialEq)]
 pub enum DebugEvent { Stopped(DebugFrame), Terminated { error: Option<String> } }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +32,7 @@ impl Debugger {
         let (command_tx, command_rx) = mpsc::channel(); let (event_tx, event_rx) = mpsc::channel();
         (DebugController { commands: command_tx, events: event_rx }, Self { breakpoints: breakpoints.into_iter().collect(), mode: DebugMode::Continue, commands: command_rx, events: event_tx })
     }
-    fn matches_breakpoint(&self, frame: &DebugFrame) -> bool { self.breakpoints.iter().any(|breakpoint| match breakpoint { Breakpoint::Instruction { function, instruction } => *function == frame.function_id && *instruction == frame.instruction, Breakpoint::Line { function, line } => *function == frame.function_id && frame.location.is_some_and(|location| location.line == *line) }) }
+    fn matches_breakpoint(&self, frame: &DebugFrame) -> bool { self.breakpoints.iter().any(|breakpoint| match breakpoint { Breakpoint::Instruction { function, instruction } => *function == frame.function_id && *instruction == frame.instruction, Breakpoint::Line { function, line } => *function == frame.function_id && frame.location.is_some_and(|location| location.line == *line), Breakpoint::SourceLine { source_file, line } => frame.source_file.as_ref() == Some(source_file) && frame.location.is_some_and(|location| location.line == *line) }) }
     fn should_stop(&self, frame: &DebugFrame) -> bool { match self.mode { DebugMode::Continue => self.matches_breakpoint(frame), DebugMode::StepIn => true, DebugMode::StepOver { depth } => frame.depth <= depth, DebugMode::StepOut { depth } => frame.depth < depth } }
 }
 impl DebugHook for Debugger {

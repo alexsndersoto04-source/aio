@@ -16,4 +16,4 @@ The VM debugger consumes these maps during real execution. `Vm::run_debug` invok
 
 The execution thread blocks while stopped and resumes only after a debugger command, so pause state is real rather than reconstructed after execution.
 
-Current multi-file limitation: AST nodes preserve spans but not source-file IDs after project merging. Bytecode maps are exact within each source buffer; attaching canonical source IDs to declarations is the next schema extension before cross-file source breakpoints are advertised as complete.
+The project loader now assigns canonical source paths to every function and impl method before programs are merged. Paths propagate through named functions and nested closures into `.tbc`, debugger frames and `SourceLine` breakpoints. Two files can therefore use the same line number without colliding; the breakpoint matches both canonical source path and one-based line.

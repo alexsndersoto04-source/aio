@@ -54,6 +54,8 @@ impl From<titan_lexer::Span> for SourceLocation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeFunc {
     pub name: String,
+    #[serde(default)]
+    pub source_file: Option<String>,
     pub arity: usize,
     pub captures: usize,
     pub locals: usize,
@@ -117,7 +119,7 @@ impl AstCompiler {
     }
 
     fn compile_function(&mut self, function: &FunctionDecl) -> Result<BytecodeFunc, CodegenError> {
-        self.current = BytecodeFunc { name: function.name.clone(), arity: function.params.len(), captures: 0, locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
+        self.current = BytecodeFunc { name: function.name.clone(), source_file: function.source_file.clone(), arity: function.params.len(), captures: 0, locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0; self.loops.clear();
         for param in &function.params { self.add_local(&param.name); }
         if let Some(body) = &function.body { self.compile_block(body, true)?; } else { self.emit(Op::PushNil); }
@@ -419,7 +421,7 @@ impl AstCompiler {
         let outer_next = self.next_local;
         let outer_loops = std::mem::take(&mut self.loops);
 
-        self.current = BytecodeFunc { name: format!("<closure:{function}>"), arity: params.len(), captures: captures.len(), locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
+        self.current = BytecodeFunc { name: format!("<closure:{function}>"), source_file: outer_function.source_file.clone(), arity: params.len(), captures: captures.len(), locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0;
         for (name, _) in &captures { self.add_local(name); }
         for param in params { self.add_local(&param.name); }
@@ -453,7 +455,7 @@ impl AstCompiler {
     fn find_local(&self, name: &str) -> Option<usize> { self.locals.iter().rev().find_map(|scope| scope.get(name).copied()) }
 }
 
-fn empty_function() -> BytecodeFunc { BytecodeFunc { name: String::new(), arity: 0, captures: 0, locals: 0, max_stack: 0, code: Vec::new(), debug_locations: Vec::new() } }
+fn empty_function() -> BytecodeFunc { BytecodeFunc { name: String::new(), source_file: None, arity: 0, captures: 0, locals: 0, max_stack: 0, code: Vec::new(), debug_locations: Vec::new() } }
 fn is_terminal(expr: &Expr) -> bool { matches!(expr, Expr::Return { .. } | Expr::Break { .. } | Expr::Continue { .. }) }
 fn binary_instruction(op: BinaryOp) -> Result<Op, CodegenError> {
     Ok(match op { BinaryOp::Add => Op::Add, BinaryOp::Sub => Op::Sub, BinaryOp::Mul => Op::Mul, BinaryOp::Div => Op::Div, BinaryOp::Mod => Op::Mod, _ => return Err(CodegenError::Unsupported(format!("compound assignment {op:?}"))) })

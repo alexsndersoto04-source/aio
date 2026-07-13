@@ -73,7 +73,7 @@ impl Parser {
             self.expect(TokenKind::LBrace)?;
             Some(self.parse_block_after_open(start)?)
         };
-        Ok(FunctionDecl { name, params, return_type, body, span: start })
+        Ok(FunctionDecl { name, source_file: None, params, return_type, body, span: start })
     }
 
     fn parse_struct(&mut self) -> Result<StructDecl> {

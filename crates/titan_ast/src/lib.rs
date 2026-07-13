@@ -27,6 +27,8 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDecl {
     pub name: String,
+    /// Canonical source path assigned by the project loader.
+    pub source_file: Option<String>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub body: Option<Block>,

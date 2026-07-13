@@ -91,7 +91,8 @@ impl Loader {
         }
         if self.visited.contains(&path) { return Ok(()); }
         let source = std::fs::read_to_string(&path).map_err(|source| ProjectError::Read { path: path.clone(), source })?;
-        let program = parse_file(&path, &source)?;
+        let mut program = parse_file(&path, &source)?;
+        assign_source_files(&mut program.items, &path);
         self.sources.insert(path.clone(), source);
         self.stack.push(path.clone());
         for item in &program.items {
@@ -157,6 +158,18 @@ fn collect_dependencies(root: &Path, manifest: &crate::Manifest) -> Result<BTree
     let mut output = BTreeMap::new(); visit(root, manifest, &mut output, &mut Vec::new())?; Ok(output)
 }
 
+fn assign_source_files(items: &mut [Item], path: &Path) {
+    let source = path.to_string_lossy().into_owned();
+    for item in items {
+        match item {
+            Item::Function(function) => function.source_file = Some(source.clone()),
+            Item::Impl(block) => for method in &mut block.methods { method.source_file = Some(source.clone()); },
+            Item::Module(module) => assign_source_files(&mut module.items, path),
+            _ => {}
+        }
+    }
+}
+
 fn parse_file(path: &Path, source: &str) -> Result<Program, ProjectError> {
     let mut lexer = Lexer::new(source);
     let (tokens, errors) = lexer.tokenize();
@@ -213,6 +226,7 @@ mod tests {
         std::fs::write(root.join("src/main.titan"), "import math\nimport math\nfn main() { double(21) }").unwrap();
         let project = SourceProject::load(root.join("src/main.titan")).unwrap();
         assert_eq!(project.load_order.len(), 2); assert_eq!(project.program.items.len(), 2);
+        assert!(project.program.items.iter().filter_map(|item| if let Item::Function(function) = item { function.source_file.as_ref() } else { None }).all(|source| source.ends_with(".titan")));
         std::fs::remove_dir_all(root).unwrap();
     }
 

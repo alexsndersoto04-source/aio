@@ -119,6 +119,7 @@ impl Vm {
                 hook.before_instruction(&DebugFrame {
                     function_id,
                     function_name: function.name.clone(),
+                    source_file: function.source_file.clone(),
                     instruction: ip,
                     depth,
                     location: function.debug_locations.get(ip).copied().flatten(),
