@@ -333,7 +333,9 @@ impl AstCompiler {
             };
             let guard_failure = if let Some(guard) = &arm.guard { self.compile_expr(guard)?; Some(self.jump_if_false()) } else { None };
             self.compile_block(&arm.body, true)?; ends.push(self.jump());
-            let next = self.position(); if let Some(jump) = failure { self.patch(jump, next); } if let Some(jump) = guard_failure { self.patch(jump, next); }
+            let next = self.position();
+            if let Some(jump) = failure { self.patch(jump, next); }
+            if let Some(jump) = guard_failure { self.patch(jump, next); }
             self.pop_scope();
         }
         self.emit(Op::PushNil); let end = self.position(); for jump in ends { self.patch(jump, end); } Ok(())
