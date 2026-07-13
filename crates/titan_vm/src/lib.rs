@@ -4,7 +4,9 @@ mod debug;
 mod native;
 pub use debug::{Breakpoint, DebugCommand, DebugController, DebugEvent, DebugFrame, DebugHook, DebugMode, Debugger};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}, mpsc::{self, Receiver, SyncSender}};
+use std::thread::JoinHandle;
 use thiserror::Error;
 use titan_codegen::{CompiledModule, Op};
 
@@ -15,6 +17,7 @@ pub enum Value {
     Struct { name: String, fields: BTreeMap<String, Value> },
     Enum { name: String, variant: String, payload: Option<Box<Value>> },
     Closure { function: usize, captures: Vec<Value> },
+    Task(u64), ChannelSender(u64), ChannelReceiver(u64),
 }
 
 pub fn val_to_string(value: &Value) -> String {
@@ -28,6 +31,7 @@ pub fn val_to_string(value: &Value) -> String {
         Value::Struct { name, fields } => format!("{} {{ {} }}", name, fields.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Enum { name, variant, payload } => match payload { Some(value) => format!("{}::{}({})", name, variant, val_to_string(value)), None => format!("{}::{}", name, variant) },
         Value::Closure { function, .. } => format!("<closure:{function}>"),
+        Value::Task(id) => format!("<task:{id}>"), Value::ChannelSender(id) => format!("<sender:{id}>"), Value::ChannelReceiver(id) => format!("<receiver:{id}>"),
     }
 }
 
@@ -61,6 +65,14 @@ pub enum VmError {
     PermissionDenied { function: String, capability: String },
     #[error("execution terminated by debugger")]
     DebugTerminated,
+    #[error("unknown or already joined task {0}")]
+    UnknownTask(u64),
+    #[error("task {0} panicked")]
+    TaskPanicked(u64),
+    #[error("unknown channel {0}")]
+    UnknownChannel(u64),
+    #[error("channel {0} is disconnected")]
+    ChannelDisconnected(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +88,15 @@ impl RuntimeCapabilities {
 }
 impl Default for RuntimeCapabilities { fn default() -> Self { Self::all() } }
 
+struct Channel { sender: SyncSender<Value>, receiver: Mutex<Receiver<Value>> }
+struct RuntimeState {
+    next_task: AtomicU64,
+    next_channel: AtomicU64,
+    tasks: Mutex<HashMap<u64, JoinHandle<Result<Value, VmError>>>>,
+    channels: Mutex<HashMap<u64, Arc<Channel>>>,
+}
+impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()) } } }
+
 pub struct Vm {
     module: CompiledModule,
     instruction_limit: usize,
@@ -83,10 +104,11 @@ pub struct Vm {
     max_call_depth: usize,
     capabilities: RuntimeCapabilities,
     output: Option<std::sync::mpsc::Sender<String>>,
+    runtime: Arc<RuntimeState>,
 }
 
 impl Vm {
-    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None } }
+    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()) } }
     pub fn sandboxed(module: CompiledModule) -> Self { Self { capabilities: RuntimeCapabilities::sandboxed(), ..Self::new(module) } }
     pub fn with_instruction_limit(mut self, limit: usize) -> Self { self.instruction_limit = limit; self }
     pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
@@ -186,6 +208,37 @@ impl Vm {
                     let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("fold requires a function".into())); };
                     for value in values { accumulator = self.execute(closure_function, vec![accumulator, value], captures.clone(), depth + 1, debugger)?; }
                     stack.push(accumulator);
+                }
+                Op::Spawn => {
+                    let callable = pop(&mut stack, &function.name)?;
+                    let Value::Closure { function: task_function, captures } = callable else { return Err(VmError::Type("spawn requires a closure".into())); };
+                    let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
+                    let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
+                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime }; child.execute(task_function, Vec::new(), captures, 0, &mut None) });
+                    self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, handle);
+                    stack.push(Value::Task(task_id));
+                }
+                Op::JoinTask => {
+                    let Value::Task(task_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("join requires a task".into())); };
+                    let handle = self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.remove(&task_id).ok_or(VmError::UnknownTask(task_id))?;
+                    stack.push(handle.join().map_err(|_| VmError::TaskPanicked(task_id))??);
+                }
+                Op::NewChannel => {
+                    let capacity = pop(&mut stack, &function.name)?; let Value::Int(capacity) = capacity else { return Err(VmError::Type("channel capacity must be int".into())); };
+                    let capacity = usize::try_from(capacity).map_err(|_| VmError::Type("channel capacity must be nonnegative".into()))?;
+                    let channel_id = self.runtime.next_channel.fetch_add(1, Ordering::Relaxed); let (sender, receiver) = mpsc::sync_channel(capacity);
+                    self.runtime.channels.lock().map_err(|_| VmError::Type("channel registry poisoned".into()))?.insert(channel_id, Arc::new(Channel { sender, receiver: Mutex::new(receiver) }));
+                    stack.push(Value::Tuple(vec![Value::ChannelSender(channel_id), Value::ChannelReceiver(channel_id)]));
+                }
+                Op::ChannelSend => {
+                    let value = pop(&mut stack, &function.name)?; let Value::ChannelSender(channel_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("send requires a channel sender".into())); };
+                    let channel = self.runtime.channels.lock().map_err(|_| VmError::Type("channel registry poisoned".into()))?.get(&channel_id).cloned().ok_or(VmError::UnknownChannel(channel_id))?;
+                    channel.sender.send(value).map_err(|_| VmError::ChannelDisconnected(channel_id))?; stack.push(Value::Nil);
+                }
+                Op::ChannelRecv => {
+                    let Value::ChannelReceiver(channel_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("recv requires a channel receiver".into())); };
+                    let channel = self.runtime.channels.lock().map_err(|_| VmError::Type("channel registry poisoned".into()))?.get(&channel_id).cloned().ok_or(VmError::UnknownChannel(channel_id))?;
+                    let value = channel.receiver.lock().map_err(|_| VmError::Type("channel receiver poisoned".into()))?.recv().map_err(|_| VmError::ChannelDisconnected(channel_id))?; stack.push(value);
                 }
                 Op::Try => {
                     let value = pop(&mut stack, &function.name)?;
@@ -342,5 +395,7 @@ mod tests {
         controller.command(DebugCommand::Continue).unwrap(); assert!(matches!(controller.recv().unwrap(), DebugEvent::Terminated { error: None }));
         assert_eq!(thread.join().unwrap().unwrap(), Some(Value::Int(42)));
     }
+    #[test] fn tasks_execute_on_threads_and_join() { assert_eq!(run("fn main() { let task = spawn || 40 + 2 join(task) }").unwrap(), Value::Int(42)); }
+    #[test] fn channels_communicate_between_tasks() { assert_eq!(run("fn main() { let pair = channel(1) let tx = pair[0] let rx = pair[1] let task = spawn || { send(tx, 42) } let value = recv(rx) join(task) value }").unwrap(), Value::Int(42)); }
     #[test] fn runtime_errors_are_reported() { assert!(run("fn main() { 1 / 0 }").is_err()); }
 }

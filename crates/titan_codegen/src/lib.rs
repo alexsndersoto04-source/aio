@@ -31,7 +31,8 @@ pub enum Op {
     Jump(usize), JumpIfFalse(usize),
     Call { function: usize, argc: usize }, CallNative { name: String, argc: usize },
     MakeClosure { function: usize, captures: Vec<usize> }, CallValue(usize), Try,
-    ArrayMap, ArrayFilter, ArrayFold, Ret,
+    ArrayMap, ArrayFilter, ArrayFold,
+    Spawn, JoinTask, NewChannel, ChannelSend, ChannelRecv, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -225,7 +226,7 @@ impl AstCompiler {
             Expr::Assign { target, op, value, .. } => self.compile_assignment(target, *op, value, true)?,
             Expr::Block(block) => self.compile_block(block, true)?,
             Expr::Match { scrutinee, arms, .. } => self.compile_match(scrutinee, arms)?,
-            Expr::Spawn { .. } => return Err(CodegenError::Unsupported("spawn requires the concurrency runtime".into())),
+            Expr::Spawn { expr, .. } => { self.compile_expr(expr)?; self.emit(Op::Spawn); },
             Expr::Try { expr, .. } => { self.compile_expr(expr)?; self.emit(Op::Try); }
             Expr::Closure { params, body, .. } => self.compile_closure(params, body)?,
         }
@@ -268,6 +269,10 @@ impl AstCompiler {
                 "map" if args.len() == 2 => self.emit(Op::ArrayMap),
                 "filter" if args.len() == 2 => self.emit(Op::ArrayFilter),
                 "fold" if args.len() == 3 => self.emit(Op::ArrayFold),
+                "join" if args.len() == 1 => self.emit(Op::JoinTask),
+                "channel" if args.len() == 1 => self.emit(Op::NewChannel),
+                "send" if args.len() == 2 => self.emit(Op::ChannelSend),
+                "recv" if args.len() == 1 => self.emit(Op::ChannelRecv),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];

@@ -61,6 +61,10 @@ impl TypeEnv {
         functions.insert("map".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
         functions.insert("filter".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
         functions.insert("fold".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown, Type::Unknown], result: Type::Unknown });
+        functions.insert("join".into(), FunctionSig { params: vec![Type::Named("Task".into())], result: Type::Unknown });
+        functions.insert("channel".into(), FunctionSig { params: vec![Type::Int], result: Type::Tuple(vec![Type::Named("Sender".into()), Type::Named("Receiver".into())]) });
+        functions.insert("send".into(), FunctionSig { params: vec![Type::Named("Sender".into()), Type::Unknown], result: Type::Nil });
+        functions.insert("recv".into(), FunctionSig { params: vec![Type::Named("Receiver".into())], result: Type::Unknown });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),
@@ -252,7 +256,7 @@ impl TypeEnv {
             Expr::Let { name, type_ann, value, .. } => { let found = self.check_expr(value); let ty = type_ann.as_ref().map(type_from_ast).unwrap_or(found); self.define(name.clone(), ty.clone()); ty }
             Expr::Assign { target, value, .. } => { let a = self.check_expr(target); let b = self.check_expr(value); self.require_compatible(&a, &b); a }
             Expr::Block(block) => self.check_block(block),
-            Expr::Spawn { expr, .. } => self.check_expr(expr),
+            Expr::Spawn { expr, .. } => { let ty = self.check_expr(expr); if !matches!(ty, Type::Function(_, _)) { self.errors.push(TypeError::NotCallable { name: "spawn expression".into() }); } Type::Named("Task".into()) },
             Expr::Try { expr, .. } => match self.check_expr(expr) {
                 Type::Named(name) if name == "Option" || name == "Result" => Type::Unknown,
                 Type::Unknown => Type::Unknown,
@@ -385,4 +389,5 @@ mod tests {
     #[test] fn rejects_wrong_return() { assert!(check("fn bad() -> int { return true }").is_err()); }
     #[test] fn checks_registered_native_signatures() { assert!(check("fn main() { std::text::reverse(\"Titan\") }").is_ok()); assert!(check("fn main() { std::text::reverse(42) }").is_err()); }
     #[test] fn generic_native_arrays_accept_concrete_elements() { assert!(check("fn main() { std::stats::mean([10, 20, 30, 40]) }").is_ok()); }
+    #[test] fn checks_tasks_and_channels() { assert!(check("fn main() { let endpoints = channel(1) let task = spawn || 42 join(task) endpoints }").is_ok()); assert!(check("fn main() { spawn 42 }").is_err()); }
 }
