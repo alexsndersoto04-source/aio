@@ -1,7 +1,6 @@
 //! Debug Adapter Protocol server backed by Titan's real VM debugger.
 
 use serde_json::{json, Value as Json};
-use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -129,7 +128,37 @@ fn value_type(value:&Value)->&'static str { match value { Value::Int(_)=>"int",V
 
 fn send_response(output:&mut impl Write, sequence:&mut i64, request_seq:i64, command:&str, success:bool, body:Json, message:Option<String>)->Result<(),DapError>{ let value=json!({"seq":*sequence,"type":"response","request_seq":request_seq,"success":success,"command":command,"body":body,"message":message});*sequence+=1;write_message(output,&value) }
 fn send_event(output:&mut impl Write, sequence:&mut i64, event:&str, body:Json)->Result<(),DapError>{let value=json!({"seq":*sequence,"type":"event","event":event,"body":body});*sequence+=1;write_message(output,&value)}
-fn read_message(input:&mut impl BufRead)->Result<Option<Json>,DapError>{let mut length=None;let mut line=String::new();loop{line.clear();if input.read_line(&mut line)?==0{return Ok(None)}if line=="\r\n"||line=="\n"{break}if let Some(value)=line.strip_prefix("Content-Length:"){length=Some(value.trim().parse::<usize>().map_err(|_|DapError::Frame("invalid Content-Length".into()))?)}}let length=length.ok_or_else(||DapError::Frame("missing Content-Length".into()))?;if length>16*1024*1024{return Err(DapError::Frame("message exceeds 16 MiB".into()))}let mut body=vec![0;length];std::io::Read::read_exact(input,&mut body)?;Ok(Some(serde_json::from_slice(&body)?))}
+fn read_message(input: &mut impl BufRead) -> Result<Option<Json>, DapError> {
+    let mut length = None;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        if let Some(value) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("content-length:"))
+        {
+            length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| DapError::Frame("invalid Content-Length".into()))?,
+            );
+        }
+    }
+    let length = length.ok_or_else(|| DapError::Frame("missing Content-Length".into()))?;
+    if length > 16 * 1024 * 1024 {
+        return Err(DapError::Frame("message exceeds 16 MiB".into()));
+    }
+    let mut body = vec![0; length];
+    std::io::Read::read_exact(input, &mut body)?;
+    Ok(Some(serde_json::from_slice(&body)?))
+}
 fn write_message(output:&mut impl Write,value:&Json)->Result<(),DapError>{let body=serde_json::to_vec(value)?;write!(output,"Content-Length: {}\r\n\r\n",body.len())?;output.write_all(&body)?;output.flush()?;Ok(())}
 
 #[cfg(test)] mod tests { use super::*; #[test] fn loads_source_and_artifact_programs() { let root=std::env::temp_dir().join(format!("titan-dap-{}",std::process::id()));let _=std::fs::remove_dir_all(&root);titan_pkg::create_project(&root,"dap_test").unwrap();let module=load_program(root.to_str().unwrap()).unwrap();let artifact=BytecodeArtifact::encode(&module).unwrap();let artifact_path=root.join("program.tbc");std::fs::write(&artifact_path,artifact).unwrap();assert_eq!(load_program(artifact_path.to_str().unwrap()).unwrap().functions.len(),module.functions.len());std::fs::remove_dir_all(root).unwrap();}
