@@ -12,7 +12,7 @@ pub struct DebugFrame { pub function_id: usize, pub function_name: String, pub s
 #[derive(Debug, Clone, PartialEq)]
 pub enum DebugEvent { Stopped(DebugFrame), Terminated { error: Option<String> } }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DebugCommand { Continue, StepIn, StepOver, StepOut, Terminate, AddBreakpoint(Breakpoint), RemoveBreakpoint(Breakpoint) }
+pub enum DebugCommand { Continue, Pause, StepIn, StepOver, StepOut, Terminate, AddBreakpoint(Breakpoint), RemoveBreakpoint(Breakpoint) }
 
 pub trait DebugHook {
     fn before_instruction(&mut self, frame: &DebugFrame) -> Result<(), VmError>;
@@ -37,11 +37,11 @@ impl Debugger {
 }
 impl DebugHook for Debugger {
     fn before_instruction(&mut self, frame: &DebugFrame) -> Result<(), VmError> {
-        while let Ok(command) = self.commands.try_recv() { match command { DebugCommand::AddBreakpoint(value) => { self.breakpoints.insert(value); } DebugCommand::RemoveBreakpoint(value) => { self.breakpoints.remove(&value); } DebugCommand::Terminate => return Err(VmError::DebugTerminated), command => { self.mode = command_mode(command, frame.depth); } } }
+        while let Ok(command) = self.commands.try_recv() { match command { DebugCommand::AddBreakpoint(value) => { self.breakpoints.insert(value); } DebugCommand::RemoveBreakpoint(value) => { self.breakpoints.remove(&value); } DebugCommand::Terminate => return Err(VmError::DebugTerminated), DebugCommand::Pause => { self.mode = DebugMode::StepIn; } command => { self.mode = command_mode(command, frame.depth); } } }
         if !self.should_stop(frame) { return Ok(()); }
         self.events.send(DebugEvent::Stopped(frame.clone())).map_err(|_| VmError::DebugTerminated)?;
-        loop { match self.commands.recv().map_err(|_| VmError::DebugTerminated)? { DebugCommand::Continue => { self.mode = DebugMode::Continue; return Ok(()); } DebugCommand::StepIn => { self.mode = DebugMode::StepIn; return Ok(()); } DebugCommand::StepOver => { self.mode = DebugMode::StepOver { depth: frame.depth }; return Ok(()); } DebugCommand::StepOut => { self.mode = DebugMode::StepOut { depth: frame.depth }; return Ok(()); } DebugCommand::Terminate => return Err(VmError::DebugTerminated), DebugCommand::AddBreakpoint(value) => { self.breakpoints.insert(value); } DebugCommand::RemoveBreakpoint(value) => { self.breakpoints.remove(&value); } } }
+        loop { match self.commands.recv().map_err(|_| VmError::DebugTerminated)? { DebugCommand::Continue => { self.mode = DebugMode::Continue; return Ok(()); } DebugCommand::Pause => { self.mode = DebugMode::StepIn; return Ok(()); } DebugCommand::StepIn => { self.mode = DebugMode::StepIn; return Ok(()); } DebugCommand::StepOver => { self.mode = DebugMode::StepOver { depth: frame.depth }; return Ok(()); } DebugCommand::StepOut => { self.mode = DebugMode::StepOut { depth: frame.depth }; return Ok(()); } DebugCommand::Terminate => return Err(VmError::DebugTerminated), DebugCommand::AddBreakpoint(value) => { self.breakpoints.insert(value); } DebugCommand::RemoveBreakpoint(value) => { self.breakpoints.remove(&value); } } }
     }
     fn terminated(&mut self, error: Option<&VmError>) { let _ = self.events.send(DebugEvent::Terminated { error: error.map(ToString::to_string) }); }
 }
-fn command_mode(command: DebugCommand, depth: usize) -> DebugMode { match command { DebugCommand::Continue => DebugMode::Continue, DebugCommand::StepIn => DebugMode::StepIn, DebugCommand::StepOver => DebugMode::StepOver { depth }, DebugCommand::StepOut => DebugMode::StepOut { depth }, _ => DebugMode::Continue } }
+fn command_mode(command: DebugCommand, depth: usize) -> DebugMode { match command { DebugCommand::Continue => DebugMode::Continue, DebugCommand::Pause | DebugCommand::StepIn => DebugMode::StepIn, DebugCommand::StepOver => DebugMode::StepOver { depth }, DebugCommand::StepOut => DebugMode::StepOut { depth }, _ => DebugMode::Continue } }

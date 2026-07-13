@@ -1,0 +1,19 @@
+[package]
+name = "titan_dap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_ast = { path = "../titan_ast" }
+titan_codegen = { path = "../titan_codegen" }
+titan_pkg = { path = "../titan_pkg" }
+titan_typechecker = { path = "../titan_typechecker" }
+titan_vm = { path = "../titan_vm" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "titan-dap"
+path = "src/main.rs"

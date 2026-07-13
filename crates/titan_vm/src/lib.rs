@@ -82,13 +82,15 @@ pub struct Vm {
     instructions: usize,
     max_call_depth: usize,
     capabilities: RuntimeCapabilities,
+    output: Option<std::sync::mpsc::Sender<String>>,
 }
 
 impl Vm {
-    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all() } }
+    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None } }
     pub fn sandboxed(module: CompiledModule) -> Self { Self { capabilities: RuntimeCapabilities::sandboxed(), ..Self::new(module) } }
     pub fn with_instruction_limit(mut self, limit: usize) -> Self { self.instruction_limit = limit; self }
     pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
+    pub fn with_output_sender(mut self, output: std::sync::mpsc::Sender<String>) -> Self { self.output = Some(output); self }
 
     pub fn run(&mut self) -> Result<Option<Value>, VmError> {
         self.run_internal(&mut None)
@@ -200,7 +202,8 @@ impl Vm {
                 Op::Ret => return Ok(stack.pop().unwrap_or(Value::Nil)),
                 Op::Print(argc) => {
                     let args = take_args(&mut stack, argc, &function.name)?;
-                    println!("{}", args.iter().map(val_to_string).collect::<Vec<_>>().join(" "));
+                    let line = args.iter().map(val_to_string).collect::<Vec<_>>().join(" ");
+                    if let Some(output) = &self.output { let _ = output.send(line); } else { println!("{line}"); }
                     stack.push(Value::Nil);
                 }
                 Op::Len => {
