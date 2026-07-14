@@ -51,6 +51,8 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::http::security_headers", [Map], Map), native!("std::http::cors", [Map, String, String], Map),
     native!("std::http::request_id", [Map], Map), native!("std::http::rate_limit", [String, Int, Int], Bool),
     native!("std::http::json_response", [Int, Any], Map), native!("std::http::error_response", [Int, String], Map),
+    native!("std::ws::accept_key", [String], String), native!("std::ws::upgrade_response", [String, String], Bytes),
+    native!("std::ws::encode", [Int, Bytes, Bool], Bytes), native!("std::ws::parse", [Bytes, Bool, Int], Any),
     native!("std::csv::parse", [String], Array), native!("std::csv::serialize", [Array], String),
     native!("std::json::parse", [String], Any), native!("std::json::stringify", [Any], String),
     native!("std::json::pretty", [Any], String), native!("std::json::pointer", [Any, String], Any),
