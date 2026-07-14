@@ -498,7 +498,32 @@ fn pop_websocket(runtime:&RuntimeState,value:Value)->Result<Arc<WebSocketConnect
 fn websocket_write(socket:&WebSocketConnection,data:&[u8])->Result<(),VmError>{match &socket.transport{WebSocketTransport::Tcp(stream)=>stream.lock().map_err(|_|VmError::Type("TCP stream poisoned".into()))?.write_all(data).map_err(|error|network_error("std::ws",error)),WebSocketTransport::Tls(stream)=>stream.lock().map_err(|_|VmError::Type("TLS stream poisoned".into()))?.write_all(data).map_err(|error|network_error("std::ws",error))}}
 fn websocket_read(socket:&WebSocketConnection,buffer:&mut[u8])->Result<usize,VmError>{match &socket.transport{WebSocketTransport::Tcp(stream)=>stream.lock().map_err(|_|VmError::Type("TCP stream poisoned".into()))?.read(buffer).map_err(|error|network_error("std::ws",error)),WebSocketTransport::Tls(stream)=>stream.lock().map_err(|_|VmError::Type("TLS stream poisoned".into()))?.read(buffer).map_err(|error|network_error("std::ws",error))}}
 fn websocket_send(socket:&WebSocketConnection,opcode:u8,payload:&[u8])->Result<(),VmError>{if socket.close_sent.load(Ordering::Acquire){return Err(VmError::Type("WebSocket is closing".into()))}let frame=titan_stdlib::websocket::encode_frame_with_policy(opcode,payload,socket.mask_outgoing).map_err(|error|VmError::Native{function:"std::ws".into(),message:error.to_string()})?;websocket_write(socket,&frame)}
-fn websocket_close(socket:&WebSocketConnection,code:u16,reason:&str)->Result<(),VmError>{if !matches!(code,1000..=1003|1007..=1014|3000..=4999)||reason.as_bytes().len()>123{return Err(VmError::Type("invalid WebSocket close code or reason".into()))}if socket.close_sent.swap(true,Ordering::AcqRel){return Ok(())}let mut payload=code.to_be_bytes().to_vec();payload.extend_from_slice(reason.as_bytes());let frame=titan_stdlib::websocket::encode_frame_with_policy(8,&payload,socket.mask_outgoing).map_err(|error|VmError::Native{function:"std::ws::close".into(),message:error.to_string()})?;websocket_write(socket,&frame)}
+fn websocket_close(
+    socket: &WebSocketConnection,
+    code: u16,
+    reason: &str,
+) -> Result<(), VmError> {
+    if !matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999) || reason.len() > 123 {
+        return Err(VmError::Type("invalid WebSocket close code or reason".into()));
+    }
+
+    if socket.close_sent.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+
+    let mut payload = code.to_be_bytes().to_vec();
+    payload.extend_from_slice(reason.as_bytes());
+    let frame = titan_stdlib::websocket::encode_frame_with_policy(
+        8,
+        &payload,
+        socket.mask_outgoing,
+    )
+    .map_err(|error| VmError::Native {
+        function: "std::ws::close".into(),
+        message: error.to_string(),
+    })?;
+    websocket_write(socket, &frame)
+}
 fn websocket_receive(socket:&WebSocketConnection)->Result<titan_stdlib::websocket::Message,VmError>{loop{if let Some(message)=socket.decoder.lock().map_err(|_|VmError::Type("WebSocket decoder poisoned".into()))?.next(Some(socket.require_mask)).map_err(|error|VmError::Native{function:"std::ws::receive".into(),message:error.to_string()})?{match message{titan_stdlib::websocket::Message::Ping(payload)=>{let frame=titan_stdlib::websocket::encode_frame_with_policy(10,&payload,socket.mask_outgoing).map_err(|error|VmError::Native{function:"std::ws::receive".into(),message:error.to_string()})?;websocket_write(socket,&frame)?;continue}titan_stdlib::websocket::Message::Close{code,reason}=>{if !socket.close_sent.load(Ordering::Acquire){websocket_close(socket,code.unwrap_or(1000),&reason)?}return Ok(titan_stdlib::websocket::Message::Close{code,reason})}message=>return Ok(message)}}let mut bytes=[0u8;8192];let count=websocket_read(socket,&mut bytes)?;if count==0{return Err(VmError::WebSocketDisconnected)}socket.decoder.lock().map_err(|_|VmError::Type("WebSocket decoder poisoned".into()))?.push(&bytes[..count]).map_err(|error|VmError::Native{function:"std::ws::receive".into(),message:error.to_string()})?;}}
 fn websocket_decoder(runtime:&RuntimeState,id:u64)->Result<Arc<Mutex<titan_stdlib::websocket::MessageDecoder>>,VmError>{runtime.websocket_decoders.lock().map_err(|_|VmError::Type("WebSocket decoder registry poisoned".into()))?.get(&id).cloned().ok_or_else(||VmError::Type(format!("unknown WebSocket decoder {id}")))}
 fn websocket_message_value(message:titan_stdlib::websocket::Message)->Value{use titan_stdlib::websocket::Message;match message{Message::Text(text)=>Value::Map(BTreeMap::from([("type".into(),Value::Str("text".into())),("text".into(),Value::Str(text))])),Message::Binary(data)=>Value::Map(BTreeMap::from([("type".into(),Value::Str("binary".into())),("data".into(),Value::Bytes(data))])),Message::Ping(data)=>Value::Map(BTreeMap::from([("type".into(),Value::Str("ping".into())),("data".into(),Value::Bytes(data))])),Message::Pong(data)=>Value::Map(BTreeMap::from([("type".into(),Value::Str("pong".into())),("data".into(),Value::Bytes(data))])),Message::Close{code,reason}=>Value::Map(BTreeMap::from([("type".into(),Value::Str("close".into())),("code".into(),code.map(|code|Value::Int(code as i64)).unwrap_or(Value::Nil)),("reason".into(),Value::Str(reason))]))}}
