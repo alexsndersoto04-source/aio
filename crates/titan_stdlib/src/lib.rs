@@ -8,6 +8,7 @@ pub mod csv;
 pub mod encoding;
 pub mod io;
 pub mod http;
+pub mod http_client;
 pub mod json;
 pub mod math;
 pub mod net;

@@ -38,9 +38,10 @@ pub fn client_config_with_ca(pem: &[u8]) -> Result<Arc<ClientConfig>, TlsError> 
     Ok(Arc::new(ClientConfig::builder().with_root_certificates(roots).with_no_client_auth()))
 }
 
-pub fn connect(address: &str, server_name: &str, config: Arc<ClientConfig>) -> Result<TlsStream, TlsError> {
+pub fn connect(address: &str, server_name: &str, config: Arc<ClientConfig>) -> Result<TlsStream, TlsError> { connect_with_timeout(address, server_name, config, std::time::Duration::from_secs(10)) }
+pub fn connect_with_timeout(address: &str, server_name: &str, config: Arc<ClientConfig>, timeout: std::time::Duration) -> Result<TlsStream, TlsError> {
     let name = ServerName::try_from(server_name.to_owned()).map_err(|_| TlsError::ServerName(server_name.into()))?;
-    let socket = TcpStream::connect(address)?; socket.set_nodelay(true)?; socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?; socket.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let socket = TcpStream::connect(address)?; socket.set_nodelay(true)?; socket.set_read_timeout(Some(timeout))?; socket.set_write_timeout(Some(timeout))?;
     let connection = ClientConnection::new(config, name)?;
     let mut stream = StreamOwned::new(connection, socket);
     stream.conn.complete_io(&mut stream.sock)?;

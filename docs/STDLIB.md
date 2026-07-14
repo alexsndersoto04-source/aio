@@ -2,7 +2,7 @@
 
 The `titan_stdlib` crate provides memory-safe host capabilities for the compiler, VM embedders, and future native builtin bridge. APIs return `Result`/`Option` where operations can fail; malformed input is not silently accepted.
 
-> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry currently contains 121 functions; the type checker validates their arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors.
+> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry currently contains 122 functions; the type checker validates their arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors.
 
 ## Modules
 
@@ -16,6 +16,7 @@ The `titan_stdlib` crate provides memory-safe host capabilities for the compiler
 | `encoding` | Strict hex, Base64 and UTF-8 percent encoding/decoding |
 | `io` | Text/bytes, bounded reads, lines, append, atomic writes, sorted directory listing and depth-limited walking |
 | `http` | Incremental HTTP/1.1 request parsing, anti-smuggling validation, keep-alive metadata and safe response construction |
+| `http_client` | Bounded HTTP/HTTPS requests, redirects, chunked transfer, timeouts and WebPKI validation |
 | `json` | Parsing, compact/pretty output, JSON Pointer, path queries, merge patch behavior and flattening |
 | `math` | Common floating-point functions and generic min/max |
 | `net` | TCP client/server and parsed plaintext HTTP/1.1 responses |
