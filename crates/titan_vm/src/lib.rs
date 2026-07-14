@@ -21,7 +21,7 @@ pub enum Value {
     Enum { name: String, variant: String, payload: Option<Box<Value>> },
     Closure { function: usize, captures: Vec<Value> },
     Task(u64), ChannelSender(u64), ChannelReceiver(u64),
-    TcpListener(u64), TcpStream(u64), HttpRouter(u64), TlsStream(u64), TlsServerConfig(u64), WebSocketDecoder(u64), WebSocket(u64),
+    TcpListener(u64), TcpStream(u64), HttpRouter(u64), TlsStream(u64), TlsServerConfig(u64), WebSocketDecoder(u64), WebSocket(u64), ServerControl(u64),
 }
 
 pub fn val_to_string(value: &Value) -> String {
@@ -35,7 +35,7 @@ pub fn val_to_string(value: &Value) -> String {
         Value::Struct { name, fields } => format!("{} {{ {} }}", name, fields.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Enum { name, variant, payload } => match payload { Some(value) => format!("{}::{}({})", name, variant, val_to_string(value)), None => format!("{}::{}", name, variant) },
         Value::Closure { function, .. } => format!("<closure:{function}>"),
-        Value::Task(id) => format!("<task:{id}>"), Value::ChannelSender(id) => format!("<sender:{id}>"), Value::ChannelReceiver(id) => format!("<receiver:{id}>"), Value::TcpListener(id) => format!("<tcp-listener:{id}>"), Value::TcpStream(id) => format!("<tcp-stream:{id}>"), Value::HttpRouter(id) => format!("<http-router:{id}>"), Value::TlsStream(id) => format!("<tls-stream:{id}>"), Value::TlsServerConfig(id) => format!("<tls-server-config:{id}>"), Value::WebSocketDecoder(id) => format!("<websocket-decoder:{id}>"), Value::WebSocket(id) => format!("<websocket:{id}>"),
+        Value::Task(id) => format!("<task:{id}>"), Value::ChannelSender(id) => format!("<sender:{id}>"), Value::ChannelReceiver(id) => format!("<receiver:{id}>"), Value::TcpListener(id) => format!("<tcp-listener:{id}>"), Value::TcpStream(id) => format!("<tcp-stream:{id}>"), Value::HttpRouter(id) => format!("<http-router:{id}>"), Value::TlsStream(id) => format!("<tls-stream:{id}>"), Value::TlsServerConfig(id) => format!("<tls-server-config:{id}>"), Value::WebSocketDecoder(id) => format!("<websocket-decoder:{id}>"), Value::WebSocket(id) => format!("<websocket:{id}>"), Value::ServerControl(id) => format!("<server-control:{id}>"),
     }
 }
 
@@ -105,6 +105,7 @@ struct TaskRecord { handle: JoinHandle<()>, result: Receiver<Result<Value, VmErr
 #[derive(Default)] struct HttpRouterState { routes: Vec<HttpRoute>, middleware: Vec<HttpCallable>, after: Vec<HttpCallable>, error_handler: Option<HttpCallable> }
 #[derive(Clone)] enum WebSocketTransport { Tcp(Arc<Mutex<TcpStream>>), Tls(Arc<Mutex<titan_tls::TlsStream>>) }
 struct WebSocketConnection { transport: WebSocketTransport, decoder: Mutex<titan_stdlib::websocket::MessageDecoder>, require_mask: bool, mask_outgoing: bool, close_sent: AtomicBool }
+struct ServerControl { maximum: u64, active: AtomicU64, accepted: AtomicU64, rejected: AtomicU64, completed: AtomicU64, shutting_down: AtomicBool }
 struct RuntimeState {
     next_task: AtomicU64,
     next_channel: AtomicU64,
@@ -119,8 +120,9 @@ struct RuntimeState {
     tls_configs: Mutex<HashMap<u64, Arc<titan_tls::RustlsServerConfig>>>,
     websocket_decoders: Mutex<HashMap<u64, Arc<Mutex<titan_stdlib::websocket::MessageDecoder>>>>,
     websockets: Mutex<HashMap<u64, Arc<WebSocketConnection>>>,
+    server_controls: Mutex<HashMap<u64, Arc<ServerControl>>>,
 }
-impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()) } } }
+impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()), server_controls: Mutex::new(HashMap::new()) } } }
 
 pub struct Vm {
     module: CompiledModule,
@@ -408,6 +410,11 @@ impl Vm {
                 Op::WsSendBinary => { let Value::Bytes(data)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("send_binary requires bytes".into()))};let socket=pop_websocket(&self.runtime,pop(&mut stack,&function.name)?)?;websocket_send(&socket,2,&data)?;stack.push(Value::Nil); }
                 Op::WsReceive => { let socket_value=pop(&mut stack,&function.name)?;let Value::WebSocket(socket_id)=socket_value else{return Err(VmError::Type("receive requires WebSocket".into()))};let socket=pop_websocket(&self.runtime,Value::WebSocket(socket_id))?;let message=websocket_receive(&socket)?;let closed=matches!(&message,titan_stdlib::websocket::Message::Close{..});stack.push(websocket_message_value(message));if closed{self.runtime.websockets.lock().map_err(|_|VmError::Type("WebSocket registry poisoned".into()))?.remove(&socket_id);} }
                 Op::WsClose => { let Value::Str(reason)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("close reason must be string".into()))};let code=pop(&mut stack,&function.name)?;let Value::Int(code)=code else{return Err(VmError::Type("close code must be int".into()))};let code=u16::try_from(code).map_err(|_|VmError::Type("close code out of range".into()))?;let socket_value=pop(&mut stack,&function.name)?;let Value::WebSocket(socket_id)=socket_value else{return Err(VmError::Type("close requires WebSocket".into()))};let socket=pop_websocket(&self.runtime,Value::WebSocket(socket_id))?;websocket_close(&socket,code,&reason)?;self.runtime.websockets.lock().map_err(|_|VmError::Type("WebSocket registry poisoned".into()))?.remove(&socket_id);stack.push(Value::Nil); }
+                Op::ServerControlNew => { let maximum=positive_limit(pop(&mut stack,&function.name)?,"maximum connections")? as u64;let id=self.runtime.next_socket.fetch_add(1,Ordering::Relaxed);self.runtime.server_controls.lock().map_err(|_|VmError::Type("server control registry poisoned".into()))?.insert(id,Arc::new(ServerControl{maximum,active:AtomicU64::new(0),accepted:AtomicU64::new(0),rejected:AtomicU64::new(0),completed:AtomicU64::new(0),shutting_down:AtomicBool::new(false)}));stack.push(Value::ServerControl(id)); }
+                Op::ServerTryAcquire => { let control=server_control(&self.runtime,pop(&mut stack,&function.name)?)?;let acquired=server_try_acquire(&control);stack.push(Value::Bool(acquired)); }
+                Op::ServerRelease => { let control=server_control(&self.runtime,pop(&mut stack,&function.name)?)?;let released=control.active.fetch_update(Ordering::AcqRel,Ordering::Acquire,|active|(active>0).then_some(active-1)).is_ok();if released{control.completed.fetch_add(1,Ordering::Relaxed);}stack.push(Value::Bool(released)); }
+                Op::ServerShutdown => { let control=server_control(&self.runtime,pop(&mut stack,&function.name)?)?;control.shutting_down.store(true,Ordering::Release);stack.push(Value::Nil); }
+                Op::ServerStats => { let control=server_control(&self.runtime,pop(&mut stack,&function.name)?)?;stack.push(server_stats(&control)); }
                 Op::Try => {
                     let value = pop(&mut stack, &function.name)?;
                     match value {
@@ -500,6 +507,29 @@ fn http_response_value(value: Value, request_keep_alive: bool) -> Result<HttpRes
 }
 fn require_network(capabilities: RuntimeCapabilities, function: &str) -> Result<(), VmError> { if capabilities.network { Ok(()) } else { Err(VmError::PermissionDenied { function: function.into(), capability: "Network".into() }) } }
 fn network_error(function: &str, error: std::io::Error) -> VmError { VmError::Native { function: function.into(), message: error.to_string() } }
+fn server_control(runtime:&RuntimeState,value:Value)->Result<Arc<ServerControl>,VmError>{let Value::ServerControl(id)=value else{return Err(VmError::Type("operation requires server control".into()))};runtime.server_controls.lock().map_err(|_|VmError::Type("server control registry poisoned".into()))?.get(&id).cloned().ok_or_else(||VmError::Type(format!("unknown server control {id}")))}
+fn server_try_acquire(control: &ServerControl) -> bool {
+    if control.shutting_down.load(Ordering::Acquire) {
+        control.rejected.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    loop {
+        let active = control.active.load(Ordering::Acquire);
+        if active >= control.maximum {
+            control.rejected.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        if control
+            .active
+            .compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            control.accepted.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+    }
+}
+fn server_stats(control:&ServerControl)->Value{let shutting_down=control.shutting_down.load(Ordering::Acquire);Value::Map(BTreeMap::from([("maximum".into(),Value::Int(control.maximum as i64)),("active".into(),Value::Int(control.active.load(Ordering::Acquire)as i64)),("accepted".into(),Value::Int(control.accepted.load(Ordering::Relaxed)as i64)),("rejected".into(),Value::Int(control.rejected.load(Ordering::Relaxed)as i64)),("completed".into(),Value::Int(control.completed.load(Ordering::Relaxed)as i64)),("ready".into(),Value::Bool(!shutting_down)),("healthy".into(),Value::Bool(true)),("shutting_down".into(),Value::Bool(shutting_down))]))}
 fn websocket_connect(runtime: &RuntimeState, url: &str, protocol: &str, maximum: usize) -> Result<u64, VmError> {
     let parsed = titan_stdlib::websocket::parse_url(url).map_err(|error| VmError::Native { function: "std::ws::connect".into(), message: error.to_string() })?;
     let address = if parsed.host.contains(':') { format!("[{}]:{}", parsed.host, parsed.port) } else { format!("{}:{}", parsed.host, parsed.port) };
@@ -658,6 +688,7 @@ mod tests {
     #[test] fn advanced_http_client_is_callable_from_titan(){assert_eq!(run("fn main(){let listener=std::net::tcp_listen(\"127.0.0.1:0\") let address=std::net::tcp_local_addr(listener) let server=spawn || {let accepted=std::net::tcp_accept(listener) let stream=accepted[0] std::net::tcp_read(stream,4096) std::net::tcp_write(stream,\"HTTP/1.1 200 OK\\r\\nContent-Length: 5\\r\\nConnection: close\\r\\n\\r\\nhello\") std::net::tcp_close(stream)} let response=std::http::request(\"GET\",\"http://\"+address+\"/\",std::json::parse(\"{}\"),std::encoding::utf8_encode(\"\"),1024,2,2000) join(server) std::net::tcp_close(listener) std::encoding::utf8_decode(response.body)}").unwrap(),Value::Str("hello".into()));}
     #[test] fn multipart_uploads_are_callable_from_titan(){assert_eq!(run("fn main(){let body=std::encoding::utf8_encode(\"--x\\r\\nContent-Disposition: form-data; name=\\\"title\\\"\\r\\n\\r\\nTitan\\r\\n--x--\\r\\n\") let parts=std::http::parse_multipart(\"multipart/form-data; boundary=x\",body,4,1024) std::encoding::utf8_decode(parts[0].data)}").unwrap(),Value::Str("Titan".into()));}
     #[test] fn metrics_are_callable_from_titan(){assert_eq!(run("fn main(){std::metrics::reset() std::metrics::counter_add(\"requests.total\",2) std::metrics::histogram_record(\"request.ms\",12.5) let metrics=std::metrics::snapshot() std::map::get(metrics.counters,\"requests.total\")}").unwrap(),Value::Int(2));}
+    #[test] fn server_control_enforces_backpressure_and_shutdown(){assert_eq!(run("fn main(){let control=std::server::control(2) let a=std::server::try_acquire(control) let b=std::server::try_acquire(control) let rejected=std::server::try_acquire(control) std::server::release(control) std::server::shutdown(control) let after=std::server::try_acquire(control) let stats=std::server::stats(control); [a,b,rejected,after,stats.active,stats.ready]}").unwrap(),Value::Array(vec![Value::Bool(true),Value::Bool(true),Value::Bool(false),Value::Bool(false),Value::Int(1),Value::Bool(false)]));}
     #[test] fn http_routing_is_callable_from_titan() { assert_eq!(run("fn main() { let params = std::http::route_match(\"/users/:id\", \"/users/42\")? params.id }").unwrap(), Value::Str("42".into())); assert_eq!(run("fn main() { let query = std::http::parse_query(\"tag=rust&tag=titan\", 10) query.tag[1] }").unwrap(), Value::Str("titan".into())); }
     #[test] fn composed_router_dispatches_middleware_and_params() { assert_eq!(run("fn main(){let router=std::http::router() std::http::middleware(router,|request|request) std::http::route(router,\"GET\",\"/users/:id\",|request|request.params.id) let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/users/42\\\"}\") std::http::dispatch(router,request)}").unwrap(),Value::Str("42".into())); assert!(matches!(run("fn main(){let router=std::http::router() let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/missing\\\"}\") std::http::dispatch(router,request)}").unwrap(),Value::Map(_))); }
     #[test] fn websocket_codec_is_callable_from_titan() { assert_eq!(run("fn main(){let frame=std::ws::encode(1,std::encoding::utf8_encode(\"hello\"),true) let parsed=std::ws::parse(frame,true,1024)? std::encoding::utf8_decode(parsed.payload)}").unwrap(),Value::Str("hello".into())); assert_eq!(run("fn main(){std::ws::accept_key(\"dGhlIHNhbXBsZSBub25jZQ==\")}").unwrap(),Value::Str("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=".into())); }

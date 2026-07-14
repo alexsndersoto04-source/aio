@@ -100,6 +100,11 @@ impl TypeEnv {
         functions.insert("std::ws::send_binary".into(), FunctionSig { params: vec![Type::Named("WebSocket".into()), Type::Named("bytes".into())], result: Type::Nil });
         functions.insert("std::ws::receive".into(), FunctionSig { params: vec![Type::Named("WebSocket".into())], result: Type::Unknown });
         functions.insert("std::ws::close".into(), FunctionSig { params: vec![Type::Named("WebSocket".into()), Type::Int, Type::String], result: Type::Nil });
+        functions.insert("std::server::control".into(), FunctionSig { params: vec![Type::Int], result: Type::Named("ServerControl".into()) });
+        functions.insert("std::server::try_acquire".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Bool });
+        functions.insert("std::server::release".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Bool });
+        functions.insert("std::server::shutdown".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Nil });
+        functions.insert("std::server::stats".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Named("map".into()) });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

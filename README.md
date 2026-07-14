@@ -2,7 +2,7 @@
 
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM.
 
-> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 17 crates pass `cargo check`, Clippy passes with `-D warnings`, and the growing suite contains 105 passing tests across compiler, VM, tooling, concurrency, artifacts and TCP. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
+> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 17 crates pass `cargo check`, Clippy passes with `-D warnings`, and the growing suite contains 106 passing tests across compiler, VM, tooling, concurrency, artifacts and TCP. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
 
 ## Quick start
 
@@ -104,7 +104,7 @@ Additional crates provide HIR/MIR data structures, tracing GC metadata, scheduli
 
 The standard library includes checked binary I/O, LRU caching, collections algorithms, CSV, strict hex/Base64/percent encoding, bounded and atomic filesystem operations, JSON querying/merge, paths, process execution with timeouts, streaming statistics, Unicode-scalar text operations, clocks/deadlines and checksums. A shared native registry exposes 128 functions directly to `.titan`; effectful calls are controlled by VM capabilities. See [`docs/STDLIB.md`](docs/STDLIB.md).
 
-Advanced subsystems are documented separately instead of overcrowding this overview: [projects/packages](docs/PROJECTS.md), [validated bytecode/debug source maps](docs/DEBUGGER.md), [LSP](docs/LSP.md), [DAP](docs/DAP.md), [threaded tasks and channels](docs/CONCURRENCY.md), and [TCP/HTTP networking](docs/NETWORKING.md), and [TLS](docs/TLS.md), and [WebSockets](docs/WEBSOCKET.md), and the [HTTP/HTTPS client](docs/HTTP_CLIENT.md), and [multipart uploads](docs/MULTIPART.md), and [metrics](docs/METRICS.md).
+Advanced subsystems are documented separately instead of overcrowding this overview: [projects/packages](docs/PROJECTS.md), [validated bytecode/debug source maps](docs/DEBUGGER.md), [LSP](docs/LSP.md), [DAP](docs/DAP.md), [threaded tasks and channels](docs/CONCURRENCY.md), and [TCP/HTTP networking](docs/NETWORKING.md), and [TLS](docs/TLS.md), and [WebSockets](docs/WEBSOCKET.md), and the [HTTP/HTTPS client](docs/HTTP_CLIENT.md), and [multipart uploads](docs/MULTIPART.md), and [metrics](docs/METRICS.md), and [server lifecycle/backpressure](docs/SERVER_LIFECYCLE.md).
 
 ## Development quality gates
 

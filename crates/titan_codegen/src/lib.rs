@@ -37,7 +37,8 @@ pub enum Op {
     HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpAfterAdd, HttpErrorHandlerAdd, HttpDispatch,
     TlsConnect, TlsServerConfig, TlsAccept, TlsRead, TlsWrite, TlsClose,
     WsDecoderNew, WsDecoderPush, WsDecoderNext,
-    WsConnect, WsAttachTcp, WsAttachTls, WsSendText, WsSendBinary, WsReceive, WsClose, Ret,
+    WsConnect, WsAttachTcp, WsAttachTls, WsSendText, WsSendBinary, WsReceive, WsClose,
+    ServerControlNew, ServerTryAcquire, ServerRelease, ServerShutdown, ServerStats, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -313,6 +314,11 @@ impl AstCompiler {
                 "std::ws::send_binary" if args.len() == 2 => self.emit(Op::WsSendBinary),
                 "std::ws::receive" if args.len() == 1 => self.emit(Op::WsReceive),
                 "std::ws::close" if args.len() == 3 => self.emit(Op::WsClose),
+                "std::server::control" if args.len() == 1 => self.emit(Op::ServerControlNew),
+                "std::server::try_acquire" if args.len() == 1 => self.emit(Op::ServerTryAcquire),
+                "std::server::release" if args.len() == 1 => self.emit(Op::ServerRelease),
+                "std::server::shutdown" if args.len() == 1 => self.emit(Op::ServerShutdown),
+                "std::server::stats" if args.len() == 1 => self.emit(Op::ServerStats),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];
