@@ -74,7 +74,7 @@ impl TypeEnv {
         functions.insert("std::net::tcp_accept".into(), FunctionSig { params: vec![Type::Named("TcpListener".into())], result: Type::Tuple(vec![Type::Named("TcpStream".into()), Type::String]) });
         functions.insert("std::net::tcp_connect".into(), FunctionSig { params: vec![Type::String], result: Type::Named("TcpStream".into()) });
         functions.insert("std::net::tcp_read".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Int], result: Type::Named("bytes".into()) });
-        functions.insert("std::net::tcp_write".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Bytes], result: Type::Int });
+        functions.insert("std::net::tcp_write".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Named("bytes".into())], result: Type::Int });
         functions.insert("std::net::tcp_set_timeout".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Int], result: Type::Nil });
         functions.insert("std::net::tcp_close".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Bool });
         let enum_variants = HashMap::from([
@@ -402,4 +402,5 @@ mod tests {
     #[test] fn checks_registered_native_signatures() { assert!(check("fn main() { std::text::reverse(\"Titan\") }").is_ok()); assert!(check("fn main() { std::text::reverse(42) }").is_err()); }
     #[test] fn generic_native_arrays_accept_concrete_elements() { assert!(check("fn main() { std::stats::mean([10, 20, 30, 40]) }").is_ok()); }
     #[test] fn checks_tasks_and_channels() { assert!(check("fn main() { let endpoints = channel(1) let task = spawn || 42 join(task) endpoints }").is_ok()); assert!(check("fn main() { spawn 42 }").is_err()); }
+    #[test] fn checks_tcp_handle_and_byte_signatures() { assert!(check("fn main() { let listener = std::net::tcp_listen(\"127.0.0.1:0\") let address = std::net::tcp_local_addr(listener) let stream = std::net::tcp_connect(address) let bytes = std::encoding::utf8_encode(\"ping\") std::net::tcp_write(stream, bytes) }").is_ok()); }
 }
