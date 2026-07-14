@@ -69,6 +69,14 @@ impl TypeEnv {
         functions.insert("recv".into(), FunctionSig { params: vec![Type::Named("Receiver".into())], result: Type::Unknown });
         functions.insert("recv_timeout".into(), FunctionSig { params: vec![Type::Named("Receiver".into()), Type::Int], result: Type::Named("Option".into()) });
         functions.insert("select".into(), FunctionSig { params: vec![Type::Unknown, Type::Int], result: Type::Named("Option".into()) });
+        functions.insert("std::net::tcp_listen".into(), FunctionSig { params: vec![Type::String], result: Type::Named("TcpListener".into()) });
+        functions.insert("std::net::tcp_local_addr".into(), FunctionSig { params: vec![Type::Named("TcpListener".into())], result: Type::String });
+        functions.insert("std::net::tcp_accept".into(), FunctionSig { params: vec![Type::Named("TcpListener".into())], result: Type::Tuple(vec![Type::Named("TcpStream".into()), Type::String]) });
+        functions.insert("std::net::tcp_connect".into(), FunctionSig { params: vec![Type::String], result: Type::Named("TcpStream".into()) });
+        functions.insert("std::net::tcp_read".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Int], result: Type::Named("bytes".into()) });
+        functions.insert("std::net::tcp_write".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Bytes], result: Type::Int });
+        functions.insert("std::net::tcp_set_timeout".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Int], result: Type::Nil });
+        functions.insert("std::net::tcp_close".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Bool });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}, mpsc::{self, Receiver, SyncSender}};
 use std::time::{Duration, Instant};
 use std::thread::JoinHandle;
+use std::net::{TcpListener, TcpStream};
+use std::io::{Read, Write};
 use thiserror::Error;
 use titan_codegen::{CompiledModule, Op};
 
@@ -19,6 +21,7 @@ pub enum Value {
     Enum { name: String, variant: String, payload: Option<Box<Value>> },
     Closure { function: usize, captures: Vec<Value> },
     Task(u64), ChannelSender(u64), ChannelReceiver(u64),
+    TcpListener(u64), TcpStream(u64),
 }
 
 pub fn val_to_string(value: &Value) -> String {
@@ -32,7 +35,7 @@ pub fn val_to_string(value: &Value) -> String {
         Value::Struct { name, fields } => format!("{} {{ {} }}", name, fields.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Enum { name, variant, payload } => match payload { Some(value) => format!("{}::{}({})", name, variant, val_to_string(value)), None => format!("{}::{}", name, variant) },
         Value::Closure { function, .. } => format!("<closure:{function}>"),
-        Value::Task(id) => format!("<task:{id}>"), Value::ChannelSender(id) => format!("<sender:{id}>"), Value::ChannelReceiver(id) => format!("<receiver:{id}>"),
+        Value::Task(id) => format!("<task:{id}>"), Value::ChannelSender(id) => format!("<sender:{id}>"), Value::ChannelReceiver(id) => format!("<receiver:{id}>"), Value::TcpListener(id) => format!("<tcp-listener:{id}>"), Value::TcpStream(id) => format!("<tcp-stream:{id}>"),
     }
 }
 
@@ -98,10 +101,13 @@ struct TaskRecord { handle: JoinHandle<()>, result: Receiver<Result<Value, VmErr
 struct RuntimeState {
     next_task: AtomicU64,
     next_channel: AtomicU64,
+    next_socket: AtomicU64,
     tasks: Mutex<HashMap<u64, TaskRecord>>,
     channels: Mutex<HashMap<u64, Arc<Channel>>>,
+    listeners: Mutex<HashMap<u64, Arc<TcpListener>>>,
+    streams: Mutex<HashMap<u64, Arc<Mutex<TcpStream>>>>,
 }
-impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()) } } }
+impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()) } } }
 
 pub struct Vm {
     module: CompiledModule,
@@ -314,6 +320,42 @@ impl Vm {
                         std::thread::sleep(Duration::from_millis(1));
                     }
                 }
+                Op::TcpListen => {
+                    require_network(self.capabilities, "std::net::tcp_listen")?;
+                    let Value::Str(address) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("tcp_listen requires an address string".into())); };
+                    let listener = TcpListener::bind(&address).map_err(|error| network_error("std::net::tcp_listen", error))?;
+                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed); self.runtime.listeners.lock().map_err(|_| VmError::Type("listener registry poisoned".into()))?.insert(id, Arc::new(listener)); stack.push(Value::TcpListener(id));
+                }
+                Op::TcpLocalAddr => {
+                    require_network(self.capabilities, "std::net::tcp_local_addr")?;
+                    let Value::TcpListener(listener_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("tcp_local_addr requires a listener".into())); }; let listener = self.runtime.listeners.lock().map_err(|_| VmError::Type("listener registry poisoned".into()))?.get(&listener_id).cloned().ok_or_else(|| VmError::Type("unknown TCP listener".into()))?; let address = listener.local_addr().map_err(|error| network_error("std::net::tcp_local_addr", error))?; stack.push(Value::Str(address.to_string()));
+                }
+                Op::TcpAccept => {
+                    require_network(self.capabilities, "std::net::tcp_accept")?;
+                    let Value::TcpListener(listener_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("tcp_accept requires a listener".into())); };
+                    let listener = self.runtime.listeners.lock().map_err(|_| VmError::Type("listener registry poisoned".into()))?.get(&listener_id).cloned().ok_or_else(|| VmError::Type("unknown TCP listener".into()))?;
+                    let (stream, peer) = listener.accept().map_err(|error| network_error("std::net::tcp_accept", error))?; let stream_id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed); self.runtime.streams.lock().map_err(|_| VmError::Type("stream registry poisoned".into()))?.insert(stream_id, Arc::new(Mutex::new(stream))); stack.push(Value::Tuple(vec![Value::TcpStream(stream_id), Value::Str(peer.to_string())]));
+                }
+                Op::TcpConnect => {
+                    require_network(self.capabilities, "std::net::tcp_connect")?;
+                    let Value::Str(address) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("tcp_connect requires an address string".into())); }; let stream = TcpStream::connect(&address).map_err(|error| network_error("std::net::tcp_connect", error))?; let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed); self.runtime.streams.lock().map_err(|_| VmError::Type("stream registry poisoned".into()))?.insert(id, Arc::new(Mutex::new(stream))); stack.push(Value::TcpStream(id));
+                }
+                Op::TcpRead => {
+                    require_network(self.capabilities, "std::net::tcp_read")?;
+                    let maximum = pop(&mut stack, &function.name)?; let Value::Int(maximum) = maximum else { return Err(VmError::Type("tcp_read maximum must be int".into())); }; let maximum = usize::try_from(maximum).map_err(|_| VmError::Type("tcp_read maximum must be nonnegative".into()))?.min(16 * 1024 * 1024); let Value::TcpStream(stream_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("tcp_read requires a stream".into())); }; let stream = socket_stream(&self.runtime, stream_id)?; let mut buffer = vec![0; maximum]; let count = stream.lock().map_err(|_| VmError::Type("TCP stream poisoned".into()))?.read(&mut buffer).map_err(|error| network_error("std::net::tcp_read", error))?; buffer.truncate(count); stack.push(Value::Bytes(buffer));
+                }
+                Op::TcpWrite => {
+                    require_network(self.capabilities, "std::net::tcp_write")?;
+                    let data = pop(&mut stack, &function.name)?; let data = match data { Value::Bytes(data) => data, Value::Str(data) => data.into_bytes(), _ => return Err(VmError::Type("tcp_write requires bytes or string".into())) }; let Value::TcpStream(stream_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("tcp_write requires a stream".into())); }; let stream = socket_stream(&self.runtime, stream_id)?; stream.lock().map_err(|_| VmError::Type("TCP stream poisoned".into()))?.write_all(&data).map_err(|error| network_error("std::net::tcp_write", error))?; stack.push(Value::Int(data.len() as i64));
+                }
+                Op::TcpSetTimeout => {
+                    require_network(self.capabilities, "std::net::tcp_set_timeout")?;
+                    let timeout = timeout_value(pop(&mut stack, &function.name)?)?; let Value::TcpStream(stream_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("tcp_set_timeout requires a stream".into())); }; let stream = socket_stream(&self.runtime, stream_id)?; let stream = stream.lock().map_err(|_| VmError::Type("TCP stream poisoned".into()))?; stream.set_read_timeout(Some(timeout)).and_then(|_| stream.set_write_timeout(Some(timeout))).map_err(|error| network_error("std::net::tcp_set_timeout", error))?; stack.push(Value::Nil);
+                }
+                Op::TcpClose => {
+                    require_network(self.capabilities, "std::net::tcp_close")?;
+                    let removed = match pop(&mut stack, &function.name)? { Value::TcpStream(id) => self.runtime.streams.lock().map_err(|_| VmError::Type("stream registry poisoned".into()))?.remove(&id).is_some(), Value::TcpListener(id) => self.runtime.listeners.lock().map_err(|_| VmError::Type("listener registry poisoned".into()))?.remove(&id).is_some(), _ => return Err(VmError::Type("tcp_close requires a stream or listener".into())) }; stack.push(Value::Bool(removed));
+                }
                 Op::Try => {
                     let value = pop(&mut stack, &function.name)?;
                     match value {
@@ -390,6 +432,9 @@ impl Vm {
     }
 }
 
+fn require_network(capabilities: RuntimeCapabilities, function: &str) -> Result<(), VmError> { if capabilities.network { Ok(()) } else { Err(VmError::PermissionDenied { function: function.into(), capability: "Network".into() }) } }
+fn network_error(function: &str, error: std::io::Error) -> VmError { VmError::Native { function: function.into(), message: error.to_string() } }
+fn socket_stream(runtime: &RuntimeState, id: u64) -> Result<Arc<Mutex<TcpStream>>, VmError> { runtime.streams.lock().map_err(|_| VmError::Type("stream registry poisoned".into()))?.get(&id).cloned().ok_or_else(|| VmError::Type(format!("unknown TCP stream {id}"))) }
 fn option_some(value: Value) -> Value { Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(value)) } }
 fn option_none() -> Value { Value::Enum { name: "Option".into(), variant: "None".into(), payload: None } }
 fn timeout_value(value: Value) -> Result<Duration, VmError> { if let Value::Int(milliseconds) = value { Ok(Duration::from_millis(u64::try_from(milliseconds).map_err(|_| VmError::InvalidTimeout)?)) } else { Err(VmError::InvalidTimeout) } }
@@ -435,12 +480,9 @@ mod tests {
     use titan_lexer::Lexer;
     use titan_parser::Parser;
 
-    fn run(source: &str) -> Result<Value, String> {
-        let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec();
-        let program = Parser::new(tokens).parse_program().map_err(|e| e.to_string())?;
-        let module = AstCompiler::new().compile_program(&program).map_err(|e| e.to_string())?;
-        Vm::new(module).run().map_err(|e| e.to_string()).map(|v| v.unwrap())
-    }
+    fn compile(source: &str) -> Result<CompiledModule, String> { let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec(); let program = Parser::new(tokens).parse_program().map_err(|e| e.to_string())?; AstCompiler::new().compile_program(&program).map_err(|e| e.to_string()) }
+    fn run(source: &str) -> Result<Value, String> { Vm::new(compile(source)?).run().map_err(|e| e.to_string()).map(|v| v.unwrap()) }
+    fn run_sandboxed(source: &str) -> Result<Value, String> { Vm::sandboxed(compile(source)?).run().map_err(|e| e.to_string()).map(|v| v.unwrap()) }
     #[test] fn arithmetic_returns_value() { assert_eq!(run("fn main() { 40 + 2 }").unwrap(), Value::Int(42)); }
     #[test] fn recursion_works() { assert_eq!(run("fn fact(n: int) -> int { if n <= 1 { return 1 } n * fact(n-1) } fn main() { fact(5) }").unwrap(), Value::Int(120)); }
     #[test] fn loops_and_ranges_work() { assert_eq!(run("fn main() { let x = 0 for i in 0..5 { x += i } x }").unwrap(), Value::Int(10)); }
@@ -477,5 +519,7 @@ mod tests {
     #[test] fn task_and_channel_timeouts_are_explicit_options() { assert_eq!(run("fn main() { let pair = channel(1) let result = recv_timeout(pair[1], 1) match result { Option::None => 1, Option::Some(value) => 0 } }").unwrap(), Value::Int(1)); }
     #[test] fn select_returns_channel_index_and_value() { assert_eq!(run("fn main() { let a = channel(1) let b = channel(1) let task = spawn || { send(b[0], 77) } let selected = select([a[1], b[1]], 1000)? join(task) selected[1] }").unwrap(), Value::Int(77)); }
     #[test] fn cancellation_stops_cooperative_tasks() { assert!(run("fn main() { let task = spawn || loop {} let pending = join_timeout(task, 1) cancel(task) join(task) }").is_err()); }
+    #[test] fn tcp_round_trip_works_across_tasks() { assert_eq!(run("fn main() { let listener = std::net::tcp_listen(\"127.0.0.1:0\") let address = std::net::tcp_local_addr(listener) let server = spawn || { let accepted = std::net::tcp_accept(listener) let stream = accepted[0] let request = std::net::tcp_read(stream, 16) std::net::tcp_write(stream, request) std::net::tcp_close(stream) } let client = std::net::tcp_connect(address) std::net::tcp_write(client, \"ping\") let response = std::net::tcp_read(client, 16) std::net::tcp_close(client) join(server) std::net::tcp_close(listener) std::encoding::utf8_decode(response) }").unwrap(), Value::Str("ping".into())); }
+    #[test] fn sandbox_denies_tcp_access() { assert!(run_sandboxed("fn main() { std::net::tcp_listen(\"127.0.0.1:0\") }").is_err()); }
     #[test] fn runtime_errors_are_reported() { assert!(run("fn main() { 1 / 0 }").is_err()); }
 }
