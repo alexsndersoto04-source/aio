@@ -265,9 +265,54 @@ impl Vm {
                     match result { Ok(value) => stack.push(option_some(value)), Err(mpsc::RecvTimeoutError::Timeout) => stack.push(option_none()), Err(mpsc::RecvTimeoutError::Disconnected) => return Err(VmError::ChannelDisconnected(channel_id)) }
                 }
                 Op::ChannelSelect => {
-                    let timeout = timeout_value(pop(&mut stack, &function.name)?)?; let receivers = array_value(pop(&mut stack, &function.name)?)?; let deadline = Instant::now() + timeout;
-                    let ids: Vec<u64> = receivers.into_iter().map(|value| if let Value::ChannelReceiver(id) = value { Ok(id) } else { Err(VmError::Type("select requires an array of receivers".into())) }).collect::<Result<_, _>>()?;
-                    'select: loop { for (index, channel_id) in ids.iter().enumerate() { let channel = self.runtime.channels.lock().map_err(|_| VmError::Type("channel registry poisoned".into()))?.get(channel_id).cloned().ok_or(VmError::UnknownChannel(*channel_id))?; match channel.receiver.lock().map_err(|_| VmError::Type("channel receiver poisoned".into()))?.try_recv() { Ok(value) => { stack.push(option_some(Value::Tuple(vec![Value::Int(index as i64), value]))); break 'select; } Err(mpsc::TryRecvError::Disconnected) => return Err(VmError::ChannelDisconnected(*channel_id)), Err(mpsc::TryRecvError::Empty) => {} } } if Instant::now() >= deadline { stack.push(option_none()); break; } std::thread::sleep(Duration::from_millis(1)); }
+                    let timeout = timeout_value(pop(&mut stack, &function.name)?)?;
+                    let receivers = array_value(pop(&mut stack, &function.name)?)?;
+                    let deadline = Instant::now() + timeout;
+                    let ids: Vec<u64> = receivers
+                        .into_iter()
+                        .map(|value| match value {
+                            Value::ChannelReceiver(id) => Ok(id),
+                            _ => Err(VmError::Type("select requires an array of receivers".into())),
+                        })
+                        .collect::<Result<_, _>>()?;
+
+                    'select: loop {
+                        for (index, channel_id) in ids.iter().enumerate() {
+                            let channel = self
+                                .runtime
+                                .channels
+                                .lock()
+                                .map_err(|_| VmError::Type("channel registry poisoned".into()))?
+                                .get(channel_id)
+                                .cloned()
+                                .ok_or(VmError::UnknownChannel(*channel_id))?;
+                            let received = {
+                                let receiver = channel
+                                    .receiver
+                                    .lock()
+                                    .map_err(|_| VmError::Type("channel receiver poisoned".into()))?;
+                                receiver.try_recv()
+                            };
+                            match received {
+                                Ok(value) => {
+                                    stack.push(option_some(Value::Tuple(vec![
+                                        Value::Int(index as i64),
+                                        value,
+                                    ])));
+                                    break 'select;
+                                }
+                                Err(mpsc::TryRecvError::Disconnected) => {
+                                    return Err(VmError::ChannelDisconnected(*channel_id));
+                                }
+                                Err(mpsc::TryRecvError::Empty) => {}
+                            }
+                        }
+                        if Instant::now() >= deadline {
+                            stack.push(option_none());
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
                 }
                 Op::Try => {
                     let value = pop(&mut stack, &function.name)?;
