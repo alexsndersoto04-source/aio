@@ -82,6 +82,7 @@ impl TypeEnv {
         functions.insert("std::http::route".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::String, Type::String, Type::Unknown], result: Type::Nil });
         functions.insert("std::http::middleware".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Nil });
         functions.insert("std::http::after".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Nil });
+        functions.insert("std::http::on_error".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Nil });
         functions.insert("std::http::dispatch".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Unknown });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),

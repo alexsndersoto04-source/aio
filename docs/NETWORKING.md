@@ -63,4 +63,6 @@ Routers and their captured closures are shared safely across server tasks. Regis
 
 Production helpers include `security_headers(response)` (nosniff, frame denial, strict referrer policy and CSP), validated `cors(response, origin, methods)`, monotonic process-wide `request_id(request)`, and stateful fixed-window `rate_limit(key, maximum, window_ms)`. Header helpers reject CR/LF injection, and rate-limit state is mutex protected.
 
+`on_error(router, |request, error| response)` recovers handler failures into HTTP responses while preserving structured error kind/message; failures in the recovery closure still propagate. `json_response(status, value)` and `error_response(status, message)` generate UTF-8 JSON response maps suitable for handlers. Response middleware still runs on recovered responses.
+
 TLS remains the next transport layer.

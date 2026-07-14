@@ -68,6 +68,8 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::http::cors" => { let response=take!();let origin=string!();let methods=string!();if origin.contains(['\r','\n'])||methods.contains(['\r','\n']){return Err("invalid CORS header value".into())}with_response_headers(response,|headers|{headers.insert("Access-Control-Allow-Origin".into(),Value::Str(origin));headers.insert("Access-Control-Allow-Methods".into(),Value::Str(methods));headers.insert("Vary".into(),Value::Str("Origin".into()));Ok(())})? }
         "std::http::request_id" => { let mut request=expect_map(take!())?;let id=REQUEST_IDS.fetch_add(1,Ordering::Relaxed);request.insert("request_id".into(),Value::Str(format!("titan-{id:016x}")));Value::Map(request) }
         "std::http::rate_limit" => { let key=string!();let maximum=u64::try_from(int!()).map_err(|_|"rate limit maximum must be nonnegative")?;let window=u64::try_from(int!()).map_err(|_|"rate limit window must be nonnegative")?;Value::Bool(rate_limit(&key,maximum,Duration::from_millis(window))?) }
+        "std::http::json_response" => { let status=int!();let value=to_json(take!())?;http_response_map(status,"application/json; charset=utf-8",serde_json::to_vec(&value).map_err(error)?) }
+        "std::http::error_response" => { let status=int!();let message=string!();let body=serde_json::to_vec(&serde_json::json!({"error":message})).map_err(error)?;http_response_map(status,"application/json; charset=utf-8",body) }
         "std::csv::parse" => Value::Array(stdlib::csv::parse(&string!()).map_err(error)?.into_iter().map(|row| Value::Array(row.into_iter().map(Value::Str).collect())).collect()),
         "std::csv::serialize" => { let rows = array!().into_iter().map(expect_string_array).collect::<Result<Vec<_>, _>>()?; Value::Str(stdlib::csv::serialize(&rows)) }
         "std::json::parse" => from_json(stdlib::json::parse(&string!()).map_err(error)?)?,
@@ -144,6 +146,7 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
     })
 }
 
+fn http_response_map(status:i64,content_type:&str,body:Vec<u8>)->Value{Value::Map(BTreeMap::from([("status".into(),Value::Int(status)),("headers".into(),Value::Map(BTreeMap::from([("Content-Type".into(),Value::Str(content_type.into()))]))),("body".into(),Value::Bytes(body)),("keep_alive".into(),Value::Bool(true))]))}
 static REQUEST_IDS: AtomicU64 = AtomicU64::new(1);
 static RATE_LIMITS: OnceLock<Mutex<HashMap<String, (Instant, u64)>>> = OnceLock::new();
 fn with_response_headers(mut response: Value, update: impl FnOnce(&mut BTreeMap<String, Value>) -> Result<(), String>) -> Result<Value, String> { let Value::Map(response_map)=&mut response else{return Err("HTTP response must be map".into())};let headers=response_map.entry("headers".into()).or_insert_with(||Value::Map(BTreeMap::new()));let Value::Map(headers)=headers else{return Err("HTTP response headers must be map".into())};update(headers)?;Ok(response) }
