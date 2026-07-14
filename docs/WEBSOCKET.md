@@ -6,4 +6,6 @@ TITAN implements the RFC 6455 handshake and frame codec. `accept_key` validates 
 
 The codec rejects RSV bits without negotiated extensions, reserved opcodes, non-minimal lengths, invalid 64-bit lengths, masking-policy violations, fragmented/oversized control frames, one-byte close payloads, and invalid UTF-8 text frames. Supported opcodes are continuation, text, binary, close, ping, and pong.
 
-These primitives work over both TCP and TLS stream reads/writes. Stateful fragmented-message reassembly and the high-level connection API are the next WebSocket layer.
+`std::ws::decoder(maximum)`, `decoder_push(decoder, bytes)`, and `decoder_next(decoder, require_mask)` expose a stateful VM-managed decoder. It reassembles fragmented text/binary messages across arbitrary network reads, allows ping/pong/close control frames between fragments, validates final UTF-8, tracks accumulated payload limits, validates close code/reason, and rejects unexpected continuations or interleaved data messages.
+
+Messages are returned as maps with type-specific `text`, `data`, `code`, and `reason` fields. The decoder handle is share-safe but not JSON serializable. These primitives work over both TCP and TLS stream reads/writes. Automatic ping/pong and the high-level close handshake are the next WebSocket connection layer.

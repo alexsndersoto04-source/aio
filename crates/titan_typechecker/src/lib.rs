@@ -90,6 +90,9 @@ impl TypeEnv {
         functions.insert("std::tls::read".into(), FunctionSig { params: vec![Type::Named("TlsStream".into()), Type::Int], result: Type::Named("bytes".into()) });
         functions.insert("std::tls::write".into(), FunctionSig { params: vec![Type::Named("TlsStream".into()), Type::Named("bytes".into())], result: Type::Int });
         functions.insert("std::tls::close".into(), FunctionSig { params: vec![Type::Named("TlsStream".into())], result: Type::Bool });
+        functions.insert("std::ws::decoder".into(), FunctionSig { params: vec![Type::Int], result: Type::Named("WebSocketDecoder".into()) });
+        functions.insert("std::ws::decoder_push".into(), FunctionSig { params: vec![Type::Named("WebSocketDecoder".into()), Type::Named("bytes".into())], result: Type::Nil });
+        functions.insert("std::ws::decoder_next".into(), FunctionSig { params: vec![Type::Named("WebSocketDecoder".into()), Type::Bool], result: Type::Named("Option".into()) });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),
