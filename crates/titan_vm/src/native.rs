@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
-use std::time::Duration;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Mutex, OnceLock, atomic::{AtomicU64, Ordering}};
+use std::time::{Duration, Instant};
 use titan_stdlib::{self as stdlib, native::Capability};
 use crate::{RuntimeCapabilities, Value, VmError, val_to_string};
 
@@ -63,6 +64,10 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::http::reason_phrase" => { let status=u16::try_from(int!()).map_err(|_| "HTTP status out of range")?; stdlib::http::reason_phrase(status).map(|value|Value::Str(value.into())).unwrap_or(Value::Nil) }
         "std::http::route_match" => { let pattern=string!();let path=string!();match stdlib::http::match_route(&pattern,&path).map_err(error)? { Some(params)=>Value::Enum{name:"Option".into(),variant:"Some".into(),payload:Some(Box::new(Value::Map(params.into_iter().map(|(key,value)|(key,Value::Str(value))).collect())))},None=>Value::Enum{name:"Option".into(),variant:"None".into(),payload:None} } }
         "std::http::parse_query" => { let query=string!();let limit=nonnegative(int!())?;Value::Map(stdlib::http::parse_query(&query,limit).map_err(error)?.into_iter().map(|(key,values)|(key,Value::Array(values.into_iter().map(Value::Str).collect()))).collect()) }
+        "std::http::security_headers" => with_response_headers(take!(), |headers| { headers.entry("X-Content-Type-Options".into()).or_insert_with(||Value::Str("nosniff".into()));headers.entry("X-Frame-Options".into()).or_insert_with(||Value::Str("DENY".into()));headers.entry("Referrer-Policy".into()).or_insert_with(||Value::Str("no-referrer".into()));headers.entry("Content-Security-Policy".into()).or_insert_with(||Value::Str("default-src 'none'; frame-ancestors 'none'".into()));Ok(()) })?,
+        "std::http::cors" => { let response=take!();let origin=string!();let methods=string!();if origin.contains(['\r','\n'])||methods.contains(['\r','\n']){return Err("invalid CORS header value".into())}with_response_headers(response,|headers|{headers.insert("Access-Control-Allow-Origin".into(),Value::Str(origin));headers.insert("Access-Control-Allow-Methods".into(),Value::Str(methods));headers.insert("Vary".into(),Value::Str("Origin".into()));Ok(())})? }
+        "std::http::request_id" => { let mut request=expect_map(take!())?;let id=REQUEST_IDS.fetch_add(1,Ordering::Relaxed);request.insert("request_id".into(),Value::Str(format!("titan-{id:016x}")));Value::Map(request) }
+        "std::http::rate_limit" => { let key=string!();let maximum=u64::try_from(int!()).map_err(|_|"rate limit maximum must be nonnegative")?;let window=u64::try_from(int!()).map_err(|_|"rate limit window must be nonnegative")?;Value::Bool(rate_limit(&key,maximum,Duration::from_millis(window))?) }
         "std::csv::parse" => Value::Array(stdlib::csv::parse(&string!()).map_err(error)?.into_iter().map(|row| Value::Array(row.into_iter().map(Value::Str).collect())).collect()),
         "std::csv::serialize" => { let rows = array!().into_iter().map(expect_string_array).collect::<Result<Vec<_>, _>>()?; Value::Str(stdlib::csv::serialize(&rows)) }
         "std::json::parse" => from_json(stdlib::json::parse(&string!()).map_err(error)?)?,
@@ -139,6 +144,19 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
     })
 }
 
+static REQUEST_IDS: AtomicU64 = AtomicU64::new(1);
+static RATE_LIMITS: OnceLock<Mutex<HashMap<String, (Instant, u64)>>> = OnceLock::new();
+fn with_response_headers(mut response: Value, update: impl FnOnce(&mut BTreeMap<String, Value>) -> Result<(), String>) -> Result<Value, String> { let Value::Map(response_map)=&mut response else{return Err("HTTP response must be map".into())};let headers=response_map.entry("headers".into()).or_insert_with(||Value::Map(BTreeMap::new()));let Value::Map(headers)=headers else{return Err("HTTP response headers must be map".into())};update(headers)?;Ok(response) }
+fn rate_limit(key: &str, maximum: u64, window: Duration) -> Result<bool, String> {
+    if maximum == 0 || window.is_zero() { return Ok(false); }
+    let now = Instant::now();
+    let mut limits = RATE_LIMITS.get_or_init(|| Mutex::new(HashMap::new())).lock().map_err(|_| "rate limit registry poisoned")?;
+    let entry = limits.entry(key.into()).or_insert((now, 0));
+    if now.duration_since(entry.0) >= window { *entry = (now, 0); }
+    if entry.1 >= maximum { return Ok(false); }
+    entry.1 += 1;
+    Ok(true)
+}
 fn require_capability(name: &str, capability: Capability, caps: RuntimeCapabilities) -> Result<(), VmError> {
     let allowed = match capability { Capability::None => true, Capability::Filesystem => caps.filesystem, Capability::Process => caps.process, Capability::Network => caps.network, Capability::Environment => caps.environment };
     if allowed { Ok(()) } else { Err(VmError::PermissionDenied { function: name.into(), capability: format!("{capability:?}") }) }

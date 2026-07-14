@@ -34,7 +34,7 @@ pub enum Op {
     ArrayMap, ArrayFilter, ArrayFold,
     Spawn, JoinTask, JoinTaskTimeout, CancelTask, NewChannel, ChannelSend, ChannelRecv, ChannelRecvTimeout, ChannelSelect,
     TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose,
-    HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpDispatch, Ret,
+    HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpAfterAdd, HttpDispatch, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -291,6 +291,7 @@ impl AstCompiler {
                 "std::http::router" if args.is_empty() => self.emit(Op::HttpRouterNew),
                 "std::http::route" if args.len() == 4 => self.emit(Op::HttpRouteAdd),
                 "std::http::middleware" if args.len() == 2 => self.emit(Op::HttpMiddlewareAdd),
+                "std::http::after" if args.len() == 2 => self.emit(Op::HttpAfterAdd),
                 "std::http::dispatch" if args.len() == 2 => self.emit(Op::HttpDispatch),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {

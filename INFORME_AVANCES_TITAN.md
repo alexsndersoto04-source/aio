@@ -751,7 +751,7 @@ La documentación detallada y sus límites de seguridad están en `docs/STDLIB.m
 
 En una actualización posterior se implementó el puente general entre `.titan` y la biblioteca host:
 
-- Registro autoritativo de 109 funciones en `titan_stdlib::native::NATIVES`.
+- Registro autoritativo de 113 funciones en `titan_stdlib::native::NATIVES`.
 - Nombres calificados `std::módulo::función` reconocidos por el parser existente.
 - Firmas y aridad comprobadas por `titan_typechecker`.
 - Instrucción de bytecode `CallNative` generada por `titan_codegen`.

@@ -59,6 +59,8 @@ The handler receives a map containing method, target, path, query, version, head
 
 `std::http::router()` creates a VM-managed router. `route(router, method, pattern, handler)` registers ordered handlers; `middleware(router, closure)` registers request-transforming closures; and `dispatch(router, request)` runs middleware, matches method/path, injects `request.params`, and invokes the handler. Missing routes produce a safe 404 response map.
 
-Routers and their captured closures are shared safely across server tasks. Registration validates patterns before accepting them, dispatch releases router locks before executing user code, and middleware must return a request map. A server handler can simply call `dispatch(router, request)`.
+Routers and their captured closures are shared safely across server tasks. Registration validates patterns before accepting them, dispatch releases router locks before executing user code, and middleware must return a request map. `after(router, closure)` adds response middleware executed in reverse registration order.
+
+Production helpers include `security_headers(response)` (nosniff, frame denial, strict referrer policy and CSP), validated `cors(response, origin, methods)`, monotonic process-wide `request_id(request)`, and stateful fixed-window `rate_limit(key, maximum, window_ms)`. Header helpers reject CR/LF injection, and rate-limit state is mutex protected.
 
 TLS remains the next transport layer.
