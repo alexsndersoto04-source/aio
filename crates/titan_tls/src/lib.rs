@@ -40,7 +40,7 @@ pub fn client_config_with_ca(pem: &[u8]) -> Result<Arc<ClientConfig>, TlsError> 
 
 pub fn connect(address: &str, server_name: &str, config: Arc<ClientConfig>) -> Result<TlsStream, TlsError> {
     let name = ServerName::try_from(server_name.to_owned()).map_err(|_| TlsError::ServerName(server_name.into()))?;
-    let socket = TcpStream::connect(address)?; socket.set_nodelay(true)?;
+    let socket = TcpStream::connect(address)?; socket.set_nodelay(true)?; socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?; socket.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
     let connection = ClientConnection::new(config, name)?;
     let mut stream = StreamOwned::new(connection, socket);
     stream.conn.complete_io(&mut stream.sock)?;

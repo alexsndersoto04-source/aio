@@ -17,3 +17,7 @@ Messages are returned as maps with type-specific `text`, `data`, `code`, and `re
 `attach_tcp(stream, server_side, maximum)` and `attach_tls(...)` transfer ownership of an existing transport into a WebSocket handle. `send_text`, `send_binary`, `receive`, and `close` provide message-level I/O. Client frames use secure random masking; server frames do not. Receive automatically answers ping with pong, preserves fragmented-message state, and mirrors a peer close before returning it. Close is idempotent, validates code/reason, removes the handle, and releases the underlying transport.
 
 Transport locks are separate from decoder state so a blocking receive does not hold the global registry lock. The same connection object works over plain TCP or validated rustls streams.
+
+## High-level client
+
+`std::ws::connect(url, protocol, maximum)` accepts `ws://` and `wss://` URLs (including bracketed IPv6), applies default ports, generates a 16-byte CSPRNG nonce, performs the HTTP Upgrade, validates status/critical headers/accept key/subprotocol, preserves any frame bytes read with the handshake, and returns a connected WebSocket. Userinfo, fragments, control characters, invalid ports and unrequested subprotocols are rejected before attach.

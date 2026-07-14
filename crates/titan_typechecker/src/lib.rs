@@ -93,6 +93,7 @@ impl TypeEnv {
         functions.insert("std::ws::decoder".into(), FunctionSig { params: vec![Type::Int], result: Type::Named("WebSocketDecoder".into()) });
         functions.insert("std::ws::decoder_push".into(), FunctionSig { params: vec![Type::Named("WebSocketDecoder".into()), Type::Named("bytes".into())], result: Type::Nil });
         functions.insert("std::ws::decoder_next".into(), FunctionSig { params: vec![Type::Named("WebSocketDecoder".into()), Type::Bool], result: Type::Named("Option".into()) });
+        functions.insert("std::ws::connect".into(), FunctionSig { params: vec![Type::String, Type::String, Type::Int], result: Type::Named("WebSocket".into()) });
         functions.insert("std::ws::attach_tcp".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Bool, Type::Int], result: Type::Named("WebSocket".into()) });
         functions.insert("std::ws::attach_tls".into(), FunctionSig { params: vec![Type::Named("TlsStream".into()), Type::Bool, Type::Int], result: Type::Named("WebSocket".into()) });
         functions.insert("std::ws::send_text".into(), FunctionSig { params: vec![Type::Named("WebSocket".into()), Type::String], result: Type::Nil });
