@@ -8,4 +8,10 @@ The codec rejects RSV bits without negotiated extensions, reserved opcodes, non-
 
 `std::ws::decoder(maximum)`, `decoder_push(decoder, bytes)`, and `decoder_next(decoder, require_mask)` expose a stateful VM-managed decoder. It reassembles fragmented text/binary messages across arbitrary network reads, allows ping/pong/close control frames between fragments, validates final UTF-8, tracks accumulated payload limits, validates close code/reason, and rejects unexpected continuations or interleaved data messages.
 
-Messages are returned as maps with type-specific `text`, `data`, `code`, and `reason` fields. The decoder handle is share-safe but not JSON serializable. These primitives work over both TCP and TLS stream reads/writes. Automatic ping/pong and the high-level close handshake are the next WebSocket connection layer.
+Messages are returned as maps with type-specific `text`, `data`, `code`, and `reason` fields. The decoder handle is share-safe but not JSON serializable.
+
+## High-level connection
+
+`attach_tcp(stream, server_side, maximum)` and `attach_tls(...)` transfer ownership of an existing transport into a WebSocket handle. `send_text`, `send_binary`, `receive`, and `close` provide message-level I/O. Client frames use secure random masking; server frames do not. Receive automatically answers ping with pong, preserves fragmented-message state, and mirrors a peer close before returning it. Close is idempotent, validates code/reason, removes the handle, and releases the underlying transport.
+
+Transport locks are separate from decoder state so a blocking receive does not hold the global registry lock. The same connection object works over plain TCP or validated rustls streams.

@@ -36,7 +36,8 @@ pub enum Op {
     TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose,
     HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpAfterAdd, HttpErrorHandlerAdd, HttpDispatch,
     TlsConnect, TlsServerConfig, TlsAccept, TlsRead, TlsWrite, TlsClose,
-    WsDecoderNew, WsDecoderPush, WsDecoderNext, Ret,
+    WsDecoderNew, WsDecoderPush, WsDecoderNext,
+    WsAttachTcp, WsAttachTls, WsSendText, WsSendBinary, WsReceive, WsClose, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -305,6 +306,12 @@ impl AstCompiler {
                 "std::ws::decoder" if args.len() == 1 => self.emit(Op::WsDecoderNew),
                 "std::ws::decoder_push" if args.len() == 2 => self.emit(Op::WsDecoderPush),
                 "std::ws::decoder_next" if args.len() == 2 => self.emit(Op::WsDecoderNext),
+                "std::ws::attach_tcp" if args.len() == 3 => self.emit(Op::WsAttachTcp),
+                "std::ws::attach_tls" if args.len() == 3 => self.emit(Op::WsAttachTls),
+                "std::ws::send_text" if args.len() == 2 => self.emit(Op::WsSendText),
+                "std::ws::send_binary" if args.len() == 2 => self.emit(Op::WsSendBinary),
+                "std::ws::receive" if args.len() == 1 => self.emit(Op::WsReceive),
+                "std::ws::close" if args.len() == 3 => self.emit(Op::WsClose),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];
