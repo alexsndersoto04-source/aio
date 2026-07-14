@@ -72,6 +72,8 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::http::error_response" => { let status=int!();let message=string!();let body=serde_json::to_vec(&serde_json::json!({"error":message})).map_err(error)?;http_response_map(status,"application/json; charset=utf-8",body) }
         "std::ws::accept_key" => Value::Str(stdlib::websocket::accept_key(&string!()).map_err(error)?),
         "std::ws::upgrade_response" => {let key=string!();let protocol=string!();Value::Bytes(stdlib::websocket::upgrade_response(&key,if protocol.is_empty(){None}else{Some(&protocol)}).map_err(error)?)},
+        "std::ws::validate_upgrade" => {let request=take!();let protocol=string!();Value::Bytes(websocket_upgrade(request,&protocol)?)},
+        "std::ws::validate_accept" => {let response=bytes!();let key=string!();Value::Bool(websocket_validate_accept(&response,&key)?)},
         "std::ws::encode" => {let opcode=u8::try_from(int!()).map_err(|_|"WebSocket opcode out of range")?;let payload=bytes!();let masked=expect_bool(take!())?;Value::Bytes(stdlib::websocket::encode_frame_with_policy(opcode,&payload,masked).map_err(error)?)},
         "std::ws::parse" => {let data=bytes!();let require_mask=expect_bool(take!())?;let maximum=nonnegative(int!())?;match stdlib::websocket::parse_frame(&data,Some(require_mask),maximum).map_err(error)?{Some(frame)=>Value::Enum{name:"Option".into(),variant:"Some".into(),payload:Some(Box::new(Value::Map(BTreeMap::from([("fin".into(),Value::Bool(frame.fin)),("opcode".into(),Value::Int(frame.opcode as i64)),("payload".into(),Value::Bytes(frame.payload)),("consumed".into(),Value::Int(frame.consumed as i64))]))))},None=>Value::Enum{name:"Option".into(),variant:"None".into(),payload:None}}},
         "std::csv::parse" => Value::Array(stdlib::csv::parse(&string!()).map_err(error)?.into_iter().map(|row| Value::Array(row.into_iter().map(Value::Str).collect())).collect()),
@@ -150,6 +152,19 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
     })
 }
 
+fn websocket_upgrade(request: Value, protocol: &str) -> Result<Vec<u8>, String> {
+    let Value::Map(request) = request else { return Err("WebSocket upgrade request must be map".into()) };
+    let method = match request.get("method") { Some(Value::Str(value)) => value, _ => return Err("WebSocket upgrade requires method".into()) };
+    let version = match request.get("version") { Some(Value::Str(value)) => value, _ => return Err("WebSocket upgrade requires version".into()) };
+    let headers = match request.get("headers") { Some(Value::Map(value)) => value, _ => return Err("WebSocket upgrade requires headers".into()) };
+    if method != "GET" || version != "HTTP/1.1" { return Err("WebSocket upgrade requires GET HTTP/1.1".into()); }
+    let header = |name: &str| headers.get(name).and_then(|value| if let Value::Str(value) = value { Some(value.as_str()) } else { None }).ok_or_else(|| format!("missing WebSocket header {name}"));
+    let upgrade = header("upgrade")?; let connection = header("connection")?; let ws_version = header("sec-websocket-version")?; let key = header("sec-websocket-key")?;
+    if !upgrade.eq_ignore_ascii_case("websocket") || !connection.split(',').any(|value| value.trim().eq_ignore_ascii_case("upgrade")) || ws_version != "13" { return Err("invalid WebSocket upgrade headers".into()); }
+    if !protocol.is_empty() { let offered = header("sec-websocket-protocol")?; if !offered.split(',').any(|value| value.trim() == protocol) { return Err("selected WebSocket protocol was not offered".into()); } }
+    stdlib::websocket::upgrade_response(key, if protocol.is_empty() { None } else { Some(protocol) }).map_err(error)
+}
+fn websocket_validate_accept(response:&[u8],key:&str)->Result<bool,String>{let Some(end)=response.windows(4).position(|window|window==b"\r\n\r\n")else{return Ok(false)};let text=std::str::from_utf8(&response[..end]).map_err(error)?;let mut lines=text.split("\r\n");if lines.next()!=Some("HTTP/1.1 101 Switching Protocols"){return Ok(false)}let mut headers:BTreeMap<String,Vec<String>>=BTreeMap::new();for line in lines{let Some((name,value))=line.split_once(':')else{return Ok(false)};headers.entry(name.to_ascii_lowercase()).or_default().push(value.trim().into());}let single=|name:&str|headers.get(name).filter(|values|values.len()==1).map(|values|values[0].as_str());let expected=stdlib::websocket::accept_key(key).map_err(error)?;Ok(single("upgrade").is_some_and(|value|value.eq_ignore_ascii_case("websocket"))&&single("connection").is_some_and(|value|value.split(',').any(|token|token.trim().eq_ignore_ascii_case("upgrade")))&&single("sec-websocket-accept")==Some(expected.as_str()))}
 fn http_response_map(status:i64,content_type:&str,body:Vec<u8>)->Value{Value::Map(BTreeMap::from([("status".into(),Value::Int(status)),("headers".into(),Value::Map(BTreeMap::from([("Content-Type".into(),Value::Str(content_type.into()))]))),("body".into(),Value::Bytes(body)),("keep_alive".into(),Value::Bool(true))]))}
 static REQUEST_IDS: AtomicU64 = AtomicU64::new(1);
 static RATE_LIMITS: OnceLock<Mutex<HashMap<String, (Instant, u64)>>> = OnceLock::new();
