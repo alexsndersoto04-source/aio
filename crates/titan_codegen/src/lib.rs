@@ -33,7 +33,8 @@ pub enum Op {
     MakeClosure { function: usize, captures: Vec<usize> }, CallValue(usize), Try,
     ArrayMap, ArrayFilter, ArrayFold,
     Spawn, JoinTask, JoinTaskTimeout, CancelTask, NewChannel, ChannelSend, ChannelRecv, ChannelRecvTimeout, ChannelSelect,
-    TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose, Ret,
+    TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose,
+    HttpServeConnection, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -286,6 +287,7 @@ impl AstCompiler {
                 "std::net::tcp_write" if args.len() == 2 => self.emit(Op::TcpWrite),
                 "std::net::tcp_set_timeout" if args.len() == 2 => self.emit(Op::TcpSetTimeout),
                 "std::net::tcp_close" if args.len() == 1 => self.emit(Op::TcpClose),
+                "std::http::serve_connection" if args.len() == 3 => self.emit(Op::HttpServeConnection),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];

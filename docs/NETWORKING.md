@@ -47,4 +47,12 @@ The codec enforces request-line/header/body/count limits, exactly one HTTP/1.1 H
 
 `std::http::route_match(pattern, path)` supports static segments, named `:parameters`, and a final `*wildcard`. It returns `Option::Some(params)` or `Option::None`; duplicate/empty parameters and non-final wildcards are rejected. Captured values use strict UTF-8 percent-decoding.
 
-`std::http::parse_query(query, max_pairs)` preserves repeated keys as arrays, decodes `%XX` and form-style `+`, and enforces an explicit pair limit. TLS and the high-level server lifecycle remain the next layers.
+`std::http::parse_query(query, max_pairs)` preserves repeated keys as arrays, decodes `%XX` and form-style `+`, and enforces an explicit pair limit.
+
+## High-level connection server
+
+`std::http::serve_connection(listener, handler, max_requests)` accepts one TCP connection, incrementally buffers requests, invokes a TITAN closure for each request, writes validated responses, and honors keep-alive up to the configured request limit. Run it inside `spawn` for concurrent connections.
+
+The handler receives a map containing method, target, path, query, version, headers, body, keep-alive and peer. It returns a map with status, headers, body and optional keep-alive. The server enforces a 10,000-request maximum per connection and a bounded connection buffer. Handler/runtime errors close that task and propagate through `join`.
+
+TLS remains the next transport layer.
