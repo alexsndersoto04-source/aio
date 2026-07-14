@@ -47,6 +47,7 @@ pub static NATIVES: &[NativeSignature] = &[
 
     native!("std::http::parse_request", [Bytes], Any), native!("std::http::build_response", [Int, Map, Bytes, Bool], Bytes),
     native!("std::http::reason_phrase", [Int], String),
+    native!("std::http::route_match", [String, String], Any), native!("std::http::parse_query", [String, Int], Map),
     native!("std::csv::parse", [String], Array), native!("std::csv::serialize", [Array], String),
     native!("std::json::parse", [String], Any), native!("std::json::stringify", [Any], String),
     native!("std::json::pretty", [Any], String), native!("std::json::pointer", [Any, String], Any),

@@ -41,4 +41,10 @@ The runtime registry stores listeners in `Arc<TcpListener>` and streams in `Arc<
 
 `std::http::build_response(status, headers, body, keep_alive)` generates a complete response with canonical status reason, trusted `Content-Length`, controlled `Connection` and CR/LF injection rejection.
 
-The codec enforces request-line/header/body/count limits, exactly one HTTP/1.1 Host header, consistent duplicate Content-Length, no obsolete folding, and rejects Transfer-Encoding to prevent CL/TE request-smuggling ambiguity. HTTP routing and TLS remain the next layers.
+The codec enforces request-line/header/body/count limits, exactly one HTTP/1.1 Host header, consistent duplicate Content-Length, no obsolete folding, and rejects Transfer-Encoding to prevent CL/TE request-smuggling ambiguity.
+
+## Routing and query data
+
+`std::http::route_match(pattern, path)` supports static segments, named `:parameters`, and a final `*wildcard`. It returns `Option::Some(params)` or `Option::None`; duplicate/empty parameters and non-final wildcards are rejected. Captured values use strict UTF-8 percent-decoding.
+
+`std::http::parse_query(query, max_pairs)` preserves repeated keys as arrays, decodes `%XX` and form-style `+`, and enforces an explicit pair limit. TLS and the high-level server lifecycle remain the next layers.

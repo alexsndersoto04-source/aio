@@ -2,7 +2,7 @@
 
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM.
 
-> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 16 crates pass `cargo check`, Clippy passes with `-D warnings`, and the growing suite contains 76 passing tests across compiler, VM, tooling, concurrency, artifacts and TCP. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
+> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 16 crates pass `cargo check`, Clippy passes with `-D warnings`, and the growing suite contains 79 passing tests across compiler, VM, tooling, concurrency, artifacts and TCP. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
 
 ## Quick start
 
@@ -102,7 +102,7 @@ The build artifact uses a portable, versioned JSON bytecode container with a mag
 
 Additional crates provide HIR/MIR data structures, tracing GC metadata, scheduling, package manifests, standard-library host functions, macros, and editor services. They are kept separate so the executable core does not depend on unfinished optimization passes.
 
-The standard library includes checked binary I/O, LRU caching, collections algorithms, CSV, strict hex/Base64/percent encoding, bounded and atomic filesystem operations, JSON querying/merge, paths, process execution with timeouts, streaming statistics, Unicode-scalar text operations, clocks/deadlines and checksums. A shared native registry exposes 107 functions directly to `.titan`; effectful calls are controlled by VM capabilities. See [`docs/STDLIB.md`](docs/STDLIB.md).
+The standard library includes checked binary I/O, LRU caching, collections algorithms, CSV, strict hex/Base64/percent encoding, bounded and atomic filesystem operations, JSON querying/merge, paths, process execution with timeouts, streaming statistics, Unicode-scalar text operations, clocks/deadlines and checksums. A shared native registry exposes 109 functions directly to `.titan`; effectful calls are controlled by VM capabilities. See [`docs/STDLIB.md`](docs/STDLIB.md).
 
 Advanced subsystems are documented separately instead of overcrowding this overview: [projects/packages](docs/PROJECTS.md), [validated bytecode/debug source maps](docs/DEBUGGER.md), [LSP](docs/LSP.md), [DAP](docs/DAP.md), [threaded tasks and channels](docs/CONCURRENCY.md), and [TCP networking](docs/NETWORKING.md).
 
