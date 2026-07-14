@@ -78,6 +78,10 @@ impl TypeEnv {
         functions.insert("std::net::tcp_set_timeout".into(), FunctionSig { params: vec![Type::Named("TcpStream".into()), Type::Int], result: Type::Nil });
         functions.insert("std::net::tcp_close".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Bool });
         functions.insert("std::http::serve_connection".into(), FunctionSig { params: vec![Type::Named("TcpListener".into()), Type::Unknown, Type::Int], result: Type::String });
+        functions.insert("std::http::router".into(), FunctionSig { params: vec![], result: Type::Named("HttpRouter".into()) });
+        functions.insert("std::http::route".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::String, Type::String, Type::Unknown], result: Type::Nil });
+        functions.insert("std::http::middleware".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Nil });
+        functions.insert("std::http::dispatch".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Unknown });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

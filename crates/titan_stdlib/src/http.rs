@@ -60,7 +60,13 @@ pub fn build_response(status: u16, headers: &BTreeMap<String, String>, body: &[u
     for (name, value) in headers { if !valid_token(name) || value.contains(['\r','\n']) || name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("connection") { return Err(HttpError::InvalidResponseHeader); } output.extend_from_slice(format!("{name}: {value}\r\n").as_bytes()); }
     output.extend_from_slice(format!("Content-Length: {}\r\nConnection: {}\r\n\r\n", body.len(), if keep_alive { "keep-alive" } else { "close" }).as_bytes()); output.extend_from_slice(body); Ok(output)
 }
+pub fn validate_route_pattern(pattern: &str) -> Result<(), HttpError> {
+    let parts: Vec<_> = pattern.trim_matches('/').split('/').filter(|part| !part.is_empty()).collect(); let mut names = std::collections::BTreeSet::new();
+    for (index, part) in parts.iter().enumerate() { if let Some(name) = part.strip_prefix(':') { if name.is_empty() || !names.insert(name) { return Err(HttpError::RoutePattern); } } if let Some(name) = part.strip_prefix('*') { if name.is_empty() || index + 1 != parts.len() || !names.insert(name) { return Err(HttpError::RoutePattern); } } }
+    Ok(())
+}
 pub fn match_route(pattern: &str, path: &str) -> Result<Option<BTreeMap<String, String>>, HttpError> {
+    validate_route_pattern(pattern)?;
     let pattern_parts: Vec<_> = pattern.trim_matches('/').split('/').filter(|part| !part.is_empty()).collect();
     let path_parts: Vec<_> = path.trim_matches('/').split('/').filter(|part| !part.is_empty()).collect();
     let mut params = BTreeMap::new(); let mut path_index = 0;

@@ -21,7 +21,7 @@ pub enum Value {
     Enum { name: String, variant: String, payload: Option<Box<Value>> },
     Closure { function: usize, captures: Vec<Value> },
     Task(u64), ChannelSender(u64), ChannelReceiver(u64),
-    TcpListener(u64), TcpStream(u64),
+    TcpListener(u64), TcpStream(u64), HttpRouter(u64),
 }
 
 pub fn val_to_string(value: &Value) -> String {
@@ -35,7 +35,7 @@ pub fn val_to_string(value: &Value) -> String {
         Value::Struct { name, fields } => format!("{} {{ {} }}", name, fields.iter().map(|(k, v)| format!("{}: {}", k, val_to_string(v))).collect::<Vec<_>>().join(", ")),
         Value::Enum { name, variant, payload } => match payload { Some(value) => format!("{}::{}({})", name, variant, val_to_string(value)), None => format!("{}::{}", name, variant) },
         Value::Closure { function, .. } => format!("<closure:{function}>"),
-        Value::Task(id) => format!("<task:{id}>"), Value::ChannelSender(id) => format!("<sender:{id}>"), Value::ChannelReceiver(id) => format!("<receiver:{id}>"), Value::TcpListener(id) => format!("<tcp-listener:{id}>"), Value::TcpStream(id) => format!("<tcp-stream:{id}>"),
+        Value::Task(id) => format!("<task:{id}>"), Value::ChannelSender(id) => format!("<sender:{id}>"), Value::ChannelReceiver(id) => format!("<receiver:{id}>"), Value::TcpListener(id) => format!("<tcp-listener:{id}>"), Value::TcpStream(id) => format!("<tcp-stream:{id}>"), Value::HttpRouter(id) => format!("<http-router:{id}>"),
     }
 }
 
@@ -98,16 +98,21 @@ impl Default for RuntimeCapabilities { fn default() -> Self { Self::all() } }
 
 struct Channel { sender: SyncSender<Value>, receiver: Mutex<Receiver<Value>> }
 struct TaskRecord { handle: JoinHandle<()>, result: Receiver<Result<Value, VmError>>, cancelled: Arc<AtomicBool> }
+#[derive(Clone)] struct HttpCallable { function: usize, captures: Vec<Value> }
+#[derive(Clone)] struct HttpRoute { method: String, pattern: String, handler: HttpCallable }
+#[derive(Default)] struct HttpRouterState { routes: Vec<HttpRoute>, middleware: Vec<HttpCallable> }
 struct RuntimeState {
     next_task: AtomicU64,
     next_channel: AtomicU64,
     next_socket: AtomicU64,
+    next_router: AtomicU64,
     tasks: Mutex<HashMap<u64, TaskRecord>>,
     channels: Mutex<HashMap<u64, Arc<Channel>>>,
     listeners: Mutex<HashMap<u64, Arc<TcpListener>>>,
     streams: Mutex<HashMap<u64, Arc<Mutex<TcpStream>>>>,
+    routers: Mutex<HashMap<u64, Arc<Mutex<HttpRouterState>>>>,
 }
-impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()) } } }
+impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()) } } }
 
 pub struct Vm {
     module: CompiledModule,
@@ -366,6 +371,10 @@ impl Vm {
                     }
                     stack.push(Value::Str(peer.to_string()));
                 }
+                Op::HttpRouterNew => { let id=self.runtime.next_router.fetch_add(1,Ordering::Relaxed);self.runtime.routers.lock().map_err(|_|VmError::Type("router registry poisoned".into()))?.insert(id,Arc::new(Mutex::new(HttpRouterState::default())));stack.push(Value::HttpRouter(id)); }
+                Op::HttpRouteAdd => { let handler=pop(&mut stack,&function.name)?;let Value::Closure{function:handler_function,captures}=handler else{return Err(VmError::Type("route handler must be closure".into()))};let Value::Str(pattern)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("route pattern must be string".into()))};let Value::Str(method)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("route method must be string".into()))};let Value::HttpRouter(router_id)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("route requires router".into()))};titan_stdlib::http::validate_route_pattern(&pattern).map_err(|error|VmError::Native{function:"std::http::route".into(),message:error.to_string()})?;let router=http_router(&self.runtime,router_id)?;router.lock().map_err(|_|VmError::Type("HTTP router poisoned".into()))?.routes.push(HttpRoute{method:method.to_ascii_uppercase(),pattern,handler:HttpCallable{function:handler_function,captures}});stack.push(Value::Nil); }
+                Op::HttpMiddlewareAdd => { let middleware=pop(&mut stack,&function.name)?;let Value::Closure{function:middleware_function,captures}=middleware else{return Err(VmError::Type("middleware must be closure".into()))};let Value::HttpRouter(router_id)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("middleware requires router".into()))};let router=http_router(&self.runtime,router_id)?;router.lock().map_err(|_|VmError::Type("HTTP router poisoned".into()))?.middleware.push(HttpCallable{function:middleware_function,captures});stack.push(Value::Nil); }
+                Op::HttpDispatch => { let mut request=pop(&mut stack,&function.name)?;let Value::HttpRouter(router_id)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("dispatch requires router".into()))};let router=http_router(&self.runtime,router_id)?;let (middleware,routes)={let router=router.lock().map_err(|_|VmError::Type("HTTP router poisoned".into()))?;(router.middleware.clone(),router.routes.clone())};for layer in middleware{request=self.execute(layer.function,vec![request],layer.captures,depth+1,debugger)?;if !matches!(&request,Value::Map(_)){return Err(VmError::Type("middleware must return request map".into()))}}let (method,path)=request_method_path(&request)?;let mut matched=None;for route in routes{if route.method==method{if let Some(params)=titan_stdlib::http::match_route(&route.pattern,&path).map_err(|error|VmError::Native{function:"std::http::dispatch".into(),message:error.to_string()})?{matched=Some((route,params));break}}}if let Some((route,params))=matched{if let Value::Map(map)=&mut request{map.insert("params".into(),Value::Map(params.into_iter().map(|(key,value)|(key,Value::Str(value))).collect()));}stack.push(self.execute(route.handler.function,vec![request],route.handler.captures,depth+1,debugger)?);}else{stack.push(http_not_found());} }
                 Op::Try => {
                     let value = pop(&mut stack, &function.name)?;
                     match value {
@@ -443,6 +452,9 @@ impl Vm {
 }
 
 fn http_request_value(request: titan_stdlib::http::Request, peer: &str) -> Value { let mut map=BTreeMap::new();map.insert("method".into(),Value::Str(request.method));map.insert("target".into(),Value::Str(request.target));map.insert("path".into(),Value::Str(request.path));map.insert("query".into(),request.query.map(Value::Str).unwrap_or(Value::Nil));map.insert("version".into(),Value::Str(request.version));map.insert("headers".into(),Value::Map(request.headers.into_iter().map(|(key,value)|(key,Value::Str(value))).collect()));map.insert("body".into(),Value::Bytes(request.body));map.insert("keep_alive".into(),Value::Bool(request.keep_alive));map.insert("peer".into(),Value::Str(peer.into()));Value::Map(map) }
+fn http_router(runtime:&RuntimeState,id:u64)->Result<Arc<Mutex<HttpRouterState>>,VmError>{runtime.routers.lock().map_err(|_|VmError::Type("router registry poisoned".into()))?.get(&id).cloned().ok_or_else(||VmError::Type(format!("unknown HTTP router {id}")))}
+fn request_method_path(request:&Value)->Result<(String,String),VmError>{let Value::Map(map)=request else{return Err(VmError::Type("dispatch request must be map".into()))};let method=match map.get("method"){Some(Value::Str(value))=>value.to_ascii_uppercase(),_=>return Err(VmError::Type("request.method must be string".into()))};let path=match map.get("path"){Some(Value::Str(value))=>value.clone(),_=>return Err(VmError::Type("request.path must be string".into()))};Ok((method,path))}
+fn http_not_found()->Value{Value::Map(BTreeMap::from([("status".into(),Value::Int(404)),("headers".into(),Value::Map(BTreeMap::from([("Content-Type".into(),Value::Str("text/plain; charset=utf-8".into()))]))),("body".into(),Value::Str("Not Found".into())),("keep_alive".into(),Value::Bool(false))]))}
 struct HttpResponseParts { status: u16, headers: BTreeMap<String, String>, body: Vec<u8>, keep_alive: bool }
 fn http_response_value(value: Value, request_keep_alive: bool) -> Result<HttpResponseParts, VmError> {
     let Value::Map(mut map) = value else { return Err(VmError::Type("HTTP handler must return a response map".into())) };
@@ -542,6 +554,7 @@ mod tests {
     #[test] fn tcp_round_trip_works_across_tasks() { assert_eq!(run("fn main() { let listener = std::net::tcp_listen(\"127.0.0.1:0\") let address = std::net::tcp_local_addr(listener) let server = spawn || { let accepted = std::net::tcp_accept(listener) let stream = accepted[0] let request = std::net::tcp_read(stream, 16) std::net::tcp_write(stream, request) std::net::tcp_close(stream) } let client = std::net::tcp_connect(address) std::net::tcp_write(client, \"ping\") let response = std::net::tcp_read(client, 16) std::net::tcp_close(client) join(server) std::net::tcp_close(listener) std::encoding::utf8_decode(response) }").unwrap(), Value::Str("ping".into())); }
     #[test] fn http_codec_is_callable_from_titan() { assert_eq!(run("fn main() { let bytes = std::encoding::utf8_encode(\"GET /hello?name=titan HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n\") let request = std::http::parse_request(bytes)? request.path }").unwrap(), Value::Str("/hello".into())); assert!(matches!(run("fn main() { let headers = std::json::parse(\"{\\\"Content-Type\\\":\\\"text/plain\\\"}\") std::http::build_response(200, headers, std::encoding::utf8_encode(\"ok\"), false) }").unwrap(), Value::Bytes(_))); }
     #[test] fn http_routing_is_callable_from_titan() { assert_eq!(run("fn main() { let params = std::http::route_match(\"/users/:id\", \"/users/42\")? params.id }").unwrap(), Value::Str("42".into())); assert_eq!(run("fn main() { let query = std::http::parse_query(\"tag=rust&tag=titan\", 10) query.tag[1] }").unwrap(), Value::Str("titan".into())); }
+    #[test] fn composed_router_dispatches_middleware_and_params() { assert_eq!(run("fn main(){let router=std::http::router() std::http::middleware(router,|request|request) std::http::route(router,\"GET\",\"/users/:id\",|request|request.params.id) let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/users/42\\\"}\") std::http::dispatch(router,request)}").unwrap(),Value::Str("42".into())); assert!(matches!(run("fn main(){let router=std::http::router() let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/missing\\\"}\") std::http::dispatch(router,request)}").unwrap(),Value::Map(_))); }
     #[test] fn high_level_http_server_invokes_titan_handler() { assert_eq!(run("fn main() { let listener=std::net::tcp_listen(\"127.0.0.1:0\") let address=std::net::tcp_local_addr(listener) let handler=|request| std::json::parse(\"{\\\"status\\\":200,\\\"headers\\\":{\\\"Content-Type\\\":\\\"text/plain\\\"},\\\"body\\\":\\\"hello titan\\\",\\\"keep_alive\\\":false}\") let server=spawn || std::http::serve_connection(listener,handler,10) let client=std::net::tcp_connect(address) std::net::tcp_write(client,\"GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\") let response=std::encoding::utf8_decode(std::net::tcp_read(client,4096)) std::net::tcp_close(client) join(server) std::net::tcp_close(listener) std::text::contains(response,\"hello titan\") }").unwrap(), Value::Bool(true)); }
     #[test] fn sandbox_denies_tcp_access() { assert!(run_sandboxed("fn main() { std::net::tcp_listen(\"127.0.0.1:0\") }").is_err()); }
     #[test] fn runtime_errors_are_reported() { assert!(run("fn main() { 1 / 0 }").is_err()); }

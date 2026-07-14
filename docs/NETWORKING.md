@@ -55,4 +55,10 @@ The codec enforces request-line/header/body/count limits, exactly one HTTP/1.1 H
 
 The handler receives a map containing method, target, path, query, version, headers, body, keep-alive and peer. It returns a map with status, headers, body and optional keep-alive. The server enforces a 10,000-request maximum per connection and a bounded connection buffer. Handler/runtime errors close that task and propagate through `join`.
 
+## Composed router and middleware
+
+`std::http::router()` creates a VM-managed router. `route(router, method, pattern, handler)` registers ordered handlers; `middleware(router, closure)` registers request-transforming closures; and `dispatch(router, request)` runs middleware, matches method/path, injects `request.params`, and invokes the handler. Missing routes produce a safe 404 response map.
+
+Routers and their captured closures are shared safely across server tasks. Registration validates patterns before accepting them, dispatch releases router locks before executing user code, and middleware must return a request map. A server handler can simply call `dispatch(router, request)`.
+
 TLS remains the next transport layer.
