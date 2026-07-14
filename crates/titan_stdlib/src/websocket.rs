@@ -47,7 +47,59 @@ impl MessageDecoder {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)] pub struct WebSocketUrl { pub secure: bool, pub host: String, pub port: u16, pub path: String, pub authority: String }
-pub fn parse_url(url:&str)->Result<WebSocketUrl,WebSocketError>{let(secure,rest)=if let Some(rest)=url.strip_prefix("ws://"){(false,rest)}else if let Some(rest)=url.strip_prefix("wss://"){(true,rest)}else{return Err(WebSocketError::InvalidUrl)};if rest.contains('@')||rest.contains('#'){return Err(WebSocketError::InvalidUrl)}let(authority,path)=rest.split_once('/').map(|(authority,path)|(authority,format!("/{path}"))).unwrap_or((rest,"/".into()));if authority.is_empty(){return Err(WebSocketError::InvalidUrl)}let(host,port)=if authority.starts_with('['){let end=authority.find(']').ok_or(WebSocketError::InvalidUrl)?;let host=&authority[1..end];let port=if authority.len()>end+1{authority[end+1..].strip_prefix(':').ok_or(WebSocketError::InvalidUrl)?.parse().map_err(|_|WebSocketError::InvalidUrl)?}else if secure{443}else{80};(host.into(),port)}else if let Some((host,port))=authority.rsplit_once(':'){(host.into(),port.parse().map_err(|_|WebSocketError::InvalidUrl)?)}else{(authority.into(),if secure{443}else{80})};if host.is_empty()||port==0||path.bytes().any(|byte|byte.is_ascii_control()){return Err(WebSocketError::InvalidUrl)}Ok(WebSocketUrl{secure,host,port,path,authority:authority.into()})}
+pub fn parse_url(url: &str) -> Result<WebSocketUrl, WebSocketError> {
+    let (secure, rest) = if let Some(rest) = url.strip_prefix("ws://") {
+        (false, rest)
+    } else if let Some(rest) = url.strip_prefix("wss://") {
+        (true, rest)
+    } else {
+        return Err(WebSocketError::InvalidUrl);
+    };
+    if rest.contains('@') || rest.contains('#') {
+        return Err(WebSocketError::InvalidUrl);
+    }
+    let (authority, path) = rest
+        .split_once('/')
+        .map(|(authority, path)| (authority, format!("/{path}")))
+        .unwrap_or((rest, "/".into()));
+    if authority.is_empty() {
+        return Err(WebSocketError::InvalidUrl);
+    }
+    let (host, port): (String, u16) = if authority.starts_with('[') {
+        let end = authority.find(']').ok_or(WebSocketError::InvalidUrl)?;
+        let host = &authority[1..end];
+        let port = if authority.len() > end + 1 {
+            authority[end + 1..]
+                .strip_prefix(':')
+                .ok_or(WebSocketError::InvalidUrl)?
+                .parse::<u16>()
+                .map_err(|_| WebSocketError::InvalidUrl)?
+        } else if secure {
+            443
+        } else {
+            80
+        };
+        (host.into(), port)
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        (
+            host.into(),
+            port.parse::<u16>()
+                .map_err(|_| WebSocketError::InvalidUrl)?,
+        )
+    } else {
+        (authority.into(), if secure { 443 } else { 80 })
+    };
+    if host.is_empty() || port == 0 || path.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(WebSocketError::InvalidUrl);
+    }
+    Ok(WebSocketUrl {
+        secure,
+        host,
+        port,
+        path,
+        authority: authority.into(),
+    })
+}
 pub fn client_key()->Result<String,WebSocketError>{let mut nonce=[0u8;16];getrandom::fill(&mut nonce).map_err(|_|WebSocketError::Entropy)?;Ok(crate::encoding::base64_encode(&nonce))}
 pub fn validate_accept_response(response:&[u8],key:&str)->Result<usize,WebSocketError>{let end=response.windows(4).position(|window|window==b"\r\n\r\n").ok_or(WebSocketError::InvalidHandshake)?;let text=std::str::from_utf8(&response[..end]).map_err(|_|WebSocketError::InvalidHandshake)?;let mut lines=text.split("\r\n");if lines.next()!=Some("HTTP/1.1 101 Switching Protocols"){return Err(WebSocketError::InvalidHandshake)}let mut headers=std::collections::BTreeMap::<String,Vec<String>>::new();for line in lines{let(name,value)=line.split_once(':').ok_or(WebSocketError::InvalidHandshake)?;headers.entry(name.to_ascii_lowercase()).or_default().push(value.trim().into());}let one=|name:&str|headers.get(name).filter(|values|values.len()==1).map(|values|values[0].as_str());let expected=accept_key(key)?;if !one("upgrade").is_some_and(|value|value.eq_ignore_ascii_case("websocket"))||!one("connection").is_some_and(|value|value.split(',').any(|token|token.trim().eq_ignore_ascii_case("upgrade")))||one("sec-websocket-accept")!=Some(expected.as_str()){return Err(WebSocketError::InvalidHandshake)}Ok(end+4)}
 pub fn validate_subprotocol_response(response:&[u8],protocol:&str)->Result<(),WebSocketError>{let end=response.windows(4).position(|window|window==b"\r\n\r\n").ok_or(WebSocketError::InvalidHandshake)?;let text=std::str::from_utf8(&response[..end]).map_err(|_|WebSocketError::InvalidHandshake)?;let values:Vec<_>=text.split("\r\n").skip(1).filter_map(|line|line.split_once(':')).filter(|(name,_)|name.eq_ignore_ascii_case("Sec-WebSocket-Protocol")).map(|(_,value)|value.trim()).collect();if (protocol.is_empty()&&values.is_empty())||(!protocol.is_empty()&&values==[protocol]){Ok(())}else{Err(WebSocketError::InvalidHandshake)}}
