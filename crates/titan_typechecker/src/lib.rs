@@ -84,6 +84,12 @@ impl TypeEnv {
         functions.insert("std::http::after".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Nil });
         functions.insert("std::http::on_error".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Nil });
         functions.insert("std::http::dispatch".into(), FunctionSig { params: vec![Type::Named("HttpRouter".into()), Type::Unknown], result: Type::Unknown });
+        functions.insert("std::tls::connect".into(), FunctionSig { params: vec![Type::String, Type::String], result: Type::Named("TlsStream".into()) });
+        functions.insert("std::tls::server_config".into(), FunctionSig { params: vec![Type::String, Type::String], result: Type::Named("TlsServerConfig".into()) });
+        functions.insert("std::tls::accept".into(), FunctionSig { params: vec![Type::Named("TcpListener".into()), Type::Named("TlsServerConfig".into())], result: Type::Tuple(vec![Type::Named("TlsStream".into()), Type::String]) });
+        functions.insert("std::tls::read".into(), FunctionSig { params: vec![Type::Named("TlsStream".into()), Type::Int], result: Type::Named("bytes".into()) });
+        functions.insert("std::tls::write".into(), FunctionSig { params: vec![Type::Named("TlsStream".into()), Type::Named("bytes".into())], result: Type::Int });
+        functions.insert("std::tls::close".into(), FunctionSig { params: vec![Type::Named("TlsStream".into())], result: Type::Bool });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

@@ -34,7 +34,8 @@ pub enum Op {
     ArrayMap, ArrayFilter, ArrayFold,
     Spawn, JoinTask, JoinTaskTimeout, CancelTask, NewChannel, ChannelSend, ChannelRecv, ChannelRecvTimeout, ChannelSelect,
     TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose,
-    HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpAfterAdd, HttpErrorHandlerAdd, HttpDispatch, Ret,
+    HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpAfterAdd, HttpErrorHandlerAdd, HttpDispatch,
+    TlsConnect, TlsServerConfig, TlsAccept, TlsRead, TlsWrite, TlsClose, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -294,6 +295,12 @@ impl AstCompiler {
                 "std::http::after" if args.len() == 2 => self.emit(Op::HttpAfterAdd),
                 "std::http::on_error" if args.len() == 2 => self.emit(Op::HttpErrorHandlerAdd),
                 "std::http::dispatch" if args.len() == 2 => self.emit(Op::HttpDispatch),
+                "std::tls::connect" if args.len() == 2 => self.emit(Op::TlsConnect),
+                "std::tls::server_config" if args.len() == 2 => self.emit(Op::TlsServerConfig),
+                "std::tls::accept" if args.len() == 2 => self.emit(Op::TlsAccept),
+                "std::tls::read" if args.len() == 2 => self.emit(Op::TlsRead),
+                "std::tls::write" if args.len() == 2 => self.emit(Op::TlsWrite),
+                "std::tls::close" if args.len() == 1 => self.emit(Op::TlsClose),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];
