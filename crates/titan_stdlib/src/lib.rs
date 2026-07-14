@@ -11,6 +11,7 @@ pub mod http;
 pub mod http_client;
 pub mod json;
 pub mod math;
+pub mod metrics;
 pub mod multipart;
 pub mod net;
 pub mod native;
