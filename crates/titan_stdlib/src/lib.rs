@@ -7,6 +7,7 @@ pub mod collections;
 pub mod csv;
 pub mod encoding;
 pub mod io;
+pub mod http;
 pub mod json;
 pub mod math;
 pub mod net;

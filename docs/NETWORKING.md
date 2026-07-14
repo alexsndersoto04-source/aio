@@ -33,4 +33,12 @@ Implemented operations:
 - shared handles usable by spawned tasks;
 - typed errors and sandbox denial.
 
-The runtime registry stores listeners in `Arc<TcpListener>` and streams in `Arc<Mutex<TcpStream>>`, avoiding holding the global registry lock during blocking I/O. This layer is the transport foundation for HTTP, TLS and WebSockets; those protocols are not claimed by the raw socket API.
+The runtime registry stores listeners in `Arc<TcpListener>` and streams in `Arc<Mutex<TcpStream>>`, avoiding holding the global registry lock during blocking I/O.
+
+## HTTP/1.1 codec
+
+`std::http::parse_request(bytes)` incrementally parses one request and returns `Option::Some(request)` only when headers and the declared body are complete. The request map includes method, target, path, query, version, normalized headers, bytes body, keep-alive and consumed byte count. Remaining bytes can be retained for pipelined requests.
+
+`std::http::build_response(status, headers, body, keep_alive)` generates a complete response with canonical status reason, trusted `Content-Length`, controlled `Connection` and CR/LF injection rejection.
+
+The codec enforces request-line/header/body/count limits, exactly one HTTP/1.1 Host header, consistent duplicate Content-Length, no obsolete folding, and rejects Transfer-Encoding to prevent CL/TE request-smuggling ambiguity. HTTP routing and TLS remain the next layers.

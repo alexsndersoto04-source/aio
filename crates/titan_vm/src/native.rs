@@ -55,6 +55,12 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::bytes::read_u32_le" => { let values = bytes!(); let offset = nonnegative(int!())?; let end = offset.checked_add(4).ok_or("byte offset overflow")?; let data: [u8; 4] = values.get(offset..end).ok_or("not enough bytes for u32")?.try_into().map_err(|_| "not enough bytes for u32")?; Value::Int(i64::from(u32::from_le_bytes(data))) }
         "std::bytes::write_u32_le" => { let value = u32::try_from(int!()).map_err(|_| "u32 value out of range")?; Value::Bytes(value.to_le_bytes().to_vec()) }
 
+        "std::http::parse_request" => {
+            let parsed = stdlib::http::parse_request(&bytes!(), &stdlib::http::HttpLimits::default()).map_err(error)?;
+            if let Some((request, consumed)) = parsed { let mut map = BTreeMap::new(); map.insert("method".into(), Value::Str(request.method)); map.insert("target".into(), Value::Str(request.target)); map.insert("path".into(), Value::Str(request.path)); map.insert("query".into(), request.query.map(Value::Str).unwrap_or(Value::Nil)); map.insert("version".into(), Value::Str(request.version)); map.insert("headers".into(), Value::Map(request.headers.into_iter().map(|(key,value)|(key,Value::Str(value))).collect())); map.insert("body".into(), Value::Bytes(request.body)); map.insert("keep_alive".into(), Value::Bool(request.keep_alive)); map.insert("consumed".into(), Value::Int(consumed as i64)); Value::Enum { name:"Option".into(), variant:"Some".into(), payload:Some(Box::new(Value::Map(map))) } } else { Value::Enum { name:"Option".into(), variant:"None".into(), payload:None } }
+        }
+        "std::http::build_response" => { let status = u16::try_from(int!()).map_err(|_| "HTTP status out of range")?; let headers = expect_map(take!())?.into_iter().map(|(key,value)| Ok((key,expect_string(value)?))).collect::<Result<BTreeMap<_,_>,String>>()?; let body=bytes!(); let keep_alive=expect_bool(take!())?; Value::Bytes(stdlib::http::build_response(status,&headers,&body,keep_alive).map_err(error)?) }
+        "std::http::reason_phrase" => { let status=u16::try_from(int!()).map_err(|_| "HTTP status out of range")?; stdlib::http::reason_phrase(status).map(|value|Value::Str(value.into())).unwrap_or(Value::Nil) }
         "std::csv::parse" => Value::Array(stdlib::csv::parse(&string!()).map_err(error)?.into_iter().map(|row| Value::Array(row.into_iter().map(Value::Str).collect())).collect()),
         "std::csv::serialize" => { let rows = array!().into_iter().map(expect_string_array).collect::<Result<Vec<_>, _>>()?; Value::Str(stdlib::csv::serialize(&rows)) }
         "std::json::parse" => from_json(stdlib::json::parse(&string!()).map_err(error)?)?,
@@ -140,6 +146,7 @@ fn error(error: impl std::fmt::Display) -> String { error.to_string() }
 fn expect_string(value: Value) -> Result<String, String> { if let Value::Str(v) = value { Ok(v) } else { Err("expected string".into()) } }
 fn expect_bytes(value: Value) -> Result<Vec<u8>, String> { match value { Value::Bytes(v) => Ok(v), Value::Str(v) => Ok(v.into_bytes()), _ => Err("expected bytes or string".into()) } }
 fn expect_int(value: Value) -> Result<i64, String> { if let Value::Int(v) = value { Ok(v) } else { Err("expected int".into()) } }
+fn expect_bool(value: Value) -> Result<bool, String> { if let Value::Bool(v) = value { Ok(v) } else { Err("expected bool".into()) } }
 fn expect_float(value: Value) -> Result<f64, String> { match value { Value::Float(v) => Ok(v), Value::Int(v) => Ok(v as f64), _ => Err("expected number".into()) } }
 fn expect_array(value: Value) -> Result<Vec<Value>, String> { match value { Value::Array(v) | Value::Tuple(v) => Ok(v), _ => Err("expected array".into()) } }
 fn expect_map(value: Value) -> Result<BTreeMap<String, Value>, String> { if let Value::Map(values) = value { Ok(values) } else { Err("expected map".into()) } }
