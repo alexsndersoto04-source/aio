@@ -45,8 +45,12 @@ Err(error)=>{let mut state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)
 }
 let remaining=deadline.saturating_duration_since(Instant::now());
 if remaining.is_zero(){return Err(DbError::PoolTimeout);}
-let(_,wait)=self.0.available.wait_timeout(state,remaining).map_err(|_|DbError::PoolPoisoned)?;
-if wait.timed_out(){return Err(DbError::PoolTimeout);}
+let (_state_after_wait, wait_result) = self
+    .0
+    .available
+    .wait_timeout(state, remaining)
+    .map_err(|_| DbError::PoolPoisoned)?;
+if wait_result.timed_out() { return Err(DbError::PoolTimeout); }
 }
 }
 pub fn stats(&self)->Result<PoolStats,DbError>{let state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)?;Ok(PoolStats{maximum:self.0.maximum,total:state.total,idle:state.idle.len(),checked_out:state.total-state.idle.len(),closed:state.closed})}
