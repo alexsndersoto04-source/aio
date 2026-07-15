@@ -1,10 +1,12 @@
 //! SQLite adapter with prepared parameters and typed rows.
 use rusqlite::{Connection,params_from_iter,types::{Value as SqlValue,ValueRef}};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path,PathBuf};
+use std::sync::{Arc,Condvar,Mutex};
+use std::time::{Duration,Instant};
 use thiserror::Error;
 #[derive(Debug,Clone,PartialEq)]pub enum DbValue{Null,Integer(i64),Real(f64),Text(String),Blob(Vec<u8>)}
-#[derive(Error,Debug)]pub enum DbError{#[error("SQLite error: {0}")]Sqlite(#[from]rusqlite::Error),#[error("transaction is already active")]TransactionActive,#[error("no active transaction")]NoTransaction,#[error("migration versions must be positive, unique, and increasing")]MigrationOrder,#[error("previously applied migration {version} has changed")]MigrationChanged{version:i64}}
+#[derive(Error,Debug)]pub enum DbError{#[error("SQLite error: {0}")]Sqlite(#[from]rusqlite::Error),#[error("transaction is already active")]TransactionActive,#[error("no active transaction")]NoTransaction,#[error("migration versions must be positive, unique, and increasing")]MigrationOrder,#[error("previously applied migration {version} has changed")]MigrationChanged{version:i64},#[error("SQLite pool size must be positive")]PoolSize,#[error("SQLite pool acquisition timed out")]PoolTimeout,#[error("SQLite pool is closed")]PoolClosed,#[error("SQLite pool lock poisoned")]PoolPoisoned}
 #[derive(Debug,Clone)]pub struct Migration{pub version:i64,pub name:String,pub sql:String}
 #[derive(Debug,Clone,PartialEq,Eq)]pub struct AppliedMigration{pub version:i64,pub name:String,pub checksum:String}
 pub struct Database{connection:Connection,in_transaction:bool}
@@ -22,8 +24,38 @@ pub fn last_insert_id(&self)->i64{self.connection.last_insert_rowid()}
 pub fn changes(&self)->u64{self.connection.changes()}
 }
 impl Drop for Database{fn drop(&mut self){if self.in_transaction{let _=self.connection.execute_batch("ROLLBACK");}}}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]pub struct PoolStats{pub maximum:usize,pub total:usize,pub idle:usize,pub checked_out:usize,pub closed:bool}
+struct PoolState{idle:Vec<Database>,total:usize,closed:bool}
+struct PoolInner{path:PathBuf,maximum:usize,state:Mutex<PoolState>,available:Condvar}
+#[derive(Clone)]pub struct Pool(Arc<PoolInner>);
+pub struct PooledConnection{database:Option<Database>,pool:Arc<PoolInner>}
+impl Pool{pub fn new(path:impl AsRef<Path>,maximum:usize)->Result<Self,DbError>{if maximum==0{return Err(DbError::PoolSize)}Ok(Self(Arc::new(PoolInner{path:path.as_ref().into(),maximum,state:Mutex::new(PoolState{idle:Vec::new(),total:0,closed:false}),available:Condvar::new()})))}
+pub fn acquire(&self,timeout:Duration)->Result<PooledConnection,DbError>{
+let deadline=Instant::now()+timeout;
+loop{
+let mut state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)?;
+if state.closed{return Err(DbError::PoolClosed);}
+if let Some(database)=state.idle.pop(){return Ok(PooledConnection{database:Some(database),pool:Arc::clone(&self.0)});}
+if state.total<self.0.maximum{
+state.total+=1;drop(state);
+match Database::open(&self.0.path){
+Ok(database)=>return Ok(PooledConnection{database:Some(database),pool:Arc::clone(&self.0)}),
+Err(error)=>{let mut state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)?;state.total-=1;self.0.available.notify_one();return Err(error)}
+}
+}
+let remaining=deadline.saturating_duration_since(Instant::now());
+if remaining.is_zero(){return Err(DbError::PoolTimeout);}
+let(_,wait)=self.0.available.wait_timeout(state,remaining).map_err(|_|DbError::PoolPoisoned)?;
+if wait.timed_out(){return Err(DbError::PoolTimeout);}
+}
+}
+pub fn stats(&self)->Result<PoolStats,DbError>{let state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)?;Ok(PoolStats{maximum:self.0.maximum,total:state.total,idle:state.idle.len(),checked_out:state.total-state.idle.len(),closed:state.closed})}
+pub fn close(&self)->Result<(),DbError>{let mut state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)?;state.closed=true;let idle=state.idle.len();state.idle.clear();state.total-=idle;self.0.available.notify_all();Ok(())}}
+impl std::ops::Deref for PooledConnection{type Target=Database;fn deref(&self)->&Self::Target{self.database.as_ref().expect("pooled connection invariant")}}
+impl std::ops::DerefMut for PooledConnection{fn deref_mut(&mut self)->&mut Self::Target{self.database.as_mut().expect("pooled connection invariant")}}
+impl Drop for PooledConnection{fn drop(&mut self){let Some(database)=self.database.take()else{return};if let Ok(mut state)=self.pool.state.lock(){if state.closed{state.total=state.total.saturating_sub(1)}else{state.idle.push(database)}self.pool.available.notify_one();}}}
 fn checksum(sql:&str)->String{let mut hash=0xcbf29ce484222325u64;for byte in sql.as_bytes(){hash^=u64::from(*byte);hash=hash.wrapping_mul(0x100000001b3);}format!("fnv1a64:{hash:016x}")}
 fn configure(connection:&Connection)->Result<(),rusqlite::Error>{connection.busy_timeout(std::time::Duration::from_secs(5))?;connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;Ok(())}
 fn to_sql(value:&DbValue)->SqlValue{match value{DbValue::Null=>SqlValue::Null,DbValue::Integer(value)=>SqlValue::Integer(*value),DbValue::Real(value)=>SqlValue::Real(*value),DbValue::Text(value)=>SqlValue::Text(value.clone()),DbValue::Blob(value)=>SqlValue::Blob(value.clone())}}
 fn from_sql(value:ValueRef<'_>)->DbValue{match value{ValueRef::Null=>DbValue::Null,ValueRef::Integer(value)=>DbValue::Integer(value),ValueRef::Real(value)=>DbValue::Real(value),ValueRef::Text(value)=>DbValue::Text(String::from_utf8_lossy(value).into()),ValueRef::Blob(value)=>DbValue::Blob(value.to_vec())}}
-#[cfg(test)]mod tests{use super::*;#[test]fn applies_migrations_once_and_detects_changes(){let mut db=Database::memory().unwrap();let migrations=vec![Migration{version:1,name:"create_users".into(),sql:"CREATE TABLE users(id INTEGER PRIMARY KEY);".into()},Migration{version:2,name:"add_name".into(),sql:"ALTER TABLE users ADD COLUMN name TEXT;".into()}];assert_eq!(db.migrate(&migrations).unwrap(),2);assert_eq!(db.migrate(&migrations).unwrap(),0);assert_eq!(db.applied_migrations().unwrap().len(),2);let changed=vec![Migration{version:1,name:"create_users".into(),sql:"CREATE TABLE changed(id INTEGER);".into()}];assert!(matches!(db.migrate(&changed),Err(DbError::MigrationChanged{version:1})));}#[test]fn prepared_queries_and_transactions_work(){let mut db=Database::memory().unwrap();db.execute("CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT NOT NULL)",&[]).unwrap();db.begin().unwrap();db.execute("INSERT INTO users(name) VALUES (?)",&[DbValue::Text("Ada".into())]).unwrap();assert_eq!(db.last_insert_id(),1);db.commit().unwrap();let rows=db.query("SELECT id,name FROM users WHERE name=?",&[DbValue::Text("Ada".into())]).unwrap();assert_eq!(rows[0]["id"],DbValue::Integer(1));assert_eq!(rows[0]["name"],DbValue::Text("Ada".into()));}#[test]fn rollback_and_foreign_keys_work(){let mut db=Database::memory().unwrap();db.execute("CREATE TABLE values_(value INTEGER)",&[]).unwrap();db.begin().unwrap();db.execute("INSERT INTO values_ VALUES (?)",&[DbValue::Integer(7)]).unwrap();db.rollback().unwrap();assert!(db.query("SELECT * FROM values_",&[]).unwrap().is_empty());}}
+#[cfg(test)]mod tests{use super::*;#[test]fn pool_reuses_connections_and_enforces_timeout(){let path=std::env::temp_dir().join(format!("titan-pool-{}.db",std::process::id()));let _=std::fs::remove_file(&path);let pool=Pool::new(&path,1).unwrap();let mut first=pool.acquire(Duration::from_secs(1)).unwrap();first.execute("CREATE TABLE items(value INTEGER)",&[]).unwrap();assert!(matches!(pool.acquire(Duration::from_millis(5)),Err(DbError::PoolTimeout)));drop(first);let mut reused=pool.acquire(Duration::from_secs(1)).unwrap();reused.execute("INSERT INTO items VALUES (1)",&[]).unwrap();drop(reused);let stats=pool.stats().unwrap();assert_eq!(stats.total,1);assert_eq!(stats.idle,1);pool.close().unwrap();assert!(matches!(pool.acquire(Duration::ZERO),Err(DbError::PoolClosed)));let _=std::fs::remove_file(path);}#[test]fn applies_migrations_once_and_detects_changes(){let mut db=Database::memory().unwrap();let migrations=vec![Migration{version:1,name:"create_users".into(),sql:"CREATE TABLE users(id INTEGER PRIMARY KEY);".into()},Migration{version:2,name:"add_name".into(),sql:"ALTER TABLE users ADD COLUMN name TEXT;".into()}];assert_eq!(db.migrate(&migrations).unwrap(),2);assert_eq!(db.migrate(&migrations).unwrap(),0);assert_eq!(db.applied_migrations().unwrap().len(),2);let changed=vec![Migration{version:1,name:"create_users".into(),sql:"CREATE TABLE changed(id INTEGER);".into()}];assert!(matches!(db.migrate(&changed),Err(DbError::MigrationChanged{version:1})));}#[test]fn prepared_queries_and_transactions_work(){let mut db=Database::memory().unwrap();db.execute("CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT NOT NULL)",&[]).unwrap();db.begin().unwrap();db.execute("INSERT INTO users(name) VALUES (?)",&[DbValue::Text("Ada".into())]).unwrap();assert_eq!(db.last_insert_id(),1);db.commit().unwrap();let rows=db.query("SELECT id,name FROM users WHERE name=?",&[DbValue::Text("Ada".into())]).unwrap();assert_eq!(rows[0]["id"],DbValue::Integer(1));assert_eq!(rows[0]["name"],DbValue::Text("Ada".into()));}#[test]fn rollback_and_foreign_keys_work(){let mut db=Database::memory().unwrap();db.execute("CREATE TABLE values_(value INTEGER)",&[]).unwrap();db.begin().unwrap();db.execute("INSERT INTO values_ VALUES (?)",&[DbValue::Integer(7)]).unwrap();db.rollback().unwrap();assert!(db.query("SELECT * FROM values_",&[]).unwrap().is_empty());}}
