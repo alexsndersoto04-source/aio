@@ -39,7 +39,8 @@ pub enum Op {
     WsDecoderNew, WsDecoderPush, WsDecoderNext,
     WsConnect, WsAttachTcp, WsAttachTls, WsSendText, WsSendBinary, WsReceive, WsClose,
     ServerControlNew, ServerTryAcquire, ServerRelease, ServerShutdown, ServerStats, ServerHealthResponse,
-    SqliteOpen, SqliteMemory, SqliteExecute, SqliteQuery, SqliteBegin, SqliteCommit, SqliteRollback, SqliteMigrate, SqliteLastId, SqliteClose, Ret,
+    SqliteOpen, SqliteMemory, SqliteExecute, SqliteQuery, SqliteBegin, SqliteCommit, SqliteRollback, SqliteMigrate, SqliteLastId, SqliteClose,
+    SqlitePoolNew, SqlitePoolAcquire, SqlitePoolStats, SqlitePoolClose, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -331,6 +332,10 @@ impl AstCompiler {
                 "std::sqlite::migrate" if args.len() == 2 => self.emit(Op::SqliteMigrate),
                 "std::sqlite::last_insert_id" if args.len() == 1 => self.emit(Op::SqliteLastId),
                 "std::sqlite::close" if args.len() == 1 => self.emit(Op::SqliteClose),
+                "std::sqlite::pool" if args.len() == 2 => self.emit(Op::SqlitePoolNew),
+                "std::sqlite::acquire" if args.len() == 2 => self.emit(Op::SqlitePoolAcquire),
+                "std::sqlite::pool_stats" if args.len() == 1 => self.emit(Op::SqlitePoolStats),
+                "std::sqlite::pool_close" if args.len() == 1 => self.emit(Op::SqlitePoolClose),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];

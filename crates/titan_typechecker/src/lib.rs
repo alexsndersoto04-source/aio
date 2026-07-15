@@ -114,6 +114,10 @@ impl TypeEnv {
         functions.insert("std::sqlite::migrate".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::Unknown], result: Type::Int });
         functions.insert("std::sqlite::last_insert_id".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Int });
         functions.insert("std::sqlite::close".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Bool });
+        functions.insert("std::sqlite::pool".into(), FunctionSig { params: vec![Type::String, Type::Int], result: Type::Named("SqlitePool".into()) });
+        functions.insert("std::sqlite::acquire".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into()), Type::Int], result: Type::Named("Option".into()) });
+        functions.insert("std::sqlite::pool_stats".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into())], result: Type::Named("map".into()) });
+        functions.insert("std::sqlite::pool_close".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into())], result: Type::Nil });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),
