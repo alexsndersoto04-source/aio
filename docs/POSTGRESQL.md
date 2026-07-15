@@ -4,6 +4,8 @@
 
 Supported values: NULL, bool, int2/int4/int8, float4/float8, text/varchar/bpchar/name, bytea and JSON/JSONB. Unknown PostgreSQL types return an explicit error rather than lossy strings.
 
-TITAN APIs are `postgres::connect`, `execute`, `query`, `begin`, `commit`, `rollback`, `cancel`, and `close`. Connection handles are mutex protected, require Network capability, work across tasks, convert rows to maps and reject JSON serialization.
+TITAN APIs are `postgres::connect`, `connect_tls`, `execute`, `query`, `begin`, `commit`, `rollback`, `cancel`, and `close`. Connection handles are mutex protected, require Network capability, work across tasks, convert rows to maps and reject JSON serialization.
 
-The live integration test runs when `TITAN_POSTGRES_TEST_URL` is configured; it is skipped otherwise because PostgreSQL is an external service. The current block uses plaintext `NoTls`; rustls server-certificate validation and pooling are the next PostgreSQL blocks before declaring remote connections production-ready.
+`connect_tls` uses rustls 0.23, WebPKI roots, SNI and hostname/certificate-chain validation through `tokio-postgres-rustls`; there is no insecure certificate verifier and no OpenSSL dependency. Plain `connect` remains available for trusted local Unix/TCP deployments.
+
+The live integration test runs when `TITAN_POSTGRES_TEST_URL` is configured; it is skipped otherwise because PostgreSQL is an external service. Pooling is the next PostgreSQL block.

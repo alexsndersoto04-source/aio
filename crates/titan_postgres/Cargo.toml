@@ -6,5 +6,7 @@ license.workspace = true
 
 [dependencies]
 postgres = { version = "0.19", features = ["with-serde_json-1"] }
+tokio-postgres-rustls = "0.13"
+titan_tls = { path = "../titan_tls" }
 serde_json.workspace = true
 thiserror.workspace = true
