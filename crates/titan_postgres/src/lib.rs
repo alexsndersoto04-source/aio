@@ -1,0 +1,21 @@
+//! Synchronous PostgreSQL driver with prepared parameters and typed rows.
+use postgres::{Client,NoTls,Row,types::{ToSql,Type}};
+use std::collections::BTreeMap;
+use thiserror::Error;
+#[derive(Debug,Clone,PartialEq)]pub enum DbValue{Null,Bool(bool),Integer(i64),Real(f64),Text(String),Bytes(Vec<u8>),Json(serde_json::Value)}
+#[derive(Error,Debug)]pub enum PgError{#[error("PostgreSQL error: {0}")]Postgres(#[from]postgres::Error),#[error("transaction already active")]TransactionActive,#[error("no active transaction")]NoTransaction,#[error("unsupported PostgreSQL column type '{0}'")]UnsupportedType(String)}
+pub struct Database{client:Client,in_transaction:bool}
+impl Database{
+pub fn connect(url:&str)->Result<Self,PgError>{Ok(Self{client:Client::connect(url,NoTls)?,in_transaction:false})}
+pub fn execute(&mut self,sql:&str,params:&[DbValue])->Result<u64,PgError>{let values=parameters(params);let refs:Vec<&(dyn ToSql+Sync)>=values.iter().map(|value|value.as_ref()).collect();let statement=self.client.prepare(sql)?;Ok(self.client.execute(&statement,&refs)?)}
+pub fn query(&mut self,sql:&str,params:&[DbValue])->Result<Vec<BTreeMap<String,DbValue>>,PgError>{let values=parameters(params);let refs:Vec<&(dyn ToSql+Sync)>=values.iter().map(|value|value.as_ref()).collect();let statement=self.client.prepare(sql)?;self.client.query(&statement,&refs)?.into_iter().map(row).collect()}
+pub fn begin(&mut self)->Result<(),PgError>{if self.in_transaction{return Err(PgError::TransactionActive)}self.client.batch_execute("BEGIN")?;self.in_transaction=true;Ok(())}
+pub fn commit(&mut self)->Result<(),PgError>{if !self.in_transaction{return Err(PgError::NoTransaction)}self.client.batch_execute("COMMIT")?;self.in_transaction=false;Ok(())}
+pub fn rollback(&mut self)->Result<(),PgError>{if !self.in_transaction{return Err(PgError::NoTransaction)}self.client.batch_execute("ROLLBACK")?;self.in_transaction=false;Ok(())}
+pub fn cancel(&self)->Result<(),PgError>{self.client.cancel_token().cancel_query(NoTls)?;Ok(())}
+}
+impl Drop for Database{fn drop(&mut self){if self.in_transaction{let _=self.client.batch_execute("ROLLBACK");}}}
+fn parameters(values:&[DbValue])->Vec<Box<dyn ToSql+Sync>>{values.iter().map(|value|match value{DbValue::Null=>Box::new(None::<String>)as Box<dyn ToSql+Sync>,DbValue::Bool(value)=>Box::new(*value),DbValue::Integer(value)=>Box::new(*value),DbValue::Real(value)=>Box::new(*value),DbValue::Text(value)=>Box::new(value.clone()),DbValue::Bytes(value)=>Box::new(value.clone()),DbValue::Json(value)=>Box::new(value.clone())}).collect()}
+fn row(row:Row)->Result<BTreeMap<String,DbValue>,PgError>{let mut output=BTreeMap::new();for(index,column)in row.columns().iter().enumerate(){let value=match column.type_(){&Type::BOOL=>nullable(&row,index,DbValue::Bool)?,&Type::INT2=>nullable(&row,index,|value:i16|DbValue::Integer(value.into()))?,&Type::INT4=>nullable(&row,index,|value:i32|DbValue::Integer(value.into()))?,&Type::INT8=>nullable(&row,index,DbValue::Integer)?,&Type::FLOAT4=>nullable(&row,index,|value:f32|DbValue::Real(value.into()))?,&Type::FLOAT8=>nullable(&row,index,DbValue::Real)?,&Type::TEXT|&Type::VARCHAR|&Type::BPCHAR|&Type::NAME=>nullable(&row,index,DbValue::Text)?,&Type::BYTEA=>nullable(&row,index,DbValue::Bytes)?,&Type::JSON|&Type::JSONB=>nullable(&row,index,DbValue::Json)?,other=>return Err(PgError::UnsupportedType(other.name().into()))};output.insert(column.name().into(),value);}Ok(output)}
+fn nullable<T>(row:&Row,index:usize,convert:impl FnOnce(T)->DbValue)->Result<DbValue,postgres::Error>where T:for<'a>postgres::types::FromSql<'a>{Ok(row.try_get::<_,Option<T>>(index)?.map(convert).unwrap_or(DbValue::Null))}
+#[cfg(test)]mod tests{use super::*;#[test]fn parameter_conversion_covers_supported_types(){let values=vec![DbValue::Null,DbValue::Bool(true),DbValue::Integer(1),DbValue::Real(1.5),DbValue::Text("x".into()),DbValue::Bytes(vec![1]),DbValue::Json(serde_json::json!({"x":1}))];assert_eq!(parameters(&values).len(),values.len());}#[test]fn live_postgres_round_trip_when_configured(){let Ok(url)=std::env::var("TITAN_POSTGRES_TEST_URL")else{return};let mut db=Database::connect(&url).unwrap();let row=db.query("SELECT $1::bigint AS value",&[DbValue::Integer(42)]).unwrap();assert_eq!(row[0]["value"],DbValue::Integer(42));}}

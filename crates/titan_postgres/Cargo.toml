@@ -1,0 +1,10 @@
+[package]
+name = "titan_postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
+serde_json.workspace = true
+thiserror.workspace = true
