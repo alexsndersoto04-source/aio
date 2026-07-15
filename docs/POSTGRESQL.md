@@ -12,4 +12,6 @@ TITAN APIs are `postgres::connect`, `connect_tls`, `execute`, `query`, `begin`, 
 
 TITAN exposes `postgres::pool(url, maximum, tls)`, `acquire(pool, timeout_ms)`, `pool_stats(pool)`, and `pool_close(pool)`. Acquire returns `Option::Some(Postgres)` or `Option::None`; the lease supports all query/transaction/cancel APIs and returns automatically when `postgres::close(lease)` is called.
 
+`postgres::migrate(db, migrations)` uses a process-independent PostgreSQL advisory lock so multiple application instances cannot migrate concurrently. It records version/name/FNV checksum/timestamp in `_titan_migrations`, applies pending versions atomically, skips prior versions and rejects changed history or invalid ordering.
+
 The live integration test runs when `TITAN_POSTGRES_TEST_URL` is configured; it is skipped otherwise because PostgreSQL is an external service. VM pool handles are the next integration block.

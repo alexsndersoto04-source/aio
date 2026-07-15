@@ -123,6 +123,7 @@ impl TypeEnv {
         functions.insert("std::postgres::execute".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::String, Type::Unknown], result: Type::Int });
         functions.insert("std::postgres::query".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
         for name in ["begin","commit","rollback","cancel"] { functions.insert(format!("std::postgres::{name}"), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil }); }
+        functions.insert("std::postgres::migrate".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::Unknown], result: Type::Int });
         functions.insert("std::postgres::close".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Bool });
         functions.insert("std::postgres::pool".into(), FunctionSig { params: vec![Type::String, Type::Int, Type::Bool], result: Type::Named("PostgresPool".into()) });
         functions.insert("std::postgres::acquire".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into()), Type::Int], result: Type::Named("Option".into()) });
