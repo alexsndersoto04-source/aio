@@ -124,6 +124,10 @@ impl TypeEnv {
         functions.insert("std::postgres::query".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
         for name in ["begin","commit","rollback","cancel"] { functions.insert(format!("std::postgres::{name}"), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil }); }
         functions.insert("std::postgres::close".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Bool });
+        functions.insert("std::postgres::pool".into(), FunctionSig { params: vec![Type::String, Type::Int, Type::Bool], result: Type::Named("PostgresPool".into()) });
+        functions.insert("std::postgres::acquire".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into()), Type::Int], result: Type::Named("Option".into()) });
+        functions.insert("std::postgres::pool_stats".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into())], result: Type::Named("map".into()) });
+        functions.insert("std::postgres::pool_close".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into())], result: Type::Nil });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

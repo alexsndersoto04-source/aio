@@ -41,7 +41,8 @@ pub enum Op {
     ServerControlNew, ServerTryAcquire, ServerRelease, ServerShutdown, ServerStats, ServerHealthResponse,
     SqliteOpen, SqliteMemory, SqliteExecute, SqliteQuery, SqliteBegin, SqliteCommit, SqliteRollback, SqliteMigrate, SqliteLastId, SqliteClose,
     SqlitePoolNew, SqlitePoolAcquire, SqlitePoolStats, SqlitePoolClose,
-    PostgresConnect, PostgresConnectTls, PostgresExecute, PostgresQuery, PostgresBegin, PostgresCommit, PostgresRollback, PostgresCancel, PostgresClose, Ret,
+    PostgresConnect, PostgresConnectTls, PostgresExecute, PostgresQuery, PostgresBegin, PostgresCommit, PostgresRollback, PostgresCancel, PostgresClose,
+    PostgresPoolNew, PostgresPoolAcquire, PostgresPoolStats, PostgresPoolClose, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -346,6 +347,10 @@ impl AstCompiler {
                 "std::postgres::rollback" if args.len() == 1 => self.emit(Op::PostgresRollback),
                 "std::postgres::cancel" if args.len() == 1 => self.emit(Op::PostgresCancel),
                 "std::postgres::close" if args.len() == 1 => self.emit(Op::PostgresClose),
+                "std::postgres::pool" if args.len() == 3 => self.emit(Op::PostgresPoolNew),
+                "std::postgres::acquire" if args.len() == 2 => self.emit(Op::PostgresPoolAcquire),
+                "std::postgres::pool_stats" if args.len() == 1 => self.emit(Op::PostgresPoolStats),
+                "std::postgres::pool_close" if args.len() == 1 => self.emit(Op::PostgresPoolClose),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];

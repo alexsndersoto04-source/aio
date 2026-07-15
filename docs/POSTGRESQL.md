@@ -10,4 +10,6 @@ TITAN APIs are `postgres::connect`, `connect_tls`, `execute`, `query`, `begin`, 
 
 `Pool::new(url, maximum, tls)` provides bounded plain/TLS connection reuse, condition-variable acquisition with timeout, RAII return, stats and controlled close. Connections are opened outside the global lock and failed opens release reserved capacity. Idle connections close immediately during shutdown; checked-out connections close when returned.
 
+TITAN exposes `postgres::pool(url, maximum, tls)`, `acquire(pool, timeout_ms)`, `pool_stats(pool)`, and `pool_close(pool)`. Acquire returns `Option::Some(Postgres)` or `Option::None`; the lease supports all query/transaction/cancel APIs and returns automatically when `postgres::close(lease)` is called.
+
 The live integration test runs when `TITAN_POSTGRES_TEST_URL` is configured; it is skipped otherwise because PostgreSQL is an external service. VM pool handles are the next integration block.
