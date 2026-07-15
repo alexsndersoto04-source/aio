@@ -106,6 +106,13 @@ impl TypeEnv {
         functions.insert("std::server::shutdown".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Nil });
         functions.insert("std::server::stats".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Named("map".into()) });
         functions.insert("std::server::health_response".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Named("map".into()) });
+        functions.insert("std::sqlite::open".into(), FunctionSig { params: vec![Type::String], result: Type::Named("Sqlite".into()) });
+        functions.insert("std::sqlite::memory".into(), FunctionSig { params: vec![], result: Type::Named("Sqlite".into()) });
+        functions.insert("std::sqlite::execute".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::String, Type::Unknown], result: Type::Int });
+        functions.insert("std::sqlite::query".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
+        for name in ["begin","commit","rollback"] { functions.insert(format!("std::sqlite::{name}"), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Nil }); }
+        functions.insert("std::sqlite::last_insert_id".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Int });
+        functions.insert("std::sqlite::close".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Bool });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

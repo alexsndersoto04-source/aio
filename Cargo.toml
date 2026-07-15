@@ -17,6 +17,7 @@ members = [
     "crates/titan_pkg",
     "crates/titan_dap",
     "crates/titan_tls",
+    "crates/titan_sqlite",
 ]
 resolver = "2"
 
