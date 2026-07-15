@@ -118,6 +118,11 @@ impl TypeEnv {
         functions.insert("std::sqlite::acquire".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into()), Type::Int], result: Type::Named("Option".into()) });
         functions.insert("std::sqlite::pool_stats".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into())], result: Type::Named("map".into()) });
         functions.insert("std::sqlite::pool_close".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into())], result: Type::Nil });
+        functions.insert("std::postgres::connect".into(), FunctionSig { params: vec![Type::String], result: Type::Named("Postgres".into()) });
+        functions.insert("std::postgres::execute".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::String, Type::Unknown], result: Type::Int });
+        functions.insert("std::postgres::query".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
+        for name in ["begin","commit","rollback","cancel"] { functions.insert(format!("std::postgres::{name}"), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil }); }
+        functions.insert("std::postgres::close".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Bool });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

@@ -220,7 +220,7 @@ fn to_json(value: Value) -> Result<serde_json::Value, String> {
         Value::Array(v) | Value::Tuple(v) => serde_json::Value::Array(v.into_iter().map(to_json).collect::<Result<_, _>>()?),
         Value::Map(v) | Value::Struct { fields: v, .. } => serde_json::Value::Object(v.into_iter().map(|(k,v)| Ok((k, to_json(v)?))).collect::<Result<_, String>>()?),
         Value::Enum { name, variant, payload } => { let mut map = serde_json::Map::new(); map.insert("type".into(), name.into()); map.insert("variant".into(), variant.into()); if let Some(value) = payload { map.insert("payload".into(), to_json(*value)?); } serde_json::Value::Object(map) }
-        Value::Closure { .. } | Value::Task(_) | Value::ChannelSender(_) | Value::ChannelReceiver(_) | Value::TcpListener(_) | Value::TcpStream(_) | Value::HttpRouter(_) | Value::TlsStream(_) | Value::TlsServerConfig(_) | Value::WebSocketDecoder(_) | Value::WebSocket(_) | Value::ServerControl(_) | Value::Sqlite(_) | Value::SqlitePool(_) => return Err("runtime handles cannot be encoded as JSON".into()),
+        Value::Closure { .. } | Value::Task(_) | Value::ChannelSender(_) | Value::ChannelReceiver(_) | Value::TcpListener(_) | Value::TcpStream(_) | Value::HttpRouter(_) | Value::TlsStream(_) | Value::TlsServerConfig(_) | Value::WebSocketDecoder(_) | Value::WebSocket(_) | Value::ServerControl(_) | Value::Sqlite(_) | Value::SqlitePool(_) | Value::Postgres(_) => return Err("runtime handles cannot be encoded as JSON".into()),
     })
 }
 fn from_json(value: serde_json::Value) -> Result<Value, String> {

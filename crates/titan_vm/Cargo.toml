@@ -9,6 +9,7 @@ titan_codegen = { path = "../titan_codegen" }
 titan_stdlib = { path = "../titan_stdlib" }
 titan_tls = { path = "../titan_tls" }
 titan_sqlite = { path = "../titan_sqlite" }
+titan_postgres = { path = "../titan_postgres" }
 serde_json.workspace = true
 thiserror.workspace = true
 
