@@ -129,6 +129,12 @@ impl TypeEnv {
         functions.insert("std::postgres::acquire".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into()), Type::Int], result: Type::Named("Option".into()) });
         functions.insert("std::postgres::pool_stats".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into())], result: Type::Named("map".into()) });
         functions.insert("std::postgres::pool_close".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into())], result: Type::Nil });
+        functions.insert("std::mysql::connect".into(), FunctionSig { params: vec![Type::String], result: Type::Named("Mysql".into()) });
+        functions.insert("std::mysql::execute".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::String, Type::Unknown], result: Type::Int });
+        functions.insert("std::mysql::query".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
+        for name in ["begin","commit","rollback"] { functions.insert(format!("std::mysql::{name}"), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Nil }); }
+        functions.insert("std::mysql::last_insert_id".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Int });
+        functions.insert("std::mysql::close".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Bool });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

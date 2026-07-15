@@ -10,6 +10,7 @@ titan_stdlib = { path = "../titan_stdlib" }
 titan_tls = { path = "../titan_tls" }
 titan_sqlite = { path = "../titan_sqlite" }
 titan_postgres = { path = "../titan_postgres" }
+titan_mysql = { path = "../titan_mysql" }
 serde_json.workspace = true
 thiserror.workspace = true
 
