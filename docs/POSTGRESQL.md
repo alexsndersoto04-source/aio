@@ -8,4 +8,6 @@ TITAN APIs are `postgres::connect`, `connect_tls`, `execute`, `query`, `begin`, 
 
 `connect_tls` uses rustls 0.23, WebPKI roots, SNI and hostname/certificate-chain validation through `tokio-postgres-rustls`; there is no insecure certificate verifier and no OpenSSL dependency. Plain `connect` remains available for trusted local Unix/TCP deployments.
 
-The live integration test runs when `TITAN_POSTGRES_TEST_URL` is configured; it is skipped otherwise because PostgreSQL is an external service. Pooling is the next PostgreSQL block.
+`Pool::new(url, maximum, tls)` provides bounded plain/TLS connection reuse, condition-variable acquisition with timeout, RAII return, stats and controlled close. Connections are opened outside the global lock and failed opens release reserved capacity. Idle connections close immediately during shutdown; checked-out connections close when returned.
+
+The live integration test runs when `TITAN_POSTGRES_TEST_URL` is configured; it is skipped otherwise because PostgreSQL is an external service. VM pool handles are the next integration block.
