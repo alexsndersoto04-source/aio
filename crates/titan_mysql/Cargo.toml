@@ -1,0 +1,9 @@
+[package]
+name = "titan_mysql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mysql = { version = "26", default-features = false, features = ["minimal-rust", "rustls-tls"] }
+thiserror.workspace = true
