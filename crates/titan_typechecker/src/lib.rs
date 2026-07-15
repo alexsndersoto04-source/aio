@@ -105,6 +105,7 @@ impl TypeEnv {
         functions.insert("std::server::release".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Bool });
         functions.insert("std::server::shutdown".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Nil });
         functions.insert("std::server::stats".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Named("map".into()) });
+        functions.insert("std::server::health_response".into(), FunctionSig { params: vec![Type::Named("ServerControl".into())], result: Type::Named("map".into()) });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

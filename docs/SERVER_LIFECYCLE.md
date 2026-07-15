@@ -4,4 +4,6 @@
 
 `shutdown(control)` atomically stops new acquisitions while existing tasks drain. `stats(control)` returns maximum, active, accepted, rejected, completed, ready, healthy and shutting_down. All state uses atomics; acquisition uses compare-exchange, so concurrent accept loops cannot exceed the configured maximum.
 
-Readiness becomes false immediately at shutdown, while health remains true during draining. Active reaches zero when graceful shutdown is complete. Counters are monotonic and suitable for exporting through `std::metrics` or a health endpoint.
+Readiness becomes false immediately at shutdown, while health remains true during draining. Active reaches zero when graceful shutdown is complete. `health_response(control)` emits a no-store JSON response with status 200 while ready and 503 while draining.
+
+Every router dispatch automatically increments `http.requests.total` and the appropriate `http.responses.Nxx` counter and records `http.request.duration_ms`. Metrics failures never fail a request; snapshots can be exposed through a protected endpoint.

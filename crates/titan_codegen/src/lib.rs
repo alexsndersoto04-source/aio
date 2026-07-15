@@ -38,7 +38,7 @@ pub enum Op {
     TlsConnect, TlsServerConfig, TlsAccept, TlsRead, TlsWrite, TlsClose,
     WsDecoderNew, WsDecoderPush, WsDecoderNext,
     WsConnect, WsAttachTcp, WsAttachTls, WsSendText, WsSendBinary, WsReceive, WsClose,
-    ServerControlNew, ServerTryAcquire, ServerRelease, ServerShutdown, ServerStats, Ret,
+    ServerControlNew, ServerTryAcquire, ServerRelease, ServerShutdown, ServerStats, ServerHealthResponse, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -319,6 +319,7 @@ impl AstCompiler {
                 "std::server::release" if args.len() == 1 => self.emit(Op::ServerRelease),
                 "std::server::shutdown" if args.len() == 1 => self.emit(Op::ServerShutdown),
                 "std::server::stats" if args.len() == 1 => self.emit(Op::ServerStats),
+                "std::server::health_response" if args.len() == 1 => self.emit(Op::ServerHealthResponse),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];
