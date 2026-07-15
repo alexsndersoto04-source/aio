@@ -111,6 +111,7 @@ impl TypeEnv {
         functions.insert("std::sqlite::execute".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::String, Type::Unknown], result: Type::Int });
         functions.insert("std::sqlite::query".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
         for name in ["begin","commit","rollback"] { functions.insert(format!("std::sqlite::{name}"), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Nil }); }
+        functions.insert("std::sqlite::migrate".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::Unknown], result: Type::Int });
         functions.insert("std::sqlite::last_insert_id".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Int });
         functions.insert("std::sqlite::close".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Bool });
         let enum_variants = HashMap::from([
