@@ -1,0 +1,14 @@
+fn main() {
+    std::web::set_title("TITAN WebAssembly");
+    std::web::set_text("#status", "TITAN controla este DOM desde WebAssembly 🚀");
+    std::web::set_attribute("#status", "data-runtime", "titan-wasm");
+    std::web::add_class("#status", "ready");
+
+    if std::web::query_exists("#status") {
+        println("DOM actualizado correctamente");
+    } else {
+        println("No se encontró #status");
+    }
+
+    0
+}

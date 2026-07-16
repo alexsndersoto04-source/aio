@@ -10,4 +10,16 @@ Modules using single-argument `print`/`println` now import the real host functio
 
 String `+` is lowered to an internal Wasm concatenation function when bytecode data-flow proves both operands are strings. The helper uses a mutable bump-heap pointer, grows linear memory on demand, checks address overflow and `memory.grow` failure, copies both UTF-8 payloads with `memory.copy`, combines Unicode scalar counts, and returns a new ABI handle. A local type-flow analysis tracks strings through locals, duplication, branches and chained concatenations while leaving numeric `+` as `i64.add`; ambiguous mixed values are rejected rather than guessed. The allocator intentionally does not reclaim individual strings yet.
 
-Collections remain explicitly unsupported. DOM bindings, events, asynchronous browser APIs, source maps, and eventually managed heap reclamation are subsequent Phase 6 blocks.
+The browser backend recognizes `std::web::query_exists`, `set_text`, `set_html`, `set_attribute`, `add_class`, `remove_class`, `focus`, and `set_title`. Only imports actually referenced by bytecode are emitted, in deterministic order, and all defined-function indexes are relocated by the exact import count. String arguments use the same checked ABI handles; setters return Titan `nil`, while `query_exists` returns an `i64` boolean. On the native VM these functions fail with a clear browser-host-required error instead of pretending to manipulate a DOM. `set_html` deliberately exposes raw `innerHTML`; applications must not pass untrusted markup.
+
+A complete host adapter and page live under `examples/browser/`. Build and serve it with:
+
+```bash
+titan wasm examples/browser/main.titan --output examples/browser/program.wasm
+cd examples/browser
+python3 -m http.server 8080
+```
+
+Then open `http://localhost:8080`. Browsers generally forbid loading Wasm from `file://`, so an HTTP server is required.
+
+Collections remain explicitly unsupported. Events, asynchronous browser APIs, source maps, and eventually managed heap reclamation are subsequent Phase 6 blocks.

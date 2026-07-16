@@ -101,6 +101,16 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::env::get", [String], String, Environment), native!("std::env::args", [], Array, Environment),
     native!("std::env::current_dir", [], String, Environment),
     native!("std::net::http_get", [String], Map, Network),
+
+    native!("std::web::query_exists", [String], Bool),
+    native!("std::web::set_text", [String, String], Nil),
+    native!("std::web::set_html", [String, String], Nil),
+    native!("std::web::set_attribute", [String, String, String], Nil),
+    native!("std::web::add_class", [String, String], Nil),
+    native!("std::web::remove_class", [String, String], Nil),
+    native!("std::web::focus", [String], Nil),
+    native!("std::web::set_title", [String], Nil),
+
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];
 

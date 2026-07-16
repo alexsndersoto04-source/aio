@@ -1,6 +1,6 @@
 //! Direct WebAssembly backend for Titan's portable numeric bytecode.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use thiserror::Error;
 use titan_codegen::{BytecodeFunc, CompiledModule, Op};
@@ -69,6 +69,71 @@ pub enum WasmError {
     },
 }
 
+#[derive(Clone, Copy)]
+struct HostImport {
+    native: Option<&'static str>,
+    field: &'static str,
+    params: usize,
+    returns_value: bool,
+}
+
+const PRINT_IMPORT: HostImport = HostImport {
+    native: None,
+    field: "print",
+    params: 1,
+    returns_value: false,
+};
+
+const WEB_IMPORTS: &[HostImport] = &[
+    HostImport { native: Some("std::web::query_exists"), field: "dom_query_exists", params: 1, returns_value: true },
+    HostImport { native: Some("std::web::set_text"), field: "dom_set_text", params: 2, returns_value: false },
+    HostImport { native: Some("std::web::set_html"), field: "dom_set_html", params: 2, returns_value: false },
+    HostImport { native: Some("std::web::set_attribute"), field: "dom_set_attribute", params: 3, returns_value: false },
+    HostImport { native: Some("std::web::add_class"), field: "dom_add_class", params: 2, returns_value: false },
+    HostImport { native: Some("std::web::remove_class"), field: "dom_remove_class", params: 2, returns_value: false },
+    HostImport { native: Some("std::web::focus"), field: "dom_focus", params: 1, returns_value: false },
+    HostImport { native: Some("std::web::set_title"), field: "dom_set_title", params: 1, returns_value: false },
+];
+
+struct HostImports {
+    definitions: Vec<HostImport>,
+    print: Option<u32>,
+    natives: HashMap<&'static str, u32>,
+}
+
+fn web_import(name: &str) -> Option<&'static HostImport> {
+    WEB_IMPORTS
+        .iter()
+        .find(|definition| definition.native == Some(name))
+}
+
+fn collect_host_imports(module: &CompiledModule) -> HostImports {
+    let needs_print = module.functions.iter().any(|function| {
+        function.code.iter().any(|operation| matches!(operation, Op::Print(_)))
+    });
+    let mut definitions = Vec::new();
+    let mut print = None;
+    let mut natives = HashMap::new();
+    if needs_print {
+        print = Some(0);
+        definitions.push(PRINT_IMPORT);
+    }
+    for definition in WEB_IMPORTS {
+        let Some(native) = definition.native else { continue };
+        let used = module.functions.iter().any(|function| {
+            function.code.iter().any(|operation| {
+                matches!(operation, Op::CallNative { name, .. } if name == native)
+            })
+        });
+        if used {
+            let index = definitions.len() as u32;
+            definitions.push(*definition);
+            natives.insert(native, index);
+        }
+    }
+    HostImports { definitions, print, natives }
+}
+
 /// Compile Titan numeric bytecode directly to a self-contained WebAssembly module.
 ///
 /// Numeric operand-stack values are assigned to WebAssembly locals. A structured
@@ -90,13 +155,8 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     let needs_concat = layouts
         .iter()
         .any(|layout| !layout.string_adds.is_empty());
-    let needs_print = module.functions.iter().any(|function| {
-        function
-            .code
-            .iter()
-            .any(|operation| matches!(operation, Op::Print(_)))
-    });
-    let function_bias = if needs_print { 1 } else { 0 };
+    let host_imports = collect_host_imports(module);
+    let function_bias = host_imports.definitions.len() as u32;
     let concat_function = needs_concat
         .then_some(function_bias + module.functions.len() as u32);
     let mut output = Module::new();
@@ -107,9 +167,16 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
             .ty()
             .function(vec![ValType::I64; function.arity], [ValType::I64]);
     }
-    let print_type = types.len();
-    if needs_print {
-        types.ty().function([ValType::I64], []);
+    let first_import_type = types.len();
+    for import in &host_imports.definitions {
+        let results = if import.returns_value {
+            vec![ValType::I64]
+        } else {
+            Vec::new()
+        };
+        types
+            .ty()
+            .function(vec![ValType::I64; import.params], results);
     }
     let concat_type = types.len();
     if needs_concat {
@@ -119,9 +186,15 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     }
     output.section(&types);
 
-    if needs_print {
+    if !host_imports.definitions.is_empty() {
         let mut imports = ImportSection::new();
-        imports.import("titan", "print", EntityType::Function(print_type));
+        for (offset, import) in host_imports.definitions.iter().enumerate() {
+            imports.import(
+                "titan",
+                import.field,
+                EntityType::Function(first_import_type + offset as u32),
+            );
+        }
         output.section(&imports);
     }
 
@@ -181,7 +254,7 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
             function,
             layout,
             &strings,
-            function_bias,
+            &host_imports,
             concat_function,
         )?);
     }
@@ -259,7 +332,7 @@ fn compile_function(
     function: &BytecodeFunc,
     layout: &FunctionLayout,
     strings: &StringLayout,
-    function_bias: u32,
+    host_imports: &HostImports,
     concat_function: Option<u32>,
 ) -> Result<Function, WasmError> {
     let extra = function
@@ -278,7 +351,7 @@ fn compile_function(
         function,
         layout,
         strings,
-        function_bias,
+        host_imports,
         concat_function,
     };
     body.instruction(&Instruction::Loop(BlockType::Empty));
@@ -517,7 +590,7 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState) {
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Numeric);
         }
-        Op::Call { argc, .. } | Op::Print(argc) => {
+        Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => {
             state.stack.truncate(state.stack.len() - *argc);
             state.stack.push(ValueKind::Unknown);
         }
@@ -615,6 +688,23 @@ fn validate_operation(
             function: function.name.clone(),
             operation: format!("Print({argc}) requires exactly one browser-host argument"),
         }),
+        Op::CallNative { name, argc } => {
+            let Some(import) = web_import(name) else {
+                return Err(WasmError::Unsupported {
+                    function: function.name.clone(),
+                    operation: format!("CallNative({name})"),
+                });
+            };
+            if *argc != import.params {
+                return Err(WasmError::InvalidArgumentCount {
+                    function: function.name.clone(),
+                    callee: name.clone(),
+                    expected: import.params,
+                    actual: *argc,
+                });
+            }
+            Ok(())
+        }
         Op::Call {
             function: callee,
             argc,
@@ -700,7 +790,7 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         | Op::BitOr
         | Op::BitXor => (2, 1),
         Op::Neg | Op::Not | Op::BitNot | Op::Len => (1, 1),
-        Op::Call { argc, .. } | Op::Print(argc) => (*argc, 1),
+        Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => (*argc, 1),
         Op::Jump(_) | Op::Nop => (0, 0),
         Op::Ret | Op::Halt => (0, 0),
         _ => (0, 0),
@@ -711,7 +801,7 @@ struct EmitContext<'a> {
     function: &'a BytecodeFunc,
     layout: &'a FunctionLayout,
     strings: &'a StringLayout,
-    function_bias: u32,
+    host_imports: &'a HostImports,
     concat_function: Option<u32>,
 }
 
@@ -724,7 +814,7 @@ fn emit_operation(
     let function = context.function;
     let layout = context.layout;
     let strings = context.strings;
-    let function_bias = context.function_bias;
+    let function_bias = context.host_imports.definitions.len() as u32;
     let operation = &function.code[instruction];
     match operation {
         Op::PushInt(value) => store_constant(body, layout.stack_base + height as u32, *value),
@@ -822,11 +912,32 @@ fn emit_operation(
             body.instruction(&Instruction::Call(*callee as u32 + function_bias));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
         }
+        Op::CallNative { name, argc } => {
+            let first = height - *argc;
+            for argument in first..height {
+                body.instruction(&Instruction::LocalGet(
+                    layout.stack_base + argument as u32,
+                ));
+            }
+            let import_index = context.host_imports.natives[name.as_str()];
+            body.instruction(&Instruction::Call(import_index));
+            let import = web_import(name).expect("browser natives are validated before emission");
+            if import.returns_value {
+                body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
+            } else {
+                store_constant(body, layout.stack_base + first as u32, 0);
+            }
+        }
         Op::Print(_) => {
             body.instruction(&Instruction::LocalGet(
                 layout.stack_base + (height - 1) as u32,
             ));
-            body.instruction(&Instruction::Call(0));
+            body.instruction(&Instruction::Call(
+                context
+                    .host_imports
+                    .print
+                    .expect("print operations require the print import"),
+            ));
             store_constant(body, layout.stack_base + (height - 1) as u32, 0);
         }
         Op::Jump(target) => {
@@ -1157,6 +1268,46 @@ mod tests {
     fn rejects_multi_argument_print_until_typed_host_abi_is_available() {
         let module = module_with(
             vec![Op::PushInt(1), Op::PushInt(2), Op::Print(2), Op::Ret],
+            0,
+        );
+        assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));
+    }
+
+    #[test]
+    fn emits_deduplicated_dom_host_imports() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::PushStr(1),
+                Op::CallNative {
+                    name: "std::web::set_text".into(),
+                    argc: 2,
+                },
+                Op::Pop,
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::web::query_exists".into(),
+                    argc: 1,
+                },
+                Op::Ret,
+            ],
+            0,
+        );
+        module.string_table = vec!["#status".into(), "Ready".into()];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 2);
+        assert_eq!(imports.natives["std::web::query_exists"], 0);
+        assert_eq!(imports.natives["std::web::set_text"], 1);
+    }
+
+    #[test]
+    fn rejects_non_browser_native_calls() {
+        let module = module_with(
+            vec![Op::CallNative {
+                name: "std::time::unix_millis".into(),
+                argc: 0,
+            }, Op::Ret],
             0,
         );
         assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cargando TITAN…</title>
+  <style>
+    body { max-width: 48rem; margin: 4rem auto; padding: 0 1rem; font: 1.1rem system-ui; }
+    #status { padding: 1rem; border: 1px solid #888; border-radius: .5rem; }
+    #status.ready { border-color: #16803a; background: #eaf8ee; }
+  </style>
+</head>
+<body>
+  <h1>TITAN WebAssembly + DOM</h1>
+  <p id="status">Cargando módulo…</p>
+  <script type="module" src="./host.js"></script>
+</body>
+</html>
