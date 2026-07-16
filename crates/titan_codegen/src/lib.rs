@@ -44,7 +44,8 @@ pub enum Op {
     PostgresConnect, PostgresConnectTls, PostgresExecute, PostgresQuery, PostgresBegin, PostgresCommit, PostgresRollback, PostgresMigrate, PostgresCancel, PostgresClose,
     PostgresPoolNew, PostgresPoolAcquire, PostgresPoolStats, PostgresPoolClose,
     MysqlConnect, MysqlExecute, MysqlQuery, MysqlBegin, MysqlCommit, MysqlRollback, MysqlMigrate, MysqlLastId, MysqlClose,
-    MysqlPoolNew, MysqlPoolAcquire, MysqlPoolStats, MysqlPoolClose, Ret,
+    MysqlPoolNew, MysqlPoolAcquire, MysqlPoolStats, MysqlPoolClose,
+    DbExecute, DbQuery, DbBegin, DbCommit, DbRollback, DbMigrate, DbClose, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -367,6 +368,13 @@ impl AstCompiler {
                 "std::mysql::acquire" if args.len() == 2 => self.emit(Op::MysqlPoolAcquire),
                 "std::mysql::pool_stats" if args.len() == 1 => self.emit(Op::MysqlPoolStats),
                 "std::mysql::pool_close" if args.len() == 1 => self.emit(Op::MysqlPoolClose),
+                "std::db::execute" if args.len() == 3 => self.emit(Op::DbExecute),
+                "std::db::query" if args.len() == 3 => self.emit(Op::DbQuery),
+                "std::db::begin" if args.len() == 1 => self.emit(Op::DbBegin),
+                "std::db::commit" if args.len() == 1 => self.emit(Op::DbCommit),
+                "std::db::rollback" if args.len() == 1 => self.emit(Op::DbRollback),
+                "std::db::migrate" if args.len() == 2 => self.emit(Op::DbMigrate),
+                "std::db::close" if args.len() == 1 => self.emit(Op::DbClose),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];
