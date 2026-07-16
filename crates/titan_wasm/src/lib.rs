@@ -1,13 +1,13 @@
 //! Direct WebAssembly backend for Titan's portable numeric bytecode.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use thiserror::Error;
 use titan_codegen::{BytecodeFunc, CompiledModule, Op};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection, Function,
-    EntityType, FunctionSection, ImportSection, Instruction, MemArg, MemorySection, MemoryType,
-    Module, TypeSection, ValType,
+    EntityType, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg,
+    MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -62,8 +62,11 @@ pub enum WasmError {
     InvalidString { function: String, string: usize },
     #[error("WebAssembly string data exceeds the 32-bit linear-memory ABI")]
     StringDataTooLarge,
-    #[error("function '{0}' uses string concatenation, which is not available in this backend block")]
-    StringConcatenation(String),
+    #[error("function '{function}' has an ambiguous '+' at instruction {instruction}; string and numeric operands cannot be distinguished from erased bytecode")]
+    AmbiguousAdd {
+        function: String,
+        instruction: usize,
+    },
 }
 
 /// Compile Titan numeric bytecode directly to a self-contained WebAssembly module.
@@ -79,6 +82,14 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     }
 
     let strings = StringLayout::new(&module.string_table)?;
+    let layouts = module
+        .functions
+        .iter()
+        .map(|function| analyze_function(module, function))
+        .collect::<Result<Vec<_>, _>>()?;
+    let needs_concat = layouts
+        .iter()
+        .any(|layout| !layout.string_adds.is_empty());
     let needs_print = module.functions.iter().any(|function| {
         function
             .code
@@ -86,6 +97,8 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
             .any(|operation| matches!(operation, Op::Print(_)))
     });
     let function_bias = if needs_print { 1 } else { 0 };
+    let concat_function = needs_concat
+        .then_some(function_bias + module.functions.len() as u32);
     let mut output = Module::new();
 
     let mut types = TypeSection::new();
@@ -97,6 +110,12 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     let print_type = types.len();
     if needs_print {
         types.ty().function([ValType::I64], []);
+    }
+    let concat_type = types.len();
+    if needs_concat {
+        types
+            .ty()
+            .function([ValType::I64, ValType::I64], [ValType::I64]);
     }
     output.section(&types);
 
@@ -110,6 +129,9 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     for index in 0..module.functions.len() {
         functions.function(index as u32);
     }
+    if needs_concat {
+        functions.function(concat_type);
+    }
     output.section(&functions);
 
     let mut memories = MemorySection::new();
@@ -121,6 +143,19 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
         page_size_log2: None,
     });
     output.section(&memories);
+
+    if needs_concat {
+        let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(strings.heap_start as i32),
+        );
+        output.section(&globals);
+    }
 
     let mut exports = ExportSection::new();
     exports.export(
@@ -141,13 +176,17 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     output.section(&exports);
 
     let mut code = CodeSection::new();
-    for function in &module.functions {
+    for (function, layout) in module.functions.iter().zip(&layouts) {
         code.function(&compile_function(
-            module,
             function,
+            layout,
             &strings,
             function_bias,
+            concat_function,
         )?);
+    }
+    if needs_concat {
+        code.function(&compile_string_concat());
     }
     output.section(&code);
 
@@ -168,6 +207,7 @@ struct StringLayout {
     handles: Vec<i64>,
     data: Vec<u8>,
     minimum_pages: u64,
+    heap_start: u32,
 }
 
 impl StringLayout {
@@ -178,6 +218,9 @@ impl StringLayout {
         let mut handles = Vec::with_capacity(strings.len());
         let mut data = Vec::new();
         for string in strings {
+            while !(Self::DATA_START as usize + data.len()).is_multiple_of(4) {
+                data.push(0);
+            }
             let byte_length =
                 u32::try_from(string.len()).map_err(|_| WasmError::StringDataTooLarge)?;
             let scalar_length = u32::try_from(string.chars().count())
@@ -197,26 +240,32 @@ impl StringLayout {
         let end = u64::from(Self::DATA_START)
             .checked_add(u64::try_from(data.len()).map_err(|_| WasmError::StringDataTooLarge)?)
             .ok_or(WasmError::StringDataTooLarge)?;
-        let minimum_pages = end.div_ceil(Self::PAGE_SIZE).max(1);
+        let aligned_end = end
+            .checked_add(3)
+            .ok_or(WasmError::StringDataTooLarge)?
+            & !3;
+        let heap_start = u32::try_from(aligned_end).map_err(|_| WasmError::StringDataTooLarge)?;
+        let minimum_pages = aligned_end.div_ceil(Self::PAGE_SIZE).max(1);
         Ok(Self {
             handles,
             data,
             minimum_pages,
+            heap_start,
         })
     }
 }
 
 fn compile_function(
-    module: &CompiledModule,
     function: &BytecodeFunc,
+    layout: &FunctionLayout,
     strings: &StringLayout,
     function_bias: u32,
+    concat_function: Option<u32>,
 ) -> Result<Function, WasmError> {
     let extra = function
         .locals
         .checked_sub(function.arity)
         .ok_or_else(|| WasmError::Locals(function.name.clone()))?;
-    let layout = analyze_function(module, function)?;
     let numeric_locals = extra + layout.stack_slots;
     let mut locals = Vec::new();
     if numeric_locals > 0 {
@@ -225,6 +274,13 @@ fn compile_function(
     locals.push((1, ValType::I32));
 
     let mut body = Function::new(locals);
+    let context = EmitContext {
+        function,
+        layout,
+        strings,
+        function_bias,
+        concat_function,
+    };
     body.instruction(&Instruction::Loop(BlockType::Empty));
 
     for (instruction, height) in layout.heights.iter().enumerate() {
@@ -235,15 +291,7 @@ fn compile_function(
         body.instruction(&Instruction::I32Const(instruction as i32));
         body.instruction(&Instruction::I32Eq);
         body.instruction(&Instruction::If(BlockType::Empty));
-        emit_operation(
-            function,
-            instruction,
-            *height,
-            &layout,
-            strings,
-            function_bias,
-            &mut body,
-        )?;
+        emit_operation(&context, instruction, *height, &mut body)?;
         body.instruction(&Instruction::End);
     }
 
@@ -261,23 +309,20 @@ struct FunctionLayout {
     stack_base: u32,
     stack_slots: usize,
     pc_local: u32,
+    string_adds: HashSet<usize>,
 }
 
 fn analyze_function(
     module: &CompiledModule,
     function: &BytecodeFunc,
 ) -> Result<FunctionLayout, WasmError> {
-    if function.code.iter().any(|operation| matches!(operation, Op::PushStr(_)))
-        && function.code.iter().any(|operation| matches!(operation, Op::Add))
-    {
-        return Err(WasmError::StringConcatenation(function.name.clone()));
-    }
     if function.code.is_empty() {
         return Ok(FunctionLayout {
             heights: Vec::new(),
             stack_base: function.locals as u32,
             stack_slots: 0,
             pc_local: function.locals as u32,
+            string_adds: HashSet::new(),
         });
     }
 
@@ -332,12 +377,174 @@ fn analyze_function(
         }
     }
 
+    let string_adds = infer_string_adds(function, &heights)?;
     Ok(FunctionLayout {
         heights,
         stack_base: function.locals as u32,
         stack_slots: maximum,
         pc_local: (function.locals + maximum) as u32,
+        string_adds,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValueKind {
+    Numeric,
+    String,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TypeState {
+    stack: Vec<ValueKind>,
+    locals: Vec<ValueKind>,
+}
+
+fn infer_string_adds(
+    function: &BytecodeFunc,
+    heights: &[Option<usize>],
+) -> Result<HashSet<usize>, WasmError> {
+    if function.code.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut states = vec![None; function.code.len()];
+    states[0] = Some(TypeState {
+        stack: Vec::new(),
+        locals: vec![ValueKind::Unknown; function.locals],
+    });
+    let mut pending = VecDeque::from([0]);
+
+    while let Some(instruction) = pending.pop_front() {
+        let mut state = states[instruction]
+            .clone()
+            .expect("queued instructions have a type state");
+        apply_type_effect(&function.code[instruction], &mut state);
+        let mut successors = Vec::with_capacity(2);
+        match &function.code[instruction] {
+            Op::Jump(target) => successors.push(*target),
+            Op::JumpIfFalse(target) => {
+                successors.push(*target);
+                if instruction + 1 < function.code.len() {
+                    successors.push(instruction + 1);
+                }
+            }
+            Op::Ret | Op::Halt => {}
+            _ if instruction + 1 < function.code.len() => successors.push(instruction + 1),
+            _ => {}
+        }
+        for successor in successors {
+            let changed = merge_type_state(&mut states[successor], &state);
+            if changed {
+                pending.push_back(successor);
+            }
+        }
+    }
+
+    let mut string_adds = HashSet::new();
+    for (instruction, operation) in function.code.iter().enumerate() {
+        if !matches!(operation, Op::Add) || heights[instruction].is_none() {
+            continue;
+        }
+        let state = states[instruction]
+            .as_ref()
+            .expect("reachable instructions have a type state");
+        let left = state.stack[state.stack.len() - 2];
+        let right = state.stack[state.stack.len() - 1];
+        match (left, right) {
+            (ValueKind::String, ValueKind::String) => {
+                string_adds.insert(instruction);
+            }
+            (ValueKind::String, _) | (_, ValueKind::String) => {
+                return Err(WasmError::AmbiguousAdd {
+                    function: function.name.clone(),
+                    instruction,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(string_adds)
+}
+
+fn apply_type_effect(operation: &Op, state: &mut TypeState) {
+    match operation {
+        Op::PushStr(_) => state.stack.push(ValueKind::String),
+        Op::PushInt(_) | Op::PushBool(_) | Op::PushChar(_) => {
+            state.stack.push(ValueKind::Numeric);
+        }
+        Op::PushNil => state.stack.push(ValueKind::Unknown),
+        Op::PushLocal(local) => state.stack.push(state.locals[*local]),
+        Op::StoreLocal(local) => {
+            state.locals[*local] = state.stack.pop().expect("stack analysis ran first");
+        }
+        Op::Pop | Op::JumpIfFalse(_) => {
+            let _ = state.stack.pop();
+        }
+        Op::Dup => {
+            let value = *state.stack.last().expect("stack analysis ran first");
+            state.stack.push(value);
+        }
+        Op::Add => {
+            let right = state.stack.pop().expect("stack analysis ran first");
+            let left = state.stack.pop().expect("stack analysis ran first");
+            let result = if left == ValueKind::String && right == ValueKind::String {
+                ValueKind::String
+            } else if left == ValueKind::Numeric && right == ValueKind::Numeric {
+                ValueKind::Numeric
+            } else {
+                ValueKind::Unknown
+            };
+            state.stack.push(result);
+        }
+        Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::Mod
+        | Op::Eq
+        | Op::Neq
+        | Op::Lt
+        | Op::Gt
+        | Op::Lte
+        | Op::Gte
+        | Op::BitAnd
+        | Op::BitOr
+        | Op::BitXor => {
+            let _ = state.stack.pop();
+            let _ = state.stack.pop();
+            state.stack.push(ValueKind::Numeric);
+        }
+        Op::Neg | Op::Not | Op::BitNot | Op::Len => {
+            let _ = state.stack.pop();
+            state.stack.push(ValueKind::Numeric);
+        }
+        Op::Call { argc, .. } | Op::Print(argc) => {
+            state.stack.truncate(state.stack.len() - *argc);
+            state.stack.push(ValueKind::Unknown);
+        }
+        Op::Jump(_) | Op::Ret | Op::Nop | Op::Halt => {}
+        _ => unreachable!("unsupported operations are rejected before type inference"),
+    }
+}
+
+fn merge_type_state(destination: &mut Option<TypeState>, incoming: &TypeState) -> bool {
+    let Some(current) = destination else {
+        *destination = Some(incoming.clone());
+        return true;
+    };
+    let mut changed = false;
+    for (current, incoming) in current.stack.iter_mut().zip(&incoming.stack) {
+        if *current != *incoming && *current != ValueKind::Unknown {
+            *current = ValueKind::Unknown;
+            changed = true;
+        }
+    }
+    for (current, incoming) in current.locals.iter_mut().zip(&incoming.locals) {
+        if *current != *incoming && *current != ValueKind::Unknown {
+            *current = ValueKind::Unknown;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn enqueue_fallthrough(
@@ -500,15 +707,24 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
     }
 }
 
+struct EmitContext<'a> {
+    function: &'a BytecodeFunc,
+    layout: &'a FunctionLayout,
+    strings: &'a StringLayout,
+    function_bias: u32,
+    concat_function: Option<u32>,
+}
+
 fn emit_operation(
-    function: &BytecodeFunc,
+    context: &EmitContext<'_>,
     instruction: usize,
     height: usize,
-    layout: &FunctionLayout,
-    strings: &StringLayout,
-    function_bias: u32,
     body: &mut Function,
 ) -> Result<(), WasmError> {
+    let function = context.function;
+    let layout = context.layout;
+    let strings = context.strings;
+    let function_bias = context.function_bias;
     let operation = &function.code[instruction];
     match operation {
         Op::PushInt(value) => store_constant(body, layout.stack_base + height as u32, *value),
@@ -546,6 +762,17 @@ fn emit_operation(
                 layout.stack_base + (height - 1) as u32,
             ));
             body.instruction(&Instruction::LocalSet(layout.stack_base + height as u32));
+        }
+        Op::Add if layout.string_adds.contains(&instruction) => {
+            let output = layout.stack_base + (height - 2) as u32;
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::LocalGet(output + 1));
+            body.instruction(&Instruction::Call(
+                context
+                    .concat_function
+                    .expect("string additions require the concat helper"),
+            ));
+            body.instruction(&Instruction::LocalSet(output));
         }
         Op::Add => binary(body, layout, height, Instruction::I64Add),
         Op::Sub => binary(body, layout, height, Instruction::I64Sub),
@@ -652,6 +879,144 @@ fn emit_operation(
     set_pc(body, layout.pc_local, instruction + 1);
     body.instruction(&Instruction::Br(1));
     Ok(())
+}
+
+fn compile_string_concat() -> Function {
+    const LEFT_POINTER: u32 = 2;
+    const RIGHT_POINTER: u32 = 3;
+    const LEFT_LENGTH: u32 = 4;
+    const RIGHT_LENGTH: u32 = 5;
+    const OUTPUT_DESCRIPTOR: u32 = 6;
+    const OUTPUT_POINTER: u32 = 7;
+    const TOTAL_LENGTH: u32 = 8;
+    const NEW_END: u32 = 9;
+    const MEMORY_PAGES: u32 = 10;
+    const REQUIRED_PAGES: u32 = 11;
+
+    let mut body = Function::new([(10, ValType::I32)]);
+
+    for (parameter, pointer, length) in [
+        (0, LEFT_POINTER, LEFT_LENGTH),
+        (1, RIGHT_POINTER, RIGHT_LENGTH),
+    ] {
+        body.instruction(&Instruction::LocalGet(parameter));
+        body.instruction(&Instruction::I32WrapI64);
+        body.instruction(&Instruction::LocalSet(pointer));
+        body.instruction(&Instruction::LocalGet(parameter));
+        body.instruction(&Instruction::I64Const(32));
+        body.instruction(&Instruction::I64ShrU);
+        body.instruction(&Instruction::I32WrapI64);
+        body.instruction(&Instruction::LocalSet(length));
+    }
+
+    body.instruction(&Instruction::GlobalGet(0));
+    body.instruction(&Instruction::LocalSet(OUTPUT_DESCRIPTOR));
+    body.instruction(&Instruction::GlobalGet(0));
+    body.instruction(&Instruction::I32Const(4));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalSet(OUTPUT_POINTER));
+
+    body.instruction(&Instruction::LocalGet(LEFT_LENGTH));
+    body.instruction(&Instruction::LocalGet(RIGHT_LENGTH));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalTee(TOTAL_LENGTH));
+    body.instruction(&Instruction::LocalGet(LEFT_LENGTH));
+    body.instruction(&Instruction::I32LtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
+    body.instruction(&Instruction::LocalGet(TOTAL_LENGTH));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalTee(NEW_END));
+    body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
+    body.instruction(&Instruction::I32LtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+
+    body.instruction(&Instruction::MemorySize(0));
+    body.instruction(&Instruction::LocalSet(MEMORY_PAGES));
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(16));
+    body.instruction(&Instruction::I32ShrU);
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(65_535));
+    body.instruction(&Instruction::I32And);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalTee(REQUIRED_PAGES));
+    body.instruction(&Instruction::LocalGet(MEMORY_PAGES));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(REQUIRED_PAGES));
+    body.instruction(&Instruction::LocalGet(MEMORY_PAGES));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::MemoryGrow(0));
+    body.instruction(&Instruction::I32Const(-1));
+    body.instruction(&Instruction::I32Eq);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+
+    let scalar_count = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    body.instruction(&Instruction::LocalGet(OUTPUT_DESCRIPTOR));
+    body.instruction(&Instruction::LocalGet(LEFT_POINTER));
+    body.instruction(&Instruction::I32Const(4));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32Load(scalar_count));
+    body.instruction(&Instruction::LocalGet(RIGHT_POINTER));
+    body.instruction(&Instruction::I32Const(4));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32Load(scalar_count));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Store(scalar_count));
+
+    body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
+    body.instruction(&Instruction::LocalGet(LEFT_POINTER));
+    body.instruction(&Instruction::LocalGet(LEFT_LENGTH));
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+    body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
+    body.instruction(&Instruction::LocalGet(LEFT_LENGTH));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalGet(RIGHT_POINTER));
+    body.instruction(&Instruction::LocalGet(RIGHT_LENGTH));
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(-4));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Const(-4));
+    body.instruction(&Instruction::I32And);
+    body.instruction(&Instruction::GlobalSet(0));
+
+    body.instruction(&Instruction::LocalGet(TOTAL_LENGTH));
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64Const(32));
+    body.instruction(&Instruction::I64Shl);
+    body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64Or);
+    body.instruction(&Instruction::End);
+    body
 }
 
 fn store_constant(body: &mut Function, local: u32, value: i64) {
@@ -816,16 +1181,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_string_concatenation_until_dynamic_allocation_is_available() {
+    fn emits_dynamic_utf8_string_concatenation() {
         let mut module = module_with(
-            vec![Op::PushStr(0), Op::PushStr(1), Op::Add, Op::Ret],
-            0,
+            vec![
+                Op::PushInt(20),
+                Op::PushInt(22),
+                Op::Add,
+                Op::StoreLocal(0),
+                Op::PushStr(0),
+                Op::PushStr(1),
+                Op::Add,
+                Op::PushStr(2),
+                Op::Add,
+                Op::Len,
+                Op::Ret,
+            ],
+            1,
         );
-        module.string_table = vec!["Titan ".into(), "Wasm".into()];
-        assert!(matches!(
-            compile(&module),
-            Err(WasmError::StringConcatenation(_))
-        ));
+        module.string_table = vec!["Titan ".into(), "Wasm ".into(), "🚀".into()];
+        let layout = analyze_function(&module, &module.functions[0]).unwrap();
+        assert!(!layout.string_adds.contains(&2));
+        assert!(layout.string_adds.contains(&6));
+        assert!(layout.string_adds.contains(&8));
+        validate(&module);
     }
 
     #[test]
