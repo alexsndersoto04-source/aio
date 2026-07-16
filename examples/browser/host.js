@@ -107,9 +107,62 @@ function invokeFetchHandler(handlerName, context) {
     }
 }
 
-async function performFetch(id, url, maximumBytes, handlerName, record) {
+function parseRequestHeaders(source) {
+    if (source.trim() === "") return new Headers();
+    const parsed = JSON.parse(source);
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+        throw new TypeError("request headers must be a JSON object");
+    }
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(parsed)) {
+        if (typeof value !== "string") throw new TypeError(`header '${name}' must be a string`);
+        if (name.includes("\r") || name.includes("\n") || value.includes("\r") || value.includes("\n")) {
+            throw new TypeError("request headers cannot contain CR or LF");
+        }
+        headers.set(name, value);
+    }
+    return headers;
+}
+
+function requestOptions(methodSource, headersSource, body) {
+    const method = methodSource.trim().toUpperCase();
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Z]+$/.test(method)) {
+        throw new TypeError("invalid HTTP method");
+    }
+    const options = { method, headers: parseRequestHeaders(headersSource) };
+    if (method === "GET" || method === "HEAD") {
+        if (body !== "") throw new TypeError(`${method} requests cannot have a body`);
+    } else if (body !== "") {
+        options.body = body;
+    }
+    return options;
+}
+
+function startFetch(url, maximumBytes, timeoutMs, handlerName, options) {
+    const id = nextFetchId++;
+    const record = {
+        controller: new AbortController(),
+        cancelled: false,
+        timedOut: false,
+        timer: null,
+    };
+    if (timeoutMs > 0) {
+        record.timer = setTimeout(() => {
+            record.timedOut = true;
+            record.controller.abort();
+        }, timeoutMs);
+    }
+    requests.set(id, record);
+    void performFetch(id, url, maximumBytes, handlerName, record, options);
+    return BigInt(id);
+}
+
+async function performFetch(id, url, maximumBytes, handlerName, record, options) {
     try {
-        const response = await globalThis.fetch(url, { signal: record.controller.signal });
+        const response = await globalThis.fetch(url, {
+            ...options,
+            signal: record.controller.signal,
+        });
         const body = await readBoundedBody(response, maximumBytes);
         if (!record.cancelled) {
             invokeFetchHandler(handlerName, {
@@ -118,6 +171,7 @@ async function performFetch(id, url, maximumBytes, handlerName, record) {
                 body,
                 url: response.url,
                 error: "",
+                headers: JSON.stringify(Object.fromEntries(response.headers.entries())),
             });
         }
     } catch (error) {
@@ -128,6 +182,7 @@ async function performFetch(id, url, maximumBytes, handlerName, record) {
                 body: "",
                 url,
                 error: record.timedOut ? "request timed out" : String(error?.message || error),
+                headers: "{}",
             });
         }
     } finally {
@@ -222,26 +277,25 @@ const imports = {
             return BigInt(Math.trunc(Number(currentEvent?.clientY) || 0));
         },
         fetch_start(urlHandle, maximumHandle, timeoutHandle, handlerHandle) {
-            const url = titanString(urlHandle);
-            const maximumBytes = safeInteger(maximumHandle, "maximumBytes", 1);
-            const timeoutMs = safeInteger(timeoutHandle, "timeoutMs", 0);
-            const handlerName = titanString(handlerHandle);
-            const id = nextFetchId++;
-            const record = {
-                controller: new AbortController(),
-                cancelled: false,
-                timedOut: false,
-                timer: null,
-            };
-            if (timeoutMs > 0) {
-                record.timer = setTimeout(() => {
-                    record.timedOut = true;
-                    record.controller.abort();
-                }, timeoutMs);
-            }
-            requests.set(id, record);
-            void performFetch(id, url, maximumBytes, handlerName, record);
-            return BigInt(id);
+            return startFetch(
+                titanString(urlHandle),
+                safeInteger(maximumHandle, "maximumBytes", 1),
+                safeInteger(timeoutHandle, "timeoutMs", 0),
+                titanString(handlerHandle),
+                { method: "GET" }
+            );
+        },
+        fetch_request(methodHandle, urlHandle, headersHandle, bodyHandle, maximumHandle, timeoutHandle, handlerHandle) {
+            const method = titanString(methodHandle);
+            const headers = titanString(headersHandle);
+            const body = titanString(bodyHandle);
+            return startFetch(
+                titanString(urlHandle),
+                safeInteger(maximumHandle, "maximumBytes", 1),
+                safeInteger(timeoutHandle, "timeoutMs", 0),
+                titanString(handlerHandle),
+                requestOptions(method, headers, body)
+            );
         },
         fetch_cancel(rawId) {
             const id = safeInteger(rawId, "request id", 1);
@@ -267,6 +321,9 @@ const imports = {
         },
         fetch_error() {
             return fetchString(context => context.error);
+        },
+        fetch_headers() {
+            return fetchString(context => context.headers);
         },
     },
 };

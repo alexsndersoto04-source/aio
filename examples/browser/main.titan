@@ -17,7 +17,9 @@ fn on_input() {
 fn on_fetch() {
     if std::web::fetch_ok() {
         let body = std::web::fetch_body();
+        let headers = std::web::fetch_headers();
         std::web::set_text("#response", body);
+        println(headers);
         println(body);
     } else {
         let error = std::web::fetch_error();
@@ -34,7 +36,7 @@ fn main() {
     std::web::add_class("#status", "ready");
     std::web::listen("#action", "click", "on_click");
     std::web::listen("#message", "input", "on_input");
-    std::web::fetch("./data.json", 65536, 5000, "on_fetch");
+    std::web::request("GET", "./data.json", "{\"Accept\":\"application/json\"}", "", 65536, 5000, "on_fetch");
 
     if std::web::query_exists("#status") {
         println("DOM actualizado y eventos registrados correctamente");
