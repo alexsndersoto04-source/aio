@@ -8,4 +8,8 @@ Cache layout is `<cache>/<name>/<version>/<sha256>.tpkg`. Existing entries are r
 
 Every release includes an Ed25519 public key/signature over the 32-byte SHA-256 digest. Download requires both digest and signature verification.
 
-`.tpkg` is gzip-compressed tar. Safe extraction allows only regular files/directories with relative normal path components, rejects duplicates, symlinks/hardlinks/devices and traversal, enforces file/count/total limits, requires root `Titan.toml`, extracts into staging, and atomically renames on success. Dependency-graph solving and CLI integration are the next blocks.
+`.tpkg` is gzip-compressed tar. Safe extraction allows only regular files/directories with relative normal path components, rejects duplicates, symlinks/hardlinks/devices and traversal, enforces file/count/total limits, requires root `Titan.toml`, extracts into staging, and atomically renames on success.
+
+The graph resolver collects every constraint per package and performs highest-version-first backtracking when transitive constraints conflict. It validates every range, limits package/decision counts, caches index fetches, supports dependency cycles through selected-version consistency checks, and emits a deterministic sorted lockfile containing archive, hash, signing key and dependency ranges.
+
+CLI integration and publisher key ownership/publishing are the next blocks.
