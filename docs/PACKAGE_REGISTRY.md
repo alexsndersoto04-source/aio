@@ -6,4 +6,6 @@ Metadata records version, HTTPS archive URL, SHA-256 and dependency ranges. Regi
 
 Cache layout is `<cache>/<name>/<version>/<sha256>.tpkg`. Existing entries are rehashed before use. Temporary writes include process ID and are renamed only after verification, so interrupted downloads are never treated as packages.
 
-Archive extraction, full dependency-graph solving, signatures and CLI integration are the next registry blocks.
+Every release includes an Ed25519 public key/signature over the 32-byte SHA-256 digest. Download requires both digest and signature verification.
+
+`.tpkg` is gzip-compressed tar. Safe extraction allows only regular files/directories with relative normal path components, rejects duplicates, symlinks/hardlinks/devices and traversal, enforces file/count/total limits, requires root `Titan.toml`, extracts into staging, and atomically renames on success. Dependency-graph solving and CLI integration are the next blocks.

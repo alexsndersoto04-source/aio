@@ -1,5 +1,6 @@
 //! Titan package manifests, lockfiles, and multi-file project loading.
 
+pub mod archive;
 pub mod project;
 pub mod registry;
 pub use project::{create_project, default_entry, find_project_root, ProjectError, SourceProject};
