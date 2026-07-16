@@ -1,7 +1,9 @@
 //! Titan package manifests, lockfiles, and multi-file project loading.
 
 pub mod project;
+pub mod registry;
 pub use project::{create_project, default_entry, find_project_root, ProjectError, SourceProject};
+pub use registry::{PackageIndex, PackageVersion, RegistryClient, RegistryError};
 
 use std::collections::BTreeMap;
 use std::path::Path;

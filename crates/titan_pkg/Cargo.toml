@@ -13,3 +13,5 @@ toml.workspace = true
 titan_ast = { path = "../titan_ast" }
 titan_lexer = { path = "../titan_lexer" }
 titan_parser = { path = "../titan_parser" }
+titan_stdlib = { path = "../titan_stdlib" }
+sha2 = "0.10"
