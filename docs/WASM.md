@@ -12,7 +12,9 @@ String `+` is lowered to an internal Wasm concatenation function when bytecode d
 
 The browser backend recognizes `std::web::query_exists`, `set_text`, `set_html`, `set_attribute`, `add_class`, `remove_class`, `focus`, and `set_title`. Only imports actually referenced by bytecode are emitted, in deterministic order, and all defined-function indexes are relocated by the exact import count. String arguments use the same checked ABI handles; setters return Titan `nil`, while `query_exists` returns an `i64` boolean. On the native VM these functions fail with a clear browser-host-required error instead of pretending to manipulate a DOM. `set_html` deliberately exposes raw `innerHTML`; applications must not pass untrusted markup.
 
-DOM events use `std::web::listen(selector, event_name, handler_export) -> Int` and `std::web::unlisten(id) -> Bool`. The browser host installs a real `addEventListener`, retains its callback by numeric subscription ID, and invokes the named exported zero-argument Titan function when the event fires. `unlisten` calls `removeEventListener` with the original callback and releases the host record. Handler lookup and execution failures are reported to the browser console without corrupting the Wasm instance. Event payload/value transfer is intentionally deferred until the host-to-Wasm string allocator ABI is available.
+DOM events use `std::web::listen(selector, event_name, handler_export) -> Int` and `std::web::unlisten(id) -> Bool`. The browser host installs a real `addEventListener`, retains its callback by numeric subscription ID, and invokes the named exported zero-argument Titan function when the event fires. `unlisten` calls `removeEventListener` with the original callback and releases the host record. Handler lookup and execution failures are reported to the browser console without corrupting the Wasm instance.
+
+During a handler, `std::web::event_type`, `event_value`, `event_key`, `event_target_id`, `event_checked`, `event_x`, and `event_y` expose the active DOM event. String values travel host-to-Wasm through the exported `__titan_alloc_string(byte_length, scalar_length)` ABI. The JavaScript adapter UTF-8 encodes the value, invokes the reentrant checked allocator, refreshes its memory view after possible `memory.grow`, writes the payload, and returns the normal Titan string handle. Event context is restored in `finally`, so nested dispatch cannot leak the wrong event. Outside a handler, string accessors return empty strings and numeric/boolean accessors return zero.
 
 A complete host adapter and page live under `examples/browser/`. Build and serve it with:
 
@@ -24,4 +26,4 @@ python3 -m http.server 8080
 
 Then open `http://localhost:8080`. Browsers generally forbid loading Wasm from `file://`, so an HTTP server is required.
 
-Collections remain explicitly unsupported. Events, asynchronous browser APIs, source maps, and eventually managed heap reclamation are subsequent Phase 6 blocks.
+Collections remain explicitly unsupported. Asynchronous browser APIs such as `fetch`, source maps, richer typed event objects, and eventually managed heap reclamation are subsequent Phase 6 blocks.

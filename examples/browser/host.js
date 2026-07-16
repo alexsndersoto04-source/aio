@@ -1,5 +1,7 @@
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const encoder = new TextEncoder();
 let instance;
+let currentEvent = null;
 let nextListenerId = 1;
 const listeners = new Map();
 
@@ -13,6 +15,29 @@ function titanString(handle) {
         throw new RangeError("invalid TITAN string handle");
     }
     return decoder.decode(new Uint8Array(memory.buffer, pointer, length));
+}
+
+function wasmString(value) {
+    const text = String(value);
+    const bytes = encoder.encode(text);
+    const scalarLength = Array.from(text).length;
+    const allocate = instance.exports.__titan_alloc_string;
+    if (typeof allocate !== "function") {
+        throw new Error("module does not export __titan_alloc_string");
+    }
+    const handle = allocate(bytes.length, scalarLength);
+    const bits = BigInt.asUintN(64, handle);
+    const pointer = Number(bits & 0xffffffffn);
+    const length = Number(bits >> 32n);
+    if (length !== bytes.length || pointer + length > instance.exports.memory.buffer.byteLength) {
+        throw new RangeError("TITAN allocator returned an invalid string handle");
+    }
+    new Uint8Array(instance.exports.memory.buffer, pointer, length).set(bytes);
+    return handle;
+}
+
+function eventString(read) {
+    return wasmString(currentEvent ? read(currentEvent) : "");
 }
 
 function element(handle) {
@@ -56,7 +81,9 @@ const imports = {
             const event = titanString(eventName);
             const exportedName = titanString(handlerName);
             const id = nextListenerId++;
-            const callback = () => {
+            const callback = eventObject => {
+                const previousEvent = currentEvent;
+                currentEvent = eventObject;
                 try {
                     const handler = instance.exports[exportedName];
                     if (typeof handler !== "function") {
@@ -65,6 +92,8 @@ const imports = {
                     handler();
                 } catch (error) {
                     console.error(`TITAN event handler '${exportedName}' failed`, error);
+                } finally {
+                    currentEvent = previousEvent;
                 }
             };
             node.addEventListener(event, callback);
@@ -79,6 +108,29 @@ const imports = {
             listener.node.removeEventListener(listener.event, listener.callback);
             listeners.delete(id);
             return 1n;
+        },
+        dom_event_type() {
+            return eventString(eventObject => eventObject.type || "");
+        },
+        dom_event_value() {
+            return eventString(eventObject =>
+                typeof eventObject.target?.value === "string" ? eventObject.target.value : ""
+            );
+        },
+        dom_event_key() {
+            return eventString(eventObject => eventObject.key || "");
+        },
+        dom_event_target_id() {
+            return eventString(eventObject => eventObject.target?.id || "");
+        },
+        dom_event_checked() {
+            return currentEvent?.target?.checked === true ? 1n : 0n;
+        },
+        dom_event_x() {
+            return BigInt(Math.trunc(Number(currentEvent?.clientX) || 0));
+        },
+        dom_event_y() {
+            return BigInt(Math.trunc(Number(currentEvent?.clientY) || 0));
         },
     },
 };

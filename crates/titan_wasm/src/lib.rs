@@ -67,6 +67,8 @@ pub enum WasmError {
         function: String,
         instruction: usize,
     },
+    #[error("function name '{0}' is reserved by the WebAssembly runtime ABI")]
+    ReservedFunction(String),
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +97,13 @@ const WEB_IMPORTS: &[HostImport] = &[
     HostImport { native: Some("std::web::set_title"), field: "dom_set_title", params: 1, returns_value: false },
     HostImport { native: Some("std::web::listen"), field: "dom_listen", params: 3, returns_value: true },
     HostImport { native: Some("std::web::unlisten"), field: "dom_unlisten", params: 1, returns_value: true },
+    HostImport { native: Some("std::web::event_type"), field: "dom_event_type", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::event_value"), field: "dom_event_value", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::event_key"), field: "dom_event_key", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::event_target_id"), field: "dom_event_target_id", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::event_checked"), field: "dom_event_checked", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::event_x"), field: "dom_event_x", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::event_y"), field: "dom_event_y", params: 0, returns_value: true },
 ];
 
 struct HostImports {
@@ -158,9 +167,30 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
         .iter()
         .any(|layout| !layout.string_adds.is_empty());
     let host_imports = collect_host_imports(module);
+    let needs_host_strings = host_imports.natives.keys().any(|name| {
+        matches!(
+            *name,
+            "std::web::event_type"
+                | "std::web::event_value"
+                | "std::web::event_key"
+                | "std::web::event_target_id"
+        )
+    });
+    if needs_host_strings
+        && module
+            .functions
+            .iter()
+            .any(|function| function.name == "__titan_alloc_string")
+    {
+        return Err(WasmError::ReservedFunction("__titan_alloc_string".into()));
+    }
+    let needs_heap = needs_concat || needs_host_strings;
     let function_bias = host_imports.definitions.len() as u32;
     let concat_function = needs_concat
         .then_some(function_bias + module.functions.len() as u32);
+    let allocator_function = needs_host_strings.then_some(
+        function_bias + module.functions.len() as u32 + if needs_concat { 1 } else { 0 },
+    );
     let mut output = Module::new();
 
     let mut types = TypeSection::new();
@@ -186,6 +216,12 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
             .ty()
             .function([ValType::I64, ValType::I64], [ValType::I64]);
     }
+    let allocator_type = types.len();
+    if needs_host_strings {
+        types
+            .ty()
+            .function([ValType::I32, ValType::I32], [ValType::I64]);
+    }
     output.section(&types);
 
     if !host_imports.definitions.is_empty() {
@@ -207,6 +243,9 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     if needs_concat {
         functions.function(concat_type);
     }
+    if needs_host_strings {
+        functions.function(allocator_type);
+    }
     output.section(&functions);
 
     let mut memories = MemorySection::new();
@@ -219,7 +258,7 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     });
     output.section(&memories);
 
-    if needs_concat {
+    if needs_heap {
         let mut globals = GlobalSection::new();
         globals.global(
             GlobalType {
@@ -239,6 +278,9 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
         module.entry as u32 + function_bias,
     );
     exports.export("memory", ExportKind::Memory, 0);
+    if let Some(function) = allocator_function {
+        exports.export("__titan_alloc_string", ExportKind::Func, function);
+    }
     for (index, function) in module.functions.iter().enumerate() {
         if function.name != "main" && !function.name.starts_with('<') {
             exports.export(
@@ -262,6 +304,9 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     }
     if needs_concat {
         code.function(&compile_string_concat());
+    }
+    if needs_host_strings {
+        code.function(&compile_host_string_allocator());
     }
     output.section(&code);
 
@@ -1132,6 +1177,92 @@ fn compile_string_concat() -> Function {
     body
 }
 
+fn compile_host_string_allocator() -> Function {
+    const OUTPUT_DESCRIPTOR: u32 = 2;
+    const OUTPUT_POINTER: u32 = 3;
+    const NEW_END: u32 = 4;
+    const MEMORY_PAGES: u32 = 5;
+    const REQUIRED_PAGES: u32 = 6;
+
+    let mut body = Function::new([(5, ValType::I32)]);
+    body.instruction(&Instruction::LocalGet(1));
+    body.instruction(&Instruction::LocalGet(0));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::GlobalGet(0));
+    body.instruction(&Instruction::LocalTee(OUTPUT_DESCRIPTOR));
+    body.instruction(&Instruction::I32Const(4));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalTee(OUTPUT_POINTER));
+    body.instruction(&Instruction::LocalGet(0));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalTee(NEW_END));
+    body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
+    body.instruction(&Instruction::I32LtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+
+    body.instruction(&Instruction::MemorySize(0));
+    body.instruction(&Instruction::LocalSet(MEMORY_PAGES));
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(16));
+    body.instruction(&Instruction::I32ShrU);
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(65_535));
+    body.instruction(&Instruction::I32And);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalTee(REQUIRED_PAGES));
+    body.instruction(&Instruction::LocalGet(MEMORY_PAGES));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(REQUIRED_PAGES));
+    body.instruction(&Instruction::LocalGet(MEMORY_PAGES));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::MemoryGrow(0));
+    body.instruction(&Instruction::I32Const(-1));
+    body.instruction(&Instruction::I32Eq);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+
+    body.instruction(&Instruction::LocalGet(OUTPUT_DESCRIPTOR));
+    body.instruction(&Instruction::LocalGet(1));
+    body.instruction(&Instruction::I32Store(MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    }));
+
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(-4));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Const(-4));
+    body.instruction(&Instruction::I32And);
+    body.instruction(&Instruction::GlobalSet(0));
+
+    body.instruction(&Instruction::LocalGet(0));
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64Const(32));
+    body.instruction(&Instruction::I64Shl);
+    body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64Or);
+    body.instruction(&Instruction::End);
+    body
+}
+
 fn store_constant(body: &mut Function, local: u32, value: i64) {
     body.instruction(&Instruction::I64Const(value));
     body.instruction(&Instruction::LocalSet(local));
@@ -1330,6 +1461,47 @@ mod tests {
         assert_eq!(imports.definitions.len(), 2);
         assert_eq!(imports.natives["std::web::listen"], 0);
         assert_eq!(imports.natives["std::web::unlisten"], 1);
+    }
+
+    #[test]
+    fn emits_host_to_wasm_event_string_allocator() {
+        let module = module_with(
+            vec![
+                Op::CallNative {
+                    name: "std::web::event_value".into(),
+                    argc: 0,
+                },
+                Op::Len,
+                Op::Ret,
+            ],
+            0,
+        );
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 1);
+        assert_eq!(imports.natives["std::web::event_value"], 0);
+    }
+
+    #[test]
+    fn composes_host_allocator_with_dynamic_concat_helper() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::PushStr(1),
+                Op::Add,
+                Op::StoreLocal(0),
+                Op::CallNative {
+                    name: "std::web::event_value".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::Ret,
+            ],
+            1,
+        );
+        module.string_table = vec!["host ".into(), "interop".into()];
+        validate(&module);
     }
 
     #[test]

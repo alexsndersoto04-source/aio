@@ -112,6 +112,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::set_title", [String], Nil),
     native!("std::web::listen", [String, String, String], Int),
     native!("std::web::unlisten", [Int], Bool),
+    native!("std::web::event_type", [], String),
+    native!("std::web::event_value", [], String),
+    native!("std::web::event_key", [], String),
+    native!("std::web::event_target_id", [], String),
+    native!("std::web::event_checked", [], Bool),
+    native!("std::web::event_x", [], Int),
+    native!("std::web::event_y", [], Int),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

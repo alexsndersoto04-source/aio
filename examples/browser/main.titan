@@ -1,7 +1,16 @@
 fn on_click() {
+    let event_name = std::web::event_type();
     std::web::set_text("#status", "Evento click ejecutado por TITAN 🚀");
+    std::web::set_attribute("#status", "data-last-event", event_name);
     std::web::add_class("#status", "clicked");
-    println("TITAN recibió el evento click");
+    println(event_name);
+    0
+}
+
+fn on_input() {
+    let value = std::web::event_value();
+    std::web::set_text("#status", value);
+    println(value);
     0
 }
 
@@ -11,9 +20,10 @@ fn main() {
     std::web::set_attribute("#status", "data-runtime", "titan-wasm");
     std::web::add_class("#status", "ready");
     std::web::listen("#action", "click", "on_click");
+    std::web::listen("#message", "input", "on_input");
 
     if std::web::query_exists("#status") {
-        println("DOM actualizado y evento registrado correctamente");
+        println("DOM actualizado y eventos registrados correctamente");
     } else {
         println("No se encontró #status");
     }
