@@ -5,8 +5,8 @@ use std::collections::VecDeque;
 use thiserror::Error;
 use titan_codegen::{BytecodeFunc, CompiledModule, Op};
 use wasm_encoder::{
-    BlockType, CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
-    Module, TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection, Function,
+    FunctionSection, Instruction, MemArg, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -57,6 +57,12 @@ pub enum WasmError {
         required: usize,
         declared: usize,
     },
+    #[error("function '{function}' references invalid string-table entry {string}")]
+    InvalidString { function: String, string: usize },
+    #[error("WebAssembly string data exceeds the 32-bit linear-memory ABI")]
+    StringDataTooLarge,
+    #[error("function '{0}' uses string concatenation, which is not available in this backend block")]
+    StringConcatenation(String),
 }
 
 /// Compile Titan numeric bytecode directly to a self-contained WebAssembly module.
@@ -71,6 +77,7 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
         return Err(WasmError::Entry);
     }
 
+    let strings = StringLayout::new(&module.string_table)?;
     let mut output = Module::new();
 
     let mut types = TypeSection::new();
@@ -87,8 +94,19 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     }
     output.section(&functions);
 
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: strings.minimum_pages,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    output.section(&memories);
+
     let mut exports = ExportSection::new();
     exports.export("main", ExportKind::Func, module.entry as u32);
+    exports.export("memory", ExportKind::Memory, 0);
     for (index, function) in module.functions.iter().enumerate() {
         if function.name != "main" && !function.name.starts_with('<') {
             exports.export(&function.name, ExportKind::Func, index as u32);
@@ -98,16 +116,69 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
 
     let mut code = CodeSection::new();
     for function in &module.functions {
-        code.function(&compile_function(module, function)?);
+        code.function(&compile_function(module, function, &strings)?);
     }
     output.section(&code);
 
+    if !strings.data.is_empty() {
+        let mut data = DataSection::new();
+        data.active(
+            0,
+            &ConstExpr::i32_const(StringLayout::DATA_START as i32),
+            strings.data.iter().copied(),
+        );
+        output.section(&data);
+    }
+
     Ok(output.finish())
+}
+
+struct StringLayout {
+    handles: Vec<i64>,
+    data: Vec<u8>,
+    minimum_pages: u64,
+}
+
+impl StringLayout {
+    const DATA_START: u32 = 8;
+    const PAGE_SIZE: u64 = 65_536;
+
+    fn new(strings: &[String]) -> Result<Self, WasmError> {
+        let mut handles = Vec::with_capacity(strings.len());
+        let mut data = Vec::new();
+        for string in strings {
+            let byte_length =
+                u32::try_from(string.len()).map_err(|_| WasmError::StringDataTooLarge)?;
+            let scalar_length = u32::try_from(string.chars().count())
+                .map_err(|_| WasmError::StringDataTooLarge)?;
+            let data_length =
+                u32::try_from(data.len()).map_err(|_| WasmError::StringDataTooLarge)?;
+            let pointer = Self::DATA_START
+                .checked_add(data_length)
+                .and_then(|address| address.checked_add(4))
+                .ok_or(WasmError::StringDataTooLarge)?;
+            handles.push(i64::from_ne_bytes(
+                ((u64::from(byte_length) << 32) | u64::from(pointer)).to_ne_bytes(),
+            ));
+            data.extend_from_slice(&scalar_length.to_le_bytes());
+            data.extend_from_slice(string.as_bytes());
+        }
+        let end = u64::from(Self::DATA_START)
+            .checked_add(u64::try_from(data.len()).map_err(|_| WasmError::StringDataTooLarge)?)
+            .ok_or(WasmError::StringDataTooLarge)?;
+        let minimum_pages = end.div_ceil(Self::PAGE_SIZE).max(1);
+        Ok(Self {
+            handles,
+            data,
+            minimum_pages,
+        })
+    }
 }
 
 fn compile_function(
     module: &CompiledModule,
     function: &BytecodeFunc,
+    strings: &StringLayout,
 ) -> Result<Function, WasmError> {
     let extra = function
         .locals
@@ -138,6 +209,7 @@ fn compile_function(
             instruction,
             *height,
             &layout,
+            strings,
             &mut body,
         )?;
         body.instruction(&Instruction::End);
@@ -163,6 +235,11 @@ fn analyze_function(
     module: &CompiledModule,
     function: &BytecodeFunc,
 ) -> Result<FunctionLayout, WasmError> {
+    if function.code.iter().any(|operation| matches!(operation, Op::PushStr(_)))
+        && function.code.iter().any(|operation| matches!(operation, Op::Add))
+    {
+        return Err(WasmError::StringConcatenation(function.name.clone()));
+    }
     if function.code.is_empty() {
         return Ok(FunctionLayout {
             heights: Vec::new(),
@@ -289,6 +366,12 @@ fn validate_operation(
                 local: *index,
             })
         }
+        Op::PushStr(string) if *string >= module.string_table.len() => {
+            Err(WasmError::InvalidString {
+                function: function.name.clone(),
+                string: *string,
+            })
+        }
         Op::Call {
             function: callee,
             argc,
@@ -311,7 +394,9 @@ fn validate_operation(
         }
         Op::PushInt(_)
         | Op::PushBool(_)
+        | Op::PushChar(_)
         | Op::PushNil
+        | Op::PushStr(_)
         | Op::PushLocal(_)
         | Op::StoreLocal(_)
         | Op::Pop
@@ -336,6 +421,7 @@ fn validate_operation(
         | Op::Jump(_)
         | Op::JumpIfFalse(_)
         | Op::Ret
+        | Op::Len
         | Op::Nop
         | Op::Halt => Ok(()),
         other => Err(WasmError::Unsupported {
@@ -347,7 +433,12 @@ fn validate_operation(
 
 fn stack_effect(operation: &Op) -> (usize, usize) {
     match operation {
-        Op::PushInt(_) | Op::PushBool(_) | Op::PushNil | Op::PushLocal(_) => (0, 1),
+        Op::PushInt(_)
+        | Op::PushBool(_)
+        | Op::PushChar(_)
+        | Op::PushNil
+        | Op::PushStr(_)
+        | Op::PushLocal(_) => (0, 1),
         Op::StoreLocal(_) | Op::Pop | Op::JumpIfFalse(_) => (1, 0),
         Op::Dup => (1, 2),
         Op::Add
@@ -364,7 +455,7 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         | Op::BitAnd
         | Op::BitOr
         | Op::BitXor => (2, 1),
-        Op::Neg | Op::Not | Op::BitNot => (1, 1),
+        Op::Neg | Op::Not | Op::BitNot | Op::Len => (1, 1),
         Op::Call { argc, .. } => (*argc, 1),
         Op::Jump(_) | Op::Nop => (0, 0),
         Op::Ret | Op::Halt => (0, 0),
@@ -378,6 +469,7 @@ fn emit_operation(
     instruction: usize,
     height: usize,
     layout: &FunctionLayout,
+    strings: &StringLayout,
     body: &mut Function,
 ) -> Result<(), WasmError> {
     let operation = &function.code[instruction];
@@ -386,7 +478,21 @@ fn emit_operation(
         Op::PushBool(value) => {
             store_constant(body, layout.stack_base + height as u32, i64::from(*value));
         }
+        Op::PushChar(value) => {
+            store_constant(
+                body,
+                layout.stack_base + height as u32,
+                i64::from(u32::from(*value)),
+            );
+        }
         Op::PushNil => store_constant(body, layout.stack_base + height as u32, 0),
+        Op::PushStr(string) => {
+            store_constant(
+                body,
+                layout.stack_base + height as u32,
+                strings.handles[*string],
+            );
+        }
         Op::PushLocal(local) => {
             body.instruction(&Instruction::LocalGet(*local as u32));
             body.instruction(&Instruction::LocalSet(layout.stack_base + height as u32));
@@ -480,6 +586,20 @@ fn emit_operation(
             }
             body.instruction(&Instruction::Return);
             return Ok(());
+        }
+        Op::Len => {
+            let slot = layout.stack_base + (height - 1) as u32;
+            body.instruction(&Instruction::LocalGet(slot));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Const(4));
+            body.instruction(&Instruction::I32Sub);
+            body.instruction(&Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::LocalSet(slot));
         }
         Op::Nop => {}
         _ => unreachable!("operations are checked during stack analysis"),
@@ -600,11 +720,51 @@ mod tests {
     }
 
     #[test]
+    fn emits_utf8_strings_in_exported_linear_memory() {
+        let text = "¡Hola, TITAN!";
+        let mut module = module_with(vec![Op::PushStr(0), Op::Len, Op::Ret], 0);
+        module.string_table.push(text.into());
+        validate(&module);
+        let wasm = compile(&module).unwrap();
+        assert!(wasm
+            .windows(text.len())
+            .any(|bytes| bytes == text.as_bytes()));
+
+        let layout = StringLayout::new(&module.string_table).unwrap();
+        let handle = u64::from_ne_bytes(layout.handles[0].to_ne_bytes());
+        assert_eq!(handle as u32, StringLayout::DATA_START + 4);
+        assert_eq!((handle >> 32) as usize, text.len());
+        assert_eq!(&layout.data[..4], &(text.chars().count() as u32).to_le_bytes());
+    }
+
+    #[test]
+    fn rejects_invalid_string_table_references() {
+        let module = module_with(vec![Op::PushStr(3), Op::Ret], 0);
+        assert!(matches!(
+            compile(&module),
+            Err(WasmError::InvalidString { string: 3, .. })
+        ));
+    }
+
+    #[test]
     fn rejects_unsupported_runtime_values() {
-        let module = module_with(vec![Op::PushStr(0), Op::Ret], 0);
+        let module = module_with(vec![Op::PushInt(1), Op::NewArray(1), Op::Ret], 0);
         assert!(matches!(
             compile(&module),
             Err(WasmError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_string_concatenation_until_dynamic_allocation_is_available() {
+        let mut module = module_with(
+            vec![Op::PushStr(0), Op::PushStr(1), Op::Add, Op::Ret],
+            0,
+        );
+        module.string_table = vec!["Titan ".into(), "Wasm".into()];
+        assert!(matches!(
+            compile(&module),
+            Err(WasmError::StringConcatenation(_))
         ));
     }
 
