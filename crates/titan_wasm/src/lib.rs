@@ -93,6 +93,8 @@ const WEB_IMPORTS: &[HostImport] = &[
     HostImport { native: Some("std::web::remove_class"), field: "dom_remove_class", params: 2, returns_value: false },
     HostImport { native: Some("std::web::focus"), field: "dom_focus", params: 1, returns_value: false },
     HostImport { native: Some("std::web::set_title"), field: "dom_set_title", params: 1, returns_value: false },
+    HostImport { native: Some("std::web::listen"), field: "dom_listen", params: 3, returns_value: true },
+    HostImport { native: Some("std::web::unlisten"), field: "dom_unlisten", params: 1, returns_value: true },
 ];
 
 struct HostImports {
@@ -1299,6 +1301,35 @@ mod tests {
         assert_eq!(imports.definitions.len(), 2);
         assert_eq!(imports.natives["std::web::query_exists"], 0);
         assert_eq!(imports.natives["std::web::set_text"], 1);
+    }
+
+    #[test]
+    fn emits_event_listener_lifecycle_imports() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::PushStr(1),
+                Op::PushStr(2),
+                Op::CallNative {
+                    name: "std::web::listen".into(),
+                    argc: 3,
+                },
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::CallNative {
+                    name: "std::web::unlisten".into(),
+                    argc: 1,
+                },
+                Op::Ret,
+            ],
+            1,
+        );
+        module.string_table = vec!["#action".into(), "click".into(), "on_click".into()];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 2);
+        assert_eq!(imports.natives["std::web::listen"], 0);
+        assert_eq!(imports.natives["std::web::unlisten"], 1);
     }
 
     #[test]

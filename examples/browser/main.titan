@@ -1,11 +1,19 @@
+fn on_click() {
+    std::web::set_text("#status", "Evento click ejecutado por TITAN 🚀");
+    std::web::add_class("#status", "clicked");
+    println("TITAN recibió el evento click");
+    0
+}
+
 fn main() {
     std::web::set_title("TITAN WebAssembly");
     std::web::set_text("#status", "TITAN controla este DOM desde WebAssembly 🚀");
     std::web::set_attribute("#status", "data-runtime", "titan-wasm");
     std::web::add_class("#status", "ready");
+    std::web::listen("#action", "click", "on_click");
 
     if std::web::query_exists("#status") {
-        println("DOM actualizado correctamente");
+        println("DOM actualizado y evento registrado correctamente");
     } else {
         println("No se encontró #status");
     }

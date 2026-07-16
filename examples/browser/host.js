@@ -1,5 +1,7 @@
 const decoder = new TextDecoder("utf-8", { fatal: true });
 let instance;
+let nextListenerId = 1;
+const listeners = new Map();
 
 function titanString(handle) {
     const bits = BigInt.asUintN(64, handle);
@@ -48,6 +50,35 @@ const imports = {
         },
         dom_set_title(value) {
             document.title = titanString(value);
+        },
+        dom_listen(selector, eventName, handlerName) {
+            const node = element(selector);
+            const event = titanString(eventName);
+            const exportedName = titanString(handlerName);
+            const id = nextListenerId++;
+            const callback = () => {
+                try {
+                    const handler = instance.exports[exportedName];
+                    if (typeof handler !== "function") {
+                        throw new Error(`TITAN event handler is not exported: ${exportedName}`);
+                    }
+                    handler();
+                } catch (error) {
+                    console.error(`TITAN event handler '${exportedName}' failed`, error);
+                }
+            };
+            node.addEventListener(event, callback);
+            listeners.set(id, { node, event, callback });
+            return BigInt(id);
+        },
+        dom_unlisten(rawId) {
+            const id = Number(rawId);
+            if (!Number.isSafeInteger(id)) return 0n;
+            const listener = listeners.get(id);
+            if (!listener) return 0n;
+            listener.node.removeEventListener(listener.event, listener.callback);
+            listeners.delete(id);
+            return 1n;
         },
     },
 };

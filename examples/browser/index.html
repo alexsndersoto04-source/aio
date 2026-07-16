@@ -8,11 +8,14 @@
     body { max-width: 48rem; margin: 4rem auto; padding: 0 1rem; font: 1.1rem system-ui; }
     #status { padding: 1rem; border: 1px solid #888; border-radius: .5rem; }
     #status.ready { border-color: #16803a; background: #eaf8ee; }
+    #status.clicked { border-color: #5942c7; background: #f0edff; }
+    button { padding: .65rem 1rem; font: inherit; cursor: pointer; }
   </style>
 </head>
 <body>
   <h1>TITAN WebAssembly + DOM</h1>
   <p id="status">Cargando módulo…</p>
+  <button id="action" type="button">Ejecutar handler TITAN</button>
   <script type="module" src="./host.js"></script>
 </body>
 </html>

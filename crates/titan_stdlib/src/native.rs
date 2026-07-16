@@ -110,6 +110,8 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::remove_class", [String, String], Nil),
     native!("std::web::focus", [String], Nil),
     native!("std::web::set_title", [String], Nil),
+    native!("std::web::listen", [String, String, String], Int),
+    native!("std::web::unlisten", [Int], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];
