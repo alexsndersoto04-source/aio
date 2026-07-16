@@ -6,7 +6,8 @@ use thiserror::Error;
 use titan_codegen::{BytecodeFunc, CompiledModule, Op};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection, Function,
-    FunctionSection, Instruction, MemArg, MemorySection, MemoryType, Module, TypeSection, ValType,
+    EntityType, FunctionSection, ImportSection, Instruction, MemArg, MemorySection, MemoryType,
+    Module, TypeSection, ValType,
 };
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -78,6 +79,13 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     }
 
     let strings = StringLayout::new(&module.string_table)?;
+    let needs_print = module.functions.iter().any(|function| {
+        function
+            .code
+            .iter()
+            .any(|operation| matches!(operation, Op::Print(_)))
+    });
+    let function_bias = if needs_print { 1 } else { 0 };
     let mut output = Module::new();
 
     let mut types = TypeSection::new();
@@ -86,7 +94,17 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
             .ty()
             .function(vec![ValType::I64; function.arity], [ValType::I64]);
     }
+    let print_type = types.len();
+    if needs_print {
+        types.ty().function([ValType::I64], []);
+    }
     output.section(&types);
+
+    if needs_print {
+        let mut imports = ImportSection::new();
+        imports.import("titan", "print", EntityType::Function(print_type));
+        output.section(&imports);
+    }
 
     let mut functions = FunctionSection::new();
     for index in 0..module.functions.len() {
@@ -105,18 +123,31 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
     output.section(&memories);
 
     let mut exports = ExportSection::new();
-    exports.export("main", ExportKind::Func, module.entry as u32);
+    exports.export(
+        "main",
+        ExportKind::Func,
+        module.entry as u32 + function_bias,
+    );
     exports.export("memory", ExportKind::Memory, 0);
     for (index, function) in module.functions.iter().enumerate() {
         if function.name != "main" && !function.name.starts_with('<') {
-            exports.export(&function.name, ExportKind::Func, index as u32);
+            exports.export(
+                &function.name,
+                ExportKind::Func,
+                index as u32 + function_bias,
+            );
         }
     }
     output.section(&exports);
 
     let mut code = CodeSection::new();
     for function in &module.functions {
-        code.function(&compile_function(module, function, &strings)?);
+        code.function(&compile_function(
+            module,
+            function,
+            &strings,
+            function_bias,
+        )?);
     }
     output.section(&code);
 
@@ -179,6 +210,7 @@ fn compile_function(
     module: &CompiledModule,
     function: &BytecodeFunc,
     strings: &StringLayout,
+    function_bias: u32,
 ) -> Result<Function, WasmError> {
     let extra = function
         .locals
@@ -210,6 +242,7 @@ fn compile_function(
             *height,
             &layout,
             strings,
+            function_bias,
             &mut body,
         )?;
         body.instruction(&Instruction::End);
@@ -372,6 +405,10 @@ fn validate_operation(
                 string: *string,
             })
         }
+        Op::Print(argc) if *argc != 1 => Err(WasmError::Unsupported {
+            function: function.name.clone(),
+            operation: format!("Print({argc}) requires exactly one browser-host argument"),
+        }),
         Op::Call {
             function: callee,
             argc,
@@ -421,6 +458,7 @@ fn validate_operation(
         | Op::Jump(_)
         | Op::JumpIfFalse(_)
         | Op::Ret
+        | Op::Print(1)
         | Op::Len
         | Op::Nop
         | Op::Halt => Ok(()),
@@ -456,7 +494,7 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         | Op::BitOr
         | Op::BitXor => (2, 1),
         Op::Neg | Op::Not | Op::BitNot | Op::Len => (1, 1),
-        Op::Call { argc, .. } => (*argc, 1),
+        Op::Call { argc, .. } | Op::Print(argc) => (*argc, 1),
         Op::Jump(_) | Op::Nop => (0, 0),
         Op::Ret | Op::Halt => (0, 0),
         _ => (0, 0),
@@ -470,6 +508,7 @@ fn emit_operation(
     height: usize,
     layout: &FunctionLayout,
     strings: &StringLayout,
+    function_bias: u32,
     body: &mut Function,
 ) -> Result<(), WasmError> {
     let operation = &function.code[instruction];
@@ -555,8 +594,15 @@ fn emit_operation(
                     layout.stack_base + argument as u32,
                 ));
             }
-            body.instruction(&Instruction::Call(*callee as u32));
+            body.instruction(&Instruction::Call(*callee as u32 + function_bias));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
+        }
+        Op::Print(_) => {
+            body.instruction(&Instruction::LocalGet(
+                layout.stack_base + (height - 1) as u32,
+            ));
+            body.instruction(&Instruction::Call(0));
+            store_constant(body, layout.stack_base + (height - 1) as u32, 0);
         }
         Op::Jump(target) => {
             set_pc(body, layout.pc_local, *target);
@@ -735,6 +781,22 @@ mod tests {
         assert_eq!(handle as u32, StringLayout::DATA_START + 4);
         assert_eq!((handle >> 32) as usize, text.len());
         assert_eq!(&layout.data[..4], &(text.chars().count() as u32).to_le_bytes());
+    }
+
+    #[test]
+    fn emits_browser_host_print_import() {
+        let mut module = module_with(vec![Op::PushStr(0), Op::Print(1), Op::Ret], 0);
+        module.string_table.push("Hello from Titan".into());
+        validate(&module);
+    }
+
+    #[test]
+    fn rejects_multi_argument_print_until_typed_host_abi_is_available() {
+        let module = module_with(
+            vec![Op::PushInt(1), Op::PushInt(2), Op::Print(2), Op::Ret],
+            0,
+        );
+        assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));
     }
 
     #[test]
