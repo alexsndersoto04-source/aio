@@ -18,6 +18,10 @@ pub enum Command {
     Fetch { #[arg(long,default_value=".")] project: String, #[arg(long,default_value="https://registry.titan-lang.org")] registry: String, #[arg(long)] offline: bool },
     /// Re-resolve and update remote dependencies
     Update { #[arg(long,default_value=".")] project: String, #[arg(long,default_value="https://registry.titan-lang.org")] registry: String },
+    /// Generate a private Ed25519 package signing key
+    Keygen { path: String },
+    /// Build and sign a deterministic .tpkg archive
+    Pack { #[arg(long,default_value=".")] project: String, #[arg(long)] key: String, #[arg(long)] output: String },
     /// Parse and type-check a file or project without producing an artifact
     Check { #[arg(default_value = ".")] input: String },
     /// Compile a file or project to inspectable bytecode
@@ -60,6 +64,8 @@ fn main() {
         Command::Add { package, requirement, project } => cmd_add(&project,&package,&requirement),
         Command::Fetch { project, registry, offline } => cmd_fetch(&project,&registry,offline),
         Command::Update { project, registry } => cmd_fetch(&project,&registry,false),
+        Command::Keygen { path } => { titan_pkg::generate_signing_key(Path::new(&path)).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Generated signing key at {path}"); },
+        Command::Pack { project, key, output } => { let publication=titan_pkg::build_package(Path::new(&project),Path::new(&key),Path::new(&output)).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Packed {} {} -> {}\nsha256={}\nsigning_key={}\nsignature={}",publication.name,publication.version,publication.archive.display(),publication.sha256,publication.signing_key,publication.signature); },
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Debug { input, breakpoints, sandbox } => cmd_debug(&input, &breakpoints, sandbox),

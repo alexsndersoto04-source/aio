@@ -14,4 +14,6 @@ The graph resolver collects every constraint per package and performs highest-ve
 
 CLI commands are `titan add <name> <range>`, `titan fetch [--offline]`, and `titan update`. Add rewrites `Titan.toml` atomically; fetch resolves/downloads/verifies/extracts and writes `Titan.remote.lock`; offline requires the lock and verified cache. The project loader maps remote aliases to `.titan/packages/<name>/<version>/src` so fetched dependencies participate in normal imports.
 
-Publisher key ownership/publishing is the next registry block.
+`titan keygen <path>` creates a 32-byte Ed25519 private seed with OS CSPRNG and mode 0600 on Unix, refusing overwrite. `titan pack --project . --key <outside-project> --output package.tpkg` creates deterministic tar/gzip metadata, excludes VCS/cache/build/locks, rejects symlinks/special files and refuses private keys/output inside the package tree. It prints only public key, SHA-256 and signature.
+
+Authenticated upload and registry-side publisher key ownership are the remaining publication blocks.
