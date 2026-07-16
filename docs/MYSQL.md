@@ -8,4 +8,6 @@ TITAN APIs are `mysql::connect`, `execute`, `query`, `begin`, `commit`, `rollbac
 
 `Pool::new(url, maximum)` provides bounded reuse, condition-variable acquisition timeout, RAII return, stats and controlled close. Connections open outside the lock; failed opens release capacity; idle connections close immediately during shutdown and checked-out connections close when returned.
 
-TITAN exposes `mysql::pool(url, maximum)`, `acquire(pool, timeout_ms)`, `pool_stats(pool)`, and `pool_close(pool)`. Acquire returns `Option::Some(Mysql)` or `Option::None`; leases support all query/transaction APIs and return automatically through `mysql::close(lease)`. Migrations are the next MySQL block.
+TITAN exposes `mysql::pool(url, maximum)`, `acquire(pool, timeout_ms)`, `pool_stats(pool)`, and `pool_close(pool)`. Acquire returns `Option::Some(Mysql)` or `Option::None`; leases support all query/transaction APIs and return automatically through `mysql::close(lease)`.
+
+`mysql::migrate(db, migrations)` serializes migrators across processes with `GET_LOCK`, stores version/name/FNV checksum/timestamp, skips applied versions and rejects changed history. MySQL implicitly commits many DDL statements, so unlike SQLite/PostgreSQL the driver does not falsely claim all-schema atomic rollback; the migration history row is written only after each statement succeeds.

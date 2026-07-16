@@ -133,6 +133,7 @@ impl TypeEnv {
         functions.insert("std::mysql::execute".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::String, Type::Unknown], result: Type::Int });
         functions.insert("std::mysql::query".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
         for name in ["begin","commit","rollback"] { functions.insert(format!("std::mysql::{name}"), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Nil }); }
+        functions.insert("std::mysql::migrate".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::Unknown], result: Type::Int });
         functions.insert("std::mysql::last_insert_id".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Int });
         functions.insert("std::mysql::close".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Bool });
         functions.insert("std::mysql::pool".into(), FunctionSig { params: vec![Type::String, Type::Int], result: Type::Named("MysqlPool".into()) });
