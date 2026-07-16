@@ -1,9 +1,11 @@
 //! Titan package manifests, lockfiles, and multi-file project loading.
 
 pub mod archive;
+pub mod install;
 pub mod project;
 pub mod registry;
 pub mod resolver;
+pub use install::{add_remote as add_remote_dependency, sync as sync_remote_dependencies, InstallError};
 pub use project::{create_project, default_entry, find_project_root, ProjectError, SourceProject};
 pub use resolver::{resolve as resolve_remote, PackageSource, RemoteLockfile, ResolveError};
 pub use registry::{PackageIndex, PackageVersion, RegistryClient, RegistryError};

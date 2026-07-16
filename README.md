@@ -76,6 +76,9 @@ Traits, impl blocks, references, slices, generic type syntax, `spawn` and advanc
 
 ```text
 titan new <directory>        Create Titan.toml and src/main.titan
+titan add <name> <range>     Add remote dependency
+titan fetch [--offline]      Resolve/install dependencies
+titan update                 Re-resolve remote dependencies
 titan check [file|project]   Resolve imports and type-check
 titan run [file|project]     Compile, type-check and execute
 titan run --sandbox [path]   Deny filesystem/process/network/environment

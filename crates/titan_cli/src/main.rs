@@ -12,6 +12,12 @@ pub struct Cli { #[command(subcommand)] pub command: Command }
 pub enum Command {
     /// Create a project with Titan.toml and src/main.titan
     New { path: String },
+    /// Add a remote dependency requirement to Titan.toml
+    Add { package: String, #[arg(default_value="*")] requirement: String, #[arg(long,default_value=".")] project: String },
+    /// Resolve, download, verify, and install remote dependencies
+    Fetch { #[arg(long,default_value=".")] project: String, #[arg(long,default_value="https://registry.titan-lang.org")] registry: String, #[arg(long)] offline: bool },
+    /// Re-resolve and update remote dependencies
+    Update { #[arg(long,default_value=".")] project: String, #[arg(long,default_value="https://registry.titan-lang.org")] registry: String },
     /// Parse and type-check a file or project without producing an artifact
     Check { #[arg(default_value = ".")] input: String },
     /// Compile a file or project to inspectable bytecode
@@ -51,6 +57,9 @@ pub enum Command {
 fn main() {
     match Cli::parse().command {
         Command::New { path } => cmd_new(&path),
+        Command::Add { package, requirement, project } => cmd_add(&project,&package,&requirement),
+        Command::Fetch { project, registry, offline } => cmd_fetch(&project,&registry,offline),
+        Command::Update { project, registry } => cmd_fetch(&project,&registry,false),
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Debug { input, breakpoints, sandbox } => cmd_debug(&input, &breakpoints, sandbox),
@@ -70,6 +79,9 @@ fn cmd_new(path: &str) {
         Err(error) => fatal("PROJECT ERROR", error),
     }
 }
+
+fn cmd_add(project:&str,package:&str,requirement:&str){let path=Path::new(project);let root=titan_pkg::find_project_root(path).unwrap_or_else(||path.to_path_buf());titan_pkg::add_remote_dependency(&root,package,requirement).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Added {package} {requirement}");}
+fn cmd_fetch(project:&str,registry:&str,offline:bool){let path=Path::new(project);let root=titan_pkg::find_project_root(path).unwrap_or_else(||path.to_path_buf());let lock=titan_pkg::sync_remote_dependencies(&root,registry,offline).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Synchronized {} remote packages{}",lock.packages.len(),if offline{" (offline)"}else{""});}
 
 fn cmd_check(input: &str) {
     match load_and_compile(input) {

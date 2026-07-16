@@ -137,7 +137,8 @@ impl Loader {
 }
 
 fn collect_dependencies(root: &Path, manifest: &crate::Manifest) -> Result<BTreeMap<String, PathBuf>, ProjectError> {
-    fn visit(root: &Path, manifest: &crate::Manifest, output: &mut BTreeMap<String, PathBuf>, stack: &mut Vec<PathBuf>) -> Result<(), ProjectError> {
+    let remote_versions: BTreeMap<String,String> = if root.join("Titan.remote.lock").is_file() { crate::RemoteLockfile::read(&root.join("Titan.remote.lock")).map_err(|error|ProjectError::Manifest{path:root.join("Titan.remote.lock"),message:error.to_string()})?.packages.into_iter().map(|package|(package.name,package.version)).collect() } else { BTreeMap::new() };
+    fn visit(root: &Path, project_root:&Path, remote_versions:&BTreeMap<String,String>, manifest: &crate::Manifest, output: &mut BTreeMap<String, PathBuf>, stack: &mut Vec<PathBuf>) -> Result<(), ProjectError> {
         let root = root.canonicalize().map_err(|source| ProjectError::Read { path: root.to_path_buf(), source })?;
         if let Some(position) = stack.iter().position(|path| path == &root) {
             let chain = stack[position..].iter().chain(std::iter::once(&root)).map(|path| path.display().to_string()).collect::<Vec<_>>().join(" -> ");
@@ -145,17 +146,17 @@ fn collect_dependencies(root: &Path, manifest: &crate::Manifest) -> Result<BTree
         }
         stack.push(root.clone());
         for (alias, dependency) in &manifest.dependencies {
-            let relative = dependency.path.as_ref().ok_or_else(|| ProjectError::DependencyNeedsPath { name: alias.clone() })?;
-            let dependency_root = root.join(relative).canonicalize().map_err(|source| ProjectError::Read { path: root.join(relative), source })?;
+            let dependency_candidate = if let Some(relative)=&dependency.path { root.join(relative) } else { let version=remote_versions.get(alias).ok_or_else(||ProjectError::DependencyNeedsPath{name:alias.clone()})?; project_root.join(".titan/packages").join(alias).join(version) };
+            let dependency_root = dependency_candidate.canonicalize().map_err(|source| ProjectError::Read { path: dependency_candidate, source })?;
             let dependency_manifest = crate::Manifest::from_dir(&dependency_root).map_err(|error| ProjectError::Manifest { path: dependency_root.join("Titan.toml"), message: error.to_string() })?;
             let source_candidate = dependency_root.join("src");
             let source_root = source_candidate.canonicalize().map_err(|source| ProjectError::Read { path: source_candidate, source })?;
             output.entry(alias.clone()).or_insert(source_root);
-            visit(&dependency_root, &dependency_manifest, output, stack)?;
+            visit(&dependency_root, project_root, remote_versions, &dependency_manifest, output, stack)?;
         }
         stack.pop(); Ok(())
     }
-    let mut output = BTreeMap::new(); visit(root, manifest, &mut output, &mut Vec::new())?; Ok(output)
+    let mut output = BTreeMap::new(); visit(root, root, &remote_versions, manifest, &mut output, &mut Vec::new())?; Ok(output)
 }
 
 fn assign_source_files(items: &mut [Item], path: &Path) {
