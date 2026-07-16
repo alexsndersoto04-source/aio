@@ -16,6 +16,8 @@ DOM events use `std::web::listen(selector, event_name, handler_export) -> Int` a
 
 During a handler, `std::web::event_type`, `event_value`, `event_key`, `event_target_id`, `event_checked`, `event_x`, and `event_y` expose the active DOM event. String values travel host-to-Wasm through the exported `__titan_alloc_string(byte_length, scalar_length)` ABI. The JavaScript adapter UTF-8 encodes the value, invokes the reentrant checked allocator, refreshes its memory view after possible `memory.grow`, writes the payload, and returns the normal Titan string handle. Event context is restored in `finally`, so nested dispatch cannot leak the wrong event. Outside a handler, string accessors return empty strings and numeric/boolean accessors return zero.
 
+Asynchronous GET requests use `std::web::fetch(url, maximum_bytes, timeout_ms, handler_export) -> Int`; `std::web::fetch_cancel(id) -> Bool` aborts and suppresses its callback. Responses are streamed with a hard byte limit rather than buffered without bounds. The host uses `AbortController` for cancellation/timeouts, retains HTTP status/final URL/body/error in a scoped callback context, and invokes the exported zero-argument Titan handler after completion. That handler reads `fetch_ok`, `fetch_status`, `fetch_body`, `fetch_url`, and `fetch_error`. HTTP error statuses still expose their status/body; transport errors and timeouts use status zero. Browser CORS policy remains enforced.
+
 A complete host adapter and page live under `examples/browser/`. Build and serve it with:
 
 ```bash
@@ -26,4 +28,4 @@ python3 -m http.server 8080
 
 Then open `http://localhost:8080`. Browsers generally forbid loading Wasm from `file://`, so an HTTP server is required.
 
-Collections remain explicitly unsupported. Asynchronous browser APIs such as `fetch`, source maps, richer typed event objects, and eventually managed heap reclamation are subsequent Phase 6 blocks.
+Collections remain explicitly unsupported. Additional asynchronous APIs (streaming request bodies and WebSocket browser bindings), source maps, richer typed event objects, and eventually managed heap reclamation are subsequent Phase 6 blocks.

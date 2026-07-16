@@ -1,9 +1,13 @@
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const responseDecoder = new TextDecoder("utf-8");
 const encoder = new TextEncoder();
 let instance;
 let currentEvent = null;
+let currentFetch = null;
 let nextListenerId = 1;
+let nextFetchId = 1;
 const listeners = new Map();
+const requests = new Map();
 
 function titanString(handle) {
     const bits = BigInt.asUintN(64, handle);
@@ -40,11 +44,96 @@ function eventString(read) {
     return wasmString(currentEvent ? read(currentEvent) : "");
 }
 
+function fetchString(read) {
+    return wasmString(currentFetch ? read(currentFetch) : "");
+}
+
+function safeInteger(raw, name, minimum = 0) {
+    const value = typeof raw === "bigint" ? raw : BigInt(raw);
+    if (value < BigInt(minimum) || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new RangeError(`${name} is outside the supported range`);
+    }
+    return Number(value);
+}
+
 function element(handle) {
     const selector = titanString(handle);
     const node = document.querySelector(selector);
     if (!node) throw new Error(`DOM selector did not match: ${selector}`);
     return node;
+}
+
+async function readBoundedBody(response, maximumBytes) {
+    if (!response.body) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.length > maximumBytes) throw new RangeError("fetch response exceeds maximumBytes");
+        return responseDecoder.decode(bytes);
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > maximumBytes) {
+            await reader.cancel("response limit exceeded");
+            throw new RangeError("fetch response exceeds maximumBytes");
+        }
+        chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return responseDecoder.decode(bytes);
+}
+
+function invokeFetchHandler(handlerName, context) {
+    const previousFetch = currentFetch;
+    currentFetch = context;
+    try {
+        const handler = instance.exports[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`TITAN fetch handler is not exported: ${handlerName}`);
+        }
+        handler();
+    } catch (error) {
+        console.error(`TITAN fetch handler '${handlerName}' failed`, error);
+    } finally {
+        currentFetch = previousFetch;
+    }
+}
+
+async function performFetch(id, url, maximumBytes, handlerName, record) {
+    try {
+        const response = await globalThis.fetch(url, { signal: record.controller.signal });
+        const body = await readBoundedBody(response, maximumBytes);
+        if (!record.cancelled) {
+            invokeFetchHandler(handlerName, {
+                ok: response.ok,
+                status: response.status,
+                body,
+                url: response.url,
+                error: "",
+            });
+        }
+    } catch (error) {
+        if (!record.cancelled) {
+            invokeFetchHandler(handlerName, {
+                ok: false,
+                status: 0,
+                body: "",
+                url,
+                error: record.timedOut ? "request timed out" : String(error?.message || error),
+            });
+        }
+    } finally {
+        if (record.timer !== null) clearTimeout(record.timer);
+        if (requests.get(id) === record) requests.delete(id);
+    }
 }
 
 const imports = {
@@ -131,6 +220,53 @@ const imports = {
         },
         dom_event_y() {
             return BigInt(Math.trunc(Number(currentEvent?.clientY) || 0));
+        },
+        fetch_start(urlHandle, maximumHandle, timeoutHandle, handlerHandle) {
+            const url = titanString(urlHandle);
+            const maximumBytes = safeInteger(maximumHandle, "maximumBytes", 1);
+            const timeoutMs = safeInteger(timeoutHandle, "timeoutMs", 0);
+            const handlerName = titanString(handlerHandle);
+            const id = nextFetchId++;
+            const record = {
+                controller: new AbortController(),
+                cancelled: false,
+                timedOut: false,
+                timer: null,
+            };
+            if (timeoutMs > 0) {
+                record.timer = setTimeout(() => {
+                    record.timedOut = true;
+                    record.controller.abort();
+                }, timeoutMs);
+            }
+            requests.set(id, record);
+            void performFetch(id, url, maximumBytes, handlerName, record);
+            return BigInt(id);
+        },
+        fetch_cancel(rawId) {
+            const id = safeInteger(rawId, "request id", 1);
+            const record = requests.get(id);
+            if (!record) return 0n;
+            record.cancelled = true;
+            record.controller.abort();
+            if (record.timer !== null) clearTimeout(record.timer);
+            requests.delete(id);
+            return 1n;
+        },
+        fetch_ok() {
+            return currentFetch?.ok === true ? 1n : 0n;
+        },
+        fetch_status() {
+            return BigInt(currentFetch?.status || 0);
+        },
+        fetch_body() {
+            return fetchString(context => context.body);
+        },
+        fetch_url() {
+            return fetchString(context => context.url);
+        },
+        fetch_error() {
+            return fetchString(context => context.error);
         },
     },
 };

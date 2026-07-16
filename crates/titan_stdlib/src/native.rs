@@ -119,6 +119,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::event_checked", [], Bool),
     native!("std::web::event_x", [], Int),
     native!("std::web::event_y", [], Int),
+    native!("std::web::fetch", [String, Int, Int, String], Int),
+    native!("std::web::fetch_cancel", [Int], Bool),
+    native!("std::web::fetch_ok", [], Bool),
+    native!("std::web::fetch_status", [], Int),
+    native!("std::web::fetch_body", [], String),
+    native!("std::web::fetch_url", [], String),
+    native!("std::web::fetch_error", [], String),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

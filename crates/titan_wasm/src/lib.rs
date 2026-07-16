@@ -104,6 +104,13 @@ const WEB_IMPORTS: &[HostImport] = &[
     HostImport { native: Some("std::web::event_checked"), field: "dom_event_checked", params: 0, returns_value: true },
     HostImport { native: Some("std::web::event_x"), field: "dom_event_x", params: 0, returns_value: true },
     HostImport { native: Some("std::web::event_y"), field: "dom_event_y", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::fetch"), field: "fetch_start", params: 4, returns_value: true },
+    HostImport { native: Some("std::web::fetch_cancel"), field: "fetch_cancel", params: 1, returns_value: true },
+    HostImport { native: Some("std::web::fetch_ok"), field: "fetch_ok", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::fetch_status"), field: "fetch_status", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::fetch_body"), field: "fetch_body", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::fetch_url"), field: "fetch_url", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::fetch_error"), field: "fetch_error", params: 0, returns_value: true },
 ];
 
 struct HostImports {
@@ -174,6 +181,9 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
                 | "std::web::event_value"
                 | "std::web::event_key"
                 | "std::web::event_target_id"
+                | "std::web::fetch_body"
+                | "std::web::fetch_url"
+                | "std::web::fetch_error"
         )
     });
     if needs_host_strings
@@ -1502,6 +1512,35 @@ mod tests {
         );
         module.string_table = vec!["host ".into(), "interop".into()];
         validate(&module);
+    }
+
+    #[test]
+    fn emits_bounded_async_fetch_callback_imports() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::PushInt(65_536),
+                Op::PushInt(5_000),
+                Op::PushStr(1),
+                Op::CallNative {
+                    name: "std::web::fetch".into(),
+                    argc: 4,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::web::fetch_body".into(),
+                    argc: 0,
+                },
+                Op::Ret,
+            ],
+            0,
+        );
+        module.string_table = vec!["./data.json".into(), "on_fetch".into()];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 2);
+        assert_eq!(imports.natives["std::web::fetch"], 0);
+        assert_eq!(imports.natives["std::web::fetch_body"], 1);
     }
 
     #[test]
