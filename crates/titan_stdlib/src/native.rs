@@ -128,6 +128,16 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::fetch_error", [], String),
     native!("std::web::fetch_headers", [], String),
     native!("std::web::request", [String, String, String, String, Int, Int, String], Int),
+    native!("std::web::ws_connect", [String, String, Int, String, String, String, String], Int),
+    native!("std::web::ws_send", [Int, String], Bool),
+    native!("std::web::ws_close", [Int, Int, String], Bool),
+    native!("std::web::ws_id", [], Int),
+    native!("std::web::ws_message", [], String),
+    native!("std::web::ws_protocol", [], String),
+    native!("std::web::ws_close_code", [], Int),
+    native!("std::web::ws_close_reason", [], String),
+    native!("std::web::ws_was_clean", [], Bool),
+    native!("std::web::ws_error", [], String),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

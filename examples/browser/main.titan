@@ -14,6 +14,41 @@ fn on_input() {
     0
 }
 
+fn on_socket_open() {
+    let socket = std::web::ws_id();
+    std::web::ws_send(socket, "Hola desde TITAN WebAssembly 🚀");
+    std::web::set_text("#socket-state", "WebSocket conectado; mensaje enviado");
+    0
+}
+
+fn on_socket_message() {
+    let message = std::web::ws_message();
+    std::web::set_text("#socket-state", message);
+    println(message);
+    0
+}
+
+fn on_socket_error() {
+    let error = std::web::ws_error();
+    std::web::set_text("#socket-state", error);
+    println(error);
+    0
+}
+
+fn on_socket_close() {
+    let reason = std::web::ws_close_reason();
+    std::web::set_text("#socket-state", "WebSocket cerrado");
+    println(reason);
+    0
+}
+
+fn connect_socket() {
+    let url = std::web::event_value();
+    std::web::set_text("#socket-state", "Conectando WebSocket…");
+    std::web::ws_connect(url, "[]", 65536, "on_socket_open", "on_socket_message", "on_socket_error", "on_socket_close");
+    0
+}
+
 fn on_fetch() {
     if std::web::fetch_ok() {
         let body = std::web::fetch_body();
@@ -36,6 +71,7 @@ fn main() {
     std::web::add_class("#status", "ready");
     std::web::listen("#action", "click", "on_click");
     std::web::listen("#message", "input", "on_input");
+    std::web::listen("#socket-url", "change", "connect_socket");
     std::web::request("GET", "./data.json", "{\"Accept\":\"application/json\"}", "", 65536, 5000, "on_fetch");
 
     if std::web::query_exists("#status") {

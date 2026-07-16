@@ -4,10 +4,13 @@ const encoder = new TextEncoder();
 let instance;
 let currentEvent = null;
 let currentFetch = null;
+let currentSocket = null;
 let nextListenerId = 1;
 let nextFetchId = 1;
+let nextSocketId = 1;
 const listeners = new Map();
 const requests = new Map();
+const sockets = new Map();
 
 function titanString(handle) {
     const bits = BigInt.asUintN(64, handle);
@@ -191,6 +194,56 @@ async function performFetch(id, url, maximumBytes, handlerName, record, options)
     }
 }
 
+function socketString(read) {
+    return wasmString(currentSocket ? read(currentSocket) : "");
+}
+
+function parseProtocols(source) {
+    if (source.trim() === "") return [];
+    const protocols = JSON.parse(source);
+    if (!Array.isArray(protocols) || protocols.length > 32) {
+        throw new TypeError("WebSocket protocols must be a JSON array with at most 32 entries");
+    }
+    const seen = new Set();
+    for (const protocol of protocols) {
+        if (typeof protocol !== "string" || protocol === "" || encoder.encode(protocol).length > 128) {
+            throw new TypeError("invalid WebSocket subprotocol");
+        }
+        if (seen.has(protocol)) throw new TypeError(`duplicate WebSocket subprotocol: ${protocol}`);
+        seen.add(protocol);
+    }
+    return protocols;
+}
+
+function invokeSocketHandler(handlerName, context) {
+    const previousSocket = currentSocket;
+    currentSocket = context;
+    try {
+        const handler = instance.exports[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`TITAN WebSocket handler is not exported: ${handlerName}`);
+        }
+        handler();
+    } catch (error) {
+        console.error(`TITAN WebSocket handler '${handlerName}' failed`, error);
+    } finally {
+        currentSocket = previousSocket;
+    }
+}
+
+function socketContext(id, record, values = {}) {
+    return {
+        id,
+        message: "",
+        protocol: record.socket.protocol || "",
+        closeCode: 0,
+        closeReason: "",
+        wasClean: false,
+        error: "",
+        ...values,
+    };
+}
+
 const imports = {
     titan: {
         print(value) {
@@ -324,6 +377,107 @@ const imports = {
         },
         fetch_headers() {
             return fetchString(context => context.headers);
+        },
+        ws_connect(urlHandle, protocolsHandle, maximumHandle, openHandle, messageHandle, errorHandle, closeHandle) {
+            const url = titanString(urlHandle);
+            const protocols = parseProtocols(titanString(protocolsHandle));
+            const maximumBytes = safeInteger(maximumHandle, "maximumMessageBytes", 1);
+            const handlers = {
+                open: titanString(openHandle),
+                message: titanString(messageHandle),
+                error: titanString(errorHandle),
+                close: titanString(closeHandle),
+            };
+            const id = nextSocketId++;
+            const socket = protocols.length === 0 ? new WebSocket(url) : new WebSocket(url, protocols);
+            socket.binaryType = "arraybuffer";
+            const record = { socket, maximumBytes, handlers };
+            sockets.set(id, record);
+            socket.addEventListener("open", () => {
+                invokeSocketHandler(handlers.open, socketContext(id, record));
+            });
+            socket.addEventListener("message", event => {
+                let message;
+                let length;
+                if (typeof event.data === "string") {
+                    message = event.data;
+                    length = encoder.encode(message).length;
+                } else if (event.data instanceof ArrayBuffer) {
+                    length = event.data.byteLength;
+                    message = responseDecoder.decode(new Uint8Array(event.data));
+                } else {
+                    invokeSocketHandler(handlers.error, socketContext(id, record, {
+                        error: "unsupported WebSocket message type",
+                    }));
+                    socket.close(1003, "unsupported message type");
+                    return;
+                }
+                if (length > maximumBytes) {
+                    invokeSocketHandler(handlers.error, socketContext(id, record, {
+                        error: "WebSocket message exceeds maximumMessageBytes",
+                    }));
+                    socket.close(1009, "message too large");
+                    return;
+                }
+                invokeSocketHandler(handlers.message, socketContext(id, record, { message }));
+            });
+            socket.addEventListener("error", () => {
+                invokeSocketHandler(handlers.error, socketContext(id, record, {
+                    error: "WebSocket transport error",
+                }));
+            });
+            socket.addEventListener("close", event => {
+                sockets.delete(id);
+                invokeSocketHandler(handlers.close, socketContext(id, record, {
+                    closeCode: event.code,
+                    closeReason: event.reason,
+                    wasClean: event.wasClean,
+                }));
+            });
+            return BigInt(id);
+        },
+        ws_send(rawId, messageHandle) {
+            const id = safeInteger(rawId, "WebSocket id", 1);
+            const record = sockets.get(id);
+            if (!record || record.socket.readyState !== WebSocket.OPEN) return 0n;
+            const message = titanString(messageHandle);
+            const messageBytes = encoder.encode(message).length;
+            if (messageBytes > record.maximumBytes) return 0n;
+            if (record.socket.bufferedAmount + messageBytes > record.maximumBytes) return 0n;
+            record.socket.send(message);
+            return 1n;
+        },
+        ws_close(rawId, rawCode, reasonHandle) {
+            const id = safeInteger(rawId, "WebSocket id", 1);
+            const code = safeInteger(rawCode, "WebSocket close code", 0);
+            const reason = titanString(reasonHandle);
+            const record = sockets.get(id);
+            if (!record || record.socket.readyState >= WebSocket.CLOSING) return 0n;
+            if (code !== 1000 && (code < 3000 || code > 4999)) return 0n;
+            if (encoder.encode(reason).length > 123) return 0n;
+            record.socket.close(code, reason);
+            return 1n;
+        },
+        ws_id() {
+            return BigInt(currentSocket?.id || 0);
+        },
+        ws_message() {
+            return socketString(context => context.message);
+        },
+        ws_protocol() {
+            return socketString(context => context.protocol);
+        },
+        ws_close_code() {
+            return BigInt(currentSocket?.closeCode || 0);
+        },
+        ws_close_reason() {
+            return socketString(context => context.closeReason);
+        },
+        ws_was_clean() {
+            return currentSocket?.wasClean === true ? 1n : 0n;
+        },
+        ws_error() {
+            return socketString(context => context.error);
         },
     },
 };

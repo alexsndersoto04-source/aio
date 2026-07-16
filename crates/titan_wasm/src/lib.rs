@@ -113,6 +113,16 @@ const WEB_IMPORTS: &[HostImport] = &[
     HostImport { native: Some("std::web::fetch_error"), field: "fetch_error", params: 0, returns_value: true },
     HostImport { native: Some("std::web::fetch_headers"), field: "fetch_headers", params: 0, returns_value: true },
     HostImport { native: Some("std::web::request"), field: "fetch_request", params: 7, returns_value: true },
+    HostImport { native: Some("std::web::ws_connect"), field: "ws_connect", params: 7, returns_value: true },
+    HostImport { native: Some("std::web::ws_send"), field: "ws_send", params: 2, returns_value: true },
+    HostImport { native: Some("std::web::ws_close"), field: "ws_close", params: 3, returns_value: true },
+    HostImport { native: Some("std::web::ws_id"), field: "ws_id", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::ws_message"), field: "ws_message", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::ws_protocol"), field: "ws_protocol", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::ws_close_code"), field: "ws_close_code", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::ws_close_reason"), field: "ws_close_reason", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::ws_was_clean"), field: "ws_was_clean", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::ws_error"), field: "ws_error", params: 0, returns_value: true },
 ];
 
 struct HostImports {
@@ -187,6 +197,10 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
                 | "std::web::fetch_url"
                 | "std::web::fetch_error"
                 | "std::web::fetch_headers"
+                | "std::web::ws_message"
+                | "std::web::ws_protocol"
+                | "std::web::ws_close_reason"
+                | "std::web::ws_error"
         )
     });
     if needs_host_strings
@@ -1582,6 +1596,70 @@ mod tests {
         assert_eq!(imports.definitions.len(), 2);
         assert_eq!(imports.natives["std::web::fetch_headers"], 0);
         assert_eq!(imports.natives["std::web::request"], 1);
+    }
+
+    #[test]
+    fn emits_asynchronous_browser_websocket_imports() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::PushStr(1),
+                Op::PushInt(65_536),
+                Op::PushStr(2),
+                Op::PushStr(3),
+                Op::PushStr(4),
+                Op::PushStr(5),
+                Op::CallNative {
+                    name: "std::web::ws_connect".into(),
+                    argc: 7,
+                },
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::PushStr(6),
+                Op::CallNative {
+                    name: "std::web::ws_send".into(),
+                    argc: 2,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::web::ws_id".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::web::ws_message".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::PushInt(1_000),
+                Op::PushStr(7),
+                Op::CallNative {
+                    name: "std::web::ws_close".into(),
+                    argc: 3,
+                },
+                Op::Ret,
+            ],
+            1,
+        );
+        module.string_table = vec![
+            "wss://example.invalid/socket".into(),
+            "[\"titan.v1\"]".into(),
+            "on_open".into(),
+            "on_message".into(),
+            "on_error".into(),
+            "on_close".into(),
+            "hello".into(),
+            "done".into(),
+        ];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 5);
+        assert_eq!(imports.natives["std::web::ws_connect"], 0);
+        assert_eq!(imports.natives["std::web::ws_send"], 1);
+        assert_eq!(imports.natives["std::web::ws_close"], 2);
+        assert_eq!(imports.natives["std::web::ws_id"], 3);
+        assert_eq!(imports.natives["std::web::ws_message"], 4);
     }
 
     #[test]

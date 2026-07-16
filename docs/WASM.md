@@ -28,4 +28,20 @@ python3 -m http.server 8080
 
 Then open `http://localhost:8080`. Browsers generally forbid loading Wasm from `file://`, so an HTTP server is required.
 
-Collections remain explicitly unsupported. Additional asynchronous APIs (streaming request bodies and WebSocket browser bindings), source maps, richer typed event objects, and eventually managed heap reclamation are subsequent Phase 6 blocks.
+Browser WebSockets use `std::web::ws_connect(url, protocols_json, maximum_message_bytes, on_open, on_message, on_error, on_close) -> Int`, plus `ws_send(id, text) -> Bool` and `ws_close(id, code, reason) -> Bool`. Separate callbacks avoid comparing erased string handles to determine event type. Within callbacks, `ws_id`, `ws_message`, `ws_protocol`, `ws_close_code`, `ws_close_reason`, `ws_was_clean`, and `ws_error` expose scoped state. The host validates protocol arrays, tracks sockets by ID, limits incoming/outgoing UTF-8 bytes, applies `bufferedAmount` backpressure, handles text and binary frames as UTF-8 strings, reports transport/size/type failures, enforces browser close-code/reason constraints, and releases records on close. The browser controls TLS, origin, proxy and certificate policy.
+
+```titan
+fn socket_open() {
+    std::web::ws_send(std::web::ws_id(), "hello from TITAN");
+    0
+}
+fn socket_message() { println(std::web::ws_message()); 0 }
+fn socket_error() { println(std::web::ws_error()); 0 }
+fn socket_close() { println(std::web::ws_close_reason()); 0 }
+fn main() {
+    std::web::ws_connect("wss://example.com/socket", "[]", 65536,
+        "socket_open", "socket_message", "socket_error", "socket_close")
+}
+```
+
+Collections remain explicitly unsupported. Additional asynchronous APIs (streaming request bodies), source maps, richer typed event objects, Canvas/WebGL bindings, and eventually managed heap reclamation are subsequent Phase 6 blocks.
