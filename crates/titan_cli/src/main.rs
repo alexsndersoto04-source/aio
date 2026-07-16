@@ -28,6 +28,8 @@ pub enum Command {
     Check { #[arg(default_value = ".")] input: String },
     /// Compile a file or project to inspectable bytecode
     Build { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
+    /// Compile the supported numeric subset directly to WebAssembly
+    Wasm { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
     /// Debug a file or project with source breakpoints and stepping
     Debug {
         #[arg(default_value = ".")]
@@ -71,6 +73,7 @@ fn main() {
         Command::Publish { project, key, registry } => cmd_publish(&project,&key,&registry),
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
+        Command::Wasm { input, output } => cmd_wasm(&input, output),
         Command::Debug { input, breakpoints, sandbox } => cmd_debug(&input, &breakpoints, sandbox),
         Command::Exec { input, sandbox } => cmd_exec(&input, sandbox),
         Command::Run { input, sandbox, args } => cmd_run(&input, sandbox, args),
@@ -165,6 +168,8 @@ fn cmd_exec(input: &str, sandbox: bool) {
         Err(error) => fatal("RUNTIME ERROR", error),
     }
 }
+
+fn cmd_wasm(input:&str,output:Option<String>){let(project,module)=load_and_compile(input).unwrap_or_else(|error|fatal_message("COMPILATION FAILED",&error));let target=output.map(PathBuf::from).unwrap_or_else(||{let name=project.root.file_name().and_then(|name|name.to_str()).unwrap_or("program");project.root.join("target").join(format!("{name}.wasm"))});if let Some(parent)=target.parent(){fs::create_dir_all(parent).unwrap_or_else(|error|fatal("WASM BUILD ERROR",error));}let bytes=titan_wasm::compile(&module).unwrap_or_else(|error|fatal("WASM BUILD ERROR",error));fs::write(&target,bytes).unwrap_or_else(|error|fatal("WASM BUILD ERROR",error));println!("WASM: {} -> {}",project.entry.display(),target.display());}
 
 fn cmd_run(input: &str, sandbox: bool, _args: Vec<String>) {
     let (_, module) = load_and_compile(input).unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));

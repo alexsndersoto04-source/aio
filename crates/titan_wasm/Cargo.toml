@@ -1,0 +1,13 @@
+[package]
+name = "titan_wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+titan_codegen = { path = "../titan_codegen" }
+wasm-encoder = "0.240"
+thiserror.workspace = true
+
+[dev-dependencies]
+wasmparser = "0.240"

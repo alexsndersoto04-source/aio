@@ -20,6 +20,7 @@ members = [
     "crates/titan_sqlite",
     "crates/titan_postgres",
     "crates/titan_mysql",
+    "crates/titan_wasm",
 ]
 resolver = "2"
 
