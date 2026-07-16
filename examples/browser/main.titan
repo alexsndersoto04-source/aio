@@ -64,8 +64,19 @@ fn on_fetch() {
     0
 }
 
+fn draw_scene() {
+    std::web::canvas_resize("#scene", 640, 240);
+    std::web::canvas_clear("#scene", "#0f172a");
+    std::web::canvas_fill_rect("#scene", 32, 42, 150, 100, "#0ea5e9");
+    std::web::canvas_stroke_rect("#scene", 28, 38, 158, 108, "#f8fafc", 3);
+    std::web::canvas_line("#scene", 215, 142, 590, 42, "#a78bfa", 5);
+    std::web::canvas_text("#scene", "TITAN + Canvas 2D 🚀", 215, 110, "#f8fafc", "26px sans-serif");
+    0
+}
+
 fn main() {
     std::web::set_title("TITAN WebAssembly");
+    draw_scene();
     std::web::set_text("#status", "TITAN controla este DOM desde WebAssembly 🚀");
     std::web::set_attribute("#status", "data-runtime", "titan-wasm");
     std::web::add_class("#status", "ready");

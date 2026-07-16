@@ -44,4 +44,6 @@ fn main() {
 }
 ```
 
-Collections remain explicitly unsupported. Additional asynchronous APIs (streaming request bodies), source maps, richer typed event objects, Canvas/WebGL bindings, and eventually managed heap reclamation are subsequent Phase 6 blocks.
+Canvas 2D drawing uses `std::web::canvas_resize`, `canvas_clear`, `canvas_fill_rect`, `canvas_stroke_rect`, `canvas_line`, and `canvas_text`. Selectors must resolve to `HTMLCanvasElement`; missing 2D contexts trap with explicit host errors. Dimensions, coordinates and line widths are range-checked before conversion from the `i64` ABI. Every draw operation brackets mutable context state with `save`/`restore`, resize is capped at 16384 pixels per axis and 67108864 total pixels, while line width is capped at 10000. The browser example renders a real scene during `main`.
+
+Collections remain explicitly unsupported. Additional asynchronous APIs (streaming request bodies), source maps, richer typed event objects, WebGL bindings, animation scheduling, and eventually managed heap reclamation are subsequent Phase 6 blocks.

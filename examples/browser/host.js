@@ -66,6 +66,27 @@ function element(handle) {
     return node;
 }
 
+function signedInteger(raw, name) {
+    const value = typeof raw === "bigint" ? raw : BigInt(raw);
+    const limit = BigInt(Number.MAX_SAFE_INTEGER);
+    if (value < -limit || value > limit) throw new RangeError(`${name} is outside the supported range`);
+    return Number(value);
+}
+
+function canvasContext(selectorHandle) {
+    const canvas = element(selectorHandle);
+    if (!(canvas instanceof HTMLCanvasElement)) throw new TypeError("selector does not identify a canvas");
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Canvas 2D context is unavailable");
+    return { canvas, context };
+}
+
+function lineWidth(raw) {
+    const width = safeInteger(raw, "line width", 1);
+    if (width > 10_000) throw new RangeError("line width exceeds 10000");
+    return width;
+}
+
 async function readBoundedBody(response, maximumBytes) {
     if (!response.body) {
         const bytes = new Uint8Array(await response.arrayBuffer());
@@ -478,6 +499,74 @@ const imports = {
         },
         ws_error() {
             return socketString(context => context.error);
+        },
+        canvas_resize(selector, rawWidth, rawHeight) {
+            const { canvas } = canvasContext(selector);
+            const width = safeInteger(rawWidth, "canvas width", 1);
+            const height = safeInteger(rawHeight, "canvas height", 1);
+            if (width > 16_384 || height > 16_384) throw new RangeError("canvas dimensions exceed 16384");
+            if (width * height > 67_108_864) throw new RangeError("canvas pixel area exceeds 67108864");
+            canvas.width = width;
+            canvas.height = height;
+        },
+        canvas_clear(selector, colorHandle) {
+            const { canvas, context } = canvasContext(selector);
+            const color = titanString(colorHandle);
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            if (color !== "") {
+                context.save();
+                context.fillStyle = color;
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                context.restore();
+            }
+        },
+        canvas_fill_rect(selector, rawX, rawY, rawWidth, rawHeight, colorHandle) {
+            const { context } = canvasContext(selector);
+            context.save();
+            context.fillStyle = titanString(colorHandle);
+            context.fillRect(
+                signedInteger(rawX, "rectangle x"),
+                signedInteger(rawY, "rectangle y"),
+                signedInteger(rawWidth, "rectangle width"),
+                signedInteger(rawHeight, "rectangle height")
+            );
+            context.restore();
+        },
+        canvas_stroke_rect(selector, rawX, rawY, rawWidth, rawHeight, colorHandle, rawLineWidth) {
+            const { context } = canvasContext(selector);
+            context.save();
+            context.strokeStyle = titanString(colorHandle);
+            context.lineWidth = lineWidth(rawLineWidth);
+            context.strokeRect(
+                signedInteger(rawX, "rectangle x"),
+                signedInteger(rawY, "rectangle y"),
+                signedInteger(rawWidth, "rectangle width"),
+                signedInteger(rawHeight, "rectangle height")
+            );
+            context.restore();
+        },
+        canvas_line(selector, rawX1, rawY1, rawX2, rawY2, colorHandle, rawLineWidth) {
+            const { context } = canvasContext(selector);
+            context.save();
+            context.strokeStyle = titanString(colorHandle);
+            context.lineWidth = lineWidth(rawLineWidth);
+            context.beginPath();
+            context.moveTo(signedInteger(rawX1, "line x1"), signedInteger(rawY1, "line y1"));
+            context.lineTo(signedInteger(rawX2, "line x2"), signedInteger(rawY2, "line y2"));
+            context.stroke();
+            context.restore();
+        },
+        canvas_text(selector, textHandle, rawX, rawY, colorHandle, fontHandle) {
+            const { context } = canvasContext(selector);
+            context.save();
+            context.fillStyle = titanString(colorHandle);
+            context.font = titanString(fontHandle);
+            context.fillText(
+                titanString(textHandle),
+                signedInteger(rawX, "text x"),
+                signedInteger(rawY, "text y")
+            );
+            context.restore();
         },
     },
 };

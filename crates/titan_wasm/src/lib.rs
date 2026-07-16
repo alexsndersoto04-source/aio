@@ -123,6 +123,12 @@ const WEB_IMPORTS: &[HostImport] = &[
     HostImport { native: Some("std::web::ws_close_reason"), field: "ws_close_reason", params: 0, returns_value: true },
     HostImport { native: Some("std::web::ws_was_clean"), field: "ws_was_clean", params: 0, returns_value: true },
     HostImport { native: Some("std::web::ws_error"), field: "ws_error", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::canvas_resize"), field: "canvas_resize", params: 3, returns_value: false },
+    HostImport { native: Some("std::web::canvas_clear"), field: "canvas_clear", params: 2, returns_value: false },
+    HostImport { native: Some("std::web::canvas_fill_rect"), field: "canvas_fill_rect", params: 6, returns_value: false },
+    HostImport { native: Some("std::web::canvas_stroke_rect"), field: "canvas_stroke_rect", params: 7, returns_value: false },
+    HostImport { native: Some("std::web::canvas_line"), field: "canvas_line", params: 7, returns_value: false },
+    HostImport { native: Some("std::web::canvas_text"), field: "canvas_text", params: 6, returns_value: false },
 ];
 
 struct HostImports {
@@ -1660,6 +1666,40 @@ mod tests {
         assert_eq!(imports.natives["std::web::ws_close"], 2);
         assert_eq!(imports.natives["std::web::ws_id"], 3);
         assert_eq!(imports.natives["std::web::ws_message"], 4);
+    }
+
+    #[test]
+    fn emits_canvas_2d_drawing_imports() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0), Op::PushInt(640), Op::PushInt(360),
+                Op::CallNative { name: "std::web::canvas_resize".into(), argc: 3 }, Op::Pop,
+                Op::PushStr(0), Op::PushStr(1),
+                Op::CallNative { name: "std::web::canvas_clear".into(), argc: 2 }, Op::Pop,
+                Op::PushStr(0), Op::PushInt(20), Op::PushInt(20), Op::PushInt(120), Op::PushInt(80), Op::PushStr(2),
+                Op::CallNative { name: "std::web::canvas_fill_rect".into(), argc: 6 }, Op::Pop,
+                Op::PushStr(0), Op::PushInt(18), Op::PushInt(18), Op::PushInt(124), Op::PushInt(84), Op::PushStr(3), Op::PushInt(2),
+                Op::CallNative { name: "std::web::canvas_stroke_rect".into(), argc: 7 }, Op::Pop,
+                Op::PushStr(0), Op::PushInt(0), Op::PushInt(0), Op::PushInt(640), Op::PushInt(360), Op::PushStr(3), Op::PushInt(3),
+                Op::CallNative { name: "std::web::canvas_line".into(), argc: 7 }, Op::Pop,
+                Op::PushStr(0), Op::PushStr(4), Op::PushInt(180), Op::PushInt(80), Op::PushStr(3), Op::PushStr(5),
+                Op::CallNative { name: "std::web::canvas_text".into(), argc: 6 }, Op::Ret,
+            ],
+            0,
+        );
+        module.string_table = vec![
+            "#scene".into(), "#101827".into(), "#38bdf8".into(),
+            "#f8fafc".into(), "TITAN Canvas".into(), "24px sans-serif".into(),
+        ];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 6);
+        assert_eq!(imports.natives["std::web::canvas_resize"], 0);
+        assert_eq!(imports.natives["std::web::canvas_clear"], 1);
+        assert_eq!(imports.natives["std::web::canvas_fill_rect"], 2);
+        assert_eq!(imports.natives["std::web::canvas_stroke_rect"], 3);
+        assert_eq!(imports.natives["std::web::canvas_line"], 4);
+        assert_eq!(imports.natives["std::web::canvas_text"], 5);
     }
 
     #[test]

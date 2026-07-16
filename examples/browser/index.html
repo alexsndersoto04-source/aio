@@ -10,10 +10,12 @@
     #status.ready { border-color: #16803a; background: #eaf8ee; }
     #status.clicked { border-color: #5942c7; background: #f0edff; }
     button { padding: .65rem 1rem; font: inherit; cursor: pointer; }
+    canvas { display: block; max-width: 100%; border-radius: .5rem; }
   </style>
 </head>
 <body>
   <h1>TITAN WebAssembly + DOM</h1>
+  <canvas id="scene" width="640" height="240" aria-label="Escena dibujada por TITAN"></canvas>
   <p id="status">Cargando módulo…</p>
   <pre id="response">Esperando fetch asíncrono…</pre>
   <p><label>Mensaje para TITAN: <input id="message" type="text" autocomplete="off"></label></p>

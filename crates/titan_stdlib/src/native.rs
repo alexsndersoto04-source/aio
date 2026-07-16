@@ -138,6 +138,12 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::ws_close_reason", [], String),
     native!("std::web::ws_was_clean", [], Bool),
     native!("std::web::ws_error", [], String),
+    native!("std::web::canvas_resize", [String, Int, Int], Nil),
+    native!("std::web::canvas_clear", [String, String], Nil),
+    native!("std::web::canvas_fill_rect", [String, Int, Int, Int, Int, String], Nil),
+    native!("std::web::canvas_stroke_rect", [String, Int, Int, Int, Int, String, Int], Nil),
+    native!("std::web::canvas_line", [String, Int, Int, Int, Int, String, Int], Nil),
+    native!("std::web::canvas_text", [String, String, Int, Int, String, String], Nil),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];
