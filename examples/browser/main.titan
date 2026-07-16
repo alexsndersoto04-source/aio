@@ -74,9 +74,21 @@ fn draw_scene() {
     0
 }
 
+fn animate_scene() {
+    let time = std::web::frame_time_ms();
+    let x = (time / 8) % 430;
+    std::web::canvas_clear("#scene", "#0f172a");
+    std::web::canvas_fill_rect("#scene", x + 24, 48, 150, 92, "#0ea5e9");
+    std::web::canvas_stroke_rect("#scene", x + 20, 44, 158, 100, "#f8fafc", 3);
+    std::web::canvas_line("#scene", 20, 190, 620, 190, "#a78bfa", 4);
+    std::web::canvas_text("#scene", "requestAnimationFrame + TITAN 🚀", 150, 220, "#f8fafc", "22px sans-serif");
+    0
+}
+
 fn main() {
     std::web::set_title("TITAN WebAssembly");
     draw_scene();
+    std::web::animation_start("animate_scene");
     std::web::set_text("#status", "TITAN controla este DOM desde WebAssembly 🚀");
     std::web::set_attribute("#status", "data-runtime", "titan-wasm");
     std::web::add_class("#status", "ready");

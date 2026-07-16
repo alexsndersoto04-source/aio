@@ -5,12 +5,15 @@ let instance;
 let currentEvent = null;
 let currentFetch = null;
 let currentSocket = null;
+let currentFrame = null;
 let nextListenerId = 1;
 let nextFetchId = 1;
 let nextSocketId = 1;
+let nextAnimationId = 1;
 const listeners = new Map();
 const requests = new Map();
 const sockets = new Map();
+const animations = new Map();
 
 function titanString(handle) {
     const bits = BigInt.asUintN(64, handle);
@@ -263,6 +266,35 @@ function socketContext(id, record, values = {}) {
         error: "",
         ...values,
     };
+}
+
+function runAnimationFrame(id, record, timestamp) {
+    if (!record.active) return;
+    record.count += 1;
+    const delta = record.previousTime === null ? 0 : Math.max(0, timestamp - record.previousTime);
+    record.previousTime = timestamp;
+    const previousFrame = currentFrame;
+    currentFrame = {
+        id,
+        time: Math.trunc(timestamp),
+        delta: Math.trunc(delta),
+        count: record.count,
+    };
+    let succeeded = true;
+    try {
+        record.handler();
+    } catch (error) {
+        succeeded = false;
+        console.error(`TITAN animation handler '${record.handlerName}' failed`, error);
+    } finally {
+        currentFrame = previousFrame;
+    }
+    if (record.active && succeeded) {
+        record.request = requestAnimationFrame(nextTimestamp => runAnimationFrame(id, record, nextTimestamp));
+    } else {
+        record.active = false;
+        animations.delete(id);
+    }
 }
 
 const imports = {
@@ -567,6 +599,46 @@ const imports = {
                 signedInteger(rawY, "text y")
             );
             context.restore();
+        },
+        animation_start(handlerHandle) {
+            const handlerName = titanString(handlerHandle);
+            const handler = instance.exports[handlerName];
+            if (typeof handler !== "function") {
+                throw new Error(`TITAN animation handler is not exported: ${handlerName}`);
+            }
+            const id = nextAnimationId++;
+            const record = {
+                active: true,
+                request: 0,
+                previousTime: null,
+                count: 0,
+                handler,
+                handlerName,
+            };
+            animations.set(id, record);
+            record.request = requestAnimationFrame(timestamp => runAnimationFrame(id, record, timestamp));
+            return BigInt(id);
+        },
+        animation_cancel(rawId) {
+            const id = safeInteger(rawId, "animation id", 1);
+            const record = animations.get(id);
+            if (!record) return 0n;
+            record.active = false;
+            cancelAnimationFrame(record.request);
+            animations.delete(id);
+            return 1n;
+        },
+        frame_id() {
+            return BigInt(currentFrame?.id || 0);
+        },
+        frame_time_ms() {
+            return BigInt(currentFrame?.time || 0);
+        },
+        frame_delta_ms() {
+            return BigInt(currentFrame?.delta || 0);
+        },
+        frame_count() {
+            return BigInt(currentFrame?.count || 0);
         },
     },
 };

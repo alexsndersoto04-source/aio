@@ -144,6 +144,12 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::canvas_stroke_rect", [String, Int, Int, Int, Int, String, Int], Nil),
     native!("std::web::canvas_line", [String, Int, Int, Int, Int, String, Int], Nil),
     native!("std::web::canvas_text", [String, String, Int, Int, String, String], Nil),
+    native!("std::web::animation_start", [String], Int),
+    native!("std::web::animation_cancel", [Int], Bool),
+    native!("std::web::frame_id", [], Int),
+    native!("std::web::frame_time_ms", [], Int),
+    native!("std::web::frame_delta_ms", [], Int),
+    native!("std::web::frame_count", [], Int),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

@@ -129,6 +129,12 @@ const WEB_IMPORTS: &[HostImport] = &[
     HostImport { native: Some("std::web::canvas_stroke_rect"), field: "canvas_stroke_rect", params: 7, returns_value: false },
     HostImport { native: Some("std::web::canvas_line"), field: "canvas_line", params: 7, returns_value: false },
     HostImport { native: Some("std::web::canvas_text"), field: "canvas_text", params: 6, returns_value: false },
+    HostImport { native: Some("std::web::animation_start"), field: "animation_start", params: 1, returns_value: true },
+    HostImport { native: Some("std::web::animation_cancel"), field: "animation_cancel", params: 1, returns_value: true },
+    HostImport { native: Some("std::web::frame_id"), field: "frame_id", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::frame_time_ms"), field: "frame_time_ms", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::frame_delta_ms"), field: "frame_delta_ms", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::frame_count"), field: "frame_count", params: 0, returns_value: true },
 ];
 
 struct HostImports {
@@ -1700,6 +1706,35 @@ mod tests {
         assert_eq!(imports.natives["std::web::canvas_stroke_rect"], 3);
         assert_eq!(imports.natives["std::web::canvas_line"], 4);
         assert_eq!(imports.natives["std::web::canvas_text"], 5);
+    }
+
+    #[test]
+    fn emits_request_animation_frame_lifecycle_imports() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::CallNative { name: "std::web::animation_start".into(), argc: 1 },
+                Op::StoreLocal(0),
+                Op::CallNative { name: "std::web::frame_id".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::web::frame_time_ms".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::web::frame_delta_ms".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::web::frame_count".into(), argc: 0 }, Op::Pop,
+                Op::PushLocal(0),
+                Op::CallNative { name: "std::web::animation_cancel".into(), argc: 1 },
+                Op::Ret,
+            ],
+            1,
+        );
+        module.string_table = vec!["animate".into()];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 6);
+        assert_eq!(imports.natives["std::web::animation_start"], 0);
+        assert_eq!(imports.natives["std::web::animation_cancel"], 1);
+        assert_eq!(imports.natives["std::web::frame_id"], 2);
+        assert_eq!(imports.natives["std::web::frame_time_ms"], 3);
+        assert_eq!(imports.natives["std::web::frame_delta_ms"], 4);
+        assert_eq!(imports.natives["std::web::frame_count"], 5);
     }
 
     #[test]
