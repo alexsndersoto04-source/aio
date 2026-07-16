@@ -43,7 +43,8 @@ pub enum Op {
     SqlitePoolNew, SqlitePoolAcquire, SqlitePoolStats, SqlitePoolClose,
     PostgresConnect, PostgresConnectTls, PostgresExecute, PostgresQuery, PostgresBegin, PostgresCommit, PostgresRollback, PostgresMigrate, PostgresCancel, PostgresClose,
     PostgresPoolNew, PostgresPoolAcquire, PostgresPoolStats, PostgresPoolClose,
-    MysqlConnect, MysqlExecute, MysqlQuery, MysqlBegin, MysqlCommit, MysqlRollback, MysqlLastId, MysqlClose, Ret,
+    MysqlConnect, MysqlExecute, MysqlQuery, MysqlBegin, MysqlCommit, MysqlRollback, MysqlLastId, MysqlClose,
+    MysqlPoolNew, MysqlPoolAcquire, MysqlPoolStats, MysqlPoolClose, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -361,6 +362,10 @@ impl AstCompiler {
                 "std::mysql::rollback" if args.len() == 1 => self.emit(Op::MysqlRollback),
                 "std::mysql::last_insert_id" if args.len() == 1 => self.emit(Op::MysqlLastId),
                 "std::mysql::close" if args.len() == 1 => self.emit(Op::MysqlClose),
+                "std::mysql::pool" if args.len() == 2 => self.emit(Op::MysqlPoolNew),
+                "std::mysql::acquire" if args.len() == 2 => self.emit(Op::MysqlPoolAcquire),
+                "std::mysql::pool_stats" if args.len() == 1 => self.emit(Op::MysqlPoolStats),
+                "std::mysql::pool_close" if args.len() == 1 => self.emit(Op::MysqlPoolClose),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];
