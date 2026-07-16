@@ -22,6 +22,8 @@ pub enum Command {
     Keygen { path: String },
     /// Build and sign a deterministic .tpkg archive
     Pack { #[arg(long,default_value=".")] project: String, #[arg(long)] key: String, #[arg(long)] output: String },
+    /// Build, sign, and upload a package using TITAN_REGISTRY_TOKEN
+    Publish { #[arg(long,default_value=".")] project: String, #[arg(long)] key: String, #[arg(long,default_value="https://registry.titan-lang.org")] registry: String },
     /// Parse and type-check a file or project without producing an artifact
     Check { #[arg(default_value = ".")] input: String },
     /// Compile a file or project to inspectable bytecode
@@ -66,6 +68,7 @@ fn main() {
         Command::Update { project, registry } => cmd_fetch(&project,&registry,false),
         Command::Keygen { path } => { titan_pkg::generate_signing_key(Path::new(&path)).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Generated signing key at {path}"); },
         Command::Pack { project, key, output } => { let publication=titan_pkg::build_package(Path::new(&project),Path::new(&key),Path::new(&output)).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Packed {} {} -> {}\nsha256={}\nsigning_key={}\nsignature={}",publication.name,publication.version,publication.archive.display(),publication.sha256,publication.signing_key,publication.signature); },
+        Command::Publish { project, key, registry } => cmd_publish(&project,&key,&registry),
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Debug { input, breakpoints, sandbox } => cmd_debug(&input, &breakpoints, sandbox),
@@ -88,6 +91,8 @@ fn cmd_new(path: &str) {
 
 fn cmd_add(project:&str,package:&str,requirement:&str){let path=Path::new(project);let root=titan_pkg::find_project_root(path).unwrap_or_else(||path.to_path_buf());titan_pkg::add_remote_dependency(&root,package,requirement).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Added {package} {requirement}");}
 fn cmd_fetch(project:&str,registry:&str,offline:bool){let path=Path::new(project);let root=titan_pkg::find_project_root(path).unwrap_or_else(||path.to_path_buf());let lock=titan_pkg::sync_remote_dependencies(&root,registry,offline).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));println!("Synchronized {} remote packages{}",lock.packages.len(),if offline{" (offline)"}else{""});}
+
+fn cmd_publish(project:&str,key:&str,registry:&str){let token=std::env::var("TITAN_REGISTRY_TOKEN").unwrap_or_else(|_|fatal_message("PACKAGE ERROR","TITAN_REGISTRY_TOKEN is not set"));let archive=std::env::temp_dir().join(format!("titan-publish-{}.tpkg",std::process::id()));let _=std::fs::remove_file(&archive);let publication=titan_pkg::build_package(Path::new(project),Path::new(key),&archive).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));let publisher=titan_pkg::Publisher::new(registry,&token).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));publisher.publish(&publication).unwrap_or_else(|error|fatal("PACKAGE ERROR",error));let _=std::fs::remove_file(archive);println!("Published {} {}",publication.name,publication.version);}
 
 fn cmd_check(input: &str) {
     match load_and_compile(input) {

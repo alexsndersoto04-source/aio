@@ -16,4 +16,4 @@ CLI commands are `titan add <name> <range>`, `titan fetch [--offline]`, and `tit
 
 `titan keygen <path>` creates a 32-byte Ed25519 private seed with OS CSPRNG and mode 0600 on Unix, refusing overwrite. `titan pack --project . --key <outside-project> --output package.tpkg` creates deterministic tar/gzip metadata, excludes VCS/cache/build/locks, rejects symlinks/special files and refuses private keys/output inside the package tree. It prints only public key, SHA-256 and signature.
 
-Authenticated upload and registry-side publisher key ownership are the remaining publication blocks.
+`titan publish --key <path>` builds and signs in a temporary path, reads authentication only from `TITAN_REGISTRY_TOKEN`, and POSTs JSON to the HTTPS version endpoint with zero redirects. Tokens containing CR/LF are rejected and never printed. The payload includes archive Base64, digest, public key and signature; HTTP 409 is treated as publisher-key ownership conflict. Registry-server implementation and key-rotation policy remain deployment concerns.

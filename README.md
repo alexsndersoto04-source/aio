@@ -2,7 +2,7 @@
 
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM.
 
-> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 20 crates pass `cargo check`, Clippy passes with `-D warnings`, and the growing suite contains 131 passing tests across compiler, VM, tooling, concurrency, artifacts and TCP. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
+> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 20 crates pass `cargo check`, Clippy passes with `-D warnings`, and the growing suite contains 132 passing tests across compiler, VM, tooling, concurrency, artifacts and TCP. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
 
 ## Quick start
 
@@ -81,6 +81,7 @@ titan fetch [--offline]      Resolve/install dependencies
 titan update                 Re-resolve remote dependencies
 titan keygen <path>          Generate package signing key
 titan pack --key K --output P  Build signed .tpkg
+titan publish --key K        Upload signed package over HTTPS
 titan check [file|project]   Resolve imports and type-check
 titan run [file|project]     Compile, type-check and execute
 titan run --sandbox [path]   Deny filesystem/process/network/environment

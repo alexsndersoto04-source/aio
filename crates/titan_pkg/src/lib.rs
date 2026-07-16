@@ -7,7 +7,7 @@ pub mod publish;
 pub mod registry;
 pub mod resolver;
 pub use install::{add_remote as add_remote_dependency, sync as sync_remote_dependencies, InstallError};
-pub use publish::{build as build_package, generate_key as generate_signing_key, Publication, PublishError};
+pub use publish::{build as build_package, generate_key as generate_signing_key, Publication, PublishError, Publisher};
 pub use project::{create_project, default_entry, find_project_root, ProjectError, SourceProject};
 pub use resolver::{resolve as resolve_remote, PackageSource, RemoteLockfile, ResolveError};
 pub use registry::{PackageIndex, PackageVersion, RegistryClient, RegistryError};
