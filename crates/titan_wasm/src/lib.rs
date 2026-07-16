@@ -236,7 +236,6 @@ fn compile_function(
         body.instruction(&Instruction::I32Eq);
         body.instruction(&Instruction::If(BlockType::Empty));
         emit_operation(
-            module,
             function,
             instruction,
             *height,
@@ -502,7 +501,6 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
 }
 
 fn emit_operation(
-    _module: &CompiledModule,
     function: &BytecodeFunc,
     instruction: usize,
     height: usize,
