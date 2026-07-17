@@ -202,6 +202,7 @@ struct HostImports {
 fn array_native_arity(name: &str) -> Option<usize> {
     match name {
         "std::array::set" => Some(3),
+        "std::array::push" => Some(2),
         _ => None,
     }
 }
@@ -1692,6 +1693,9 @@ fn emit_operation(
         Op::CallNative { name, .. } if name == "std::array::set" => {
             emit_array_set(context, height, body);
         }
+        Op::CallNative { name, .. } if name == "std::array::push" => {
+            emit_array_push(context, height, body);
+        }
         Op::CallNative { name, argc } => {
             let first = height - *argc;
             for argument in first..height {
@@ -1887,6 +1891,54 @@ fn emit_array_set(context: &EmitContext<'_>, height: usize, body: &mut Function)
     body.instruction(&Instruction::I32WrapI64);
     body.instruction(&Instruction::LocalGet(index));
     body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalGet(value));
+    body.instruction(&Instruction::I64Store(element_memory));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(output));
+}
+
+fn emit_array_push(context: &EmitContext<'_>, height: usize, body: &mut Function) {
+    const MAX_ELEMENTS: i32 = (u32::MAX / 8) as i32;
+    let output = context.layout.stack_base + (height - 2) as u32;
+    let value = output + 1;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let element_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(MAX_ELEMENTS));
+    body.instruction(&Instruction::I32GeU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("array push requires allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(output));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, output, count_memory);
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
     body.instruction(&Instruction::I32Add);
@@ -2890,6 +2942,19 @@ mod tests {
                 Op::PushInt(1), Op::PushInt(99),
                 Op::CallNative { name: "std::array::set".into(), argc: 3 },
                 Op::PushInt(1), Op::Index, Op::Ret,
+            ],
+            0,
+        );
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_copy_on_write_array_push() {
+        let module = module_with(
+            vec![
+                Op::PushInt(10), Op::PushInt(20), Op::NewArray(2), Op::PushInt(30),
+                Op::CallNative { name: "std::array::push".into(), argc: 2 },
+                Op::PushInt(2), Op::Index, Op::Ret,
             ],
             0,
         );

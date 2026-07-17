@@ -733,6 +733,7 @@ mod tests {
     #[test] fn named_functions_are_first_class() { assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let operation = double operation(21) }").unwrap(), Value::Int(42)); }
     #[test] fn functional_array_pipeline_works() { assert_eq!(run("fn main() { [1, 2, 3, 4].map(|x: int| x * 2).filter(|x: int| x > 4).fold(0, |sum: int, x: int| sum + x) }").unwrap(), Value::Int(14)); }
     #[test] fn persistent_array_set_returns_updated_copy() { assert_eq!(run("fn main() { let original = [10, 20] let updated = std::array::set(original, 1, 99) updated[1] }").unwrap(), Value::Int(99)); }
+    #[test] fn persistent_array_push_preserves_original() { assert_eq!(run("fn main() { let original = [10, 20] let updated = std::array::push(original, 30) len(original) * 100 + updated[2] }").unwrap(), Value::Int(230)); }
     #[test] fn try_unwraps_success_and_propagates_failure() {
         assert_eq!(run("fn answer() -> Result { let value = Result::Ok(41)? Result::Ok(value + 1) } fn main() { match answer() { Result::Ok(value) => value, Result::Err(error) => 0 } }").unwrap(), Value::Int(42));
         assert_eq!(run("fn answer() -> Result { let value = Result::Err(\"no\")? Result::Ok(value) } fn main() { match answer() { Result::Ok(value) => 0, Result::Err(error) => 7 } }").unwrap(), Value::Int(7));
