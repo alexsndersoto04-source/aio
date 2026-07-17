@@ -264,6 +264,12 @@ pub fn compile_artifact_with_source_root(
     let needs_concat = layouts
         .iter()
         .any(|layout| !layout.string_adds.is_empty());
+    let needs_arrays = module.functions.iter().any(|function| {
+        function
+            .code
+            .iter()
+            .any(|operation| matches!(operation, Op::NewArray(_) | Op::NewTuple(_)))
+    });
     let host_imports = collect_host_imports(module);
     let needs_host_strings = host_imports.natives.keys().any(|name| {
         matches!(
@@ -290,11 +296,12 @@ pub fn compile_artifact_with_source_root(
     {
         return Err(WasmError::ReservedFunction("__titan_alloc_string".into()));
     }
-    let needs_heap = needs_concat || needs_host_strings;
+    let needs_allocator = needs_host_strings || needs_arrays;
+    let needs_heap = needs_concat || needs_allocator;
     let function_bias = host_imports.definitions.len() as u32;
     let concat_function = needs_concat
         .then_some(function_bias + module.functions.len() as u32);
-    let allocator_function = needs_host_strings.then_some(
+    let allocator_function = needs_allocator.then_some(
         function_bias + module.functions.len() as u32 + if needs_concat { 1 } else { 0 },
     );
     let mut output = Module::new();
@@ -323,7 +330,7 @@ pub fn compile_artifact_with_source_root(
             .function([ValType::I64, ValType::I64], [ValType::I64]);
     }
     let allocator_type = types.len();
-    if needs_host_strings {
+    if needs_allocator {
         types
             .ty()
             .function([ValType::I32, ValType::I32], [ValType::I64]);
@@ -349,7 +356,7 @@ pub fn compile_artifact_with_source_root(
     if needs_concat {
         functions.function(concat_type);
     }
-    if needs_host_strings {
+    if needs_allocator {
         functions.function(allocator_type);
     }
     output.section(&functions);
@@ -384,8 +391,12 @@ pub fn compile_artifact_with_source_root(
         module.entry as u32 + function_bias,
     );
     exports.export("memory", ExportKind::Memory, 0);
-    if let Some(function) = allocator_function {
-        exports.export("__titan_alloc_string", ExportKind::Func, function);
+    if needs_host_strings {
+        exports.export(
+            "__titan_alloc_string",
+            ExportKind::Func,
+            allocator_function.expect("host strings require allocator"),
+        );
     }
     for (index, function) in module.functions.iter().enumerate() {
         if function.name != "main" && !function.name.starts_with('<') {
@@ -406,12 +417,13 @@ pub fn compile_artifact_with_source_root(
             &strings,
             &host_imports,
             concat_function,
+            allocator_function,
         )?);
     }
     if needs_concat {
         code.function(&compile_string_concat());
     }
-    if needs_host_strings {
+    if needs_allocator {
         code.function(&compile_host_string_allocator());
     }
     output.section(&code);
@@ -726,6 +738,7 @@ fn compile_function(
     strings: &StringLayout,
     host_imports: &HostImports,
     concat_function: Option<u32>,
+    allocator_function: Option<u32>,
 ) -> Result<Function, WasmError> {
     let extra = function
         .locals
@@ -734,7 +747,9 @@ fn compile_function(
     let linear = is_linear_function(function, layout);
     let direct_control = has_reducible_control_flow(function, layout);
     let direct = linear || direct_control;
-    let numeric_locals = extra + layout.stack_slots;
+    // One scratch i64 local supports managed-value construction without
+    // overwriting operand slots before their payload is copied.
+    let numeric_locals = extra + layout.stack_slots + 1;
     let mut locals = Vec::new();
     if numeric_locals > 0 {
         locals.push((numeric_locals as u32, ValType::I64));
@@ -750,6 +765,9 @@ fn compile_function(
         strings,
         host_imports,
         concat_function,
+        allocator_function,
+        managed_scratch: layout.pc_local,
+        pc_local: layout.pc_local + 1,
     };
     let reachable: Vec<_> = layout
         .heights
@@ -790,7 +808,7 @@ fn compile_function(
     for (depth, (instruction, _)) in reachable.iter().enumerate() {
         targets[*instruction] = depth as u32;
     }
-    body.instruction(&Instruction::LocalGet(layout.pc_local));
+    body.instruction(&Instruction::LocalGet(context.pc_local));
     body.instruction(&Instruction::BrTable(Cow::Owned(targets), default_depth));
 
     for (position, (instruction, height)) in reachable.iter().enumerate() {
@@ -1228,12 +1246,23 @@ fn infer_string_adds(
 
     let mut string_adds = HashSet::new();
     for (instruction, operation) in function.code.iter().enumerate() {
-        if !matches!(operation, Op::Add) || heights[instruction].is_none() {
+        if heights[instruction].is_none() {
             continue;
         }
         let state = states[instruction]
             .as_ref()
             .expect("reachable instructions have a type state");
+        if matches!(operation, Op::Index)
+            && state.stack[state.stack.len() - 2] == ValueKind::String
+        {
+            return Err(WasmError::Unsupported {
+                function: function.name.clone(),
+                operation: format!("string Index at instruction {instruction}"),
+            });
+        }
+        if !matches!(operation, Op::Add) {
+            continue;
+        }
         let left = state.stack[state.stack.len() - 2];
         let right = state.stack[state.stack.len() - 1];
         match (left, right) {
@@ -1302,6 +1331,14 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState) {
         Op::Neg | Op::Not | Op::BitNot | Op::Len => {
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Numeric);
+        }
+        Op::NewArray(count) | Op::NewTuple(count) => {
+            state.stack.truncate(state.stack.len() - *count);
+            state.stack.push(ValueKind::Unknown);
+        }
+        Op::Index => {
+            state.stack.truncate(state.stack.len() - 2);
+            state.stack.push(ValueKind::Unknown);
         }
         Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => {
             state.stack.truncate(state.stack.len() - *argc);
@@ -1397,6 +1434,14 @@ fn validate_operation(
                 string: *string,
             })
         }
+        Op::NewArray(count) | Op::NewTuple(count)
+            if *count > (u32::MAX as usize) / 8 =>
+        {
+            Err(WasmError::Unsupported {
+                function: function.name.clone(),
+                operation: format!("collection with {count} elements exceeds Wasm memory32"),
+            })
+        }
         Op::Print(argc) if *argc != 1 => Err(WasmError::Unsupported {
             function: function.name.clone(),
             operation: format!("Print({argc}) requires exactly one browser-host argument"),
@@ -1469,6 +1514,9 @@ fn validate_operation(
         | Op::Ret
         | Op::Print(1)
         | Op::Len
+        | Op::NewArray(_)
+        | Op::NewTuple(_)
+        | Op::Index
         | Op::Nop
         | Op::Halt => Ok(()),
         other => Err(WasmError::Unsupported {
@@ -1503,6 +1551,8 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         | Op::BitOr
         | Op::BitXor => (2, 1),
         Op::Neg | Op::Not | Op::BitNot | Op::Len => (1, 1),
+        Op::NewArray(count) | Op::NewTuple(count) => (*count, 1),
+        Op::Index => (2, 1),
         Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => (*argc, 1),
         Op::Jump(_) | Op::Nop => (0, 0),
         Op::Ret | Op::Halt => (0, 0),
@@ -1516,6 +1566,9 @@ struct EmitContext<'a> {
     strings: &'a StringLayout,
     host_imports: &'a HostImports,
     concat_function: Option<u32>,
+    allocator_function: Option<u32>,
+    managed_scratch: u32,
+    pc_local: u32,
 }
 
 fn emit_operation(
@@ -1656,7 +1709,7 @@ fn emit_operation(
         }
         Op::Jump(target) => {
             let dispatch_depth = dispatch_depth.expect("jumps require dispatcher lowering");
-            set_pc(body, layout.pc_local, *target);
+            set_pc(body, context.pc_local, *target);
             body.instruction(&Instruction::Br(dispatch_depth));
             return Ok(());
         }
@@ -1667,9 +1720,9 @@ fn emit_operation(
             ));
             body.instruction(&Instruction::I64Eqz);
             body.instruction(&Instruction::If(BlockType::Empty));
-            set_pc(body, layout.pc_local, *target);
+            set_pc(body, context.pc_local, *target);
             body.instruction(&Instruction::Else);
-            set_pc(body, layout.pc_local, instruction + 1);
+            set_pc(body, context.pc_local, instruction + 1);
             body.instruction(&Instruction::End);
             body.instruction(&Instruction::Br(dispatch_depth));
             return Ok(());
@@ -1684,6 +1737,74 @@ fn emit_operation(
             }
             body.instruction(&Instruction::Return);
             return Ok(());
+        }
+        Op::NewArray(count) | Op::NewTuple(count) => {
+            let first = height - *count;
+            let count_u32 = *count as u32;
+            let byte_length = count_u32 * 8;
+            body.instruction(&Instruction::I32Const(byte_length as i32));
+            body.instruction(&Instruction::I32Const(count_u32 as i32));
+            body.instruction(&Instruction::Call(
+                context
+                    .allocator_function
+                    .expect("collections require managed allocator"),
+            ));
+            body.instruction(&Instruction::LocalSet(context.managed_scratch));
+            let element_memory = MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 0,
+            };
+            for element in 0..*count {
+                body.instruction(&Instruction::LocalGet(context.managed_scratch));
+                body.instruction(&Instruction::I32WrapI64);
+                body.instruction(&Instruction::I32Const((element as u32 * 8) as i32));
+                body.instruction(&Instruction::I32Add);
+                body.instruction(&Instruction::LocalGet(
+                    layout.stack_base + (first + element) as u32,
+                ));
+                body.instruction(&Instruction::I64Store(element_memory));
+            }
+            body.instruction(&Instruction::LocalGet(context.managed_scratch));
+            body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
+        }
+        Op::Index => {
+            let output = layout.stack_base + (height - 2) as u32;
+            let index = output + 1;
+            body.instruction(&Instruction::LocalGet(index));
+            body.instruction(&Instruction::I64Const(0));
+            body.instruction(&Instruction::I64LtS);
+            body.instruction(&Instruction::If(BlockType::Empty));
+            body.instruction(&Instruction::Unreachable);
+            body.instruction(&Instruction::End);
+            body.instruction(&Instruction::LocalGet(index));
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Const(4));
+            body.instruction(&Instruction::I32Sub);
+            body.instruction(&Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::I64GeU);
+            body.instruction(&Instruction::If(BlockType::Empty));
+            body.instruction(&Instruction::Unreachable);
+            body.instruction(&Instruction::End);
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::LocalGet(index));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Const(3));
+            body.instruction(&Instruction::I32Shl);
+            body.instruction(&Instruction::I32Add);
+            body.instruction(&Instruction::I64Load(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 0,
+            }));
+            body.instruction(&Instruction::LocalSet(output));
         }
         Op::Len => {
             let slot = layout.stack_base + (height - 1) as u32;
@@ -1704,7 +1825,7 @@ fn emit_operation(
     }
 
     if let Some(dispatch_depth) = dispatch_depth {
-        set_pc(body, layout.pc_local, instruction + 1);
+        set_pc(body, context.pc_local, instruction + 1);
         body.instruction(&Instruction::Br(dispatch_depth));
     }
     Ok(())
@@ -2667,8 +2788,50 @@ mod tests {
     }
 
     #[test]
+    fn emits_managed_numeric_arrays_tuples_len_and_index() {
+        let module = module_with(
+            vec![
+                Op::PushInt(10), Op::PushInt(20), Op::PushInt(30), Op::NewArray(3),
+                Op::StoreLocal(0), Op::PushLocal(0), Op::Len, Op::Pop,
+                Op::PushLocal(0), Op::PushInt(1), Op::Index, Op::Ret,
+            ],
+            1,
+        );
+        validate(&module);
+
+        let tuple = module_with(
+            vec![
+                Op::PushInt(7), Op::PushInt(9), Op::NewTuple(2),
+                Op::PushInt(0), Op::Index, Op::Ret,
+            ],
+            0,
+        );
+        validate(&tuple);
+    }
+
+    #[test]
+    fn rejects_string_indexing_as_array_memory() {
+        let mut module = module_with(
+            vec![Op::PushStr(0), Op::PushInt(0), Op::Index, Op::Ret],
+            0,
+        );
+        module.string_table.push("not an i64 array".into());
+        assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));
+    }
+
+    #[test]
     fn rejects_unsupported_runtime_values() {
-        let module = module_with(vec![Op::PushInt(1), Op::NewArray(1), Op::Ret], 0);
+        let module = module_with(
+            vec![
+                Op::PushInt(1),
+                Op::NewStruct {
+                    name: "Box".into(),
+                    fields: vec!["value".into()],
+                },
+                Op::Ret,
+            ],
+            0,
+        );
         assert!(matches!(
             compile(&module),
             Err(WasmError::Unsupported { .. })
