@@ -80,6 +80,8 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::wasm::heap_reclaimed_bytes", [], Int),
     native!("std::wasm::heap_peak_used", [], Int),
     native!("std::wasm::heap_reset_counters", [], Bool),
+    native!("std::wasm::heap_scope_begin", [], Int),
+    native!("std::wasm::heap_scope_end", [Int], Bool),
     native!("std::collections::length", [Any], Int), native!("std::collections::contains", [Array, Any], Bool),
     native!("std::collections::reverse", [Array], Array), native!("std::collections::deduplicate", [Array], Array),
     native!("std::collections::join", [Array, String], String), native!("std::collections::chunk", [Array, Int], Array),
