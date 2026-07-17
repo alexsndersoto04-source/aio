@@ -1,12 +1,15 @@
 //! Direct WebAssembly backend for Titan's portable numeric bytecode.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 
+use serde::Serialize;
 use thiserror::Error;
 use titan_codegen::{BytecodeFunc, CompiledModule, Op};
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection, Function,
-    EntityType, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg,
+    BlockType, CodeSection, ConstExpr, CustomSection, DataSection, EntityType, ExportKind,
+    ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg,
     MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
@@ -69,6 +72,42 @@ pub enum WasmError {
     },
     #[error("function name '{0}' is reserved by the WebAssembly runtime ABI")]
     ReservedFunction(String),
+    #[error("could not encode WebAssembly source metadata: {0}")]
+    SourceMap(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WasmArtifact {
+    #[serde(skip)]
+    pub wasm: Vec<u8>,
+    pub source_map: WasmSourceMap,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WasmSourceMap {
+    pub format: &'static str,
+    pub version: u32,
+    pub imported_function_count: u32,
+    pub functions: Vec<WasmFunctionMap>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WasmFunctionMap {
+    pub titan_function_index: u32,
+    pub wasm_function_index: u32,
+    pub name: String,
+    pub source_file: Option<String>,
+    pub instructions: Vec<WasmInstructionMap>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WasmInstructionMap {
+    pub titan_instruction: u32,
+    pub operation: String,
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -184,6 +223,17 @@ fn collect_host_imports(module: &CompiledModule) -> HostImports {
 /// control-flow graphs while preserving WebAssembly's structured-control rules.
 /// Operations requiring managed runtime values are rejected explicitly.
 pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
+    Ok(compile_artifact(module)?.wasm)
+}
+
+pub fn compile_artifact(module: &CompiledModule) -> Result<WasmArtifact, WasmError> {
+    compile_artifact_with_source_root(module, None)
+}
+
+pub fn compile_artifact_with_source_root(
+    module: &CompiledModule,
+    source_root: Option<&Path>,
+) -> Result<WasmArtifact, WasmError> {
     if module.entry >= module.functions.len() {
         return Err(WasmError::Entry);
     }
@@ -359,7 +409,74 @@ pub fn compile(module: &CompiledModule) -> Result<Vec<u8>, WasmError> {
         output.section(&data);
     }
 
-    Ok(output.finish())
+    let source_map = build_source_map(module, function_bias, source_root);
+    let source_map_bytes = serde_json::to_vec(&source_map)
+        .map_err(|error| WasmError::SourceMap(error.to_string()))?;
+    output.section(&CustomSection {
+        name: Cow::Borrowed("titan.source_map"),
+        data: Cow::Borrowed(&source_map_bytes),
+    });
+
+    Ok(WasmArtifact {
+        wasm: output.finish(),
+        source_map,
+    })
+}
+
+fn build_source_map(
+    module: &CompiledModule,
+    function_bias: u32,
+    source_root: Option<&Path>,
+) -> WasmSourceMap {
+    let functions = module
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(function_index, function)| {
+            let instructions = function
+                .debug_locations
+                .iter()
+                .enumerate()
+                .filter_map(|(instruction, location)| {
+                    location.map(|location| WasmInstructionMap {
+                        titan_instruction: instruction as u32,
+                        operation: function
+                            .code
+                            .get(instruction)
+                            .map_or_else(|| "<missing>".into(), |operation| format!("{operation:?}")),
+                        start: location.start,
+                        end: location.end,
+                        line: location.line,
+                        column: location.column,
+                    })
+                })
+                .collect();
+            WasmFunctionMap {
+                titan_function_index: function_index as u32,
+                wasm_function_index: function_bias + function_index as u32,
+                name: function.name.clone(),
+                source_file: normalize_source_file(function.source_file.as_deref(), source_root),
+                instructions,
+            }
+        })
+        .collect();
+    WasmSourceMap {
+        format: "titan-wasm-source-map",
+        version: 1,
+        imported_function_count: function_bias,
+        functions,
+    }
+}
+
+fn normalize_source_file(source: Option<&str>, source_root: Option<&Path>) -> Option<String> {
+    let source = source?;
+    let path = Path::new(source);
+    let displayed = source_root
+        .and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    Some(displayed)
 }
 
 struct StringLayout {
@@ -1372,6 +1489,46 @@ mod tests {
             vec![Op::PushInt(40), Op::PushInt(2), Op::Add, Op::Ret],
             0,
         ));
+    }
+
+    #[test]
+    fn embeds_and_returns_versioned_source_metadata() {
+        let mut module = module_with(vec![Op::PushInt(42), Op::Ret], 0);
+        module.functions[0].debug_locations[0] = Some(titan_codegen::SourceLocation {
+            start: 12,
+            end: 14,
+            line: 3,
+            column: 5,
+        });
+        let artifact = compile_artifact(&module).unwrap();
+        assert_eq!(artifact.source_map.format, "titan-wasm-source-map");
+        assert_eq!(artifact.source_map.version, 1);
+        assert_eq!(artifact.source_map.functions[0].wasm_function_index, 0);
+        assert_eq!(artifact.source_map.functions[0].instructions[0].line, 3);
+
+        let embedded = wasmparser::Parser::new(0)
+            .parse_all(&artifact.wasm)
+            .filter_map(Result::ok)
+            .find_map(|payload| match payload {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == "titan.source_map" =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .expect("source map custom section");
+        let json: serde_json::Value = serde_json::from_slice(&embedded).unwrap();
+        assert_eq!(
+            json["functions"][0]["instructions"][0]["column"].as_u64(),
+            Some(5)
+        );
+
+        let mut imported = module_with(vec![Op::PushStr(0), Op::Print(1), Op::Ret], 0);
+        imported.string_table.push("mapped".into());
+        let imported_artifact = compile_artifact(&imported).unwrap();
+        assert_eq!(imported_artifact.source_map.imported_function_count, 1);
+        assert_eq!(imported_artifact.source_map.functions[0].wasm_function_index, 1);
     }
 
     #[test]

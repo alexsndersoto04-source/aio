@@ -1,2 +1,4 @@
 target/
 *.tbc
+*.wasm
+*.wasm.map.json

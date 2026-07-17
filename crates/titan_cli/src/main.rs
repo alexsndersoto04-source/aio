@@ -169,7 +169,34 @@ fn cmd_exec(input: &str, sandbox: bool) {
     }
 }
 
-fn cmd_wasm(input:&str,output:Option<String>){let(project,module)=load_and_compile(input).unwrap_or_else(|error|fatal_message("COMPILATION FAILED",&error));let target=output.map(PathBuf::from).unwrap_or_else(||{let name=project.root.file_name().and_then(|name|name.to_str()).unwrap_or("program");project.root.join("target").join(format!("{name}.wasm"))});if let Some(parent)=target.parent(){fs::create_dir_all(parent).unwrap_or_else(|error|fatal("WASM BUILD ERROR",error));}let bytes=titan_wasm::compile(&module).unwrap_or_else(|error|fatal("WASM BUILD ERROR",error));fs::write(&target,bytes).unwrap_or_else(|error|fatal("WASM BUILD ERROR",error));println!("WASM: {} -> {}",project.entry.display(),target.display());}
+fn cmd_wasm(input: &str, output: Option<String>) {
+    let (project, module) = load_and_compile(input)
+        .unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
+    let target = output.map(PathBuf::from).unwrap_or_else(|| {
+        let name = project
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("program");
+        project.root.join("target").join(format!("{name}.wasm"))
+    });
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|error| fatal("WASM BUILD ERROR", error));
+    }
+    let artifact = titan_wasm::compile_artifact_with_source_root(&module, Some(&project.root))
+        .unwrap_or_else(|error| fatal("WASM BUILD ERROR", error));
+    fs::write(&target, artifact.wasm).unwrap_or_else(|error| fatal("WASM BUILD ERROR", error));
+
+    let mut map_name = target.as_os_str().to_os_string();
+    map_name.push(".map.json");
+    let map_target = PathBuf::from(map_name);
+    let map = serde_json::to_vec_pretty(&artifact.source_map)
+        .unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
+    fs::write(&map_target, map).unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
+
+    println!("WASM: {} -> {}", project.entry.display(), target.display());
+    println!("SOURCE MAP: {}", map_target.display());
+}
 
 fn cmd_run(input: &str, sandbox: bool, _args: Vec<String>) {
     let (_, module) = load_and_compile(input).unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));

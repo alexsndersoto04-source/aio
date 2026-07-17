@@ -8,6 +8,8 @@ license.workspace = true
 titan_codegen = { path = "../titan_codegen" }
 wasm-encoder = "0.240"
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 wasmparser = "0.240"
