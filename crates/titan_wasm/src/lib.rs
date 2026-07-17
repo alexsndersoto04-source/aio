@@ -881,7 +881,6 @@ fn is_linear_function(function: &BytecodeFunc, layout: &FunctionLayout) -> bool 
 
 #[derive(Debug, Clone, Copy)]
 struct DirectIfRegion {
-    conditional: usize,
     then_jump: usize,
     else_start: usize,
     end: usize,
@@ -903,7 +902,6 @@ fn direct_if_region_at(
         return None;
     }
     Some(DirectIfRegion {
-        conditional,
         then_jump,
         else_start: *else_start,
         end: *end,
