@@ -732,12 +732,14 @@ fn compile_function(
         .checked_sub(function.arity)
         .ok_or_else(|| WasmError::Locals(function.name.clone()))?;
     let linear = is_linear_function(function, layout);
+    let direct_if = direct_if_region(function, layout);
+    let direct = linear || direct_if.is_some();
     let numeric_locals = extra + layout.stack_slots;
     let mut locals = Vec::new();
     if numeric_locals > 0 {
         locals.push((numeric_locals as u32, ValType::I64));
     }
-    if !linear {
+    if !direct {
         locals.push((1, ValType::I32));
     }
 
@@ -764,9 +766,48 @@ fn compile_function(
         for (instruction, height) in reachable {
             // Empty block + marker keeps the post-encoding offset pass uniform
             // across direct and dispatcher-based lowering.
-            body.instruction(&Instruction::Block(BlockType::Empty));
-            body.instruction(&Instruction::End);
-            body.instruction(&Instruction::Nop);
+            emit_source_marker(&mut body);
+            emit_operation(&context, instruction, height, None, &mut body)?;
+        }
+        body.instruction(&Instruction::End);
+        return Ok(body);
+    }
+    if let Some(region) = direct_if {
+        for instruction in 0..region.conditional {
+            emit_source_marker(&mut body);
+            let height = layout.heights[instruction].expect("direct if instructions are reachable");
+            emit_operation(&context, instruction, height, None, &mut body)?;
+        }
+
+        emit_source_marker(&mut body);
+        let condition_height = layout.heights[region.conditional]
+            .expect("direct if condition is reachable");
+        body.instruction(&Instruction::LocalGet(
+            layout.stack_base + (condition_height - 1) as u32,
+        ));
+        body.instruction(&Instruction::I64Eqz);
+        body.instruction(&Instruction::I32Eqz);
+        body.instruction(&Instruction::If(BlockType::Empty));
+
+        for instruction in region.conditional + 1..region.then_jump {
+            emit_source_marker(&mut body);
+            let height = layout.heights[instruction].expect("direct then instruction is reachable");
+            emit_operation(&context, instruction, height, None, &mut body)?;
+        }
+        // The logical Jump over the else branch maps to this no-op marker; the
+        // surrounding Wasm If performs the branch structurally.
+        emit_source_marker(&mut body);
+        body.instruction(&Instruction::Else);
+        for instruction in region.else_start..region.end {
+            emit_source_marker(&mut body);
+            let height = layout.heights[instruction].expect("direct else instruction is reachable");
+            emit_operation(&context, instruction, height, None, &mut body)?;
+        }
+        body.instruction(&Instruction::End);
+
+        for instruction in region.end..function.code.len() {
+            emit_source_marker(&mut body);
+            let height = layout.heights[instruction].expect("direct tail instruction is reachable");
             emit_operation(&context, instruction, height, None, &mut body)?;
         }
         body.instruction(&Instruction::End);
@@ -813,6 +854,12 @@ fn compile_function(
     Ok(body)
 }
 
+fn emit_source_marker(body: &mut Function) {
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::Nop);
+}
+
 struct FunctionLayout {
     heights: Vec<Option<usize>>,
     stack_base: u32,
@@ -827,6 +874,50 @@ fn is_linear_function(function: &BytecodeFunc, layout: &FunctionLayout) -> bool 
             .code
             .iter()
             .any(|operation| matches!(operation, Op::Jump(_) | Op::JumpIfFalse(_)))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DirectIfRegion {
+    conditional: usize,
+    then_jump: usize,
+    else_start: usize,
+    end: usize,
+}
+
+fn direct_if_region(function: &BytecodeFunc, layout: &FunctionLayout) -> Option<DirectIfRegion> {
+    if !layout.heights.iter().all(Option::is_some) {
+        return None;
+    }
+    let controls: Vec<_> = function
+        .code
+        .iter()
+        .enumerate()
+        .filter(|(_, operation)| matches!(operation, Op::Jump(_) | Op::JumpIfFalse(_)))
+        .collect();
+    if controls.len() != 2 {
+        return None;
+    }
+    let (conditional, first) = controls[0];
+    let (then_jump, second) = controls[1];
+    let Op::JumpIfFalse(else_start) = first else {
+        return None;
+    };
+    let Op::Jump(end) = second else {
+        return None;
+    };
+    if conditional >= then_jump
+        || *else_start != then_jump + 1
+        || *end <= *else_start
+        || *end >= function.code.len()
+    {
+        return None;
+    }
+    Some(DirectIfRegion {
+        conditional,
+        then_jump,
+        else_start: *else_start,
+        end: *end,
+    })
 }
 
 fn analyze_function(
@@ -1861,8 +1952,8 @@ mod tests {
     }
 
     #[test]
-    fn emits_forward_conditional_control_flow() {
-        validate(&module_with(
+    fn lowers_canonical_if_else_without_dispatcher() {
+        let module = module_with(
             vec![
                 Op::PushBool(false),
                 Op::JumpIfFalse(4),
@@ -1872,7 +1963,22 @@ mod tests {
                 Op::Ret,
             ],
             0,
-        ));
+        );
+        let wasm = compile(&module).unwrap();
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let mut has_if = false;
+        let mut has_br_table = false;
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                for operator in body.get_operators_reader().unwrap() {
+                    let operator = operator.unwrap();
+                    has_if |= matches!(&operator, wasmparser::Operator::If { .. });
+                    has_br_table |= matches!(&operator, wasmparser::Operator::BrTable { .. });
+                }
+            }
+        }
+        assert!(has_if);
+        assert!(!has_br_table);
     }
 
     #[test]
