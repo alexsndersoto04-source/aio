@@ -186,6 +186,11 @@ const WEB_IMPORTS: &[HostImport] = &[
     HostImport { native: Some("std::web::frame_time_ms"), field: "frame_time_ms", params: 0, returns_value: true },
     HostImport { native: Some("std::web::frame_delta_ms"), field: "frame_delta_ms", params: 0, returns_value: true },
     HostImport { native: Some("std::web::frame_count"), field: "frame_count", params: 0, returns_value: true },
+    HostImport { native: Some("std::web::webgl_supported"), field: "webgl_supported", params: 1, returns_value: true },
+    HostImport { native: Some("std::web::webgl_create"), field: "webgl_create", params: 5, returns_value: true },
+    HostImport { native: Some("std::web::webgl_uniform_f32"), field: "webgl_uniform_f32", params: 4, returns_value: true },
+    HostImport { native: Some("std::web::webgl_draw"), field: "webgl_draw", params: 2, returns_value: true },
+    HostImport { native: Some("std::web::webgl_delete"), field: "webgl_delete", params: 1, returns_value: true },
 ];
 
 struct HostImports {
@@ -2114,6 +2119,39 @@ mod tests {
         assert_eq!(imports.natives["std::web::frame_time_ms"], 3);
         assert_eq!(imports.natives["std::web::frame_delta_ms"], 4);
         assert_eq!(imports.natives["std::web::frame_count"], 5);
+    }
+
+    #[test]
+    fn emits_webgl2_pipeline_lifecycle_imports() {
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::CallNative { name: "std::web::webgl_supported".into(), argc: 1 }, Op::Pop,
+                Op::PushStr(0), Op::PushStr(1), Op::PushStr(2), Op::PushStr(3), Op::PushStr(4),
+                Op::CallNative { name: "std::web::webgl_create".into(), argc: 5 },
+                Op::StoreLocal(0),
+                Op::PushLocal(0), Op::PushStr(5), Op::PushInt(25), Op::PushInt(100),
+                Op::CallNative { name: "std::web::webgl_uniform_f32".into(), argc: 4 }, Op::Pop,
+                Op::PushLocal(0), Op::PushStr(6),
+                Op::CallNative { name: "std::web::webgl_draw".into(), argc: 2 }, Op::Pop,
+                Op::PushLocal(0),
+                Op::CallNative { name: "std::web::webgl_delete".into(), argc: 1 }, Op::Ret,
+            ],
+            1,
+        );
+        module.string_table = vec![
+            "#gl-scene".into(), "vertex shader".into(), "fragment shader".into(),
+            "[-0.5,-0.5,0.5,-0.5,0,0.5]".into(), "[0,1,2]".into(),
+            "u_offset".into(), "[0.02,0.04,0.09,1]".into(),
+        ];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 5);
+        assert_eq!(imports.natives["std::web::webgl_supported"], 0);
+        assert_eq!(imports.natives["std::web::webgl_create"], 1);
+        assert_eq!(imports.natives["std::web::webgl_uniform_f32"], 2);
+        assert_eq!(imports.natives["std::web::webgl_draw"], 3);
+        assert_eq!(imports.natives["std::web::webgl_delete"], 4);
     }
 
     #[test]

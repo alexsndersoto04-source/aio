@@ -10,10 +10,12 @@ let nextListenerId = 1;
 let nextFetchId = 1;
 let nextSocketId = 1;
 let nextAnimationId = 1;
+let nextWebGlId = 1;
 const listeners = new Map();
 const requests = new Map();
 const sockets = new Map();
 const animations = new Map();
+const webGlScenes = new Map();
 
 function titanString(handle) {
     const bits = BigInt.asUintN(64, handle);
@@ -266,6 +268,44 @@ function socketContext(id, record, values = {}) {
         error: "",
         ...values,
     };
+}
+
+function numericJsonArray(source, name, maximumLength) {
+    const values = JSON.parse(source);
+    if (!Array.isArray(values) || values.length > maximumLength) {
+        throw new TypeError(`${name} must be a JSON array with at most ${maximumLength} entries`);
+    }
+    for (const value of values) {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            throw new TypeError(`${name} contains a non-finite number`);
+        }
+    }
+    return values;
+}
+
+function compileWebGlShader(gl, type, source, label) {
+    const shader = gl.createShader(type);
+    if (!shader) throw new Error(`could not allocate ${label} shader`);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(shader) || "unknown compiler error";
+        gl.deleteShader(shader);
+        throw new Error(`${label} shader compilation failed: ${log}`);
+    }
+    return shader;
+}
+
+function webGlScene(rawId) {
+    const id = safeInteger(rawId, "WebGL scene id", 1);
+    return { id, scene: webGlScenes.get(id) };
+}
+
+function deleteWebGlScene(scene) {
+    scene.gl.deleteBuffer(scene.vertexBuffer);
+    scene.gl.deleteBuffer(scene.indexBuffer);
+    scene.gl.deleteVertexArray(scene.vertexArray);
+    scene.gl.deleteProgram(scene.program);
 }
 
 function runAnimationFrame(id, record, timestamp) {
@@ -639,6 +679,125 @@ const imports = {
         },
         frame_count() {
             return BigInt(currentFrame?.count || 0);
+        },
+        webgl_supported(selectorHandle) {
+            const canvas = element(selectorHandle);
+            if (!(canvas instanceof HTMLCanvasElement)) return 0n;
+            return canvas.getContext("webgl2", { alpha: false, antialias: true }) ? 1n : 0n;
+        },
+        webgl_create(selectorHandle, vertexSourceHandle, fragmentSourceHandle, verticesHandle, indicesHandle) {
+            const canvas = element(selectorHandle);
+            if (!(canvas instanceof HTMLCanvasElement)) throw new TypeError("selector does not identify a canvas");
+            const gl = canvas.getContext("webgl2", { alpha: false, antialias: true });
+            if (!gl) throw new Error("WebGL2 context is unavailable");
+            const vertexSource = titanString(vertexSourceHandle);
+            const fragmentSource = titanString(fragmentSourceHandle);
+            if (encoder.encode(vertexSource).length > 1_048_576 || encoder.encode(fragmentSource).length > 1_048_576) {
+                throw new RangeError("WebGL shader source exceeds 1 MiB");
+            }
+            const vertices = numericJsonArray(titanString(verticesHandle), "vertices", 2_000_000);
+            const indices = numericJsonArray(titanString(indicesHandle), "indices", 1_000_000);
+            if (vertices.some(value => Math.abs(value) > 3.4028235e38)) {
+                throw new RangeError("vertex is outside the Float32 range");
+            }
+            if (vertices.length < 6 || vertices.length % 2 !== 0) {
+                throw new TypeError("vertices must contain at least three vec2 positions");
+            }
+            const vertexCount = vertices.length / 2;
+            for (const index of indices) {
+                if (!Number.isInteger(index) || index < 0 || index >= vertexCount || index > 65_535) {
+                    throw new RangeError("index is outside the Uint16 vertex range");
+                }
+            }
+            if (indices.length === 0 || indices.length % 3 !== 0) {
+                throw new TypeError("indices must contain complete triangles");
+            }
+
+            const vertexShader = compileWebGlShader(gl, gl.VERTEX_SHADER, vertexSource, "vertex");
+            let fragmentShader;
+            let program;
+            let vertexArray;
+            let vertexBuffer;
+            let indexBuffer;
+            try {
+                fragmentShader = compileWebGlShader(gl, gl.FRAGMENT_SHADER, fragmentSource, "fragment");
+                program = gl.createProgram();
+                if (!program) throw new Error("could not allocate WebGL program");
+                gl.attachShader(program, vertexShader);
+                gl.attachShader(program, fragmentShader);
+                gl.linkProgram(program);
+                if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                    throw new Error(`WebGL program link failed: ${gl.getProgramInfoLog(program) || "unknown linker error"}`);
+                }
+                const position = gl.getAttribLocation(program, "a_position");
+                if (position < 0) throw new Error("vertex shader must expose attribute 'a_position'");
+                vertexArray = gl.createVertexArray();
+                vertexBuffer = gl.createBuffer();
+                indexBuffer = gl.createBuffer();
+                if (!vertexArray || !vertexBuffer || !indexBuffer) throw new Error("could not allocate WebGL buffers");
+                gl.bindVertexArray(vertexArray);
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+                gl.enableVertexAttribArray(position);
+                gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+                gl.bindVertexArray(null);
+            } catch (error) {
+                if (vertexBuffer) gl.deleteBuffer(vertexBuffer);
+                if (indexBuffer) gl.deleteBuffer(indexBuffer);
+                if (vertexArray) gl.deleteVertexArray(vertexArray);
+                if (program) gl.deleteProgram(program);
+                if (fragmentShader) gl.deleteShader(fragmentShader);
+                gl.deleteShader(vertexShader);
+                throw error;
+            }
+            gl.detachShader(program, vertexShader);
+            gl.detachShader(program, fragmentShader);
+            gl.deleteShader(vertexShader);
+            gl.deleteShader(fragmentShader);
+            const id = nextWebGlId++;
+            webGlScenes.set(id, {
+                canvas, gl, program, vertexArray, vertexBuffer, indexBuffer,
+                indexCount: indices.length,
+            });
+            return BigInt(id);
+        },
+        webgl_uniform_f32(rawId, nameHandle, rawNumerator, rawDenominator) {
+            const { scene } = webGlScene(rawId);
+            if (!scene || scene.gl.isContextLost()) return 0n;
+            const denominator = signedInteger(rawDenominator, "uniform denominator");
+            if (denominator === 0) return 0n;
+            const value = signedInteger(rawNumerator, "uniform numerator") / denominator;
+            const location = scene.gl.getUniformLocation(scene.program, titanString(nameHandle));
+            if (location === null) return 0n;
+            scene.gl.useProgram(scene.program);
+            scene.gl.uniform1f(location, value);
+            return 1n;
+        },
+        webgl_draw(rawId, clearColorHandle) {
+            const { scene } = webGlScene(rawId);
+            if (!scene || scene.gl.isContextLost()) return 0n;
+            const color = numericJsonArray(titanString(clearColorHandle), "clear color", 4);
+            if (color.length !== 4 || color.some(component => component < 0 || component > 1)) {
+                throw new RangeError("clear color must contain four components between zero and one");
+            }
+            const { canvas, gl } = scene;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(color[0], color[1], color[2], color[3]);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.useProgram(scene.program);
+            gl.bindVertexArray(scene.vertexArray);
+            gl.drawElements(gl.TRIANGLES, scene.indexCount, gl.UNSIGNED_SHORT, 0);
+            gl.bindVertexArray(null);
+            return gl.getError() === gl.NO_ERROR ? 1n : 0n;
+        },
+        webgl_delete(rawId) {
+            const { id, scene } = webGlScene(rawId);
+            if (!scene) return 0n;
+            webGlScenes.delete(id);
+            deleteWebGlScene(scene);
+            return 1n;
         },
     },
 };

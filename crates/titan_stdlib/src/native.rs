@@ -150,6 +150,11 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::frame_time_ms", [], Int),
     native!("std::web::frame_delta_ms", [], Int),
     native!("std::web::frame_count", [], Int),
+    native!("std::web::webgl_supported", [String], Bool),
+    native!("std::web::webgl_create", [String, String, String, String, String], Int),
+    native!("std::web::webgl_uniform_f32", [Int, String, Int, Int], Bool),
+    native!("std::web::webgl_draw", [Int, String], Bool),
+    native!("std::web::webgl_delete", [Int], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

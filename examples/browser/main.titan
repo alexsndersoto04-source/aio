@@ -64,6 +64,15 @@ fn on_fetch() {
     0
 }
 
+fn draw_webgl_scene() {
+    let vertex = "#version 300 es\nin vec2 a_position;\nuniform float u_offset;\nvoid main() { gl_Position = vec4(a_position.x + u_offset, a_position.y, 0.0, 1.0); }";
+    let fragment = "#version 300 es\nprecision highp float;\nout vec4 color;\nvoid main() { color = vec4(0.15, 0.75, 0.95, 1.0); }";
+    let scene = std::web::webgl_create("#gl-scene", vertex, fragment, "[-0.65,-0.65,0.65,-0.65,0.0,0.7]", "[0,1,2]");
+    std::web::webgl_uniform_f32(scene, "u_offset", 20, 100);
+    std::web::webgl_draw(scene, "[0.02,0.04,0.09,1.0]");
+    0
+}
+
 fn draw_scene() {
     std::web::canvas_resize("#scene", 640, 240);
     std::web::canvas_clear("#scene", "#0f172a");
@@ -88,6 +97,11 @@ fn animate_scene() {
 fn main() {
     std::web::set_title("TITAN WebAssembly");
     draw_scene();
+    if std::web::webgl_supported("#gl-scene") {
+        draw_webgl_scene();
+    } else {
+        std::web::set_text("#webgl-status", "WebGL2 no está disponible en este navegador");
+    }
     std::web::animation_start("animate_scene");
     std::web::set_text("#status", "TITAN controla este DOM desde WebAssembly 🚀");
     std::web::set_attribute("#status", "data-runtime", "titan-wasm");
