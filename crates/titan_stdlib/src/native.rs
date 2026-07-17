@@ -72,6 +72,8 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::wasm::heap_capacity", [], Int),
     native!("std::wasm::heap_limit", [], Int),
     native!("std::wasm::heap_set_limit", [Int], Bool),
+    native!("std::wasm::heap_checkpoint", [], Int),
+    native!("std::wasm::heap_restore", [Int], Bool),
     native!("std::collections::length", [Any], Int), native!("std::collections::contains", [Array, Any], Bool),
     native!("std::collections::reverse", [Array], Array), native!("std::collections::deduplicate", [Array], Array),
     native!("std::collections::join", [Array, String], String), native!("std::collections::chunk", [Array, Int], Array),

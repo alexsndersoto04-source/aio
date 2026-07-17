@@ -212,8 +212,11 @@ fn array_native_arity(name: &str) -> Option<usize> {
 
 fn wasm_heap_native_arity(name: &str) -> Option<usize> {
     match name {
-        "std::wasm::heap_used" | "std::wasm::heap_capacity" | "std::wasm::heap_limit" => Some(0),
-        "std::wasm::heap_set_limit" => Some(1),
+        "std::wasm::heap_used"
+        | "std::wasm::heap_capacity"
+        | "std::wasm::heap_limit"
+        | "std::wasm::heap_checkpoint" => Some(0),
+        "std::wasm::heap_set_limit" | "std::wasm::heap_restore" => Some(1),
         _ => None,
     }
 }
@@ -410,6 +413,14 @@ pub fn compile_artifact_with_source_root(
             &ConstExpr::i32_const(strings.heap_start as i32),
         );
         globals.global(mutable_i32, &ConstExpr::i32_const(-1));
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: false,
+                shared: false,
+            },
+            &ConstExpr::i32_const(strings.heap_start as i32),
+        );
         output.section(&globals);
     }
 
@@ -1885,14 +1896,17 @@ fn emit_wasm_heap_native(
     height: usize,
     body: &mut Function,
 ) {
-    let output_slot = if name == "std::wasm::heap_set_limit" {
+    let output_slot = if matches!(
+        name,
+        "std::wasm::heap_set_limit" | "std::wasm::heap_restore"
+    ) {
         height - 1
     } else {
         height
     };
     let output = context.layout.stack_base + output_slot as u32;
     match name {
-        "std::wasm::heap_used" => {
+        "std::wasm::heap_used" | "std::wasm::heap_checkpoint" => {
             body.instruction(&Instruction::GlobalGet(0));
             body.instruction(&Instruction::I64ExtendI32U);
         }
@@ -1932,6 +1946,40 @@ fn emit_wasm_heap_native(
             body.instruction(&Instruction::I64Const(1));
             body.instruction(&Instruction::LocalSet(output));
             body.instruction(&Instruction::End);
+            body.instruction(&Instruction::End);
+            return;
+        }
+        "std::wasm::heap_restore" => {
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I64Const(0));
+            body.instruction(&Instruction::I64LtS);
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::GlobalGet(0));
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::I64GtU);
+            body.instruction(&Instruction::I32Or);
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::GlobalGet(2));
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::I64LtU);
+            body.instruction(&Instruction::I32Or);
+            body.instruction(&Instruction::If(BlockType::Empty));
+            body.instruction(&Instruction::I64Const(0));
+            body.instruction(&Instruction::LocalSet(output));
+            body.instruction(&Instruction::Else);
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Const(0));
+            body.instruction(&Instruction::GlobalGet(0));
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Sub);
+            body.instruction(&Instruction::MemoryFill(0));
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::GlobalSet(0));
+            body.instruction(&Instruction::I64Const(1));
+            body.instruction(&Instruction::LocalSet(output));
             body.instruction(&Instruction::End);
             return;
         }
@@ -3283,6 +3331,21 @@ mod tests {
                 Op::CallNative { name: "std::wasm::heap_limit".into(), argc: 0 }, Op::Ret,
             ],
             0,
+        );
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_heap_checkpoint_restore_and_zeroing() {
+        let module = module_with(
+            vec![
+                Op::CallNative { name: "std::wasm::heap_checkpoint".into(), argc: 0 },
+                Op::StoreLocal(0),
+                Op::PushInt(1), Op::PushInt(2), Op::NewArray(2), Op::Pop,
+                Op::PushLocal(0),
+                Op::CallNative { name: "std::wasm::heap_restore".into(), argc: 1 }, Op::Ret,
+            ],
+            1,
         );
         validate(&module);
     }
