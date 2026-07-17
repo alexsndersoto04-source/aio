@@ -219,7 +219,9 @@ fn wasm_heap_native_arity(name: &str) -> Option<usize> {
         | "std::wasm::heap_allocations"
         | "std::wasm::heap_allocated_bytes"
         | "std::wasm::heap_restores"
-        | "std::wasm::heap_reclaimed_bytes" => Some(0),
+        | "std::wasm::heap_reclaimed_bytes"
+        | "std::wasm::heap_peak_used"
+        | "std::wasm::heap_reset_counters" => Some(0),
         "std::wasm::heap_set_limit" | "std::wasm::heap_restore" => Some(1),
         _ => None,
     }
@@ -433,6 +435,10 @@ pub fn compile_artifact_with_source_root(
         for _ in 0..4 {
             globals.global(counter_type, &ConstExpr::i64_const(0));
         }
+        globals.global(
+            counter_type,
+            &ConstExpr::i64_const(i64::from(strings.heap_start)),
+        );
         output.section(&globals);
     }
 
@@ -1944,6 +1950,19 @@ fn emit_wasm_heap_native(
         "std::wasm::heap_reclaimed_bytes" => {
             body.instruction(&Instruction::GlobalGet(6));
         }
+        "std::wasm::heap_peak_used" => {
+            body.instruction(&Instruction::GlobalGet(7));
+        }
+        "std::wasm::heap_reset_counters" => {
+            for counter in 3..=6 {
+                body.instruction(&Instruction::I64Const(0));
+                body.instruction(&Instruction::GlobalSet(counter));
+            }
+            body.instruction(&Instruction::GlobalGet(0));
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::GlobalSet(7));
+            body.instruction(&Instruction::I64Const(1));
+        }
         "std::wasm::heap_set_limit" => {
             body.instruction(&Instruction::LocalGet(output));
             body.instruction(&Instruction::I64Const(0));
@@ -2303,6 +2322,15 @@ fn emit_allocation_counters(body: &mut Function, previous_heap: u32) {
     body.instruction(&Instruction::I64ExtendI32U);
     body.instruction(&Instruction::I64Add);
     body.instruction(&Instruction::GlobalSet(4));
+    body.instruction(&Instruction::GlobalGet(0));
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::GlobalGet(7));
+    body.instruction(&Instruction::I64GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::GlobalGet(0));
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::GlobalSet(7));
+    body.instruction(&Instruction::End);
 }
 
 fn compile_string_concat() -> Function {
@@ -3399,7 +3427,9 @@ mod tests {
                 Op::CallNative { name: "std::wasm::heap_allocations".into(), argc: 0 }, Op::Pop,
                 Op::CallNative { name: "std::wasm::heap_allocated_bytes".into(), argc: 0 }, Op::Pop,
                 Op::CallNative { name: "std::wasm::heap_restores".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_reclaimed_bytes".into(), argc: 0 }, Op::Ret,
+                Op::CallNative { name: "std::wasm::heap_reclaimed_bytes".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_peak_used".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_reset_counters".into(), argc: 0 }, Op::Ret,
             ],
             1,
         );
