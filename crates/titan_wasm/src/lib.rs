@@ -205,6 +205,7 @@ fn array_native_arity(name: &str) -> Option<usize> {
         "std::array::push" => Some(2),
         "std::array::pop" => Some(1),
         "std::array::slice" => Some(3),
+        "std::array::concat" => Some(2),
         _ => None,
     }
 }
@@ -1704,6 +1705,9 @@ fn emit_operation(
         Op::CallNative { name, .. } if name == "std::array::slice" => {
             emit_array_slice(context, height, body);
         }
+        Op::CallNative { name, .. } if name == "std::array::concat" => {
+            emit_array_concat(context, height, body);
+        }
         Op::CallNative { name, argc } => {
             let first = height - *argc;
             for argument in first..height {
@@ -2054,6 +2058,65 @@ fn emit_array_slice(context: &EmitContext<'_>, height: usize, body: &mut Functio
     body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::LocalSet(output));
+}
+
+fn emit_array_concat(context: &EmitContext<'_>, height: usize, body: &mut Function) {
+    const MAX_ELEMENTS: i32 = (u32::MAX / 8) as i32;
+    let left = context.layout.stack_base + (height - 2) as u32;
+    let right = left + 1;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+
+    emit_collection_count(body, right, count_memory);
+    body.instruction(&Instruction::I32Const(MAX_ELEMENTS));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    emit_collection_count(body, left, count_memory);
+    body.instruction(&Instruction::I32Const(MAX_ELEMENTS));
+    emit_collection_count(body, right, count_memory);
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+
+    emit_collection_count(body, left, count_memory);
+    emit_collection_count(body, right, count_memory);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    emit_collection_count(body, left, count_memory);
+    emit_collection_count(body, right, count_memory);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("array concat requires allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(left));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, left, count_memory);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, left, count_memory);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalGet(right));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, right, count_memory);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(left));
 }
 
 fn emit_collection_count(body: &mut Function, handle_local: u32, memory: MemArg) {
@@ -3097,6 +3160,20 @@ mod tests {
                 Op::PushInt(1), Op::PushInt(3),
                 Op::CallNative { name: "std::array::slice".into(), argc: 3 },
                 Op::PushInt(0), Op::Index, Op::Ret,
+            ],
+            0,
+        );
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_copy_on_write_array_concat() {
+        let module = module_with(
+            vec![
+                Op::PushInt(1), Op::PushInt(2), Op::NewArray(2),
+                Op::PushInt(3), Op::PushInt(4), Op::NewArray(2),
+                Op::CallNative { name: "std::array::concat".into(), argc: 2 },
+                Op::PushInt(3), Op::Index, Op::Ret,
             ],
             0,
         );

@@ -67,6 +67,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::array::push", [Array, Any], Array),
     native!("std::array::pop", [Array], Array),
     native!("std::array::slice", [Array, Int, Int], Array),
+    native!("std::array::concat", [Array, Array], Array),
     native!("std::collections::length", [Any], Int), native!("std::collections::contains", [Array, Any], Bool),
     native!("std::collections::reverse", [Array], Array), native!("std::collections::deduplicate", [Array], Array),
     native!("std::collections::join", [Array, String], String), native!("std::collections::chunk", [Array, Int], Array),

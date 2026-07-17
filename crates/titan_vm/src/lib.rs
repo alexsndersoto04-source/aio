@@ -736,6 +736,7 @@ mod tests {
     #[test] fn persistent_array_push_preserves_original() { assert_eq!(run("fn main() { let original = [10, 20] let updated = std::array::push(original, 30) len(original) * 100 + updated[2] }").unwrap(), Value::Int(230)); }
     #[test] fn persistent_array_pop_handles_values_and_empty_arrays() { assert_eq!(run("fn main() { let original = [10, 20, 30] let shorter = std::array::pop(original) let empty = std::array::pop([]) len(original) * 100 + len(shorter) * 10 + len(empty) }").unwrap(), Value::Int(320)); }
     #[test] fn persistent_array_slice_validates_and_copies_range() { assert_eq!(run("fn main() { let original = [10, 20, 30, 40] let part = std::array::slice(original, 1, 3) len(original) * 100 + part[0] + part[1] }").unwrap(), Value::Int(450)); }
+    #[test] fn persistent_array_concat_preserves_both_inputs() { assert_eq!(run("fn main() { let left = [1, 2] let right = [3, 4] let joined = std::array::concat(left, right) len(left) * 1000 + len(right) * 100 + len(joined) * 10 + joined[3] }").unwrap(), Value::Int(2244)); }
     #[test] fn try_unwraps_success_and_propagates_failure() {
         assert_eq!(run("fn answer() -> Result { let value = Result::Ok(41)? Result::Ok(value + 1) } fn main() { match answer() { Result::Ok(value) => value, Result::Err(error) => 0 } }").unwrap(), Value::Int(42));
         assert_eq!(run("fn answer() -> Result { let value = Result::Err(\"no\")? Result::Ok(value) } fn main() { match answer() { Result::Ok(value) => 0, Result::Err(error) => 7 } }").unwrap(), Value::Int(7));
