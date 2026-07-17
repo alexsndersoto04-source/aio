@@ -203,6 +203,7 @@ fn array_native_arity(name: &str) -> Option<usize> {
     match name {
         "std::array::set" => Some(3),
         "std::array::push" => Some(2),
+        "std::array::pop" => Some(1),
         _ => None,
     }
 }
@@ -1696,6 +1697,9 @@ fn emit_operation(
         Op::CallNative { name, .. } if name == "std::array::push" => {
             emit_array_push(context, height, body);
         }
+        Op::CallNative { name, .. } if name == "std::array::pop" => {
+            emit_array_pop(context, height, body);
+        }
         Op::CallNative { name, argc } => {
             let first = height - *argc;
             for argument in first..height {
@@ -1946,6 +1950,43 @@ fn emit_array_push(context: &EmitContext<'_>, height: usize, body: &mut Function
     body.instruction(&Instruction::I64Store(element_memory));
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::LocalSet(output));
+}
+
+fn emit_array_pop(context: &EmitContext<'_>, height: usize, body: &mut Function) {
+    let output = context.layout.stack_base + (height - 1) as u32;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    // Empty arrays are already the correct persistent result.
+    body.instruction(&Instruction::Else);
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("array pop requires allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(output));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(output));
+    body.instruction(&Instruction::End);
 }
 
 fn emit_collection_count(body: &mut Function, handle_local: u32, memory: MemArg) {
@@ -2959,6 +3000,26 @@ mod tests {
             0,
         );
         validate(&module);
+    }
+
+    #[test]
+    fn emits_copy_on_write_array_pop_and_empty_fast_path() {
+        let module = module_with(
+            vec![
+                Op::PushInt(10), Op::PushInt(20), Op::PushInt(30), Op::NewArray(3),
+                Op::CallNative { name: "std::array::pop".into(), argc: 1 }, Op::Len, Op::Ret,
+            ],
+            0,
+        );
+        validate(&module);
+        let empty = module_with(
+            vec![
+                Op::NewArray(0),
+                Op::CallNative { name: "std::array::pop".into(), argc: 1 }, Op::Len, Op::Ret,
+            ],
+            0,
+        );
+        validate(&empty);
     }
 
     #[test]
