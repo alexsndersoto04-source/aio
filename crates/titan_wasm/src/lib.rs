@@ -732,8 +732,8 @@ fn compile_function(
         .checked_sub(function.arity)
         .ok_or_else(|| WasmError::Locals(function.name.clone()))?;
     let linear = is_linear_function(function, layout);
-    let direct_if = direct_if_region(function, layout);
-    let direct = linear || direct_if.is_some();
+    let direct_branches = has_reducible_branches(function, layout);
+    let direct = linear || direct_branches;
     let numeric_locals = extra + layout.stack_slots;
     let mut locals = Vec::new();
     if numeric_locals > 0 {
@@ -772,44 +772,8 @@ fn compile_function(
         body.instruction(&Instruction::End);
         return Ok(body);
     }
-    if let Some(region) = direct_if {
-        for instruction in 0..region.conditional {
-            emit_source_marker(&mut body);
-            let height = layout.heights[instruction].expect("direct if instructions are reachable");
-            emit_operation(&context, instruction, height, None, &mut body)?;
-        }
-
-        emit_source_marker(&mut body);
-        let condition_height = layout.heights[region.conditional]
-            .expect("direct if condition is reachable");
-        body.instruction(&Instruction::LocalGet(
-            layout.stack_base + (condition_height - 1) as u32,
-        ));
-        body.instruction(&Instruction::I64Eqz);
-        body.instruction(&Instruction::I32Eqz);
-        body.instruction(&Instruction::If(BlockType::Empty));
-
-        for instruction in region.conditional + 1..region.then_jump {
-            emit_source_marker(&mut body);
-            let height = layout.heights[instruction].expect("direct then instruction is reachable");
-            emit_operation(&context, instruction, height, None, &mut body)?;
-        }
-        // The logical Jump over the else branch maps to this no-op marker; the
-        // surrounding Wasm If performs the branch structurally.
-        emit_source_marker(&mut body);
-        body.instruction(&Instruction::Else);
-        for instruction in region.else_start..region.end {
-            emit_source_marker(&mut body);
-            let height = layout.heights[instruction].expect("direct else instruction is reachable");
-            emit_operation(&context, instruction, height, None, &mut body)?;
-        }
-        body.instruction(&Instruction::End);
-
-        for instruction in region.end..function.code.len() {
-            emit_source_marker(&mut body);
-            let height = layout.heights[instruction].expect("direct tail instruction is reachable");
-            emit_operation(&context, instruction, height, None, &mut body)?;
-        }
+    if direct_branches {
+        emit_direct_region(&context, 0, function.code.len(), &mut body)?;
         body.instruction(&Instruction::End);
         return Ok(body);
     }
@@ -854,6 +818,45 @@ fn compile_function(
     Ok(body)
 }
 
+fn emit_direct_region(
+    context: &EmitContext<'_>,
+    start: usize,
+    end: usize,
+    body: &mut Function,
+) -> Result<(), WasmError> {
+    let mut instruction = start;
+    while instruction < end {
+        if matches!(&context.function.code[instruction], Op::JumpIfFalse(_)) {
+            let region = direct_if_region_at(context.function, instruction, end)
+                .expect("reducible regions are validated before emission");
+            emit_source_marker(body);
+            let condition_height = context.layout.heights[instruction]
+                .expect("direct condition is reachable");
+            body.instruction(&Instruction::LocalGet(
+                context.layout.stack_base + (condition_height - 1) as u32,
+            ));
+            body.instruction(&Instruction::I64Eqz);
+            body.instruction(&Instruction::I32Eqz);
+            body.instruction(&Instruction::If(BlockType::Empty));
+            emit_direct_region(context, instruction + 1, region.then_jump, body)?;
+            // Preserve a source location for the logical jump now represented by
+            // the structured else edge.
+            emit_source_marker(body);
+            body.instruction(&Instruction::Else);
+            emit_direct_region(context, region.else_start, region.end, body)?;
+            body.instruction(&Instruction::End);
+            instruction = region.end;
+        } else {
+            emit_source_marker(body);
+            let height = context.layout.heights[instruction]
+                .expect("direct region instruction is reachable");
+            emit_operation(context, instruction, height, None, body)?;
+            instruction += 1;
+        }
+    }
+    Ok(())
+}
+
 fn emit_source_marker(body: &mut Function) {
     body.instruction(&Instruction::Block(BlockType::Empty));
     body.instruction(&Instruction::End);
@@ -884,32 +887,19 @@ struct DirectIfRegion {
     end: usize,
 }
 
-fn direct_if_region(function: &BytecodeFunc, layout: &FunctionLayout) -> Option<DirectIfRegion> {
-    if !layout.heights.iter().all(Option::is_some) {
-        return None;
-    }
-    let controls: Vec<_> = function
-        .code
-        .iter()
-        .enumerate()
-        .filter(|(_, operation)| matches!(operation, Op::Jump(_) | Op::JumpIfFalse(_)))
-        .collect();
-    if controls.len() != 2 {
-        return None;
-    }
-    let (conditional, first) = controls[0];
-    let (then_jump, second) = controls[1];
-    let Op::JumpIfFalse(else_start) = first else {
+fn direct_if_region_at(
+    function: &BytecodeFunc,
+    conditional: usize,
+    limit: usize,
+) -> Option<DirectIfRegion> {
+    let Op::JumpIfFalse(else_start) = function.code.get(conditional)? else {
         return None;
     };
-    let Op::Jump(end) = second else {
+    let then_jump = else_start.checked_sub(1)?;
+    let Op::Jump(end) = function.code.get(then_jump)? else {
         return None;
     };
-    if conditional >= then_jump
-        || *else_start != then_jump + 1
-        || *end <= *else_start
-        || *end >= function.code.len()
-    {
+    if conditional >= then_jump || *end <= *else_start || *end > limit {
         return None;
     }
     Some(DirectIfRegion {
@@ -918,6 +908,37 @@ fn direct_if_region(function: &BytecodeFunc, layout: &FunctionLayout) -> Option<
         else_start: *else_start,
         end: *end,
     })
+}
+
+fn reducible_region(function: &BytecodeFunc, start: usize, end: usize) -> bool {
+    let mut instruction = start;
+    while instruction < end {
+        match &function.code[instruction] {
+            Op::JumpIfFalse(_) => {
+                let Some(region) = direct_if_region_at(function, instruction, end) else {
+                    return false;
+                };
+                if !reducible_region(function, instruction + 1, region.then_jump)
+                    || !reducible_region(function, region.else_start, region.end)
+                {
+                    return false;
+                }
+                instruction = region.end;
+            }
+            Op::Jump(_) => return false,
+            _ => instruction += 1,
+        }
+    }
+    true
+}
+
+fn has_reducible_branches(function: &BytecodeFunc, layout: &FunctionLayout) -> bool {
+    layout.heights.iter().all(Option::is_some)
+        && function
+            .code
+            .iter()
+            .any(|operation| matches!(operation, Op::JumpIfFalse(_)))
+        && reducible_region(function, 0, function.code.len())
 }
 
 fn analyze_function(
@@ -1978,6 +1999,42 @@ mod tests {
             }
         }
         assert!(has_if);
+        assert!(!has_br_table);
+    }
+
+    #[test]
+    fn recursively_lowers_nested_if_regions() {
+        let module = module_with(
+            vec![
+                Op::PushBool(true),
+                Op::JumpIfFalse(8),
+                Op::PushBool(false),
+                Op::JumpIfFalse(6),
+                Op::PushInt(1),
+                Op::Jump(7),
+                Op::PushInt(2),
+                Op::Jump(9),
+                Op::PushInt(3),
+                Op::Ret,
+            ],
+            0,
+        );
+        let wasm = compile(&module).unwrap();
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let mut if_count = 0usize;
+        let mut has_br_table = false;
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                for operator in body.get_operators_reader().unwrap() {
+                    let operator = operator.unwrap();
+                    if matches!(&operator, wasmparser::Operator::If { .. }) {
+                        if_count += 1;
+                    }
+                    has_br_table |= matches!(&operator, wasmparser::Operator::BrTable { .. });
+                }
+            }
+        }
+        assert_eq!(if_count, 2);
         assert!(!has_br_table);
     }
 
