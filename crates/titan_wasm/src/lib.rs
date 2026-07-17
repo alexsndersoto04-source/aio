@@ -1,7 +1,7 @@
 //! Direct WebAssembly backend for Titan's portable numeric bytecode.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use serde::Serialize;
@@ -81,6 +81,7 @@ pub struct WasmArtifact {
     #[serde(skip)]
     pub wasm: Vec<u8>,
     pub source_map: WasmSourceMap,
+    pub standard_source_map: StandardSourceMap,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,6 +90,16 @@ pub struct WasmSourceMap {
     pub version: u32,
     pub imported_function_count: u32,
     pub functions: Vec<WasmFunctionMap>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StandardSourceMap {
+    pub version: u32,
+    pub sources: Vec<String>,
+    #[serde(rename = "sourcesContent", skip_serializing_if = "Option::is_none")]
+    pub sources_content: Option<Vec<Option<String>>>,
+    pub names: Vec<String>,
+    pub mappings: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +114,7 @@ pub struct WasmFunctionMap {
 #[derive(Debug, Clone, Serialize)]
 pub struct WasmInstructionMap {
     pub titan_instruction: u32,
+    pub wasm_offset: Option<usize>,
     pub operation: String,
     pub start: usize,
     pub end: usize,
@@ -409,17 +421,18 @@ pub fn compile_artifact_with_source_root(
         output.section(&data);
     }
 
-    let source_map = build_source_map(module, function_bias, source_root);
+    let mut wasm = output.finish();
+    let offsets = extract_instruction_offsets(&wasm, &layouts, module.functions.len())?;
+    let source_map = build_source_map(module, function_bias, source_root, &offsets);
+    let standard_source_map = build_standard_source_map(&source_map);
     let source_map_bytes = serde_json::to_vec(&source_map)
         .map_err(|error| WasmError::SourceMap(error.to_string()))?;
-    output.section(&CustomSection {
-        name: Cow::Borrowed("titan.source_map"),
-        data: Cow::Borrowed(&source_map_bytes),
-    });
+    append_custom_section(&mut wasm, "titan.source_map", &source_map_bytes);
 
     Ok(WasmArtifact {
-        wasm: output.finish(),
+        wasm,
         source_map,
+        standard_source_map,
     })
 }
 
@@ -427,6 +440,7 @@ fn build_source_map(
     module: &CompiledModule,
     function_bias: u32,
     source_root: Option<&Path>,
+    offsets: &HashMap<(usize, usize), usize>,
 ) -> WasmSourceMap {
     let functions = module
         .functions
@@ -440,6 +454,7 @@ fn build_source_map(
                 .filter_map(|(instruction, location)| {
                     location.map(|location| WasmInstructionMap {
                         titan_instruction: instruction as u32,
+                        wasm_offset: offsets.get(&(function_index, instruction)).copied(),
                         operation: function
                             .code
                             .get(instruction)
@@ -466,6 +481,175 @@ fn build_source_map(
         imported_function_count: function_bias,
         functions,
     }
+}
+
+fn extract_instruction_offsets(
+    wasm: &[u8],
+    layouts: &[FunctionLayout],
+    titan_function_count: usize,
+) -> Result<HashMap<(usize, usize), usize>, WasmError> {
+    let mut offsets = HashMap::new();
+    let mut body_index = 0usize;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        let payload = payload.map_err(|error| WasmError::SourceMap(error.to_string()))?;
+        let wasmparser::Payload::CodeSectionEntry(body) = payload else {
+            continue;
+        };
+        if body_index < titan_function_count {
+            let expected: Vec<_> = layouts[body_index]
+                .heights
+                .iter()
+                .enumerate()
+                .filter_map(|(instruction, height)| height.map(|_| instruction))
+                .collect();
+            let mut marker = 0usize;
+            let mut previous_was_if = false;
+            let mut reader = body
+                .get_operators_reader()
+                .map_err(|error| WasmError::SourceMap(error.to_string()))?;
+            while !reader.eof() {
+                let (operator, offset) = reader
+                    .read_with_offset()
+                    .map_err(|error| WasmError::SourceMap(error.to_string()))?;
+                if previous_was_if && matches!(&operator, wasmparser::Operator::Nop) {
+                    let instruction = expected.get(marker).ok_or_else(|| {
+                        WasmError::SourceMap(format!(
+                            "unexpected source marker in function {body_index}"
+                        ))
+                    })?;
+                    offsets.insert((body_index, *instruction), offset);
+                    marker += 1;
+                }
+                previous_was_if = matches!(&operator, wasmparser::Operator::If { .. });
+            }
+            if marker != expected.len() {
+                return Err(WasmError::SourceMap(format!(
+                    "function {body_index} emitted {marker} source markers, expected {}",
+                    expected.len()
+                )));
+            }
+        }
+        body_index += 1;
+    }
+    if body_index < titan_function_count {
+        return Err(WasmError::SourceMap(format!(
+            "module contains {body_index} function bodies, expected at least {titan_function_count}"
+        )));
+    }
+    Ok(offsets)
+}
+
+fn build_standard_source_map(source_map: &WasmSourceMap) -> StandardSourceMap {
+    let mut source_names = BTreeMap::new();
+    let mut function_names = BTreeMap::new();
+    for function in &source_map.functions {
+        if let Some(source) = &function.source_file {
+            source_names.insert(source.clone(), 0usize);
+        }
+        function_names.insert(function.name.clone(), 0usize);
+    }
+    let sources: Vec<_> = source_names.keys().cloned().collect();
+    let names: Vec<_> = function_names.keys().cloned().collect();
+    for (index, source) in sources.iter().enumerate() {
+        source_names.insert(source.clone(), index);
+    }
+    for (index, name) in names.iter().enumerate() {
+        function_names.insert(name.clone(), index);
+    }
+
+    let mut entries = Vec::new();
+    for function in &source_map.functions {
+        let Some(source) = &function.source_file else {
+            continue;
+        };
+        for instruction in &function.instructions {
+            if let Some(offset) = instruction.wasm_offset {
+                entries.push((
+                    offset,
+                    source_names[source],
+                    instruction.line.saturating_sub(1),
+                    instruction.column.saturating_sub(1),
+                    function_names[&function.name],
+                ));
+            }
+        }
+    }
+    entries.sort_unstable_by_key(|entry| entry.0);
+
+    let mut mappings = String::new();
+    let mut previous_generated = 0i64;
+    let mut previous_source = 0i64;
+    let mut previous_line = 0i64;
+    let mut previous_column = 0i64;
+    let mut previous_name = 0i64;
+    for (index, (generated, source, line, column, name)) in entries.into_iter().enumerate() {
+        if index > 0 {
+            mappings.push(',');
+        }
+        let generated = generated as i64;
+        let source = source as i64;
+        let line = line as i64;
+        let column = column as i64;
+        let name = name as i64;
+        encode_vlq(generated - previous_generated, &mut mappings);
+        encode_vlq(source - previous_source, &mut mappings);
+        encode_vlq(line - previous_line, &mut mappings);
+        encode_vlq(column - previous_column, &mut mappings);
+        encode_vlq(name - previous_name, &mut mappings);
+        previous_generated = generated;
+        previous_source = source;
+        previous_line = line;
+        previous_column = column;
+        previous_name = name;
+    }
+
+    StandardSourceMap {
+        version: 3,
+        sources,
+        sources_content: None,
+        names,
+        mappings,
+    }
+}
+
+fn encode_vlq(value: i64, output: &mut String) {
+    const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut value = if value < 0 {
+        ((-value) as u64) << 1 | 1
+    } else {
+        (value as u64) << 1
+    };
+    loop {
+        let mut digit = (value & 31) as u8;
+        value >>= 5;
+        if value != 0 {
+            digit |= 32;
+        }
+        output.push(char::from(BASE64[usize::from(digit)]));
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+fn append_custom_section(wasm: &mut Vec<u8>, name: &str, data: &[u8]) {
+    let mut extension = Module::new();
+    extension.section(&CustomSection {
+        name: Cow::Borrowed(name),
+        data: Cow::Borrowed(data),
+    });
+    let encoded = extension.finish();
+    wasm.extend_from_slice(&encoded[8..]);
+}
+
+pub fn append_source_mapping_url(wasm: &mut Vec<u8>, url: &str) -> Result<(), WasmError> {
+    if !wasm.starts_with(b"\0asm") {
+        return Err(WasmError::SourceMap(
+            "cannot append sourceMappingURL to invalid Wasm bytes".into(),
+        ));
+    }
+    append_custom_section(wasm, "sourceMappingURL", url.as_bytes());
+    Ok(())
 }
 
 fn normalize_source_file(source: Option<&str>, source_root: Option<&Path>) -> Option<String> {
@@ -567,6 +751,8 @@ fn compile_function(
         body.instruction(&Instruction::I32Const(instruction as i32));
         body.instruction(&Instruction::I32Eq);
         body.instruction(&Instruction::If(BlockType::Empty));
+        // A marker for the post-encoding binary-offset source-map pass.
+        body.instruction(&Instruction::Nop);
         emit_operation(&context, instruction, *height, &mut body)?;
         body.instruction(&Instruction::End);
     }
@@ -1505,6 +1691,15 @@ mod tests {
         assert_eq!(artifact.source_map.version, 1);
         assert_eq!(artifact.source_map.functions[0].wasm_function_index, 0);
         assert_eq!(artifact.source_map.functions[0].instructions[0].line, 3);
+        assert!(artifact.source_map.functions[0].instructions[0]
+            .wasm_offset
+            .is_some_and(|offset| offset > 8));
+        assert_eq!(artifact.standard_source_map.version, 3);
+        assert_eq!(
+            artifact.standard_source_map.sources,
+            vec!["main.titan".to_string()]
+        );
+        assert!(!artifact.standard_source_map.mappings.is_empty());
 
         let embedded = wasmparser::Parser::new(0)
             .parse_all(&artifact.wasm)
@@ -1524,11 +1719,38 @@ mod tests {
             Some(5)
         );
 
+        let mut linked = artifact.wasm.clone();
+        append_source_mapping_url(&mut linked, "program.wasm.map").unwrap();
+        wasmparser::Validator::new().validate_all(&linked).unwrap();
+        let url = wasmparser::Parser::new(0)
+            .parse_all(&linked)
+            .filter_map(Result::ok)
+            .find_map(|payload| match payload {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == "sourceMappingURL" =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(url, b"program.wasm.map");
+
         let mut imported = module_with(vec![Op::PushStr(0), Op::Print(1), Op::Ret], 0);
         imported.string_table.push("mapped".into());
         let imported_artifact = compile_artifact(&imported).unwrap();
         assert_eq!(imported_artifact.source_map.imported_function_count, 1);
         assert_eq!(imported_artifact.source_map.functions[0].wasm_function_index, 1);
+    }
+
+    #[test]
+    fn encodes_source_map_base64_vlq_segments() {
+        let mut encoded = String::new();
+        encode_vlq(0, &mut encoded);
+        encode_vlq(1, &mut encoded);
+        encode_vlq(-1, &mut encoded);
+        encode_vlq(16, &mut encoded);
+        assert_eq!(encoded, "ACDgB");
     }
 
     #[test]

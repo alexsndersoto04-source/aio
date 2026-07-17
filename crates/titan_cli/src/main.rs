@@ -183,19 +183,68 @@ fn cmd_wasm(input: &str, output: Option<String>) {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).unwrap_or_else(|error| fatal("WASM BUILD ERROR", error));
     }
-    let artifact = titan_wasm::compile_artifact_with_source_root(&module, Some(&project.root))
+    let mut artifact = titan_wasm::compile_artifact_with_source_root(&module, Some(&project.root))
         .unwrap_or_else(|error| fatal("WASM BUILD ERROR", error));
-    fs::write(&target, artifact.wasm).unwrap_or_else(|error| fatal("WASM BUILD ERROR", error));
+    artifact.standard_source_map.sources_content = Some(
+        artifact
+            .standard_source_map
+            .sources
+            .iter()
+            .map(|source| {
+                let source = Path::new(source);
+                let source = if source.is_absolute() {
+                    source.to_path_buf()
+                } else {
+                    project.root.join(source)
+                };
+                project.sources.get(&source).cloned()
+            })
+            .collect(),
+    );
 
-    let mut map_name = target.as_os_str().to_os_string();
-    map_name.push(".map.json");
-    let map_target = PathBuf::from(map_name);
-    let map = serde_json::to_vec_pretty(&artifact.source_map)
+    let mut logical_map_name = target.as_os_str().to_os_string();
+    logical_map_name.push(".map.json");
+    let logical_map_target = PathBuf::from(logical_map_name);
+    let logical_map = serde_json::to_vec_pretty(&artifact.source_map)
         .unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
-    fs::write(&map_target, map).unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
+
+    let mut standard_map_name = target.as_os_str().to_os_string();
+    standard_map_name.push(".map");
+    let standard_map_target = PathBuf::from(standard_map_name);
+    let standard_map = serde_json::to_vec(&artifact.standard_source_map)
+        .unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
+    let source_map_filename = standard_map_target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| fatal_message("WASM SOURCE MAP ERROR", "map filename is not valid UTF-8"));
+    let source_map_url = percent_encode_path_segment(source_map_filename);
+    titan_wasm::append_source_mapping_url(&mut artifact.wasm, &source_map_url)
+        .unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
+
+    fs::write(&target, artifact.wasm).unwrap_or_else(|error| fatal("WASM BUILD ERROR", error));
+    fs::write(&logical_map_target, logical_map)
+        .unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
+    fs::write(&standard_map_target, standard_map)
+        .unwrap_or_else(|error| fatal("WASM SOURCE MAP ERROR", error));
 
     println!("WASM: {} -> {}", project.entry.display(), target.display());
-    println!("SOURCE MAP: {}", map_target.display());
+    println!("TITAN SOURCE MAP: {}", logical_map_target.display());
+    println!("STANDARD SOURCE MAP: {}", standard_map_target.display());
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+    }
+    encoded
 }
 
 fn cmd_run(input: &str, sandbox: bool, _args: Vec<String>) {
