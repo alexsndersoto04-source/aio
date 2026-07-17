@@ -773,7 +773,7 @@ fn compile_function(
         return Ok(body);
     }
     if direct_control {
-        emit_direct_region(&context, 0, function.code.len(), &mut body)?;
+        emit_direct_region(&context, 0, function.code.len(), None, &mut body)?;
         body.instruction(&Instruction::End);
         return Ok(body);
     }
@@ -818,18 +818,47 @@ fn compile_function(
     Ok(body)
 }
 
+#[derive(Clone, Copy)]
+struct DirectLoopBranches {
+    continue_target: usize,
+    break_target: usize,
+    continue_depth: u32,
+    break_depth: u32,
+}
+
+impl DirectLoopBranches {
+    fn deeper(self, levels: u32) -> Self {
+        Self {
+            continue_depth: self.continue_depth + levels,
+            break_depth: self.break_depth + levels,
+            ..self
+        }
+    }
+}
+
 fn emit_direct_region(
     context: &EmitContext<'_>,
     start: usize,
     end: usize,
+    active_loop: Option<DirectLoopBranches>,
     body: &mut Function,
 ) -> Result<(), WasmError> {
     let mut instruction = start;
     while instruction < end {
+        if context.layout.heights[instruction].is_none() {
+            instruction += 1;
+            continue;
+        }
         if let Some(region) = direct_loop_region_at(context.function, instruction, end) {
             body.instruction(&Instruction::Block(BlockType::Empty));
             body.instruction(&Instruction::Loop(BlockType::Empty));
-            emit_direct_region(context, instruction, region.condition, body)?;
+            emit_direct_region(
+                context,
+                instruction,
+                region.condition,
+                active_loop.map(|branches| branches.deeper(2)),
+                body,
+            )?;
             emit_source_marker(body);
             let condition_height = context.layout.heights[region.condition]
                 .expect("direct loop condition is reachable");
@@ -838,9 +867,23 @@ fn emit_direct_region(
             ));
             body.instruction(&Instruction::I64Eqz);
             body.instruction(&Instruction::BrIf(1));
-            emit_direct_region(context, region.condition + 1, region.back_jump, body)?;
-            // Preserve the logical backward Jump in source metadata.
-            emit_source_marker(body);
+            emit_direct_region(
+                context,
+                region.condition + 1,
+                region.back_jump,
+                Some(DirectLoopBranches {
+                    continue_target: instruction,
+                    break_target: region.end,
+                    continue_depth: 0,
+                    break_depth: 1,
+                }),
+                body,
+            )?;
+            // Preserve the logical backward Jump when it is reachable. The Br is
+            // still emitted in unreachable position to keep the loop closed.
+            if context.layout.heights[region.back_jump].is_some() {
+                emit_source_marker(body);
+            }
             body.instruction(&Instruction::Br(0));
             body.instruction(&Instruction::End);
             body.instruction(&Instruction::End);
@@ -857,14 +900,38 @@ fn emit_direct_region(
             body.instruction(&Instruction::I64Eqz);
             body.instruction(&Instruction::I32Eqz);
             body.instruction(&Instruction::If(BlockType::Empty));
-            emit_direct_region(context, instruction + 1, region.then_jump, body)?;
-            // Preserve a source location for the logical jump now represented by
-            // the structured else edge.
-            emit_source_marker(body);
+            emit_direct_region(
+                context,
+                instruction + 1,
+                region.then_jump,
+                active_loop.map(|branches| branches.deeper(1)),
+                body,
+            )?;
+            // Preserve a source location for a reachable logical jump now
+            // represented by the structured else edge.
+            if context.layout.heights[region.then_jump].is_some() {
+                emit_source_marker(body);
+            }
             body.instruction(&Instruction::Else);
-            emit_direct_region(context, region.else_start, region.end, body)?;
+            emit_direct_region(
+                context,
+                region.else_start,
+                region.end,
+                active_loop.map(|branches| branches.deeper(1)),
+                body,
+            )?;
             body.instruction(&Instruction::End);
             instruction = region.end;
+        } else if let Op::Jump(target) = &context.function.code[instruction] {
+            let branches = active_loop.expect("reducible jumps require an active loop");
+            emit_source_marker(body);
+            if *target == branches.continue_target {
+                body.instruction(&Instruction::Br(branches.continue_depth));
+            } else {
+                debug_assert_eq!(*target, branches.break_target);
+                body.instruction(&Instruction::Br(branches.break_depth));
+            }
+            instruction += 1;
         } else {
             emit_source_marker(body);
             let height = context.layout.heights[instruction]
@@ -958,12 +1025,28 @@ fn direct_loop_region_at(
     None
 }
 
-fn reducible_region(function: &BytecodeFunc, start: usize, end: usize) -> bool {
+fn reducible_region(
+    function: &BytecodeFunc,
+    layout: &FunctionLayout,
+    start: usize,
+    end: usize,
+    loop_targets: Option<(usize, usize)>,
+) -> bool {
     let mut instruction = start;
     while instruction < end {
+        if layout.heights[instruction].is_none() {
+            instruction += 1;
+            continue;
+        }
         if let Some(region) = direct_loop_region_at(function, instruction, end) {
-            if !reducible_region(function, instruction, region.condition)
-                || !reducible_region(function, region.condition + 1, region.back_jump)
+            if !reducible_region(function, layout, instruction, region.condition, loop_targets)
+                || !reducible_region(
+                    function,
+                    layout,
+                    region.condition + 1,
+                    region.back_jump,
+                    Some((instruction, region.end)),
+                )
             {
                 return false;
             }
@@ -975,12 +1058,30 @@ fn reducible_region(function: &BytecodeFunc, start: usize, end: usize) -> bool {
                 let Some(region) = direct_if_region_at(function, instruction, end) else {
                     return false;
                 };
-                if !reducible_region(function, instruction + 1, region.then_jump)
-                    || !reducible_region(function, region.else_start, region.end)
-                {
+                if !reducible_region(
+                    function,
+                    layout,
+                    instruction + 1,
+                    region.then_jump,
+                    loop_targets,
+                ) || !reducible_region(
+                    function,
+                    layout,
+                    region.else_start,
+                    region.end,
+                    loop_targets,
+                ) {
                     return false;
                 }
                 instruction = region.end;
+            }
+            Op::Jump(target)
+                if loop_targets
+                    .is_some_and(|(continue_target, break_target)| {
+                        *target == continue_target || *target == break_target
+                    }) =>
+            {
+                instruction += 1;
             }
             Op::Jump(_) => return false,
             _ => instruction += 1,
@@ -990,12 +1091,11 @@ fn reducible_region(function: &BytecodeFunc, start: usize, end: usize) -> bool {
 }
 
 fn has_reducible_control_flow(function: &BytecodeFunc, layout: &FunctionLayout) -> bool {
-    layout.heights.iter().all(Option::is_some)
-        && function
-            .code
-            .iter()
-            .any(|operation| matches!(operation, Op::Jump(_) | Op::JumpIfFalse(_)))
-        && reducible_region(function, 0, function.code.len())
+    function
+        .code
+        .iter()
+        .any(|operation| matches!(operation, Op::Jump(_) | Op::JumpIfFalse(_)))
+        && reducible_region(function, layout, 0, function.code.len(), None)
 }
 
 fn analyze_function(
@@ -2142,6 +2242,33 @@ mod tests {
                 Op::PushInt(100), Op::Jump(13), Op::PushInt(200), Op::Pop,
                 Op::PushLocal(0), Op::PushInt(1), Op::Add, Op::StoreLocal(0), Op::Jump(2),
                 Op::PushLocal(0), Op::Ret,
+            ],
+            1,
+        );
+        let wasm = compile(&module).unwrap();
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let mut has_br_table = false;
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                for operator in body.get_operators_reader().unwrap() {
+                    has_br_table |=
+                        matches!(operator.unwrap(), wasmparser::Operator::BrTable { .. });
+                }
+            }
+        }
+        assert!(!has_br_table);
+    }
+
+    #[test]
+    fn directly_lowers_conditional_break_in_while_loop() {
+        let module = module_with(
+            vec![
+                Op::PushInt(0), Op::StoreLocal(0),
+                Op::PushLocal(0), Op::PushInt(10), Op::Lt, Op::JumpIfFalse(19),
+                Op::PushLocal(0), Op::PushInt(3), Op::Eq, Op::JumpIfFalse(12),
+                Op::Jump(19), Op::Jump(13), Op::PushNil, Op::Pop,
+                Op::PushLocal(0), Op::PushInt(1), Op::Add, Op::StoreLocal(0), Op::Jump(2),
+                Op::PushNil, Op::Pop, Op::PushLocal(0), Op::Ret,
             ],
             1,
         );
