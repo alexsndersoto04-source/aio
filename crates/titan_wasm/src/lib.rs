@@ -210,6 +210,14 @@ fn array_native_arity(name: &str) -> Option<usize> {
     }
 }
 
+fn wasm_heap_native_arity(name: &str) -> Option<usize> {
+    match name {
+        "std::wasm::heap_used" | "std::wasm::heap_capacity" | "std::wasm::heap_limit" => Some(0),
+        "std::wasm::heap_set_limit" => Some(1),
+        _ => None,
+    }
+}
+
 fn web_import(name: &str) -> Option<&'static HostImport> {
     WEB_IMPORTS
         .iter()
@@ -284,6 +292,11 @@ pub fn compile_artifact_with_source_root(
                     || matches!(operation, Op::CallNative { name, .. } if array_native_arity(name).is_some())
             })
     });
+    let needs_heap_api = module.functions.iter().any(|function| {
+        function.code.iter().any(|operation| {
+            matches!(operation, Op::CallNative { name, .. } if wasm_heap_native_arity(name).is_some())
+        })
+    });
     let host_imports = collect_host_imports(module);
     let needs_host_strings = host_imports.natives.keys().any(|name| {
         matches!(
@@ -311,7 +324,7 @@ pub fn compile_artifact_with_source_root(
         return Err(WasmError::ReservedFunction("__titan_alloc_string".into()));
     }
     let needs_allocator = needs_host_strings || needs_arrays;
-    let needs_heap = needs_concat || needs_allocator;
+    let needs_heap = needs_concat || needs_allocator || needs_heap_api;
     let function_bias = host_imports.definitions.len() as u32;
     let concat_function = needs_concat
         .then_some(function_bias + module.functions.len() as u32);
@@ -387,14 +400,16 @@ pub fn compile_artifact_with_source_root(
 
     if needs_heap {
         let mut globals = GlobalSection::new();
+        let mutable_i32 = GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        };
         globals.global(
-            GlobalType {
-                val_type: ValType::I32,
-                mutable: true,
-                shared: false,
-            },
+            mutable_i32,
             &ConstExpr::i32_const(strings.heap_start as i32),
         );
+        globals.global(mutable_i32, &ConstExpr::i32_const(-1));
         output.section(&globals);
     }
 
@@ -1462,6 +1477,7 @@ fn validate_operation(
         }),
         Op::CallNative { name, argc } => {
             let expected = array_native_arity(name)
+                .or_else(|| wasm_heap_native_arity(name))
                 .or_else(|| web_import(name).map(|import| import.params))
                 .ok_or_else(|| WasmError::Unsupported {
                     function: function.name.clone(),
@@ -1693,6 +1709,9 @@ fn emit_operation(
             body.instruction(&Instruction::Call(*callee as u32 + function_bias));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
         }
+        Op::CallNative { name, .. } if wasm_heap_native_arity(name).is_some() => {
+            emit_wasm_heap_native(name, context, height, body);
+        }
         Op::CallNative { name, .. } if name == "std::array::set" => {
             emit_array_set(context, height, body);
         }
@@ -1858,6 +1877,67 @@ fn emit_operation(
         body.instruction(&Instruction::Br(dispatch_depth));
     }
     Ok(())
+}
+
+fn emit_wasm_heap_native(
+    name: &str,
+    context: &EmitContext<'_>,
+    height: usize,
+    body: &mut Function,
+) {
+    let output_slot = if name == "std::wasm::heap_set_limit" {
+        height - 1
+    } else {
+        height
+    };
+    let output = context.layout.stack_base + output_slot as u32;
+    match name {
+        "std::wasm::heap_used" => {
+            body.instruction(&Instruction::GlobalGet(0));
+            body.instruction(&Instruction::I64ExtendI32U);
+        }
+        "std::wasm::heap_capacity" => {
+            body.instruction(&Instruction::MemorySize(0));
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::I64Const(65_536));
+            body.instruction(&Instruction::I64Mul);
+        }
+        "std::wasm::heap_limit" => {
+            body.instruction(&Instruction::GlobalGet(1));
+            body.instruction(&Instruction::I64ExtendI32U);
+        }
+        "std::wasm::heap_set_limit" => {
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I64Const(0));
+            body.instruction(&Instruction::I64LtS);
+            body.instruction(&Instruction::If(BlockType::Empty));
+            body.instruction(&Instruction::I64Const(0));
+            body.instruction(&Instruction::LocalSet(output));
+            body.instruction(&Instruction::Else);
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I64Const(i64::from(u32::MAX)));
+            body.instruction(&Instruction::I64GtU);
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::GlobalGet(0));
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::I64LtU);
+            body.instruction(&Instruction::I32Or);
+            body.instruction(&Instruction::If(BlockType::Empty));
+            body.instruction(&Instruction::I64Const(0));
+            body.instruction(&Instruction::LocalSet(output));
+            body.instruction(&Instruction::Else);
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::GlobalSet(1));
+            body.instruction(&Instruction::I64Const(1));
+            body.instruction(&Instruction::LocalSet(output));
+            body.instruction(&Instruction::End);
+            body.instruction(&Instruction::End);
+            return;
+        }
+        _ => unreachable!("heap native validated before emission"),
+    }
+    body.instruction(&Instruction::LocalSet(output));
 }
 
 fn emit_array_set(context: &EmitContext<'_>, height: usize, body: &mut Function) {
@@ -2180,6 +2260,12 @@ fn compile_string_concat() -> Function {
     body.instruction(&Instruction::If(BlockType::Empty));
     body.instruction(&Instruction::Unreachable);
     body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::GlobalGet(1));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
 
     body.instruction(&Instruction::MemorySize(0));
     body.instruction(&Instruction::LocalSet(MEMORY_PAGES));
@@ -2289,6 +2375,12 @@ fn compile_host_string_allocator() -> Function {
     body.instruction(&Instruction::LocalTee(NEW_END));
     body.instruction(&Instruction::LocalGet(OUTPUT_POINTER));
     body.instruction(&Instruction::I32LtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(NEW_END));
+    body.instruction(&Instruction::GlobalGet(1));
+    body.instruction(&Instruction::I32GtU);
     body.instruction(&Instruction::If(BlockType::Empty));
     body.instruction(&Instruction::Unreachable);
     body.instruction(&Instruction::End);
@@ -3174,6 +3266,21 @@ mod tests {
                 Op::PushInt(3), Op::PushInt(4), Op::NewArray(2),
                 Op::CallNative { name: "std::array::concat".into(), argc: 2 },
                 Op::PushInt(3), Op::Index, Op::Ret,
+            ],
+            0,
+        );
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_heap_statistics_and_limit_controls() {
+        let module = module_with(
+            vec![
+                Op::CallNative { name: "std::wasm::heap_used".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_capacity".into(), argc: 0 }, Op::Pop,
+                Op::PushInt(65_536),
+                Op::CallNative { name: "std::wasm::heap_set_limit".into(), argc: 1 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_limit".into(), argc: 0 }, Op::Ret,
             ],
             0,
         );
