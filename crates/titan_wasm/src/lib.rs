@@ -508,7 +508,7 @@ fn extract_instruction_offsets(
                 .filter_map(|(instruction, height)| height.map(|_| instruction))
                 .collect();
             let mut marker = 0usize;
-            let mut previous_was_if = false;
+            let mut previous_was_end = false;
             let mut reader = body
                 .get_operators_reader()
                 .map_err(|error| WasmError::SourceMap(error.to_string()))?;
@@ -516,7 +516,7 @@ fn extract_instruction_offsets(
                 let (operator, offset) = reader
                     .read_with_offset()
                     .map_err(|error| WasmError::SourceMap(error.to_string()))?;
-                if previous_was_if && matches!(&operator, wasmparser::Operator::Nop) {
+                if previous_was_end && matches!(&operator, wasmparser::Operator::Nop) {
                     let instruction = expected.get(marker).ok_or_else(|| {
                         WasmError::SourceMap(format!(
                             "unexpected source marker in function {body_index}"
@@ -525,7 +525,7 @@ fn extract_instruction_offsets(
                     offsets.insert((body_index, *instruction), offset);
                     marker += 1;
                 }
-                previous_was_if = matches!(&operator, wasmparser::Operator::If { .. });
+                previous_was_end = matches!(&operator, wasmparser::Operator::End);
             }
             if marker != expected.len() {
                 return Err(WasmError::SourceMap(format!(
@@ -746,26 +746,53 @@ fn compile_function(
         host_imports,
         concat_function,
     };
-    body.instruction(&Instruction::Loop(BlockType::Empty));
-
-    for (instruction, height) in layout.heights.iter().enumerate() {
-        let Some(height) = height else {
-            continue;
-        };
-        body.instruction(&Instruction::LocalGet(layout.pc_local));
-        body.instruction(&Instruction::I32Const(instruction as i32));
-        body.instruction(&Instruction::I32Eq);
-        body.instruction(&Instruction::If(BlockType::Empty));
-        // A marker for the post-encoding binary-offset source-map pass.
-        body.instruction(&Instruction::Nop);
-        emit_operation(&context, instruction, *height, &mut body)?;
+    let reachable: Vec<_> = layout
+        .heights
+        .iter()
+        .enumerate()
+        .filter_map(|(instruction, height)| height.map(|height| (instruction, height)))
+        .collect();
+    if reachable.is_empty() {
+        body.instruction(&Instruction::I64Const(0));
         body.instruction(&Instruction::End);
+        return Ok(body);
     }
 
-    // Stack analysis guarantees every assigned program counter has a case. This
-    // instruction traps corrupted state instead of returning a fabricated value.
+    // Arbitrary Titan jumps are dispatched in O(1) through nested structured
+    // blocks and br_table. The outer block is the invalid-PC trap target.
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    for _ in &reachable {
+        body.instruction(&Instruction::Block(BlockType::Empty));
+    }
+    let default_depth = reachable.len() as u32 + 1;
+    let mut targets = vec![default_depth; function.code.len()];
+    for (depth, (instruction, _)) in reachable.iter().enumerate() {
+        targets[*instruction] = depth as u32;
+    }
+    body.instruction(&Instruction::LocalGet(layout.pc_local));
+    body.instruction(&Instruction::BrTable(Cow::Owned(targets), default_depth));
+
+    for (position, (instruction, height)) in reachable.iter().enumerate() {
+        body.instruction(&Instruction::End);
+        // A marker for the post-encoding binary-offset source-map pass.
+        body.instruction(&Instruction::Nop);
+        let dispatch_depth = (reachable.len() - position - 1) as u32;
+        emit_operation(
+            &context,
+            *instruction,
+            *height,
+            dispatch_depth,
+            &mut body,
+        )?;
+    }
+
+    // Every case either returns or branches back to the loop. Invalid PCs leave
+    // the outer block and trap here instead of spinning forever.
     body.instruction(&Instruction::Unreachable);
     body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::Unreachable);
     body.instruction(&Instruction::I64Const(0));
     body.instruction(&Instruction::End);
     Ok(body)
@@ -1203,6 +1230,7 @@ fn emit_operation(
     context: &EmitContext<'_>,
     instruction: usize,
     height: usize,
+    dispatch_depth: u32,
     body: &mut Function,
 ) -> Result<(), WasmError> {
     let function = context.function;
@@ -1336,7 +1364,7 @@ fn emit_operation(
         }
         Op::Jump(target) => {
             set_pc(body, layout.pc_local, *target);
-            body.instruction(&Instruction::Br(1));
+            body.instruction(&Instruction::Br(dispatch_depth));
             return Ok(());
         }
         Op::JumpIfFalse(target) => {
@@ -1349,7 +1377,7 @@ fn emit_operation(
             body.instruction(&Instruction::Else);
             set_pc(body, layout.pc_local, instruction + 1);
             body.instruction(&Instruction::End);
-            body.instruction(&Instruction::Br(1));
+            body.instruction(&Instruction::Br(dispatch_depth));
             return Ok(());
         }
         Op::Ret | Op::Halt => {
@@ -1382,7 +1410,7 @@ fn emit_operation(
     }
 
     set_pc(body, layout.pc_local, instruction + 1);
-    body.instruction(&Instruction::Br(1));
+    body.instruction(&Instruction::Br(dispatch_depth));
     Ok(())
 }
 
@@ -1756,6 +1784,31 @@ mod tests {
         encode_vlq(-1, &mut encoded);
         encode_vlq(16, &mut encoded);
         assert_eq!(encoded, "ACDgB");
+    }
+
+    #[test]
+    fn uses_constant_time_br_table_dispatch() {
+        let module = module_with(
+            vec![Op::PushInt(1), Op::Jump(3), Op::PushInt(99), Op::Ret],
+            0,
+        );
+        let wasm = compile(&module).unwrap();
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let mut has_br_table = false;
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let reader = body.get_operators_reader().unwrap();
+                if reader
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .any(|operator| matches!(operator, wasmparser::Operator::BrTable { .. }))
+                {
+                    has_br_table = true;
+                    break;
+                }
+            }
+        }
+        assert!(has_br_table);
     }
 
     #[test]
