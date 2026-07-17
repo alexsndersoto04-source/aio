@@ -63,6 +63,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::json::pretty", [Any], String), native!("std::json::pointer", [Any, String], Any),
     native!("std::json::merge", [Any, Any], Any), native!("std::json::flatten", [Any], Array),
 
+    native!("std::array::set", [Array, Int, Any], Array),
     native!("std::collections::length", [Any], Int), native!("std::collections::contains", [Array, Any], Bool),
     native!("std::collections::reverse", [Array], Array), native!("std::collections::deduplicate", [Array], Array),
     native!("std::collections::join", [Array, String], String), native!("std::collections::chunk", [Array, Int], Array),

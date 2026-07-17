@@ -92,6 +92,7 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::json::merge" => { let mut target = to_json(take!())?; let patch = to_json(take!())?; stdlib::json::merge(&mut target, patch); from_json(target)? }
         "std::json::flatten" => Value::Array(stdlib::json::flatten(&to_json(take!())?).into_iter().map(|(path, value)| Ok(Value::Tuple(vec![Value::Str(path), from_json(value)?]))).collect::<Result<Vec<_>, String>>()?),
 
+        "std::array::set" => { let mut values=array!();let index=nonnegative(int!())?;let value=take!();let Some(slot)=values.get_mut(index)else{return Err("array index out of bounds".into())};*slot=value;Value::Array(values) }
         "std::collections::length" => Value::Int(to_i64(value_length(&take!())?)?),
         "std::collections::contains" => { let values = array!(); Value::Bool(values.contains(&take!())) }
         "std::collections::reverse" => { let mut values = array!(); values.reverse(); Value::Array(values) }

@@ -199,6 +199,13 @@ struct HostImports {
     natives: HashMap<&'static str, u32>,
 }
 
+fn array_native_arity(name: &str) -> Option<usize> {
+    match name {
+        "std::array::set" => Some(3),
+        _ => None,
+    }
+}
+
 fn web_import(name: &str) -> Option<&'static HostImport> {
     WEB_IMPORTS
         .iter()
@@ -268,7 +275,10 @@ pub fn compile_artifact_with_source_root(
         function
             .code
             .iter()
-            .any(|operation| matches!(operation, Op::NewArray(_) | Op::NewTuple(_)))
+            .any(|operation| {
+                matches!(operation, Op::NewArray(_) | Op::NewTuple(_))
+                    || matches!(operation, Op::CallNative { name, .. } if array_native_arity(name).is_some())
+            })
     });
     let host_imports = collect_host_imports(module);
     let needs_host_strings = host_imports.natives.keys().any(|name| {
@@ -1447,17 +1457,17 @@ fn validate_operation(
             operation: format!("Print({argc}) requires exactly one browser-host argument"),
         }),
         Op::CallNative { name, argc } => {
-            let Some(import) = web_import(name) else {
-                return Err(WasmError::Unsupported {
+            let expected = array_native_arity(name)
+                .or_else(|| web_import(name).map(|import| import.params))
+                .ok_or_else(|| WasmError::Unsupported {
                     function: function.name.clone(),
                     operation: format!("CallNative({name})"),
-                });
-            };
-            if *argc != import.params {
+                })?;
+            if *argc != expected {
                 return Err(WasmError::InvalidArgumentCount {
                     function: function.name.clone(),
                     callee: name.clone(),
-                    expected: import.params,
+                    expected,
                     actual: *argc,
                 });
             }
@@ -1679,6 +1689,9 @@ fn emit_operation(
             body.instruction(&Instruction::Call(*callee as u32 + function_bias));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
         }
+        Op::CallNative { name, .. } if name == "std::array::set" => {
+            emit_array_set(context, height, body);
+        }
         Op::CallNative { name, argc } => {
             let first = height - *argc;
             for argument in first..height {
@@ -1829,6 +1842,66 @@ fn emit_operation(
         body.instruction(&Instruction::Br(dispatch_depth));
     }
     Ok(())
+}
+
+fn emit_array_set(context: &EmitContext<'_>, height: usize, body: &mut Function) {
+    let output = context.layout.stack_base + (height - 3) as u32;
+    let index = output + 1;
+    let value = output + 2;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let element_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+
+    body.instruction(&Instruction::LocalGet(index));
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::I64LtS);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(index));
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64GeU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("array set requires allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(output));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(index));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalGet(value));
+    body.instruction(&Instruction::I64Store(element_memory));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(output));
+}
+
+fn emit_collection_count(body: &mut Function, handle_local: u32, memory: MemArg) {
+    body.instruction(&Instruction::LocalGet(handle_local));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(4));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32Load(memory));
 }
 
 fn compile_string_concat() -> Function {
@@ -2807,6 +2880,20 @@ mod tests {
             0,
         );
         validate(&tuple);
+    }
+
+    #[test]
+    fn emits_copy_on_write_array_set() {
+        let module = module_with(
+            vec![
+                Op::PushInt(10), Op::PushInt(20), Op::NewArray(2),
+                Op::PushInt(1), Op::PushInt(99),
+                Op::CallNative { name: "std::array::set".into(), argc: 3 },
+                Op::PushInt(1), Op::Index, Op::Ret,
+            ],
+            0,
+        );
+        validate(&module);
     }
 
     #[test]
