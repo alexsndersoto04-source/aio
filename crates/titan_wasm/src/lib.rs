@@ -215,7 +215,11 @@ fn wasm_heap_native_arity(name: &str) -> Option<usize> {
         "std::wasm::heap_used"
         | "std::wasm::heap_capacity"
         | "std::wasm::heap_limit"
-        | "std::wasm::heap_checkpoint" => Some(0),
+        | "std::wasm::heap_checkpoint"
+        | "std::wasm::heap_allocations"
+        | "std::wasm::heap_allocated_bytes"
+        | "std::wasm::heap_restores"
+        | "std::wasm::heap_reclaimed_bytes" => Some(0),
         "std::wasm::heap_set_limit" | "std::wasm::heap_restore" => Some(1),
         _ => None,
     }
@@ -421,6 +425,14 @@ pub fn compile_artifact_with_source_root(
             },
             &ConstExpr::i32_const(strings.heap_start as i32),
         );
+        let counter_type = GlobalType {
+            val_type: ValType::I64,
+            mutable: true,
+            shared: false,
+        };
+        for _ in 0..4 {
+            globals.global(counter_type, &ConstExpr::i64_const(0));
+        }
         output.section(&globals);
     }
 
@@ -1920,6 +1932,18 @@ fn emit_wasm_heap_native(
             body.instruction(&Instruction::GlobalGet(1));
             body.instruction(&Instruction::I64ExtendI32U);
         }
+        "std::wasm::heap_allocations" => {
+            body.instruction(&Instruction::GlobalGet(3));
+        }
+        "std::wasm::heap_allocated_bytes" => {
+            body.instruction(&Instruction::GlobalGet(4));
+        }
+        "std::wasm::heap_restores" => {
+            body.instruction(&Instruction::GlobalGet(5));
+        }
+        "std::wasm::heap_reclaimed_bytes" => {
+            body.instruction(&Instruction::GlobalGet(6));
+        }
         "std::wasm::heap_set_limit" => {
             body.instruction(&Instruction::LocalGet(output));
             body.instruction(&Instruction::I64Const(0));
@@ -1975,6 +1999,18 @@ fn emit_wasm_heap_native(
             body.instruction(&Instruction::I32WrapI64);
             body.instruction(&Instruction::I32Sub);
             body.instruction(&Instruction::MemoryFill(0));
+            body.instruction(&Instruction::GlobalGet(5));
+            body.instruction(&Instruction::I64Const(1));
+            body.instruction(&Instruction::I64Add);
+            body.instruction(&Instruction::GlobalSet(5));
+            body.instruction(&Instruction::GlobalGet(6));
+            body.instruction(&Instruction::GlobalGet(0));
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Sub);
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::I64Add);
+            body.instruction(&Instruction::GlobalSet(6));
             body.instruction(&Instruction::LocalGet(output));
             body.instruction(&Instruction::I32WrapI64);
             body.instruction(&Instruction::GlobalSet(0));
@@ -2255,6 +2291,20 @@ fn emit_collection_count(body: &mut Function, handle_local: u32, memory: MemArg)
     body.instruction(&Instruction::I32Load(memory));
 }
 
+fn emit_allocation_counters(body: &mut Function, previous_heap: u32) {
+    body.instruction(&Instruction::GlobalGet(3));
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::I64Add);
+    body.instruction(&Instruction::GlobalSet(3));
+    body.instruction(&Instruction::GlobalGet(4));
+    body.instruction(&Instruction::GlobalGet(0));
+    body.instruction(&Instruction::LocalGet(previous_heap));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64Add);
+    body.instruction(&Instruction::GlobalSet(4));
+}
+
 fn compile_string_concat() -> Function {
     const LEFT_POINTER: u32 = 2;
     const RIGHT_POINTER: u32 = 3;
@@ -2387,6 +2437,7 @@ fn compile_string_concat() -> Function {
     body.instruction(&Instruction::I32Const(-4));
     body.instruction(&Instruction::I32And);
     body.instruction(&Instruction::GlobalSet(0));
+    emit_allocation_counters(&mut body, OUTPUT_DESCRIPTOR);
 
     body.instruction(&Instruction::LocalGet(TOTAL_LENGTH));
     body.instruction(&Instruction::I64ExtendI32U);
@@ -2479,6 +2530,7 @@ fn compile_host_string_allocator() -> Function {
     body.instruction(&Instruction::I32Const(-4));
     body.instruction(&Instruction::I32And);
     body.instruction(&Instruction::GlobalSet(0));
+    emit_allocation_counters(&mut body, OUTPUT_DESCRIPTOR);
 
     body.instruction(&Instruction::LocalGet(0));
     body.instruction(&Instruction::I64ExtendI32U);
@@ -3343,7 +3395,11 @@ mod tests {
                 Op::StoreLocal(0),
                 Op::PushInt(1), Op::PushInt(2), Op::NewArray(2), Op::Pop,
                 Op::PushLocal(0),
-                Op::CallNative { name: "std::wasm::heap_restore".into(), argc: 1 }, Op::Ret,
+                Op::CallNative { name: "std::wasm::heap_restore".into(), argc: 1 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_allocations".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_allocated_bytes".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_restores".into(), argc: 0 }, Op::Pop,
+                Op::CallNative { name: "std::wasm::heap_reclaimed_bytes".into(), argc: 0 }, Op::Ret,
             ],
             1,
         );
