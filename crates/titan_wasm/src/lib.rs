@@ -731,12 +731,15 @@ fn compile_function(
         .locals
         .checked_sub(function.arity)
         .ok_or_else(|| WasmError::Locals(function.name.clone()))?;
+    let linear = is_linear_function(function, layout);
     let numeric_locals = extra + layout.stack_slots;
     let mut locals = Vec::new();
     if numeric_locals > 0 {
         locals.push((numeric_locals as u32, ValType::I64));
     }
-    locals.push((1, ValType::I32));
+    if !linear {
+        locals.push((1, ValType::I32));
+    }
 
     let mut body = Function::new(locals);
     let context = EmitContext {
@@ -754,6 +757,18 @@ fn compile_function(
         .collect();
     if reachable.is_empty() {
         body.instruction(&Instruction::I64Const(0));
+        body.instruction(&Instruction::End);
+        return Ok(body);
+    }
+    if linear {
+        for (instruction, height) in reachable {
+            // Empty block + marker keeps the post-encoding offset pass uniform
+            // across direct and dispatcher-based lowering.
+            body.instruction(&Instruction::Block(BlockType::Empty));
+            body.instruction(&Instruction::End);
+            body.instruction(&Instruction::Nop);
+            emit_operation(&context, instruction, height, None, &mut body)?;
+        }
         body.instruction(&Instruction::End);
         return Ok(body);
     }
@@ -782,7 +797,7 @@ fn compile_function(
             &context,
             *instruction,
             *height,
-            dispatch_depth,
+            Some(dispatch_depth),
             &mut body,
         )?;
     }
@@ -804,6 +819,14 @@ struct FunctionLayout {
     stack_slots: usize,
     pc_local: u32,
     string_adds: HashSet<usize>,
+}
+
+fn is_linear_function(function: &BytecodeFunc, layout: &FunctionLayout) -> bool {
+    layout.heights.iter().all(Option::is_some)
+        && !function
+            .code
+            .iter()
+            .any(|operation| matches!(operation, Op::Jump(_) | Op::JumpIfFalse(_)))
 }
 
 fn analyze_function(
@@ -1230,7 +1253,7 @@ fn emit_operation(
     context: &EmitContext<'_>,
     instruction: usize,
     height: usize,
-    dispatch_depth: u32,
+    dispatch_depth: Option<u32>,
     body: &mut Function,
 ) -> Result<(), WasmError> {
     let function = context.function;
@@ -1363,11 +1386,13 @@ fn emit_operation(
             store_constant(body, layout.stack_base + (height - 1) as u32, 0);
         }
         Op::Jump(target) => {
+            let dispatch_depth = dispatch_depth.expect("jumps require dispatcher lowering");
             set_pc(body, layout.pc_local, *target);
             body.instruction(&Instruction::Br(dispatch_depth));
             return Ok(());
         }
         Op::JumpIfFalse(target) => {
+            let dispatch_depth = dispatch_depth.expect("conditional jumps require dispatcher lowering");
             body.instruction(&Instruction::LocalGet(
                 layout.stack_base + (height - 1) as u32,
             ));
@@ -1409,8 +1434,10 @@ fn emit_operation(
         _ => unreachable!("operations are checked during stack analysis"),
     }
 
-    set_pc(body, layout.pc_local, instruction + 1);
-    body.instruction(&Instruction::Br(dispatch_depth));
+    if let Some(dispatch_depth) = dispatch_depth {
+        set_pc(body, layout.pc_local, instruction + 1);
+        body.instruction(&Instruction::Br(dispatch_depth));
+    }
     Ok(())
 }
 
@@ -1784,6 +1811,28 @@ mod tests {
         encode_vlq(-1, &mut encoded);
         encode_vlq(16, &mut encoded);
         assert_eq!(encoded, "ACDgB");
+    }
+
+    #[test]
+    fn lowers_straight_line_functions_without_a_dispatcher() {
+        let module = module_with(
+            vec![Op::PushInt(40), Op::PushInt(2), Op::Add, Op::Ret],
+            0,
+        );
+        let wasm = compile(&module).unwrap();
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let mut has_br_table = false;
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                has_br_table |= body
+                    .get_operators_reader()
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .any(|operator| matches!(operator, wasmparser::Operator::BrTable { .. }));
+            }
+        }
+        assert!(!has_br_table);
     }
 
     #[test]
