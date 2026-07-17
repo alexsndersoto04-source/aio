@@ -95,6 +95,7 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::array::set" => { let mut values=array!();let index=nonnegative(int!())?;let value=take!();let Some(slot)=values.get_mut(index)else{return Err("array index out of bounds".into())};*slot=value;Value::Array(values) }
         "std::array::push" => { let mut values=array!();values.push(take!());Value::Array(values) }
         "std::array::pop" => { let mut values=array!();let _=values.pop();Value::Array(values) }
+        "std::array::slice" => { let values=array!();let start=nonnegative(int!())?;let end=nonnegative(int!())?;if start>end||end>values.len(){return Err("invalid array slice range".into())}Value::Array(values[start..end].to_vec()) }
         "std::collections::length" => Value::Int(to_i64(value_length(&take!())?)?),
         "std::collections::contains" => { let values = array!(); Value::Bool(values.contains(&take!())) }
         "std::collections::reverse" => { let mut values = array!(); values.reverse(); Value::Array(values) }

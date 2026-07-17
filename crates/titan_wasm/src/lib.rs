@@ -204,6 +204,7 @@ fn array_native_arity(name: &str) -> Option<usize> {
         "std::array::set" => Some(3),
         "std::array::push" => Some(2),
         "std::array::pop" => Some(1),
+        "std::array::slice" => Some(3),
         _ => None,
     }
 }
@@ -1700,6 +1701,9 @@ fn emit_operation(
         Op::CallNative { name, .. } if name == "std::array::pop" => {
             emit_array_pop(context, height, body);
         }
+        Op::CallNative { name, .. } if name == "std::array::slice" => {
+            emit_array_slice(context, height, body);
+        }
         Op::CallNative { name, argc } => {
             let first = height - *argc;
             for argument in first..height {
@@ -1987,6 +1991,69 @@ fn emit_array_pop(context: &EmitContext<'_>, height: usize, body: &mut Function)
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::LocalSet(output));
     body.instruction(&Instruction::End);
+}
+
+fn emit_array_slice(context: &EmitContext<'_>, height: usize, body: &mut Function) {
+    let output = context.layout.stack_base + (height - 3) as u32;
+    let start = output + 1;
+    let end = output + 2;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+
+    for index in [start, end] {
+        body.instruction(&Instruction::LocalGet(index));
+        body.instruction(&Instruction::I64Const(0));
+        body.instruction(&Instruction::I64LtS);
+        body.instruction(&Instruction::If(BlockType::Empty));
+        body.instruction(&Instruction::Unreachable);
+        body.instruction(&Instruction::End);
+    }
+    body.instruction(&Instruction::LocalGet(start));
+    body.instruction(&Instruction::LocalGet(end));
+    body.instruction(&Instruction::I64GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(end));
+    emit_collection_count(body, output, count_memory);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+
+    body.instruction(&Instruction::LocalGet(end));
+    body.instruction(&Instruction::LocalGet(start));
+    body.instruction(&Instruction::I64Sub);
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::LocalGet(end));
+    body.instruction(&Instruction::LocalGet(start));
+    body.instruction(&Instruction::I64Sub);
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("array slice requires allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(output));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(start));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalGet(end));
+    body.instruction(&Instruction::LocalGet(start));
+    body.instruction(&Instruction::I64Sub);
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(output));
 }
 
 fn emit_collection_count(body: &mut Function, handle_local: u32, memory: MemArg) {
@@ -3020,6 +3087,20 @@ mod tests {
             0,
         );
         validate(&empty);
+    }
+
+    #[test]
+    fn emits_copy_on_write_array_slice() {
+        let module = module_with(
+            vec![
+                Op::PushInt(10), Op::PushInt(20), Op::PushInt(30), Op::PushInt(40), Op::NewArray(4),
+                Op::PushInt(1), Op::PushInt(3),
+                Op::CallNative { name: "std::array::slice".into(), argc: 3 },
+                Op::PushInt(0), Op::Index, Op::Ret,
+            ],
+            0,
+        );
+        validate(&module);
     }
 
     #[test]
