@@ -207,6 +207,7 @@ fn map_native_arity(name: &str) -> Option<usize> {
         "std::map::new" => Some(0),
         "std::map::length" => Some(1),
         "std::map::insert_new" => Some(3),
+        "std::map::contains" | "std::map::get" => Some(2),
         _ => None,
     }
 }
@@ -316,12 +317,12 @@ pub fn compile_artifact_with_source_root(
         .any(|layout| !layout.string_adds.is_empty());
     let needs_string_equals = module.functions.iter().any(|function| {
         function.code.iter().any(|operation| {
-            matches!(operation, Op::CallNative { name, .. } if name == "std::text::equals")
+            matches!(operation, Op::CallNative { name, .. } if matches!(name.as_str(), "std::text::equals" | "std::map::contains" | "std::map::get"))
         })
     });
     let needs_string_hash = module.functions.iter().any(|function| {
         function.code.iter().any(|operation| {
-            matches!(operation, Op::CallNative { name, .. } if matches!(name.as_str(), "std::text::hash64" | "std::map::insert_new"))
+            matches!(operation, Op::CallNative { name, .. } if matches!(name.as_str(), "std::text::hash64" | "std::map::insert_new" | "std::map::contains" | "std::map::get"))
         })
     });
     let needs_arrays = module.functions.iter().any(|function| {
@@ -2040,6 +2041,9 @@ fn emit_operation(
         Op::CallNative { name, .. } if name == "std::map::insert_new" => {
             emit_map_insert_new(context, height, body);
         }
+        Op::CallNative { name, .. } if matches!(name.as_str(), "std::map::contains" | "std::map::get") => {
+            emit_map_lookup(context, height, name == "std::map::contains", body);
+        }
         Op::CallNative { name, .. } if name == "std::text::equals" => {
             let output = layout.stack_base + (height - 2) as u32;
             body.instruction(&Instruction::LocalGet(output));
@@ -2490,6 +2494,33 @@ fn emit_heap_rewind(body: &mut Function, checkpoint_local: u32) {
     body.instruction(&Instruction::LocalGet(checkpoint_local));
     body.instruction(&Instruction::I32WrapI64);
     body.instruction(&Instruction::GlobalSet(0));
+}
+
+fn emit_map_entry_address(body: &mut Function, map: u32, index: u32, offset: i32) {
+    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(index)); body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add);
+    if offset != 0 { body.instruction(&Instruction::I32Const(offset)); body.instruction(&Instruction::I32Add); }
+}
+
+fn emit_map_lookup(context: &EmitContext<'_>, height: usize, contains: bool, body: &mut Function) {
+    let map = context.layout.stack_base + (height - 2) as u32;
+    let key = map + 1;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+    body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Block(BlockType::Empty)); body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch)); emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::I64GeU);
+    body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(map)); body.instruction(&Instruction::Br(2)); body.instruction(&Instruction::End);
+    emit_map_entry_address(body, map, context.managed_scratch, 0); body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map hash helper"))); body.instruction(&Instruction::I64Eq);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    emit_map_entry_address(body, map, context.managed_scratch, 8); body.instruction(&Instruction::I64Load(slot_memory)); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_equals_function.expect("map equality helper")));
+    body.instruction(&Instruction::If(BlockType::Empty));
+    if contains { body.instruction(&Instruction::I64Const(1)); } else { emit_map_entry_address(body, map, context.managed_scratch, 16); body.instruction(&Instruction::I64Load(slot_memory)); }
+    body.instruction(&Instruction::LocalSet(map)); body.instruction(&Instruction::Br(3)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Add); body.instruction(&Instruction::LocalSet(context.managed_scratch)); body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End); body.instruction(&Instruction::End);
 }
 
 fn emit_map_insert_new(context: &EmitContext<'_>, height: usize, body: &mut Function) {
@@ -3843,6 +3874,18 @@ mod tests {
             Op::CallNative { name: "std::map::insert_new".into(), argc: 3 },
             Op::CallNative { name: "std::map::length".into(), argc: 1 }, Op::Ret,
         ], 0);
+        module.string_table.push("answer".into());
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_collision_safe_map_contains_and_get() {
+        let mut module = module_with(vec![
+            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(42),
+            Op::CallNative { name: "std::map::insert_new".into(), argc: 3 }, Op::StoreLocal(0),
+            Op::PushLocal(0), Op::PushStr(0), Op::CallNative { name: "std::map::contains".into(), argc: 2 }, Op::Pop,
+            Op::PushLocal(0), Op::PushStr(0), Op::CallNative { name: "std::map::get".into(), argc: 2 }, Op::Ret,
+        ], 1);
         module.string_table.push("answer".into());
         validate(&module);
     }

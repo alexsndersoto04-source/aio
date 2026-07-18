@@ -728,6 +728,7 @@ mod tests {
     #[test] fn native_text_and_encoding_work() { assert_eq!(run("fn main() { std::text::reverse(\"Titan\") }").unwrap(), Value::Str("natiT".into())); assert_eq!(run("fn main() { std::encoding::utf8_decode(std::encoding::base64_decode(\"VGl0YW4=\")) }").unwrap(), Value::Str("Titan".into())); }
     #[test] fn empty_map_constructor_and_length_work() { assert_eq!(run("fn main() { let values = std::map::new() std::map::length(values) }").unwrap(), Value::Int(0)); }
     #[test] fn persistent_map_insert_new_adds_entry() { assert_eq!(run("fn main() { let values = std::map::insert_new(std::map::new(), \"answer\", 42) std::map::length(values) }").unwrap(), Value::Int(1)); }
+    #[test] fn map_lookup_uses_string_content() { assert_eq!(run("fn main() { let values = std::map::insert_new(std::map::new(), \"answer\", 42) if std::map::contains(values, \"ans\" + \"wer\") { std::map::get(values, \"answer\") } else { 0 } }").unwrap(), Value::Int(42)); }
     #[test] fn native_json_maps_support_fields() { assert_eq!(run(r#"fn main() { std::json::parse("{\"answer\":42}").answer }"#).unwrap(), Value::Int(42)); }
     #[test] fn interpolation_concatenates_every_segment() { assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let i = 3 \"value({i}) = {double(i)}!\" }").unwrap(), Value::Str("value(3) = 6!".into())); }
     #[test] fn native_generic_arrays_accept_concrete_elements() { assert_eq!(run("fn main() { std::stats::mean([10, 20, 30, 40]) }").unwrap(), Value::Float(25.0)); }
