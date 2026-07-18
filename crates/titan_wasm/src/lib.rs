@@ -298,7 +298,7 @@ pub fn compile_artifact_with_source_root(
             .code
             .iter()
             .any(|operation| {
-                matches!(operation, Op::NewArray(_) | Op::NewTuple(_))
+                matches!(operation, Op::NewArray(_) | Op::NewTuple(_) | Op::NewStruct { .. })
                     || matches!(operation, Op::CallNative { name, .. } if array_native_arity(name).is_some())
             })
     });
@@ -1038,6 +1038,7 @@ struct FunctionLayout {
     stack_slots: usize,
     pc_local: u32,
     string_adds: HashSet<usize>,
+    struct_fields: HashMap<usize, usize>,
 }
 
 fn is_linear_function(function: &BytecodeFunc, layout: &FunctionLayout) -> bool {
@@ -1192,6 +1193,7 @@ fn analyze_function(
             stack_slots: 0,
             pc_local: function.locals as u32,
             string_adds: HashSet::new(),
+            struct_fields: HashMap::new(),
         });
     }
 
@@ -1246,20 +1248,22 @@ fn analyze_function(
         }
     }
 
-    let string_adds = infer_string_adds(function, &heights)?;
+    let (string_adds, struct_fields) = infer_value_operations(function, &heights)?;
     Ok(FunctionLayout {
         heights,
         stack_base: function.locals as u32,
         stack_slots: maximum,
         pc_local: (function.locals + maximum) as u32,
         string_adds,
+        struct_fields,
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ValueKind {
     Numeric,
     String,
+    Struct(Vec<String>),
     Unknown,
 }
 
@@ -1269,12 +1273,12 @@ struct TypeState {
     locals: Vec<ValueKind>,
 }
 
-fn infer_string_adds(
+fn infer_value_operations(
     function: &BytecodeFunc,
     heights: &[Option<usize>],
-) -> Result<HashSet<usize>, WasmError> {
+) -> Result<(HashSet<usize>, HashMap<usize, usize>), WasmError> {
     if function.code.is_empty() {
-        return Ok(HashSet::new());
+        return Ok((HashSet::new(), HashMap::new()));
     }
     let mut states = vec![None; function.code.len()];
     states[0] = Some(TypeState {
@@ -1310,6 +1314,7 @@ fn infer_string_adds(
     }
 
     let mut string_adds = HashSet::new();
+    let mut struct_fields = HashMap::new();
     for (instruction, operation) in function.code.iter().enumerate() {
         if heights[instruction].is_none() {
             continue;
@@ -1317,6 +1322,21 @@ fn infer_string_adds(
         let state = states[instruction]
             .as_ref()
             .expect("reachable instructions have a type state");
+        if let Op::GetField(field) = operation {
+            let ValueKind::Struct(fields) = &state.stack[state.stack.len() - 1] else {
+                return Err(WasmError::Unsupported {
+                    function: function.name.clone(),
+                    operation: format!("unresolved struct field '{field}' at instruction {instruction}"),
+                });
+            };
+            let index = fields.iter().position(|candidate| candidate == field).ok_or_else(|| {
+                WasmError::Unsupported {
+                    function: function.name.clone(),
+                    operation: format!("unknown struct field '{field}' at instruction {instruction}"),
+                }
+            })?;
+            struct_fields.insert(instruction, index);
+        }
         if matches!(operation, Op::Index)
             && state.stack[state.stack.len() - 2] == ValueKind::String
         {
@@ -1328,8 +1348,8 @@ fn infer_string_adds(
         if !matches!(operation, Op::Add) {
             continue;
         }
-        let left = state.stack[state.stack.len() - 2];
-        let right = state.stack[state.stack.len() - 1];
+        let left = &state.stack[state.stack.len() - 2];
+        let right = &state.stack[state.stack.len() - 1];
         match (left, right) {
             (ValueKind::String, ValueKind::String) => {
                 string_adds.insert(instruction);
@@ -1343,7 +1363,7 @@ fn infer_string_adds(
             _ => {}
         }
     }
-    Ok(string_adds)
+    Ok((string_adds, struct_fields))
 }
 
 fn apply_type_effect(operation: &Op, state: &mut TypeState) {
@@ -1353,7 +1373,7 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState) {
             state.stack.push(ValueKind::Numeric);
         }
         Op::PushNil => state.stack.push(ValueKind::Unknown),
-        Op::PushLocal(local) => state.stack.push(state.locals[*local]),
+        Op::PushLocal(local) => state.stack.push(state.locals[*local].clone()),
         Op::StoreLocal(local) => {
             state.locals[*local] = state.stack.pop().expect("stack analysis ran first");
         }
@@ -1361,7 +1381,7 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState) {
             let _ = state.stack.pop();
         }
         Op::Dup => {
-            let value = *state.stack.last().expect("stack analysis ran first");
+            let value = state.stack.last().expect("stack analysis ran first").clone();
             state.stack.push(value);
         }
         Op::Add => {
@@ -1401,6 +1421,14 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState) {
             state.stack.truncate(state.stack.len() - *count);
             state.stack.push(ValueKind::Unknown);
         }
+        Op::NewStruct { fields, .. } => {
+            state.stack.truncate(state.stack.len() - fields.len());
+            state.stack.push(ValueKind::Struct(fields.clone()));
+        }
+        Op::GetField(_) => {
+            let _ = state.stack.pop();
+            state.stack.push(ValueKind::Unknown);
+        }
         Op::Index => {
             state.stack.truncate(state.stack.len() - 2);
             state.stack.push(ValueKind::Unknown);
@@ -1421,13 +1449,13 @@ fn merge_type_state(destination: &mut Option<TypeState>, incoming: &TypeState) -
     };
     let mut changed = false;
     for (current, incoming) in current.stack.iter_mut().zip(&incoming.stack) {
-        if *current != *incoming && *current != ValueKind::Unknown {
+        if &*current != incoming && !matches!(current, ValueKind::Unknown) {
             *current = ValueKind::Unknown;
             changed = true;
         }
     }
     for (current, incoming) in current.locals.iter_mut().zip(&incoming.locals) {
-        if *current != *incoming && *current != ValueKind::Unknown {
+        if &*current != incoming && !matches!(current, ValueKind::Unknown) {
             *current = ValueKind::Unknown;
             changed = true;
         }
@@ -1507,6 +1535,12 @@ fn validate_operation(
                 operation: format!("collection with {count} elements exceeds Wasm memory32"),
             })
         }
+        Op::NewStruct { fields, .. } if fields.len() > (u32::MAX as usize) / 8 => {
+            Err(WasmError::Unsupported {
+                function: function.name.clone(),
+                operation: "struct exceeds Wasm memory32".into(),
+            })
+        }
         Op::Print(argc) if *argc != 1 => Err(WasmError::Unsupported {
             function: function.name.clone(),
             operation: format!("Print({argc}) requires exactly one browser-host argument"),
@@ -1583,6 +1617,8 @@ fn validate_operation(
         | Op::NewArray(_)
         | Op::NewTuple(_)
         | Op::Index
+        | Op::NewStruct { .. }
+        | Op::GetField(_)
         | Op::Nop
         | Op::Halt => Ok(()),
         other => Err(WasmError::Unsupported {
@@ -1618,7 +1654,9 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         | Op::BitXor => (2, 1),
         Op::Neg | Op::Not | Op::BitNot | Op::Len => (1, 1),
         Op::NewArray(count) | Op::NewTuple(count) => (*count, 1),
+        Op::NewStruct { fields, .. } => (fields.len(), 1),
         Op::Index => (2, 1),
+        Op::GetField(_) => (1, 1),
         Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => (*argc, 1),
         Op::Jump(_) | Op::Nop => (0, 0),
         Op::Ret | Op::Halt => (0, 0),
@@ -1822,9 +1860,14 @@ fn emit_operation(
             body.instruction(&Instruction::Return);
             return Ok(());
         }
-        Op::NewArray(count) | Op::NewTuple(count) => {
-            let first = height - *count;
-            let count_u32 = *count as u32;
+        Op::NewArray(_) | Op::NewTuple(_) | Op::NewStruct { .. } => {
+            let count = match operation {
+                Op::NewArray(count) | Op::NewTuple(count) => *count,
+                Op::NewStruct { fields, .. } => fields.len(),
+                _ => unreachable!(),
+            };
+            let first = height - count;
+            let count_u32 = count as u32;
             let byte_length = count_u32 * 8;
             body.instruction(&Instruction::I32Const(byte_length as i32));
             body.instruction(&Instruction::I32Const(count_u32 as i32));
@@ -1839,7 +1882,7 @@ fn emit_operation(
                 align: 3,
                 memory_index: 0,
             };
-            for element in 0..*count {
+            for element in 0..count {
                 body.instruction(&Instruction::LocalGet(context.managed_scratch));
                 body.instruction(&Instruction::I32WrapI64);
                 body.instruction(&Instruction::I32Const((element as u32 * 8) as i32));
@@ -1851,6 +1894,20 @@ fn emit_operation(
             }
             body.instruction(&Instruction::LocalGet(context.managed_scratch));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
+        }
+        Op::GetField(_) => {
+            let output = layout.stack_base + (height - 1) as u32;
+            let field = layout.struct_fields[&instruction] as u32;
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Const((field * 8) as i32));
+            body.instruction(&Instruction::I32Add);
+            body.instruction(&Instruction::I64Load(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 0,
+            }));
+            body.instruction(&Instruction::LocalSet(output));
         }
         Op::Index => {
             let output = layout.stack_base + (height - 2) as u32;
@@ -3553,13 +3610,28 @@ mod tests {
     }
 
     #[test]
+    fn emits_managed_struct_construction_and_fields() {
+        let module = module_with(
+            vec![
+                Op::PushInt(7), Op::PushInt(9),
+                Op::NewStruct { name: "Point".into(), fields: vec!["x".into(), "y".into()] },
+                Op::StoreLocal(0), Op::PushLocal(0), Op::GetField("x".into()),
+                Op::PushLocal(0), Op::GetField("y".into()), Op::Add, Op::Ret,
+            ],
+            1,
+        );
+        validate(&module);
+    }
+
+    #[test]
     fn rejects_unsupported_runtime_values() {
         let module = module_with(
             vec![
                 Op::PushInt(1),
-                Op::NewStruct {
-                    name: "Box".into(),
-                    fields: vec!["value".into()],
+                Op::NewEnum {
+                    name: "Maybe".into(),
+                    variant: "Some".into(),
+                    has_payload: true,
                 },
                 Op::Ret,
             ],
