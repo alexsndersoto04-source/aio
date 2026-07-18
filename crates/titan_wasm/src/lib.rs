@@ -1298,8 +1298,8 @@ fn analyze_function(
 enum ValueKind {
     Numeric,
     String,
-    Array,
-    Tuple,
+    Array(Option<Box<ValueKind>>),
+    Tuple(Option<Vec<ValueKind>>),
     Struct(Vec<String>),
     Enum(String),
     Unknown,
@@ -1315,8 +1315,14 @@ fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKin
     match ty {
         Some(BytecodeType::Int | BytecodeType::Bool) => ValueKind::Numeric,
         Some(BytecodeType::String) => ValueKind::String,
-        Some(BytecodeType::Array) => ValueKind::Array,
-        Some(BytecodeType::Tuple) => ValueKind::Tuple,
+        Some(BytecodeType::Array) => ValueKind::Array(None),
+        Some(BytecodeType::Tuple) => ValueKind::Tuple(None),
+        Some(BytecodeType::ArrayOf(inner)) => {
+            ValueKind::Array(Some(Box::new(metadata_kind(module, Some(inner)))))
+        }
+        Some(BytecodeType::TupleOf(elements)) => ValueKind::Tuple(Some(
+            elements.iter().map(|element| metadata_kind(module, Some(element))).collect(),
+        )),
         Some(BytecodeType::Enum(name)) => ValueKind::Enum(name.clone()),
         Some(BytecodeType::Struct(name)) => module
             .struct_schemas
@@ -1491,12 +1497,13 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
             state.stack.push(ValueKind::Numeric);
         }
         Op::NewArray(count) => {
-            state.stack.truncate(state.stack.len() - *count);
-            state.stack.push(ValueKind::Array);
+            let elements = state.stack.split_off(state.stack.len() - *count);
+            let element = elements.first().cloned().filter(|first| elements.iter().all(|item| item == first));
+            state.stack.push(ValueKind::Array(element.map(Box::new)));
         }
         Op::NewTuple(count) => {
-            state.stack.truncate(state.stack.len() - *count);
-            state.stack.push(ValueKind::Tuple);
+            let elements = state.stack.split_off(state.stack.len() - *count);
+            state.stack.push(ValueKind::Tuple(Some(elements)));
         }
         Op::NewStruct { fields, .. } => {
             state.stack.truncate(state.stack.len() - fields.len());
@@ -1519,8 +1526,16 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
             state.stack.push(ValueKind::Unknown);
         }
         Op::Index => {
-            state.stack.truncate(state.stack.len() - 2);
-            state.stack.push(ValueKind::Unknown);
+            let _ = state.stack.pop();
+            let target = state.stack.pop().expect("stack analysis ran first");
+            let result = match target {
+                ValueKind::Array(Some(element)) => *element,
+                ValueKind::Tuple(Some(elements)) => elements.first().cloned()
+                    .filter(|first| elements.iter().all(|item| item == first))
+                    .unwrap_or(ValueKind::Unknown),
+                _ => ValueKind::Unknown,
+            };
+            state.stack.push(result);
         }
         Op::Call { function, argc } => {
             state.stack.truncate(state.stack.len() - *argc);
@@ -3823,6 +3838,24 @@ mod tests {
             artifact.source_map.enum_tags.get("Maybe::Some"),
             Some(&enum_tag("Maybe", "Some"))
         );
+    }
+
+    #[test]
+    fn preserves_generic_array_element_metadata_across_calls() {
+        let mut module = module_with(
+            vec![Op::Call { function: 1, argc: 0 }, Op::PushInt(0), Op::Index, Op::GetField("x".into()), Op::Ret],
+            0,
+        );
+        module.functions.push(BytecodeFunc {
+            name: "make_points".into(), source_file: Some("main.titan".into()), arity: 0,
+            param_types: Vec::new(),
+            return_type: Some(BytecodeType::ArrayOf(Box::new(BytecodeType::Struct("Point".into())))),
+            captures: 0, locals: 0, max_stack: 4,
+            code: vec![Op::PushInt(42), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::NewArray(1), Op::Ret],
+            debug_locations: vec![None; 4],
+        });
+        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
+        validate(&module);
     }
 
     #[test]
