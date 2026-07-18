@@ -77,6 +77,7 @@ fn validate(module: &CompiledModule) -> Result<(), ArtifactError> {
         if function.name.len() > 4096 { return invalid(&format!("function {function_index} name is too long")); }
         if function.source_file.as_ref().is_some_and(|source| source.len() > 32_768) { return invalid(&format!("function '{}' source path is too long", function.name)); }
         if !function.debug_locations.is_empty() && function.debug_locations.len() != function.code.len() { return invalid(&format!("function '{}' has a malformed source map", function.name)); }
+        if !function.param_types.is_empty() && function.param_types.len() != function.arity { return invalid(&format!("function '{}' has malformed parameter type metadata", function.name)); }
         if function.captures + function.arity > function.locals { return invalid(&format!("function '{}' has fewer locals than captures and arguments", function.name)); }
         if function.max_stack == 0 || function.max_stack > 1_000_000 { return invalid(&format!("function '{}' has invalid max stack", function.name)); }
         for (instruction_index, instruction) in function.code.iter().enumerate() {
@@ -118,9 +119,10 @@ mod tests {
 
     fn module() -> CompiledModule {
         CompiledModule {
-            functions: vec![BytecodeFunc { name: "main".into(), source_file: Some("main.titan".into()), arity: 0, captures: 0, locals: 0, max_stack: 8, code: vec![Op::PushInt(42), Op::Ret], debug_locations: vec![None, None] }],
+            functions: vec![BytecodeFunc { name: "main".into(), source_file: Some("main.titan".into()), arity: 0, param_types: Vec::new(), return_type: None, captures: 0, locals: 0, max_stack: 8, code: vec![Op::PushInt(42), Op::Ret], debug_locations: vec![None, None] }],
             entry: 0,
             string_table: Vec::new(),
+            struct_schemas: std::collections::HashMap::new(),
         }
     }
 

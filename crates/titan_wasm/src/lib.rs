@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use thiserror::Error;
-use titan_codegen::{BytecodeFunc, CompiledModule, Op};
+use titan_codegen::{BytecodeFunc, BytecodeType, CompiledModule, Op};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, DataSection, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg,
@@ -1248,7 +1248,7 @@ fn analyze_function(
         }
     }
 
-    let (string_adds, struct_fields) = infer_value_operations(function, &heights)?;
+    let (string_adds, struct_fields) = infer_value_operations(module, function, &heights)?;
     Ok(FunctionLayout {
         heights,
         stack_base: function.locals as u32,
@@ -1273,17 +1273,35 @@ struct TypeState {
     locals: Vec<ValueKind>,
 }
 
+fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKind {
+    match ty {
+        Some(BytecodeType::Int | BytecodeType::Bool) => ValueKind::Numeric,
+        Some(BytecodeType::String) => ValueKind::String,
+        Some(BytecodeType::Struct(name)) => module
+            .struct_schemas
+            .get(name)
+            .cloned()
+            .map_or(ValueKind::Unknown, ValueKind::Struct),
+        _ => ValueKind::Unknown,
+    }
+}
+
 fn infer_value_operations(
+    module: &CompiledModule,
     function: &BytecodeFunc,
     heights: &[Option<usize>],
 ) -> Result<(HashSet<usize>, HashMap<usize, usize>), WasmError> {
     if function.code.is_empty() {
         return Ok((HashSet::new(), HashMap::new()));
     }
+    let mut initial_locals = vec![ValueKind::Unknown; function.locals];
+    for (local, ty) in initial_locals.iter_mut().zip(&function.param_types) {
+        *local = metadata_kind(module, Some(ty));
+    }
     let mut states = vec![None; function.code.len()];
     states[0] = Some(TypeState {
         stack: Vec::new(),
-        locals: vec![ValueKind::Unknown; function.locals],
+        locals: initial_locals,
     });
     let mut pending = VecDeque::from([0]);
 
@@ -1291,7 +1309,7 @@ fn infer_value_operations(
         let mut state = states[instruction]
             .clone()
             .expect("queued instructions have a type state");
-        apply_type_effect(&function.code[instruction], &mut state);
+        apply_type_effect(&function.code[instruction], &mut state, module);
         let mut successors = Vec::with_capacity(2);
         match &function.code[instruction] {
             Op::Jump(target) => successors.push(*target),
@@ -1366,7 +1384,7 @@ fn infer_value_operations(
     Ok((string_adds, struct_fields))
 }
 
-fn apply_type_effect(operation: &Op, state: &mut TypeState) {
+fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledModule) {
     match operation {
         Op::PushStr(_) => state.stack.push(ValueKind::String),
         Op::PushInt(_) | Op::PushBool(_) | Op::PushChar(_) => {
@@ -1433,7 +1451,14 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState) {
             state.stack.truncate(state.stack.len() - 2);
             state.stack.push(ValueKind::Unknown);
         }
-        Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => {
+        Op::Call { function, argc } => {
+            state.stack.truncate(state.stack.len() - *argc);
+            state.stack.push(metadata_kind(
+                module,
+                module.functions.get(*function).and_then(|target| target.return_type.as_ref()),
+            ));
+        }
+        Op::CallNative { argc, .. } | Op::Print(argc) => {
             state.stack.truncate(state.stack.len() - *argc);
             state.stack.push(ValueKind::Unknown);
         }
@@ -2764,6 +2789,8 @@ mod tests {
                 name: "main".into(),
                 source_file: Some("main.titan".into()),
                 arity: 0,
+                param_types: Vec::new(),
+                return_type: None,
                 captures: 0,
                 locals,
                 max_stack: 16,
@@ -2772,6 +2799,7 @@ mod tests {
             }],
             entry: 0,
             string_table: Vec::new(),
+            struct_schemas: HashMap::new(),
         }
     }
 
@@ -3620,6 +3648,24 @@ mod tests {
             ],
             1,
         );
+        validate(&module);
+    }
+
+    #[test]
+    fn preserves_struct_return_metadata_across_function_calls() {
+        let mut module = module_with(
+            vec![Op::Call { function: 1, argc: 0 }, Op::GetField("x".into()), Op::Ret],
+            0,
+        );
+        module.functions[0].return_type = Some(BytecodeType::Int);
+        module.functions.push(BytecodeFunc {
+            name: "make_point".into(), source_file: Some("main.titan".into()), arity: 0,
+            param_types: Vec::new(), return_type: Some(BytecodeType::Struct("Point".into())),
+            captures: 0, locals: 0, max_stack: 4,
+            code: vec![Op::PushInt(42), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::Ret],
+            debug_locations: vec![None; 3],
+        });
+        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
         validate(&module);
     }
 
