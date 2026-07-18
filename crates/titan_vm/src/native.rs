@@ -105,6 +105,8 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::collections::deduplicate" => { let mut output = Vec::new(); for value in array!() { if !output.contains(&value) { output.push(value); } } Value::Array(output) }
         "std::collections::join" => { let values = array!(); let separator = string!(); Value::Str(values.iter().map(val_to_string).collect::<Vec<_>>().join(&separator)) }
         "std::collections::chunk" => { let values = array!(); let size = nonnegative(int!())?; if size == 0 { return Err("chunk size must be positive".into()); } Value::Array(values.chunks(size).map(|part| Value::Array(part.to_vec())).collect()) }
+        "std::map::new" => Value::Map(BTreeMap::new()),
+        "std::map::length" => Value::Int(to_i64(expect_map(take!())?.len())?),
         "std::map::keys" => Value::Array(expect_map(take!())?.into_keys().map(Value::Str).collect()),
         "std::map::values" => Value::Array(expect_map(take!())?.into_values().collect()),
         "std::map::contains" => { let values = expect_map(take!())?; Value::Bool(values.contains_key(&string!())) }

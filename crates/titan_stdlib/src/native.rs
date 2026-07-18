@@ -86,6 +86,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::collections::length", [Any], Int), native!("std::collections::contains", [Array, Any], Bool),
     native!("std::collections::reverse", [Array], Array), native!("std::collections::deduplicate", [Array], Array),
     native!("std::collections::join", [Array, String], String), native!("std::collections::chunk", [Array, Int], Array),
+    native!("std::map::new", [], Map), native!("std::map::length", [Map], Int),
     native!("std::map::keys", [Map], Array), native!("std::map::values", [Map], Array),
     native!("std::map::contains", [Map, String], Bool), native!("std::map::get", [Map, String], Any),
     native!("std::map::insert", [Map, String, Any], Map), native!("std::map::remove", [Map, String], Map),

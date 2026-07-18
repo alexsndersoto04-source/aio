@@ -202,6 +202,14 @@ struct HostImports {
     natives: HashMap<&'static str, u32>,
 }
 
+fn map_native_arity(name: &str) -> Option<usize> {
+    match name {
+        "std::map::new" => Some(0),
+        "std::map::length" => Some(1),
+        _ => None,
+    }
+}
+
 fn string_native_arity(name: &str) -> Option<usize> {
     match name {
         "std::text::equals" => Some(2),
@@ -324,6 +332,11 @@ pub fn compile_artifact_with_source_root(
                     || matches!(operation, Op::CallNative { name, .. } if array_native_arity(name).is_some())
             })
     });
+    let needs_maps = module.functions.iter().any(|function| {
+        function.code.iter().any(|operation| {
+            matches!(operation, Op::CallNative { name, .. } if map_native_arity(name).is_some())
+        })
+    });
     let needs_heap_api = module.functions.iter().any(|function| {
         function.code.iter().any(|operation| {
             matches!(operation, Op::CallNative { name, .. } if wasm_heap_native_arity(name).is_some())
@@ -360,7 +373,7 @@ pub fn compile_artifact_with_source_root(
             matches!(operation, Op::CallNative { name, .. } if matches!(name.as_str(), "std::wasm::heap_scope_begin" | "std::wasm::heap_scope_end"))
         })
     });
-    let needs_allocator = needs_host_strings || needs_arrays || needs_scopes;
+    let needs_allocator = needs_host_strings || needs_arrays || needs_maps || needs_scopes;
     let needs_heap = needs_concat || needs_allocator || needs_heap_api;
     let function_bias = host_imports.definitions.len() as u32;
     let concat_function = needs_concat
@@ -1764,7 +1777,8 @@ fn validate_operation(
             operation: format!("Print({argc}) requires exactly one browser-host argument"),
         }),
         Op::CallNative { name, argc } => {
-            let expected = string_native_arity(name)
+            let expected = map_native_arity(name)
+                .or_else(|| string_native_arity(name))
                 .or_else(|| array_native_arity(name))
                 .or_else(|| wasm_heap_native_arity(name))
                 .or_else(|| web_import(name).map(|import| import.params))
@@ -2008,6 +2022,19 @@ fn emit_operation(
             }
             body.instruction(&Instruction::Call(*callee as u32 + function_bias));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
+        }
+        Op::CallNative { name, .. } if name == "std::map::new" => {
+            let output = layout.stack_base + height as u32;
+            body.instruction(&Instruction::I32Const(0));
+            body.instruction(&Instruction::I32Const(0));
+            body.instruction(&Instruction::Call(context.allocator_function.expect("map new requires allocator")));
+            body.instruction(&Instruction::LocalSet(output));
+        }
+        Op::CallNative { name, .. } if name == "std::map::length" => {
+            let output = layout.stack_base + (height - 1) as u32;
+            emit_collection_count(body, output, MemArg { offset: 0, align: 2, memory_index: 0 });
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::LocalSet(output));
         }
         Op::CallNative { name, .. } if name == "std::text::equals" => {
             let output = layout.stack_base + (height - 2) as u32;
@@ -3756,6 +3783,18 @@ mod tests {
     fn emits_stable_utf8_string_hashing() {
         let mut module = module_with(vec![Op::PushStr(0), Op::CallNative { name: "std::text::hash64".into(), argc: 1 }, Op::Ret], 0);
         module.string_table.push("hash 🚀".into());
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_managed_empty_map_and_length() {
+        let module = module_with(
+            vec![
+                Op::CallNative { name: "std::map::new".into(), argc: 0 },
+                Op::CallNative { name: "std::map::length".into(), argc: 1 }, Op::Ret,
+            ],
+            0,
+        );
         validate(&module);
     }
 
