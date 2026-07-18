@@ -1301,7 +1301,7 @@ enum ValueKind {
     Array(Option<Box<ValueKind>>),
     Tuple(Option<Vec<ValueKind>>),
     Struct(Vec<String>),
-    Enum { name: String, payload: Option<Box<ValueKind>> },
+    Enum { name: String, payloads: BTreeMap<String, Box<ValueKind>> },
     Unknown,
 }
 
@@ -1323,13 +1323,23 @@ fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKin
         Some(BytecodeType::TupleOf(elements)) => ValueKind::Tuple(Some(
             elements.iter().map(|element| metadata_kind(module, Some(element))).collect(),
         )),
-        Some(BytecodeType::Enum(name)) => ValueKind::Enum { name: name.clone(), payload: None },
+        Some(BytecodeType::Enum(name)) => ValueKind::Enum {
+            name: name.clone(),
+            payloads: BTreeMap::new(),
+        },
         Some(BytecodeType::EnumOf(name, generics)) => {
             let kinds: Vec<_> = generics.iter().map(|generic| metadata_kind(module, Some(generic))).collect();
-            let payload = kinds.first().cloned()
-                .filter(|first| kinds.iter().all(|kind| kind == first))
-                .map(Box::new);
-            ValueKind::Enum { name: name.clone(), payload }
+            let mut payloads = BTreeMap::new();
+            match (name.as_str(), kinds.as_slice()) {
+                ("Option", [some]) => { payloads.insert("Some".into(), Box::new(some.clone())); }
+                ("Result", [ok, error]) => {
+                    payloads.insert("Ok".into(), Box::new(ok.clone()));
+                    payloads.insert("Err".into(), Box::new(error.clone()));
+                }
+                (_, [only]) => { payloads.insert("*".into(), Box::new(only.clone())); }
+                _ => {}
+            }
+            ValueKind::Enum { name: name.clone(), payloads }
         }
         Some(BytecodeType::Struct(name)) => module
             .struct_schemas
@@ -1363,7 +1373,7 @@ fn infer_value_operations(
         let mut state = states[instruction]
             .clone()
             .expect("queued instructions have a type state");
-        apply_type_effect(&function.code[instruction], &mut state, module);
+        apply_type_effect(&function.code[instruction], &mut state, module, function, instruction);
         let mut successors = Vec::with_capacity(2);
         match &function.code[instruction] {
             Op::Jump(target) => successors.push(*target),
@@ -1452,7 +1462,13 @@ fn infer_value_operations(
     Ok((string_adds, struct_fields))
 }
 
-fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledModule) {
+fn apply_type_effect(
+    operation: &Op,
+    state: &mut TypeState,
+    module: &CompiledModule,
+    function: &BytecodeFunc,
+    instruction: usize,
+) {
     match operation {
         Op::PushStr(_) => state.stack.push(ValueKind::String),
         Op::PushInt(_) | Op::PushBool(_) | Op::PushChar(_) => {
@@ -1520,9 +1536,14 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Unknown);
         }
-        Op::NewEnum { name, has_payload, .. } => {
-            let payload = if *has_payload { state.stack.pop().map(Box::new) } else { None };
-            state.stack.push(ValueKind::Enum { name: name.clone(), payload });
+        Op::NewEnum { name, variant, has_payload } => {
+            let mut payloads = BTreeMap::new();
+            if *has_payload {
+                if let Some(payload) = state.stack.pop() {
+                    payloads.insert(variant.clone(), Box::new(payload));
+                }
+            }
+            state.stack.push(ValueKind::Enum { name: name.clone(), payloads });
         }
         Op::EnumIs { .. } => {
             let _ = state.stack.pop();
@@ -1530,8 +1551,13 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
         }
         Op::EnumPayload => {
             let value = state.stack.pop().expect("stack analysis ran first");
+            let variant = function.code[..instruction].iter().rev().find_map(|operation| {
+                if let Op::EnumIs { variant, .. } = operation { Some(variant.as_str()) } else { None }
+            });
             let payload = match value {
-                ValueKind::Enum { payload: Some(payload), .. } => *payload,
+                ValueKind::Enum { payloads, .. } => variant
+                    .and_then(|variant| payloads.get(variant).or_else(|| payloads.get("*")))
+                    .map_or(ValueKind::Unknown, |payload| payload.as_ref().clone()),
                 _ => ValueKind::Unknown,
             };
             state.stack.push(payload);
@@ -3902,6 +3928,29 @@ mod tests {
         });
         module.struct_schemas.insert("Point".into(), vec!["x".into()]);
         module.enum_schemas.insert("Option".into(), vec!["None".into(), "Some".into()]);
+        validate(&module);
+    }
+
+    #[test]
+    fn resolves_result_payload_metadata_by_variant() {
+        let mut module = module_with(
+            vec![
+                Op::Call { function: 1, argc: 0 }, Op::StoreLocal(0),
+                Op::PushLocal(0), Op::EnumIs { name: "Result".into(), variant: "Err".into() }, Op::Pop,
+                Op::PushLocal(0), Op::EnumPayload, Op::GetField("code".into()), Op::Ret,
+            ],
+            1,
+        );
+        module.functions.push(BytecodeFunc {
+            name: "make_error".into(), source_file: Some("main.titan".into()), arity: 0,
+            param_types: Vec::new(),
+            return_type: Some(BytecodeType::EnumOf("Result".into(), vec![BytecodeType::Int, BytecodeType::Struct("Error".into())])),
+            captures: 0, locals: 0, max_stack: 4,
+            code: vec![Op::PushInt(42), Op::NewStruct { name: "Error".into(), fields: vec!["code".into()] }, Op::NewEnum { name: "Result".into(), variant: "Err".into(), has_payload: true }, Op::Ret],
+            debug_locations: vec![None; 4],
+        });
+        module.struct_schemas.insert("Error".into(), vec!["code".into()]);
+        module.enum_schemas.insert("Result".into(), vec!["Ok".into(), "Err".into()]);
         validate(&module);
     }
 
