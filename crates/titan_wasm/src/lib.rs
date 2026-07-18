@@ -74,6 +74,8 @@ pub enum WasmError {
     ReservedFunction(String),
     #[error("could not encode WebAssembly source metadata: {0}")]
     SourceMap(String),
+    #[error("enum discriminant collision between '{first}' and '{second}' at tag {tag:#018x}")]
+    EnumTagCollision { first: String, second: String, tag: u64 },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,6 +91,7 @@ pub struct WasmSourceMap {
     pub format: &'static str,
     pub version: u32,
     pub imported_function_count: u32,
+    pub enum_tags: BTreeMap<String, u64>,
     pub functions: Vec<WasmFunctionMap>,
 }
 
@@ -285,6 +288,7 @@ pub fn compile_artifact_with_source_root(
     }
 
     let strings = StringLayout::new(&module.string_table)?;
+    let enum_tags = collect_enum_tags(module)?;
     let layouts = module
         .functions
         .iter()
@@ -505,7 +509,7 @@ pub fn compile_artifact_with_source_root(
 
     let mut wasm = output.finish();
     let offsets = extract_instruction_offsets(&wasm, &layouts, module.functions.len())?;
-    let source_map = build_source_map(module, function_bias, source_root, &offsets);
+    let source_map = build_source_map(module, function_bias, source_root, &offsets, enum_tags);
     let standard_source_map = build_standard_source_map(&source_map);
     let source_map_bytes = serde_json::to_vec(&source_map)
         .map_err(|error| WasmError::SourceMap(error.to_string()))?;
@@ -523,6 +527,7 @@ fn build_source_map(
     function_bias: u32,
     source_root: Option<&Path>,
     offsets: &HashMap<(usize, usize), usize>,
+    enum_tags: BTreeMap<String, u64>,
 ) -> WasmSourceMap {
     let functions = module
         .functions
@@ -561,6 +566,7 @@ fn build_source_map(
         format: "titan-wasm-source-map",
         version: 1,
         imported_function_count: function_bias,
+        enum_tags,
         functions,
     }
 }
@@ -1024,6 +1030,26 @@ fn emit_direct_region(
         }
     }
     Ok(())
+}
+
+fn collect_enum_tags(module: &CompiledModule) -> Result<BTreeMap<String, u64>, WasmError> {
+    let mut tags = BTreeMap::new();
+    let mut owners = HashMap::new();
+    for operation in module.functions.iter().flat_map(|function| &function.code) {
+        let (name, variant) = match operation {
+            Op::NewEnum { name, variant, .. } | Op::EnumIs { name, variant } => (name, variant),
+            _ => continue,
+        };
+        let label = format!("{name}::{variant}");
+        let tag = enum_tag(name, variant);
+        if let Some(first) = owners.insert(tag, label.clone()) {
+            if first != label {
+                return Err(WasmError::EnumTagCollision { first, second: label, tag });
+            }
+        }
+        tags.insert(label, tag);
+    }
+    Ok(tags)
 }
 
 fn enum_tag(name: &str, variant: &str) -> u64 {
@@ -3775,6 +3801,11 @@ mod tests {
             1,
         );
         validate(&module);
+        let artifact = compile_artifact(&module).unwrap();
+        assert_eq!(
+            artifact.source_map.enum_tags.get("Maybe::Some"),
+            Some(&enum_tag("Maybe", "Some"))
+        );
     }
 
     #[test]
