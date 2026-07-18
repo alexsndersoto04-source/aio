@@ -2516,6 +2516,7 @@ fn emit_map_lookup(context: &EmitContext<'_>, height: usize, contains: bool, bod
     body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map hash helper"))); body.instruction(&Instruction::I64Eq);
     body.instruction(&Instruction::If(BlockType::Empty));
     emit_map_entry_address(body, map, context.managed_scratch, 8); body.instruction(&Instruction::I64Load(slot_memory)); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_equals_function.expect("map equality helper")));
+    body.instruction(&Instruction::I64Eqz); body.instruction(&Instruction::I32Eqz);
     body.instruction(&Instruction::If(BlockType::Empty));
     if contains { body.instruction(&Instruction::I64Const(1)); } else { emit_map_entry_address(body, map, context.managed_scratch, 16); body.instruction(&Instruction::I64Load(slot_memory)); }
     body.instruction(&Instruction::LocalSet(map)); body.instruction(&Instruction::Br(3)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
