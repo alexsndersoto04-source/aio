@@ -123,6 +123,7 @@ mod tests {
             entry: 0,
             string_table: Vec::new(),
             struct_schemas: std::collections::HashMap::new(),
+            enum_schemas: std::collections::HashMap::new(),
         }
     }
 

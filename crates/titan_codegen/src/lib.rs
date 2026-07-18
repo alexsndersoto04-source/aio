@@ -67,7 +67,7 @@ impl From<titan_lexer::Span> for SourceLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BytecodeType {
-    Unknown, Int, Bool, String, Struct(String), Array, Tuple,
+    Unknown, Int, Bool, String, Struct(String), Enum(String), Array, Tuple,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +95,8 @@ pub struct CompiledModule {
     pub string_table: Vec<String>,
     #[serde(default)]
     pub struct_schemas: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub enum_schemas: HashMap<String, Vec<String>>,
 }
 
 pub struct AstCompiler {
@@ -116,17 +118,20 @@ struct LoopContext { breaks: Vec<usize>, continues: Vec<usize>, continue_target:
 impl AstCompiler {
     pub fn new() -> Self {
         Self {
-            module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new() },
+            module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new() },
             current: empty_function(), locals: Vec::new(), next_local: 0,
             strings: HashMap::new(), function_ids: HashMap::new(), enum_variants: HashMap::new(), constants: HashMap::new(), loops: Vec::new(), current_location: None,
         }
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Result<CompiledModule, CodegenError> {
-        self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new() };
+        self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new() };
         self.strings.clear(); self.function_ids.clear(); self.enum_variants.clear(); self.constants.clear();
         self.enum_variants.extend([("Option::None".into(), false), ("Option::Some".into(), true), ("Result::Ok".into(), true), ("Result::Err".into(), true)]);
+        self.module.enum_schemas.insert("Option".into(), vec!["None".into(), "Some".into()]);
+        self.module.enum_schemas.insert("Result".into(), vec!["Ok".into(), "Err".into()]);
         collect_struct_schemas(&program.items, &mut self.module.struct_schemas);
+        collect_enum_schemas(&program.items, &mut self.module.enum_schemas);
         let mut functions = Vec::new();
         collect_items(&program.items, &mut functions, &mut self.constants, &mut self.enum_variants);
         for (index, function) in functions.iter().enumerate() {
@@ -145,7 +150,9 @@ impl AstCompiler {
     }
 
     fn compile_function(&mut self, function: &FunctionDecl) -> Result<BytecodeFunc, CodegenError> {
-        self.current = BytecodeFunc { name: function.name.clone(), source_file: function.source_file.clone(), arity: function.params.len(), param_types: function.params.iter().map(|param| bytecode_type(param.type_ann.as_ref())).collect(), return_type: function.return_type.as_ref().map(|ty| bytecode_type(Some(ty))), captures: 0, locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
+        let param_types = function.params.iter().map(|param| bytecode_type(param.type_ann.as_ref(), &self.module.enum_schemas)).collect();
+        let return_type = function.return_type.as_ref().map(|ty| bytecode_type(Some(ty), &self.module.enum_schemas));
+        self.current = BytecodeFunc { name: function.name.clone(), source_file: function.source_file.clone(), arity: function.params.len(), param_types, return_type, captures: 0, locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0; self.loops.clear();
         for param in &function.params { self.add_local(&param.name); }
         if let Some(body) = &function.body { self.compile_block(body, true)?; } else { self.emit(Op::PushNil); }
@@ -540,7 +547,8 @@ impl AstCompiler {
         let outer_next = self.next_local;
         let outer_loops = std::mem::take(&mut self.loops);
 
-        self.current = BytecodeFunc { name: format!("<closure:{function}>"), source_file: outer_function.source_file.clone(), arity: params.len(), param_types: params.iter().map(|param| bytecode_type(param.type_ann.as_ref())).collect(), return_type: None, captures: captures.len(), locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
+        let param_types = params.iter().map(|param| bytecode_type(param.type_ann.as_ref(), &self.module.enum_schemas)).collect();
+        self.current = BytecodeFunc { name: format!("<closure:{function}>"), source_file: outer_function.source_file.clone(), arity: params.len(), param_types, return_type: None, captures: captures.len(), locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0;
         for (name, _) in &captures { self.add_local(name); }
         for param in params { self.add_local(&param.name); }
@@ -574,12 +582,13 @@ impl AstCompiler {
     fn find_local(&self, name: &str) -> Option<usize> { self.locals.iter().rev().find_map(|scope| scope.get(name).copied()) }
 }
 
-fn bytecode_type(ty: Option<&TypeExpr>) -> BytecodeType {
+fn bytecode_type(ty: Option<&TypeExpr>, enum_schemas: &HashMap<String, Vec<String>>) -> BytecodeType {
     match ty {
         Some(TypeExpr::Named { name, .. }) => match name.as_str() {
             "int" => BytecodeType::Int,
             "bool" => BytecodeType::Bool,
             "string" => BytecodeType::String,
+            other if enum_schemas.contains_key(other) => BytecodeType::Enum(other.into()),
             other => BytecodeType::Struct(other.into()),
         },
         Some(TypeExpr::Array { .. } | TypeExpr::Slice { .. }) => BytecodeType::Array,
@@ -598,6 +607,16 @@ fn collect_struct_schemas(items: &[Item], output: &mut HashMap<String, Vec<Strin
         match item {
             Item::Struct(item) => { output.insert(item.name.clone(), item.fields.iter().map(|field| field.name.clone()).collect()); }
             Item::Module(module) => collect_struct_schemas(&module.items, output),
+            _ => {}
+        }
+    }
+}
+
+fn collect_enum_schemas(items: &[Item], output: &mut HashMap<String, Vec<String>>) {
+    for item in items {
+        match item {
+            Item::Enum(item) => { output.insert(item.name.clone(), item.variants.iter().map(|variant| variant.name.clone()).collect()); }
+            Item::Module(module) => collect_enum_schemas(&module.items, output),
             _ => {}
         }
     }

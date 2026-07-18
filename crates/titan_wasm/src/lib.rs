@@ -1301,6 +1301,7 @@ enum ValueKind {
     Array,
     Tuple,
     Struct(Vec<String>),
+    Enum(String),
     Unknown,
 }
 
@@ -1316,6 +1317,7 @@ fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKin
         Some(BytecodeType::String) => ValueKind::String,
         Some(BytecodeType::Array) => ValueKind::Array,
         Some(BytecodeType::Tuple) => ValueKind::Tuple,
+        Some(BytecodeType::Enum(name)) => ValueKind::Enum(name.clone()),
         Some(BytecodeType::Struct(name)) => module
             .struct_schemas
             .get(name)
@@ -1379,6 +1381,20 @@ fn infer_value_operations(
         let state = states[instruction]
             .as_ref()
             .expect("reachable instructions have a type state");
+        if let Op::EnumIs { name, .. } = operation {
+            match &state.stack[state.stack.len() - 1] {
+                ValueKind::Enum(actual) if actual == name => {}
+                ValueKind::Enum(actual) => return Err(WasmError::Unsupported {
+                    function: function.name.clone(),
+                    operation: format!("enum test expects '{name}', found '{actual}'"),
+                }),
+                ValueKind::Unknown => {},
+                _ => return Err(WasmError::Unsupported {
+                    function: function.name.clone(),
+                    operation: format!("value is not enum '{name}' at instruction {instruction}"),
+                }),
+            }
+        }
         if let Op::GetField(field) = operation {
             let ValueKind::Struct(fields) = &state.stack[state.stack.len() - 1] else {
                 return Err(WasmError::Unsupported {
@@ -1490,9 +1506,9 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Unknown);
         }
-        Op::NewEnum { has_payload, .. } => {
+        Op::NewEnum { name, has_payload, .. } => {
             if *has_payload { let _ = state.stack.pop(); }
-            state.stack.push(ValueKind::Unknown);
+            state.stack.push(ValueKind::Enum(name.clone()));
         }
         Op::EnumIs { .. } => {
             let _ = state.stack.pop();
@@ -2893,6 +2909,7 @@ mod tests {
             entry: 0,
             string_table: Vec::new(),
             struct_schemas: HashMap::new(),
+            enum_schemas: HashMap::new(),
         }
     }
 
@@ -3806,6 +3823,23 @@ mod tests {
             artifact.source_map.enum_tags.get("Maybe::Some"),
             Some(&enum_tag("Maybe", "Some"))
         );
+    }
+
+    #[test]
+    fn preserves_enum_return_metadata_across_calls() {
+        let mut module = module_with(
+            vec![Op::Call { function: 1, argc: 0 }, Op::EnumPayload, Op::Ret],
+            0,
+        );
+        module.functions.push(BytecodeFunc {
+            name: "make".into(), source_file: Some("main.titan".into()), arity: 0,
+            param_types: Vec::new(), return_type: Some(BytecodeType::Enum("Maybe".into())),
+            captures: 0, locals: 0, max_stack: 4,
+            code: vec![Op::PushInt(42), Op::NewEnum { name: "Maybe".into(), variant: "Some".into(), has_payload: true }, Op::Ret],
+            debug_locations: vec![None; 3],
+        });
+        module.enum_schemas.insert("Maybe".into(), vec!["None".into(), "Some".into()]);
+        validate(&module);
     }
 
     #[test]
