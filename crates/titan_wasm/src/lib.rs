@@ -1301,7 +1301,7 @@ enum ValueKind {
     Array(Option<Box<ValueKind>>),
     Tuple(Option<Vec<ValueKind>>),
     Struct(Vec<String>),
-    Enum(String),
+    Enum { name: String, payload: Option<Box<ValueKind>> },
     Unknown,
 }
 
@@ -1323,7 +1323,14 @@ fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKin
         Some(BytecodeType::TupleOf(elements)) => ValueKind::Tuple(Some(
             elements.iter().map(|element| metadata_kind(module, Some(element))).collect(),
         )),
-        Some(BytecodeType::Enum(name)) => ValueKind::Enum(name.clone()),
+        Some(BytecodeType::Enum(name)) => ValueKind::Enum { name: name.clone(), payload: None },
+        Some(BytecodeType::EnumOf(name, generics)) => {
+            let kinds: Vec<_> = generics.iter().map(|generic| metadata_kind(module, Some(generic))).collect();
+            let payload = kinds.first().cloned()
+                .filter(|first| kinds.iter().all(|kind| kind == first))
+                .map(Box::new);
+            ValueKind::Enum { name: name.clone(), payload }
+        }
         Some(BytecodeType::Struct(name)) => module
             .struct_schemas
             .get(name)
@@ -1389,8 +1396,8 @@ fn infer_value_operations(
             .expect("reachable instructions have a type state");
         if let Op::EnumIs { name, .. } = operation {
             match &state.stack[state.stack.len() - 1] {
-                ValueKind::Enum(actual) if actual == name => {}
-                ValueKind::Enum(actual) => return Err(WasmError::Unsupported {
+                ValueKind::Enum { name: actual, .. } if actual == name => {}
+                ValueKind::Enum { name: actual, .. } => return Err(WasmError::Unsupported {
                     function: function.name.clone(),
                     operation: format!("enum test expects '{name}', found '{actual}'"),
                 }),
@@ -1514,16 +1521,20 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
             state.stack.push(ValueKind::Unknown);
         }
         Op::NewEnum { name, has_payload, .. } => {
-            if *has_payload { let _ = state.stack.pop(); }
-            state.stack.push(ValueKind::Enum(name.clone()));
+            let payload = if *has_payload { state.stack.pop().map(Box::new) } else { None };
+            state.stack.push(ValueKind::Enum { name: name.clone(), payload });
         }
         Op::EnumIs { .. } => {
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Numeric);
         }
         Op::EnumPayload => {
-            let _ = state.stack.pop();
-            state.stack.push(ValueKind::Unknown);
+            let value = state.stack.pop().expect("stack analysis ran first");
+            let payload = match value {
+                ValueKind::Enum { payload: Some(payload), .. } => *payload,
+                _ => ValueKind::Unknown,
+            };
+            state.stack.push(payload);
         }
         Op::Index => {
             let _ = state.stack.pop();
@@ -3872,6 +3883,25 @@ mod tests {
             debug_locations: vec![None; 3],
         });
         module.enum_schemas.insert("Maybe".into(), vec!["None".into(), "Some".into()]);
+        validate(&module);
+    }
+
+    #[test]
+    fn preserves_generic_enum_payload_metadata_across_calls() {
+        let mut module = module_with(
+            vec![Op::Call { function: 1, argc: 0 }, Op::EnumPayload, Op::GetField("x".into()), Op::Ret],
+            0,
+        );
+        module.functions.push(BytecodeFunc {
+            name: "make".into(), source_file: Some("main.titan".into()), arity: 0,
+            param_types: Vec::new(),
+            return_type: Some(BytecodeType::EnumOf("Option".into(), vec![BytecodeType::Struct("Point".into())])),
+            captures: 0, locals: 0, max_stack: 4,
+            code: vec![Op::PushInt(42), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::NewEnum { name: "Option".into(), variant: "Some".into(), has_payload: true }, Op::Ret],
+            debug_locations: vec![None; 4],
+        });
+        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
+        module.enum_schemas.insert("Option".into(), vec!["None".into(), "Some".into()]);
         validate(&module);
     }
 

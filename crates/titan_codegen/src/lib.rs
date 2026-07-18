@@ -69,6 +69,7 @@ impl From<titan_lexer::Span> for SourceLocation {
 pub enum BytecodeType {
     Unknown, Int, Bool, String, Struct(String), Enum(String), Array, Tuple,
     ArrayOf(Box<BytecodeType>), TupleOf(Vec<BytecodeType>),
+    EnumOf(String, Vec<BytecodeType>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -585,10 +586,14 @@ impl AstCompiler {
 
 fn bytecode_type(ty: Option<&TypeExpr>, enum_schemas: &HashMap<String, Vec<String>>) -> BytecodeType {
     match ty {
-        Some(TypeExpr::Named { name, .. }) => match name.as_str() {
+        Some(TypeExpr::Named { name, generics }) => match name.as_str() {
             "int" => BytecodeType::Int,
             "bool" => BytecodeType::Bool,
             "string" => BytecodeType::String,
+            other if enum_schemas.contains_key(other) && !generics.is_empty() => BytecodeType::EnumOf(
+                other.into(),
+                generics.iter().map(|generic| bytecode_type(Some(generic), enum_schemas)).collect(),
+            ),
             other if enum_schemas.contains_key(other) => BytecodeType::Enum(other.into()),
             other => BytecodeType::Struct(other.into()),
         },
