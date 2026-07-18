@@ -205,6 +205,7 @@ struct HostImports {
 fn string_native_arity(name: &str) -> Option<usize> {
     match name {
         "std::text::equals" => Some(2),
+        "std::text::hash64" => Some(1),
         _ => None,
     }
 }
@@ -309,6 +310,11 @@ pub fn compile_artifact_with_source_root(
             matches!(operation, Op::CallNative { name, .. } if name == "std::text::equals")
         })
     });
+    let needs_string_hash = module.functions.iter().any(|function| {
+        function.code.iter().any(|operation| {
+            matches!(operation, Op::CallNative { name, .. } if name == "std::text::hash64")
+        })
+    });
     let needs_arrays = module.functions.iter().any(|function| {
         function
             .code
@@ -367,6 +373,12 @@ pub fn compile_artifact_with_source_root(
             + if needs_concat { 1 } else { 0 }
             + if needs_allocator { 1 } else { 0 },
     );
+    let string_hash_function = needs_string_hash.then_some(
+        function_bias + module.functions.len() as u32
+            + if needs_concat { 1 } else { 0 }
+            + if needs_allocator { 1 } else { 0 }
+            + if needs_string_equals { 1 } else { 0 },
+    );
     let mut output = Module::new();
 
     let mut types = TypeSection::new();
@@ -402,6 +414,10 @@ pub fn compile_artifact_with_source_root(
     if needs_string_equals {
         types.ty().function([ValType::I64, ValType::I64], [ValType::I64]);
     }
+    let string_hash_type = types.len();
+    if needs_string_hash {
+        types.ty().function([ValType::I64], [ValType::I64]);
+    }
     output.section(&types);
 
     if !host_imports.definitions.is_empty() {
@@ -428,6 +444,9 @@ pub fn compile_artifact_with_source_root(
     }
     if needs_string_equals {
         functions.function(string_equals_type);
+    }
+    if needs_string_hash {
+        functions.function(string_hash_type);
     }
     output.section(&functions);
 
@@ -512,6 +531,7 @@ pub fn compile_artifact_with_source_root(
             concat_function,
             allocator_function,
             string_equals_function,
+            string_hash_function,
         )?);
     }
     if needs_concat {
@@ -522,6 +542,9 @@ pub fn compile_artifact_with_source_root(
     }
     if needs_string_equals {
         code.function(&compile_string_equals());
+    }
+    if needs_string_hash {
+        code.function(&compile_string_hash());
     }
     output.section(&code);
 
@@ -839,6 +862,7 @@ fn compile_function(
     concat_function: Option<u32>,
     allocator_function: Option<u32>,
     string_equals_function: Option<u32>,
+    string_hash_function: Option<u32>,
 ) -> Result<Function, WasmError> {
     let extra = function
         .locals
@@ -867,6 +891,7 @@ fn compile_function(
         concat_function,
         allocator_function,
         string_equals_function,
+        string_hash_function,
         managed_scratch: layout.pc_local,
         pc_local: layout.pc_local + 1,
     };
@@ -1863,6 +1888,7 @@ struct EmitContext<'a> {
     concat_function: Option<u32>,
     allocator_function: Option<u32>,
     string_equals_function: Option<u32>,
+    string_hash_function: Option<u32>,
     managed_scratch: u32,
     pc_local: u32,
 }
@@ -1980,6 +2006,12 @@ fn emit_operation(
             body.instruction(&Instruction::LocalGet(output));
             body.instruction(&Instruction::LocalGet(output + 1));
             body.instruction(&Instruction::Call(context.string_equals_function.expect("string equals helper")));
+            body.instruction(&Instruction::LocalSet(output));
+        }
+        Op::CallNative { name, .. } if name == "std::text::hash64" => {
+            let output = layout.stack_base + (height - 1) as u32;
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::Call(context.string_hash_function.expect("string hash helper")));
             body.instruction(&Instruction::LocalSet(output));
         }
         Op::CallNative { name, .. } if wasm_heap_native_arity(name).is_some() => {
@@ -2709,6 +2741,19 @@ fn emit_allocation_counters(body: &mut Function, previous_heap: u32) {
     body.instruction(&Instruction::I64ExtendI32U);
     body.instruction(&Instruction::GlobalSet(7));
     body.instruction(&Instruction::End);
+}
+
+fn compile_string_hash() -> Function {
+    const POINTER: u32 = 1; const LENGTH: u32 = 2; const INDEX: u32 = 3; const HASH: u32 = 4;
+    let mut body = Function::new([(3, ValType::I32), (1, ValType::I64)]);
+    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(POINTER));
+    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(LENGTH));
+    body.instruction(&Instruction::I64Const(0xcbf29ce484222325u64 as i64)); body.instruction(&Instruction::LocalSet(HASH));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::LocalGet(LENGTH)); body.instruction(&Instruction::I32GeU); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::LocalGet(HASH)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(HASH)); body.instruction(&Instruction::LocalGet(POINTER)); body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I64Load8U(MemArg { offset: 0, align: 0, memory_index: 0 })); body.instruction(&Instruction::I64Xor); body.instruction(&Instruction::I64Const(0x100000001b3)); body.instruction(&Instruction::I64Mul); body.instruction(&Instruction::LocalSet(HASH));
+    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::LocalSet(INDEX)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::End); body
 }
 
 fn compile_string_equals() -> Function {
@@ -3696,6 +3741,13 @@ mod tests {
     fn emits_content_based_utf8_string_equality() {
         let mut module = module_with(vec![Op::PushStr(0), Op::PushStr(0), Op::CallNative { name: "std::text::equals".into(), argc: 2 }, Op::Ret], 0);
         module.string_table.push("same 🚀".into());
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_stable_utf8_string_hashing() {
+        let mut module = module_with(vec![Op::PushStr(0), Op::CallNative { name: "std::text::hash64".into(), argc: 1 }, Op::Ret], 0);
+        module.string_table.push("hash 🚀".into());
         validate(&module);
     }
 

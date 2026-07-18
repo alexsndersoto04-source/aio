@@ -29,6 +29,7 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::text::slugify" => Value::Str(stdlib::text::slugify(&string!())),
         "std::text::levenshtein" => { let a = string!(); let b = string!(); Value::Int(to_i64(stdlib::text::levenshtein(&a, &b))?) }
         "std::text::equals" => Value::Bool(string!() == string!()),
+        "std::text::hash64" => Value::Int(i64::from_ne_bytes(stdlib::checksum::fnv1a_64(string!().as_bytes()).to_ne_bytes())),
         "std::text::contains" => { let text = string!(); Value::Bool(text.contains(&string!())) }
         "std::text::starts_with" => { let text = string!(); Value::Bool(text.starts_with(&string!())) }
         "std::text::ends_with" => { let text = string!(); Value::Bool(text.ends_with(&string!())) }
