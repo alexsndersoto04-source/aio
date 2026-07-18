@@ -1263,6 +1263,8 @@ fn analyze_function(
 enum ValueKind {
     Numeric,
     String,
+    Array,
+    Tuple,
     Struct(Vec<String>),
     Unknown,
 }
@@ -1277,6 +1279,8 @@ fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKin
     match ty {
         Some(BytecodeType::Int | BytecodeType::Bool) => ValueKind::Numeric,
         Some(BytecodeType::String) => ValueKind::String,
+        Some(BytecodeType::Array) => ValueKind::Array,
+        Some(BytecodeType::Tuple) => ValueKind::Tuple,
         Some(BytecodeType::Struct(name)) => module
             .struct_schemas
             .get(name)
@@ -1435,9 +1439,13 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Numeric);
         }
-        Op::NewArray(count) | Op::NewTuple(count) => {
+        Op::NewArray(count) => {
             state.stack.truncate(state.stack.len() - *count);
-            state.stack.push(ValueKind::Unknown);
+            state.stack.push(ValueKind::Array);
+        }
+        Op::NewTuple(count) => {
+            state.stack.truncate(state.stack.len() - *count);
+            state.stack.push(ValueKind::Tuple);
         }
         Op::NewStruct { fields, .. } => {
             state.stack.truncate(state.stack.len() - fields.len());
@@ -3666,6 +3674,33 @@ mod tests {
             debug_locations: vec![None; 3],
         });
         module.struct_schemas.insert("Point".into(), vec!["x".into()]);
+        validate(&module);
+    }
+
+    #[test]
+    fn preserves_array_parameter_and_return_metadata_across_calls() {
+        let mut module = module_with(
+            vec![
+                Op::PushInt(5), Op::PushInt(7), Op::NewArray(2),
+                Op::Call { function: 1, argc: 1 },
+                Op::Call { function: 2, argc: 0 }, Op::PushInt(1), Op::Index, Op::Add, Op::Ret,
+            ],
+            0,
+        );
+        module.functions.push(BytecodeFunc {
+            name: "first".into(), source_file: Some("main.titan".into()), arity: 1,
+            param_types: vec![BytecodeType::Array], return_type: Some(BytecodeType::Int),
+            captures: 0, locals: 1, max_stack: 4,
+            code: vec![Op::PushLocal(0), Op::PushInt(0), Op::Index, Op::Ret],
+            debug_locations: vec![None; 4],
+        });
+        module.functions.push(BytecodeFunc {
+            name: "make".into(), source_file: Some("main.titan".into()), arity: 0,
+            param_types: Vec::new(), return_type: Some(BytecodeType::Array),
+            captures: 0, locals: 0, max_stack: 4,
+            code: vec![Op::PushInt(20), Op::PushInt(22), Op::NewArray(2), Op::Ret],
+            debug_locations: vec![None; 4],
+        });
         validate(&module);
     }
 
