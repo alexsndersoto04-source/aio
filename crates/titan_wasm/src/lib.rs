@@ -379,6 +379,12 @@ pub fn compile_artifact_with_source_root(
             + if needs_allocator { 1 } else { 0 }
             + if needs_string_equals { 1 } else { 0 },
     );
+    let runtime_functions = RuntimeFunctions {
+        concat: concat_function,
+        allocator: allocator_function,
+        string_equals: string_equals_function,
+        string_hash: string_hash_function,
+    };
     let mut output = Module::new();
 
     let mut types = TypeSection::new();
@@ -528,10 +534,7 @@ pub fn compile_artifact_with_source_root(
             layout,
             &strings,
             &host_imports,
-            concat_function,
-            allocator_function,
-            string_equals_function,
-            string_hash_function,
+            runtime_functions,
         )?);
     }
     if needs_concat {
@@ -854,15 +857,20 @@ impl StringLayout {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RuntimeFunctions {
+    concat: Option<u32>,
+    allocator: Option<u32>,
+    string_equals: Option<u32>,
+    string_hash: Option<u32>,
+}
+
 fn compile_function(
     function: &BytecodeFunc,
     layout: &FunctionLayout,
     strings: &StringLayout,
     host_imports: &HostImports,
-    concat_function: Option<u32>,
-    allocator_function: Option<u32>,
-    string_equals_function: Option<u32>,
-    string_hash_function: Option<u32>,
+    runtime_functions: RuntimeFunctions,
 ) -> Result<Function, WasmError> {
     let extra = function
         .locals
@@ -888,10 +896,10 @@ fn compile_function(
         layout,
         strings,
         host_imports,
-        concat_function,
-        allocator_function,
-        string_equals_function,
-        string_hash_function,
+        concat_function: runtime_functions.concat,
+        allocator_function: runtime_functions.allocator,
+        string_equals_function: runtime_functions.string_equals,
+        string_hash_function: runtime_functions.string_hash,
         managed_scratch: layout.pc_local,
         pc_local: layout.pc_local + 1,
     };
