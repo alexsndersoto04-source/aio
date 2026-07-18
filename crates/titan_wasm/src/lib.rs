@@ -206,6 +206,7 @@ fn map_native_arity(name: &str) -> Option<usize> {
     match name {
         "std::map::new" => Some(0),
         "std::map::length" => Some(1),
+        "std::map::insert_new" => Some(3),
         _ => None,
     }
 }
@@ -320,7 +321,7 @@ pub fn compile_artifact_with_source_root(
     });
     let needs_string_hash = module.functions.iter().any(|function| {
         function.code.iter().any(|operation| {
-            matches!(operation, Op::CallNative { name, .. } if name == "std::text::hash64")
+            matches!(operation, Op::CallNative { name, .. } if matches!(name.as_str(), "std::text::hash64" | "std::map::insert_new"))
         })
     });
     let needs_arrays = module.functions.iter().any(|function| {
@@ -2036,6 +2037,9 @@ fn emit_operation(
             body.instruction(&Instruction::I64ExtendI32U);
             body.instruction(&Instruction::LocalSet(output));
         }
+        Op::CallNative { name, .. } if name == "std::map::insert_new" => {
+            emit_map_insert_new(context, height, body);
+        }
         Op::CallNative { name, .. } if name == "std::text::equals" => {
             let output = layout.stack_base + (height - 2) as u32;
             body.instruction(&Instruction::LocalGet(output));
@@ -2486,6 +2490,40 @@ fn emit_heap_rewind(body: &mut Function, checkpoint_local: u32) {
     body.instruction(&Instruction::LocalGet(checkpoint_local));
     body.instruction(&Instruction::I32WrapI64);
     body.instruction(&Instruction::GlobalSet(0));
+}
+
+fn emit_map_insert_new(context: &EmitContext<'_>, height: usize, body: &mut Function) {
+    const MAX_ENTRIES: i32 = (u32::MAX / 24) as i32;
+    let map = context.layout.stack_base + (height - 3) as u32;
+    let key = map + 1;
+    let value = map + 2;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(MAX_ENTRIES)); body.instruction(&Instruction::I32GeU);
+    body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Block(BlockType::Empty)); body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch)); emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::I64GeU); body.instruction(&Instruction::BrIf(1));
+    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map key hashing helper"))); body.instruction(&Instruction::I64Eq); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Add); body.instruction(&Instruction::LocalSet(context.managed_scratch)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
+    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul);
+    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::Call(context.allocator_function.expect("map insert requires allocator"))); body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    for (slot, local) in [(0u32, key), (1, key), (2, value)] {
+        body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64);
+        emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add);
+        if slot != 0 { body.instruction(&Instruction::I32Const((slot * 8) as i32)); body.instruction(&Instruction::I32Add); }
+        body.instruction(&Instruction::LocalGet(local));
+        if slot == 0 { body.instruction(&Instruction::Call(context.string_hash_function.expect("map key hashing helper"))); }
+        body.instruction(&Instruction::I64Store(slot_memory));
+    }
+    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::LocalSet(map));
 }
 
 fn emit_array_set(context: &EmitContext<'_>, height: usize, body: &mut Function) {
@@ -3795,6 +3833,17 @@ mod tests {
             ],
             0,
         );
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_persistent_map_insert_new() {
+        let mut module = module_with(vec![
+            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(42),
+            Op::CallNative { name: "std::map::insert_new".into(), argc: 3 },
+            Op::CallNative { name: "std::map::length".into(), argc: 1 }, Op::Ret,
+        ], 0);
+        module.string_table.push("answer".into());
         validate(&module);
     }
 
