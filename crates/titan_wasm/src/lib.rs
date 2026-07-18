@@ -1557,6 +1557,13 @@ fn apply_type_effect(
             let payload = match value {
                 ValueKind::Enum { payloads, .. } => variant
                     .and_then(|variant| payloads.get(variant).or_else(|| payloads.get("*")))
+                    .or_else(|| {
+                        if payloads.len() == 1 {
+                            payloads.values().next()
+                        } else {
+                            None
+                        }
+                    })
                     .map_or(ValueKind::Unknown, |payload| payload.as_ref().clone()),
                 _ => ValueKind::Unknown,
             };
