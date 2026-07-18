@@ -298,7 +298,7 @@ pub fn compile_artifact_with_source_root(
             .code
             .iter()
             .any(|operation| {
-                matches!(operation, Op::NewArray(_) | Op::NewTuple(_) | Op::NewStruct { .. })
+                matches!(operation, Op::NewArray(_) | Op::NewTuple(_) | Op::NewStruct { .. } | Op::NewEnum { .. })
                     || matches!(operation, Op::CallNative { name, .. } if array_native_arity(name).is_some())
             })
     });
@@ -1026,6 +1026,15 @@ fn emit_direct_region(
     Ok(())
 }
 
+fn enum_tag(name: &str, variant: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in name.bytes().chain([b':', b':']).chain(variant.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 fn emit_source_marker(body: &mut Function) {
     body.instruction(&Instruction::Block(BlockType::Empty));
     body.instruction(&Instruction::End);
@@ -1455,6 +1464,18 @@ fn apply_type_effect(operation: &Op, state: &mut TypeState, module: &CompiledMod
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Unknown);
         }
+        Op::NewEnum { has_payload, .. } => {
+            if *has_payload { let _ = state.stack.pop(); }
+            state.stack.push(ValueKind::Unknown);
+        }
+        Op::EnumIs { .. } => {
+            let _ = state.stack.pop();
+            state.stack.push(ValueKind::Numeric);
+        }
+        Op::EnumPayload => {
+            let _ = state.stack.pop();
+            state.stack.push(ValueKind::Unknown);
+        }
         Op::Index => {
             state.stack.truncate(state.stack.len() - 2);
             state.stack.push(ValueKind::Unknown);
@@ -1652,6 +1673,9 @@ fn validate_operation(
         | Op::Index
         | Op::NewStruct { .. }
         | Op::GetField(_)
+        | Op::NewEnum { .. }
+        | Op::EnumIs { .. }
+        | Op::EnumPayload
         | Op::Nop
         | Op::Halt => Ok(()),
         other => Err(WasmError::Unsupported {
@@ -1690,6 +1714,8 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         Op::NewStruct { fields, .. } => (fields.len(), 1),
         Op::Index => (2, 1),
         Op::GetField(_) => (1, 1),
+        Op::NewEnum { has_payload, .. } => (if *has_payload { 1 } else { 0 }, 1),
+        Op::EnumIs { .. } | Op::EnumPayload => (1, 1),
         Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => (*argc, 1),
         Op::Jump(_) | Op::Nop => (0, 0),
         Op::Ret | Op::Halt => (0, 0),
@@ -1927,6 +1953,39 @@ fn emit_operation(
             }
             body.instruction(&Instruction::LocalGet(context.managed_scratch));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
+        }
+        Op::NewEnum { name, variant, has_payload } => {
+            let output_slot = height - if *has_payload { 1 } else { 0 };
+            let output = layout.stack_base + output_slot as u32;
+            body.instruction(&Instruction::I32Const(16));
+            body.instruction(&Instruction::I32Const(2));
+            body.instruction(&Instruction::Call(context.allocator_function.expect("enums require allocator")));
+            body.instruction(&Instruction::LocalSet(context.managed_scratch));
+            for (slot, value_local) in [(0u32, None), (1u32, if *has_payload { Some(output) } else { None })] {
+                body.instruction(&Instruction::LocalGet(context.managed_scratch));
+                body.instruction(&Instruction::I32WrapI64);
+                if slot != 0 { body.instruction(&Instruction::I32Const(8)); body.instruction(&Instruction::I32Add); }
+                if slot == 0 { body.instruction(&Instruction::I64Const(enum_tag(name, variant) as i64)); }
+                else if let Some(local) = value_local { body.instruction(&Instruction::LocalGet(local)); }
+                else { body.instruction(&Instruction::I64Const(0)); }
+                body.instruction(&Instruction::I64Store(MemArg { offset: 0, align: 3, memory_index: 0 }));
+            }
+            body.instruction(&Instruction::LocalGet(context.managed_scratch));
+            body.instruction(&Instruction::LocalSet(output));
+        }
+        Op::EnumIs { name, variant } => {
+            let output = layout.stack_base + (height - 1) as u32;
+            body.instruction(&Instruction::LocalGet(output)); body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+            body.instruction(&Instruction::I64Const(enum_tag(name, variant) as i64)); body.instruction(&Instruction::I64Eq);
+            body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::LocalSet(output));
+        }
+        Op::EnumPayload => {
+            let output = layout.stack_base + (height - 1) as u32;
+            body.instruction(&Instruction::LocalGet(output)); body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Const(8)); body.instruction(&Instruction::I32Add);
+            body.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+            body.instruction(&Instruction::LocalSet(output));
         }
         Op::GetField(_) => {
             let output = layout.stack_base + (height - 1) as u32;
@@ -3705,15 +3764,24 @@ mod tests {
     }
 
     #[test]
+    fn emits_managed_enum_tags_and_payloads() {
+        let module = module_with(
+            vec![
+                Op::PushInt(42), Op::NewEnum { name: "Maybe".into(), variant: "Some".into(), has_payload: true },
+                Op::StoreLocal(0), Op::PushLocal(0),
+                Op::EnumIs { name: "Maybe".into(), variant: "Some".into() }, Op::Pop,
+                Op::PushLocal(0), Op::EnumPayload, Op::Ret,
+            ],
+            1,
+        );
+        validate(&module);
+    }
+
+    #[test]
     fn rejects_unsupported_runtime_values() {
         let module = module_with(
             vec![
-                Op::PushInt(1),
-                Op::NewEnum {
-                    name: "Maybe".into(),
-                    variant: "Some".into(),
-                    has_payload: true,
-                },
+                Op::MakeClosure { function: 0, captures: Vec::new() },
                 Op::Ret,
             ],
             0,
