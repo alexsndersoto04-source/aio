@@ -202,6 +202,13 @@ struct HostImports {
     natives: HashMap<&'static str, u32>,
 }
 
+fn string_native_arity(name: &str) -> Option<usize> {
+    match name {
+        "std::text::equals" => Some(2),
+        _ => None,
+    }
+}
+
 fn array_native_arity(name: &str) -> Option<usize> {
     match name {
         "std::array::set" => Some(3),
@@ -297,6 +304,11 @@ pub fn compile_artifact_with_source_root(
     let needs_concat = layouts
         .iter()
         .any(|layout| !layout.string_adds.is_empty());
+    let needs_string_equals = module.functions.iter().any(|function| {
+        function.code.iter().any(|operation| {
+            matches!(operation, Op::CallNative { name, .. } if name == "std::text::equals")
+        })
+    });
     let needs_arrays = module.functions.iter().any(|function| {
         function
             .code
@@ -350,6 +362,11 @@ pub fn compile_artifact_with_source_root(
     let allocator_function = needs_allocator.then_some(
         function_bias + module.functions.len() as u32 + if needs_concat { 1 } else { 0 },
     );
+    let string_equals_function = needs_string_equals.then_some(
+        function_bias + module.functions.len() as u32
+            + if needs_concat { 1 } else { 0 }
+            + if needs_allocator { 1 } else { 0 },
+    );
     let mut output = Module::new();
 
     let mut types = TypeSection::new();
@@ -381,6 +398,10 @@ pub fn compile_artifact_with_source_root(
             .ty()
             .function([ValType::I32, ValType::I32], [ValType::I64]);
     }
+    let string_equals_type = types.len();
+    if needs_string_equals {
+        types.ty().function([ValType::I64, ValType::I64], [ValType::I64]);
+    }
     output.section(&types);
 
     if !host_imports.definitions.is_empty() {
@@ -404,6 +425,9 @@ pub fn compile_artifact_with_source_root(
     }
     if needs_allocator {
         functions.function(allocator_type);
+    }
+    if needs_string_equals {
+        functions.function(string_equals_type);
     }
     output.section(&functions);
 
@@ -487,6 +511,7 @@ pub fn compile_artifact_with_source_root(
             &host_imports,
             concat_function,
             allocator_function,
+            string_equals_function,
         )?);
     }
     if needs_concat {
@@ -494,6 +519,9 @@ pub fn compile_artifact_with_source_root(
     }
     if needs_allocator {
         code.function(&compile_host_string_allocator());
+    }
+    if needs_string_equals {
+        code.function(&compile_string_equals());
     }
     output.section(&code);
 
@@ -810,6 +838,7 @@ fn compile_function(
     host_imports: &HostImports,
     concat_function: Option<u32>,
     allocator_function: Option<u32>,
+    string_equals_function: Option<u32>,
 ) -> Result<Function, WasmError> {
     let extra = function
         .locals
@@ -837,6 +866,7 @@ fn compile_function(
         host_imports,
         concat_function,
         allocator_function,
+        string_equals_function,
         managed_scratch: layout.pc_local,
         pc_local: layout.pc_local + 1,
     };
@@ -1701,7 +1731,8 @@ fn validate_operation(
             operation: format!("Print({argc}) requires exactly one browser-host argument"),
         }),
         Op::CallNative { name, argc } => {
-            let expected = array_native_arity(name)
+            let expected = string_native_arity(name)
+                .or_else(|| array_native_arity(name))
                 .or_else(|| wasm_heap_native_arity(name))
                 .or_else(|| web_import(name).map(|import| import.params))
                 .ok_or_else(|| WasmError::Unsupported {
@@ -1831,6 +1862,7 @@ struct EmitContext<'a> {
     host_imports: &'a HostImports,
     concat_function: Option<u32>,
     allocator_function: Option<u32>,
+    string_equals_function: Option<u32>,
     managed_scratch: u32,
     pc_local: u32,
 }
@@ -1942,6 +1974,13 @@ fn emit_operation(
             }
             body.instruction(&Instruction::Call(*callee as u32 + function_bias));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
+        }
+        Op::CallNative { name, .. } if name == "std::text::equals" => {
+            let output = layout.stack_base + (height - 2) as u32;
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::LocalGet(output + 1));
+            body.instruction(&Instruction::Call(context.string_equals_function.expect("string equals helper")));
+            body.instruction(&Instruction::LocalSet(output));
         }
         Op::CallNative { name, .. } if wasm_heap_native_arity(name).is_some() => {
             emit_wasm_heap_native(name, context, height, body);
@@ -2670,6 +2709,22 @@ fn emit_allocation_counters(body: &mut Function, previous_heap: u32) {
     body.instruction(&Instruction::I64ExtendI32U);
     body.instruction(&Instruction::GlobalSet(7));
     body.instruction(&Instruction::End);
+}
+
+fn compile_string_equals() -> Function {
+    const LEFT_PTR: u32 = 2; const RIGHT_PTR: u32 = 3; const LENGTH: u32 = 4; const INDEX: u32 = 5;
+    let mut body = Function::new([(4, ValType::I32)]);
+    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU);
+    body.instruction(&Instruction::LocalGet(1)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU);
+    body.instruction(&Instruction::I64Ne); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
+    for (parameter, pointer) in [(0, LEFT_PTR), (1, RIGHT_PTR)] { body.instruction(&Instruction::LocalGet(parameter)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(pointer)); }
+    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(LENGTH));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::LocalGet(LENGTH)); body.instruction(&Instruction::I32GeU); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
+    for pointer in [LEFT_PTR, RIGHT_PTR] { body.instruction(&Instruction::LocalGet(pointer)); body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I64Load8U(MemArg { offset: 0, align: 0, memory_index: 0 })); }
+    body.instruction(&Instruction::I64Ne); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::LocalSet(INDEX)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::End); body
 }
 
 fn compile_string_concat() -> Function {
@@ -3635,6 +3690,13 @@ mod tests {
             0,
         );
         assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));
+    }
+
+    #[test]
+    fn emits_content_based_utf8_string_equality() {
+        let mut module = module_with(vec![Op::PushStr(0), Op::PushStr(0), Op::CallNative { name: "std::text::equals".into(), argc: 2 }, Op::Ret], 0);
+        module.string_table.push("same 🚀".into());
+        validate(&module);
     }
 
     #[test]
