@@ -32,6 +32,8 @@ pub struct FunctionDecl {
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub body: Option<Block>,
+    pub is_extern: bool,
+    pub abi: Option<String>,
     pub span: Span,
 }
 

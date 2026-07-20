@@ -20,7 +20,7 @@ impl Span {
 pub enum TokenKind {
     Let, Mut, Fn, Return, If, Else, Match, For, While, Loop,
     Break, Continue, In, Struct, Enum, Trait, Impl, Module, Import,
-    Pub, Const, Unsafe, Spawn, Go, True, False, Nil, Self_, As,
+    Pub, Const, Unsafe, Spawn, Go, True, False, Nil, Self_, As, Extern,
     Plus, Minus, Star, Slash, Percent, Ampersand, Pipe, Caret, Tilde,
     Bang, Question, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
     ThinArrow, FatArrow, EqEq, NotEq, LtEq, GtEq, Lt, Gt, LazyAnd,
@@ -244,7 +244,7 @@ impl Lexer {
             "import" => TokenKind::Import, "pub" => TokenKind::Pub, "const" => TokenKind::Const,
             "unsafe" => TokenKind::Unsafe, "spawn" => TokenKind::Spawn, "go" => TokenKind::Go,
             "true" => TokenKind::True, "false" => TokenKind::False, "nil" => TokenKind::Nil,
-            "self" => TokenKind::Self_, "as" => TokenKind::As,
+            "self" => TokenKind::Self_, "as" => TokenKind::As, "extern" => TokenKind::Extern,
             _ => TokenKind::Ident(ident),
         }
     }
@@ -267,6 +267,7 @@ fn is_ident_start(c: char) -> bool { c == '_' || c.is_alphabetic() }
 fn is_ident_continue(c: char) -> bool { c == '_' || c.is_alphanumeric() }
 
 #[cfg(test)]
+#[allow(unused_mut)]
 mod tests {
     use super::*;
 
@@ -277,11 +278,12 @@ mod tests {
 
     #[test]
     fn lexes_keywords_operators_and_ranges() {
-        let tokens = kinds("fn let if <= != 0..20 0..=20");
+        let tokens = kinds("fn let if <= != 0..20 0..=20 extern");
         assert!(matches!(tokens[0], TokenKind::Fn));
         assert!(tokens.contains(&TokenKind::LtEq));
         assert!(tokens.contains(&TokenKind::Range));
         assert!(tokens.contains(&TokenKind::RangeInclusive));
+        assert!(tokens.contains(&TokenKind::Extern));
     }
 
     #[test]

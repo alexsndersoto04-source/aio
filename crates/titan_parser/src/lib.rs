@@ -41,7 +41,7 @@ impl Parser {
     fn parse_item(&mut self) -> Result<Item> {
         self.eat(TokenKind::Pub);
         match self.peek_kind() {
-            Some(TokenKind::Fn) => self.parse_function().map(Item::Function),
+            Some(TokenKind::Fn) | Some(TokenKind::Extern) => self.parse_function().map(Item::Function),
             Some(TokenKind::Struct) => self.parse_struct().map(Item::Struct),
             Some(TokenKind::Enum) => self.parse_enum().map(Item::Enum),
             Some(TokenKind::Trait) => self.parse_trait().map(Item::Trait),
@@ -54,6 +54,17 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Result<FunctionDecl> {
+        let is_extern = self.eat(TokenKind::Extern);
+        let abi = if is_extern {
+            if let Some(TokenKind::StringLit(s)) = self.peek_kind().cloned() {
+                self.advance();
+                Some(s)
+            } else {
+                Some("C".to_string())
+            }
+        } else {
+            None
+        };
         let start = self.expect(TokenKind::Fn)?;
         let name = self.expect_ident()?;
         self.expect(TokenKind::LParen)?;
@@ -73,7 +84,7 @@ impl Parser {
             self.expect(TokenKind::LBrace)?;
             Some(self.parse_block_after_open(start)?)
         };
-        Ok(FunctionDecl { name, source_file: None, params, return_type, body, span: start })
+        Ok(FunctionDecl { name, source_file: None, params, return_type, body, is_extern, abi, span: start })
     }
 
     fn parse_struct(&mut self) -> Result<StructDecl> {
@@ -220,7 +231,7 @@ impl Parser {
                 stmts.push(Stmt::Let { name, type_ann, value, span });
                 continue;
             }
-            if self.at_any(&[TokenKind::Fn, TokenKind::Struct, TokenKind::Enum, TokenKind::Const]) {
+            if self.at_any(&[TokenKind::Fn, TokenKind::Extern, TokenKind::Struct, TokenKind::Enum, TokenKind::Const]) {
                 stmts.push(Stmt::Item(self.parse_item()?));
                 continue;
             }
@@ -547,7 +558,7 @@ impl Parser {
     fn message(&self, message: &str) -> ParseError { let s = self.span(); ParseError::Message { message: message.into(), line: s.line, column: s.column } }
     fn synchronize_item(&mut self) {
         while !self.at(TokenKind::Eof) {
-            if self.at_any(&[TokenKind::Fn, TokenKind::Struct, TokenKind::Enum, TokenKind::Trait, TokenKind::Impl, TokenKind::Module, TokenKind::Import, TokenKind::Const]) { return; }
+            if self.at_any(&[TokenKind::Fn, TokenKind::Extern, TokenKind::Struct, TokenKind::Enum, TokenKind::Trait, TokenKind::Impl, TokenKind::Module, TokenKind::Import, TokenKind::Const]) { return; }
             self.advance();
         }
     }
@@ -628,4 +639,24 @@ mod tests {
 
     #[test]
     fn rejects_invalid_programs() { assert!(parse("fn broken( {").is_err()); }
+
+    #[test]
+    fn parses_extern_functions() {
+        let program = parse("extern \"C\" fn puts(s: &str) -> int; extern fn getpid() -> int;").unwrap();
+        assert_eq!(program.items.len(), 2);
+        if let Item::Function(f1) = &program.items[0] {
+            assert!(f1.is_extern);
+            assert_eq!(f1.abi.as_deref(), Some("C"));
+            assert!(f1.body.is_none());
+        } else {
+            panic!("expected function");
+        }
+        if let Item::Function(f2) = &program.items[1] {
+            assert!(f2.is_extern);
+            assert_eq!(f2.abi.as_deref(), Some("C"));
+            assert!(f2.body.is_none());
+        } else {
+            panic!("expected function");
+        }
+    }
 }
