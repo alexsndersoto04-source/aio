@@ -235,6 +235,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::freestanding_cpu::invoke_syscall", [Int, Int, Int, Int], Int),
     native!("std::freestanding_cpu::get_last_fault_addr", [], Int),
     native!("std::freestanding_cpu::shutdown", [], Bool),
+    native!("std::freestanding_mmio::init_mmio_region", [Int, Int], Bool),
+    native!("std::freestanding_mmio::read_mmio_u32", [Int], Int),
+    native!("std::freestanding_mmio::write_mmio_u32", [Int, Int], Bool),
+    native!("std::freestanding_mmio::serial_init", [Int, Int], Bool),
+    native!("std::freestanding_mmio::serial_write_str", [String], Int),
+    native!("std::freestanding_mmio::serial_get_buffer", [], String),
+    native!("std::freestanding_mmio::shutdown", [], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

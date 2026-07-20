@@ -232,6 +232,14 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::freestanding_cpu::invoke_syscall" => { let num = int!(); let a0 = int!(); let a1 = int!(); let a2 = int!(); Value::Int(titan_freestanding_cpu_invoke_syscall(num as u32, a0 as u64, a1 as u64, a2 as u64) as i64) }
         "std::freestanding_cpu::get_last_fault_addr" => Value::Int(titan_freestanding_cpu_get_last_fault_addr() as i64),
         "std::freestanding_cpu::shutdown" => Value::Bool(titan_freestanding_cpu_shutdown()),
+        // Phase 9: Freestanding MMIO & UART Serial Bindings
+        "std::freestanding_mmio::init_mmio_region" => { let base = int!(); let size = int!(); Value::Bool(titan_freestanding_mmio_init_mmio_region(base as u64, size as u64)) }
+        "std::freestanding_mmio::read_mmio_u32" => { let paddr = int!(); Value::Int(titan_freestanding_mmio_read_mmio_u32(paddr as u64) as i64) }
+        "std::freestanding_mmio::write_mmio_u32" => { let paddr = int!(); let val = int!(); Value::Bool(titan_freestanding_mmio_write_mmio_u32(paddr as u64, val as u32)) }
+        "std::freestanding_mmio::serial_init" => { let base = int!(); let baud = int!(); Value::Bool(titan_freestanding_mmio_serial_init(base as u64, baud as u32)) }
+        "std::freestanding_mmio::serial_write_str" => { let text = string!(); Value::Int(titan_freestanding_mmio_serial_write_str(&text) as i64) }
+        "std::freestanding_mmio::serial_get_buffer" => Value::Str(titan_freestanding_mmio_serial_get_buffer()),
+        "std::freestanding_mmio::shutdown" => Value::Bool(titan_freestanding_mmio_shutdown()),
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
@@ -444,6 +452,29 @@ pub fn titan_freestanding_cpu_shutdown() -> bool {
     titan_stdlib::freestanding_cpu::shutdown()
 }
 
+// --- Phase 9: Freestanding MMIO & UART Serial Bindings ---
+pub fn titan_freestanding_mmio_init_mmio_region(base_paddr: u64, size_bytes: u64) -> bool {
+    titan_stdlib::freestanding_mmio::init_mmio_region(base_paddr, size_bytes)
+}
+pub fn titan_freestanding_mmio_read_mmio_u32(paddr: u64) -> u32 {
+    titan_stdlib::freestanding_mmio::read_mmio_u32(paddr)
+}
+pub fn titan_freestanding_mmio_write_mmio_u32(paddr: u64, value: u32) -> bool {
+    titan_stdlib::freestanding_mmio::write_mmio_u32(paddr, value)
+}
+pub fn titan_freestanding_mmio_serial_init(uart_base_paddr: u64, baudrate: u32) -> bool {
+    titan_stdlib::freestanding_mmio::serial_init(uart_base_paddr, baudrate)
+}
+pub fn titan_freestanding_mmio_serial_write_str(text: &str) -> usize {
+    titan_stdlib::freestanding_mmio::serial_write_str(text)
+}
+pub fn titan_freestanding_mmio_serial_get_buffer() -> String {
+    titan_stdlib::freestanding_mmio::serial_get_buffer()
+}
+pub fn titan_freestanding_mmio_shutdown() -> bool {
+    titan_stdlib::freestanding_mmio::shutdown()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +648,40 @@ mod tests {
         ], RuntimeCapabilities::all()).unwrap(), Value::Int(0x9000_0000 + 60));
         
         assert_eq!(invoke("std::freestanding_cpu::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+    }
+    #[test]
+    fn test_freestanding_mmio_and_kernel_demo() {
+        // 1. Inicializar región MMIO genérica y verificar lectura/escritura volátil
+        assert_eq!(invoke("std::freestanding_mmio::init_mmio_region", vec![
+            Value::Int(0x3F00_0000), Value::Int(0x1000)
+        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        
+        assert_eq!(invoke("std::freestanding_mmio::write_mmio_u32", vec![
+            Value::Int(0x3F00_0004), Value::Int(0x1234_5678)
+        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        assert_eq!(invoke("std::freestanding_mmio::read_mmio_u32", vec![Value::Int(0x3F00_0004)], RuntimeCapabilities::all()).unwrap(), Value::Int(0x1234_5678));
+
+        // 2. Inicializar puerto serial UART bare-metal (0x1000_0000 en ARM64 PL011) a 115200 baudios
+        assert_eq!(invoke("std::freestanding_mmio::serial_init", vec![
+            Value::Int(0x1000_0000), Value::Int(115200)
+        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+
+        // 3. Simular secuencia real de arranque de un Demo Kernel bare-metal escrito en TITAN
+        assert_eq!(invoke("std::freestanding_mmio::serial_write_str", vec![
+            Value::Str("[BOOT] TITAN Bare-Metal Kernel Starting...
+".into())
+        ], RuntimeCapabilities::all()).unwrap(), Value::Int(43));
+        
+        assert_eq!(invoke("std::freestanding_mmio::serial_write_str", vec![
+            Value::Str("[MMIO] UART PL011 Serial Driver Online.
+".into())
+        ], RuntimeCapabilities::all()).unwrap(), Value::Int(40));
+
+        let buffer = invoke("std::freestanding_mmio::serial_get_buffer", vec![], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(buffer, Value::Str("[BOOT] TITAN Bare-Metal Kernel Starting...
+[MMIO] UART PL011 Serial Driver Online.
+".into()));
+
+        assert_eq!(invoke("std::freestanding_mmio::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
     }
 }
