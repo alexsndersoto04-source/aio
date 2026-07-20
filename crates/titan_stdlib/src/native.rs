@@ -205,6 +205,16 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::audio::play", [Int, Bool], Bool),
     native!("std::audio::set_volume", [Int, Float], Bool),
     native!("std::audio::stop", [Int], Bool),
+    native!("std::gui::init", [], Bool),
+    native!("std::gui::create_container", [String, Int, Int], Int),
+    native!("std::gui::add_button", [Int, String, Int, Int, Int, Int], Int),
+    native!("std::gui::add_label", [Int, String, Int, Int], Int),
+    native!("std::gui::set_text", [Int, String], Bool),
+    native!("std::gui::get_text", [Int], String),
+    native!("std::gui::trigger_click", [Int], Bool),
+    native!("std::gui::is_clicked", [Int], Bool),
+    native!("std::gui::child_count", [Int], Int),
+    native!("std::gui::shutdown", [], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

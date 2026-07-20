@@ -198,6 +198,17 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::audio::play" => { let handle = int!(); let loop_audio = boolean!(); Value::Bool(titan_audio_play(handle, loop_audio)) }
         "std::audio::set_volume" => { let handle = int!(); let volume = float!(); Value::Bool(titan_audio_set_volume(handle, volume)) }
         "std::audio::stop" => { let handle = int!(); Value::Bool(titan_audio_stop(handle)) }
+        // Phase 8: GUI Native Bindings
+        "std::gui::init" => Value::Bool(titan_gui_init()),
+        "std::gui::create_container" => { let title = string!(); let width = int!(); let height = int!(); Value::Int(titan_gui_create_container(&title, width, height)) }
+        "std::gui::add_button" => { let parent = int!(); let label = string!(); let x = int!(); let y = int!(); let w = int!(); let h = int!(); Value::Int(titan_gui_add_button(parent, &label, x, y, w, h)) }
+        "std::gui::add_label" => { let parent = int!(); let text = string!(); let x = int!(); let y = int!(); Value::Int(titan_gui_add_label(parent, &text, x, y)) }
+        "std::gui::set_text" => { let id = int!(); let text = string!(); Value::Bool(titan_gui_set_text(id, &text)) }
+        "std::gui::get_text" => { let id = int!(); Value::Str(titan_gui_get_text(id)) }
+        "std::gui::trigger_click" => { let id = int!(); Value::Bool(titan_gui_trigger_click(id)) }
+        "std::gui::is_clicked" => { let id = int!(); Value::Bool(titan_gui_is_clicked(id)) }
+        "std::gui::child_count" => { let id = int!(); Value::Int(titan_gui_child_count(id) as i64) }
+        "std::gui::shutdown" => Value::Bool(titan_gui_shutdown()),
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
@@ -312,6 +323,38 @@ pub fn titan_audio_stop(handle: i64) -> bool {
     titan_stdlib::audio::stop(handle)
 }
 
+// --- Phase 8: GUI Native Bindings ---
+pub fn titan_gui_init() -> bool {
+    titan_stdlib::gui::init()
+}
+pub fn titan_gui_create_container(title: &str, width: i64, height: i64) -> i64 {
+    titan_stdlib::gui::create_container(title, width, height)
+}
+pub fn titan_gui_add_button(parent_id: i64, label: &str, x: i64, y: i64, width: i64, height: i64) -> i64 {
+    titan_stdlib::gui::add_button(parent_id, label, x, y, width, height)
+}
+pub fn titan_gui_add_label(parent_id: i64, text: &str, x: i64, y: i64) -> i64 {
+    titan_stdlib::gui::add_label(parent_id, text, x, y)
+}
+pub fn titan_gui_set_text(widget_id: i64, new_text: &str) -> bool {
+    titan_stdlib::gui::set_text(widget_id, new_text)
+}
+pub fn titan_gui_get_text(widget_id: i64) -> String {
+    titan_stdlib::gui::get_text(widget_id)
+}
+pub fn titan_gui_trigger_click(widget_id: i64) -> bool {
+    titan_stdlib::gui::trigger_click(widget_id)
+}
+pub fn titan_gui_is_clicked(widget_id: i64) -> bool {
+    titan_stdlib::gui::is_clicked(widget_id)
+}
+pub fn titan_gui_child_count(parent_id: i64) -> usize {
+    titan_stdlib::gui::child_count(parent_id)
+}
+pub fn titan_gui_shutdown() -> bool {
+    titan_stdlib::gui::shutdown()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +416,38 @@ mod tests {
             let _ = invoke("std::audio::play", vec![Value::Int(handle), Value::Bool(true)], RuntimeCapabilities::all()).unwrap();
             let _ = invoke("std::audio::set_volume", vec![Value::Int(handle), Value::Float(0.8)], RuntimeCapabilities::all()).unwrap();
             let _ = invoke("std::audio::stop", vec![Value::Int(handle)], RuntimeCapabilities::all()).unwrap();
+        }
+    }
+    #[test]
+    fn test_gui_native_bindings() {
+        assert_eq!(invoke("std::gui::init", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        
+        let root = invoke("std::gui::create_container", vec![
+            Value::Str("VM App".into()), Value::Int(1024), Value::Int(768)
+        ], RuntimeCapabilities::all()).unwrap();
+        
+        if let Value::Int(root_id) = root {
+            assert!(root_id > 0);
+            let btn = invoke("std::gui::add_button", vec![
+                Value::Int(root_id), Value::Str("Submit".into()), Value::Int(20), Value::Int(20), Value::Int(150), Value::Int(45)
+            ], RuntimeCapabilities::all()).unwrap();
+            
+            if let Value::Int(btn_id) = btn {
+                assert!(btn_id > 0);
+                assert_eq!(invoke("std::gui::child_count", vec![Value::Int(root_id)], RuntimeCapabilities::all()).unwrap(), Value::Int(1));
+                
+                assert_eq!(invoke("std::gui::set_text", vec![Value::Int(btn_id), Value::Str("Send".into())], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+                assert_eq!(invoke("std::gui::get_text", vec![Value::Int(btn_id)], RuntimeCapabilities::all()).unwrap(), Value::Str("Send".into()));
+                
+                assert_eq!(invoke("std::gui::is_clicked", vec![Value::Int(btn_id)], RuntimeCapabilities::all()).unwrap(), Value::Bool(false));
+                assert_eq!(invoke("std::gui::trigger_click", vec![Value::Int(btn_id)], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+                assert_eq!(invoke("std::gui::is_clicked", vec![Value::Int(btn_id)], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+            } else {
+                panic!("add_button should return Int handle");
+            }
+            assert_eq!(invoke("std::gui::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        } else {
+            panic!("create_container should return Int handle");
         }
     }
 }
