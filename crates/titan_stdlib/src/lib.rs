@@ -4,6 +4,7 @@ pub mod game;
 pub mod audio;
 pub mod gui;
 pub mod freestanding;
+pub mod freestanding_memory;
 pub mod bytes;
 pub mod cache;
 pub mod checksum;

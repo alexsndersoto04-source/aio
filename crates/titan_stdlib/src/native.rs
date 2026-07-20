@@ -221,6 +221,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::freestanding::generate_startup_asm", [String, String], String),
     native!("std::freestanding::get_active_target", [], String),
     native!("std::freestanding::shutdown", [], Bool),
+    native!("std::freestanding_memory::init_frame_allocator", [Int, Int], Bool),
+    native!("std::freestanding_memory::allocate_frame", [], Int),
+    native!("std::freestanding_memory::deallocate_frame", [Int], Bool),
+    native!("std::freestanding_memory::map_page", [Int, Int, Int], Bool),
+    native!("std::freestanding_memory::translate_page", [Int], Int),
+    native!("std::freestanding_memory::free_frames_count", [], Int),
+    native!("std::freestanding_memory::shutdown", [], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

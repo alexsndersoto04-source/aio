@@ -216,6 +216,14 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::freestanding::generate_startup_asm" => { let arch = string!(); let entry = string!(); Value::Str(titan_freestanding_generate_startup_asm(&arch, &entry)) }
         "std::freestanding::get_active_target" => Value::Str(titan_freestanding_get_active_target()),
         "std::freestanding::shutdown" => Value::Bool(titan_freestanding_shutdown()),
+        // Phase 9: Freestanding Memory & Paging Bindings
+        "std::freestanding_memory::init_frame_allocator" => { let base = int!(); let size = int!(); Value::Bool(titan_freestanding_memory_init_frame_allocator(base as u64, size as u64)) }
+        "std::freestanding_memory::allocate_frame" => Value::Int(titan_freestanding_memory_allocate_frame() as i64),
+        "std::freestanding_memory::deallocate_frame" => { let paddr = int!(); Value::Bool(titan_freestanding_memory_deallocate_frame(paddr as u64)) }
+        "std::freestanding_memory::map_page" => { let vaddr = int!(); let paddr = int!(); let flags = int!(); Value::Bool(titan_freestanding_memory_map_page(vaddr as u64, paddr as u64, flags as u32)) }
+        "std::freestanding_memory::translate_page" => { let vaddr = int!(); Value::Int(titan_freestanding_memory_translate_page(vaddr as u64) as i64) }
+        "std::freestanding_memory::free_frames_count" => Value::Int(titan_freestanding_memory_free_frames_count() as i64),
+        "std::freestanding_memory::shutdown" => Value::Bool(titan_freestanding_memory_shutdown()),
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
@@ -382,6 +390,29 @@ pub fn titan_freestanding_shutdown() -> bool {
     titan_stdlib::freestanding::shutdown()
 }
 
+// --- Phase 9: Freestanding Memory & Paging Bindings ---
+pub fn titan_freestanding_memory_init_frame_allocator(base_paddr: u64, total_size_bytes: u64) -> bool {
+    titan_stdlib::freestanding_memory::init_frame_allocator(base_paddr, total_size_bytes)
+}
+pub fn titan_freestanding_memory_allocate_frame() -> u64 {
+    titan_stdlib::freestanding_memory::allocate_frame()
+}
+pub fn titan_freestanding_memory_deallocate_frame(paddr: u64) -> bool {
+    titan_stdlib::freestanding_memory::deallocate_frame(paddr)
+}
+pub fn titan_freestanding_memory_map_page(vaddr: u64, paddr: u64, flags: u32) -> bool {
+    titan_stdlib::freestanding_memory::map_page(vaddr, paddr, flags)
+}
+pub fn titan_freestanding_memory_translate_page(vaddr: u64) -> u64 {
+    titan_stdlib::freestanding_memory::translate_page(vaddr)
+}
+pub fn titan_freestanding_memory_free_frames_count() -> u64 {
+    titan_stdlib::freestanding_memory::free_frames_count()
+}
+pub fn titan_freestanding_memory_shutdown() -> bool {
+    titan_stdlib::freestanding_memory::shutdown()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,5 +535,32 @@ mod tests {
         }
 
         assert_eq!(invoke("std::freestanding::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+    }
+    #[test]
+    fn test_freestanding_memory_native_bindings() {
+        assert_eq!(invoke("std::freestanding_memory::init_frame_allocator", vec![
+            Value::Int(0x200000), Value::Int(0x8000) // 32KB = 8 frames de 4KB
+        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        
+        assert_eq!(invoke("std::freestanding_memory::free_frames_count", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(8));
+        
+        let frame = invoke("std::freestanding_memory::allocate_frame", vec![], RuntimeCapabilities::all()).unwrap();
+        if let Value::Int(paddr) = frame {
+            assert_eq!(paddr, 0x200000);
+            assert_eq!(invoke("std::freestanding_memory::free_frames_count", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(7));
+            
+            assert_eq!(invoke("std::freestanding_memory::map_page", vec![
+                Value::Int(0x80000000), Value::Int(paddr), Value::Int(3)
+            ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+            
+            assert_eq!(invoke("std::freestanding_memory::translate_page", vec![Value::Int(0x80000010)], RuntimeCapabilities::all()).unwrap(), Value::Int(0x200010));
+            
+            assert_eq!(invoke("std::freestanding_memory::deallocate_frame", vec![Value::Int(paddr)], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+            assert_eq!(invoke("std::freestanding_memory::free_frames_count", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(8));
+        } else {
+            panic!("allocate_frame should return Int");
+        }
+        
+        assert_eq!(invoke("std::freestanding_memory::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
     }
 }
