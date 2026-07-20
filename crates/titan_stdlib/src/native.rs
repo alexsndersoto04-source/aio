@@ -178,6 +178,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::webgl_draw", [Int, String], Bool),
     native!("std::web::webgl_delete", [Int], Bool),
 
+    native!("std::window::create", [String, Int, Int], Int),
+    native!("std::window::is_open", [Int], Bool),
+    native!("std::window::close", [Int], Bool),
+    native!("std::window::set_title", [Int, String], Bool),
+    native!("std::window::resize", [Int, Int, Int], Bool),
+    native!("std::window::poll_events", [Int], Array),
+
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];
 

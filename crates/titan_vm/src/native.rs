@@ -165,6 +165,13 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::net::http_get" => { let response = stdlib::net::http_get(&string!()).map_err(error)?; let mut map = BTreeMap::new(); map.insert("status".into(), Value::Int(i64::from(response.status))); map.insert("body".into(), Value::Bytes(response.body)); map.insert("headers".into(), Value::Array(response.headers.into_iter().map(|(k,v)| Value::Tuple(vec![Value::Str(k), Value::Str(v)])).collect())); Value::Map(map) }
         "std::web::query_exists" | "std::web::set_text" | "std::web::set_html" | "std::web::set_attribute" | "std::web::add_class" | "std::web::remove_class" | "std::web::focus" | "std::web::set_title" | "std::web::listen" | "std::web::unlisten" | "std::web::event_type" | "std::web::event_value" | "std::web::event_key" | "std::web::event_target_id" | "std::web::event_checked" | "std::web::event_x" | "std::web::event_y" | "std::web::fetch" | "std::web::fetch_cancel" | "std::web::fetch_ok" | "std::web::fetch_status" | "std::web::fetch_body" | "std::web::fetch_url" | "std::web::fetch_error" | "std::web::fetch_headers" | "std::web::request" | "std::web::ws_connect" | "std::web::ws_send" | "std::web::ws_close" | "std::web::ws_id" | "std::web::ws_message" | "std::web::ws_protocol" | "std::web::ws_close_code" | "std::web::ws_close_reason" | "std::web::ws_was_clean" | "std::web::ws_error" | "std::web::canvas_resize" | "std::web::canvas_clear" | "std::web::canvas_fill_rect" | "std::web::canvas_stroke_rect" | "std::web::canvas_line" | "std::web::canvas_text" | "std::web::animation_start" | "std::web::animation_cancel" | "std::web::frame_id" | "std::web::frame_time_ms" | "std::web::frame_delta_ms" | "std::web::frame_count" | "std::web::webgl_supported" | "std::web::webgl_create" | "std::web::webgl_uniform_f32" | "std::web::webgl_draw" | "std::web::webgl_delete" => return Err("std::web functions require the WebAssembly browser host".into()),
         "std::wasm::heap_used" | "std::wasm::heap_capacity" | "std::wasm::heap_limit" | "std::wasm::heap_set_limit" | "std::wasm::heap_checkpoint" | "std::wasm::heap_restore" | "std::wasm::heap_allocations" | "std::wasm::heap_allocated_bytes" | "std::wasm::heap_restores" | "std::wasm::heap_reclaimed_bytes" | "std::wasm::heap_peak_used" | "std::wasm::heap_reset_counters" | "std::wasm::heap_scope_begin" | "std::wasm::heap_scope_end" => return Err("std::wasm heap functions require the WebAssembly backend".into()),
+        "std::window::create" => { let title = string!(); let w = int!() as u32; let h = int!() as u32; Value::Int(stdlib::window::create(&title, w, h) as i64) }
+        "std::window::is_open" => { let id = int!() as u64; Value::Bool(stdlib::window::is_open(id)) }
+        "std::window::close" => { let id = int!() as u64; Value::Bool(stdlib::window::close(id)) }
+        "std::window::set_title" => { let id = int!() as u64; let title = string!(); Value::Bool(stdlib::window::set_title(id, &title)) }
+        "std::window::resize" => { let id = int!() as u64; let w = int!() as u32; let h = int!() as u32; Value::Bool(stdlib::window::resize(id, w, h)) }
+        "std::window::poll_events" => { let id = int!() as u64; Value::Array(stdlib::window::poll_events(id).into_iter().map(Value::Str).collect()) }
+
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
         _ => return Err("registered function has no VM implementation".into()),
@@ -243,4 +250,22 @@ fn from_json(value: serde_json::Value) -> Result<Value, String> {
         serde_json::Value::Array(v) => Value::Array(v.into_iter().map(from_json).collect::<Result<_, _>>()?),
         serde_json::Value::Object(v) => Value::Map(v.into_iter().map(|(k,v)| Ok((k, from_json(v)?))).collect::<Result<_, String>>()?),
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_window_native_bindings() {
+        let win_id = invoke("std::window::create", vec![Value::Str("VM Window".into()), Value::Int(800), Value::Int(600)], RuntimeCapabilities::all()).unwrap();
+        assert!(matches!(win_id, Value::Int(i) if i > 0));
+        if let Value::Int(id) = win_id {
+            let is_open = invoke("std::window::is_open", vec![Value::Int(id)], RuntimeCapabilities::all()).unwrap();
+            assert_eq!(is_open, Value::Bool(true));
+            let closed = invoke("std::window::close", vec![Value::Int(id)], RuntimeCapabilities::all()).unwrap();
+            assert_eq!(closed, Value::Bool(true));
+        }
+    }
 }

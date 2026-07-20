@@ -23,6 +23,7 @@ pub mod testing;
 pub mod text;
 pub mod time;
 pub mod websocket;
+pub mod window;
 
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
