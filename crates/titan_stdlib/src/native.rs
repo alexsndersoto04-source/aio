@@ -195,6 +195,16 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::mobile::state", [], String),
     native!("std::mobile::trigger", [String], Bool),
     native!("std::mobile::poll_events", [], Array),
+    native!("std::game::init", [String, Int, Int], Bool),
+    native!("std::game::step", [], Float),
+    native!("std::game::fps", [], Int),
+    native!("std::game::check_collision", [Float, Float, Float, Float, Float, Float, Float, Float], Bool),
+    native!("std::audio::init", [], Bool),
+    native!("std::audio::load_wave", [Float, Int], Int),
+    native!("std::audio::sample_count", [Int], Int),
+    native!("std::audio::play", [Int, Bool], Bool),
+    native!("std::audio::set_volume", [Int, Float], Bool),
+    native!("std::audio::stop", [Int], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

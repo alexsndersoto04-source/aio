@@ -1,5 +1,7 @@
 //! Titan Standard Library.
 
+pub mod game;
+pub mod audio;
 pub mod bytes;
 pub mod cache;
 pub mod checksum;

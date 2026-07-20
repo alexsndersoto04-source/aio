@@ -18,6 +18,7 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
     macro_rules! int { () => { expect_int(take!())? }; }
     macro_rules! float { () => { expect_float(take!())? }; }
     macro_rules! array { () => { expect_array(take!())? }; }
+    macro_rules! boolean { () => { expect_bool(take!())? }; }
     Ok(match name {
         "std::text::length" => Value::Int(to_i64(stdlib::text::length(&string!()))?),
         "std::text::reverse" => Value::Str(stdlib::text::reverse(&string!())),
@@ -182,6 +183,21 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::mobile::state" => Value::Str(stdlib::mobile::get_state()),
         "std::mobile::trigger" => { let event = string!(); Value::Bool(stdlib::mobile::trigger_event(&event)) }
         "std::mobile::poll_events" => Value::Array(stdlib::mobile::poll_events().into_iter().map(Value::Str).collect()),
+        // Phase 8: Game & Audio
+        "std::game::init" => { let title = string!(); let width = int!(); let height = int!(); Value::Bool(titan_game_init(&title, width, height)) }
+        "std::game::step" => Value::Float(titan_game_step()),
+        "std::game::fps" => Value::Int(titan_game_fps()),
+        "std::game::check_collision" => {
+            let x1 = float!(); let y1 = float!(); let w1 = float!(); let h1 = float!();
+            let x2 = float!(); let y2 = float!(); let w2 = float!(); let h2 = float!();
+            Value::Bool(titan_game_check_collision((x1, y1), (w1, h1), (x2, y2), (w2, h2)))
+        }
+        "std::audio::init" => Value::Bool(titan_audio_init()),
+        "std::audio::load_wave" => { let freq_hz = float!(); let duration_ms = int!(); Value::Int(titan_audio_load_wave(freq_hz, duration_ms)) }
+        "std::audio::sample_count" => { let handle = int!(); Value::Int(titan_audio_sample_count(handle) as i64) }
+        "std::audio::play" => { let handle = int!(); let loop_audio = boolean!(); Value::Bool(titan_audio_play(handle, loop_audio)) }
+        "std::audio::set_volume" => { let handle = int!(); let volume = float!(); Value::Bool(titan_audio_set_volume(handle, volume)) }
+        "std::audio::stop" => { let handle = int!(); Value::Bool(titan_audio_stop(handle)) }
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
@@ -264,6 +280,38 @@ fn from_json(value: serde_json::Value) -> Result<Value, String> {
 }
 
 
+// --- Phase 8: Game Loop & Audio Native Bindings ---
+pub fn titan_game_init(title: &str, width: i64, height: i64) -> bool {
+    titan_stdlib::game::init(title, width, height)
+}
+pub fn titan_game_step() -> f64 {
+    titan_stdlib::game::step()
+}
+pub fn titan_game_fps() -> i64 {
+    titan_stdlib::game::fps()
+}
+pub fn titan_game_check_collision(pos1: (f64, f64), size1: (f64, f64), pos2: (f64, f64), size2: (f64, f64)) -> bool {
+    titan_stdlib::game::check_collision(pos1, size1, pos2, size2)
+}
+pub fn titan_audio_init() -> bool {
+    titan_stdlib::audio::init()
+}
+pub fn titan_audio_load_wave(freq_hz: f64, duration_ms: i64) -> i64 {
+    titan_stdlib::audio::load_wave(freq_hz, duration_ms)
+}
+pub fn titan_audio_sample_count(handle: i64) -> usize {
+    titan_stdlib::audio::sample_count(handle)
+}
+pub fn titan_audio_play(handle: i64, loop_audio: bool) -> bool {
+    titan_stdlib::audio::play(handle, loop_audio)
+}
+pub fn titan_audio_set_volume(handle: i64, volume: f64) -> bool {
+    titan_stdlib::audio::set_volume(handle, volume)
+}
+pub fn titan_audio_stop(handle: i64) -> bool {
+    titan_stdlib::audio::stop(handle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +350,29 @@ mod tests {
 
         let events = invoke("std::mobile::poll_events", vec![], RuntimeCapabilities::all()).unwrap();
         assert!(matches!(events, Value::Array(v) if !v.is_empty()));
+    }
+
+    #[test]
+    fn test_game_audio_native_bindings() {
+        let init_game = invoke("std::game::init", vec![Value::Str("VM Game".into()), Value::Int(800), Value::Int(600)], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(init_game, Value::Bool(true));
+        
+        let _ = invoke("std::game::step", vec![], RuntimeCapabilities::all()).unwrap();
+        let _ = invoke("std::game::fps", vec![], RuntimeCapabilities::all()).unwrap();
+        
+        let coll = invoke("std::game::check_collision", vec![
+            Value::Float(0.0), Value::Float(0.0), Value::Float(10.0), Value::Float(10.0),
+            Value::Float(2.0), Value::Float(2.0), Value::Float(10.0), Value::Float(10.0)
+        ], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(coll, Value::Bool(true));
+
+        assert_eq!(invoke("std::audio::init", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        let handle_val = invoke("std::audio::load_wave", vec![Value::Float(220.0), Value::Int(50)], RuntimeCapabilities::all()).unwrap();
+        if let Value::Int(handle) = handle_val {
+            let _ = invoke("std::audio::sample_count", vec![Value::Int(handle)], RuntimeCapabilities::all()).unwrap();
+            let _ = invoke("std::audio::play", vec![Value::Int(handle), Value::Bool(true)], RuntimeCapabilities::all()).unwrap();
+            let _ = invoke("std::audio::set_volume", vec![Value::Int(handle), Value::Float(0.8)], RuntimeCapabilities::all()).unwrap();
+            let _ = invoke("std::audio::stop", vec![Value::Int(handle)], RuntimeCapabilities::all()).unwrap();
+        }
     }
 }
