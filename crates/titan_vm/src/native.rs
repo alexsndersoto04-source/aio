@@ -172,6 +172,17 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::window::resize" => { let id = int!() as u64; let w = int!() as u32; let h = int!() as u32; Value::Bool(stdlib::window::resize(id, w, h)) }
         "std::window::poll_events" => { let id = int!() as u64; Value::Array(stdlib::window::poll_events(id).into_iter().map(Value::Str).collect()) }
 
+        "std::input::is_key_pressed" => { let key = string!(); Value::Bool(stdlib::input::is_key_pressed(&key)) }
+        "std::input::mouse_pos" => { let (x, y) = stdlib::input::mouse_pos(); Value::Array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y))]) }
+        "std::input::is_mouse_button_pressed" => { let btn = int!() as u8; Value::Bool(stdlib::input::is_mouse_button_pressed(btn)) }
+        "std::input::touch_pos" => { let idx = int!() as u32; let (x, y, active) = stdlib::input::touch_pos(idx); Value::Array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y)), Value::Bool(active)]) }
+        "std::clipboard::get_text" => Value::Str(stdlib::clipboard::get_text()),
+        "std::clipboard::set_text" => { let text = string!(); Value::Bool(stdlib::clipboard::set_text(&text)) }
+        "std::notify::send" => { let title = string!(); let body = string!(); Value::Bool(stdlib::clipboard::send_notification(&title, &body)) }
+        "std::mobile::state" => Value::Str(stdlib::mobile::get_state()),
+        "std::mobile::trigger" => { let event = string!(); Value::Bool(stdlib::mobile::trigger_event(&event)) }
+        "std::mobile::poll_events" => Value::Array(stdlib::mobile::poll_events().into_iter().map(Value::Str).collect()),
+
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
         _ => return Err("registered function has no VM implementation".into()),
@@ -267,5 +278,29 @@ mod tests {
             let closed = invoke("std::window::close", vec![Value::Int(id)], RuntimeCapabilities::all()).unwrap();
             assert_eq!(closed, Value::Bool(true));
         }
+    }
+
+    #[test]
+    fn test_input_clipboard_native_bindings() {
+        stdlib::input::set_key_state("Enter", true);
+        let pressed = invoke("std::input::is_key_pressed", vec![Value::Str("Enter".into())], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(pressed, Value::Bool(true));
+
+        invoke("std::clipboard::set_text", vec![Value::Str("Copied Data".into())], RuntimeCapabilities::all()).unwrap();
+        let clip = invoke("std::clipboard::get_text", vec![], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(clip, Value::Str("Copied Data".into()));
+
+        let notified = invoke("std::notify::send", vec![Value::Str("Alert".into()), Value::Str("Done".into())], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(notified, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_mobile_native_bindings() {
+        invoke("std::mobile::trigger", vec![Value::Str("onPause".into())], RuntimeCapabilities::all()).unwrap();
+        let state = invoke("std::mobile::state", vec![], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(state, Value::Str("Paused".into()));
+
+        let events = invoke("std::mobile::poll_events", vec![], RuntimeCapabilities::all()).unwrap();
+        assert!(matches!(events, Value::Array(v) if !v.is_empty()));
     }
 }

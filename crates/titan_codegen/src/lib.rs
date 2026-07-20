@@ -67,9 +67,9 @@ impl From<titan_lexer::Span> for SourceLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BytecodeType {
-    Unknown, Int, Bool, String, Struct(String), Enum(String), Array, Tuple,
+    Unknown, Int, Bool, String, Struct(String), Enum(String), Array, Tuple, Map,
     ArrayOf(Box<BytecodeType>), TupleOf(Vec<BytecodeType>),
-    EnumOf(String, Vec<BytecodeType>),
+    EnumOf(String, Vec<BytecodeType>), MapOf(Box<BytecodeType>, Box<BytecodeType>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -590,6 +590,11 @@ fn bytecode_type(ty: Option<&TypeExpr>, enum_schemas: &HashMap<String, Vec<Strin
             "int" => BytecodeType::Int,
             "bool" => BytecodeType::Bool,
             "string" => BytecodeType::String,
+            "map" if generics.len() == 2 => BytecodeType::MapOf(
+                Box::new(bytecode_type(Some(&generics[0]), enum_schemas)),
+                Box::new(bytecode_type(Some(&generics[1]), enum_schemas)),
+            ),
+            "map" => BytecodeType::Map,
             other if enum_schemas.contains_key(other) && !generics.is_empty() => BytecodeType::EnumOf(
                 other.into(),
                 generics.iter().map(|generic| bytecode_type(Some(generic), enum_schemas)).collect(),

@@ -205,7 +205,7 @@ struct HostImports {
 fn map_native_arity(name: &str) -> Option<usize> {
     match name {
         "std::map::new" => Some(0),
-        "std::map::length" => Some(1),
+        "std::map::length" | "std::map::keys" | "std::map::values" => Some(1),
         "std::map::insert_new" | "std::map::insert" => Some(3),
         "std::map::contains" | "std::map::get" | "std::map::remove" => Some(2),
         _ => None,
@@ -894,9 +894,9 @@ fn compile_function(
     let linear = is_linear_function(function, layout);
     let direct_control = has_reducible_control_flow(function, layout);
     let direct = linear || direct_control;
-    // One scratch i64 local supports managed-value construction without
-    // overwriting operand slots before their payload is copied.
-    let numeric_locals = extra + layout.stack_slots + 1;
+    // Two scratch i64 locals support managed-value construction and loop traversal
+    // without overwriting operand slots before their payload is copied.
+    let numeric_locals = extra + layout.stack_slots + 2;
     let mut locals = Vec::new();
     if numeric_locals > 0 {
         locals.push((numeric_locals as u32, ValType::I64));
@@ -916,7 +916,8 @@ fn compile_function(
         string_equals_function: runtime_functions.string_equals,
         string_hash_function: runtime_functions.string_hash,
         managed_scratch: layout.pc_local,
-        pc_local: layout.pc_local + 1,
+        managed_scratch_2: layout.pc_local + 1,
+        pc_local: layout.pc_local + 2,
     };
     let reachable: Vec<_> = layout
         .heights
@@ -1132,7 +1133,7 @@ fn collect_enum_tags(module: &CompiledModule) -> Result<BTreeMap<String, u64>, W
 
 fn enum_tag(name: &str, variant: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in name.bytes().chain([b':', b':']).chain(variant.bytes()) {
+    for byte in name.bytes().chain(*b"::").chain(variant.bytes()) {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -1378,6 +1379,7 @@ enum ValueKind {
     String,
     Array(Option<Box<ValueKind>>),
     Tuple(Option<Vec<ValueKind>>),
+    Map(Option<Box<ValueKind>>),
     Struct(Vec<String>),
     Enum { name: String, payloads: BTreeMap<String, Box<ValueKind>> },
     Unknown,
@@ -1395,8 +1397,12 @@ fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKin
         Some(BytecodeType::String) => ValueKind::String,
         Some(BytecodeType::Array) => ValueKind::Array(None),
         Some(BytecodeType::Tuple) => ValueKind::Tuple(None),
+        Some(BytecodeType::Map) => ValueKind::Map(None),
         Some(BytecodeType::ArrayOf(inner)) => {
             ValueKind::Array(Some(Box::new(metadata_kind(module, Some(inner)))))
+        }
+        Some(BytecodeType::MapOf(_, value_ty)) => {
+            ValueKind::Map(Some(Box::new(metadata_kind(module, Some(value_ty)))))
         }
         Some(BytecodeType::TupleOf(elements)) => ValueKind::Tuple(Some(
             elements.iter().map(|element| metadata_kind(module, Some(element))).collect(),
@@ -1666,7 +1672,44 @@ fn apply_type_effect(
                 module.functions.get(*function).and_then(|target| target.return_type.as_ref()),
             ));
         }
-        Op::CallNative { argc, .. } | Op::Print(argc) => {
+        Op::CallNative { name, argc } => {
+            let return_kind = match name.as_str() {
+                "std::map::new" => ValueKind::Map(None),
+                "std::map::insert_new" | "std::map::insert" if *argc >= 3 && state.stack.len() >= *argc => {
+                    let map_kind = &state.stack[state.stack.len() - *argc];
+                    let value_kind = &state.stack[state.stack.len() - 1];
+                    match map_kind {
+                        ValueKind::Map(Some(inner)) => ValueKind::Map(Some(inner.clone())),
+                        _ if *value_kind != ValueKind::Unknown => ValueKind::Map(Some(Box::new(value_kind.clone()))),
+                        _ => ValueKind::Map(None),
+                    }
+                }
+                "std::map::remove" if *argc >= 2 && state.stack.len() >= *argc => {
+                    match &state.stack[state.stack.len() - *argc] {
+                        ValueKind::Map(inner) => ValueKind::Map(inner.clone()),
+                        _ => ValueKind::Map(None),
+                    }
+                }
+                "std::map::get" if *argc >= 2 && state.stack.len() >= *argc => {
+                    match &state.stack[state.stack.len() - *argc] {
+                        ValueKind::Map(Some(inner)) => inner.as_ref().clone(),
+                        _ => ValueKind::Unknown,
+                    }
+                }
+                "std::map::values" if *argc >= 1 && state.stack.len() >= *argc => {
+                    match &state.stack[state.stack.len() - *argc] {
+                        ValueKind::Map(Some(inner)) => ValueKind::Array(Some(inner.clone())),
+                        _ => ValueKind::Array(None),
+                    }
+                }
+                "std::map::keys" => ValueKind::Array(Some(Box::new(ValueKind::String))),
+                "std::map::length" => ValueKind::Numeric,
+                _ => ValueKind::Unknown,
+            };
+            state.stack.truncate(state.stack.len() - *argc);
+            state.stack.push(return_kind);
+        }
+        Op::Print(argc) => {
             state.stack.truncate(state.stack.len() - *argc);
             state.stack.push(ValueKind::Unknown);
         }
@@ -1914,6 +1957,7 @@ struct EmitContext<'a> {
     string_equals_function: Option<u32>,
     string_hash_function: Option<u32>,
     managed_scratch: u32,
+    managed_scratch_2: u32,
     pc_local: u32,
 }
 
@@ -2037,6 +2081,9 @@ fn emit_operation(
             emit_collection_count(body, output, MemArg { offset: 0, align: 2, memory_index: 0 });
             body.instruction(&Instruction::I64ExtendI32U);
             body.instruction(&Instruction::LocalSet(output));
+        }
+        Op::CallNative { name, .. } if matches!(name.as_str(), "std::map::keys" | "std::map::values") => {
+            emit_map_keys_or_values(context, height, name == "std::map::keys", body);
         }
         Op::CallNative { name, .. } if name == "std::map::insert_new" => {
             emit_map_insert_new(context, height, body);
@@ -2552,6 +2599,61 @@ fn emit_map_remove(context: &EmitContext<'_>, height: usize, body: &mut Function
     body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add);
     emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::I64Sub); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Sub); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::LocalSet(map)); body.instruction(&Instruction::End);
+}
+
+fn emit_map_keys_or_values(context: &EmitContext<'_>, height: usize, is_keys: bool, body: &mut Function) {
+    const MAX_ELEMENTS: i32 = (u32::MAX / 8) as i32;
+    let map = context.layout.stack_base + (height - 1) as u32;
+    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(MAX_ELEMENTS));
+    body.instruction(&Instruction::I32GtU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("map keys/values require allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch_2));
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch_2));
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64GeU);
+    body.instruction(&Instruction::BrIf(1));
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch_2));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(3));
+    body.instruction(&Instruction::I32Shl);
+    body.instruction(&Instruction::I32Add);
+    emit_map_entry_address(body, map, context.managed_scratch_2, if is_keys { 8 } else { 16 });
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::I64Store(slot_memory));
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch_2));
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::I64Add);
+    body.instruction(&Instruction::LocalSet(context.managed_scratch_2));
+    body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(map));
 }
 
 fn emit_map_insert(context: &EmitContext<'_>, height: usize, body: &mut Function) {
@@ -3890,6 +3992,61 @@ mod tests {
     }
 
     #[test]
+    fn emits_browser_integrated_application_with_managed_maps() {
+        let mut module = module_with(
+            vec![
+                // 1. Initialize managed map state
+                Op::CallNative { name: "std::map::new".into(), argc: 0 },
+                Op::PushStr(0),
+                Op::PushInt(1),
+                Op::CallNative { name: "std::map::insert_new".into(), argc: 3 },
+                Op::StoreLocal(0),
+                // 2. Query DOM and update UI
+                Op::PushStr(1),
+                Op::CallNative { name: "std::web::query_exists".into(), argc: 1 },
+                Op::Pop,
+                Op::PushStr(2),
+                Op::PushStr(3),
+                Op::CallNative { name: "std::web::set_text".into(), argc: 2 },
+                // 3. Register DOM event listener
+                Op::PushStr(4),
+                Op::PushStr(5),
+                Op::PushStr(6),
+                Op::CallNative { name: "std::web::listen".into(), argc: 3 },
+                Op::Pop,
+                // 4. Trigger configured fetch request
+                Op::PushStr(7),
+                Op::PushStr(8),
+                Op::PushStr(9),
+                Op::PushStr(10),
+                Op::PushInt(32_768),
+                Op::PushInt(3_000),
+                Op::PushStr(11),
+                Op::CallNative { name: "std::web::request".into(), argc: 7 },
+                Op::Pop,
+                // 5. Query managed map state alongside host calls
+                Op::PushLocal(0),
+                Op::PushStr(0),
+                Op::CallNative { name: "std::map::get".into(), argc: 2 },
+                Op::Ret,
+            ],
+            1,
+        );
+        module.string_table = vec![
+            "active".into(), "#app".into(), "#status".into(), "Running".into(),
+            "#btn".into(), "click".into(), "on_click".into(),
+            "GET".into(), "/state".into(), "".into(), "".into(), "on_fetch".into(),
+        ];
+        validate(&module);
+        let imports = collect_host_imports(&module);
+        assert_eq!(imports.definitions.len(), 4);
+        assert_eq!(imports.natives["std::web::query_exists"], 0);
+        assert_eq!(imports.natives["std::web::set_text"], 1);
+        assert_eq!(imports.natives["std::web::listen"], 2);
+        assert_eq!(imports.natives["std::web::request"], 3);
+    }
+
+    #[test]
     fn rejects_non_browser_native_calls() {
         let module = module_with(
             vec![Op::CallNative {
@@ -3971,6 +4128,58 @@ mod tests {
             Op::CallNative { name: "std::map::length".into(), argc: 1 }, Op::Ret,
         ], 0);
         module.string_table.push("answer".into());
+        validate(&module);
+    }
+
+    #[test]
+    fn emits_managed_map_keys_and_values() {
+        let mut module = module_with(vec![
+            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(42),
+            Op::CallNative { name: "std::map::insert".into(), argc: 3 }, Op::StoreLocal(0),
+            Op::PushLocal(0), Op::CallNative { name: "std::map::keys".into(), argc: 1 }, Op::Pop,
+            Op::PushLocal(0), Op::CallNative { name: "std::map::values".into(), argc: 1 }, Op::Len, Op::Ret,
+        ], 1);
+        module.string_table.push("answer".into());
+        validate(&module);
+    }
+
+    #[test]
+    fn preserves_map_parameter_and_return_metadata_across_calls() {
+        let mut module = module_with(
+            vec![
+                Op::CallNative { name: "std::map::new".into(), argc: 0 },
+                Op::PushStr(0),
+                Op::PushInt(42),
+                Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] },
+                Op::CallNative { name: "std::map::insert".into(), argc: 3 },
+                Op::Call { function: 1, argc: 1 },
+                Op::Call { function: 2, argc: 0 },
+                Op::PushStr(0),
+                Op::CallNative { name: "std::map::get".into(), argc: 2 },
+                Op::GetField("x".into()),
+                Op::Add,
+                Op::Ret,
+            ],
+            0,
+        );
+        module.string_table.push("pt".into());
+        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
+        module.functions.push(BytecodeFunc {
+            name: "extract_x".into(), source_file: Some("main.titan".into()), arity: 1,
+            param_types: vec![BytecodeType::MapOf(Box::new(BytecodeType::String), Box::new(BytecodeType::Struct("Point".into())))],
+            return_type: Some(BytecodeType::Int),
+            captures: 0, locals: 1, max_stack: 4,
+            code: vec![Op::PushLocal(0), Op::PushStr(0), Op::CallNative { name: "std::map::get".into(), argc: 2 }, Op::GetField("x".into()), Op::Ret],
+            debug_locations: vec![None; 5],
+        });
+        module.functions.push(BytecodeFunc {
+            name: "make_map".into(), source_file: Some("main.titan".into()), arity: 0,
+            param_types: Vec::new(),
+            return_type: Some(BytecodeType::MapOf(Box::new(BytecodeType::String), Box::new(BytecodeType::Struct("Point".into())))),
+            captures: 0, locals: 0, max_stack: 4,
+            code: vec![Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(100), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::CallNative { name: "std::map::insert".into(), argc: 3 }, Op::Ret],
+            debug_locations: vec![None; 6],
+        });
         validate(&module);
     }
 

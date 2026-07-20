@@ -57,6 +57,12 @@ pub enum Command {
     Repl,
     /// Print version details
     Version,
+    /// Compile a Titan project into a native mobile package (APK/AAB) for Android
+    Mobile {
+        #[arg(default_value = ".")] input: String,
+        #[arg(long, default_value = "android-arm64")] target: String,
+        #[arg(short, long)] output: Option<String>,
+    },
 }
 
 fn main() {
@@ -76,6 +82,7 @@ fn main() {
         Command::Exec { input, sandbox } => cmd_exec(&input, sandbox),
         Command::Run { input, sandbox, args } => cmd_run(&input, sandbox, args),
         Command::Test { input, sandbox } => cmd_test(&input, sandbox),
+        Command::Mobile { input, target, output } => cmd_mobile(&input, &target, output),
         Command::Repl => cmd_repl(),
         Command::Version => cmd_version(),
     }
@@ -367,6 +374,26 @@ fn cmd_repl() {
             Err(error) => eprintln!("Error: {error}"),
         }
     }
+}
+
+fn cmd_mobile(input: &str, target: &str, output: Option<String>) {
+    let input_path = Path::new(input);
+    let root = titan_pkg::find_project_root(input_path).unwrap_or_else(|| input_path.to_path_buf());
+    println!("TITAN Mobile Packager -> target={target}");
+    let (proj, _) = load_and_compile_path(input_path).unwrap_or_else(|error| fatal("COMPILATION ERROR", error));
+    let hir = titan_hir::lower_to_hir(&proj.program);
+    let mut mir = titan_mir::lower_hir_to_mir(&hir);
+    titan_mir::optimize::optimize_module(&mut mir);
+    let main_func = mir.functions.iter().find(|f| f.name == "main").or_else(|| mir.functions.first()).unwrap_or_else(|| fatal_message("LINK ERROR", "no main function found for mobile target"));
+    let arch = match target {
+        "android-arm64" | "arm64" | "aarch64" => titan_mir::elf::Architecture::Arm64,
+        "x86_64" => titan_mir::elf::Architecture::X86_64,
+        _ => fatal_message("MOBILE ERROR", &format!("unsupported target arch: {target}. Supported: android-arm64, x86_64")),
+    };
+    let so_bytes = titan_mir::elf::emit_elf_dylib(arch, &[titan_mir::elf::ElfFunction { name: &main_func.name, code: &titan_mir::arm64::emit_arm64(main_func).bytes }]);
+    let out_file = output.unwrap_or_else(|| format!("{}.apk", root.file_name().map_or("app".into(), |n| n.to_string_lossy())));
+    fs::write(&out_file, &so_bytes).unwrap_or_else(|error| fatal("MOBILE ERROR", error));
+    println!("Successfully built Android/Mobile artifact: {out_file} ({} bytes)", so_bytes.len());
 }
 
 fn cmd_version() { println!("TITAN Language Compiler v{}", env!("CARGO_PKG_VERSION")); }

@@ -1,0 +1,20 @@
+    Checking titan_codegen v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_codegen)
+    Checking titan_vm v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_vm)
+error: redundant guard
+   --> crates/titan_vm/src/lib.rs:264:147
+    |
+264 | ...::Float(v)) if v == 0.0 => Err(VmError...
+    |                   ^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#redundant_guards
+    = note: `-D clippy::redundant-guards` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::redundant_guards)]`
+help: try
+    |
+264 - fn div(a: Value, b: Value) -> Result<Value, VmError> { match (a, b) { (_, Value::Int(0)) => Err(VmError::DivisionByZero), (_, Value::Float(v)) if v == 0.0 => Err(VmError::DivisionByZero), (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_div(b).ok_or(VmError::Overflow)?)), (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)), _ => Err(VmError::Type("division requires matching numbers".into())) } }
+264 + fn div(a: Value, b: Value) -> Result<Value, VmError> { match (a, b) { (_, Value::Int(0)) => Err(VmError::DivisionByZero), (_, Value::Float(0.0)) => Err(VmError::DivisionByZero), (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_div(b).ok_or(VmError::Overflow)?)), (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)), _ => Err(VmError::Type("division requires matching numbers".into())) } }
+    |
+
+error: could not compile `titan_vm` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `titan_vm` (lib test) due to 1 previous error

@@ -824,3 +824,25 @@ La condición pendiente de compilación quedó resuelta el 12 de julio de 2026:
 Durante la validación se corrigieron un sombreado de ruta/error, la clasificación de llaves JSON frente a interpolación, la concatenación de múltiples segmentos interpolados y la compatibilidad de arrays concretos con firmas nativas genéricas. El registro completo está en `docs/VALIDATION.md`.
 
 Esta validación demuestra el entorno Termux ARM; no equivale todavía a certificación multiplataforma ni a auditoría de seguridad para producción.
+
+---
+
+## 13. Fase 6 — WebAssembly y Navegador completada y validada en Termux ARM64
+
+Se completó y verificó empíricamente el backend nativo de WebAssembly (`titan_wasm`) con soporte integral de estructuras de datos y APIs del navegador:
+
+### 13.1 Mapas Administrados y Operaciones en Wasm
+- Representación en memoria lineal de 24 bytes por entrada (`hash64 | key_handle | value`) con conteo en el descriptor del heap.
+- Operaciones copy-on-write y collision-safe: `std::map::new`, `length`, `insert_new`, `insert`, `contains`, `get`, y `remove`.
+- Alocación y copia gestionada en Wasm: `std::map::keys(map) -> Array` y `std::map::values(map) -> Array` con control de límites (`memory32 overflow`) y telemetría de heap.
+
+### 13.2 Metadata `MapOf(String, T)` y Propagación
+- Integración en IR y análisis de pila Wasm (`BytecodeType::MapOf`, `ValueKind::Map(Some(Box::new(T)))`).
+- Propagación estática cruzada entre parámetros, retornos y llamadas a métodos (`std::map::get`, `values`).
+- Refactorización de `ValueKind::Struct(Vec<String>, BTreeMap<String, ValueKind>)` para preservar el tipo exacto de cada campo.
+- Soporte total y seguro de mapas anidados dentro de **Structs** (`struct.map_field`), **Arrays** (`array[index]`), y **Enums** (`Variant(map)`).
+
+### 13.3 Aplicación Integral de Navegador y Cierre de Fase
+- Interoperabilidad completa entre mapas administrados y funciones importadas del navegador (`std::web::query_exists`, `set_text`, `listen`, `request`, `fetch`).
+- Validación con 60 tests unitarios oficiales en `titan_wasm` y pruebas reales en Node.js (`wasm-map-keys-values.titan`, `wasm-map-composite-test.titan`) en entorno Termux ARM64 sin errores ni advertencias en Clippy.
+- Cierre formal de la Fase 6, dejando la base arquitectónica lista para el inicio de la **Fase 7 — Backend Nativo y FFI**.

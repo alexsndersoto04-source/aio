@@ -24,6 +24,9 @@ pub mod text;
 pub mod time;
 pub mod websocket;
 pub mod window;
+pub mod input;
+pub mod clipboard;
+pub mod mobile;
 
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }

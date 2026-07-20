@@ -1,0 +1,19 @@
+    Checking titan_stdlib v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_stdlib)
+    Checking titan_parser v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_parser)
+    Checking titan_pkg v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_pkg)
+    Checking titan_macros v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_macros)
+    Checking titan_typechecker v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_typechecker)
+error: this looks like an `else if` but the `else` is missing
+   --> crates/titan_typechecker/src/lib.rs:245:113
+    |
+245 | ...r::OutsideLoop); } if let Some(v) = va...
+    |                      ^
+    |
+    = note: to remove this lint, add the missing `else` or add a new line before the second `if`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#possible_missing_else
+    = note: `-D clippy::possible-missing-else` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::possible_missing_else)]`
+
+error: could not compile `titan_typechecker` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `titan_typechecker` (lib test) due to 1 previous error

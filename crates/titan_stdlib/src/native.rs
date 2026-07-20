@@ -185,6 +185,17 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::window::resize", [Int, Int, Int], Bool),
     native!("std::window::poll_events", [Int], Array),
 
+    native!("std::input::is_key_pressed", [String], Bool),
+    native!("std::input::mouse_pos", [], Array),
+    native!("std::input::is_mouse_button_pressed", [Int], Bool),
+    native!("std::input::touch_pos", [Int], Array),
+    native!("std::clipboard::get_text", [], String),
+    native!("std::clipboard::set_text", [String], Bool),
+    native!("std::notify::send", [String, String], Bool),
+    native!("std::mobile::state", [], String),
+    native!("std::mobile::trigger", [String], Bool),
+    native!("std::mobile::poll_events", [], Array),
+
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];
 

@@ -1,0 +1,148 @@
+   Compiling titan_parser v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_parser)
+   Compiling titan_codegen v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_codegen)
+   Compiling titan_vm v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_vm)
+   Compiling titan_pkg v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_pkg)
+   Compiling titan_macros v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_macros)
+   Compiling titan_lsp v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_lsp)
+   Compiling titan_typechecker v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_typechecker)
+   Compiling titan_runtime v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_runtime)
+   Compiling titan_cli v0.2.0 (/data/data/com.termux/files/home/titan/crates/titan_cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.25s
+     Running unittests src/lib.rs (target/debug/deps/titan_ast-cc3995e195df7b5c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/titan-86485af209a78e3c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_codegen-eb071fc9ca4e8124)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_gc-61bae527675c06d5)
+
+running 1 test
+test tests::traces_transitive_references ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_hir-1228272d0c9138cb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_lexer-ff23b3b8fdb5bf7f)
+
+running 3 tests
+test tests::handles_unicode_spans_and_escapes ... ok
+test tests::lexes_keywords_operators_and_ranges ... ok
+test tests::reports_bad_input_without_panicking ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_lsp-9f6d31100b3eb2b5)
+
+running 1 test
+test tests::reports_invalid_document ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_macros-1e898f1354f2ce2a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_mir-c51616fbefa5e2ad)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_parser-0fdf8f304bcc5957)
+
+running 5 tests
+test tests::rejects_invalid_programs ... ok
+test tests::distinguishes_json_braces_from_interpolation ... ok
+test tests::parses_closures_and_try_operator ... ok
+test tests::parses_functions_types_and_control_flow ... ok
+test tests::parses_declarations_and_match ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_pkg-3511503b13ed72c9)
+
+running 3 tests
+test project::tests::loads_imports_once_in_dependency_order ... ok
+test project::tests::detects_import_cycles ... ok
+test project::tests::resolves_local_path_dependencies ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_runtime-cc23216eb8fe11ed)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_stdlib-551aad1cae039575)
+
+running 18 tests
+test bytes::tests::round_trip_binary_values ... ok
+test cache::tests::evicts_least_recently_used ... ok
+test checksum::tests::standard_vectors ... ok
+test collections::tests::collection_algorithms ... ok
+test csv::tests::quoted_round_trip ... ok
+test csv::tests::table_columns ... ok
+test encoding::tests::known_vectors ... ok
+test encoding::tests::percent_round_trip ... ok
+test encoding::tests::rejects_non_canonical_base64 ... ok
+test path::tests::manipulates_paths ... ok
+test json::tests::queries_and_merges ... ok
+test native::tests::registry_names_are_unique_and_qualified ... ok
+test stats::tests::stable_summary ... ok
+test text::tests::escaping_and_distance ... ok
+test sync::tests::pool_runs_jobs_and_joins ... ok
+test text::tests::unicode_operations ... ok
+test time::tests::validates_seconds ... ok
+test process::tests::captures_output_without_shell ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_typechecker-cec89f2aa9c66fd7)
+
+running 4 tests
+test tests::rejects_unknown_names ... ok
+test tests::checks_registered_native_signatures ... ok
+test tests::accepts_recursive_typed_function ... ok
+test tests::rejects_wrong_return ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_vm-bb757bb4b3376a94)
+
+running 13 tests
+test tests::closures_capture_lexical_values ... ok
+test tests::enum_matching_works ... ok
+test tests::native_json_maps_support_fields ... ok
+test tests::arithmetic_returns_value ... ok
+test tests::loops_and_ranges_work ... ok
+test tests::named_functions_are_first_class ... ok
+test tests::functional_array_pipeline_works ... ok
+test tests::native_text_and_encoding_work ... ok
+test tests::recursion_works ... ok
+test tests::sandbox_blocks_effectful_natives ... ok
+test tests::runtime_errors_are_reported ... ok
+test tests::structs_work ... ok
+test tests::try_unwraps_success_and_propagates_failure ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
