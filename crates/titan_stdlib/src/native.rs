@@ -228,6 +228,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::freestanding_memory::translate_page", [Int], Int),
     native!("std::freestanding_memory::free_frames_count", [], Int),
     native!("std::freestanding_memory::shutdown", [], Bool),
+    native!("std::freestanding_cpu::init_exception_table", [Int], Bool),
+    native!("std::freestanding_cpu::register_exception_handler", [Int, Int], Bool),
+    native!("std::freestanding_cpu::dispatch_exception", [Int, Int, Int], Int),
+    native!("std::freestanding_cpu::register_syscall_handler", [Int, Int], Bool),
+    native!("std::freestanding_cpu::invoke_syscall", [Int, Int, Int, Int], Int),
+    native!("std::freestanding_cpu::get_last_fault_addr", [], Int),
+    native!("std::freestanding_cpu::shutdown", [], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

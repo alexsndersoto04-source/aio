@@ -224,6 +224,14 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::freestanding_memory::translate_page" => { let vaddr = int!(); Value::Int(titan_freestanding_memory_translate_page(vaddr as u64) as i64) }
         "std::freestanding_memory::free_frames_count" => Value::Int(titan_freestanding_memory_free_frames_count() as i64),
         "std::freestanding_memory::shutdown" => Value::Bool(titan_freestanding_memory_shutdown()),
+        // Phase 9: Freestanding CPU & Exception Traps Bindings
+        "std::freestanding_cpu::init_exception_table" => { let base = int!(); Value::Bool(titan_freestanding_cpu_init_exception_table(base as u64)) }
+        "std::freestanding_cpu::register_exception_handler" => { let vec_id = int!(); let addr = int!(); Value::Bool(titan_freestanding_cpu_register_exception_handler(vec_id as u32, addr as u64)) }
+        "std::freestanding_cpu::dispatch_exception" => { let vec_id = int!(); let fault = int!(); let code = int!(); Value::Int(titan_freestanding_cpu_dispatch_exception(vec_id as u32, fault as u64, code as u64) as i64) }
+        "std::freestanding_cpu::register_syscall_handler" => { let num = int!(); let addr = int!(); Value::Bool(titan_freestanding_cpu_register_syscall_handler(num as u32, addr as u64)) }
+        "std::freestanding_cpu::invoke_syscall" => { let num = int!(); let a0 = int!(); let a1 = int!(); let a2 = int!(); Value::Int(titan_freestanding_cpu_invoke_syscall(num as u32, a0 as u64, a1 as u64, a2 as u64) as i64) }
+        "std::freestanding_cpu::get_last_fault_addr" => Value::Int(titan_freestanding_cpu_get_last_fault_addr() as i64),
+        "std::freestanding_cpu::shutdown" => Value::Bool(titan_freestanding_cpu_shutdown()),
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
@@ -413,6 +421,29 @@ pub fn titan_freestanding_memory_shutdown() -> bool {
     titan_stdlib::freestanding_memory::shutdown()
 }
 
+// --- Phase 9: Freestanding CPU & Exception Traps Bindings ---
+pub fn titan_freestanding_cpu_init_exception_table(base_vbar: u64) -> bool {
+    titan_stdlib::freestanding_cpu::init_exception_table(base_vbar)
+}
+pub fn titan_freestanding_cpu_register_exception_handler(vector_id: u32, handler_vaddr: u64) -> bool {
+    titan_stdlib::freestanding_cpu::register_exception_handler(vector_id, handler_vaddr)
+}
+pub fn titan_freestanding_cpu_dispatch_exception(vector_id: u32, fault_addr: u64, error_code: u64) -> u64 {
+    titan_stdlib::freestanding_cpu::dispatch_exception(vector_id, fault_addr, error_code)
+}
+pub fn titan_freestanding_cpu_register_syscall_handler(syscall_num: u32, handler_vaddr: u64) -> bool {
+    titan_stdlib::freestanding_cpu::register_syscall_handler(syscall_num, handler_vaddr)
+}
+pub fn titan_freestanding_cpu_invoke_syscall(syscall_num: u32, arg0: u64, arg1: u64, arg2: u64) -> u64 {
+    titan_stdlib::freestanding_cpu::invoke_syscall(syscall_num, arg0, arg1, arg2)
+}
+pub fn titan_freestanding_cpu_get_last_fault_addr() -> u64 {
+    titan_stdlib::freestanding_cpu::get_last_fault_addr()
+}
+pub fn titan_freestanding_cpu_shutdown() -> bool {
+    titan_stdlib::freestanding_cpu::shutdown()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,5 +593,29 @@ mod tests {
         }
         
         assert_eq!(invoke("std::freestanding_memory::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+    }
+    #[test]
+    fn test_freestanding_cpu_native_bindings() {
+        assert_eq!(invoke("std::freestanding_cpu::init_exception_table", vec![Value::Int(0x8000_0000)], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        
+        assert_eq!(invoke("std::freestanding_cpu::register_exception_handler", vec![
+            Value::Int(0), Value::Int(0xFFFF_0000_8000_1000u64 as i64)
+        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        
+        assert_eq!(invoke("std::freestanding_cpu::dispatch_exception", vec![
+            Value::Int(0), Value::Int(0x4000_1234), Value::Int(0x05)
+        ], RuntimeCapabilities::all()).unwrap(), Value::Int((0xFFFF_0000_8000_1000u64 ^ 0x4000_1234u64 ^ 0x05u64) as i64));
+        
+        assert_eq!(invoke("std::freestanding_cpu::get_last_fault_addr", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(0x4000_1234));
+
+        assert_eq!(invoke("std::freestanding_cpu::register_syscall_handler", vec![
+            Value::Int(1), Value::Int(0x9000_0000)
+        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        
+        assert_eq!(invoke("std::freestanding_cpu::invoke_syscall", vec![
+            Value::Int(1), Value::Int(10), Value::Int(20), Value::Int(30)
+        ], RuntimeCapabilities::all()).unwrap(), Value::Int(0x9000_0000 + 60));
+        
+        assert_eq!(invoke("std::freestanding_cpu::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
     }
 }
