@@ -28,37 +28,34 @@ pub enum Command {
     Check { #[arg(default_value = ".")] input: String },
     /// Compile a file or project to inspectable bytecode
     Build { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
-    /// Compile the supported numeric subset directly to WebAssembly
+    /// Compile a file or project to standalone WebAssembly plus standard/logical source maps
     Wasm { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
-    /// Debug a file or project with source breakpoints and stepping
+    /// Compile a file or project to a native relocatable object, dynamic library (.so), or standalone executable
+    Native {
+        #[arg(default_value = ".")] input: String,
+        #[arg(short, long)] output: Option<String>,
+        #[arg(long, default_value = "arm64")] arch: String,
+        #[arg(long, default_value = "exec")] format: String,
+    },
+    /// Interactive bytecode debugger with breakpoints and stack inspection
     Debug {
-        #[arg(default_value = ".")]
-        input: String,
-        /// Breakpoint as path:line; repeat for multiple breakpoints
-        #[arg(short = 'b', long = "break")]
-        breakpoints: Vec<String>,
-        #[arg(long)]
-        sandbox: bool,
+        #[arg(default_value = ".")] input: String,
+        #[arg(short, long)] breakpoints: Vec<String>,
+        #[arg(long)] sandbox: bool,
     },
-    /// Execute a previously built .tbc artifact without source compilation
-    Exec {
-        input: String,
-        /// Deny filesystem, process, network, and environment native functions
-        #[arg(long)]
-        sandbox: bool,
-    },
-    /// Compile and run a file or project
+    /// Execute an already-compiled .tbc bytecode artifact directly
+    Exec { #[arg(default_value = "target/program.tbc")] input: String, #[arg(long)] sandbox: bool },
+    /// Execute bytecode using the high-performance VM
     Run {
         #[arg(default_value = ".")] input: String,
-        /// Deny filesystem, process, network, and environment native functions
         #[arg(long)] sandbox: bool,
-        #[arg(last = true)] args: Vec<String>,
+        #[arg(trailing_var_arg = true)] args: Vec<String>,
     },
-    /// Execute every .titan test program under tests/
+    /// Run all .titan unit tests discovered in the tests/ directory
     Test { #[arg(default_value = ".")] input: String, #[arg(long)] sandbox: bool },
-    /// Start the interactive REPL
+    /// Launch the interactive read-eval-print loop
     Repl,
-    /// Print version
+    /// Print version details
     Version,
 }
 
@@ -74,6 +71,7 @@ fn main() {
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Wasm { input, output } => cmd_wasm(&input, output),
+        Command::Native { input, output, arch, format } => cmd_native(&input, output, &arch, &format),
         Command::Debug { input, breakpoints, sandbox } => cmd_debug(&input, &breakpoints, sandbox),
         Command::Exec { input, sandbox } => cmd_exec(&input, sandbox),
         Command::Run { input, sandbox, args } => cmd_run(&input, sandbox, args),
@@ -168,7 +166,6 @@ fn cmd_exec(input: &str, sandbox: bool) {
         Err(error) => fatal("RUNTIME ERROR", error),
     }
 }
-
 fn cmd_wasm(input: &str, output: Option<String>) {
     let (project, module) = load_and_compile(input)
         .unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
@@ -230,6 +227,77 @@ fn cmd_wasm(input: &str, output: Option<String>) {
     println!("WASM: {} -> {}", project.entry.display(), target.display());
     println!("TITAN SOURCE MAP: {}", logical_map_target.display());
     println!("STANDARD SOURCE MAP: {}", standard_map_target.display());
+}
+
+fn cmd_native(input: &str, output: Option<String>, arch: &str, format: &str) {
+    let project = if format == "object" || format == "dylib" || format == "shared" || format == "so" {
+        let entry = titan_pkg::default_entry(input);
+        let proj = titan_pkg::SourceProject::load(&entry)
+            .unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error.to_string()));
+        let mut types = titan_typechecker::TypeEnv::new();
+        types.check_program(&proj.program)
+            .unwrap_or_else(|errors| fatal_message("COMPILATION FAILED", &errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")));
+        proj
+    } else {
+        let (proj, _module) = load_and_compile(input)
+            .unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
+        proj
+    };
+    let target = output.map(PathBuf::from).unwrap_or_else(|| {
+        let name = project
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("program");
+        let ext = match format {
+            "object" => ".o",
+            "dylib" | "shared" | "so" => ".so",
+            _ => "",
+        };
+        project.root.join("target").join(format!("{name}{ext}"))
+    });
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|error| fatal("NATIVE BUILD ERROR", error));
+    }
+    let architecture = match arch {
+        "arm64" | "aarch64" => titan_mir::elf::Architecture::Arm64,
+        "x86_64" | "amd64" => titan_mir::elf::Architecture::X86_64,
+        other => fatal_message("NATIVE BUILD ERROR", &format!("Unsupported architecture: {other}. Use 'arm64' or 'x86_64'.")),
+    };
+    let hir = titan_hir::lower_to_hir(&project.program);
+    let mut mir = titan_mir::lower_hir_to_mir(&hir);
+    titan_mir::optimize::optimize_module(&mut mir);
+    if mir.functions.is_empty() {
+        fatal_message("NATIVE BUILD ERROR", "No functions found in module to compile natively.");
+    }
+    let bytes = if format == "object" || format == "dylib" || format == "shared" || format == "so" {
+        let mut functions = Vec::new();
+        for f in &mir.functions {
+            let code = match architecture {
+                titan_mir::elf::Architecture::Arm64 => titan_mir::arm64::emit_arm64(f).bytes,
+                titan_mir::elf::Architecture::X86_64 => titan_mir::x86_64::emit_x86_64(f).bytes,
+            };
+            functions.push((f.name.clone(), code));
+        }
+        let elf_funcs: Vec<_> = functions.iter().map(|(name, code)| titan_mir::elf::ElfFunction { name, code }).collect();
+        if format == "object" {
+            titan_mir::elf::emit_elf_object(architecture, &elf_funcs)
+        } else {
+            titan_mir::elf::emit_elf_dylib(architecture, &elf_funcs)
+        }
+    } else {
+        let main_func = mir.functions.iter().find(|f| f.name == "main").unwrap_or(&mir.functions[0]);
+        titan_mir::elf::emit_standalone_executable(architecture, main_func)
+    };
+    fs::write(&target, &bytes).unwrap_or_else(|error| fatal("NATIVE BUILD ERROR", error));
+    #[cfg(unix)]
+    if format != "object" {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
+    }
+    println!("NATIVE: {} -> {} ({})", project.entry.display(), target.display(), arch);
+    println!("  Functions lowered: {}", mir.functions.len());
+    println!("  Output size: {} bytes ({format})", bytes.len());
 }
 
 fn percent_encode_path_segment(value: &str) -> String {

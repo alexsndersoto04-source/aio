@@ -6,4 +6,6 @@ license.workspace = true
 
 [dependencies]
 titan_hir = { path = "../titan_hir" }
+titan_ast = { path = "../titan_ast" }
+titan_lexer = { path = "../titan_lexer" }
 thiserror.workspace = true
