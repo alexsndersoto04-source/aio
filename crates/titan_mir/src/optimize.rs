@@ -55,6 +55,13 @@ pub fn eliminate_dead_code(function: &mut MirFunction) -> bool {
                         used_regs.insert(*r);
                     }
                 }
+                MirInst::Call { args, .. } | MirInst::CallExtern { args, .. } => {
+                    for arg in args {
+                        if let MirOperand::Reg(r) = arg {
+                            used_regs.insert(*r);
+                        }
+                    }
+                }
                 MirInst::Ret(Some(MirOperand::Reg(r))) => {
                     used_regs.insert(*r);
                 }
@@ -180,6 +187,29 @@ mod tests {
         assert!(changed);
         assert_eq!(func.blocks[0].instructions.len(), 2);
         assert!(matches!(func.blocks[0].instructions[0], MirInst::Move { dst: 1, .. }));
+    }
+
+    #[test]
+    fn test_dce_preserves_calls() {
+        let mut func = MirFunction {
+            name: "test_call_dce".to_string(),
+            entry: 0,
+            blocks: vec![MirBlock {
+                id: 0,
+                instructions: vec![
+                    MirInst::CallExtern {
+                        dst: Some(10),
+                        target: "puts".to_string(),
+                        abi: "C".to_string(),
+                        args: vec![MirOperand::Imm(MirImmediate::Int(0))],
+                    },
+                    MirInst::Ret(None),
+                ],
+            }],
+        };
+        let changed = eliminate_dead_code(&mut func);
+        assert!(!changed);
+        assert_eq!(func.blocks[0].instructions.len(), 2);
     }
 
     #[test]

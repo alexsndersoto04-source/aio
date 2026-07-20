@@ -29,6 +29,8 @@ pub struct MirBlock {
 pub enum MirInst {
     Move { dst: usize, src: MirOperand },
     BinOp { dst: usize, op: BinOp, lhs: MirOperand, rhs: MirOperand },
+    Call { dst: Option<usize>, target: String, args: Vec<MirOperand> },
+    CallExtern { dst: Option<usize>, target: String, abi: String, args: Vec<MirOperand> },
     Ret(Option<MirOperand>),
     Jump(usize),
     Comment(String),
