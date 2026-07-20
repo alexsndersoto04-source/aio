@@ -215,6 +215,12 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::gui::is_clicked", [Int], Bool),
     native!("std::gui::child_count", [Int], Int),
     native!("std::gui::shutdown", [], Bool),
+    native!("std::freestanding::init", [String], Bool),
+    native!("std::freestanding::validate_target_spec", [String], Bool),
+    native!("std::freestanding::generate_linker_script", [String, Int, Int], String),
+    native!("std::freestanding::generate_startup_asm", [String, String], String),
+    native!("std::freestanding::get_active_target", [], String),
+    native!("std::freestanding::shutdown", [], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 ];

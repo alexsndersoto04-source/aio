@@ -209,6 +209,13 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::gui::is_clicked" => { let id = int!(); Value::Bool(titan_gui_is_clicked(id)) }
         "std::gui::child_count" => { let id = int!(); Value::Int(titan_gui_child_count(id) as i64) }
         "std::gui::shutdown" => Value::Bool(titan_gui_shutdown()),
+        // Phase 9: Freestanding & Bare-Metal Bindings
+        "std::freestanding::init" => { let arch = string!(); Value::Bool(titan_freestanding_init(&arch)) }
+        "std::freestanding::validate_target_spec" => { let target = string!(); Value::Bool(titan_freestanding_validate_target_spec(&target)) }
+        "std::freestanding::generate_linker_script" => { let arch = string!(); let base = int!(); let stack = int!(); Value::Str(titan_freestanding_generate_linker_script(&arch, base as u64, stack as u64)) }
+        "std::freestanding::generate_startup_asm" => { let arch = string!(); let entry = string!(); Value::Str(titan_freestanding_generate_startup_asm(&arch, &entry)) }
+        "std::freestanding::get_active_target" => Value::Str(titan_freestanding_get_active_target()),
+        "std::freestanding::shutdown" => Value::Bool(titan_freestanding_shutdown()),
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
@@ -355,6 +362,26 @@ pub fn titan_gui_shutdown() -> bool {
     titan_stdlib::gui::shutdown()
 }
 
+// --- Phase 9: Freestanding & Bare-Metal Bindings ---
+pub fn titan_freestanding_init(target_arch: &str) -> bool {
+    titan_stdlib::freestanding::init(target_arch)
+}
+pub fn titan_freestanding_validate_target_spec(target: &str) -> bool {
+    titan_stdlib::freestanding::validate_target_spec(target)
+}
+pub fn titan_freestanding_generate_linker_script(target_arch: &str, base_addr: u64, stack_size: u64) -> String {
+    titan_stdlib::freestanding::generate_linker_script(target_arch, base_addr, stack_size)
+}
+pub fn titan_freestanding_generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
+    titan_stdlib::freestanding::generate_startup_asm(target_arch, entry_fn)
+}
+pub fn titan_freestanding_get_active_target() -> String {
+    titan_stdlib::freestanding::get_active_target()
+}
+pub fn titan_freestanding_shutdown() -> bool {
+    titan_stdlib::freestanding::shutdown()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,5 +476,33 @@ mod tests {
         } else {
             panic!("create_container should return Int handle");
         }
+    }
+    #[test]
+    fn test_freestanding_native_bindings() {
+        assert_eq!(invoke("std::freestanding::validate_target_spec", vec![Value::Str("aarch64-unknown-none".into())], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        assert_eq!(invoke("std::freestanding::init", vec![Value::Str("aarch64-unknown-none".into())], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        assert_eq!(invoke("std::freestanding::get_active_target", vec![], RuntimeCapabilities::all()).unwrap(), Value::Str("aarch64-unknown-none".into()));
+
+        let ld = invoke("std::freestanding::generate_linker_script", vec![
+            Value::Str("aarch64-unknown-none".into()), Value::Int(0x80000), Value::Int(0x10000)
+        ], RuntimeCapabilities::all()).unwrap();
+        if let Value::Str(ld_content) = ld {
+            assert!(ld_content.contains("ENTRY(_start)"));
+            assert!(ld_content.contains(". = 0x80000;"));
+        } else {
+            panic!("generate_linker_script should return String");
+        }
+
+        let asm = invoke("std::freestanding::generate_startup_asm", vec![
+            Value::Str("aarch64-unknown-none".into()), Value::Str("kernel_main".into())
+        ], RuntimeCapabilities::all()).unwrap();
+        if let Value::Str(asm_content) = asm {
+            assert!(asm_content.contains("adrp x0, _stack_top"));
+            assert!(asm_content.contains("bl kernel_main"));
+        } else {
+            panic!("generate_startup_asm should return String");
+        }
+
+        assert_eq!(invoke("std::freestanding::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
     }
 }
