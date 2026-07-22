@@ -30,7 +30,7 @@ struct Envelope {
     format_version: u32,
     compiler_version: String,
     checksum_crc32: u32,
-    module: CompiledModule,
+    module: serde_json::Value,
 }
 
 pub struct BytecodeArtifact;
@@ -38,12 +38,13 @@ pub struct BytecodeArtifact;
 impl BytecodeArtifact {
     pub fn encode(module: &CompiledModule) -> Result<Vec<u8>, ArtifactError> {
         validate(module)?;
-        let module_bytes = serde_json::to_vec(module)?;
+        let module_json = serde_json::to_value(module)?;
+        let module_bytes = serde_json::to_vec(&module_json)?;
         let envelope = Envelope {
             format_version: FORMAT_VERSION,
             compiler_version: env!("CARGO_PKG_VERSION").into(),
             checksum_crc32: titan_stdlib::checksum::crc32(&module_bytes),
-            module: module.clone(),
+            module: module_json,
         };
         let mut output = Vec::with_capacity(MAGIC.len() + module_bytes.len() + 128);
         output.extend_from_slice(MAGIC);
@@ -60,8 +61,9 @@ impl BytecodeArtifact {
         if envelope.format_version != FORMAT_VERSION { return Err(ArtifactError::UnsupportedVersion(envelope.format_version)); }
         let module_bytes = serde_json::to_vec(&envelope.module)?;
         if titan_stdlib::checksum::crc32(&module_bytes) != envelope.checksum_crc32 { return Err(ArtifactError::ChecksumMismatch); }
-        validate(&envelope.module)?;
-        Ok(envelope.module)
+        let module: CompiledModule = serde_json::from_value(envelope.module)?;
+        validate(&module)?;
+        Ok(module)
     }
 }
 

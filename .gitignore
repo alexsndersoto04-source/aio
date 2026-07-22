@@ -3,3 +3,8 @@ target/
 *.wasm
 *.wasm.map
 *.wasm.map.json
+
+# Archivos locales usados al crear el paquete Zett
+crates/titan_codegen/src/artifact.rs.bak
+packaging/
+zett_*.deb
