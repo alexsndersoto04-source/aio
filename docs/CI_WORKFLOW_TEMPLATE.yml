@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, "arena/**" ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: cargo test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+        continue-on-error: true   # formatting is advisory for now
+
+      - name: cargo check (default features)
+        run: cargo check --workspace --all-targets
+
+      - name: cargo test (default features)
+        run: cargo test --workspace --all-targets --no-fail-fast
+
+      - name: cargo check (no default features)
+        run: cargo check --workspace --all-targets --no-default-features
+
+  aarch64-cross:
+    name: cross-check AArch64 (Termux target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + aarch64 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # This just checks the code compiles for AArch64/Android – it does not
+      # link a full binary. Useful to catch regressions before they hit Termux.
+      - name: cargo check for aarch64-linux-android
+        run: cargo check --workspace --target aarch64-linux-android
+        continue-on-error: true

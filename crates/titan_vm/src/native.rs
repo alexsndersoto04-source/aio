@@ -243,6 +243,127 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
+
+        // ---------------- Phase 1: regex ----------------
+        #[cfg(feature = "regex_mod")]
+        "std::regex::is_match" => { let pattern = string!(); let text = string!(); Value::Bool(stdlib::regex_mod::is_match(&pattern, &text).map_err(error)?) }
+        #[cfg(feature = "regex_mod")]
+        "std::regex::find" => { let pattern = string!(); let text = string!(); Value::Str(stdlib::regex_mod::find(&pattern, &text).map_err(error)?) }
+        #[cfg(feature = "regex_mod")]
+        "std::regex::find_all" => { let pattern = string!(); let text = string!(); Value::Array(stdlib::regex_mod::find_all(&pattern, &text).map_err(error)?.into_iter().map(Value::Str).collect()) }
+        #[cfg(feature = "regex_mod")]
+        "std::regex::captures" => { let pattern = string!(); let text = string!(); Value::Array(stdlib::regex_mod::captures(&pattern, &text).map_err(error)?.into_iter().map(Value::Str).collect()) }
+        #[cfg(feature = "regex_mod")]
+        "std::regex::replace_all" => { let pattern = string!(); let text = string!(); let replacement = string!(); Value::Str(stdlib::regex_mod::replace_all(&pattern, &text, &replacement).map_err(error)?) }
+        #[cfg(feature = "regex_mod")]
+        "std::regex::split" => { let pattern = string!(); let text = string!(); Value::Array(stdlib::regex_mod::split(&pattern, &text).map_err(error)?.into_iter().map(Value::Str).collect()) }
+        #[cfg(feature = "regex_mod")]
+        "std::regex::is_valid" => Value::Bool(stdlib::regex_mod::is_valid(&string!())),
+
+        // ---------------- Phase 1: uuid ----------------
+        #[cfg(feature = "uuid_mod")] "std::uuid::v4"        => Value::Str(stdlib::uuid_mod::v4()),
+        #[cfg(feature = "uuid_mod")] "std::uuid::v7"        => Value::Str(stdlib::uuid_mod::v7()),
+        #[cfg(feature = "uuid_mod")] "std::uuid::is_valid"  => Value::Bool(stdlib::uuid_mod::is_valid(&string!())),
+        #[cfg(feature = "uuid_mod")] "std::uuid::normalize" => Value::Str(stdlib::uuid_mod::normalize(&string!())),
+        #[cfg(feature = "uuid_mod")] "std::uuid::nil"       => Value::Str(stdlib::uuid_mod::nil()),
+
+        // ---------------- Phase 1: hash ----------------
+        #[cfg(feature = "hash_mod")] "std::hash::sha256"       => Value::Str(stdlib::hash_mod::sha256(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::sha384"       => Value::Str(stdlib::hash_mod::sha384(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::sha512"       => Value::Str(stdlib::hash_mod::sha512(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::sha3_256"     => Value::Str(stdlib::hash_mod::sha3_256(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::sha3_512"     => Value::Str(stdlib::hash_mod::sha3_512(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::blake3"       => Value::Str(stdlib::hash_mod::blake3(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::sha256_bytes" => Value::Bytes(stdlib::hash_mod::sha256_bytes(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::sha512_bytes" => Value::Bytes(stdlib::hash_mod::sha512_bytes(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::blake3_bytes" => Value::Bytes(stdlib::hash_mod::blake3_bytes(&bytes!())),
+        #[cfg(feature = "hash_mod")] "std::hash::hmac_sha256"  => { let key = bytes!(); let data = bytes!(); Value::Str(stdlib::hash_mod::hmac_sha256(&key, &data)) }
+        #[cfg(feature = "hash_mod")] "std::hash::hmac_sha512"  => { let key = bytes!(); let data = bytes!(); Value::Str(stdlib::hash_mod::hmac_sha512(&key, &data)) }
+
+        // ---------------- Phase 1: random ----------------
+        #[cfg(feature = "random_mod")] "std::random::int"          => Value::Int(stdlib::random_mod::int()),
+        #[cfg(feature = "random_mod")] "std::random::range"        => { let min = int!(); let max = int!(); Value::Int(stdlib::random_mod::range(min, max)) }
+        #[cfg(feature = "random_mod")] "std::random::float"        => Value::Float(stdlib::random_mod::float()),
+        #[cfg(feature = "random_mod")] "std::random::bool"         => Value::Bool(stdlib::random_mod::boolean()),
+        #[cfg(feature = "random_mod")] "std::random::bytes"        => { let n = nonnegative(int!())?; Value::Bytes(stdlib::random_mod::bytes(n)) }
+        #[cfg(feature = "random_mod")] "std::random::seeded_int"   => { let seed = int!() as u64; let min = int!(); let max = int!(); Value::Int(stdlib::random_mod::seeded_int(seed, min, max)) }
+        #[cfg(feature = "random_mod")] "std::random::seeded_float" => { let seed = int!() as u64; Value::Float(stdlib::random_mod::seeded_float(seed)) }
+        #[cfg(feature = "random_mod")] "std::random::seeded_bytes" => { let seed = int!() as u64; let n = nonnegative(int!())?; Value::Bytes(stdlib::random_mod::seeded_bytes(seed, n)) }
+
+        // ---------------- Phase 1: datetime ----------------
+        #[cfg(feature = "datetime_mod")] "std::datetime::now"           => Value::Int(stdlib::datetime_mod::now()),
+        #[cfg(feature = "datetime_mod")] "std::datetime::now_iso"       => Value::Str(stdlib::datetime_mod::now_iso()),
+        #[cfg(feature = "datetime_mod")] "std::datetime::format"        => { let ts = int!(); let fmt = string!(); Value::Str(stdlib::datetime_mod::format(ts, &fmt).map_err(error)?) }
+        #[cfg(feature = "datetime_mod")] "std::datetime::to_rfc3339"    => Value::Str(stdlib::datetime_mod::to_rfc3339(int!()).map_err(error)?),
+        #[cfg(feature = "datetime_mod")] "std::datetime::to_rfc2822"    => Value::Str(stdlib::datetime_mod::to_rfc2822(int!()).map_err(error)?),
+        #[cfg(feature = "datetime_mod")] "std::datetime::parse_rfc3339" => Value::Int(stdlib::datetime_mod::parse_rfc3339(&string!()).map_err(error)?),
+        #[cfg(feature = "datetime_mod")] "std::datetime::parse"         => { let text = string!(); let fmt = string!(); Value::Int(stdlib::datetime_mod::parse(&text, &fmt).map_err(error)?) }
+        #[cfg(feature = "datetime_mod")] "std::datetime::utc_ymd_hms"   => {
+            let year   = i32::try_from(int!()).map_err(|_| "year out of range".to_string())?;
+            let month  = u32::try_from(int!()).map_err(|_| "month out of range".to_string())?;
+            let day    = u32::try_from(int!()).map_err(|_| "day out of range".to_string())?;
+            let hour   = u32::try_from(int!()).map_err(|_| "hour out of range".to_string())?;
+            let minute = u32::try_from(int!()).map_err(|_| "minute out of range".to_string())?;
+            let second = u32::try_from(int!()).map_err(|_| "second out of range".to_string())?;
+            Value::Int(stdlib::datetime_mod::utc_ymd_hms(year, month, day, hour, minute, second))
+        }
+        #[cfg(feature = "datetime_mod")] "std::datetime::add_seconds"  => { let ts = int!(); let s = int!(); Value::Int(stdlib::datetime_mod::add_seconds(ts, s)) }
+        #[cfg(feature = "datetime_mod")] "std::datetime::add_days"     => { let ts = int!(); let d = int!(); Value::Int(stdlib::datetime_mod::add_days(ts, d)) }
+        #[cfg(feature = "datetime_mod")] "std::datetime::diff_seconds" => { let a = int!(); let b = int!(); Value::Int(stdlib::datetime_mod::diff_seconds(a, b)) }
+        #[cfg(feature = "datetime_mod")] "std::datetime::year"    => Value::Int(stdlib::datetime_mod::year(int!()).map_err(error)? as i64),
+        #[cfg(feature = "datetime_mod")] "std::datetime::month"   => Value::Int(stdlib::datetime_mod::month(int!()).map_err(error)? as i64),
+        #[cfg(feature = "datetime_mod")] "std::datetime::day"     => Value::Int(stdlib::datetime_mod::day(int!()).map_err(error)? as i64),
+        #[cfg(feature = "datetime_mod")] "std::datetime::hour"    => Value::Int(stdlib::datetime_mod::hour(int!()).map_err(error)? as i64),
+        #[cfg(feature = "datetime_mod")] "std::datetime::minute"  => Value::Int(stdlib::datetime_mod::minute(int!()).map_err(error)? as i64),
+        #[cfg(feature = "datetime_mod")] "std::datetime::second"  => Value::Int(stdlib::datetime_mod::second(int!()).map_err(error)? as i64),
+        #[cfg(feature = "datetime_mod")] "std::datetime::weekday" => Value::Int(stdlib::datetime_mod::weekday(int!()).map_err(error)? as i64),
+        #[cfg(feature = "datetime_mod")] "std::datetime::format_offset" => {
+            let ts = int!(); let fmt = string!();
+            let offset = i32::try_from(int!()).map_err(|_| "offset minutes out of range".to_string())?;
+            Value::Str(stdlib::datetime_mod::format_offset(ts, &fmt, offset).map_err(error)?)
+        }
+
+        // ---------------- Phase 1: url ----------------
+        #[cfg(feature = "url_mod")] "std::url::is_valid"    => Value::Bool(stdlib::url_mod::is_valid(&string!())),
+        #[cfg(feature = "url_mod")] "std::url::scheme"      => Value::Str(stdlib::url_mod::scheme(&string!()).map_err(error)?),
+        #[cfg(feature = "url_mod")] "std::url::host"        => Value::Str(stdlib::url_mod::host(&string!()).map_err(error)?),
+        #[cfg(feature = "url_mod")] "std::url::port"        => Value::Int(stdlib::url_mod::port(&string!()).map_err(error)?.map(i64::from).unwrap_or(-1)),
+        #[cfg(feature = "url_mod")] "std::url::path"        => Value::Str(stdlib::url_mod::path(&string!()).map_err(error)?),
+        #[cfg(feature = "url_mod")] "std::url::query"       => Value::Str(stdlib::url_mod::query(&string!()).map_err(error)?),
+        #[cfg(feature = "url_mod")] "std::url::fragment"    => Value::Str(stdlib::url_mod::fragment(&string!()).map_err(error)?),
+        #[cfg(feature = "url_mod")] "std::url::parse_query" => Value::Map(stdlib::url_mod::parse_query(&string!()).into_iter().map(|(k, v)| (k, Value::Str(v))).collect()),
+        #[cfg(feature = "url_mod")] "std::url::build_query" => {
+            let pairs = array!().into_iter().map(|item| {
+                let mut tuple = expect_array(item)?;
+                if tuple.len() != 2 { return Err("build_query expects an array of [key, value] pairs".into()); }
+                let value = expect_string(tuple.remove(1))?;
+                let key = expect_string(tuple.remove(0))?;
+                Ok::<(String, String), String>((key, value))
+            }).collect::<Result<Vec<_>, String>>()?;
+            Value::Str(stdlib::url_mod::build_query(&pairs))
+        }
+        #[cfg(feature = "url_mod")] "std::url::join" => { let base = string!(); let rel = string!(); Value::Str(stdlib::url_mod::join(&base, &rel).map_err(error)?) }
+
+        // ---------------- Phase 1: dirs ----------------
+        #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::cache"      => Value::Str(stdlib::dirs_mod::cache()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::data"       => Value::Str(stdlib::dirs_mod::data()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::data_local" => Value::Str(stdlib::dirs_mod::data_local()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::state"      => Value::Str(stdlib::dirs_mod::state()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::executable" => Value::Str(stdlib::dirs_mod::executable()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::runtime"    => Value::Str(stdlib::dirs_mod::runtime()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::preference" => Value::Str(stdlib::dirs_mod::preference()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::desktop"    => Value::Str(stdlib::dirs_mod::desktop()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::documents"  => Value::Str(stdlib::dirs_mod::documents()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::downloads"  => Value::Str(stdlib::dirs_mod::downloads()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::pictures"   => Value::Str(stdlib::dirs_mod::pictures()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::music"      => Value::Str(stdlib::dirs_mod::music()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::videos"     => Value::Str(stdlib::dirs_mod::videos()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::public"     => Value::Str(stdlib::dirs_mod::public()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::temp"       => Value::Str(stdlib::dirs_mod::temp()),
+        #[cfg(feature = "dirs_mod")] "std::dirs::current"    => Value::Str(stdlib::dirs_mod::current()),
+
         _ => return Err("registered function has no VM implementation".into()),
     })
 }
@@ -683,5 +804,102 @@ mod tests {
 ".into()));
 
         assert_eq!(invoke("std::freestanding_mmio::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 1 extras — end-to-end VM bindings
+    // ------------------------------------------------------------------
+    #[cfg(feature = "regex_mod")]
+    #[test]
+    fn regex_native_bindings() {
+        let out = invoke("std::regex::find_all", vec![
+            Value::Str(r"\d+".into()),
+            Value::Str("a1 b22 c333".into()),
+        ], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(out, Value::Array(vec![
+            Value::Str("1".into()), Value::Str("22".into()), Value::Str("333".into()),
+        ]));
+
+        let replaced = invoke("std::regex::replace_all", vec![
+            Value::Str(r"\s+".into()),
+            Value::Str("hola   mundo".into()),
+            Value::Str("_".into()),
+        ], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(replaced, Value::Str("hola_mundo".into()));
+    }
+
+    #[cfg(feature = "uuid_mod")]
+    #[test]
+    fn uuid_native_bindings() {
+        let Value::Str(a) = invoke("std::uuid::v4", vec![], RuntimeCapabilities::all()).unwrap() else { panic!() };
+        assert_eq!(a.len(), 36);
+        assert_eq!(invoke("std::uuid::is_valid", vec![Value::Str(a.clone())], RuntimeCapabilities::all()).unwrap(),
+                   Value::Bool(true));
+        assert_eq!(invoke("std::uuid::nil", vec![], RuntimeCapabilities::all()).unwrap(),
+                   Value::Str("00000000-0000-0000-0000-000000000000".into()));
+    }
+
+    #[cfg(feature = "hash_mod")]
+    #[test]
+    fn hash_native_bindings() {
+        assert_eq!(
+            invoke("std::hash::sha256", vec![Value::Bytes(b"abc".to_vec())], RuntimeCapabilities::all()).unwrap(),
+            Value::Str("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into())
+        );
+        assert_eq!(
+            invoke("std::hash::blake3", vec![Value::Bytes(b"abc".to_vec())], RuntimeCapabilities::all()).unwrap(),
+            Value::Str("6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85".into())
+        );
+    }
+
+    #[cfg(feature = "random_mod")]
+    #[test]
+    fn random_native_bindings() {
+        let out = invoke("std::random::range", vec![Value::Int(1), Value::Int(10)], RuntimeCapabilities::all()).unwrap();
+        if let Value::Int(v) = out { assert!((1..=10).contains(&v)); } else { panic!("expected Int"); }
+
+        let a = invoke("std::random::seeded_bytes", vec![Value::Int(42), Value::Int(8)], RuntimeCapabilities::all()).unwrap();
+        let b = invoke("std::random::seeded_bytes", vec![Value::Int(42), Value::Int(8)], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(a, b, "seeded_bytes must be deterministic");
+    }
+
+    #[cfg(feature = "datetime_mod")]
+    #[test]
+    fn datetime_native_bindings() {
+        let ts = invoke("std::datetime::utc_ymd_hms", vec![
+            Value::Int(2026), Value::Int(7), Value::Int(25),
+            Value::Int(12), Value::Int(0), Value::Int(0),
+        ], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(ts, Value::Int(1_784_980_800));
+        let rfc = invoke("std::datetime::to_rfc3339", vec![ts.clone()], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(rfc, Value::Str("2026-07-25T12:00:00+00:00".into()));
+        let parsed = invoke("std::datetime::parse_rfc3339", vec![rfc], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(parsed, ts);
+    }
+
+    #[cfg(feature = "url_mod")]
+    #[test]
+    fn url_native_bindings() {
+        let url = Value::Str("https://user@example.com:8443/api?q=hola+mundo&n=1#frag".into());
+        assert_eq!(invoke("std::url::scheme", vec![url.clone()], RuntimeCapabilities::all()).unwrap(),
+                   Value::Str("https".into()));
+        assert_eq!(invoke("std::url::host", vec![url.clone()], RuntimeCapabilities::all()).unwrap(),
+                   Value::Str("example.com".into()));
+        assert_eq!(invoke("std::url::port", vec![url.clone()], RuntimeCapabilities::all()).unwrap(),
+                   Value::Int(8443));
+        let built = invoke("std::url::build_query", vec![Value::Array(vec![
+            Value::Array(vec![Value::Str("q".into()), Value::Str("hola mundo".into())]),
+            Value::Array(vec![Value::Str("n".into()), Value::Str("1".into())]),
+        ])], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(built, Value::Str("q=hola+mundo&n=1".into()));
+    }
+
+    #[cfg(feature = "dirs_mod")]
+    #[test]
+    fn dirs_native_bindings() {
+        let Value::Str(temp) = invoke("std::dirs::temp", vec![], RuntimeCapabilities::all()).unwrap() else { panic!() };
+        assert!(!temp.is_empty());
+        let Value::Str(cwd) = invoke("std::dirs::current", vec![], RuntimeCapabilities::all()).unwrap() else { panic!() };
+        assert!(!cwd.is_empty());
     }
 }

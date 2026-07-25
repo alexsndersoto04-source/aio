@@ -4,9 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["extras"]
+# Forward Phase 1 feature flags through to the stdlib so builders can
+# enable/disable the extra modules from any consumer crate.
+extras = ["titan_stdlib/extras", "regex_mod", "uuid_mod", "hash_mod", "random_mod", "datetime_mod", "url_mod", "dirs_mod"]
+regex_mod    = ["titan_stdlib/regex_mod"]
+uuid_mod     = ["titan_stdlib/uuid_mod"]
+hash_mod     = ["titan_stdlib/hash_mod"]
+random_mod   = ["titan_stdlib/random_mod"]
+datetime_mod = ["titan_stdlib/datetime_mod"]
+url_mod      = ["titan_stdlib/url_mod"]
+dirs_mod     = ["titan_stdlib/dirs_mod"]
+
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }
-titan_stdlib = { path = "../titan_stdlib" }
+titan_stdlib = { path = "../titan_stdlib", default-features = false }
 titan_tls = { path = "../titan_tls" }
 titan_sqlite = { path = "../titan_sqlite" }
 titan_postgres = { path = "../titan_postgres" }

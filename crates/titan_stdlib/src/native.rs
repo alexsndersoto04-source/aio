@@ -244,6 +244,98 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::freestanding_mmio::shutdown", [], Bool),
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
+
+    // --- Phase 1: regex ---
+    native!("std::regex::is_match",     [String, String], Bool),
+    native!("std::regex::find",         [String, String], String),
+    native!("std::regex::find_all",     [String, String], Array),
+    native!("std::regex::captures",     [String, String], Array),
+    native!("std::regex::replace_all",  [String, String, String], String),
+    native!("std::regex::split",        [String, String], Array),
+    native!("std::regex::is_valid",     [String], Bool),
+
+    // --- Phase 1: uuid ---
+    native!("std::uuid::v4",        [], String),
+    native!("std::uuid::v7",        [], String),
+    native!("std::uuid::is_valid",  [String], Bool),
+    native!("std::uuid::normalize", [String], String),
+    native!("std::uuid::nil",       [], String),
+
+    // --- Phase 1: hash ---
+    native!("std::hash::sha256",       [Bytes], String),
+    native!("std::hash::sha384",       [Bytes], String),
+    native!("std::hash::sha512",       [Bytes], String),
+    native!("std::hash::sha3_256",     [Bytes], String),
+    native!("std::hash::sha3_512",     [Bytes], String),
+    native!("std::hash::blake3",       [Bytes], String),
+    native!("std::hash::sha256_bytes", [Bytes], Bytes),
+    native!("std::hash::sha512_bytes", [Bytes], Bytes),
+    native!("std::hash::blake3_bytes", [Bytes], Bytes),
+    native!("std::hash::hmac_sha256",  [Bytes, Bytes], String),
+    native!("std::hash::hmac_sha512",  [Bytes, Bytes], String),
+
+    // --- Phase 1: random ---
+    native!("std::random::int",           [], Int),
+    native!("std::random::range",         [Int, Int], Int),
+    native!("std::random::float",         [], Float),
+    native!("std::random::bool",          [], Bool),
+    native!("std::random::bytes",         [Int], Bytes),
+    native!("std::random::seeded_int",    [Int, Int, Int], Int),
+    native!("std::random::seeded_float",  [Int], Float),
+    native!("std::random::seeded_bytes",  [Int, Int], Bytes),
+
+    // --- Phase 1: datetime ---
+    native!("std::datetime::now",           [], Int),
+    native!("std::datetime::now_iso",       [], String),
+    native!("std::datetime::format",        [Int, String], String),
+    native!("std::datetime::to_rfc3339",    [Int], String),
+    native!("std::datetime::to_rfc2822",    [Int], String),
+    native!("std::datetime::parse_rfc3339", [String], Int),
+    native!("std::datetime::parse",         [String, String], Int),
+    native!("std::datetime::utc_ymd_hms",   [Int, Int, Int, Int, Int, Int], Int),
+    native!("std::datetime::add_seconds",   [Int, Int], Int),
+    native!("std::datetime::add_days",      [Int, Int], Int),
+    native!("std::datetime::diff_seconds",  [Int, Int], Int),
+    native!("std::datetime::year",          [Int], Int),
+    native!("std::datetime::month",         [Int], Int),
+    native!("std::datetime::day",           [Int], Int),
+    native!("std::datetime::hour",          [Int], Int),
+    native!("std::datetime::minute",        [Int], Int),
+    native!("std::datetime::second",        [Int], Int),
+    native!("std::datetime::weekday",       [Int], Int),
+    native!("std::datetime::format_offset", [Int, String, Int], String),
+
+    // --- Phase 1: url ---
+    native!("std::url::is_valid",    [String], Bool),
+    native!("std::url::scheme",      [String], String),
+    native!("std::url::host",        [String], String),
+    native!("std::url::port",        [String], Int),
+    native!("std::url::path",        [String], String),
+    native!("std::url::query",       [String], String),
+    native!("std::url::fragment",    [String], String),
+    native!("std::url::parse_query", [String], Map),
+    native!("std::url::build_query", [Array], String),
+    native!("std::url::join",        [String, String], String),
+
+    // --- Phase 1: dirs ---
+    native!("std::dirs::home",       [], String),
+    native!("std::dirs::config",     [], String),
+    native!("std::dirs::cache",      [], String),
+    native!("std::dirs::data",       [], String),
+    native!("std::dirs::data_local", [], String),
+    native!("std::dirs::state",      [], String),
+    native!("std::dirs::executable", [], String),
+    native!("std::dirs::runtime",    [], String),
+    native!("std::dirs::preference", [], String),
+    native!("std::dirs::desktop",    [], String),
+    native!("std::dirs::documents",  [], String),
+    native!("std::dirs::downloads",  [], String),
+    native!("std::dirs::pictures",   [], String),
+    native!("std::dirs::music",      [], String),
+    native!("std::dirs::videos",     [], String),
+    native!("std::dirs::public",     [], String),
+    native!("std::dirs::temp",       [], String),
+    native!("std::dirs::current",    [], String),
 ];
 
 pub fn lookup(name: &str) -> Option<&'static NativeSignature> { NATIVES.iter().find(|signature| signature.name == name) }

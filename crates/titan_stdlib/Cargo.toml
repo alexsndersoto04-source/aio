@@ -4,6 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["extras"]
+# Meta-feature that bundles all Phase 1 optional modules. Turn off if you need
+# the smallest possible zett binary.
+extras = ["regex_mod", "uuid_mod", "hash_mod", "random_mod", "datetime_mod", "url_mod", "dirs_mod"]
+
+regex_mod    = ["dep:regex"]
+uuid_mod     = ["dep:uuid"]
+hash_mod     = ["dep:sha2", "dep:sha3", "dep:blake3", "dep:hmac"]
+random_mod   = ["dep:rand", "dep:rand_chacha"]
+datetime_mod = ["dep:chrono"]
+url_mod      = ["dep:url"]
+dirs_mod     = ["dep:dirs"]
+
 [dependencies]
 titan_tls = { path = "../titan_tls" }
 thiserror.workspace = true
@@ -11,3 +25,16 @@ serde.workspace = true
 serde_json.workspace = true
 sha1 = "0.10"
 getrandom = "0.3"
+
+# Phase 1 — optional, activated via features
+regex        = { version = "1", optional = true, default-features = false, features = ["std", "perf", "unicode"] }
+uuid         = { version = "1", optional = true, default-features = false, features = ["std", "v4", "v7"] }
+sha2         = { version = "0.10", optional = true }
+sha3         = { version = "0.10", optional = true }
+blake3       = { version = "1", optional = true, default-features = false, features = ["std"] }
+hmac         = { version = "0.12", optional = true }
+rand         = { version = "0.9", optional = true, default-features = false, features = ["std", "std_rng", "os_rng"] }
+rand_chacha  = { version = "0.9", optional = true }
+chrono       = { version = "0.4", optional = true, default-features = false, features = ["clock", "serde"] }
+url          = { version = "2", optional = true }
+dirs         = { version = "5", optional = true }

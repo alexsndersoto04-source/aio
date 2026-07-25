@@ -1,0 +1,33 @@
+// Demo de las nuevas librerías (Fase 1).
+// Ejecutar con:  zett run examples/extras.titan
+
+fn main() {
+    // regex
+    let emails = std::regex::find_all("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+", "escribe a juan@ejemplo.com o a maria@dev.io")
+    print("emails encontrados: {emails}")
+
+    // uuid
+    let id = std::uuid::v7()
+    print("uuid v7: {id}")
+
+    // hash
+    let digest = std::hash::sha256(std::encoding::utf8_encode("hola mundo"))
+    print("sha256: {digest}")
+
+    // random reproducible
+    let dado = std::random::seeded_int(42, 1, 6)
+    print("dado semilla 42: {dado}")
+
+    // datetime
+    let ahora = std::datetime::now_iso()
+    print("ahora (UTC): {ahora}")
+    let local = std::datetime::format_offset(std::datetime::now(), "%Y-%m-%d %H:%M", -240)
+    print("Caracas: {local}")
+
+    // url
+    let host = std::url::host("https://arena.ai/agents?x=1")
+    print("host: {host}")
+
+    // dirs
+    print("temp dir: {std::dirs::temp()}")
+}

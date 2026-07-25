@@ -35,6 +35,15 @@ pub mod input;
 pub mod clipboard;
 pub mod mobile;
 
+// --- Phase 1: optional extras (each behind its own Cargo feature) ------
+#[cfg(feature = "regex_mod")]    pub mod regex_mod;
+#[cfg(feature = "uuid_mod")]     pub mod uuid_mod;
+#[cfg(feature = "hash_mod")]     pub mod hash_mod;
+#[cfg(feature = "random_mod")]   pub mod random_mod;
+#[cfg(feature = "datetime_mod")] pub mod datetime_mod;
+#[cfg(feature = "url_mod")]      pub mod url_mod;
+#[cfg(feature = "dirs_mod")]     pub mod dirs_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }
