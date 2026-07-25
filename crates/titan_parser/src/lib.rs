@@ -576,17 +576,26 @@ fn contains_interpolation(value: &str) -> bool {
 }
 
 fn valid_interpolation(value: &str) -> bool {
-    if valid_identifier(value) { return true; }
+    if valid_path(value) { return true; }
     let Some((function, arguments)) = value.split_once('(') else { return false };
-    if !value.ends_with(')') || !valid_identifier(function.trim()) { return false; }
+    if !value.ends_with(')') || !valid_path(function.trim()) { return false; }
     let arguments = &arguments[..arguments.len().saturating_sub(1)];
-    arguments.trim().is_empty() || arguments.split(',').map(str::trim).all(|argument| !argument.is_empty() && (valid_identifier(argument) || argument.parse::<i64>().is_ok()))
+    arguments.trim().is_empty() || arguments.split(',').map(str::trim).all(|argument| !argument.is_empty() && (valid_path(argument) || argument.parse::<i64>().is_ok()))
 }
 
 fn valid_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     chars.next().is_some_and(|first| first == '_' || first.is_alphabetic())
         && chars.all(|character| character == '_' || character.is_alphanumeric())
+}
+
+/// Accepts a dotted or `::`-qualified path made of valid identifiers, so
+/// interpolation covers `x`, `foo.bar`, `std::dirs::temp` and combinations.
+fn valid_path(value: &str) -> bool {
+    if value.is_empty() { return false; }
+    // Normalize `a::b::c` to `a.b.c` for segment checking; both separators are allowed.
+    let normalized = value.replace("::", ".");
+    normalized.split('.').all(valid_identifier)
 }
 
 fn same_variant(a: &TokenKind, b: &TokenKind) -> bool { std::mem::discriminant(a) == std::mem::discriminant(b) }

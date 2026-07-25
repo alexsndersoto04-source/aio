@@ -44,6 +44,12 @@ pub mod mobile;
 #[cfg(feature = "url_mod")]      pub mod url_mod;
 #[cfg(feature = "dirs_mod")]     pub mod dirs_mod;
 
+// --- Phase 2: formats & compression ------------------------------------
+#[cfg(feature = "compress_mod")] pub mod compress_mod;
+#[cfg(feature = "archive_mod")]  pub mod archive_mod;
+#[cfg(feature = "yaml_mod")]     pub mod yaml_mod;
+#[cfg(feature = "xml_mod")]      pub mod xml_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

@@ -6,9 +6,13 @@ license.workspace = true
 
 [features]
 default = ["extras"]
-# Forward Phase 1 feature flags through to the stdlib so builders can
-# enable/disable the extra modules from any consumer crate.
-extras = ["titan_stdlib/extras", "regex_mod", "uuid_mod", "hash_mod", "random_mod", "datetime_mod", "url_mod", "dirs_mod"]
+# Forward feature flags through to the stdlib so builders can enable /
+# disable the optional modules from any consumer crate.
+extras = [
+    "titan_stdlib/extras",
+    "regex_mod", "uuid_mod", "hash_mod", "random_mod", "datetime_mod", "url_mod", "dirs_mod",
+    "compress_mod", "archive_mod", "yaml_mod", "xml_mod",
+]
 regex_mod    = ["titan_stdlib/regex_mod"]
 uuid_mod     = ["titan_stdlib/uuid_mod"]
 hash_mod     = ["titan_stdlib/hash_mod"]
@@ -16,6 +20,10 @@ random_mod   = ["titan_stdlib/random_mod"]
 datetime_mod = ["titan_stdlib/datetime_mod"]
 url_mod      = ["titan_stdlib/url_mod"]
 dirs_mod     = ["titan_stdlib/dirs_mod"]
+compress_mod = ["titan_stdlib/compress_mod"]
+archive_mod  = ["titan_stdlib/archive_mod"]
+yaml_mod     = ["titan_stdlib/yaml_mod"]
+xml_mod      = ["titan_stdlib/xml_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

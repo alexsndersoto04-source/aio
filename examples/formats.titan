@@ -1,0 +1,39 @@
+// Demo Fase 2: compresión, archivos, YAML y XML.
+// Ejecutar con:  cargo run -p titan_cli -- run examples/formats.titan
+
+fn main() {
+    // ---- Compresión gzip ----
+    let mensaje = std::encoding::utf8_encode("hola hola hola hola hola hola hola hola hola")
+    let comprimido = std::compress::gzip_encode(mensaje, 6)
+    let descomprimido = std::compress::gzip_decode(comprimido)
+    let texto = std::encoding::utf8_decode(descomprimido)
+    print("gzip original: {std::bytes::length(mensaje)} bytes")
+    print("gzip comprimido: {std::bytes::length(comprimido)} bytes")
+    print("gzip recuperado: {texto}")
+
+    // ---- Zstandard (mejor compresión, más rápido) ----
+    let z = std::compress::zstd_encode(mensaje, 3)
+    print("zstd comprimido: {std::bytes::length(z)} bytes")
+
+    // ---- YAML ----
+    let yaml_texto = "app:
+  name: TITAN
+  version: 0.2
+  tags:
+    - lenguaje
+    - vm
+    - wasm"
+    let doc = std::yaml::parse(yaml_texto)
+    let vuelto = std::yaml::stringify(doc)
+    print("---- YAML round-trip ----")
+    print(vuelto)
+
+    // ---- XML ----
+    let xml = "<config><host>arena.ai</host><port>443</port></config>"
+    let arbol = std::xml::parse(xml)
+    let regenerado = std::xml::stringify(arbol)
+    print("XML regenerado: {regenerado}")
+
+    // ---- Escapes XML ----
+    print("escape_text: {std::xml::escape_text(\"<b>hola & mundo</b>\")}")
+}

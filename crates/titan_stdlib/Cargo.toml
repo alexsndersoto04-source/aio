@@ -6,10 +6,16 @@ license.workspace = true
 
 [features]
 default = ["extras"]
-# Meta-feature that bundles all Phase 1 optional modules. Turn off if you need
+# Meta-feature that bundles all optional modules. Turn off if you need
 # the smallest possible zett binary.
-extras = ["regex_mod", "uuid_mod", "hash_mod", "random_mod", "datetime_mod", "url_mod", "dirs_mod"]
+extras = [
+    # Phase 1 — fundamentals
+    "regex_mod", "uuid_mod", "hash_mod", "random_mod", "datetime_mod", "url_mod", "dirs_mod",
+    # Phase 2 — formats & compression
+    "compress_mod", "archive_mod", "yaml_mod", "xml_mod",
+]
 
+# Phase 1
 regex_mod    = ["dep:regex"]
 uuid_mod     = ["dep:uuid"]
 hash_mod     = ["dep:sha2", "dep:sha3", "dep:blake3", "dep:hmac"]
@@ -17,6 +23,12 @@ random_mod   = ["dep:rand", "dep:rand_chacha"]
 datetime_mod = ["dep:chrono"]
 url_mod      = ["dep:url"]
 dirs_mod     = ["dep:dirs"]
+
+# Phase 2 — formats & compression
+compress_mod = ["dep:flate2", "dep:zstd"]
+archive_mod  = ["dep:tar", "dep:zip"]
+yaml_mod     = ["dep:serde_yaml"]
+xml_mod      = ["dep:quick-xml"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -38,3 +50,11 @@ rand_chacha  = { version = "0.9", optional = true }
 chrono       = { version = "0.4", optional = true, default-features = false, features = ["clock", "serde"] }
 url          = { version = "2", optional = true }
 dirs         = { version = "5", optional = true }
+
+# Phase 2 — formats & compression
+flate2       = { version = "1", optional = true }
+zstd         = { version = "0.13", optional = true, default-features = false }
+tar          = { version = "0.4", optional = true }
+zip          = { version = "2", optional = true, default-features = false, features = ["deflate"] }
+serde_yaml   = { version = "0.9", optional = true }
+quick-xml    = { version = "0.36", optional = true, features = ["serialize"] }

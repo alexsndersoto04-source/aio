@@ -317,6 +317,34 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::url::build_query", [Array], String),
     native!("std::url::join",        [String, String], String),
 
+    // --- Phase 2: compress ---
+    native!("std::compress::gzip_encode",    [Bytes, Int], Bytes),
+    native!("std::compress::gzip_decode",    [Bytes], Bytes),
+    native!("std::compress::zlib_encode",    [Bytes, Int], Bytes),
+    native!("std::compress::zlib_decode",    [Bytes], Bytes),
+    native!("std::compress::deflate_encode", [Bytes, Int], Bytes),
+    native!("std::compress::deflate_decode", [Bytes], Bytes),
+    native!("std::compress::zstd_encode",    [Bytes, Int], Bytes),
+    native!("std::compress::zstd_decode",    [Bytes], Bytes),
+
+    // --- Phase 2: archive ---
+    native!("std::archive::tar_pack",   [Array], Bytes),
+    native!("std::archive::tar_unpack", [Bytes], Array),
+    native!("std::archive::zip_pack",   [Array], Bytes),
+    native!("std::archive::zip_unpack", [Bytes], Array),
+    native!("std::archive::zip_list",   [Bytes], Array),
+
+    // --- Phase 2: yaml ---
+    native!("std::yaml::parse",       [String], Any),
+    native!("std::yaml::stringify",   [Any], String),
+    native!("std::yaml::parse_multi", [String], Array),
+
+    // --- Phase 2: xml ---
+    native!("std::xml::parse",         [String], Any),
+    native!("std::xml::stringify",     [Any], String),
+    native!("std::xml::escape_text",   [String], String),
+    native!("std::xml::escape_attr",   [String], String),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

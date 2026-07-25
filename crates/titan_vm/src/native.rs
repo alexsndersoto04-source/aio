@@ -344,6 +344,52 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         }
         #[cfg(feature = "url_mod")] "std::url::join" => { let base = string!(); let rel = string!(); Value::Str(stdlib::url_mod::join(&base, &rel).map_err(error)?) }
 
+        // ---------------- Phase 2: compress ----------------
+        #[cfg(feature = "compress_mod")] "std::compress::gzip_encode"    => { let data = bytes!(); let lvl = i32::try_from(int!()).unwrap_or(-1); Value::Bytes(stdlib::compress_mod::gzip_encode(&data, lvl).map_err(error)?) }
+        #[cfg(feature = "compress_mod")] "std::compress::gzip_decode"    => { let data = bytes!(); Value::Bytes(stdlib::compress_mod::gzip_decode(&data).map_err(error)?) }
+        #[cfg(feature = "compress_mod")] "std::compress::zlib_encode"    => { let data = bytes!(); let lvl = i32::try_from(int!()).unwrap_or(-1); Value::Bytes(stdlib::compress_mod::zlib_encode(&data, lvl).map_err(error)?) }
+        #[cfg(feature = "compress_mod")] "std::compress::zlib_decode"    => { let data = bytes!(); Value::Bytes(stdlib::compress_mod::zlib_decode(&data).map_err(error)?) }
+        #[cfg(feature = "compress_mod")] "std::compress::deflate_encode" => { let data = bytes!(); let lvl = i32::try_from(int!()).unwrap_or(-1); Value::Bytes(stdlib::compress_mod::deflate_encode(&data, lvl).map_err(error)?) }
+        #[cfg(feature = "compress_mod")] "std::compress::deflate_decode" => { let data = bytes!(); Value::Bytes(stdlib::compress_mod::deflate_decode(&data).map_err(error)?) }
+        #[cfg(feature = "compress_mod")] "std::compress::zstd_encode"    => { let data = bytes!(); let lvl = i32::try_from(int!()).unwrap_or(0); Value::Bytes(stdlib::compress_mod::zstd_encode(&data, lvl).map_err(error)?) }
+        #[cfg(feature = "compress_mod")] "std::compress::zstd_decode"    => { let data = bytes!(); Value::Bytes(stdlib::compress_mod::zstd_decode(&data).map_err(error)?) }
+
+        // ---------------- Phase 2: archive ----------------
+        #[cfg(feature = "archive_mod")] "std::archive::tar_pack" => {
+            let entries = value_to_archive_entries(take!())?;
+            Value::Bytes(stdlib::archive_mod::tar_pack(&entries).map_err(error)?)
+        }
+        #[cfg(feature = "archive_mod")] "std::archive::tar_unpack" => {
+            let data = bytes!();
+            archive_entries_to_value(stdlib::archive_mod::tar_unpack(&data).map_err(error)?)
+        }
+        #[cfg(feature = "archive_mod")] "std::archive::zip_pack" => {
+            let entries = value_to_archive_entries(take!())?;
+            Value::Bytes(stdlib::archive_mod::zip_pack(&entries).map_err(error)?)
+        }
+        #[cfg(feature = "archive_mod")] "std::archive::zip_unpack" => {
+            let data = bytes!();
+            archive_entries_to_value(stdlib::archive_mod::zip_unpack(&data).map_err(error)?)
+        }
+        #[cfg(feature = "archive_mod")] "std::archive::zip_list" => {
+            let data = bytes!();
+            Value::Array(stdlib::archive_mod::zip_list(&data).map_err(error)?.into_iter().map(Value::Str).collect())
+        }
+
+        // ---------------- Phase 2: yaml ----------------
+        #[cfg(feature = "yaml_mod")] "std::yaml::parse"       => from_json(stdlib::yaml_mod::parse(&string!()).map_err(error)?)?,
+        #[cfg(feature = "yaml_mod")] "std::yaml::stringify"   => Value::Str(stdlib::yaml_mod::stringify(&to_json(take!())?).map_err(error)?),
+        #[cfg(feature = "yaml_mod")] "std::yaml::parse_multi" => Value::Array(
+            stdlib::yaml_mod::parse_multi(&string!()).map_err(error)?
+                .into_iter().map(from_json).collect::<Result<_, _>>()?
+        ),
+
+        // ---------------- Phase 2: xml ----------------
+        #[cfg(feature = "xml_mod")] "std::xml::parse"       => from_json(stdlib::xml_mod::parse(&string!()).map_err(error)?)?,
+        #[cfg(feature = "xml_mod")] "std::xml::stringify"   => Value::Str(stdlib::xml_mod::stringify(&to_json(take!())?).map_err(error)?),
+        #[cfg(feature = "xml_mod")] "std::xml::escape_text" => Value::Str(stdlib::xml_mod::escape_text(&string!())),
+        #[cfg(feature = "xml_mod")] "std::xml::escape_attr" => Value::Str(stdlib::xml_mod::escape_attr(&string!())),
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),
@@ -419,6 +465,33 @@ fn optional_string(value: Option<String>) -> Value { value.map(Value::Str).unwra
 fn optional_path(value: Option<std::path::PathBuf>) -> Value { value.map(|p| Value::Str(p.to_string_lossy().into())).unwrap_or(Value::Nil) }
 fn value_length(value: &Value) -> Result<usize, String> { match value { Value::Str(v) => Ok(v.chars().count()), Value::Bytes(v) => Ok(v.len()), Value::Array(v) | Value::Tuple(v) => Ok(v.len()), Value::Map(v) => Ok(v.len()), _ => Err("value has no length".into()) } }
 fn process_output(output: stdlib::process::ProcessOutput) -> Value { let mut map = BTreeMap::new(); map.insert("status".into(), output.status.map(|v| Value::Int(i64::from(v))).unwrap_or(Value::Nil)); map.insert("success".into(), Value::Bool(output.success)); map.insert("stdout".into(), Value::Bytes(output.stdout)); map.insert("stderr".into(), Value::Bytes(output.stderr)); map.insert("timed_out".into(), Value::Bool(output.timed_out)); Value::Map(map) }
+
+#[cfg(feature = "archive_mod")]
+fn value_to_archive_entries(value: Value) -> Result<Vec<stdlib::archive_mod::ArchiveEntry>, String> {
+    let items = expect_array(value)?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let mut map = expect_map(item)?;
+        let name = map.remove("name")
+            .ok_or_else(|| "archive entry map requires 'name'".to_string())
+            .and_then(expect_string)?;
+        let bytes = map.remove("bytes")
+            .ok_or_else(|| "archive entry map requires 'bytes'".to_string())
+            .and_then(expect_bytes)?;
+        out.push(stdlib::archive_mod::ArchiveEntry { name, bytes });
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "archive_mod")]
+fn archive_entries_to_value(entries: Vec<stdlib::archive_mod::ArchiveEntry>) -> Value {
+    Value::Array(entries.into_iter().map(|entry| {
+        let mut map = BTreeMap::new();
+        map.insert("name".into(), Value::Str(entry.name));
+        map.insert("bytes".into(), Value::Bytes(entry.bytes));
+        Value::Map(map)
+    }).collect())
+}
 
 fn to_json(value: Value) -> Result<serde_json::Value, String> {
     Ok(match value {
@@ -901,5 +974,84 @@ mod tests {
         assert!(!temp.is_empty());
         let Value::Str(cwd) = invoke("std::dirs::current", vec![], RuntimeCapabilities::all()).unwrap() else { panic!() };
         assert!(!cwd.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 2 extras — end-to-end VM bindings
+    // -----------------------------------------------------------------
+    #[cfg(feature = "compress_mod")]
+    #[test]
+    fn compress_native_bindings_round_trip() {
+        let data = Value::Bytes(b"hola mundo hola mundo hola mundo".to_vec());
+        for (encoder, decoder, level) in [
+            ("std::compress::gzip_encode",    "std::compress::gzip_decode",    6),
+            ("std::compress::zlib_encode",    "std::compress::zlib_decode",    6),
+            ("std::compress::deflate_encode", "std::compress::deflate_decode", 6),
+            ("std::compress::zstd_encode",    "std::compress::zstd_decode",    3),
+        ] {
+            let encoded = invoke(encoder, vec![data.clone(), Value::Int(level)], RuntimeCapabilities::all()).unwrap();
+            let decoded = invoke(decoder, vec![encoded.clone()], RuntimeCapabilities::all()).unwrap();
+            assert_eq!(decoded, data, "{encoder}/{decoder} round-trip failed");
+        }
+    }
+
+    #[cfg(feature = "archive_mod")]
+    #[test]
+    fn archive_native_bindings_round_trip() {
+        let entry_map = |name: &str, bytes: Vec<u8>| {
+            let mut map = BTreeMap::new();
+            map.insert("name".to_string(), Value::Str(name.into()));
+            map.insert("bytes".to_string(), Value::Bytes(bytes));
+            Value::Map(map)
+        };
+        let entries = Value::Array(vec![
+            entry_map("hola.txt",  b"hola".to_vec()),
+            entry_map("mundo.txt", b"mundo".to_vec()),
+        ]);
+
+        // tar
+        let packed = invoke("std::archive::tar_pack", vec![entries.clone()], RuntimeCapabilities::all()).unwrap();
+        let unpacked = invoke("std::archive::tar_unpack", vec![packed], RuntimeCapabilities::all()).unwrap();
+        let Value::Array(items) = unpacked else { panic!("tar unpack should return array"); };
+        assert_eq!(items.len(), 2);
+
+        // zip
+        let packed = invoke("std::archive::zip_pack", vec![entries.clone()], RuntimeCapabilities::all()).unwrap();
+        let names = invoke("std::archive::zip_list", vec![packed.clone()], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(names, Value::Array(vec![Value::Str("hola.txt".into()), Value::Str("mundo.txt".into())]));
+        let unpacked = invoke("std::archive::zip_unpack", vec![packed], RuntimeCapabilities::all()).unwrap();
+        let Value::Array(items) = unpacked else { panic!("zip unpack should return array"); };
+        assert_eq!(items.len(), 2);
+    }
+
+    #[cfg(feature = "yaml_mod")]
+    #[test]
+    fn yaml_native_bindings_round_trip() {
+        let doc = invoke("std::yaml::parse", vec![Value::Str("name: TITAN\nversion: 2\n".into())], RuntimeCapabilities::all()).unwrap();
+        let Value::Map(map) = doc.clone() else { panic!("expected map"); };
+        assert_eq!(map.get("name"), Some(&Value::Str("TITAN".into())));
+        assert_eq!(map.get("version"), Some(&Value::Int(2)));
+
+        let text = invoke("std::yaml::stringify", vec![doc.clone()], RuntimeCapabilities::all()).unwrap();
+        let Value::Str(text) = text else { panic!("expected string"); };
+        let back = invoke("std::yaml::parse", vec![Value::Str(text)], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(back, doc);
+    }
+
+    #[cfg(feature = "xml_mod")]
+    #[test]
+    fn xml_native_bindings_parse_and_escape() {
+        let tree = invoke("std::xml::parse", vec![Value::Str("<a x=\"1\"><b>hola</b></a>".into())], RuntimeCapabilities::all()).unwrap();
+        let Value::Map(map) = tree else { panic!("expected map"); };
+        assert_eq!(map.get("tag"), Some(&Value::Str("a".into())));
+
+        assert_eq!(
+            invoke("std::xml::escape_text", vec![Value::Str("<b>&".into())], RuntimeCapabilities::all()).unwrap(),
+            Value::Str("&lt;b&gt;&amp;".into())
+        );
+        assert_eq!(
+            invoke("std::xml::escape_attr", vec![Value::Str("a\"b".into())], RuntimeCapabilities::all()).unwrap(),
+            Value::Str("a&quot;b".into())
+        );
     }
 }

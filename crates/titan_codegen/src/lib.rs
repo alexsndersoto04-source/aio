@@ -529,8 +529,16 @@ impl AstCompiler {
                 else { let local = self.find_local(arg).ok_or_else(|| CodegenError::UnknownVariable(arg.into()))?; self.emit(Op::PushLocal(local)); }
                 argc += 1;
             }
-            let function = self.function_ids.get(name).copied().ok_or_else(|| CodegenError::UnknownFunction(name.into()))?;
-            self.emit(Op::Call { function, argc });
+            // Prefer a user-defined function; fall back to a registered native (e.g.
+            // `std::dirs::temp()`, `std::datetime::now()`) so interpolation covers
+            // the full standard-library surface, not just plain identifiers.
+            if let Some(function) = self.function_ids.get(name).copied() {
+                self.emit(Op::Call { function, argc });
+            } else if titan_stdlib::native::contains(name) {
+                self.emit(Op::CallNative { name: name.into(), argc });
+            } else {
+                return Err(CodegenError::UnknownFunction(name.into()));
+            }
         } else {
             let local = self.find_local(source).ok_or_else(|| CodegenError::UnknownVariable(source.into()))?; self.emit(Op::PushLocal(local));
         }
