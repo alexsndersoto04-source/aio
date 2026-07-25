@@ -1,10 +1,25 @@
+# Build artefactos
 target/
 *.tbc
 *.wasm
 *.wasm.map
 *.wasm.map.json
 
-# Archivos locales usados al crear el paquete Zett
-crates/titan_codegen/src/artifact.rs.bak
+# Logs de cargo — nunca commitear
+*.log
+cargo-*.log
+
+# Archivos de parcheo temporales
+*.bak
+crates/*/src/*.rs.bak
+fix_*.py
+rmir.py
+
+# Empaquetado
 packaging/
 zett_*.deb
+
+# SO / editores
+.DS_Store
+.idea/
+.vscode/

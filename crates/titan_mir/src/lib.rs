@@ -1,4 +1,13 @@
-//! Titan MIR — Mid-level IR with optimizations and native emission.
+//! Titan MIR — Mid-level IR skeleton.
+//!
+//! STATUS: EXPERIMENTAL / INCOMPLETE.
+//! The public data types (`MirModule`, `MirFunction`, `MirInst`, etc.) and the
+//! constant-folding pass in `optimize::` are implemented, but `lower_hir_to_mir`
+//! is a stub that returns an empty module. The `arm64` and `x86_64` backends and
+//! the `elf` writer emit only a small set of instructions and a partial ELF header;
+//! they are NOT suitable for producing loadable object files, dynamic libraries
+//! or executables today. Use `titan_codegen` (bytecode) or `titan_wasm` for
+//! real end-to-end compilation.
 
 pub mod optimize;
 pub mod arm64;

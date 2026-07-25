@@ -1,4 +1,11 @@
 //! ELF binary emission (Object, Dylib, Executable) for Titan MIR.
+//!
+//! WARNING: this writer produces only a truncated ELF header followed by raw
+//! machine bytes. It does NOT emit section headers, program headers for a real
+//! load layout, a symbol table, a `.dynamic` section, or relocations. As a
+//! result the output is NOT a valid loadable object, `.so` or executable and
+//! will be rejected by the Linux/Android loader. Kept in-tree as scaffolding
+//! for future work on a native backend.
 
 use crate::MirFunction;
 

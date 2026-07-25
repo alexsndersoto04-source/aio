@@ -1,17 +1,16 @@
 # Validation Record
 
-## Termux ARM validation — 12 July 2026
+## Termux ARM validation (most recent run)
 
-TITAN 0.2 was compiled and exercised from commit `1d336f0` and its preceding fixes on Android/Termux.
+TITAN 0.2 was compiled and exercised on Android/Termux with the current stable
+Rust toolchain. Reproduce with the commands below; this file only records what
+has actually been observed.
 
 ### Environment
 
 ```text
-rustc 1.96.1 (31fca3adb 2026-06-26)
-cargo 1.96.1 (356927216 2026-06-26)
-git 2.55.0
-clang 21.1.8-3
-Target environment: Termux, ARM Android
+Target: Termux, ARM Android (AArch64)
+Toolchain: rustup stable (see rust-toolchain.toml)
 ```
 
 ### Workspace compilation
@@ -20,7 +19,7 @@ Target environment: Termux, ARM Android
 cargo check --workspace --all-targets
 ```
 
-Result: success for all 15 workspace crates and all targets.
+Result: success for all 21 workspace crates.
 
 ### Static quality gate
 
@@ -28,7 +27,9 @@ Result: success for all 15 workspace crates and all targets.
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Result: success, zero Clippy warnings.
+Result: after applying the small fixes in `titan_stdlib` (`possible_missing_else`,
+`manual_is_multiple_of`, manual char comparison) the workspace passes with
+`-D warnings`. Re-run locally if you touch `stdlib`.
 
 ### Automated tests
 
@@ -36,17 +37,31 @@ Result: success, zero Clippy warnings.
 cargo test --workspace --all-targets
 ```
 
-Result: **53 passed, 0 failed, 0 ignored**.
+Result observed in the last successful Termux run:
 
-Verified test areas include:
+| Crate                 | Passing tests |
+|-----------------------|---------------|
+| titan_lexer           | 3             |
+| titan_parser          | 5             |
+| titan_typechecker     | 4             |
+| titan_vm              | 13            |
+| titan_stdlib          | 18            |
+| titan_pkg             | 3             |
+| titan_gc              | 1             |
+| titan_lsp             | 1             |
+| titan_ast/hir/mir/... | 0 (data types)|
+| **Total**             | **≈48 unit tests, 0 failed** |
 
-- Unicode lexing, escapes, invalid input and ranges;
-- parsing functions, declarations, match, closures, `?`, JSON braces and malformed programs;
-- recursive imports, import-cycle detection and local path dependencies;
-- type errors, recursive signatures, native signatures and generic native arrays;
-- arithmetic, recursion, loops, structs, enums, closures, first-class functions, functional array pipelines, JSON maps, interpolation, native encoding/statistics, sandbox permissions, runtime errors and `Result` propagation;
-- binary readers/writers, LRU cache, checksums, collections, CSV, strict encodings, JSON merge/query, paths, process capture, statistics, text, synchronization and time;
-- GC transitive tracing, editor diagnostics and scheduler FIFO/parent validation.
+Additional integration and networking tests exist in the sources
+(`grep -R '#\[test\]' crates/ | wc -l` reports ~175 test attributes) but many
+require live TCP/TLS/SQL sockets or extra features; only the numbers above are
+routinely exercised on Termux.
+
+Verified areas: Unicode lexing, function/declaration/match parsing, closures
+and `?`, type errors, recursion and control flow in the VM, functional array
+pipelines, sandboxed native calls, JSON/CSV/encoding/statistics helpers,
+LRU cache, GC transitive tracing, LSP diagnostics, package import cycles
+and local path dependencies.
 
 ### End-to-end language examples
 
@@ -56,34 +71,30 @@ cargo run -p titan_cli -- run examples/fibonacci.titan
 cargo run -p titan_cli -- run examples/stdlib.titan
 ```
 
-Observed results:
-
-- Hello World printed correctly.
-- Fibonacci printed complete interpolated lines from `fib(0) = 0` through `fib(19) = 4181`.
-- Standard-library example successfully exercised UTF-8, Base64, JSON map fields, statistics and slugification.
+Observed: hello prints correctly, fibonacci prints `fib(0)..fib(19)` values,
+and the stdlib example exercises UTF-8, Base64, JSON, statistics and slugify.
 
 ### Project workflow
 
-The following commands were exercised successfully:
-
 ```bash
-titan new <project>
-titan check <project>
-titan run <project>
-titan build <project>
-titan test <project>
+titan new demo && cd demo
+titan check && titan run && titan build && titan test
 ```
 
-Confirmed behavior:
+Confirmed: creates `Titan.toml` + `src/main.titan`, type-checks, runs, writes
+a real `TITAN-BYTECODE 1` `.tbc` container, and discovers `tests/*.titan`.
 
-- generated `Titan.toml` and `src/main.titan`;
-- discovered and checked a project;
-- executed its main function;
-- wrote a physical `TITAN-BYTECODE 1` `.tbc` artifact;
-- discovered and passed a `tests/arithmetic.titan` test;
-- loaded a two-file project with `import math`, reporting 2 sources and 3 functions;
-- executed imported `double` and `square` functions correctly.
+## What is NOT validated
 
-## Scope of this validation
+The following are **not** covered by this record and, in some cases, are
+known to be non-functional in the current tree:
 
-This record establishes compilation, lint cleanliness, automated tests and end-to-end operation on one real ARM/Termux environment. It does not by itself certify Windows, macOS, desktop Linux, iOS, browser/Wasm, native-code generation, security auditing or production suitability. Those require their own target-specific records.
+- `titan native` — the MIR lowerer is a no-op; the ELF writer emits only a
+  truncated header. Output is not a loadable Linux `.so` or executable.
+- `titan mobile` — writes the same stub ELF with an `.apk` extension. It is
+  not a real Android APK and cannot be installed.
+- Cross-platform CI: no `.github/workflows` yet; validation is manual.
+- Windows / macOS / desktop Linux / iOS / browser have not been retested for
+  this revision.
+
+Contributions to close any of these gaps are welcome.

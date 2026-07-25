@@ -2,7 +2,9 @@
 
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM.
 
-> Project status: the supported core compiles and runs end to end. On Termux ARM with Rust 1.96.1, all 21 crates pass `cargo check`, Clippy passes with `-D warnings`, and the growing suite contains 134 passing tests across compiler, VM, tooling, concurrency, artifacts and TCP. See [`docs/VALIDATION.md`](docs/VALIDATION.md). Experimental syntax is identified separately rather than advertised as complete.
+> **Project status.** The supported core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end, and there is a real WebAssembly backend (`titan wasm`). On the last Termux ARM run all 21 workspace crates passed `cargo check`, and `cargo test --workspace` reported roughly **50+ passing unit tests** across lexer, parser, typechecker, VM, GC, LSP, package manager and stdlib. See [`docs/VALIDATION.md`](docs/VALIDATION.md) for the exact breakdown.
+>
+> **Not yet functional (experimental scaffolding).** The `titan_mir` crate and the `titan native` / `titan mobile` CLI commands are placeholders: `lower_hir_to_mir` is a no-op, and the ELF/APK writers emit an incomplete header that is **not** a loadable Linux `.so`, executable or Android APK. Both commands print a warning at runtime. Please use `titan build` (portable bytecode) or `titan wasm` (WebAssembly) for real artifacts.
 
 ## Quick start
 
@@ -87,6 +89,8 @@ titan run [file|project]     Compile, type-check and execute
 titan run --sandbox [path]   Deny filesystem/process/network/environment
 titan build [file|project]   Write validated .tbc bytecode
 titan wasm [file|project]    Compile supported code to .wasm
+titan native [file|project]  EXPERIMENTAL — emits an incomplete ELF stub (not loadable)
+titan mobile [file|project]  EXPERIMENTAL — does NOT produce a real Android APK
 titan debug [path] -b file:line  Interactive source debugger
 titan exec <file.tbc>        Validate and execute bytecode without source
 titan test [project]         Run all tests/*.titan programs

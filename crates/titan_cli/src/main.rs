@@ -30,7 +30,10 @@ pub enum Command {
     Build { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
     /// Compile a file or project to standalone WebAssembly plus standard/logical source maps
     Wasm { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
-    /// Compile a file or project to a native relocatable object, dynamic library (.so), or standalone executable
+    /// [EXPERIMENTAL — NOT PRODUCTION-READY] Emit a stub ELF from partial MIR.
+    /// The MIR lowerer is currently a no-op (`lower_hir_to_mir` returns an empty module),
+    /// so this command produces headers-only ELF files that are NOT loadable by Linux/Android.
+    /// Use `titan build` (bytecode) or `titan wasm` (WebAssembly) for real artifacts.
     Native {
         #[arg(default_value = ".")] input: String,
         #[arg(short, long)] output: Option<String>,
@@ -57,7 +60,10 @@ pub enum Command {
     Repl,
     /// Print version details
     Version,
-    /// Compile a Titan project into a native mobile package (APK/AAB) for Android
+    /// [EXPERIMENTAL — NOT AN APK] Placeholder for Android packaging.
+    /// This does NOT produce a real .apk: it writes the same stub ELF as `titan native`
+    /// with an .apk extension. A real APK requires AndroidManifest.xml, DEX/native libs
+    /// packaged in a signed ZIP, none of which is implemented.
     Mobile {
         #[arg(default_value = ".")] input: String,
         #[arg(long, default_value = "android-arm64")] target: String,
@@ -237,6 +243,11 @@ fn cmd_wasm(input: &str, output: Option<String>) {
 }
 
 fn cmd_native(input: &str, output: Option<String>, arch: &str, format: &str) {
+    eprintln!("WARNING: `titan native` is experimental and NOT production-ready.");
+    eprintln!("         The MIR lowerer is currently a no-op, so this command emits");
+    eprintln!("         a stub ELF header that Linux/Android will NOT load or execute.");
+    eprintln!("         Use `titan build` (bytecode) or `titan wasm` (WebAssembly) instead.");
+    eprintln!();
     let project = if format == "object" || format == "dylib" || format == "shared" || format == "so" {
         let entry = titan_pkg::default_entry(input);
         let proj = titan_pkg::SourceProject::load(&entry)
@@ -377,6 +388,11 @@ fn cmd_repl() {
 }
 
 fn cmd_mobile(input: &str, target: &str, output: Option<String>) {
+    eprintln!("WARNING: `titan mobile` does NOT produce a real Android APK.");
+    eprintln!("         It writes the same stub ELF as `titan native` with an .apk extension.");
+    eprintln!("         A real APK needs AndroidManifest.xml, DEX/native libs, and ZIP signing,");
+    eprintln!("         none of which is implemented yet. Do NOT try to install the output.");
+    eprintln!();
     let input_path = Path::new(input);
     let root = titan_pkg::find_project_root(input_path).unwrap_or_else(|| input_path.to_path_buf());
     println!("TITAN Mobile Packager -> target={target}");
