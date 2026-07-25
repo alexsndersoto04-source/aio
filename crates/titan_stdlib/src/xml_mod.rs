@@ -20,7 +20,6 @@
 //! ```
 
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
-use quick_xml::name::QName;
 use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
 use serde_json::{json, Value};
@@ -142,7 +141,8 @@ fn build_start(event: &BytesStart<'_>) -> Result<Node, XmlError> {
 }
 
 fn close(stack: &mut Vec<Node>, event: &BytesEnd<'_>) -> Result<(), XmlError> {
-    let name = std::str::from_utf8(event.name().as_ref()).map_err(map_err)?;
+    let name_binding = event.name();
+    let name = std::str::from_utf8(name_binding.as_ref()).map_err(map_err)?;
     let finished = stack.pop().ok_or_else(|| XmlError::Parse("unbalanced close tag".into()))?;
     if finished.tag != name {
         return Err(XmlError::Parse(format!("mismatched close tag: expected </{}> but found </{}>", finished.tag, name)));
@@ -159,7 +159,9 @@ fn write_node(writer: &mut Writer<Cursor<Vec<u8>>>, value: &Value) -> Result<(),
     if let Some(attrs) = object.get("attrs").and_then(Value::as_object) {
         for (key, val) in attrs {
             if let Some(text) = val.as_str() {
-                start.push_attribute((QName(key.as_bytes()), text.as_bytes()));
+                // quick-xml's `push_attribute` takes `Into<Attribute>`, and the
+                // available impls are `(&[u8], &[u8])` and `(&str, &str)`.
+                start.push_attribute((key.as_str(), text));
             }
         }
     }
