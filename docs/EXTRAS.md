@@ -104,3 +104,20 @@ cargo test -p titan_vm -- dirs_native_bindings
 6. Forward the feature in `titan_vm/Cargo.toml` and `titan_cli/Cargo.toml`.
 7. Add a smoke test in `crates/titan_vm/src/native.rs`'s
    `#[cfg(test)] mod tests`.
+
+## Enabling the CI workflow (do this once, from your machine)
+
+GitHub Apps aren't allowed to create workflows for you, so the CI file
+lives at `docs/CI_WORKFLOW_TEMPLATE.yml`. Activate it with:
+
+```bash
+mkdir -p .github/workflows
+cp docs/CI_WORKFLOW_TEMPLATE.yml .github/workflows/ci.yml
+git add .github/workflows/ci.yml
+git commit -m "Enable GitHub Actions CI"
+git push
+```
+
+From that push onward every commit gets `cargo fmt/check/test` on Linux
+plus an AArch64 cross-check, so future regressions are caught before
+they reach your Termux build.
