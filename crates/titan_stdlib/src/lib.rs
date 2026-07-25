@@ -50,6 +50,11 @@ pub mod mobile;
 #[cfg(feature = "yaml_mod")]     pub mod yaml_mod;
 #[cfg(feature = "xml_mod")]      pub mod xml_mod;
 
+// --- Phase 3: advanced networking --------------------------------------
+#[cfg(feature = "http_full_mod")] pub mod http_full_mod;
+#[cfg(feature = "dns_mod")]       pub mod dns_mod;
+#[cfg(feature = "email_mod")]     pub mod email_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

@@ -1,0 +1,38 @@
+// Demo Fase 3: red avanzada (HTTPS + DNS).
+// Ejecutar con:  cargo run -p titan_cli -- run examples/network.titan
+//
+// Nota: usa red real, por eso hace falta internet. Los servicios usados
+// son públicos (Cloudflare DNS, httpbin.org).
+
+fn main() {
+    // ---- Resolver DNS ----
+    print("---- DNS ----")
+    let ips_google = std::dns::resolve("dns.google")
+    print("dns.google -> {ips_google}")
+
+    let solo_v4 = std::dns::resolve_ipv4("one.one.one.one")
+    print("one.one.one.one IPv4 -> {solo_v4}")
+
+    // ---- HTTPS: GET simple ----
+    print("---- HTTPS GET ----")
+    let headers = std::map::new()
+    let opts = std::map::new()
+    let opts = std::map::insert(opts, "timeout_ms", 10000)
+    let respuesta = std::http_full::request("GET", "https://httpbin.org/ip", headers, std::bytes::from_array([]), opts)
+    let cuerpo = std::encoding::utf8_decode(respuesta.body)
+    print("status: {respuesta.status}")
+    print("body: {cuerpo}")
+
+    // ---- HTTPS: GET JSON directo ----
+    print("---- HTTPS GET JSON ----")
+    let dato = std::http_full::get_json("https://httpbin.org/user-agent", headers, opts)
+    print("user-agent visto por el servidor: {dato}")
+
+    // ---- HTTPS: POST JSON ----
+    print("---- HTTPS POST JSON ----")
+    let payload = std::map::new()
+    let payload = std::map::insert(payload, "lenguaje", "TITAN")
+    let payload = std::map::insert(payload, "version", 0.2)
+    let echo = std::http_full::post_json("https://httpbin.org/post", payload, headers, opts)
+    print("echo recibido: {echo}")
+}

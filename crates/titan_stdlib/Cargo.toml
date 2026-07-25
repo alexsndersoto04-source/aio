@@ -13,6 +13,8 @@ extras = [
     "regex_mod", "uuid_mod", "hash_mod", "random_mod", "datetime_mod", "url_mod", "dirs_mod",
     # Phase 2 — formats & compression
     "compress_mod", "archive_mod", "yaml_mod", "xml_mod",
+    # Phase 3 — advanced networking
+    "http_full_mod", "dns_mod", "email_mod",
 ]
 
 # Phase 1
@@ -29,6 +31,11 @@ compress_mod = ["dep:flate2", "dep:zstd"]
 archive_mod  = ["dep:tar", "dep:zip"]
 yaml_mod     = ["dep:serde_yaml"]
 xml_mod      = ["dep:quick-xml"]
+
+# Phase 3 — advanced networking
+http_full_mod = ["dep:ureq", "dep:base64"]
+dns_mod       = ["dep:hickory-resolver", "dep:tokio", "dep:once_cell"]
+email_mod     = ["dep:lettre", "dep:tokio", "dep:once_cell"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -58,3 +65,11 @@ tar          = { version = "0.4", optional = true }
 zip          = { version = "2", optional = true, default-features = false, features = ["deflate"] }
 serde_yaml   = { version = "0.9", optional = true }
 quick-xml    = { version = "0.36", optional = true, features = ["serialize"] }
+
+# Phase 3 — advanced networking (all pure-Rust, TLS via rustls, Termux friendly)
+ureq              = { version = "2", optional = true, default-features = false, features = ["tls", "json", "gzip"] }
+hickory-resolver  = { version = "0.24", optional = true, default-features = false, features = ["system-config", "tokio-runtime"] }
+lettre            = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "rustls-tls", "webpki-roots", "builder"] }
+base64            = { version = "0.22", optional = true }
+tokio             = { version = "1", optional = true, features = ["rt", "net"] }
+once_cell         = { version = "1", optional = true }

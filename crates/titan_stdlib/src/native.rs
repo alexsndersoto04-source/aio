@@ -345,6 +345,28 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::xml::escape_text",   [String], String),
     native!("std::xml::escape_attr",   [String], String),
 
+    // --- Phase 3: http_full (HTTPS client via ureq + rustls) ---
+    // Signature: (method, url, headers_map, body_bytes, options_map) -> response_map
+    // options_map keys: basic_user, basic_pass, bearer, user_agent, timeout_ms, max_redirects
+    native!("std::http_full::request",   [String, String, Map, Bytes, Map], Map, Network),
+    native!("std::http_full::get_json",  [String, Map, Map], Any, Network),
+    native!("std::http_full::post_json", [String, Any, Map, Map], Any, Network),
+    native!("std::http_full::post_form", [String, Array, Map, Map], Map, Network),
+
+    // --- Phase 3: dns ---
+    native!("std::dns::resolve",       [String], Array, Network),
+    native!("std::dns::resolve_ipv4",  [String], Array, Network),
+    native!("std::dns::resolve_ipv6",  [String], Array, Network),
+    native!("std::dns::resolve_mx",    [String], Array, Network),
+    native!("std::dns::resolve_txt",   [String], Array, Network),
+    native!("std::dns::resolve_cname", [String], Array, Network),
+    native!("std::dns::reverse",       [String], Array, Network),
+
+    // --- Phase 3: email (SMTP+TLS via lettre + rustls) ---
+    native!("std::email::send_simple",          [String, Int, String, String, String, String, String, String], String, Network),
+    native!("std::email::send_html",            [String, Int, String, String, String, String, String, String, String], String, Network),
+    native!("std::email::send_with_attachment", [String, Int, String, String, String, String, String, String, String, String, Bytes], String, Network),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

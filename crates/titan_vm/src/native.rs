@@ -390,6 +390,90 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         #[cfg(feature = "xml_mod")] "std::xml::escape_text" => Value::Str(stdlib::xml_mod::escape_text(&string!())),
         #[cfg(feature = "xml_mod")] "std::xml::escape_attr" => Value::Str(stdlib::xml_mod::escape_attr(&string!())),
 
+        // ---------------- Phase 3: http_full ----------------
+        #[cfg(feature = "http_full_mod")] "std::http_full::request" => {
+            let method = string!();
+            let url    = string!();
+            let headers_map = expect_map(take!())?;
+            let body   = bytes!();
+            let options_map = expect_map(take!())?;
+            let mut options = stdlib::http_full_mod::Options::default();
+            options.headers = headers_map.into_iter().map(|(k,v)| Ok::<_, String>((k, expect_string(v)?))).collect::<Result<_, _>>()?;
+            build_http_full_options(&mut options, options_map)?;
+            let response = call_http_full(&method, &url, &body, &options)?;
+            http_full_response_to_value(response)
+        }
+        #[cfg(feature = "http_full_mod")] "std::http_full::get_json" => {
+            let url = string!();
+            let headers_map = expect_map(take!())?;
+            let options_map = expect_map(take!())?;
+            let mut options = stdlib::http_full_mod::Options::default();
+            options.headers = headers_map.into_iter().map(|(k,v)| Ok::<_, String>((k, expect_string(v)?))).collect::<Result<_, _>>()?;
+            build_http_full_options(&mut options, options_map)?;
+            from_json(stdlib::http_full_mod::get_json(&url, &options).map_err(error)?)?
+        }
+        #[cfg(feature = "http_full_mod")] "std::http_full::post_json" => {
+            let url = string!();
+            let body = to_json(take!())?;
+            let headers_map = expect_map(take!())?;
+            let options_map = expect_map(take!())?;
+            let mut options = stdlib::http_full_mod::Options::default();
+            options.headers = headers_map.into_iter().map(|(k,v)| Ok::<_, String>((k, expect_string(v)?))).collect::<Result<_, _>>()?;
+            build_http_full_options(&mut options, options_map)?;
+            from_json(stdlib::http_full_mod::post_json(&url, &body, &options).map_err(error)?)?
+        }
+        #[cfg(feature = "http_full_mod")] "std::http_full::post_form" => {
+            let url = string!();
+            let form = array!().into_iter().map(|item| {
+                let mut tuple = expect_array(item)?;
+                if tuple.len() != 2 { return Err("post_form pairs must be [key, value]".to_string()); }
+                let value = expect_string(tuple.remove(1))?;
+                let key   = expect_string(tuple.remove(0))?;
+                Ok::<(String, String), String>((key, value))
+            }).collect::<Result<Vec<_>, String>>()?;
+            let headers_map = expect_map(take!())?;
+            let options_map = expect_map(take!())?;
+            let mut options = stdlib::http_full_mod::Options::default();
+            options.headers = headers_map.into_iter().map(|(k,v)| Ok::<_, String>((k, expect_string(v)?))).collect::<Result<_, _>>()?;
+            build_http_full_options(&mut options, options_map)?;
+            let response = stdlib::http_full_mod::post_form(&url, &form, &options).map_err(error)?;
+            http_full_response_to_value(response)
+        }
+
+        // ---------------- Phase 3: dns ----------------
+        #[cfg(feature = "dns_mod")] "std::dns::resolve"       => Value::Array(stdlib::dns_mod::resolve(&string!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "dns_mod")] "std::dns::resolve_ipv4"  => Value::Array(stdlib::dns_mod::resolve_ipv4(&string!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "dns_mod")] "std::dns::resolve_ipv6"  => Value::Array(stdlib::dns_mod::resolve_ipv6(&string!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "dns_mod")] "std::dns::resolve_mx"    => Value::Array(stdlib::dns_mod::resolve_mx(&string!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "dns_mod")] "std::dns::resolve_txt"   => Value::Array(stdlib::dns_mod::resolve_txt(&string!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "dns_mod")] "std::dns::resolve_cname" => Value::Array(stdlib::dns_mod::resolve_cname(&string!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "dns_mod")] "std::dns::reverse"       => Value::Array(stdlib::dns_mod::reverse(&string!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+
+        // ---------------- Phase 3: email ----------------
+        #[cfg(feature = "email_mod")] "std::email::send_simple" => {
+            let host = string!(); let port = u16::try_from(int!()).map_err(|_| "port out of range".to_string())?;
+            let user = string!(); let pass = string!();
+            let from = string!(); let to = string!();
+            let subject = string!(); let body = string!();
+            Value::Str(stdlib::email_mod::send_simple(&host, port, &user, &pass, &from, &to, &subject, &body).map_err(error)?)
+        }
+        #[cfg(feature = "email_mod")] "std::email::send_html" => {
+            let host = string!(); let port = u16::try_from(int!()).map_err(|_| "port out of range".to_string())?;
+            let user = string!(); let pass = string!();
+            let from = string!(); let to = string!();
+            let subject = string!(); let text = string!(); let html = string!();
+            Value::Str(stdlib::email_mod::send_html(&host, port, &user, &pass, &from, &to, &subject, &text, &html).map_err(error)?)
+        }
+        #[cfg(feature = "email_mod")] "std::email::send_with_attachment" => {
+            let host = string!(); let port = u16::try_from(int!()).map_err(|_| "port out of range".to_string())?;
+            let user = string!(); let pass = string!();
+            let from = string!(); let to = string!();
+            let subject = string!(); let html = string!();
+            let filename = string!(); let mime = string!();
+            let bytes = bytes!();
+            Value::Str(stdlib::email_mod::send_with_attachment(&host, port, &user, &pass, &from, &to, &subject, &html, &filename, &mime, &bytes).map_err(error)?)
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),
@@ -465,6 +549,51 @@ fn optional_string(value: Option<String>) -> Value { value.map(Value::Str).unwra
 fn optional_path(value: Option<std::path::PathBuf>) -> Value { value.map(|p| Value::Str(p.to_string_lossy().into())).unwrap_or(Value::Nil) }
 fn value_length(value: &Value) -> Result<usize, String> { match value { Value::Str(v) => Ok(v.chars().count()), Value::Bytes(v) => Ok(v.len()), Value::Array(v) | Value::Tuple(v) => Ok(v.len()), Value::Map(v) => Ok(v.len()), _ => Err("value has no length".into()) } }
 fn process_output(output: stdlib::process::ProcessOutput) -> Value { let mut map = BTreeMap::new(); map.insert("status".into(), output.status.map(|v| Value::Int(i64::from(v))).unwrap_or(Value::Nil)); map.insert("success".into(), Value::Bool(output.success)); map.insert("stdout".into(), Value::Bytes(output.stdout)); map.insert("stderr".into(), Value::Bytes(output.stderr)); map.insert("timed_out".into(), Value::Bool(output.timed_out)); Value::Map(map) }
+
+#[cfg(feature = "http_full_mod")]
+fn build_http_full_options(options: &mut stdlib::http_full_mod::Options, mut map: BTreeMap<String, Value>) -> Result<(), String> {
+    if let Some(user) = map.remove("basic_user").map(expect_string).transpose()? {
+        let pass = map.remove("basic_pass").map(expect_string).transpose()?.unwrap_or_default();
+        options.basic_auth = Some((user, pass));
+    }
+    if let Some(token) = map.remove("bearer").map(expect_string).transpose()? {
+        options.bearer = Some(token);
+    }
+    if let Some(agent_name) = map.remove("user_agent").map(expect_string).transpose()? {
+        options.user_agent = Some(agent_name);
+    }
+    if let Some(Value::Int(millis)) = map.remove("timeout_ms") {
+        if millis >= 0 { options.timeout_ms = Some(millis as u64); }
+    }
+    if let Some(Value::Int(redirects)) = map.remove("max_redirects") {
+        if let Ok(n) = u32::try_from(redirects) { options.max_redirects = Some(n); }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "http_full_mod")]
+fn call_http_full(method: &str, url: &str, body: &[u8], options: &stdlib::http_full_mod::Options) -> Result<stdlib::http_full_mod::Response, String> {
+    let method_upper = method.to_ascii_uppercase();
+    match method_upper.as_str() {
+        "GET"     => stdlib::http_full_mod::get(url, options),
+        "HEAD"    => stdlib::http_full_mod::head(url, options),
+        "DELETE"  => stdlib::http_full_mod::delete(url, options),
+        "POST"    => stdlib::http_full_mod::post(url, body, options),
+        "PUT"     => stdlib::http_full_mod::put(url, body, options),
+        "PATCH"   => stdlib::http_full_mod::patch(url, body, options),
+        other     => return Err(format!("std::http_full::request unsupported method '{other}'")),
+    }.map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "http_full_mod")]
+fn http_full_response_to_value(response: stdlib::http_full_mod::Response) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert("status".into(), Value::Int(response.status as i64));
+    map.insert("headers".into(), Value::Map(response.headers.into_iter().map(|(k,v)| (k, Value::Str(v))).collect()));
+    map.insert("body".into(), Value::Bytes(response.body));
+    map.insert("final_url".into(), Value::Str(response.final_url));
+    Value::Map(map)
+}
 
 #[cfg(feature = "archive_mod")]
 fn value_to_archive_entries(value: Value) -> Result<Vec<stdlib::archive_mod::ArchiveEntry>, String> {
