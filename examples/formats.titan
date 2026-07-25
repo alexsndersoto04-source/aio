@@ -15,14 +15,8 @@ fn main() {
     let z = std::compress::zstd_encode(mensaje, 3)
     print("zstd comprimido: {std::bytes::length(z)} bytes")
 
-    // ---- YAML ----
-    let yaml_texto = "app:
-  name: TITAN
-  version: 0.2
-  tags:
-    - lenguaje
-    - vm
-    - wasm"
+    // ---- YAML (strings de una sola línea, con \n literales) ----
+    let yaml_texto = "app:\n  name: TITAN\n  version: 0.2\n  tags:\n    - lenguaje\n    - vm\n    - wasm\n"
     let doc = std::yaml::parse(yaml_texto)
     let vuelto = std::yaml::stringify(doc)
     print("---- YAML round-trip ----")
@@ -35,5 +29,23 @@ fn main() {
     print("XML regenerado: {regenerado}")
 
     // ---- Escapes XML ----
-    print("escape_text: {std::xml::escape_text(\"<b>hola & mundo</b>\")}")
+    let peligroso = "<b>hola & mundo</b>"
+    let seguro = std::xml::escape_text(peligroso)
+    print("escape_text: {seguro}")
+
+    // ---- Archivo TAR en memoria ----
+    let entrada1 = std::map::new()
+    let entrada1 = std::map::insert(entrada1, "name", "hola.txt")
+    let entrada1 = std::map::insert(entrada1, "bytes", std::encoding::utf8_encode("hola mundo"))
+    let entrada2 = std::map::new()
+    let entrada2 = std::map::insert(entrada2, "name", "docs/readme.md")
+    let entrada2 = std::map::insert(entrada2, "bytes", std::encoding::utf8_encode("# TITAN"))
+    let tar_bytes = std::archive::tar_pack([entrada1, entrada2])
+    print("tar generado: {std::bytes::length(tar_bytes)} bytes")
+
+    // ---- ZIP con compresión Deflate ----
+    let zip_bytes = std::archive::zip_pack([entrada1, entrada2])
+    print("zip generado: {std::bytes::length(zip_bytes)} bytes")
+    let nombres = std::archive::zip_list(zip_bytes)
+    print("zip contiene: {nombres}")
 }
