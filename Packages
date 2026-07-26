@@ -51,3 +51,27 @@ Description: TITAN language compiler with HTTPS, crypto, Android and TUI
  terminal/TUI helpers (colors, cursor, raw mode, keyboard events,
  readline with history, animated progress bars and spinners).
 
+Package: zett
+Version: 0.5.0
+Architecture: arm
+Maintainer: Alex Sanders Soto
+Filename: ./zett_0.5.0_arm.deb
+Size: 5639504
+MD5sum: 5cc1711365e51fe363f53f79df94e13b
+SHA1: 888a358c7b3143fbb5c8a197a1207e1fd6489f36
+SHA256: a0611d810e47a428c4a9ffd755cc746fe5da5c40a3864b8ffcfa45ef0bc52505
+Description: TITAN language compiler with HTTPS, crypto, Android, TUI, images and QR
+ Zett installs the TITAN Language Compiler, examples and documentation.
+ Includes a modern standard library with real (non-simulated) modules:
+ regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
+ compress (gzip/zstd), archive (tar/zip), yaml, xml, blocking HTTPS
+ client, DNS resolver, SMTP email, ChaCha20-Poly1305 & AES-GCM AEAD,
+ Argon2id/bcrypt password hashing, JWT signing/verification, direct
+ access to Termux:API for Android hardware/OS integration (battery,
+ GPS, sensors, camera, SMS, clipboard, vibrate, notify, TTS), and
+ terminal/TUI helpers (colors, cursor, raw mode, keyboard events,
+ readline with history, animated progress bars and spinners), plus
+ image processing (PNG/JPEG/WebP/BMP/GIF: load, save, encode, resize,
+ crop, rotate, grayscale, blur, brighten) and QR code generation
+ (ASCII/Unicode/SVG/PNG at every error-correction level).
+
