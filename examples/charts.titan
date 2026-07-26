@@ -1,0 +1,58 @@
+// Demo Fase 14: graficos SVG con plotters (pure Rust, sin C-deps).
+// Ejecutar en Termux con:
+//     zett run examples/charts.titan
+//
+// Escribe 4 SVGs en tu HOME. Para verlos:
+//   * Abrirlos con Firefox: termux-open ~/chart_line.svg
+//   * O convertirlos a PNG: pkg install librsvg
+//     rsvg-convert ~/chart_line.svg -o ~/chart_line.png
+
+fn main() {
+    let home = std::dirs::home()
+
+    // ---- 1) Line chart: y = x^2 ----
+    let path1 = home + "/chart_line.svg"
+    print("---- Line chart -> {path1}")
+    let xs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    let ys = [0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0]
+    std::plot::line(path1, "y = x^2", "x", "y", xs, ys)
+
+    // ---- 2) Bar chart: ventas por mes ----
+    let path2 = home + "/chart_bar.svg"
+    print("---- Bar chart -> {path2}")
+    let meses = ["ene", "feb", "mar", "abr", "may", "jun"]
+    let ventas = [1200.0, 1850.0, 1600.0, 2400.0, 2100.0, 2800.0]
+    std::plot::bar(path2, "Ventas 2026 (EUR)", "importe", meses, ventas)
+
+    // ---- 3) Scatter: nube de puntos ----
+    let path3 = home + "/chart_scatter.svg"
+    print("---- Scatter -> {path3}")
+    let sx = [0.5, 1.2, 2.1, 2.8, 3.5, 4.0, 4.8, 5.3, 6.1, 7.2, 8.0]
+    let sy = [1.0, 0.8, 2.5, 1.9, 3.2, 4.1, 3.6, 5.0, 4.8, 6.5, 7.0]
+    std::plot::scatter(path3, "Correlacion x vs y", "x", "y", sx, sy)
+
+    // ---- 4) Histograma: distribucion de tiempos de respuesta ----
+    let path4 = home + "/chart_histogram.svg"
+    print("---- Histogram -> {path4}")
+    let latencias = [12.3, 14.1, 13.8, 15.2, 16.0, 14.5, 13.2, 12.9, 15.8, 17.1,
+                     18.4, 14.7, 13.5, 15.0, 16.3, 14.2, 13.9, 15.5, 16.8, 14.9,
+                     13.6, 15.3, 16.1, 14.4, 13.1, 15.7, 16.5, 14.8, 13.3, 15.4]
+    std::plot::histogram(path4, "Latencias (ms)", "ms", latencias, 8)
+
+    // ---- 5) Multi-line: tres series comparadas ----
+    let path5 = home + "/chart_multi.svg"
+    print("---- Multi-line -> {path5}")
+    let x_dias = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    let cpu    = [23.5, 28.1, 35.2, 42.8, 38.4, 45.1, 40.7]
+    let ram    = [55.2, 58.4, 62.1, 65.8, 63.4, 68.9, 66.2]
+    let disk   = [12.1, 12.3, 12.8, 13.4, 13.6, 14.1, 14.5]
+
+    let serie_cpu  = ["CPU %", x_dias, cpu]
+    let serie_ram  = ["RAM %", x_dias, ram]
+    let serie_disk = ["Disk %", x_dias, disk]
+    let series = [serie_cpu, serie_ram, serie_disk]
+    std::plot::multi_line(path5, "Uso del sistema (7 dias)", "dia", "%", series)
+
+    print("---- Todos los SVGs generados en {home} ----")
+    print("Abri uno con: termux-open ~/chart_line.svg")
+}

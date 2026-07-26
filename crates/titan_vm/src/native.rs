@@ -1100,6 +1100,52 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             Value::Bool(stdlib::router_mod::matches(h, &p).map_err(error)?)
         }
 
+        // ---------------- Phase 14: charts (plotters, SVG) ----------------
+        #[cfg(feature = "plot_mod")] "std::plot::line" => {
+            let path = string!(); let title = string!(); let xa = string!(); let ya = string!();
+            let xs = array!().into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+            let ys = array!().into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+            stdlib::plot_mod::line_svg(&path, &title, &xa, &ya, &xs, &ys).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "plot_mod")] "std::plot::multi_line" => {
+            let path = string!(); let title = string!(); let xa = string!(); let ya = string!();
+            // series = [ [label, xs_array, ys_array], ... ]
+            let raw = array!();
+            let mut series: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::with_capacity(raw.len());
+            for item in raw {
+                let mut trio = expect_array(item)?;
+                if trio.len() != 3 { return Err("each series must be [label, xs, ys]".into()); }
+                let ys = expect_array(trio.remove(2))?.into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+                let xs = expect_array(trio.remove(1))?.into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+                let label = expect_string(trio.remove(0))?;
+                series.push((label, xs, ys));
+            }
+            stdlib::plot_mod::multi_line_svg(&path, &title, &xa, &ya, &series).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "plot_mod")] "std::plot::bar" => {
+            let path = string!(); let title = string!(); let ya = string!();
+            let labels = array!().into_iter().map(expect_string).collect::<Result<Vec<_>, _>>()?;
+            let values = array!().into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+            stdlib::plot_mod::bar_svg(&path, &title, &ya, &labels, &values).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "plot_mod")] "std::plot::scatter" => {
+            let path = string!(); let title = string!(); let xa = string!(); let ya = string!();
+            let xs = array!().into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+            let ys = array!().into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+            stdlib::plot_mod::scatter_svg(&path, &title, &xa, &ya, &xs, &ys).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "plot_mod")] "std::plot::histogram" => {
+            let path = string!(); let title = string!(); let xa = string!();
+            let values = array!().into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+            let bins = nonnegative(int!())?;
+            stdlib::plot_mod::histogram_svg(&path, &title, &xa, &values, bins).map_err(error)?;
+            Value::Nil
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

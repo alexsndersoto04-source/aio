@@ -21,6 +21,7 @@ extras = [
     "audio_mod",
     "kv_mod", "redis_mod",
     "server_mod", "router_mod",
+    "plot_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
@@ -53,6 +54,7 @@ kv_mod        = ["titan_stdlib/kv_mod"]
 redis_mod     = ["titan_stdlib/redis_mod"]
 server_mod    = ["titan_stdlib/server_mod"]
 router_mod    = ["titan_stdlib/router_mod"]
+plot_mod      = ["titan_stdlib/plot_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

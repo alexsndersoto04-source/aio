@@ -31,6 +31,8 @@ extras = [
     "kv_mod", "redis_mod",
     # Phase 11 — HTTP server + URL router (axum-style)
     "server_mod", "router_mod",
+    # Phase 14 — Charts (SVG line/bar/scatter/histogram)
+    "plot_mod",
 ]
 
 # Phase 1
@@ -85,6 +87,10 @@ redis_mod    = ["dep:redis"]
 # Phase 11 — HTTP server (tiny_http) + URL router (matchit, same as axum)
 server_mod   = ["dep:tiny_http"]
 router_mod   = ["dep:matchit"]
+
+# Phase 14 — Charts (SVG only, ttf/font-kit DISABLED to avoid the
+# freetype-sys / fontconfig C-deps that would break Termux builds).
+plot_mod     = ["dep:plotters"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -169,3 +175,9 @@ redis             = { version = "0.27", optional = true, default-features = fals
 # `matchit` is the zero-copy radix-tree router used by axum internally.
 tiny_http         = { version = "0.12", optional = true, default-features = false }
 matchit           = { version = "0.8",  optional = true }
+
+# Phase 14 — Plotters (SVG-only build).
+# Turning off `ttf` / `font-kit` avoids freetype-sys / expat-sys /
+# fontconfig, all of which are C-deps that either fail to build on
+# Termux or blow up the disk. SVG text is rendered by the viewer.
+plotters          = { version = "0.3",  optional = true, default-features = false, features = ["svg_backend", "line_series", "point_series", "area_series", "histogram", "colormaps", "full_palette"] }

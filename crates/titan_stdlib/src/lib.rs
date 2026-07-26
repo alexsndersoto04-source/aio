@@ -88,6 +88,9 @@ pub mod mobile;
 #[cfg(feature = "server_mod")]    pub mod server_mod;
 #[cfg(feature = "router_mod")]    pub mod router_mod;
 
+// --- Phase 14: SVG charts (plotters, no ttf/font-kit for Termux) -------
+#[cfg(feature = "plot_mod")]      pub mod plot_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

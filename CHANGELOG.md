@@ -1,5 +1,35 @@
 # Zett / TITAN — Changelog
 
+## 0.10.0 — Phase 14: SVG charts (plotters)
+
+### Added
+- **`std::plot::*`** — real, pure-Rust charts via `plotters` 0.3.
+  Deliberately built **without** `ttf` / `font-kit` (which pull in
+  `freetype-sys` / `expat-sys` / `fontconfig`, all C-deps that break or
+  bloat Termux builds). Every function writes a standalone `.svg` file;
+  text is rendered by whatever viewer opens the file.
+  - `line(path, title, x_axis, y_axis, xs, ys)` — single line chart
+    with a marker on every sample.
+  - `multi_line(path, title, x_axis, y_axis, series)` where `series`
+    is an array of `[label, xs, ys]` triples; each series gets a stable
+    colour from an 8-slot palette and a legend entry.
+  - `bar(path, title, y_axis, labels, values)` — bar chart.
+  - `scatter(path, title, x_axis, y_axis, xs, ys)` — scatter plot.
+  - `histogram(path, title, x_axis, values, bins)` — auto-binned
+    histogram.
+- **`examples/charts.titan`** — writes 5 SVGs to `$HOME` (line, bar,
+  scatter, histogram, multi-line) and prints their paths so you can
+  `termux-open` them or `rsvg-convert` them to PNG.
+
+### Notes
+- SVGs are ~5-15 KB each — safe to commit to a repo, e-mail, or
+  attach to WhatsApp.
+- For PNG output on Termux, install `librsvg`: `pkg install librsvg`
+  and then `rsvg-convert chart.svg -o chart.png`.
+- Combines beautifully with `std::procfs::*` (Fase 8) to build live
+  system dashboards, and with `std::server::respond_bytes` (Fase 11)
+  to serve charts straight from an HTTP endpoint.
+
 ## 0.9.0 — Phase 11: Web server (tiny_http + matchit, axum-style)
 
 ### Added
