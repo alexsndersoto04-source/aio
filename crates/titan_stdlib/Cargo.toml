@@ -116,4 +116,4 @@ indicatif         = { version = "0.17", optional = true }
 # Phase 7 — Images & QR codes (limit `image` to codecs we really use so the
 # Termux build stays lean).
 image             = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
-qrcode            = { version = "0.14", optional = true, default-features = false, features = ["image"] }
+qrcode            = { version = "0.14", optional = true, default-features = false, features = ["image", "svg"] }
