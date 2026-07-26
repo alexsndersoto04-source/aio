@@ -1,38 +1,50 @@
 // Demo Fase 3: red avanzada (HTTPS + DNS).
 // Ejecutar con:  cargo run -p titan_cli -- run examples/network.titan
 //
-// Nota: usa red real, por eso hace falta internet. Los servicios usados
-// son públicos (Cloudflare DNS, httpbin.org).
+// Necesita internet. Usa servicios públicos (Cloudflare DNS, httpbin.org).
 
 fn main() {
-    // ---- Resolver DNS ----
+    // ---- DNS ----
     print("---- DNS ----")
     let ips_google = std::dns::resolve("dns.google")
-    print("dns.google -> {ips_google}")
+    print("dns.google resolvio a:")
+    print(ips_google)
 
     let solo_v4 = std::dns::resolve_ipv4("one.one.one.one")
-    print("one.one.one.one IPv4 -> {solo_v4}")
+    print("one.one.one.one IPv4:")
+    print(solo_v4)
 
     // ---- HTTPS: GET simple ----
     print("---- HTTPS GET ----")
     let headers = std::map::new()
     let opts = std::map::new()
     let opts = std::map::insert(opts, "timeout_ms", 10000)
-    let respuesta = std::http_full::request("GET", "https://httpbin.org/ip", headers, std::bytes::from_array([]), opts)
-    let cuerpo = std::encoding::utf8_decode(respuesta.body)
-    print("status: {respuesta.status}")
-    print("body: {cuerpo}")
+    let body_vacio = std::bytes::from_array([])
+    let respuesta = std::http_full::request("GET", "https://httpbin.org/ip", headers, body_vacio, opts)
+
+    // Extraer campos a variables antes de imprimir (el interpolador de
+    // strings del lenguaje aun no soporta 'respuesta.status', asi que
+    // los pasamos por variables locales).
+    let status = respuesta.status
+    let body = respuesta.body
+    let cuerpo = std::encoding::utf8_decode(body)
+    print("status:")
+    print(status)
+    print("body:")
+    print(cuerpo)
 
     // ---- HTTPS: GET JSON directo ----
     print("---- HTTPS GET JSON ----")
     let dato = std::http_full::get_json("https://httpbin.org/user-agent", headers, opts)
-    print("user-agent visto por el servidor: {dato}")
+    print("respuesta JSON:")
+    print(dato)
 
     // ---- HTTPS: POST JSON ----
     print("---- HTTPS POST JSON ----")
     let payload = std::map::new()
     let payload = std::map::insert(payload, "lenguaje", "TITAN")
-    let payload = std::map::insert(payload, "version", 0.2)
+    let payload = std::map::insert(payload, "version", "0.2")
     let echo = std::http_full::post_json("https://httpbin.org/post", payload, headers, opts)
-    print("echo recibido: {echo}")
+    print("eco recibido:")
+    print(echo)
 }
