@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.4.0_arm.deb"
+OUT="zett_0.5.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.4.0
+Version: 0.5.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN language compiler with HTTPS, crypto, Android and TUI
+Description: TITAN language compiler with HTTPS, crypto, Android, TUI, images and QR
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -26,7 +26,10 @@ Description: TITAN language compiler with HTTPS, crypto, Android and TUI
  access to Termux:API for Android hardware/OS integration (battery,
  GPS, sensors, camera, SMS, clipboard, vibrate, notify, TTS), and
  terminal/TUI helpers (colors, cursor, raw mode, keyboard events,
- readline with history, animated progress bars and spinners).
+ readline with history, animated progress bars and spinners), plus
+ image processing (PNG/JPEG/WebP/BMP/GIF: load, save, encode, resize,
+ crop, rotate, grayscale, blur, brighten) and QR code generation
+ (ASCII/Unicode/SVG/PNG at every error-correction level).
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

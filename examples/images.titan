@@ -1,0 +1,50 @@
+// Demo Fase 7: imagenes + codigos QR.
+// Ejecutar en Termux con:
+//     zett run examples/images.titan
+//
+// Muestra:
+//  1. Generar un QR y mostrarlo en ASCII y Unicode en la terminal.
+//  2. Guardar el QR como PNG (300x300).
+//  3. Cargar el PNG generado, redimensionar y volver a guardar.
+
+fn main() {
+    let url = "https://github.com/alexsndersoto04-source/aio"
+
+    print("---- QR en ASCII ----")
+    let ascii = std::qrcode::to_ascii(url, "M", "#", " ")
+    print(ascii)
+
+    print("---- QR en Unicode (mas denso) ----")
+    let unicode = std::qrcode::to_unicode(url, "M")
+    print(unicode)
+
+    print("---- Guardar QR como PNG ----")
+    std::qrcode::save_png(url, "H", 300, "/tmp/qr.png")
+    print("PNG guardado en /tmp/qr.png")
+
+    print("---- Cargar el PNG y ver metadata ----")
+    let img = std::image::load("/tmp/qr.png")
+    let w = std::image::width(img)
+    let h = std::image::height(img)
+    let ct = std::image::color_type(img)
+    print("dimensiones:")
+    print(w)
+    print(h)
+    print("color type:")
+    print(ct)
+
+    print("---- Redimensionar a 100x100 y guardar como thumbnail ----")
+    let mini = std::image::resize_exact(img, 100, 100, "lanczos3")
+    std::image::save(mini, "/tmp/qr_mini.png")
+    print("thumbnail guardado en /tmp/qr_mini.png")
+
+    print("---- Convertir a escala de grises y guardar ----")
+    let gris = std::image::grayscale(img)
+    std::image::save(gris, "/tmp/qr_gris.png")
+
+    // Liberar handles.
+    std::image::close(img)
+    std::image::close(mini)
+    std::image::close(gris)
+    print("---- Listo ----")
+}

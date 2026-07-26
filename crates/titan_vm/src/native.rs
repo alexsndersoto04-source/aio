@@ -652,6 +652,84 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             stdlib::progress_mod::abandon(int!()); Value::Nil
         }
 
+        // ---------------- Phase 7: images (image crate) ----------------
+        #[cfg(feature = "image_mod")] "std::image::load"       => Value::Int(stdlib::image_mod::load(&string!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::load_bytes" => Value::Int(stdlib::image_mod::load_bytes(&bytes!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::save" => {
+            let handle = int!(); let path = string!();
+            stdlib::image_mod::save(handle, &path).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "image_mod")] "std::image::encode" => {
+            let handle = int!(); let format = string!();
+            Value::Bytes(stdlib::image_mod::encode(handle, &format).map_err(error)?)
+        }
+        #[cfg(feature = "image_mod")] "std::image::width"      => Value::Int(stdlib::image_mod::width(int!()).map_err(error)? as i64),
+        #[cfg(feature = "image_mod")] "std::image::height"     => Value::Int(stdlib::image_mod::height(int!()).map_err(error)? as i64),
+        #[cfg(feature = "image_mod")] "std::image::color_type" => Value::Str(stdlib::image_mod::color_type(int!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::resize" => {
+            let handle = int!();
+            let width  = u32::try_from(int!()).map_err(|_| "width out of range".to_string())?;
+            let height = u32::try_from(int!()).map_err(|_| "height out of range".to_string())?;
+            let filter = string!();
+            Value::Int(stdlib::image_mod::resize(handle, width, height, &filter).map_err(error)?)
+        }
+        #[cfg(feature = "image_mod")] "std::image::resize_exact" => {
+            let handle = int!();
+            let width  = u32::try_from(int!()).map_err(|_| "width out of range".to_string())?;
+            let height = u32::try_from(int!()).map_err(|_| "height out of range".to_string())?;
+            let filter = string!();
+            Value::Int(stdlib::image_mod::resize_exact(handle, width, height, &filter).map_err(error)?)
+        }
+        #[cfg(feature = "image_mod")] "std::image::thumbnail" => {
+            let handle = int!();
+            let width  = u32::try_from(int!()).map_err(|_| "width out of range".to_string())?;
+            let height = u32::try_from(int!()).map_err(|_| "height out of range".to_string())?;
+            Value::Int(stdlib::image_mod::thumbnail(handle, width, height).map_err(error)?)
+        }
+        #[cfg(feature = "image_mod")] "std::image::crop" => {
+            let handle = int!();
+            let x = u32::try_from(int!()).map_err(|_| "x out of range".to_string())?;
+            let y = u32::try_from(int!()).map_err(|_| "y out of range".to_string())?;
+            let width  = u32::try_from(int!()).map_err(|_| "width out of range".to_string())?;
+            let height = u32::try_from(int!()).map_err(|_| "height out of range".to_string())?;
+            Value::Int(stdlib::image_mod::crop(handle, x, y, width, height).map_err(error)?)
+        }
+        #[cfg(feature = "image_mod")] "std::image::grayscale"       => Value::Int(stdlib::image_mod::grayscale(int!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::blur"            => { let h = int!(); let s = float!() as f32; Value::Int(stdlib::image_mod::blur(h, s).map_err(error)?) }
+        #[cfg(feature = "image_mod")] "std::image::brighten"        => { let h = int!(); let v = i32::try_from(int!()).unwrap_or(0); Value::Int(stdlib::image_mod::brighten(h, v).map_err(error)?) }
+        #[cfg(feature = "image_mod")] "std::image::rotate90"        => Value::Int(stdlib::image_mod::rotate90(int!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::rotate180"       => Value::Int(stdlib::image_mod::rotate180(int!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::rotate270"       => Value::Int(stdlib::image_mod::rotate270(int!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::flip_horizontal" => Value::Int(stdlib::image_mod::flip_horizontal(int!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::flip_vertical"   => Value::Int(stdlib::image_mod::flip_vertical(int!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::close"           => { stdlib::image_mod::close(int!()); Value::Nil }
+
+        // ---------------- Phase 7: QR codes (qrcode crate) ----------------
+        #[cfg(feature = "qrcode_mod")] "std::qrcode::to_ascii" => {
+            let text = string!(); let level = string!(); let dark = string!(); let light = string!();
+            Value::Str(stdlib::qrcode_mod::to_ascii(&text, &level, &dark, &light).map_err(error)?)
+        }
+        #[cfg(feature = "qrcode_mod")] "std::qrcode::to_unicode" => {
+            let text = string!(); let level = string!();
+            Value::Str(stdlib::qrcode_mod::to_unicode(&text, &level).map_err(error)?)
+        }
+        #[cfg(feature = "qrcode_mod")] "std::qrcode::to_svg" => {
+            let text = string!(); let level = string!();
+            let module_pixels = u32::try_from(int!()).map_err(|_| "module_pixels out of range".to_string())?;
+            Value::Bytes(stdlib::qrcode_mod::to_svg(&text, &level, module_pixels).map_err(error)?)
+        }
+        #[cfg(feature = "qrcode_mod")] "std::qrcode::to_png" => {
+            let text = string!(); let level = string!();
+            let side_pixels = u32::try_from(int!()).map_err(|_| "side_pixels out of range".to_string())?;
+            Value::Bytes(stdlib::qrcode_mod::to_png(&text, &level, side_pixels).map_err(error)?)
+        }
+        #[cfg(feature = "qrcode_mod")] "std::qrcode::save_png" => {
+            let text = string!(); let level = string!();
+            let side_pixels = u32::try_from(int!()).map_err(|_| "side_pixels out of range".to_string())?;
+            let path = string!();
+            stdlib::qrcode_mod::save_png(&text, &level, side_pixels, &path).map_err(error)?; Value::Nil
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

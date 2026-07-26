@@ -68,6 +68,10 @@ pub mod mobile;
 #[cfg(feature = "readline_mod")]  pub mod readline_mod;
 #[cfg(feature = "progress_mod")]  pub mod progress_mod;
 
+// --- Phase 7: Images & QR codes ----------------------------------------
+#[cfg(feature = "image_mod")]     pub mod image_mod;
+#[cfg(feature = "qrcode_mod")]    pub mod qrcode_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

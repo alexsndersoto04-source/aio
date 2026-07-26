@@ -1,5 +1,41 @@
 # Zett / TITAN — Changelog
 
+## 0.5.0 — Phase 7: Images & QR codes
+
+### Added
+- **`std::image::*`** — real image processing via the `image` crate.
+  Supports PNG, JPEG, WebP, BMP, GIF. Images are managed through opaque
+  `i64` handles kept in a process-wide registry.
+  - I/O: `load(path)`, `load_bytes(bytes)`, `save(handle, path)`,
+    `encode(handle, format)`, `close(handle)`.
+  - Metadata: `width`, `height`, `color_type`.
+  - Transforms (return new handles): `resize`, `resize_exact`,
+    `thumbnail`, `crop`, `grayscale`, `blur`, `brighten`,
+    `rotate90`/`180`/`270`, `flip_horizontal`, `flip_vertical`.
+  - Named filters: `nearest`, `triangle`, `catmullrom`, `gaussian`,
+    `lanczos3`.
+- **`std::qrcode::*`** — QR code generation via the `qrcode` crate.
+  - `to_ascii(text, level, dark, light)` — printable text.
+  - `to_unicode(text, level)` — dense Unicode block art.
+  - `to_svg(text, level, module_pixels)` — SVG bytes.
+  - `to_png(text, level, side_pixels)` — PNG bytes.
+  - `save_png(text, level, side_pixels, path)` — write PNG to disk.
+  - Error-correction levels: `L`, `M`, `Q`, `H`.
+- `examples/images.titan` demoing a QR encoded as ASCII + Unicode + PNG,
+  then reloading the PNG and creating a 100×100 thumbnail and a
+  grayscale version.
+
+### Combines beautifully with earlier phases
+- Take a photo with `std::termux::camera_photo` (Phase 5), resize it
+  with `std::image::resize` (Phase 7), hash it with `std::hash::sha256`
+  (Phase 1), generate a QR of the hash with `std::qrcode::to_ansi`
+  (Phase 7), and share it via `std::termux::share` (Phase 5).
+
+### Nothing removed
+All Phases 1-6 remain untouched.
+
+---
+
 ## 0.4.0 — Phase 6: Terminal & TUI
 
 ### Added

@@ -451,6 +451,36 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::progress::finish",       [Int, String], Nil),
     native!("std::progress::abandon",      [Int], Nil),
 
+    // --- Phase 7: Images (image crate) ---
+    // Load / save are gated with Filesystem so `--sandbox` blocks them.
+    native!("std::image::load",             [String], Int, Filesystem),
+    native!("std::image::load_bytes",       [Bytes],  Int),
+    native!("std::image::save",             [Int, String], Nil, Filesystem),
+    native!("std::image::encode",           [Int, String], Bytes),
+    native!("std::image::width",            [Int], Int),
+    native!("std::image::height",           [Int], Int),
+    native!("std::image::color_type",       [Int], String),
+    native!("std::image::resize",           [Int, Int, Int, String], Int),
+    native!("std::image::resize_exact",     [Int, Int, Int, String], Int),
+    native!("std::image::thumbnail",        [Int, Int, Int], Int),
+    native!("std::image::crop",             [Int, Int, Int, Int, Int], Int),
+    native!("std::image::grayscale",        [Int], Int),
+    native!("std::image::blur",             [Int, Float], Int),
+    native!("std::image::brighten",         [Int, Int], Int),
+    native!("std::image::rotate90",         [Int], Int),
+    native!("std::image::rotate180",        [Int], Int),
+    native!("std::image::rotate270",        [Int], Int),
+    native!("std::image::flip_horizontal",  [Int], Int),
+    native!("std::image::flip_vertical",    [Int], Int),
+    native!("std::image::close",            [Int], Nil),
+
+    // --- Phase 7: QR codes (qrcode crate) ---
+    native!("std::qrcode::to_ascii",   [String, String, String, String], String),
+    native!("std::qrcode::to_unicode", [String, String], String),
+    native!("std::qrcode::to_svg",     [String, String, Int], Bytes),
+    native!("std::qrcode::to_png",     [String, String, Int], Bytes),
+    native!("std::qrcode::save_png",   [String, String, Int, String], Nil, Filesystem),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

@@ -16,6 +16,7 @@ extras = [
     "crypto_mod", "password_mod", "jwt_mod",
     "termux_mod",
     "term_mod", "readline_mod", "progress_mod",
+    "image_mod", "qrcode_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
@@ -38,6 +39,8 @@ termux_mod    = ["titan_stdlib/termux_mod"]
 term_mod      = ["titan_stdlib/term_mod"]
 readline_mod  = ["titan_stdlib/readline_mod"]
 progress_mod  = ["titan_stdlib/progress_mod"]
+image_mod     = ["titan_stdlib/image_mod"]
+qrcode_mod    = ["titan_stdlib/qrcode_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }
