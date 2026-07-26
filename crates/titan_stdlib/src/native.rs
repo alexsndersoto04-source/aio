@@ -538,6 +538,52 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::audio::record_stop",  [], String, Process),
     native!("std::audio::record_info",  [], String, Process),
 
+    // --- Phase 10: NoSQL — embedded key-value (sled) ---
+    // Path I/O -> Filesystem capability. Results that may be missing use
+    // Any (returns Bytes or Nil).
+    native!("std::kv::open",             [String], Int, Filesystem),
+    native!("std::kv::close",            [Int], Nil),
+    native!("std::kv::flush",            [Int], Int),
+    native!("std::kv::insert",           [Int, Bytes, Bytes], Any),
+    native!("std::kv::get",              [Int, Bytes], Any),
+    native!("std::kv::remove",           [Int, Bytes], Any),
+    native!("std::kv::contains",         [Int, Bytes], Bool),
+    native!("std::kv::len",              [Int], Int),
+    native!("std::kv::clear",            [Int], Nil),
+    native!("std::kv::keys",             [Int], Array),
+    // compare_and_swap: pass empty bytes for None (expected / new).
+    native!("std::kv::compare_and_swap", [Int, Bytes, Bytes, Bytes], Bool),
+    native!("std::kv::open_tree",        [Int, String], Int),
+    native!("std::kv::tree_insert",      [Int, Bytes, Bytes], Any),
+    native!("std::kv::tree_get",         [Int, Bytes], Any),
+    native!("std::kv::tree_remove",      [Int, Bytes], Any),
+    native!("std::kv::tree_len",         [Int], Int),
+    native!("std::kv::tree_keys",        [Int], Array),
+
+    // --- Phase 10: Redis client ---
+    // Network capability across the board.
+    native!("std::redis::connect",  [String], Int, Network),
+    native!("std::redis::close",    [Int], Nil),
+    native!("std::redis::ping",     [Int], String, Network),
+    native!("std::redis::set",      [Int, String, String], Nil, Network),
+    native!("std::redis::set_ex",   [Int, String, String, Int], Nil, Network),
+    native!("std::redis::get",      [Int, String], Any, Network),
+    native!("std::redis::del",      [Int, String], Int, Network),
+    native!("std::redis::exists",   [Int, String], Bool, Network),
+    native!("std::redis::expire",   [Int, String, Int], Bool, Network),
+    native!("std::redis::ttl",      [Int, String], Int, Network),
+    native!("std::redis::incr",     [Int, String, Int], Int, Network),
+    native!("std::redis::keys",     [Int, String], Array, Network),
+    native!("std::redis::lpush",    [Int, String, String], Int, Network),
+    native!("std::redis::rpush",    [Int, String, String], Int, Network),
+    native!("std::redis::lrange",   [Int, String, Int, Int], Array, Network),
+    native!("std::redis::llen",     [Int, String], Int, Network),
+    native!("std::redis::hset",     [Int, String, String, String], Nil, Network),
+    native!("std::redis::hget",     [Int, String, String], Any, Network),
+    native!("std::redis::hdel",     [Int, String, String], Int, Network),
+    native!("std::redis::hgetall",  [Int, String], Array, Network),
+    native!("std::redis::raw",      [Int, String], String, Network),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

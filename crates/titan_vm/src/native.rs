@@ -854,6 +854,135 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         #[cfg(feature = "audio_mod")] "std::audio::record_stop" => Value::Str(stdlib::audio_mod::record_stop().map_err(error)?),
         #[cfg(feature = "audio_mod")] "std::audio::record_info" => Value::Str(stdlib::audio_mod::record_info().map_err(error)?),
 
+        // ---------------- Phase 10: sled key-value ----------------
+        #[cfg(feature = "kv_mod")] "std::kv::open"  => Value::Int(stdlib::kv_mod::open(&string!()).map_err(error)?),
+        #[cfg(feature = "kv_mod")] "std::kv::close" => { stdlib::kv_mod::close(int!()).map_err(error)?; Value::Nil }
+        #[cfg(feature = "kv_mod")] "std::kv::flush" => Value::Int(stdlib::kv_mod::flush(int!()).map_err(error)? as i64),
+        #[cfg(feature = "kv_mod")] "std::kv::insert" => {
+            let h = int!(); let k = bytes!(); let v = bytes!();
+            stdlib::kv_mod::insert(h, &k, &v).map_err(error)?.map(Value::Bytes).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::get" => {
+            let h = int!(); let k = bytes!();
+            stdlib::kv_mod::get(h, &k).map_err(error)?.map(Value::Bytes).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::remove" => {
+            let h = int!(); let k = bytes!();
+            stdlib::kv_mod::remove(h, &k).map_err(error)?.map(Value::Bytes).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::contains" => {
+            let h = int!(); let k = bytes!();
+            Value::Bool(stdlib::kv_mod::contains(h, &k).map_err(error)?)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::len"   => Value::Int(stdlib::kv_mod::len(int!()).map_err(error)? as i64),
+        #[cfg(feature = "kv_mod")] "std::kv::clear" => { stdlib::kv_mod::clear(int!()).map_err(error)?; Value::Nil }
+        #[cfg(feature = "kv_mod")] "std::kv::keys"  =>
+            Value::Array(stdlib::kv_mod::keys(int!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "kv_mod")] "std::kv::compare_and_swap" => {
+            let h = int!(); let k = bytes!(); let e = bytes!(); let n = bytes!();
+            let expected  = if e.is_empty() { None } else { Some(e.as_slice()) };
+            let new_value = if n.is_empty() { None } else { Some(n.as_slice()) };
+            Value::Bool(stdlib::kv_mod::compare_and_swap(h, &k, expected, new_value).map_err(error)?)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::open_tree" => {
+            let h = int!(); let name = string!();
+            Value::Int(stdlib::kv_mod::open_tree(h, &name).map_err(error)?)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::tree_insert" => {
+            let h = int!(); let k = bytes!(); let v = bytes!();
+            stdlib::kv_mod::tree_insert(h, &k, &v).map_err(error)?.map(Value::Bytes).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::tree_get" => {
+            let h = int!(); let k = bytes!();
+            stdlib::kv_mod::tree_get(h, &k).map_err(error)?.map(Value::Bytes).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::tree_remove" => {
+            let h = int!(); let k = bytes!();
+            stdlib::kv_mod::tree_remove(h, &k).map_err(error)?.map(Value::Bytes).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "kv_mod")] "std::kv::tree_len"  => Value::Int(stdlib::kv_mod::tree_len(int!()).map_err(error)? as i64),
+        #[cfg(feature = "kv_mod")] "std::kv::tree_keys" =>
+            Value::Array(stdlib::kv_mod::tree_keys(int!()).map_err(error)?.into_iter().map(Value::Str).collect()),
+
+        // ---------------- Phase 10: Redis client ----------------
+        #[cfg(feature = "redis_mod")] "std::redis::connect" => Value::Int(stdlib::redis_mod::connect(&string!()).map_err(error)?),
+        #[cfg(feature = "redis_mod")] "std::redis::close"   => { stdlib::redis_mod::close(int!()); Value::Nil }
+        #[cfg(feature = "redis_mod")] "std::redis::ping"    => Value::Str(stdlib::redis_mod::ping(int!()).map_err(error)?),
+        #[cfg(feature = "redis_mod")] "std::redis::set" => {
+            let h = int!(); let k = string!(); let v = string!();
+            stdlib::redis_mod::set(h, &k, &v).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::set_ex" => {
+            let h = int!(); let k = string!(); let v = string!();
+            let secs = u64::try_from(int!()).map_err(|_| "seconds out of range".to_string())?;
+            stdlib::redis_mod::set_ex(h, &k, &v, secs).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::get" => {
+            let h = int!(); let k = string!();
+            stdlib::redis_mod::get(h, &k).map_err(error)?.map(Value::Str).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::del" => {
+            let h = int!(); let k = string!();
+            Value::Int(stdlib::redis_mod::del(h, &k).map_err(error)? as i64)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::exists" => {
+            let h = int!(); let k = string!();
+            Value::Bool(stdlib::redis_mod::exists(h, &k).map_err(error)?)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::expire" => {
+            let h = int!(); let k = string!(); let s = int!();
+            Value::Bool(stdlib::redis_mod::expire(h, &k, s).map_err(error)?)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::ttl" => {
+            let h = int!(); let k = string!();
+            Value::Int(stdlib::redis_mod::ttl(h, &k).map_err(error)?)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::incr" => {
+            let h = int!(); let k = string!(); let d = int!();
+            Value::Int(stdlib::redis_mod::incr(h, &k, d).map_err(error)?)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::keys" => {
+            let h = int!(); let pattern = string!();
+            Value::Array(stdlib::redis_mod::keys(h, &pattern).map_err(error)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::lpush" => {
+            let h = int!(); let k = string!(); let v = string!();
+            Value::Int(stdlib::redis_mod::lpush(h, &k, &v).map_err(error)? as i64)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::rpush" => {
+            let h = int!(); let k = string!(); let v = string!();
+            Value::Int(stdlib::redis_mod::rpush(h, &k, &v).map_err(error)? as i64)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::lrange" => {
+            let h = int!(); let k = string!(); let start = int!(); let stop = int!();
+            Value::Array(stdlib::redis_mod::lrange(h, &k, start, stop).map_err(error)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::llen" => {
+            let h = int!(); let k = string!();
+            Value::Int(stdlib::redis_mod::llen(h, &k).map_err(error)? as i64)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::hset" => {
+            let h = int!(); let k = string!(); let f = string!(); let v = string!();
+            stdlib::redis_mod::hset(h, &k, &f, &v).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::hget" => {
+            let h = int!(); let k = string!(); let f = string!();
+            stdlib::redis_mod::hget(h, &k, &f).map_err(error)?.map(Value::Str).unwrap_or(Value::Nil)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::hdel" => {
+            let h = int!(); let k = string!(); let f = string!();
+            Value::Int(stdlib::redis_mod::hdel(h, &k, &f).map_err(error)? as i64)
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::hgetall" => {
+            let h = int!(); let k = string!();
+            let pairs = stdlib::redis_mod::hgetall(h, &k).map_err(error)?;
+            Value::Array(pairs.into_iter().map(|(k, v)| Value::Array(vec![Value::Str(k), Value::Str(v)])).collect())
+        }
+        #[cfg(feature = "redis_mod")] "std::redis::raw" => {
+            let h = int!(); let cmd = string!();
+            Value::Str(stdlib::redis_mod::raw(h, &cmd).map_err(error)?)
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

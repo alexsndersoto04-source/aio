@@ -1,0 +1,62 @@
+// Demo Fase 10: base de datos NoSQL embebida (sled).
+// Ejecutar en Termux con:
+//     zett run examples/database.titan
+//
+// La demo de Redis (std::redis::*) esta al final: solo corre si tenes un
+// servidor Redis andando; por eso lo dejo comentado.
+
+fn main() {
+    let home = std::dirs::home()
+    let db_path = home + "/my_kv.db"
+
+    print("---- Abrir base de datos en:")
+    print(db_path)
+    let db = std::kv::open(db_path)
+
+    // ---- Guardar y leer ----
+    print("---- Guardar 3 claves ----")
+    std::kv::insert(db, std::encoding::utf8_encode("user:1"),  std::encoding::utf8_encode("juan"))
+    std::kv::insert(db, std::encoding::utf8_encode("user:2"),  std::encoding::utf8_encode("maria"))
+    std::kv::insert(db, std::encoding::utf8_encode("user:42"), std::encoding::utf8_encode("titan"))
+
+    print("---- Leer usuario 1 ----")
+    let raw = std::kv::get(db, std::encoding::utf8_encode("user:1"))
+    let nombre = std::encoding::utf8_decode(raw)
+    print(nombre)
+
+    print("---- Total de claves ----")
+    print(std::kv::len(db))
+
+    print("---- Todas las claves ----")
+    let ks = std::kv::keys(db)
+    print(ks)
+
+    // ---- Sub-buckets (trees) ----
+    print("---- Bucket 'sessions' ----")
+    let sessions = std::kv::open_tree(db, "sessions")
+    std::kv::tree_insert(sessions, std::encoding::utf8_encode("user:1"), std::encoding::utf8_encode("token-abc-123"))
+    std::kv::tree_insert(sessions, std::encoding::utf8_encode("user:2"), std::encoding::utf8_encode("token-xyz-456"))
+    print("tokens guardados:")
+    print(std::kv::tree_len(sessions))
+
+    let tok = std::encoding::utf8_decode(std::kv::tree_get(sessions, std::encoding::utf8_encode("user:1")))
+    print("token de user:1 =")
+    print(tok)
+
+    // ---- Compare-and-swap (CAS) ----
+    print("---- CAS: insertar solo si no existe ----")
+    let empty = std::encoding::utf8_encode("")
+    let ok1 = std::kv::compare_and_swap(db, std::encoding::utf8_encode("config"), empty, std::encoding::utf8_encode("v1"))
+    let ok2 = std::kv::compare_and_swap(db, std::encoding::utf8_encode("config"), empty, std::encoding::utf8_encode("v2"))
+    print("primer intento (deberia ser true):")
+    print(ok1)
+    print("segundo intento (deberia ser false):")
+    print(ok2)
+
+    // ---- Flush a disco y cerrar ----
+    std::kv::flush(db)
+    std::kv::close(db)
+    print("---- DB persistida en disco. Reabri con:")
+    print(db_path)
+    print("---- Listo ----")
+}

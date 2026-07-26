@@ -1,5 +1,36 @@
 # Zett / TITAN — Changelog
 
+## 0.8.0 — Phase 10: NoSQL (embedded KV + Redis)
+
+### Added
+- **`std::kv::*`** — real embedded key-value database via `sled` 0.34.
+  Pure Rust, ACID, persists a whole database to a single directory on
+  disk. Multiple databases and named sub-buckets ("trees") can coexist
+  through opaque `i64` handles.
+  - Lifecycle: `open(path)`, `close`, `flush`.
+  - Default tree: `insert`, `get`, `remove`, `contains`, `len`, `clear`,
+    `keys`, `compare_and_swap(key, expected, new)` — pass empty bytes
+    for `None`.
+  - Named trees (buckets): `open_tree(db, name)`, `tree_insert`,
+    `tree_get`, `tree_remove`, `tree_len`, `tree_keys`.
+- **`std::redis::*`** — blocking Redis client via `redis` 0.27.
+  Connections are opaque handles.
+  - Lifecycle: `connect(url)`, `close`, `ping`.
+  - Strings: `set`, `set_ex`, `get`, `del`, `exists`, `expire`, `ttl`,
+    `incr`, `keys(pattern)`.
+  - Lists: `lpush`, `rpush`, `lrange`, `llen`.
+  - Hashes: `hset`, `hget`, `hdel`, `hgetall`.
+  - Escape hatch: `raw(command_and_args)` for anything else.
+- `examples/database.titan` opens a sled database in `$HOME`, writes
+  three users, reads one back, walks all keys, uses a "sessions"
+  sub-bucket for tokens, exercises compare-and-swap, flushes and
+  closes. Runs offline (no Redis required).
+
+### Nothing removed
+All Phases 1-9 remain untouched.
+
+---
+
 ## 0.7.0 — Phase 9: Audio
 
 ### Added

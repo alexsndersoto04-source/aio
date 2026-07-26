@@ -80,6 +80,10 @@ pub mod mobile;
 // --- Phase 9: Audio (WAV synthesis / I/O + Termux media playback) ------
 #[cfg(feature = "audio_mod")]     pub mod audio_mod;
 
+// --- Phase 10: NoSQL — embedded key-value + Redis client ---------------
+#[cfg(feature = "kv_mod")]        pub mod kv_mod;
+#[cfg(feature = "redis_mod")]     pub mod redis_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

@@ -27,6 +27,8 @@ extras = [
     "procfs_mod", "fswatch_mod", "signals_mod",
     # Phase 9 — Audio
     "audio_mod",
+    # Phase 10 — NoSQL key-value + Redis
+    "kv_mod", "redis_mod",
 ]
 
 # Phase 1
@@ -73,6 +75,10 @@ signals_mod  = ["dep:signal-hook"]
 
 # Phase 9 — Audio (WAV read/write + synthesis; playback via termux-media-player)
 audio_mod    = ["dep:hound"]
+
+# Phase 10 — Embedded key-value store and Redis client
+kv_mod       = ["dep:sled"]
+redis_mod    = ["dep:redis"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -140,3 +146,12 @@ signal-hook       = { version = "0.3",  optional = true }
 # Playback is delegated to `termux-media-player` (from termux-api) so we
 # never link against ALSA/AAudio (which would break in a stock Termux build).
 hound             = { version = "3.5",  optional = true }
+
+# Phase 10 — Embedded key-value store + Redis client.
+# `sled` is pure-Rust, ACID, and produces a single on-disk file — perfect
+# for caches, sessions and app config without spinning up a database.
+# `redis` uses blocking sockets (no async runtime added); TLS off by
+# default to keep the Termux build lean — plain redis:// is enough for
+# 99% of use cases (Upstash / Redis Cloud terminate TLS at the edge).
+sled              = { version = "0.34", optional = true }
+redis             = { version = "0.27", optional = true, default-features = false }
