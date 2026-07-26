@@ -11,3 +11,22 @@ Description: Zett package containing the TITAN language compiler and ecosystem
  Zett installs the TITAN Language Compiler, examples, documentation,
  and the complete TITAN source ecosystem.
 
+Package: zett
+Version: 0.3.0
+Architecture: arm
+Maintainer: Alex Sanders Soto
+Filename: ./zett_0.3.0_arm.deb
+Size: 4991372
+MD5sum: b38aef55c3e3155021222319dd952178
+SHA1: 43ffcaf71f94bfe66b6de18e8e6e8a3dbb0d2bed
+SHA256: a9f2958dc5ef8887d753e86b660928be8ac82fb5c589c82d8640affff199ec8d
+Description: TITAN language compiler with real HTTPS, crypto and Android bindings
+ Zett installs the TITAN Language Compiler, examples and documentation.
+ Includes a modern standard library with real (non-simulated) modules:
+ regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
+ compress (gzip/zstd), archive (tar/zip), yaml, xml, blocking HTTPS
+ client, DNS resolver, SMTP email, ChaCha20-Poly1305 & AES-GCM AEAD,
+ Argon2id/bcrypt password hashing, JWT signing/verification, and
+ direct access to Termux:API for Android hardware/OS integration
+ (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notify, TTS).
+
