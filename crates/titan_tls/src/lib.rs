@@ -32,13 +32,16 @@ impl Write for TlsStream { fn write(&mut self, buffer: &[u8]) -> io::Result<usiz
 /// building a ClientConfig / ServerConfig — required since rustls 0.23,
 /// where an ambient default is not selected when more than one provider is
 /// linked (for instance when a dependency such as `ureq` also uses rustls).
+///
+/// Uses the `ring` backend so we don't pull in aws-lc-sys, which is huge to
+/// compile on Termux (hundreds of C files, gigabytes of intermediate .o).
 pub fn ensure_default_crypto_provider() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         // Ignore the returned Result: another dependency may have installed
         // its own provider first, which is also fine.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }
 

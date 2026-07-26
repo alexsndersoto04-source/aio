@@ -76,7 +76,9 @@ quick-xml    = { version = "0.36", optional = true, features = ["serialize"] }
 # Phase 3 — advanced networking (all pure-Rust, TLS via rustls, Termux friendly)
 ureq              = { version = "2", optional = true, default-features = false, features = ["tls", "json", "gzip"] }
 hickory-resolver  = { version = "0.24", optional = true, default-features = false, features = ["system-config", "tokio-runtime"] }
-lettre            = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "rustls-tls", "webpki-roots", "builder"] }
+# lettre's `rustls-tls` feature already pulls webpki-roots + ring; do NOT
+# add `aws-lc-rs`, which would drag aws-lc-sys back in.
+lettre            = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "rustls-tls", "builder"] }
 base64            = { version = "0.22", optional = true }
 tokio             = { version = "1", optional = true, features = ["rt", "net"] }
 once_cell         = { version = "1", optional = true }

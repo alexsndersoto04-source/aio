@@ -5,5 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-mysql = { version = "26", default-features = false, features = ["minimal-rust", "rustls-tls"] }
+# IMPORTANT: use `rustls-tls-ring`, not `rustls-tls`. The default `rustls-tls`
+# activates rustls's `aws_lc_rs` feature, which pulls in aws-lc-sys (~300 C
+# files, several GB of intermediate .o) and blows up small Termux storage.
+mysql = { version = "26", default-features = false, features = ["minimal-rust", "rustls-tls-ring"] }
 thiserror.workspace = true

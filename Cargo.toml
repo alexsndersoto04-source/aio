@@ -36,3 +36,14 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 semver = "1"
+
+# --- Termux-friendly TLS: force the whole workspace onto the `ring` backend
+# and off aws-lc-sys, which pulls in ~300 C files that fill small Termux
+# partitions when compiling. Every direct dep on rustls / rustls-webpki /
+# tokio-rustls in the workspace inherits these settings via
+# `.workspace = true`, and Cargo feature unification propagates them to the
+# rest of the graph too.
+rustls        = { version = "0.23", default-features = false, features = ["std", "ring", "tls12", "logging"] }
+rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
+tokio-rustls  = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
+webpki-roots  = "1"
