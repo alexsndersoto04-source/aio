@@ -624,8 +624,8 @@ pub static NATIVES: &[NativeSignature] = &[
     // --- Phase 14: SVG charts (plotters, pure Rust, no ttf/C-deps) ---
     // All write a standalone .svg to `path`. `xs`/`ys` are float arrays.
     native!("std::plot::line",       [String, String, String, String, Array, Array], Nil, Filesystem),
-    // multi_line: series is an Array of Arrays [label, xs, ys].
-    native!("std::plot::multi_line", [String, String, String, String, Array], Nil, Filesystem),
+    // multi_line: 3 parallel arrays — labels, list-of-xs-arrays, list-of-ys-arrays.
+    native!("std::plot::multi_line", [String, String, String, String, Array, Array, Array], Nil, Filesystem),
     native!("std::plot::bar",        [String, String, String, Array, Array], Nil, Filesystem),
     native!("std::plot::scatter",    [String, String, String, String, Array, Array], Nil, Filesystem),
     native!("std::plot::histogram",  [String, String, String, Array, Int], Nil, Filesystem),

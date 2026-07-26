@@ -10,9 +10,10 @@
   text is rendered by whatever viewer opens the file.
   - `line(path, title, x_axis, y_axis, xs, ys)` — single line chart
     with a marker on every sample.
-  - `multi_line(path, title, x_axis, y_axis, series)` where `series`
-    is an array of `[label, xs, ys]` triples; each series gets a stable
-    colour from an 8-slot palette and a legend entry.
+  - `multi_line(path, title, x_axis, y_axis, labels, xs_of_series, ys_of_series)`
+    — 3 parallel arrays (a triple-of-arrays per series would be a
+    heterogeneous literal, which Titan's typechecker rejects). Each
+    series gets a stable colour from an 8-slot palette + a legend entry.
   - `bar(path, title, y_axis, labels, values)` — bar chart.
   - `scatter(path, title, x_axis, y_axis, xs, ys)` — scatter plot.
   - `histogram(path, title, x_axis, values, bins)` — auto-binned

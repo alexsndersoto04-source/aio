@@ -1110,15 +1110,18 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         }
         #[cfg(feature = "plot_mod")] "std::plot::multi_line" => {
             let path = string!(); let title = string!(); let xa = string!(); let ya = string!();
-            // series = [ [label, xs_array, ys_array], ... ]
-            let raw = array!();
-            let mut series: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::with_capacity(raw.len());
-            for item in raw {
-                let mut trio = expect_array(item)?;
-                if trio.len() != 3 { return Err("each series must be [label, xs, ys]".into()); }
-                let ys = expect_array(trio.remove(2))?.into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
-                let xs = expect_array(trio.remove(1))?.into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
-                let label = expect_string(trio.remove(0))?;
+            // 3 parallel arrays: labels, xs-of-series, ys-of-series.
+            let labels_arr = array!();
+            let xss_arr    = array!();
+            let yss_arr    = array!();
+            if labels_arr.len() != xss_arr.len() || labels_arr.len() != yss_arr.len() {
+                return Err("multi_line: labels, xs and ys arrays must all have the same length".into());
+            }
+            let mut series: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::with_capacity(labels_arr.len());
+            for ((label_v, xs_v), ys_v) in labels_arr.into_iter().zip(xss_arr.into_iter()).zip(yss_arr.into_iter()) {
+                let label = expect_string(label_v)?;
+                let xs = expect_array(xs_v)?.into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
+                let ys = expect_array(ys_v)?.into_iter().map(expect_float).collect::<Result<Vec<_>, _>>()?;
                 series.push((label, xs, ys));
             }
             stdlib::plot_mod::multi_line_svg(&path, &title, &xa, &ya, &series).map_err(error)?;

@@ -40,6 +40,8 @@ fn main() {
     std::plot::histogram(path4, "Latencias (ms)", "ms", latencias, 8)
 
     // ---- 5) Multi-line: tres series comparadas ----
+    // multi_line usa 3 arrays paralelos (labels, xs-por-serie, ys-por-serie)
+    // porque el typechecker rechaza literales heterogeneos tipo [str, arr, arr].
     let path5 = home + "/chart_multi.svg"
     print("---- Multi-line -> {path5}")
     let x_dias = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
@@ -47,11 +49,10 @@ fn main() {
     let ram    = [55.2, 58.4, 62.1, 65.8, 63.4, 68.9, 66.2]
     let disk   = [12.1, 12.3, 12.8, 13.4, 13.6, 14.1, 14.5]
 
-    let serie_cpu  = ["CPU %", x_dias, cpu]
-    let serie_ram  = ["RAM %", x_dias, ram]
-    let serie_disk = ["Disk %", x_dias, disk]
-    let series = [serie_cpu, serie_ram, serie_disk]
-    std::plot::multi_line(path5, "Uso del sistema (7 dias)", "dia", "%", series)
+    let labels = ["CPU %", "RAM %", "Disk %"]
+    let xss    = [x_dias, x_dias, x_dias]
+    let yss    = [cpu, ram, disk]
+    std::plot::multi_line(path5, "Uso del sistema (7 dias)", "dia", "%", labels, xss, yss)
 
     print("---- Todos los SVGs generados en {home} ----")
     print("Abri uno con: termux-open ~/chart_line.svg")
