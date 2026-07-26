@@ -17,6 +17,8 @@ extras = [
     "http_full_mod", "dns_mod", "email_mod",
     # Phase 4 — modern cryptography
     "crypto_mod", "password_mod", "jwt_mod",
+    # Phase 5 — Termux / Android integration
+    "termux_mod",
 ]
 
 # Phase 1
@@ -43,6 +45,9 @@ email_mod     = ["dep:lettre", "dep:tokio", "dep:once_cell"]
 crypto_mod   = ["dep:chacha20poly1305", "dep:aes-gcm", "dep:rand"]
 password_mod = ["dep:argon2", "dep:bcrypt"]
 jwt_mod      = ["dep:jsonwebtoken"]
+
+# Phase 5 — Termux / Android integration (pure std, shells out to termux-api)
+termux_mod   = []
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }

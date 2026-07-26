@@ -1,0 +1,53 @@
+// Demo Fase 5: acceso REAL al hardware/software de Android desde TITAN.
+// Ejecutar en Termux con:
+//     zett run examples/android.titan
+//
+// Requiere:
+//     1. Termux:API app instalada (Play Store o F-Droid).
+//     2. pkg install termux-api
+
+fn main() {
+    // Detectar si termux-api esta disponible.
+    let disponible = std::termux::is_available()
+    print("termux-api disponible:")
+    print(disponible)
+
+    if !disponible {
+        print("Instala Termux:API y ejecuta: pkg install termux-api")
+        return
+    }
+
+    // ---- Bateria ----
+    print("---- Bateria ----")
+    let bateria = std::termux::battery_status()
+    print(bateria)
+
+    // ---- Toast (aparece en la pantalla) ----
+    print("---- Toast ----")
+    std::termux::toast("Hola desde TITAN! (Fase 5)")
+
+    // ---- Vibrar 300 ms ----
+    print("---- Vibracion (300 ms) ----")
+    std::termux::vibrate(300, false)
+
+    // ---- Portapapeles del sistema (REAL, no simulado) ----
+    print("---- Portapapeles ----")
+    std::termux::clipboard_set("copiado desde zett")
+    let recuperado = std::termux::clipboard_get()
+    print("clipboard:")
+    print(recuperado)
+
+    // ---- Notificacion ----
+    print("---- Notificacion ----")
+    std::termux::notify("Zett dice hola", "Notificacion generada desde un .titan", 42)
+
+    // ---- Sensores disponibles ----
+    print("---- Sensores ----")
+    let sensores = std::termux::sensor_list()
+    print(sensores)
+
+    // ---- WiFi (nombre de red, IP, etc.) ----
+    print("---- WiFi ----")
+    let wifi = std::termux::wifi_info()
+    print(wifi)
+}

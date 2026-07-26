@@ -392,6 +392,33 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::jwt::verify_rs256", [String, Bytes, String, String], Any),
     native!("std::jwt::peek_header",  [String], Any),
 
+    // --- Phase 5: Termux / Android integration ---
+    // Every helper spawns the matching `termux-*` CLI. Needs Termux:API + `pkg install termux-api`.
+    // Marked `Process` so `titan run --sandbox` blocks them consistently with `std::process::*`.
+    native!("std::termux::is_available",     [], Bool),
+    native!("std::termux::battery_status",   [], Any, Process),
+    native!("std::termux::wifi_info",        [], Any, Process),
+    native!("std::termux::telephony_info",   [], Any, Process),
+    native!("std::termux::location",         [String, String], Any, Process),
+    native!("std::termux::sensor_list",      [], Array, Process),
+    native!("std::termux::sensor_read",      [String], Any, Process),
+    native!("std::termux::clipboard_get",    [], String, Process),
+    native!("std::termux::clipboard_set",    [String], Nil, Process),
+    native!("std::termux::vibrate",          [Int, Bool], Nil, Process),
+    native!("std::termux::torch",            [Bool], Nil, Process),
+    native!("std::termux::toast",            [String], Nil, Process),
+    native!("std::termux::notify",           [String, String, Int], Nil, Process),
+    native!("std::termux::notify_remove",    [Int], Nil, Process),
+    native!("std::termux::tts_speak",        [String], Nil, Process),
+    native!("std::termux::sms_list",         [Int], Any, Process),
+    native!("std::termux::sms_send",         [String, String], Nil, Process),
+    native!("std::termux::contacts",         [], Any, Process),
+    native!("std::termux::camera_info",      [], Any, Process),
+    native!("std::termux::camera_photo",     [String, String], Nil, Process),
+    native!("std::termux::brightness",       [Int], Nil, Process),
+    native!("std::termux::dialog",           [String, String], Any, Process),
+    native!("std::termux::share",            [String], Nil, Process),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

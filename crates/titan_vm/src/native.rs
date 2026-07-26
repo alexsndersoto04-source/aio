@@ -511,6 +511,71 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         }
         #[cfg(feature = "jwt_mod")] "std::jwt::peek_header" => from_json(stdlib::jwt_mod::peek_header(&string!()).map_err(error)?)?,
 
+        // ---------------- Phase 5: Termux / Android ----------------
+        #[cfg(feature = "termux_mod")] "std::termux::is_available"   => Value::Bool(stdlib::termux_mod::is_available()),
+        #[cfg(feature = "termux_mod")] "std::termux::battery_status" => from_json(stdlib::termux_mod::battery_status().map_err(error)?)?,
+        #[cfg(feature = "termux_mod")] "std::termux::wifi_info"      => from_json(stdlib::termux_mod::wifi_info().map_err(error)?)?,
+        #[cfg(feature = "termux_mod")] "std::termux::telephony_info" => from_json(stdlib::termux_mod::telephony_info().map_err(error)?)?,
+        #[cfg(feature = "termux_mod")] "std::termux::location" => {
+            let provider = string!(); let request = string!();
+            from_json(stdlib::termux_mod::location(&provider, &request).map_err(error)?)?
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::sensor_list" =>
+            Value::Array(stdlib::termux_mod::sensor_list().map_err(error)?.into_iter().map(Value::Str).collect()),
+        #[cfg(feature = "termux_mod")] "std::termux::sensor_read" =>
+            from_json(stdlib::termux_mod::sensor_read(&string!()).map_err(error)?)?,
+        #[cfg(feature = "termux_mod")] "std::termux::clipboard_get" =>
+            Value::Str(stdlib::termux_mod::clipboard_get().map_err(error)?),
+        #[cfg(feature = "termux_mod")] "std::termux::clipboard_set" => {
+            stdlib::termux_mod::clipboard_set(&string!()).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::vibrate" => {
+            let ms = int!(); let force = expect_bool(take!())?;
+            stdlib::termux_mod::vibrate(std::time::Duration::from_millis(ms.max(0) as u64), force).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::torch" => {
+            let on = expect_bool(take!())?;
+            stdlib::termux_mod::torch(on).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::toast" => {
+            stdlib::termux_mod::toast(&string!()).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::notify" => {
+            let title = string!(); let content = string!(); let id = int!();
+            stdlib::termux_mod::notify(&title, &content, id).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::notify_remove" => {
+            stdlib::termux_mod::notify_remove(int!()).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::tts_speak" => {
+            stdlib::termux_mod::tts_speak(&string!()).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::sms_list" =>
+            from_json(stdlib::termux_mod::sms_list(int!()).map_err(error)?)?,
+        #[cfg(feature = "termux_mod")] "std::termux::sms_send" => {
+            let recipient = string!(); let message = string!();
+            stdlib::termux_mod::sms_send(&recipient, &message).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::contacts" =>
+            from_json(stdlib::termux_mod::contacts().map_err(error)?)?,
+        #[cfg(feature = "termux_mod")] "std::termux::camera_info" =>
+            from_json(stdlib::termux_mod::camera_info().map_err(error)?)?,
+        #[cfg(feature = "termux_mod")] "std::termux::camera_photo" => {
+            let camera_id = string!(); let output_path = string!();
+            stdlib::termux_mod::camera_photo(&camera_id, &output_path).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::brightness" => {
+            stdlib::termux_mod::brightness(int!()).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::dialog" => {
+            let dialog_type = string!(); let title = string!();
+            from_json(stdlib::termux_mod::dialog(&dialog_type, &title).map_err(error)?)?
+        }
+        #[cfg(feature = "termux_mod")] "std::termux::share" => {
+            stdlib::termux_mod::share(&string!()).map_err(error)?; Value::Nil
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

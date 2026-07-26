@@ -60,6 +60,9 @@ pub mod mobile;
 #[cfg(feature = "password_mod")]  pub mod password_mod;
 #[cfg(feature = "jwt_mod")]       pub mod jwt_mod;
 
+// --- Phase 5: Termux / Android integration -----------------------------
+#[cfg(feature = "termux_mod")]    pub mod termux_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }
