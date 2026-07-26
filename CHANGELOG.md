@@ -1,5 +1,31 @@
 # Zett / TITAN — Changelog
 
+## 0.7.0 — Phase 9: Audio
+
+### Added
+- **`std::audio::*`** — real WAV I/O and synthesis (crate `hound`, pure
+  Rust, no native audio deps), plus playback and recording delegated to
+  the Termux:API binaries so the compile never breaks on Android.
+  - Read: `read_wav(path)`, `read_wav_bytes(bytes)` — both return
+    `{ samples, sample_rate, channels, bits_per_sample }` with the
+    samples normalized to floats in `[-1.0, 1.0]`.
+  - Write: `write_wav(path, samples, sample_rate, channels)` and
+    in-memory `encode_wav(samples, sample_rate, channels)`.
+  - Synthesis: `sine_wave`, `square_wave`, `saw_wave`, `white_noise` —
+    each returns a float sample array for the requested duration/rate.
+  - Playback (via `termux-media-player`): `play(path)`, `pause`,
+    `resume`, `stop`, `info`, `is_termux_media_available`.
+  - Recording (via `termux-microphone-record`): `record_start(path,
+    seconds)`, `record_stop`, `record_info`.
+- `examples/audio.titan` synthesises a 500 ms A4 tone, writes and
+  re-reads the WAV, tries to play it via Termux:API, and stitches
+  Do-Re-Mi-Fa-Sol into a scale WAV.
+
+### Nothing removed
+All Phases 1-8 remain untouched.
+
+---
+
 ## 0.6.0 — Phase 8: System & OS
 
 ### Added

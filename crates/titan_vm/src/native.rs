@@ -785,6 +785,72 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             Value::Str(stdlib::signals_mod::wait_any(timeout).map_err(error)?)
         }
 
+        // ---------------- Phase 9: audio (hound + termux-media) ----------------
+        #[cfg(feature = "audio_mod")] "std::audio::read_wav" => {
+            let path = string!();
+            let (samples, sample_rate, channels, bits) = stdlib::audio_mod::read_wav(&path).map_err(error)?;
+            audio_read_result(samples, sample_rate, channels, bits)
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::read_wav_bytes" => {
+            let data = bytes!();
+            let (samples, sample_rate, channels, bits) = stdlib::audio_mod::read_wav_bytes(&data).map_err(error)?;
+            audio_read_result(samples, sample_rate, channels, bits)
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::write_wav" => {
+            let path = string!();
+            let samples = audio_samples_from_array(array!())?;
+            let sample_rate = u32::try_from(int!()).map_err(|_| "sample_rate out of range".to_string())?;
+            let channels    = u16::try_from(int!()).map_err(|_| "channels out of range".to_string())?;
+            stdlib::audio_mod::write_wav(&path, &samples, sample_rate, channels).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::encode_wav" => {
+            let samples = audio_samples_from_array(array!())?;
+            let sample_rate = u32::try_from(int!()).map_err(|_| "sample_rate out of range".to_string())?;
+            let channels    = u16::try_from(int!()).map_err(|_| "channels out of range".to_string())?;
+            Value::Bytes(stdlib::audio_mod::encode_wav(&samples, sample_rate, channels).map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::sine_wave" => {
+            let freq = float!() as f32;
+            let duration_ms = u32::try_from(int!()).map_err(|_| "duration_ms out of range".to_string())?;
+            let sample_rate = u32::try_from(int!()).map_err(|_| "sample_rate out of range".to_string())?;
+            let amplitude = float!() as f32;
+            audio_samples_to_array(stdlib::audio_mod::sine_wave(freq, duration_ms, sample_rate, amplitude))
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::square_wave" => {
+            let freq = float!() as f32;
+            let duration_ms = u32::try_from(int!()).map_err(|_| "duration_ms out of range".to_string())?;
+            let sample_rate = u32::try_from(int!()).map_err(|_| "sample_rate out of range".to_string())?;
+            let amplitude = float!() as f32;
+            audio_samples_to_array(stdlib::audio_mod::square_wave(freq, duration_ms, sample_rate, amplitude))
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::saw_wave" => {
+            let freq = float!() as f32;
+            let duration_ms = u32::try_from(int!()).map_err(|_| "duration_ms out of range".to_string())?;
+            let sample_rate = u32::try_from(int!()).map_err(|_| "sample_rate out of range".to_string())?;
+            let amplitude = float!() as f32;
+            audio_samples_to_array(stdlib::audio_mod::saw_wave(freq, duration_ms, sample_rate, amplitude))
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::white_noise" => {
+            let duration_ms = u32::try_from(int!()).map_err(|_| "duration_ms out of range".to_string())?;
+            let sample_rate = u32::try_from(int!()).map_err(|_| "sample_rate out of range".to_string())?;
+            let amplitude = float!() as f32;
+            audio_samples_to_array(stdlib::audio_mod::white_noise(duration_ms, sample_rate, amplitude))
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::is_termux_media_available" => Value::Bool(stdlib::audio_mod::is_termux_media_available()),
+        #[cfg(feature = "audio_mod")] "std::audio::play"         => Value::Str(stdlib::audio_mod::play(&string!()).map_err(error)?),
+        #[cfg(feature = "audio_mod")] "std::audio::pause"        => Value::Str(stdlib::audio_mod::pause().map_err(error)?),
+        #[cfg(feature = "audio_mod")] "std::audio::resume"       => Value::Str(stdlib::audio_mod::resume().map_err(error)?),
+        #[cfg(feature = "audio_mod")] "std::audio::stop"         => Value::Str(stdlib::audio_mod::stop().map_err(error)?),
+        #[cfg(feature = "audio_mod")] "std::audio::info"         => Value::Str(stdlib::audio_mod::info().map_err(error)?),
+        #[cfg(feature = "audio_mod")] "std::audio::record_start" => {
+            let path = string!();
+            let secs = u32::try_from(int!()).map_err(|_| "seconds out of range".to_string())?;
+            Value::Str(stdlib::audio_mod::record_start(&path, secs).map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")] "std::audio::record_stop" => Value::Str(stdlib::audio_mod::record_stop().map_err(error)?),
+        #[cfg(feature = "audio_mod")] "std::audio::record_info" => Value::Str(stdlib::audio_mod::record_info().map_err(error)?),
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),
@@ -931,6 +997,30 @@ fn archive_entries_to_value(entries: Vec<stdlib::archive_mod::ArchiveEntry>) -> 
         map.insert("bytes".into(), Value::Bytes(entry.bytes));
         Value::Map(map)
     }).collect())
+}
+
+#[cfg(feature = "audio_mod")]
+fn audio_read_result(samples: Vec<f32>, sample_rate: u32, channels: u16, bits: u16) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert("samples".into(),         Value::Array(samples.into_iter().map(|value| Value::Float(value as f64)).collect()));
+    map.insert("sample_rate".into(),     Value::Int(sample_rate as i64));
+    map.insert("channels".into(),        Value::Int(channels as i64));
+    map.insert("bits_per_sample".into(), Value::Int(bits as i64));
+    Value::Map(map)
+}
+
+#[cfg(feature = "audio_mod")]
+fn audio_samples_from_array(items: Vec<Value>) -> Result<Vec<f32>, String> {
+    items.into_iter().map(|value| match value {
+        Value::Float(f) => Ok(f as f32),
+        Value::Int(i)   => Ok(i as f32),
+        other => Err(format!("audio sample array must contain numbers, got {other:?}")),
+    }).collect()
+}
+
+#[cfg(feature = "audio_mod")]
+fn audio_samples_to_array(samples: Vec<f32>) -> Value {
+    Value::Array(samples.into_iter().map(|value| Value::Float(value as f64)).collect())
 }
 
 fn to_json(value: Value) -> Result<serde_json::Value, String> {

@@ -2,7 +2,7 @@
 
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM. On Termux, the compiler ships as the **`zett`** binary.
 
-> **Project status.** Version **0.6.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end. There is a real WebAssembly backend (`zett wasm`), and the standard library has grown to **26 optional modules** covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, **terminal/TUI** (colors, cursor, keys, animated bars, readline with history), **image processing** (PNG/JPEG/WebP/BMP/GIF: load, save, resize, rotate, crop, grayscale, blur), **QR codes** (ASCII/Unicode/SVG/PNG), **system info** (CPU %, memory, load average, processes, disks, networks), **file-system watcher** (inotify), **Unix signals**, and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
+> **Project status.** Version **0.7.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end. There is a real WebAssembly backend (`zett wasm`), and the standard library has grown to **27 optional modules** covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, **terminal/TUI** (colors, cursor, keys, animated bars, readline with history), **image processing** (PNG/JPEG/WebP/BMP/GIF), **QR codes** (ASCII/Unicode/SVG/PNG), **system info** (CPU %, memory, load average, processes, disks, networks), **file-system watcher** (inotify), **Unix signals**, **audio** (real WAV I/O and synthesis + playback/recording via Termux:API), and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
 >
 > **Not yet functional (experimental scaffolding).** The `titan_mir` crate and the `zett native` / `zett mobile` CLI commands are placeholders: `lower_hir_to_mir` is a no-op, and the ELF/APK writers emit an incomplete header. Both commands print a warning at runtime. Use `zett build` (portable bytecode) or `zett wasm` (WebAssembly) for real artifacts.
 
@@ -40,6 +40,7 @@ target/release/titan run examples/android.titan    # Phase 5 (needs Termux:API)
 target/release/titan run examples/tui.titan        # Phase 6
 target/release/titan run examples/images.titan     # Phase 7 (images + QR)
 target/release/titan run examples/system.titan     # Phase 8 (procfs / system info)
+target/release/titan run examples/audio.titan      # Phase 9 (WAV synth + playback)
 ```
 
 Install the CLI locally:

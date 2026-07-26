@@ -77,6 +77,9 @@ pub mod mobile;
 #[cfg(feature = "fswatch_mod")]   pub mod fswatch_mod;
 #[cfg(feature = "signals_mod")]   pub mod signals_mod;
 
+// --- Phase 9: Audio (WAV synthesis / I/O + Termux media playback) ------
+#[cfg(feature = "audio_mod")]     pub mod audio_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

@@ -1,0 +1,60 @@
+// Demo Fase 9: audio (WAV real, sintesis, playback).
+// Ejecutar en Termux con:
+//     zett run examples/audio.titan
+//
+// Para escuchar el resultado necesitas 'pkg install termux-api' + la app
+// Termux:API. Igualmente, el WAV se genera bien aunque no lo puedas
+// reproducir.
+
+fn main() {
+    let home = std::dirs::home()
+    let path = home + "/beep.wav"
+
+    print("---- Sintesis: tono LA (440 Hz) por 500 ms a 44.1 kHz ----")
+    let samples = std::audio::sine_wave(440.0, 500, 44100, 0.6)
+    print("muestras generadas:")
+    print(std::collections::length(samples))
+
+    print("---- Guardar como WAV ----")
+    std::audio::write_wav(path, samples, 44100, 1)
+    print("WAV guardado en:")
+    print(path)
+
+    print("---- Releer el WAV ----")
+    let info = std::audio::read_wav(path)
+    print("sample rate:")
+    print(info.sample_rate)
+    print("canales:")
+    print(info.channels)
+    print("bits por muestra:")
+    print(info.bits_per_sample)
+
+    print("---- Reproducir (necesita termux-api) ----")
+    let disponible = std::audio::is_termux_media_available()
+    print("termux-media-player disponible:")
+    print(disponible)
+
+    if disponible {
+        let out = std::audio::play(path)
+        print("reproduccion iniciada:")
+        print(out)
+    } else {
+        print("Instala Termux:API + 'pkg install termux-api' para escucharlo.")
+    }
+
+    print("---- Melodia (Do-Re-Mi-Fa-Sol) guardada como scale.wav ----")
+    let do_note  = std::audio::sine_wave(261.63, 250, 44100, 0.4)
+    let re_note  = std::audio::sine_wave(293.66, 250, 44100, 0.4)
+    let mi_note  = std::audio::sine_wave(329.63, 250, 44100, 0.4)
+    let fa_note  = std::audio::sine_wave(349.23, 250, 44100, 0.4)
+    let sol_note = std::audio::sine_wave(392.00, 250, 44100, 0.4)
+    let scale = std::array::concat(do_note, re_note)
+    let scale = std::array::concat(scale, mi_note)
+    let scale = std::array::concat(scale, fa_note)
+    let scale = std::array::concat(scale, sol_note)
+    let scale_path = home + "/scale.wav"
+    std::audio::write_wav(scale_path, scale, 44100, 1)
+    print("Melodia guardada en:")
+    print(scale_path)
+    print("---- Listo ----")
+}

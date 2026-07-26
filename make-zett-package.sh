@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.6.0_arm.deb"
+OUT="zett_0.7.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.6.0
+Version: 0.7.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN language compiler: HTTPS, crypto, Android, TUI, images, QR, system info
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -29,9 +29,11 @@ Description: TITAN language compiler: HTTPS, crypto, Android, TUI, images, QR, s
  readline with history, animated progress bars and spinners), image
  processing (PNG/JPEG/WebP/BMP/GIF: load, save, encode, resize, crop,
  rotate, grayscale, blur, brighten), QR code generation
- (ASCII/Unicode/SVG/PNG at every error-correction level), and system
- tools: procfs (CPU, memory, load average, processes, disks, networks),
- file-system watcher (inotify) and Unix signal handling.
+ (ASCII/Unicode/SVG/PNG at every error-correction level), system
+ tools (procfs CPU/memory/processes/disks/networks, file-system watcher
+ via inotify, Unix signal handling), and audio (WAV I/O and synthesis
+ via hound: sine, square, sawtooth, white noise, fades; playback and
+ recording through termux-media-player and termux-microphone-record).
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

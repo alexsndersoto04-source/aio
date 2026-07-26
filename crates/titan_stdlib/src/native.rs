@@ -512,6 +512,27 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::signals::pending",  [String], Int),
     native!("std::signals::wait_any", [Int], String),
 
+    // --- Phase 9: Audio (hound + termux-media-player) ---
+    // Pure-Rust WAV I/O and synthesis.
+    native!("std::audio::read_wav",         [String], Map, Filesystem),
+    native!("std::audio::read_wav_bytes",   [Bytes], Map),
+    native!("std::audio::write_wav",        [String, Array, Int, Int], Nil, Filesystem),
+    native!("std::audio::encode_wav",       [Array, Int, Int], Bytes),
+    native!("std::audio::sine_wave",        [Float, Int, Int, Float], Array),
+    native!("std::audio::square_wave",      [Float, Int, Int, Float], Array),
+    native!("std::audio::saw_wave",         [Float, Int, Int, Float], Array),
+    native!("std::audio::white_noise",      [Int, Int, Float], Array),
+    // Playback / recording via termux-api. Marked Process so `--sandbox` blocks them.
+    native!("std::audio::is_termux_media_available", [], Bool),
+    native!("std::audio::play",         [String], String, Process),
+    native!("std::audio::pause",        [], String, Process),
+    native!("std::audio::resume",       [], String, Process),
+    native!("std::audio::stop",         [], String, Process),
+    native!("std::audio::info",         [], String, Process),
+    native!("std::audio::record_start", [String, Int], String, Process),
+    native!("std::audio::record_stop",  [], String, Process),
+    native!("std::audio::record_info",  [], String, Process),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),
