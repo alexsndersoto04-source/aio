@@ -1,7 +1,0 @@
-Origin: Zett
-Label: Zett
-Suite: stable
-Codename: stable
-Architectures: arm aarch64
-Components: main
-Description: Zett - TITAN language for Termux
