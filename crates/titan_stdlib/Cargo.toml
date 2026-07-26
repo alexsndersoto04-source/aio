@@ -35,6 +35,8 @@ extras = [
     "plot_mod",
     # Phase 12 — Local AI: HuggingFace tokenizers (pure-Rust build)
     "tokenize_mod",
+    # Phase 12 part 2 — Local AI: ONNX inference (tract, pure-Rust)
+    "onnx_mod",
 ]
 
 # Phase 1
@@ -96,6 +98,9 @@ plot_mod     = ["dep:plotters"]
 
 # Phase 12 — HuggingFace tokenizers, pure-Rust build (no onig, no C++).
 tokenize_mod = ["dep:tokenizers"]
+
+# Phase 12 part 2 — ONNX inference via tract (Sonos' inference engine).
+onnx_mod     = ["dep:tract-onnx"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -199,3 +204,10 @@ plotters          = { version = "0.3",  optional = true, default-features = fals
 # tokenizers >= 0.22 gates SysRegex on `fancy-regex XOR onig` and emits a
 # compile_error!() if you enable neither, so we can trust the mutex.
 tokenizers        = { version = "0.22", optional = true, default-features = false, features = ["fancy-regex"] }
+
+# Phase 12 part 2 — tract-onnx (Sonos' pure-Rust inference engine).
+# No optional features to enable/disable here: `tract-onnx` 0.21 is 100%
+# Rust with no C dependencies. It brings its own protobuf reader (`prost`),
+# its own ndarray fork (`tract-ndarray`), and its own optimizer. Perfect
+# fit for embedded / Termux use.
+tract-onnx        = { version = "0.21", optional = true, default-features = false }

@@ -69,6 +69,12 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::array::pop", [Array], Array),
     native!("std::array::slice", [Array, Int, Int], Array),
     native!("std::array::concat", [Array, Array], Array),
+    // filled(n, value): array of `n` copies of `value`. Handy for building
+    // sized float buffers for ONNX / plotters without a hand-rolled loop.
+    native!("std::array::filled", [Int, Any], Array),
+    // range(start, end): [start, start+1, ..., end-1] as ints. Complements
+    // the `for i in start..end` syntax when you need the values as data.
+    native!("std::array::range",  [Int, Int], Array),
     native!("std::wasm::heap_used", [], Int),
     native!("std::wasm::heap_capacity", [], Int),
     native!("std::wasm::heap_limit", [], Int),
@@ -646,6 +652,23 @@ pub static NATIVES: &[NativeSignature] = &[
     // Lookups: string <-> id (returns Any because either can be Nil when absent).
     native!("std::tokenize::token_to_id",  [Int, String], Any),
     native!("std::tokenize::id_to_token",  [Int, Int], Any),
+
+    // --- Phase 12 part 2: ONNX inference via tract (pure-Rust) ---
+    // load()      → optimizes and prepares a model without pinning shapes.
+    // load_shape()→ pins the first input to the given shape before optimize
+    //               (needed for models with dynamic axes).
+    native!("std::onnx::load",         [String], Int, Filesystem),
+    native!("std::onnx::load_shape",   [String, Array], Int, Filesystem),
+    native!("std::onnx::close",        [Int], Nil),
+    native!("std::onnx::input_count",  [Int], Int),
+    native!("std::onnx::output_count", [Int], Int),
+    // input_shape(handle, i) / output_shape(handle, i) → [Int] (may contain -1 for symbolic).
+    native!("std::onnx::input_shape",  [Int, Int], Array),
+    native!("std::onnx::output_shape", [Int, Int], Array),
+    // run_f32(handle, shape, data) → { values: [Float], shape: [Int] }
+    native!("std::onnx::run_f32",      [Int, Array, Array], Map),
+    // run_ids(handle, shape, ids)  → same shape, for token-id inputs (BERT-family).
+    native!("std::onnx::run_ids",      [Int, Array, Array], Map),
 
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),

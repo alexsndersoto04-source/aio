@@ -94,6 +94,9 @@ pub mod mobile;
 // --- Phase 12: Local AI — HuggingFace tokenizers (pure-Rust build) -----
 #[cfg(feature = "tokenize_mod")]  pub mod tokenize_mod;
 
+// --- Phase 12 part 2: Local AI — ONNX inference (tract, pure-Rust) -----
+#[cfg(feature = "onnx_mod")]      pub mod onnx_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

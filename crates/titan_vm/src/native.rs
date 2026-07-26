@@ -100,6 +100,16 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::array::pop" => { let mut values=array!();let _=values.pop();Value::Array(values) }
         "std::array::slice" => { let values=array!();let start=nonnegative(int!())?;let end=nonnegative(int!())?;if start>end||end>values.len(){return Err("invalid array slice range".into())}Value::Array(values[start..end].to_vec()) }
         "std::array::concat" => { let mut left=array!();left.extend(array!());Value::Array(left) }
+        "std::array::filled" => {
+            let n = nonnegative(int!())?;
+            let value = take!();
+            Value::Array((0..n).map(|_| value.clone()).collect())
+        }
+        "std::array::range" => {
+            let start = int!(); let end = int!();
+            if end < start { return Err("range end must be >= start".into()); }
+            Value::Array((start..end).map(Value::Int).collect())
+        }
         "std::collections::length" => Value::Int(to_i64(value_length(&take!())?)?),
         "std::collections::contains" => { let values = array!(); Value::Bool(values.contains(&take!())) }
         "std::collections::reverse" => { let mut values = array!(); values.reverse(); Value::Array(values) }
@@ -1197,6 +1207,46 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             }
         }
 
+        // ---------------- Phase 12 part 2: ONNX inference (tract) ----------------
+        #[cfg(feature = "onnx_mod")] "std::onnx::load" =>
+            Value::Int(stdlib::onnx_mod::load(&string!()).map_err(error)?),
+        #[cfg(feature = "onnx_mod")] "std::onnx::load_shape" => {
+            let path = string!();
+            let shape = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            Value::Int(stdlib::onnx_mod::load_with_input_shape(&path, &shape).map_err(error)?)
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::close" => {
+            stdlib::onnx_mod::close(int!()); Value::Nil
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::input_count" =>
+            Value::Int(stdlib::onnx_mod::input_count(int!()).map_err(error)? as i64),
+        #[cfg(feature = "onnx_mod")] "std::onnx::output_count" =>
+            Value::Int(stdlib::onnx_mod::output_count(int!()).map_err(error)? as i64),
+        #[cfg(feature = "onnx_mod")] "std::onnx::input_shape" => {
+            let h = int!(); let i = nonnegative(int!())?;
+            let shape = stdlib::onnx_mod::input_shape(h, i).map_err(error)?;
+            Value::Array(shape.into_iter().map(Value::Int).collect())
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::output_shape" => {
+            let h = int!(); let i = nonnegative(int!())?;
+            let shape = stdlib::onnx_mod::output_shape(h, i).map_err(error)?;
+            Value::Array(shape.into_iter().map(Value::Int).collect())
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::run_f32" => {
+            let h = int!();
+            let shape = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let data: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            let (values, out_shape) = stdlib::onnx_mod::run_f32(h, &shape, &data).map_err(error)?;
+            Value::Map(onnx_output_to_map(values, out_shape))
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::run_ids" => {
+            let h = int!();
+            let shape = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let data = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let (values, out_shape) = stdlib::onnx_mod::run_i64_in_f32_out(h, &shape, &data).map_err(error)?;
+            Value::Map(onnx_output_to_map(values, out_shape))
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),
@@ -1222,6 +1272,14 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
 }
 
 fn metrics_snapshot(snapshot:stdlib::metrics::Snapshot)->Value{let counters=snapshot.counters.into_iter().map(|(name,value)|(name,Value::Int(i64::try_from(value).unwrap_or(i64::MAX)))).collect();let gauges=snapshot.gauges.into_iter().map(|(name,value)|(name,Value::Float(value))).collect();let histograms=snapshot.histograms.into_iter().map(|(name,value)|(name,Value::Map(BTreeMap::from([("count".into(),Value::Int(i64::try_from(value.count).unwrap_or(i64::MAX))),("sum".into(),Value::Float(value.sum)),("min".into(),Value::Float(value.min)),("max".into(),Value::Float(value.max))])))).collect();Value::Map(BTreeMap::from([("counters".into(),Value::Map(counters)),("gauges".into(),Value::Map(gauges)),("histograms".into(),Value::Map(histograms))]))}
+
+#[cfg(feature = "onnx_mod")]
+fn onnx_output_to_map(values: Vec<f32>, shape: Vec<usize>) -> BTreeMap<String, Value> {
+    BTreeMap::from([
+        ("values".into(), Value::Array(values.into_iter().map(|v| Value::Float(v as f64)).collect())),
+        ("shape".into(),  Value::Array(shape.into_iter().map(|d| Value::Int(d as i64)).collect())),
+    ])
+}
 
 #[cfg(feature = "tokenize_mod")]
 fn encoding_to_map(e: stdlib::tokenize_mod::Encoding) -> BTreeMap<String, Value> {

@@ -1,0 +1,80 @@
+// Demo Fase 12 (parte 2): inferencia ONNX real corriendo en Termux.
+// Ejecutar con:
+//     zett run examples/onnx.titan
+//
+// Requiere el modelo MNIST-8 (~26 KB) en $HOME/mnist-8.onnx.
+// El primer bloque te da las instrucciones de descarga.
+//
+// MNIST-8 clasifica imagenes de digitos manuscritos (28x28 grayscale)
+// en 10 clases (0-9). Aca le damos una imagen falsa (gris uniforme)
+// solo para verificar que el modelo carga y corre. En un caso real
+// usarias std::image::* para levantar un PNG y aplanarlo.
+
+fn main() {
+    let home = std::dirs::home()
+    let path = home + "/mnist-8.onnx"
+
+    print("---- Fase 12 parte 2: inferencia ONNX con tract ----")
+
+    if !std::fs::exists(path) {
+        print("No encontre el modelo en {path}")
+        print("")
+        print("Baja MNIST-8 con:")
+        print("")
+        print("  curl -L -o ~/mnist-8.onnx \\")
+        print("    https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-8.onnx")
+        print("")
+        print("(es un modelo LeNet de ~26 KB, sirve para validar la instalacion)")
+        return
+    }
+
+    print("Cargando modelo ONNX desde {path} ...")
+    let model = std::onnx::load(path)
+
+    let n_in = std::onnx::input_count(model)
+    let n_out = std::onnx::output_count(model)
+    print("Inputs: {n_in}   Outputs: {n_out}")
+
+    let ish = std::onnx::input_shape(model, 0)
+    let osh = std::onnx::output_shape(model, 0)
+    print("Input shape:  {ish}")
+    print("Output shape: {osh}")
+
+    // MNIST espera [1, 1, 28, 28] float32. 784 pixeles en total.
+    // Construimos una "imagen gris" (todos 0.5) con std::array::filled.
+    print("---- Preparando tensor 1x1x28x28 (784 floats a 0.5) ----")
+    let shape = [1, 1, 28, 28]
+    let pixels = std::array::filled(784, 0.5)
+
+    print("---- Corriendo inferencia ----")
+    let result = std::onnx::run_f32(model, shape, pixels)
+    let logits = result.values
+    let out_shape = result.shape
+    print("Output shape: {out_shape}")
+    print("Logits (10 clases 0-9):")
+    print(logits)
+
+    // Argmax manual para encontrar la clase con mayor score.
+    let best = argmax(logits)
+    print("Prediccion (imagen gris): clase {best}")
+    print("(en una imagen gris uniforme la prediccion no es significativa;")
+    print(" lo importante es que tract cargo el .onnx y ejecuto el forward pass)")
+
+    std::onnx::close(model)
+    print("---- Listo ----")
+}
+
+// Argmax sobre un array de floats. Devuelve el indice del maximo.
+fn argmax(xs: array) -> int {
+    let mut best_i = 0
+    let mut best_v = xs[0]
+    let n = std::collections::length(xs)
+    for i in 1..n {
+        let v = xs[i]
+        if v > best_v {
+            best_i = i
+            best_v = v
+        }
+    }
+    best_i
+}

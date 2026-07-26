@@ -23,6 +23,7 @@ extras = [
     "server_mod", "router_mod",
     "plot_mod",
     "tokenize_mod",
+    "onnx_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
@@ -57,6 +58,7 @@ server_mod    = ["titan_stdlib/server_mod"]
 router_mod    = ["titan_stdlib/router_mod"]
 plot_mod      = ["titan_stdlib/plot_mod"]
 tokenize_mod  = ["titan_stdlib/tokenize_mod"]
+onnx_mod      = ["titan_stdlib/onnx_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

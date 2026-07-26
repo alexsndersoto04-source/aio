@@ -1,5 +1,43 @@
 # Zett / TITAN — Changelog
 
+## 0.12.0 — Phase 12 (part 2): ONNX inference on-device
+
+### Added
+- **`std::onnx::*`** — real ONNX model inference via `tract-onnx` 0.21,
+  the pure-Rust runtime Sonos uses in production for wake-word and
+  streaming speech recognition on their smart speakers. **No CUDA, no
+  cuDNN, no BLAS, no ONNX Runtime C++.** Runs anywhere Rust compiles,
+  including armv7-linux-androideabi (your Termux ARM phone).
+- API (opaque `i64` handles; multiple models can coexist):
+    * `load(path)` — parse → optimize → make runnable in one shot.
+    * `load_shape(path, shape)` — same, but pin the first input's shape
+      before optimizing (needed for models with dynamic axes, e.g. BERT
+      that leaves batch/seq-len symbolic).
+    * `close(handle)`.
+    * `input_count(handle)` / `output_count(handle)`.
+    * `input_shape(handle, i)` / `output_shape(handle, i)` — return an
+      `[Int]` shape (may contain -1 for symbolic dims tract couldn't
+      resolve statically).
+    * `run_f32(handle, shape, data)` — flat f32 input, returns
+      `{values: [Float], shape: [Int]}` (first output). Perfect for
+      MNIST, MobileNet, image classifiers, VAD, etc.
+    * `run_ids(handle, shape, ids)` — same but for i64 token-id inputs
+      (BERT / MiniLM / DistilBERT and other transformers), so you can
+      pipe the output of `std::tokenize::encode()` straight in.
+- **Combines** with Fase 12 pt.1 (`std::tokenize::*`): tokenize text →
+  feed ids to an ONNX transformer → get embeddings back. All on-device,
+  offline, no cloud, no API key.
+
+### Notes
+- `tract-onnx` 0.21 build takes 8–12 min on Termux the first time
+  (~50 crates in the dep graph — `prost` protobuf, `tract-hir`,
+  `tract-nnef`, `tract-onnx-opl`, `tract-core`, `tract-linalg`,
+  `smallvec`, `num-integer`, `memmap2`, ...). All pure Rust, no C.
+- Suggested first model: MNIST-8 (~26 KB) or MobileNet-v2 (~14 MB).
+  Both are on the ONNX model zoo.
+- For LLM-family models (BERT, MiniLM, DistilBERT), use `load_shape`
+  and pass `[1, seq_len]` as input shape before you feed ids.
+
 ## 0.11.0 — Phase 12 (part 1): HuggingFace tokenizers
 
 ### Added
