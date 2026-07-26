@@ -27,11 +27,28 @@ pub enum TlsStream {
 impl Read for TlsStream { fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> { match self { Self::Client(stream) => stream.read(buffer), Self::Server(stream) => stream.read(buffer) } } }
 impl Write for TlsStream { fn write(&mut self, buffer: &[u8]) -> io::Result<usize> { match self { Self::Client(stream) => stream.write(buffer), Self::Server(stream) => stream.write(buffer) } } fn flush(&mut self) -> io::Result<()> { match self { Self::Client(stream) => stream.flush(), Self::Server(stream) => stream.flush() } } }
 
+/// Ensures a default rustls CryptoProvider is installed exactly once per
+/// process. Idempotent and safe to call from every entry point that ends up
+/// building a ClientConfig / ServerConfig — required since rustls 0.23,
+/// where an ambient default is not selected when more than one provider is
+/// linked (for instance when a dependency such as `ureq` also uses rustls).
+pub fn ensure_default_crypto_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // Ignore the returned Result: another dependency may have installed
+        // its own provider first, which is also fine.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
 pub fn client_config() -> Arc<ClientConfig> {
+    ensure_default_crypto_provider();
     let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     Arc::new(ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
 }
 pub fn client_config_with_ca(pem: &[u8]) -> Result<Arc<ClientConfig>, TlsError> {
+    ensure_default_crypto_provider();
     let mut reader = BufReader::new(pem); let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() { return Err(TlsError::NoCertificates); }
     let mut roots = RootCertStore::empty(); for certificate in certificates { roots.add(certificate)?; }
@@ -49,6 +66,7 @@ pub fn connect_with_timeout(address: &str, server_name: &str, config: Arc<Client
 }
 
 pub fn server_config(cert_path: impl AsRef<Path>, key_path: impl AsRef<Path>) -> Result<Arc<ServerConfig>, TlsError> {
+    ensure_default_crypto_provider();
     let mut certificates = BufReader::new(std::fs::File::open(cert_path)?);
     let certificates = rustls_pemfile::certs(&mut certificates).collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() { return Err(TlsError::NoCertificates); }
