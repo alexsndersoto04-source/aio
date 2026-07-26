@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.2.0_arm.deb"
+OUT="zett_0.3.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,12 +13,18 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.2.0
+Version: 0.3.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: Zett package containing the TITAN language compiler and ecosystem
- Zett installs the TITAN Language Compiler, examples, documentation,
- and the complete TITAN source ecosystem.
+Description: TITAN language compiler with real HTTPS, crypto and Android bindings
+ Zett installs the TITAN Language Compiler, examples and documentation.
+ Includes a modern standard library with real (non-simulated) modules:
+ regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
+ compress (gzip/zstd), archive (tar/zip), yaml, xml, blocking HTTPS
+ client, DNS resolver, SMTP email, ChaCha20-Poly1305 & AES-GCM AEAD,
+ Argon2id/bcrypt password hashing, JWT signing/verification, and
+ direct access to Termux:API for Android hardware/OS integration
+ (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notify, TTS).
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

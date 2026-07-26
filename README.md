@@ -1,21 +1,42 @@
-# TITAN
+# TITAN / Zett
 
-TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM.
+TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM. On Termux, the compiler ships as the **`zett`** binary.
 
-> **Project status.** The supported core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end, and there is a real WebAssembly backend (`titan wasm`). On the last Termux ARM run all 21 workspace crates passed `cargo check`, and `cargo test --workspace` reported roughly **50+ passing unit tests** across lexer, parser, typechecker, VM, GC, LSP, package manager and stdlib. See [`docs/VALIDATION.md`](docs/VALIDATION.md) for the exact breakdown.
+> **Project status.** Version **0.3.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end. There is a real WebAssembly backend (`zett wasm`), and the standard library has grown to **18 optional modules** covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
 >
-> **Not yet functional (experimental scaffolding).** The `titan_mir` crate and the `titan native` / `titan mobile` CLI commands are placeholders: `lower_hir_to_mir` is a no-op, and the ELF/APK writers emit an incomplete header that is **not** a loadable Linux `.so`, executable or Android APK. Both commands print a warning at runtime. Please use `titan build` (portable bytecode) or `titan wasm` (WebAssembly) for real artifacts.
+> **Not yet functional (experimental scaffolding).** The `titan_mir` crate and the `zett native` / `zett mobile` CLI commands are placeholders: `lower_hir_to_mir` is a no-op, and the ELF/APK writers emit an incomplete header. Both commands print a warning at runtime. Use `zett build` (portable bytecode) or `zett wasm` (WebAssembly) for real artifacts.
 
-## Quick start
+## Install on Termux (one-liner)
+
+```bash
+echo 'deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo ./ ' \
+  > $PREFIX/etc/apt/sources.list.d/zett.list
+pkg update && pkg install zett
+zett --help
+```
+
+Optional: for the Android integrations (`std::termux::*`), also install
+the Termux:API app from F-Droid and:
+
+```bash
+pkg install termux-api
+```
+
+## Build from source
 
 Prerequisite: current stable Rust from <https://rustup.rs>.
 
 ```bash
 git clone https://github.com/alexsndersoto04-source/aio
 cd aio
-cargo test --workspace --all-targets
-cargo run -p titan_cli -- run examples/hello.titan
-cargo run -p titan_cli -- run examples/fibonacci.titan
+cargo build --release -p titan_cli
+target/release/titan run examples/hello.titan
+target/release/titan run examples/fibonacci.titan
+target/release/titan run examples/extras.titan     # Phase 1
+target/release/titan run examples/formats.titan    # Phase 2
+target/release/titan run examples/network.titan    # Phase 3 (needs internet)
+target/release/titan run examples/security.titan   # Phase 4
+target/release/titan run examples/android.titan    # Phase 5 (needs Termux:API)
 ```
 
 Install the CLI locally:
