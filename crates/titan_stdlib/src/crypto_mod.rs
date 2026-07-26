@@ -12,7 +12,7 @@
 //! nonce to the ciphertext so `.titan` code can persist a single blob and
 //! decrypt it later without keeping a separate nonce around.
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, Payload};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng as AeadOsRng, Payload};
 use aes_gcm::Aes256Gcm;
 use chacha20poly1305::ChaCha20Poly1305;
 use rand::RngCore;
@@ -75,10 +75,13 @@ pub fn chacha20_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8])
 }
 
 /// Encrypts `plaintext` and returns `nonce || ciphertext` (a single blob).
+///
+/// Uses the AEAD-crate's own `OsRng` (backed by `rand_core 0.6`) to generate
+/// the nonce so we don't collide with `rand 0.9` used elsewhere in the crate.
 pub fn chacha20_seal(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let key_bytes = take_key::<32>(key)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes).expect("32 bytes");
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut rand::rng());
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut AeadOsRng);
     let ciphertext = cipher.encrypt(&nonce, Payload { msg: plaintext, aad }).map_err(|_| CryptoError::Cipher)?;
     let mut out = Vec::with_capacity(nonce.len() + ciphertext.len());
     out.extend_from_slice(&nonce);
@@ -112,7 +115,7 @@ pub fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8]) 
 pub fn aes_gcm_seal(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let key_bytes = take_key::<32>(key)?;
     let cipher = Aes256Gcm::new_from_slice(&key_bytes).expect("32 bytes");
-    let nonce = Aes256Gcm::generate_nonce(&mut rand::rng());
+    let nonce = Aes256Gcm::generate_nonce(&mut AeadOsRng);
     let ciphertext = cipher.encrypt(&nonce, Payload { msg: plaintext, aad }).map_err(|_| CryptoError::Cipher)?;
     let mut out = Vec::with_capacity(nonce.len() + ciphertext.len());
     out.extend_from_slice(&nonce);
