@@ -129,3 +129,34 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  via hound: sine, square, sawtooth, white noise, fades; playback and
  recording through termux-media-player and termux-microphone-record).
 
+Package: zett
+Version: 0.8.0
+Architecture: arm
+Maintainer: Alex Sanders Soto
+Filename: ./zett_0.8.0_arm.deb
+Size: 6113136
+MD5sum: cedca2c9e8ed60362fd616f6b5f6c732
+SHA1: 96814ee6b1615a375766545914788bcef0ef8811
+SHA256: 59c7dbd9aff257527fe75218ada68b998a21fd482a79a1a6d28c9df65a8f6601
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL
+ Zett installs the TITAN Language Compiler, examples and documentation.
+ Includes a modern standard library with real (non-simulated) modules:
+ regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
+ compress (gzip/zstd), archive (tar/zip), yaml, xml, blocking HTTPS
+ client, DNS resolver, SMTP email, ChaCha20-Poly1305 & AES-GCM AEAD,
+ Argon2id/bcrypt password hashing, JWT signing/verification, direct
+ access to Termux:API for Android hardware/OS integration (battery,
+ GPS, sensors, camera, SMS, clipboard, vibrate, notify, TTS),
+ terminal/TUI helpers (colors, cursor, raw mode, keyboard events,
+ readline with history, animated progress bars and spinners), image
+ processing (PNG/JPEG/WebP/BMP/GIF: load, save, encode, resize, crop,
+ rotate, grayscale, blur, brighten), QR code generation
+ (ASCII/Unicode/SVG/PNG at every error-correction level), system
+ tools (procfs CPU/memory/processes/disks/networks, file-system watcher
+ via inotify, Unix signal handling), and audio (WAV I/O and synthesis
+ via hound: sine, square, sawtooth, white noise, fades; playback and
+ recording through termux-media-player and termux-microphone-record), and
+ NoSQL storage (embedded ACID key-value database via sled with named
+ sub-buckets and compare-and-swap, plus a blocking Redis client with
+ strings, lists, hashes, TTL and raw commands).
+
