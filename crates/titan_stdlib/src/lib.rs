@@ -55,6 +55,11 @@ pub mod mobile;
 #[cfg(feature = "dns_mod")]       pub mod dns_mod;
 #[cfg(feature = "email_mod")]     pub mod email_mod;
 
+// --- Phase 4: modern cryptography --------------------------------------
+#[cfg(feature = "crypto_mod")]    pub mod crypto_mod;
+#[cfg(feature = "password_mod")]  pub mod password_mod;
+#[cfg(feature = "jwt_mod")]       pub mod jwt_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

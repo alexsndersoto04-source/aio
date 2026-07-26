@@ -1,0 +1,70 @@
+// Demo Fase 4: cripto moderna.
+// Ejecutar con:  cargo run -p titan_cli -- run examples/security.titan
+//
+// Muestra:
+//  1. Cifrar y descifrar con ChaCha20-Poly1305 y AES-256-GCM.
+//  2. Hashear contrasenas correctamente con Argon2id (nunca en texto plano).
+//  3. Emitir y verificar un JSON Web Token firmado con HMAC-SHA256.
+
+fn main() {
+    // ------------- Cifrado autenticado ------------------
+    print("---- ChaCha20-Poly1305 ----")
+    let clave = std::crypto::generate_key_32()
+    let mensaje = std::encoding::utf8_encode("tarjeta 4111-1111-1111-1111")
+    let aad = std::encoding::utf8_encode("cliente=42")
+    let sobre = std::crypto::chacha20_seal(clave, mensaje, aad)
+    let sobre_size = std::bytes::length(sobre)
+    print("bytes cifrados:")
+    print(sobre_size)
+    let abierto = std::crypto::chacha20_open(clave, sobre, aad)
+    let texto = std::encoding::utf8_decode(abierto)
+    print("descifrado:")
+    print(texto)
+
+    print("---- AES-256-GCM ----")
+    let clave2 = std::crypto::generate_key_32()
+    let ct = std::crypto::aes_gcm_seal(clave2, mensaje, aad)
+    let pt = std::crypto::aes_gcm_open(clave2, ct, aad)
+    print("descifrado AES:")
+    print(std::encoding::utf8_decode(pt))
+
+    // ------------- Password hashing --------------------
+    print("---- Argon2id password ----")
+    let pass_plano = "clave-super-secreta-2026!"
+    let hash = std::password::hash_argon2(pass_plano)
+    print("hash Argon2id (guardable en DB):")
+    print(hash)
+    let ok = std::password::verify_argon2(hash, pass_plano)
+    print("verify con clave correcta:")
+    print(ok)
+    let mal = std::password::verify_argon2(hash, "clave-mala")
+    print("verify con clave incorrecta:")
+    print(mal)
+
+    // ------------- JWT (HS256) --------------------------
+    print("---- JWT HS256 ----")
+    let secreto = std::encoding::utf8_encode("mi-secreto-de-servidor-al-menos-32-bytes")
+
+    // Construir claims (map).
+    let claims = std::map::new()
+    let claims = std::map::insert(claims, "sub", "usuario-42")
+    let claims = std::map::insert(claims, "role", "admin")
+    // exp = ahora + 1 hora (necesita datetime).
+    let ahora = std::datetime::now()
+    let expira = std::datetime::add_seconds(ahora, 3600)
+    let claims = std::map::insert(claims, "exp", expira)
+
+    let token = std::jwt::sign_hs256(claims, secreto)
+    print("JWT emitido:")
+    print(token)
+
+    // Verificar (sin audience ni issuer -> pasar strings vacios).
+    let verificado = std::jwt::verify_hs256(token, secreto, "", "")
+    print("claims verificados:")
+    print(verificado)
+
+    // Inspeccionar el header sin firma.
+    let header = std::jwt::peek_header(token)
+    print("header:")
+    print(header)
+}

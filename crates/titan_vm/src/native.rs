@@ -474,6 +474,43 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             Value::Str(stdlib::email_mod::send_with_attachment(&host, port, &user, &pass, &from, &to, &subject, &html, &filename, &mime, &bytes).map_err(error)?)
         }
 
+        // ---------------- Phase 4: crypto ----------------
+        #[cfg(feature = "crypto_mod")] "std::crypto::generate_key_32" => Value::Bytes(stdlib::crypto_mod::generate_key_32()),
+        #[cfg(feature = "crypto_mod")] "std::crypto::generate_nonce"  => Value::Bytes(stdlib::crypto_mod::generate_nonce()),
+        #[cfg(feature = "crypto_mod")] "std::crypto::chacha20_encrypt" => { let key = bytes!(); let nonce = bytes!(); let pt = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::chacha20_encrypt(&key, &nonce, &pt, &aad).map_err(error)?) }
+        #[cfg(feature = "crypto_mod")] "std::crypto::chacha20_decrypt" => { let key = bytes!(); let nonce = bytes!(); let ct = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::chacha20_decrypt(&key, &nonce, &ct, &aad).map_err(error)?) }
+        #[cfg(feature = "crypto_mod")] "std::crypto::chacha20_seal"    => { let key = bytes!(); let pt = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::chacha20_seal(&key, &pt, &aad).map_err(error)?) }
+        #[cfg(feature = "crypto_mod")] "std::crypto::chacha20_open"    => { let key = bytes!(); let sealed = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::chacha20_open(&key, &sealed, &aad).map_err(error)?) }
+        #[cfg(feature = "crypto_mod")] "std::crypto::aes_gcm_encrypt"  => { let key = bytes!(); let nonce = bytes!(); let pt = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::aes_gcm_encrypt(&key, &nonce, &pt, &aad).map_err(error)?) }
+        #[cfg(feature = "crypto_mod")] "std::crypto::aes_gcm_decrypt"  => { let key = bytes!(); let nonce = bytes!(); let ct = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::aes_gcm_decrypt(&key, &nonce, &ct, &aad).map_err(error)?) }
+        #[cfg(feature = "crypto_mod")] "std::crypto::aes_gcm_seal"     => { let key = bytes!(); let pt = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::aes_gcm_seal(&key, &pt, &aad).map_err(error)?) }
+        #[cfg(feature = "crypto_mod")] "std::crypto::aes_gcm_open"     => { let key = bytes!(); let sealed = bytes!(); let aad = bytes!(); Value::Bytes(stdlib::crypto_mod::aes_gcm_open(&key, &sealed, &aad).map_err(error)?) }
+
+        // ---------------- Phase 4: password ----------------
+        #[cfg(feature = "password_mod")] "std::password::hash_argon2"   => Value::Str(stdlib::password_mod::hash_argon2(&string!()).map_err(error)?),
+        #[cfg(feature = "password_mod")] "std::password::verify_argon2" => { let hash = string!(); let pass = string!(); Value::Bool(stdlib::password_mod::verify_argon2(&hash, &pass).map_err(error)?) }
+        #[cfg(feature = "password_mod")] "std::password::hash_bcrypt"   => { let pass = string!(); let cost = u32::try_from(int!()).map_err(|_| "bcrypt cost out of range".to_string())?; Value::Str(stdlib::password_mod::hash_bcrypt(&pass, cost).map_err(error)?) }
+        #[cfg(feature = "password_mod")] "std::password::verify_bcrypt" => { let hash = string!(); let pass = string!(); Value::Bool(stdlib::password_mod::verify_bcrypt(&hash, &pass).map_err(error)?) }
+
+        // ---------------- Phase 4: JWT ----------------
+        #[cfg(feature = "jwt_mod")] "std::jwt::sign_hs256"   => { let claims = to_json(take!())?; let secret = bytes!(); Value::Str(stdlib::jwt_mod::sign_hs256(&claims, &secret).map_err(error)?) }
+        #[cfg(feature = "jwt_mod")] "std::jwt::verify_hs256" => {
+            let token = string!(); let secret = bytes!();
+            let aud = string!(); let iss = string!();
+            let aud_opt = if aud.is_empty() { None } else { Some(aud.as_str()) };
+            let iss_opt = if iss.is_empty() { None } else { Some(iss.as_str()) };
+            from_json(stdlib::jwt_mod::verify_hs256(&token, &secret, aud_opt, iss_opt).map_err(error)?)?
+        }
+        #[cfg(feature = "jwt_mod")] "std::jwt::sign_rs256"   => { let claims = to_json(take!())?; let pem = bytes!(); Value::Str(stdlib::jwt_mod::sign_rs256(&claims, &pem).map_err(error)?) }
+        #[cfg(feature = "jwt_mod")] "std::jwt::verify_rs256" => {
+            let token = string!(); let pem = bytes!();
+            let aud = string!(); let iss = string!();
+            let aud_opt = if aud.is_empty() { None } else { Some(aud.as_str()) };
+            let iss_opt = if iss.is_empty() { None } else { Some(iss.as_str()) };
+            from_json(stdlib::jwt_mod::verify_rs256(&token, &pem, aud_opt, iss_opt).map_err(error)?)?
+        }
+        #[cfg(feature = "jwt_mod")] "std::jwt::peek_header" => from_json(stdlib::jwt_mod::peek_header(&string!()).map_err(error)?)?,
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

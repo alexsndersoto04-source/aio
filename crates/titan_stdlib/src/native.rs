@@ -367,6 +367,31 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::email::send_html",            [String, Int, String, String, String, String, String, String, String], String, Network),
     native!("std::email::send_with_attachment", [String, Int, String, String, String, String, String, String, String, String, Bytes], String, Network),
 
+    // --- Phase 4: crypto (AEAD) ---
+    native!("std::crypto::generate_key_32",   [], Bytes),
+    native!("std::crypto::generate_nonce",    [], Bytes),
+    native!("std::crypto::chacha20_encrypt",  [Bytes, Bytes, Bytes, Bytes], Bytes),
+    native!("std::crypto::chacha20_decrypt",  [Bytes, Bytes, Bytes, Bytes], Bytes),
+    native!("std::crypto::chacha20_seal",     [Bytes, Bytes, Bytes], Bytes),
+    native!("std::crypto::chacha20_open",     [Bytes, Bytes, Bytes], Bytes),
+    native!("std::crypto::aes_gcm_encrypt",   [Bytes, Bytes, Bytes, Bytes], Bytes),
+    native!("std::crypto::aes_gcm_decrypt",   [Bytes, Bytes, Bytes, Bytes], Bytes),
+    native!("std::crypto::aes_gcm_seal",      [Bytes, Bytes, Bytes], Bytes),
+    native!("std::crypto::aes_gcm_open",      [Bytes, Bytes, Bytes], Bytes),
+
+    // --- Phase 4: password (Argon2id + bcrypt) ---
+    native!("std::password::hash_argon2",   [String], String),
+    native!("std::password::verify_argon2", [String, String], Bool),
+    native!("std::password::hash_bcrypt",   [String, Int], String),
+    native!("std::password::verify_bcrypt", [String, String], Bool),
+
+    // --- Phase 4: JWT (HS256 + RS256) ---
+    native!("std::jwt::sign_hs256",   [Any, Bytes], String),
+    native!("std::jwt::verify_hs256", [String, Bytes, String, String], Any),
+    native!("std::jwt::sign_rs256",   [Any, Bytes], String),
+    native!("std::jwt::verify_rs256", [String, Bytes, String, String], Any),
+    native!("std::jwt::peek_header",  [String], Any),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),
