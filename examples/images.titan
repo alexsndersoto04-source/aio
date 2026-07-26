@@ -18,12 +18,20 @@ fn main() {
     let unicode = std::qrcode::to_unicode(url, "M")
     print(unicode)
 
+    // Usar el directorio HOME del usuario (portable: funciona en Termux,
+    // Linux y macOS por igual).
+    let home = std::dirs::home()
+    let png_path = home + "/qr.png"
+    let mini_path = home + "/qr_mini.png"
+    let gris_path = home + "/qr_gris.png"
+
     print("---- Guardar QR como PNG ----")
-    std::qrcode::save_png(url, "H", 300, "/tmp/qr.png")
-    print("PNG guardado en /tmp/qr.png")
+    std::qrcode::save_png(url, "H", 300, png_path)
+    print("PNG guardado en:")
+    print(png_path)
 
     print("---- Cargar el PNG y ver metadata ----")
-    let img = std::image::load("/tmp/qr.png")
+    let img = std::image::load(png_path)
     let w = std::image::width(img)
     let h = std::image::height(img)
     let ct = std::image::color_type(img)
@@ -35,12 +43,15 @@ fn main() {
 
     print("---- Redimensionar a 100x100 y guardar como thumbnail ----")
     let mini = std::image::resize_exact(img, 100, 100, "lanczos3")
-    std::image::save(mini, "/tmp/qr_mini.png")
-    print("thumbnail guardado en /tmp/qr_mini.png")
+    std::image::save(mini, mini_path)
+    print("thumbnail guardado en:")
+    print(mini_path)
 
     print("---- Convertir a escala de grises y guardar ----")
     let gris = std::image::grayscale(img)
-    std::image::save(gris, "/tmp/qr_gris.png")
+    std::image::save(gris, gris_path)
+    print("grayscale guardado en:")
+    print(gris_path)
 
     // Liberar handles.
     std::image::close(img)
@@ -48,3 +59,4 @@ fn main() {
     std::image::close(gris)
     print("---- Listo ----")
 }
+
