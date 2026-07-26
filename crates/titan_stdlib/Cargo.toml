@@ -189,11 +189,13 @@ plotters          = { version = "0.3",  optional = true, default-features = fals
 
 # Phase 12 — HuggingFace tokenizers.
 # DEFAULTS DISABLED to keep Termux happy:
-#   * `progressbar` (pulls indicatif — we already have it in Phase 6 but
-#     tokenizers imports it as a dep, easy to drop)
-#   * `onig` (C library — Oniguruma regex — replaced by pure-Rust `fancy-regex`)
-#   * `esaxx_fast` (C++ suffix-array — the pure-Rust `esaxx-rs` fallback
-#     already ships as an unconditional dep and works fine for Unigram/BPE)
-# `fancy-regex` is opt-in and delivers all the regex features BPE and
-# WordPiece tokenizers actually need.
-tokenizers        = { version = "0.20", optional = true, default-features = false, features = ["fancy-regex"] }
+#   * `progressbar` (pulls indicatif — we already have it in Phase 6)
+#   * `onig`        (C library — Oniguruma regex — replaced by pure-Rust
+#                    `fancy-regex` which properly overrides SysRegex from
+#                    tokenizers 0.22 onwards)
+#   * `esaxx_fast`  (C++ suffix-array — the pure-Rust `esaxx-rs` fallback
+#                    that ships as an unconditional dep works fine for
+#                    Unigram / BPE / WordPiece)
+# tokenizers >= 0.22 gates SysRegex on `fancy-regex XOR onig` and emits a
+# compile_error!() if you enable neither, so we can trust the mutex.
+tokenizers        = { version = "0.22", optional = true, default-features = false, features = ["fancy-regex"] }

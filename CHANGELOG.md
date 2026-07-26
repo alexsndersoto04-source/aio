@@ -3,15 +3,16 @@
 ## 0.11.0 — Phase 12 (part 1): HuggingFace tokenizers
 
 ### Added
-- **`std::tokenize::*`** — real HuggingFace `tokenizers` crate 0.20
+- **`std::tokenize::*`** — real HuggingFace `tokenizers` crate 0.22
   built in a **pure-Rust configuration**. Defaults are deliberately
   turned off (`default-features = false`) to avoid three C/C++ deps
   that would break Termux builds:
     * `esaxx_fast`  → skipped (C++ suffix-array; pure-Rust fallback works)
     * `onig`        → skipped (C Oniguruma regex; replaced by `fancy-regex`)
     * `progressbar` → skipped (Phase 6 already ships `indicatif`)
-  Only `fancy-regex` is enabled, which covers everything BPE, WordPiece
-  and Unigram tokenizers need.
+  Only `fancy-regex` is enabled. **v0.22 is the first release that
+  properly gates `SysRegex` on `fancy-regex XOR onig`** — v0.20/0.21
+  hardcoded `mod onig;` and refused to compile without the C library.
 - API (opaque `i64` handles from a process-wide registry, so multiple
   tokenizers can coexist):
     * `load(path)` — open a HuggingFace `tokenizer.json` from disk.
