@@ -2,7 +2,12 @@ Package: zett
 Version: 0.2.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Filename: zett_0.2.0_arm.deb
-Size: 4251836
-SHA256: 1936a326ad228d8ecec221e832ca31243f98edbbf57d0084b16571498464149a
+Filename: ./zett_0.2.0_arm.deb
+Size: 4979820
+MD5sum: 161286a86aa7fafaaf4b168e135d9c72
+SHA1: 80af88f341e9fbaa19b2a5dff703a77d94fb6b81
+SHA256: cbdbdc9705c09cc75ebc51ca1ba0e6fcd24252098f0e8cd6e66c9741ebe6d817
 Description: Zett package containing the TITAN language compiler and ecosystem
+ Zett installs the TITAN Language Compiler, examples, documentation,
+ and the complete TITAN source ecosystem.
+
