@@ -584,6 +584,43 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::redis::hgetall",  [Int, String], Array, Network),
     native!("std::redis::raw",      [Int, String], String, Network),
 
+    // --- Phase 11: HTTP server (tiny_http) ---
+    // Binding a port and accepting connections needs Network.
+    native!("std::server::start",             [String], Int, Network),
+    native!("std::server::local_addr",        [Int], String),
+    native!("std::server::accept",            [Int, Int], Int, Network),
+    native!("std::server::stop",              [Int], Nil),
+    native!("std::server::method",            [Int], String),
+    native!("std::server::url",               [Int], String),
+    native!("std::server::path",              [Int], String),
+    native!("std::server::query",             [Int], String),
+    native!("std::server::remote_addr",       [Int], String),
+    native!("std::server::header",            [Int, String], Any),
+    native!("std::server::headers",           [Int], Map),
+    native!("std::server::body",              [Int], Bytes),
+    native!("std::server::body_text",         [Int], String),
+    native!("std::server::respond",           [Int, Int, String], Nil, Network),
+    native!("std::server::respond_html",      [Int, Int, String], Nil, Network),
+    native!("std::server::respond_json",      [Int, Int, String], Nil, Network),
+    native!("std::server::respond_bytes",     [Int, Int, String, Bytes], Nil, Network),
+    // respond_full: (req, status, content_type, headers-map, body-bytes)
+    native!("std::server::respond_full",      [Int, Int, String, Map, Bytes], Nil, Network),
+    // WebSocket upgrade + I/O.
+    native!("std::server::upgrade_websocket", [Int, Int], Int, Network),
+    // ws_recv returns [kind, text, bytes] as an array of 3 elements.
+    native!("std::server::ws_recv",           [Int], Array, Network),
+    native!("std::server::ws_send_text",      [Int, String], Nil, Network),
+    native!("std::server::ws_send_binary",    [Int, Bytes], Nil, Network),
+    native!("std::server::ws_close",          [Int, Int, String], Nil, Network),
+
+    // --- Phase 11: URL router (matchit, same one axum uses) ---
+    native!("std::router::new",       [], Int),
+    native!("std::router::drop",      [Int], Nil),
+    native!("std::router::insert",    [Int, String, String], Nil),
+    // at() returns { "pattern": String, "params": Map<String,String> } or Nil.
+    native!("std::router::at",        [Int, String], Any),
+    native!("std::router::matches",   [Int, String], Bool),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

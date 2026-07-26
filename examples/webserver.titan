@@ -1,0 +1,87 @@
+// Demo Fase 11: servidor web real (tiny_http + matchit).
+// Ejecutar en Termux con:
+//     zett run examples/webserver.titan
+//
+// Bindea el puerto 8080 y sirve varias rutas con path-params estilo
+// axum. Desde otra shell podes probar con curl:
+//
+//   curl http://127.0.0.1:8080/
+//   curl http://127.0.0.1:8080/hello/juan
+//   curl http://127.0.0.1:8080/api/users/42
+//   curl -X POST -d "hola" http://127.0.0.1:8080/echo
+//   curl http://127.0.0.1:8080/files/a/b/c.txt
+//
+// El servidor procesa hasta 20 requests y se cierra solo. Si queres
+// que corra siempre, cambia el `for i in 0..20` por `while true`.
+
+fn main() {
+    // ---- 1) Crear router y registrar rutas ----
+    let r = std::router::new()
+    std::router::insert(r, "/",                     "home")
+    std::router::insert(r, "/hello/{name}",         "hello")
+    std::router::insert(r, "/api/users/{id}",       "get_user")
+    std::router::insert(r, "/echo",                 "echo")
+    std::router::insert(r, "/files/{*rest}",        "files")
+
+    // ---- 2) Arrancar el servidor ----
+    let s = std::server::start("127.0.0.1:8080")
+    print("---- Servidor Titan escuchando en:")
+    print(std::server::local_addr(s))
+    print("Prueba en otra shell (Termux):")
+    print("  curl http://127.0.0.1:8080/hello/juan")
+    print("  curl http://127.0.0.1:8080/api/users/42")
+    print("  curl -X POST -d 'hola' http://127.0.0.1:8080/echo")
+    print("  curl http://127.0.0.1:8080/files/a/b/c.txt")
+    print("---- Aceptando hasta 20 conexiones (timeout 60s cada una) ----")
+
+    // ---- 3) Loop de aceptacion ----
+    for i in 0..20 {
+        let req = std::server::accept(s, 60000)
+        if req < 0 {
+            print("timeout, saliendo")
+        } else {
+            let m = std::server::method(req)
+            let p = std::server::path(req)
+            print("---- request:")
+            print(m)
+            print(p)
+
+            let hit = std::router::at(r, p)
+            if hit == nil {
+                std::server::respond(req, 404, "Not Found")
+            } else {
+                let tag = hit.pattern
+                let params = hit.params
+
+                if tag == "home" {
+                    let html = "<h1>Titan Web Server</h1><p>Fase 11 corriendo.</p>"
+                    std::server::respond_html(req, 200, html)
+                }
+                if tag == "hello" {
+                    let name = params.name
+                    let msg = "hola " + name + " desde Titan!"
+                    std::server::respond(req, 200, msg)
+                }
+                if tag == "get_user" {
+                    let id = params.id
+                    let json = "{\"id\":\"" + id + "\",\"name\":\"usuario-" + id + "\",\"lang\":\"titan\"}"
+                    std::server::respond_json(req, 200, json)
+                }
+                if tag == "echo" {
+                    let body = std::server::body_text(req)
+                    std::server::respond(req, 200, body)
+                }
+                if tag == "files" {
+                    let rest = params.rest
+                    let msg = "pediste el archivo: " + rest
+                    std::server::respond(req, 200, msg)
+                }
+            }
+        }
+    }
+
+    // ---- 4) Cerrar todo ----
+    std::server::stop(s)
+    std::router::drop(r)
+    print("---- Servidor detenido. Listo ----")
+}

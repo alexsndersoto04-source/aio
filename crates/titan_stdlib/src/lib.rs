@@ -84,6 +84,10 @@ pub mod mobile;
 #[cfg(feature = "kv_mod")]        pub mod kv_mod;
 #[cfg(feature = "redis_mod")]     pub mod redis_mod;
 
+// --- Phase 11: HTTP server (tiny_http) + URL router (matchit) ----------
+#[cfg(feature = "server_mod")]    pub mod server_mod;
+#[cfg(feature = "router_mod")]    pub mod router_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

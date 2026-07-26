@@ -29,6 +29,8 @@ extras = [
     "audio_mod",
     # Phase 10 — NoSQL key-value + Redis
     "kv_mod", "redis_mod",
+    # Phase 11 — HTTP server + URL router (axum-style)
+    "server_mod", "router_mod",
 ]
 
 # Phase 1
@@ -79,6 +81,10 @@ audio_mod    = ["dep:hound"]
 # Phase 10 — Embedded key-value store and Redis client
 kv_mod       = ["dep:sled"]
 redis_mod    = ["dep:redis"]
+
+# Phase 11 — HTTP server (tiny_http) + URL router (matchit, same as axum)
+server_mod   = ["dep:tiny_http"]
+router_mod   = ["dep:matchit"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -155,3 +161,11 @@ hound             = { version = "3.5",  optional = true }
 # 99% of use cases (Upstash / Redis Cloud terminate TLS at the edge).
 sled              = { version = "0.34", optional = true }
 redis             = { version = "0.27", optional = true, default-features = false }
+
+# Phase 11 — Web server + router.
+# `tiny_http` is a pure-Rust, blocking HTTP/1.1 server. Default features
+# only (NO ssl/openssl/rustls) — Termux gets a plain listener; put a
+# real reverse-proxy in front for TLS.
+# `matchit` is the zero-copy radix-tree router used by axum internally.
+tiny_http         = { version = "0.12", optional = true, default-features = false }
+matchit           = { version = "0.8",  optional = true }

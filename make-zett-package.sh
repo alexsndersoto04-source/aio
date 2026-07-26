@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.8.0_arm.deb"
+OUT="zett_0.9.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.8.0
+Version: 0.9.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -36,7 +36,10 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  recording through termux-media-player and termux-microphone-record), and
  NoSQL storage (embedded ACID key-value database via sled with named
  sub-buckets and compare-and-swap, plus a blocking Redis client with
- strings, lists, hashes, TTL and raw commands).
+ strings, lists, hashes, TTL and raw commands), and a pure-Rust HTTP/1.1
+ web server (tiny_http) with a radix-tree URL router (matchit, the same
+ router axum uses under the hood) supporting named and catch-all path
+ parameters, JSON/HTML/bytes responses and RFC 6455 WebSocket upgrades.
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

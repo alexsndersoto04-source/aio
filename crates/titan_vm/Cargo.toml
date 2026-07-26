@@ -20,6 +20,7 @@ extras = [
     "procfs_mod", "fswatch_mod", "signals_mod",
     "audio_mod",
     "kv_mod", "redis_mod",
+    "server_mod", "router_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
@@ -50,6 +51,8 @@ signals_mod   = ["titan_stdlib/signals_mod"]
 audio_mod     = ["titan_stdlib/audio_mod"]
 kv_mod        = ["titan_stdlib/kv_mod"]
 redis_mod     = ["titan_stdlib/redis_mod"]
+server_mod    = ["titan_stdlib/server_mod"]
+router_mod    = ["titan_stdlib/router_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

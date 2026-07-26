@@ -1,5 +1,47 @@
 # Zett / TITAN — Changelog
 
+## 0.9.0 — Phase 11: Web server (tiny_http + matchit, axum-style)
+
+### Added
+- **`std::server::*`** — real pure-Rust HTTP/1.1 server via `tiny_http`
+  0.12. No async runtime, no OpenSSL, no C shims. Blocking event-loop
+  model that fits Titan's synchronous VM perfectly.
+  - Lifecycle: `start(addr)`, `local_addr(server)`, `stop(server)`.
+  - Accept: `accept(server, timeout_ms) → request | -1`.
+  - Introspection: `method`, `url`, `path`, `query`, `remote_addr`,
+    `header(name)`, `headers()` (whole map), `body()` (raw bytes),
+    `body_text()` (UTF-8).
+  - Responses: `respond` (text/plain), `respond_html`, `respond_json`,
+    `respond_bytes(content_type, bytes)`, `respond_full(status,
+    content_type, headers-map, body-bytes)`.
+  - **WebSocket upgrade (RFC 6455):**
+    `upgrade_websocket(request, max_message) → ws_handle`,
+    `ws_recv(ws) → [kind, text, bytes]` (kind is one of `"text"`,
+    `"binary"`, `"ping"`, `"pong"`, `"close"`; pings are auto-ponged),
+    `ws_send_text`, `ws_send_binary`, `ws_close(ws, code, reason)`.
+- **`std::router::*`** — high-performance radix-tree URL router via
+  `matchit` 0.8 (the same crate axum uses internally).
+  - `new()`, `drop(router)`.
+  - `insert(router, pattern, tag)` — pattern syntax:
+    * `/users` — static
+    * `/users/{id}` — named parameter
+    * `/files/{*rest}` — catch-all (must be last segment)
+  - `at(router, path) → { pattern: tag, params: {name: value, ...} }`
+    or `nil` when nothing matches.
+  - `matches(router, path) → bool` for quick feature-flag style checks.
+- **`examples/webserver.titan`** — end-to-end demo: binds a port,
+  installs 4 routes with matchit, decodes path params for
+  `GET /users/{id}` and `GET /files/{*rest}`, and returns JSON,
+  HTML and plain text responses.
+
+### Notes
+- No TLS in the server itself (keeps the Termux build lean and avoids
+  the `aws-lc-sys` C-dep trap). Put nginx / Caddy / stunnel in front
+  for public HTTPS, or use the existing `std::http` client (which does
+  use rustls) for outbound HTTPS.
+- `std::ws::*` (RFC 6455 codec primitives) from Phase 3 stays available
+  and is what `std::server::ws_*` builds upon.
+
 ## 0.8.0 — Phase 10: NoSQL (embedded KV + Redis)
 
 ### Added

@@ -983,6 +983,123 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             Value::Str(stdlib::redis_mod::raw(h, &cmd).map_err(error)?)
         }
 
+        // ---------------- Phase 11: HTTP server (tiny_http) ----------------
+        #[cfg(feature = "server_mod")] "std::server::start" =>
+            Value::Int(stdlib::server_mod::start(&string!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::local_addr" =>
+            Value::Str(stdlib::server_mod::local_addr(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::accept" => {
+            let h = int!(); let to = u64::try_from(int!()).map_err(|_| "timeout must be nonnegative")?;
+            Value::Int(stdlib::server_mod::accept(h, to).map_err(error)?)
+        }
+        #[cfg(feature = "server_mod")] "std::server::stop" => {
+            stdlib::server_mod::stop(int!()); Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::method" =>
+            Value::Str(stdlib::server_mod::method(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::url" =>
+            Value::Str(stdlib::server_mod::url(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::path" =>
+            Value::Str(stdlib::server_mod::path(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::query" =>
+            Value::Str(stdlib::server_mod::query(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::remote_addr" =>
+            Value::Str(stdlib::server_mod::remote_addr(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::header" => {
+            let h = int!(); let name = string!();
+            match stdlib::server_mod::header(h, &name).map_err(error)? {
+                Some(v) => Value::Str(v),
+                None    => Value::Nil,
+            }
+        }
+        #[cfg(feature = "server_mod")] "std::server::headers" => {
+            let h = int!();
+            let hs = stdlib::server_mod::headers(h).map_err(error)?;
+            Value::Map(hs.into_iter().map(|(k, v)| (k, Value::Str(v))).collect())
+        }
+        #[cfg(feature = "server_mod")] "std::server::body" =>
+            Value::Bytes(stdlib::server_mod::body(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::body_text" =>
+            Value::Str(stdlib::server_mod::body_text(int!()).map_err(error)?),
+        #[cfg(feature = "server_mod")] "std::server::respond" => {
+            let h = int!(); let status = u16::try_from(int!()).map_err(|_| "status out of range")?;
+            let body = string!();
+            stdlib::server_mod::respond(h, status, &body).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::respond_html" => {
+            let h = int!(); let status = u16::try_from(int!()).map_err(|_| "status out of range")?;
+            let body = string!();
+            stdlib::server_mod::respond_html(h, status, &body).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::respond_json" => {
+            let h = int!(); let status = u16::try_from(int!()).map_err(|_| "status out of range")?;
+            let body = string!();
+            stdlib::server_mod::respond_json(h, status, &body).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::respond_bytes" => {
+            let h = int!(); let status = u16::try_from(int!()).map_err(|_| "status out of range")?;
+            let ctype = string!(); let data = bytes!();
+            stdlib::server_mod::respond_bytes(h, status, &ctype, data).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::respond_full" => {
+            let h = int!(); let status = u16::try_from(int!()).map_err(|_| "status out of range")?;
+            let ctype = string!();
+            let headers_map = expect_map(take!())?;
+            let mut headers: Vec<(String, String)> = Vec::with_capacity(headers_map.len());
+            for (k, v) in headers_map { headers.push((k, expect_string(v)?)); }
+            let data = bytes!();
+            stdlib::server_mod::respond_full(h, status, &ctype, &headers, data).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::upgrade_websocket" => {
+            let h = int!(); let max = nonnegative(int!())?;
+            Value::Int(stdlib::server_mod::upgrade_websocket(h, max).map_err(error)?)
+        }
+        #[cfg(feature = "server_mod")] "std::server::ws_recv" => {
+            let (kind, text, bytes) = stdlib::server_mod::ws_recv(int!()).map_err(error)?;
+            Value::Array(vec![Value::Str(kind), Value::Str(text), Value::Bytes(bytes)])
+        }
+        #[cfg(feature = "server_mod")] "std::server::ws_send_text" => {
+            let h = int!(); let text = string!();
+            stdlib::server_mod::ws_send_text(h, &text).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::ws_send_binary" => {
+            let h = int!(); let data = bytes!();
+            stdlib::server_mod::ws_send_binary(h, &data).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "server_mod")] "std::server::ws_close" => {
+            let h = int!();
+            let code_raw = int!();
+            let reason = string!();
+            let code = if code_raw <= 0 { None } else {
+                Some(u16::try_from(code_raw).map_err(|_| "close code out of range")?)
+            };
+            stdlib::server_mod::ws_close(h, code, &reason).map_err(error)?; Value::Nil
+        }
+
+        // ---------------- Phase 11: URL router (matchit) ----------------
+        #[cfg(feature = "router_mod")] "std::router::new"  => Value::Int(stdlib::router_mod::new()),
+        #[cfg(feature = "router_mod")] "std::router::drop" => { stdlib::router_mod::drop_router(int!()); Value::Nil }
+        #[cfg(feature = "router_mod")] "std::router::insert" => {
+            let h = int!(); let pat = string!(); let val = string!();
+            stdlib::router_mod::insert(h, &pat, &val).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "router_mod")] "std::router::at" => {
+            let h = int!(); let p = string!();
+            match stdlib::router_mod::at(h, &p).map_err(error)? {
+                Some((pattern, params)) => {
+                    let mut m = BTreeMap::new();
+                    m.insert("pattern".into(), Value::Str(pattern));
+                    m.insert("params".into(), Value::Map(params.into_iter().map(|(k, v)| (k, Value::Str(v))).collect()));
+                    Value::Map(m)
+                }
+                None => Value::Nil,
+            }
+        }
+        #[cfg(feature = "router_mod")] "std::router::matches" => {
+            let h = int!(); let p = string!();
+            Value::Bool(stdlib::router_mod::matches(h, &p).map_err(error)?)
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),
