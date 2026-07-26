@@ -91,6 +91,9 @@ pub mod mobile;
 // --- Phase 14: SVG charts (plotters, no ttf/font-kit for Termux) -------
 #[cfg(feature = "plot_mod")]      pub mod plot_mod;
 
+// --- Phase 12: Local AI — HuggingFace tokenizers (pure-Rust build) -----
+#[cfg(feature = "tokenize_mod")]  pub mod tokenize_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

@@ -1149,6 +1149,54 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             Value::Nil
         }
 
+        // ---------------- Phase 12: HuggingFace tokenizers ----------------
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::load" =>
+            Value::Int(stdlib::tokenize_mod::load(&string!()).map_err(error)?),
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::from_json" =>
+            Value::Int(stdlib::tokenize_mod::from_json(&string!()).map_err(error)?),
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::close" => {
+            stdlib::tokenize_mod::close(int!()); Value::Nil
+        }
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::vocab_size" =>
+            Value::Int(stdlib::tokenize_mod::vocab_size(int!()).map_err(error)? as i64),
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::encode" => {
+            let h = int!(); let text = string!(); let special = boolean!();
+            let enc = stdlib::tokenize_mod::encode(h, &text, special).map_err(error)?;
+            Value::Map(encoding_to_map(enc))
+        }
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::encode_batch" => {
+            let h = int!();
+            let texts = array!().into_iter().map(expect_string).collect::<Result<Vec<_>, _>>()?;
+            let special = boolean!();
+            let batch = stdlib::tokenize_mod::encode_batch(h, &texts, special).map_err(error)?;
+            Value::Array(batch.into_iter().map(|e| Value::Map(encoding_to_map(e))).collect())
+        }
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::decode" => {
+            let h = int!();
+            let ids: Vec<u32> = array!().into_iter().map(|v| {
+                let n = expect_int(v)?;
+                u32::try_from(n).map_err(|_| "token id out of u32 range".to_string())
+            }).collect::<Result<Vec<_>, String>>()?;
+            let skip = boolean!();
+            Value::Str(stdlib::tokenize_mod::decode(h, &ids, skip).map_err(error)?)
+        }
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::token_to_id" => {
+            let h = int!(); let tok = string!();
+            match stdlib::tokenize_mod::token_to_id(h, &tok).map_err(error)? {
+                Some(id) => Value::Int(id as i64),
+                None     => Value::Nil,
+            }
+        }
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::id_to_token" => {
+            let h = int!();
+            let id_raw = int!();
+            let id = u32::try_from(id_raw).map_err(|_| "token id out of u32 range".to_string())?;
+            match stdlib::tokenize_mod::id_to_token(h, id).map_err(error)? {
+                Some(s) => Value::Str(s),
+                None    => Value::Nil,
+            }
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),
@@ -1174,6 +1222,18 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
 }
 
 fn metrics_snapshot(snapshot:stdlib::metrics::Snapshot)->Value{let counters=snapshot.counters.into_iter().map(|(name,value)|(name,Value::Int(i64::try_from(value).unwrap_or(i64::MAX)))).collect();let gauges=snapshot.gauges.into_iter().map(|(name,value)|(name,Value::Float(value))).collect();let histograms=snapshot.histograms.into_iter().map(|(name,value)|(name,Value::Map(BTreeMap::from([("count".into(),Value::Int(i64::try_from(value.count).unwrap_or(i64::MAX))),("sum".into(),Value::Float(value.sum)),("min".into(),Value::Float(value.min)),("max".into(),Value::Float(value.max))])))).collect();Value::Map(BTreeMap::from([("counters".into(),Value::Map(counters)),("gauges".into(),Value::Map(gauges)),("histograms".into(),Value::Map(histograms))]))}
+
+#[cfg(feature = "tokenize_mod")]
+fn encoding_to_map(e: stdlib::tokenize_mod::Encoding) -> BTreeMap<String, Value> {
+    let to_int_array = |xs: Vec<u32>| Value::Array(xs.into_iter().map(|n| Value::Int(n as i64)).collect());
+    BTreeMap::from([
+        ("ids".into(),                 to_int_array(e.ids)),
+        ("tokens".into(),              Value::Array(e.tokens.into_iter().map(Value::Str).collect())),
+        ("type_ids".into(),            to_int_array(e.type_ids)),
+        ("attention_mask".into(),      to_int_array(e.attention_mask)),
+        ("special_tokens_mask".into(), to_int_array(e.special_tokens_mask)),
+    ])
+}
 fn websocket_upgrade(request: Value, protocol: &str) -> Result<Vec<u8>, String> {
     let Value::Map(request) = request else { return Err("WebSocket upgrade request must be map".into()) };
     let method = match request.get("method") { Some(Value::Str(value)) => value, _ => return Err("WebSocket upgrade requires method".into()) };

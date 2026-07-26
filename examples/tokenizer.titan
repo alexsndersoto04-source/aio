@@ -1,0 +1,73 @@
+// Demo Fase 12 (parte 1): tokenizers de HuggingFace corriendo en Termux.
+// Ejecutar con:
+//     zett run examples/tokenizer.titan
+//
+// Requiere un archivo tokenizer.json en $HOME/tokenizer.json.
+// El primer bloque te da las instrucciones exactas si no lo tenes.
+//
+// Modelo recomendado (pequenio, en espaniol/multilingue): 30 kB de JSON.
+
+fn main() {
+    let home = std::dirs::home()
+    let path = home + "/tokenizer.json"
+
+    print("---- Fase 12 parte 1: tokenizers HuggingFace ----")
+
+    if !std::fs::exists(path) {
+        print("No encontre tokenizer.json en {path}")
+        print("")
+        print("Baja uno con este comando y volve a correr el ejemplo:")
+        print("")
+        print("  curl -L -o ~/tokenizer.json \\")
+        print("    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json")
+        print("")
+        print("(es un archivo de ~700 KB, tokenizador WordPiece de MiniLM)")
+        return
+    }
+
+    print("Cargando tokenizer desde {path} ...")
+    let tok = std::tokenize::load(path)
+    let vocab = std::tokenize::vocab_size(tok)
+    print("Vocabulario total: {vocab} tokens")
+
+    // ---- Encode simple ----
+    print("---- Encode simple ----")
+    let texto = "Hola mundo desde Titan!"
+    let enc = std::tokenize::encode(tok, texto, true)
+    let ids = enc.ids
+    let tokens = enc.tokens
+    let masks = enc.attention_mask
+    print("Texto:    {texto}")
+    print("Tokens:   {tokens}")
+    print("IDs:      {ids}")
+    print("Mask:     {masks}")
+
+    // ---- Decode ----
+    print("---- Decode ----")
+    let decoded = std::tokenize::decode(tok, ids, true)
+    print("Decoded:  {decoded}")
+
+    // ---- Encode batch ----
+    print("---- Encode batch (3 frases) ----")
+    let batch = ["hello world", "titan is a language", "compiled in termux"]
+    let results = std::tokenize::encode_batch(tok, batch, true)
+    let n = std::collections::length(results)
+    print("Procesadas {n} frases en paralelo")
+
+    for i in 0..n {
+        let frase = batch[i]
+        let r = results[i]
+        let r_ids = r.ids
+        print("  '{frase}' -> {r_ids}")
+    }
+
+    // ---- Lookups ----
+    print("---- Lookups token <-> id ----")
+    let hello_id = std::tokenize::token_to_id(tok, "hello")
+    print("id de 'hello': {hello_id}")
+    let id_100 = std::tokenize::id_to_token(tok, 100)
+    print("token id=100:  {id_100}")
+
+    std::tokenize::close(tok)
+    print("---- Listo ----")
+}

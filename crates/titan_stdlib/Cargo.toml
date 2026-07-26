@@ -33,6 +33,8 @@ extras = [
     "server_mod", "router_mod",
     # Phase 14 — Charts (SVG line/bar/scatter/histogram)
     "plot_mod",
+    # Phase 12 — Local AI: HuggingFace tokenizers (pure-Rust build)
+    "tokenize_mod",
 ]
 
 # Phase 1
@@ -91,6 +93,9 @@ router_mod   = ["dep:matchit"]
 # Phase 14 — Charts (SVG only, ttf/font-kit DISABLED to avoid the
 # freetype-sys / fontconfig C-deps that would break Termux builds).
 plot_mod     = ["dep:plotters"]
+
+# Phase 12 — HuggingFace tokenizers, pure-Rust build (no onig, no C++).
+tokenize_mod = ["dep:tokenizers"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -181,3 +186,14 @@ matchit           = { version = "0.8",  optional = true }
 # fontconfig, all of which are C-deps that either fail to build on
 # Termux or blow up the disk. SVG text is rendered by the viewer.
 plotters          = { version = "0.3",  optional = true, default-features = false, features = ["svg_backend", "line_series", "point_series", "area_series", "histogram", "colormaps", "full_palette"] }
+
+# Phase 12 — HuggingFace tokenizers.
+# DEFAULTS DISABLED to keep Termux happy:
+#   * `progressbar` (pulls indicatif — we already have it in Phase 6 but
+#     tokenizers imports it as a dep, easy to drop)
+#   * `onig` (C library — Oniguruma regex — replaced by pure-Rust `fancy-regex`)
+#   * `esaxx_fast` (C++ suffix-array — the pure-Rust `esaxx-rs` fallback
+#     already ships as an unconditional dep and works fine for Unigram/BPE)
+# `fancy-regex` is opt-in and delivers all the regex features BPE and
+# WordPiece tokenizers actually need.
+tokenizers        = { version = "0.20", optional = true, default-features = false, features = ["fancy-regex"] }

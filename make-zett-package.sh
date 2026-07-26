@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.10.0_arm.deb"
+OUT="zett_0.11.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.10.0
+Version: 0.11.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -42,7 +42,10 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  parameters, JSON/HTML/bytes responses and RFC 6455 WebSocket upgrades,
  and pure-Rust SVG charts via plotters (line, multi-line, bar, scatter
  and histogram outputs to standalone .svg files that any viewer can
- render without shipping a font).
+ render without shipping a font), and HuggingFace text tokenizers
+ (BPE / WordPiece / Unigram) via the official `tokenizers` crate in a
+ pure-Rust configuration — reads any HF `tokenizer.json` and exposes
+ encode / encode_batch / decode / vocab_size / token_to_id lookups.
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

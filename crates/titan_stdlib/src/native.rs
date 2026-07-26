@@ -630,6 +630,23 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::plot::scatter",    [String, String, String, String, Array, Array], Nil, Filesystem),
     native!("std::plot::histogram",  [String, String, String, Array, Int], Nil, Filesystem),
 
+    // --- Phase 12: HuggingFace tokenizers (pure Rust, no C++) ---
+    // load() opens a HuggingFace tokenizer.json from disk; from_json()
+    // takes the raw JSON string. Both return an opaque i64 handle.
+    native!("std::tokenize::load",         [String], Int, Filesystem),
+    native!("std::tokenize::from_json",    [String], Int),
+    native!("std::tokenize::close",        [Int], Nil),
+    native!("std::tokenize::vocab_size",   [Int], Int),
+    // encode returns { ids, tokens, type_ids, attention_mask, special_tokens_mask } map.
+    native!("std::tokenize::encode",       [Int, String, Bool], Map),
+    // encode_batch takes an array of strings, returns an array of the same map shape.
+    native!("std::tokenize::encode_batch", [Int, Array, Bool], Array),
+    // decode: array of ids -> string.
+    native!("std::tokenize::decode",       [Int, Array, Bool], String),
+    // Lookups: string <-> id (returns Any because either can be Nil when absent).
+    native!("std::tokenize::token_to_id",  [Int, String], Any),
+    native!("std::tokenize::id_to_token",  [Int, Int], Any),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

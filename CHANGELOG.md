@@ -1,5 +1,36 @@
 # Zett / TITAN — Changelog
 
+## 0.11.0 — Phase 12 (part 1): HuggingFace tokenizers
+
+### Added
+- **`std::tokenize::*`** — real HuggingFace `tokenizers` crate 0.20
+  built in a **pure-Rust configuration**. Defaults are deliberately
+  turned off (`default-features = false`) to avoid three C/C++ deps
+  that would break Termux builds:
+    * `esaxx_fast`  → skipped (C++ suffix-array; pure-Rust fallback works)
+    * `onig`        → skipped (C Oniguruma regex; replaced by `fancy-regex`)
+    * `progressbar` → skipped (Phase 6 already ships `indicatif`)
+  Only `fancy-regex` is enabled, which covers everything BPE, WordPiece
+  and Unigram tokenizers need.
+- API (opaque `i64` handles from a process-wide registry, so multiple
+  tokenizers can coexist):
+    * `load(path)` — open a HuggingFace `tokenizer.json` from disk.
+    * `from_json(text)` — same but from an in-memory JSON string.
+    * `close(handle)` — release.
+    * `vocab_size(handle)` — total vocab (incl. added tokens).
+    * `encode(handle, text, add_special_tokens)` → map with
+      `ids`, `tokens`, `type_ids`, `attention_mask`, `special_tokens_mask`.
+    * `encode_batch(handle, texts, add_special_tokens)` — same but
+      returns an array of maps (uses rayon internally for parallelism).
+    * `decode(handle, ids, skip_special_tokens)` → string.
+    * `token_to_id(handle, token)` / `id_to_token(handle, id)` — lookups
+      that return `nil` when the token/id is absent.
+
+### Coming next in Phase 12
+- `std::onnx::*` via `tract-onnx` (pure-Rust ONNX inference). Kept as a
+  separate patch so `tract`'s 8-12 min compile doesn't hold this shipment
+  back if something needs adjusting.
+
 ## 0.10.0 — Phase 14: SVG charts (plotters)
 
 ### Added
