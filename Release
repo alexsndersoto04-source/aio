@@ -1,24 +1,24 @@
 Architectures: arm aarch64
 Codename: stable
 Components: main
-Date: Sun, 26 Jul 2026 03:05:30 +0000
+Date: Sun, 26 Jul 2026 03:55:35 +0000
 Description: Zett - TITAN language for Termux
 Label: Zett
 Origin: Zett
 Suite: stable
 MD5Sum:
- 82ba6d357ea312a17a09d5b155668442             1389 Packages
- 3cd1f5ffd76a0ddc40bc3d555be3457b              827 Packages.gz
- 520374d5ee8aa620f703ff9fab3fdc2e              184 Release
+ 8bf8ca2ca023e2ada80ca68297c3213c             2423 Packages
+ 2d9c445ef1dbfbf6c10ee4427ca23002             1049 Packages.gz
+ 11ac4f70c0e45d407d24fe13b9470d23              184 Release
 SHA1:
- 3fbe0da0f05eec3f31bb91f5bb05305ae7dd4ea4             1389 Packages
- ba3570d84e901481404c65a4926086fcc0791f6a              827 Packages.gz
- a4b49f2275f67fe82e95bd66538ceb3da222ee2d              184 Release
+ f7bc4e3d9acd9828343103355ebe1ccf389ca132             2423 Packages
+ d3dd394e624fc0b23363059efed92f9429c2ce55             1049 Packages.gz
+ b89ed07ee690baa99ebc496c4a6a62c7c01d9e8f              184 Release
 SHA256:
- 5e8e7b0bd764ca183dcd78063435a9b13ef5506855298c992909762afdcac24b             1389 Packages
- c670f9245482eafb6615c6462d4c0b08c69d4e38e46b9be43fc229be28aacdaf              827 Packages.gz
- f8a591e3c022b60d6d2efa8eb94c057c6f2e0da6e6b48565c68da07469be4112              184 Release
+ c525eb3b9fa073f9e633ef7c3a636e3620724d82dd3baae5ff38dd216998839e             2423 Packages
+ 0081f804b7dbec018101afc6760bda68c91f5e581c9c084556467e8cbbbe6242             1049 Packages.gz
+ 114efab350e1e68e3c179e5d24783a0bb53cff644d0cdf4fd7c388e9273f3d39              184 Release
 SHA512:
- 73fd3e2a695932db8ce56b187bf26896ea3a8774d056c49cab5410cac7e70b186b58cf7502a9de5ef27ad660ff010bdfd8efa47fae0e02c760705f537dc36926             1389 Packages
- e7fc2342659ce54d6028097604e5112b2c2801d5ffc1d7680a60935c28c378acdfff835eb7a6be6c77d758aaa5c3fec677aec83688c8b58fa002826b17912e7b              827 Packages.gz
- 148ec36c625261921870fc79726aa5343c3fae6cede0d22d3cda20b71392d89d848ddd9d7a9eaf3387b33de0ed3a92fb7f1c9c2dac6c714bf92ce55069166c97              184 Release
+ 9d0433c7ee570206913600b151b04aeb8508625bba6cbc6bd339f1037d92372c6b8709d61d7e6b330dc389efbae3bbcc17f0cb705b4d2fb0c3011ecdcb5c656e             2423 Packages
+ 707d46e3c741ec6d01d1fed60202886b8bade1a917952298f86e772478d2cd5aa1c370d40675fbbd8633e8a932962460bb09375d75d68e387a23bcba0937846d             1049 Packages.gz
+ e45c86cba77ccea52c6230f2fca54ef09c89175b5fe807200833e6ef65cf72ac213186b43089c885f6e9afed2efdc7762076aab123387e3f282fecf7554ed5ea              184 Release

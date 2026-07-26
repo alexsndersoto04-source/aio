@@ -30,3 +30,24 @@ Description: TITAN language compiler with real HTTPS, crypto and Android binding
  direct access to Termux:API for Android hardware/OS integration
  (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notify, TTS).
 
+Package: zett
+Version: 0.4.0
+Architecture: arm
+Maintainer: Alex Sanders Soto
+Filename: ./zett_0.4.0_arm.deb
+Size: 5153156
+MD5sum: 1c4bf06ff96bc80c3eeee4c9452881f2
+SHA1: e7da346478296e915dcdad3d440a595c553e28e0
+SHA256: a35030c604804e917c658ba43821091eeba879052cd0d80ada11ca05c8d027be
+Description: TITAN language compiler with HTTPS, crypto, Android and TUI
+ Zett installs the TITAN Language Compiler, examples and documentation.
+ Includes a modern standard library with real (non-simulated) modules:
+ regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
+ compress (gzip/zstd), archive (tar/zip), yaml, xml, blocking HTTPS
+ client, DNS resolver, SMTP email, ChaCha20-Poly1305 & AES-GCM AEAD,
+ Argon2id/bcrypt password hashing, JWT signing/verification, direct
+ access to Termux:API for Android hardware/OS integration (battery,
+ GPS, sensors, camera, SMS, clipboard, vibrate, notify, TTS), and
+ terminal/TUI helpers (colors, cursor, raw mode, keyboard events,
+ readline with history, animated progress bars and spinners).
+
