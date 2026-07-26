@@ -1,5 +1,34 @@
 # Zett / TITAN — Changelog
 
+## 0.6.0 — Phase 8: System & OS
+
+### Added
+- **`std::procfs::*`** — cross-platform system information via `sysinfo`.
+  Works on Termux/Android, Linux and macOS.
+  - Identity: `hostname`, `kernel`, `os_name`, `os_version`, `uptime`.
+  - CPU: `cpu_usage` (global %), `cpu_count`, `cpus()` (per-core map).
+  - Memory: `total_memory`, `used_memory`, `available_memory`,
+    `total_swap`, `used_swap`.
+  - `load_average()` returning `{one, five, fifteen}`.
+  - Processes: `process_count`, `top_processes(limit)` sorted by CPU %.
+  - `disks()` and `networks()` with usage counters.
+- **`std::fswatch::*`** — file-system watcher powered by `notify`
+  (inotify on Linux/Android).
+  - `watch_once(path, timeout_ms, recursive)` — one-shot blocking watch.
+  - Handle-based `open(path, recursive)` + `next_event(handle, timeout_ms)`
+    + `close(handle)` for long-lived daemons.
+- **`std::signals::*`** — Unix signals via `signal-hook`.
+  - `install("SIGINT")` (idempotent), `pending("SIGINT")` for counter
+    polling, `wait_any(timeout_ms)` returning the first fired signal.
+  - Names accepted with or without `SIG` prefix.
+- `examples/system.titan` demoing hostname, OS, CPU %, memory, load
+  average, top processes, disks and network counters.
+
+### Nothing removed
+All Phases 1-7 stay exactly as they were in 0.5.0.
+
+---
+
 ## 0.5.0 — Phase 7: Images & QR codes
 
 ### Added

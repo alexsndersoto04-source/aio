@@ -1,0 +1,41 @@
+// Demo Fase 8: sistema (procfs + fswatch + signals).
+// Ejecutar en Termux con:
+//     zett run examples/system.titan
+//
+// Muestra: info del OS, CPU, memoria, procesos top, discos y red.
+
+fn main() {
+    print("---- Sistema ----")
+    print(std::procfs::hostname())
+    print(std::procfs::os_name())
+    print(std::procfs::kernel())
+    print("uptime (segundos):")
+    print(std::procfs::uptime())
+
+    print("---- CPU ----")
+    print("cores:")
+    print(std::procfs::cpu_count())
+    print("uso global (%):")
+    print(std::procfs::cpu_usage())
+
+    print("---- Memoria (bytes) ----")
+    print("total:")
+    print(std::procfs::total_memory())
+    print("usada:")
+    print(std::procfs::used_memory())
+    print("disponible:")
+    print(std::procfs::available_memory())
+
+    print("---- Load average (1m / 5m / 15m) ----")
+    print(std::procfs::load_average())
+
+    print("---- Procesos totales ----")
+    print(std::procfs::process_count())
+
+    print("---- Top 5 procesos por CPU ----")
+    let top = std::procfs::top_processes(5)
+    print(top)
+
+    print("---- Discos ----")
+    print(std::procfs::disks())
+}

@@ -17,6 +17,7 @@ extras = [
     "termux_mod",
     "term_mod", "readline_mod", "progress_mod",
     "image_mod", "qrcode_mod",
+    "procfs_mod", "fswatch_mod", "signals_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
@@ -41,6 +42,9 @@ readline_mod  = ["titan_stdlib/readline_mod"]
 progress_mod  = ["titan_stdlib/progress_mod"]
 image_mod     = ["titan_stdlib/image_mod"]
 qrcode_mod    = ["titan_stdlib/qrcode_mod"]
+procfs_mod    = ["titan_stdlib/procfs_mod"]
+fswatch_mod   = ["titan_stdlib/fswatch_mod"]
+signals_mod   = ["titan_stdlib/signals_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

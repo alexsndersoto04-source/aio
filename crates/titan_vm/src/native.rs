@@ -730,6 +730,61 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             stdlib::qrcode_mod::save_png(&text, &level, side_pixels, &path).map_err(error)?; Value::Nil
         }
 
+        // ---------------- Phase 8: procfs (sysinfo) ----------------
+        #[cfg(feature = "procfs_mod")] "std::procfs::hostname"         => Value::Str(stdlib::procfs_mod::hostname()),
+        #[cfg(feature = "procfs_mod")] "std::procfs::kernel"           => Value::Str(stdlib::procfs_mod::kernel()),
+        #[cfg(feature = "procfs_mod")] "std::procfs::os_name"          => Value::Str(stdlib::procfs_mod::os_name()),
+        #[cfg(feature = "procfs_mod")] "std::procfs::os_version"       => Value::Str(stdlib::procfs_mod::os_version()),
+        #[cfg(feature = "procfs_mod")] "std::procfs::uptime"           => Value::Int(stdlib::procfs_mod::uptime() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::cpu_usage"        => Value::Float(stdlib::procfs_mod::cpu_usage() as f64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::cpu_count"        => Value::Int(stdlib::procfs_mod::cpu_count() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::cpus"             => from_json(stdlib::procfs_mod::cpus())?,
+        #[cfg(feature = "procfs_mod")] "std::procfs::total_memory"     => Value::Int(stdlib::procfs_mod::total_memory() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::used_memory"      => Value::Int(stdlib::procfs_mod::used_memory() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::available_memory" => Value::Int(stdlib::procfs_mod::available_memory() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::total_swap"       => Value::Int(stdlib::procfs_mod::total_swap() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::used_swap"        => Value::Int(stdlib::procfs_mod::used_swap() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::load_average"     => from_json(stdlib::procfs_mod::load_average())?,
+        #[cfg(feature = "procfs_mod")] "std::procfs::process_count"    => Value::Int(stdlib::procfs_mod::process_count() as i64),
+        #[cfg(feature = "procfs_mod")] "std::procfs::top_processes"    => {
+            let limit = usize::try_from(int!()).unwrap_or(10);
+            from_json(stdlib::procfs_mod::top_processes(limit))?
+        }
+        #[cfg(feature = "procfs_mod")] "std::procfs::disks"            => from_json(stdlib::procfs_mod::disks())?,
+        #[cfg(feature = "procfs_mod")] "std::procfs::networks"         => from_json(stdlib::procfs_mod::networks())?,
+
+        // ---------------- Phase 8: fswatch (notify) ----------------
+        #[cfg(feature = "fswatch_mod")] "std::fswatch::watch_once" => {
+            let path = string!();
+            let timeout = u64::try_from(int!()).unwrap_or(1000);
+            let recursive = expect_bool(take!())?;
+            Value::Str(stdlib::fswatch_mod::watch_once(&path, timeout, recursive).map_err(error)?)
+        }
+        #[cfg(feature = "fswatch_mod")] "std::fswatch::open" => {
+            let path = string!(); let recursive = expect_bool(take!())?;
+            Value::Int(stdlib::fswatch_mod::open(&path, recursive).map_err(error)?)
+        }
+        #[cfg(feature = "fswatch_mod")] "std::fswatch::next_event" => {
+            let handle = int!();
+            let timeout = u64::try_from(int!()).unwrap_or(1000);
+            Value::Str(stdlib::fswatch_mod::next_event(handle, timeout).map_err(error)?)
+        }
+        #[cfg(feature = "fswatch_mod")] "std::fswatch::close" => {
+            stdlib::fswatch_mod::close(int!()); Value::Nil
+        }
+
+        // ---------------- Phase 8: Unix signals ----------------
+        #[cfg(feature = "signals_mod")] "std::signals::install" => {
+            stdlib::signals_mod::install(&string!()).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "signals_mod")] "std::signals::pending" => {
+            Value::Int(stdlib::signals_mod::pending(&string!()).map_err(error)? as i64)
+        }
+        #[cfg(feature = "signals_mod")] "std::signals::wait_any" => {
+            let timeout = u64::try_from(int!()).unwrap_or(1000);
+            Value::Str(stdlib::signals_mod::wait_any(timeout).map_err(error)?)
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

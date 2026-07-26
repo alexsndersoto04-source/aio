@@ -481,6 +481,37 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::qrcode::to_png",     [String, String, Int], Bytes),
     native!("std::qrcode::save_png",   [String, String, Int, String], Nil, Filesystem),
 
+    // --- Phase 8: System info (sysinfo) ---
+    native!("std::procfs::hostname",        [], String),
+    native!("std::procfs::kernel",          [], String),
+    native!("std::procfs::os_name",         [], String),
+    native!("std::procfs::os_version",      [], String),
+    native!("std::procfs::uptime",          [], Int),
+    native!("std::procfs::cpu_usage",       [], Float),
+    native!("std::procfs::cpu_count",       [], Int),
+    native!("std::procfs::cpus",            [], Array),
+    native!("std::procfs::total_memory",    [], Int),
+    native!("std::procfs::used_memory",     [], Int),
+    native!("std::procfs::available_memory",[], Int),
+    native!("std::procfs::total_swap",      [], Int),
+    native!("std::procfs::used_swap",       [], Int),
+    native!("std::procfs::load_average",    [], Map),
+    native!("std::procfs::process_count",   [], Int),
+    native!("std::procfs::top_processes",   [Int], Array),
+    native!("std::procfs::disks",           [], Array),
+    native!("std::procfs::networks",        [], Map),
+
+    // --- Phase 8: File-system watcher (notify) ---
+    native!("std::fswatch::watch_once", [String, Int, Bool], String, Filesystem),
+    native!("std::fswatch::open",       [String, Bool], Int, Filesystem),
+    native!("std::fswatch::next_event", [Int, Int], String),
+    native!("std::fswatch::close",      [Int], Nil),
+
+    // --- Phase 8: Unix signals (signal-hook) ---
+    native!("std::signals::install",  [String], Nil, Process),
+    native!("std::signals::pending",  [String], Int),
+    native!("std::signals::wait_any", [Int], String),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),
