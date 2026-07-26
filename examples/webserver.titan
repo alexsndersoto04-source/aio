@@ -86,6 +86,10 @@ fn main() {
             print("timeout, saliendo")
         } else {
             handle(r, req)
+            // Terminar el else con un print (Nil) para que el
+            // typechecker vea el mismo tipo en ambas ramas del if
+            // (handle() por si sola devuelve Unit).
+            print("---")
         }
     }
 
