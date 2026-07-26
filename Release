@@ -1,24 +1,24 @@
 Architectures: arm
 Codename: zett
 Components: .
-Date: Sun, 26 Jul 2026 06:20:14 +0000
+Date: Sun, 26 Jul 2026 18:16:57 +0000
 Description: Zett APT repository for Termux ARM
 Label: zett
 Origin: zett
 Suite: stable
 MD5Sum:
- 38412268c7646897e01a07d2a21ccb31             8280 Packages
- 31e888cfcf6c4c4b86b63a8f8a3c841f             2060 Packages.gz
- 3b13a040b95989543ee786fb5ae636e2              173 Release
+ 414fcc69c51cfffe92503fdbc41eb00f            10247 Packages
+ ca6160470dd20c6c629eb8f04a60197c             2338 Packages.gz
+ 744db6694c5b6c20e1ce041fd1dc4e56              173 Release
 SHA1:
- 922651701269d78a20cc2f7d75009ba2c54973ea             8280 Packages
- 651c9765c43d27c1daca01375bea446ae62002e2             2060 Packages.gz
- ca1a2ed0c2f44da3e2878fee601c63ef4cf4ff1b              173 Release
+ 4a65b907e579e75c1208dd1019306df15f0e2fc2            10247 Packages
+ 018f354dd1664094fcaa505c7ff44ef2a2c8455a             2338 Packages.gz
+ 4b27245620d9a0a75357ae6b6df9e12970b4cd80              173 Release
 SHA256:
- 3b1cee9b2ac855098d266b5e10c53e884880df92ec2d43e70c4a99c06ce5568d             8280 Packages
- 7871a7d4cd7b8ff2f384d53b47ac0b3cc60aef543147570a216e71a5489d5436             2060 Packages.gz
- ceb351292e688ae165ca951e5198434befef9168bf658f358c09a8418d3643b2              173 Release
+ dc32f8e62374d6cf803c474b804e80ae6232a30984c0c8916586f4371c4ed67b            10247 Packages
+ ac0ef1c33053a38126f8966fbde1a79f407246ff02ca9db93d7429eeb9531240             2338 Packages.gz
+ 3208e7991c67c649d06e5ed0de735762bbef5b2d51b4905f431f71aac0b59b73              173 Release
 SHA512:
- 84de597b28fbae0bf7b4b80d89f665b20fa0a917890b42810414a08eab83d0cf0f6580fd6e07b1b30bcd27212aa60b452f032dda408d3cf8c0c49175644bf607             8280 Packages
- 725d16805e0424cba29d1c73864f893086e969cfcaa12071936aa66d2e800372e3cbb5ed4d6795fa5e4746fd6a3e2b6fb3a9266df1f1297e1e82cc0fd7e3cee1             2060 Packages.gz
- fce42ddae78d0518b247d384cfeb80e05fa65a0ae364da7e7f549edb232a2865ff4df0b72a89b04563a68f77ac2842a6ac5203d79da7ebf4301316ac03fe63c7              173 Release
+ 93e22de1c5dc07f3f767a8d96f49fb28221e69ca58c21f92105647905033dd2da003733d407e1037140009ef54e1bfb3035963e2ad0c2cdbba0d544b94a835c2            10247 Packages
+ be4bba0c570b8548c6d519f1ffba3eb4467aa0bc5fc6ca0787d4cf935fd86b8a8ce560f9c0f8ecb9fd452014671114f42f1b5bcab01954ce6b0d1c964394fbe4             2338 Packages.gz
+ c60f5a2935267e02c12041894a012f9a2ef2703099c223884eb1b404459a527bf5e34b8cea0fa87b0aae0f71f74ad79d16a896f27f92d30d8dfdff806a22deaa              173 Release
