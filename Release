@@ -1,0 +1,24 @@
+Architectures: arm aarch64
+Codename: stable
+Components: main
+Date: Sun, 26 Jul 2026 03:05:30 +0000
+Description: Zett - TITAN language for Termux
+Label: Zett
+Origin: Zett
+Suite: stable
+MD5Sum:
+ 82ba6d357ea312a17a09d5b155668442             1389 Packages
+ 3cd1f5ffd76a0ddc40bc3d555be3457b              827 Packages.gz
+ 520374d5ee8aa620f703ff9fab3fdc2e              184 Release
+SHA1:
+ 3fbe0da0f05eec3f31bb91f5bb05305ae7dd4ea4             1389 Packages
+ ba3570d84e901481404c65a4926086fcc0791f6a              827 Packages.gz
+ a4b49f2275f67fe82e95bd66538ceb3da222ee2d              184 Release
+SHA256:
+ 5e8e7b0bd764ca183dcd78063435a9b13ef5506855298c992909762afdcac24b             1389 Packages
+ c670f9245482eafb6615c6462d4c0b08c69d4e38e46b9be43fc229be28aacdaf              827 Packages.gz
+ f8a591e3c022b60d6d2efa8eb94c057c6f2e0da6e6b48565c68da07469be4112              184 Release
+SHA512:
+ 73fd3e2a695932db8ce56b187bf26896ea3a8774d056c49cab5410cac7e70b186b58cf7502a9de5ef27ad660ff010bdfd8efa47fae0e02c760705f537dc36926             1389 Packages
+ e7fc2342659ce54d6028097604e5112b2c2801d5ffc1d7680a60935c28c378acdfff835eb7a6be6c77d758aaa5c3fec677aec83688c8b58fa002826b17912e7b              827 Packages.gz
+ 148ec36c625261921870fc79726aa5343c3fae6cede0d22d3cda20b71392d89d848ddd9d7a9eaf3387b33de0ed3a92fb7f1c9c2dac6c714bf92ce55069166c97              184 Release
