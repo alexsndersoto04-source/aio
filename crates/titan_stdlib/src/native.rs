@@ -199,12 +199,17 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::game::step", [], Float),
     native!("std::game::fps", [], Int),
     native!("std::game::check_collision", [Float, Float, Float, Float, Float, Float, Float, Float], Bool),
-    native!("std::audio::init", [], Bool),
-    native!("std::audio::load_wave", [Float, Int], Int),
-    native!("std::audio::sample_count", [Int], Int),
-    native!("std::audio::play", [Int, Bool], Bool),
-    native!("std::audio::set_volume", [Int, Float], Bool),
-    native!("std::audio::stop", [Int], Bool),
+    // NOTE: the legacy in-memory audio module (buffers, playback flags,
+    // volume) was retired in 0.7.0 and replaced by std::audio::* below,
+    // which is the real one (WAV I/O via `hound` + playback through
+    // termux-media-player). Names kept only as `sim_*` to avoid silently
+    // breaking pre-0.7.0 programs that might have used them for tests.
+    native!("std::audio::sim_init",         [], Bool),
+    native!("std::audio::sim_load_wave",    [Float, Int], Int),
+    native!("std::audio::sim_sample_count", [Int], Int),
+    native!("std::audio::sim_play",         [Int, Bool], Bool),
+    native!("std::audio::sim_set_volume",   [Int, Float], Bool),
+    native!("std::audio::sim_stop",         [Int], Bool),
     native!("std::gui::init", [], Bool),
     native!("std::gui::create_container", [String, Int, Int], Int),
     native!("std::gui::add_button", [Int, String, Int, Int, Int, Int], Int),

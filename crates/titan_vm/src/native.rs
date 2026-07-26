@@ -192,12 +192,15 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             let x2 = float!(); let y2 = float!(); let w2 = float!(); let h2 = float!();
             Value::Bool(titan_game_check_collision((x1, y1), (w1, h1), (x2, y2), (w2, h2)))
         }
-        "std::audio::init" => Value::Bool(titan_audio_init()),
-        "std::audio::load_wave" => { let freq_hz = float!(); let duration_ms = int!(); Value::Int(titan_audio_load_wave(freq_hz, duration_ms)) }
-        "std::audio::sample_count" => { let handle = int!(); Value::Int(titan_audio_sample_count(handle) as i64) }
-        "std::audio::play" => { let handle = int!(); let loop_audio = boolean!(); Value::Bool(titan_audio_play(handle, loop_audio)) }
-        "std::audio::set_volume" => { let handle = int!(); let volume = float!(); Value::Bool(titan_audio_set_volume(handle, volume)) }
-        "std::audio::stop" => { let handle = int!(); Value::Bool(titan_audio_stop(handle)) }
+        // Legacy in-memory audio module renamed to `sim_*` in 0.7.0 so
+        // the real `std::audio::*` (Phase 9: hound + termux-media) can
+        // own those names. See titan_stdlib/src/native.rs.
+        "std::audio::sim_init"         => Value::Bool(titan_audio_init()),
+        "std::audio::sim_load_wave"    => { let freq_hz = float!(); let duration_ms = int!(); Value::Int(titan_audio_load_wave(freq_hz, duration_ms)) }
+        "std::audio::sim_sample_count" => { let handle = int!(); Value::Int(titan_audio_sample_count(handle) as i64) }
+        "std::audio::sim_play"         => { let handle = int!(); let loop_audio = boolean!(); Value::Bool(titan_audio_play(handle, loop_audio)) }
+        "std::audio::sim_set_volume"   => { let handle = int!(); let volume = float!(); Value::Bool(titan_audio_set_volume(handle, volume)) }
+        "std::audio::sim_stop"         => { let handle = int!(); Value::Bool(titan_audio_stop(handle)) }
         // Phase 8: GUI Native Bindings
         "std::gui::init" => Value::Bool(titan_gui_init()),
         "std::gui::create_container" => { let title = string!(); let width = int!(); let height = int!(); Value::Int(titan_gui_create_container(&title, width, height)) }
@@ -1253,13 +1256,13 @@ mod tests {
         ], RuntimeCapabilities::all()).unwrap();
         assert_eq!(coll, Value::Bool(true));
 
-        assert_eq!(invoke("std::audio::init", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        let handle_val = invoke("std::audio::load_wave", vec![Value::Float(220.0), Value::Int(50)], RuntimeCapabilities::all()).unwrap();
+        assert_eq!(invoke("std::audio::sim_init", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
+        let handle_val = invoke("std::audio::sim_load_wave", vec![Value::Float(220.0), Value::Int(50)], RuntimeCapabilities::all()).unwrap();
         if let Value::Int(handle) = handle_val {
-            let _ = invoke("std::audio::sample_count", vec![Value::Int(handle)], RuntimeCapabilities::all()).unwrap();
-            let _ = invoke("std::audio::play", vec![Value::Int(handle), Value::Bool(true)], RuntimeCapabilities::all()).unwrap();
-            let _ = invoke("std::audio::set_volume", vec![Value::Int(handle), Value::Float(0.8)], RuntimeCapabilities::all()).unwrap();
-            let _ = invoke("std::audio::stop", vec![Value::Int(handle)], RuntimeCapabilities::all()).unwrap();
+            let _ = invoke("std::audio::sim_sample_count", vec![Value::Int(handle)], RuntimeCapabilities::all()).unwrap();
+            let _ = invoke("std::audio::sim_play", vec![Value::Int(handle), Value::Bool(true)], RuntimeCapabilities::all()).unwrap();
+            let _ = invoke("std::audio::sim_set_volume", vec![Value::Int(handle), Value::Float(0.8)], RuntimeCapabilities::all()).unwrap();
+            let _ = invoke("std::audio::sim_stop", vec![Value::Int(handle)], RuntimeCapabilities::all()).unwrap();
         }
     }
     #[test]
