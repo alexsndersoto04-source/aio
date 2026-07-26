@@ -82,18 +82,21 @@ fn parse_attr(name: &str) -> Result<Attribute, TermError> {
 
 /// Print `text` with a foreground colour name (returns to default afterwards).
 pub fn print_colored(color: &str, text: &str) -> Result<(), TermError> {
+    let color = parse_color(color)?;
     let mut out = io::stdout();
-    execute!(out, SetForegroundColor(parse_color(color)?), Print(text), ResetColor)?;
+    execute!(out, SetForegroundColor(color), Print(text), ResetColor)?;
     Ok(())
 }
 
 /// Print `text` with foreground + background colour names.
 pub fn print_styled(fg: &str, bg: &str, text: &str) -> Result<(), TermError> {
+    let fg = parse_color(fg)?;
+    let bg = parse_color(bg)?;
     let mut out = io::stdout();
     execute!(
         out,
-        SetForegroundColor(parse_color(fg)?),
-        SetBackgroundColor(parse_color(bg)?),
+        SetForegroundColor(fg),
+        SetBackgroundColor(bg),
         Print(text),
         ResetColor,
     )?;
@@ -102,8 +105,9 @@ pub fn print_styled(fg: &str, bg: &str, text: &str) -> Result<(), TermError> {
 
 /// Apply a text attribute (bold, italic, underline, …) around `text`.
 pub fn print_attr(attr: &str, text: &str) -> Result<(), TermError> {
+    let attr = parse_attr(attr)?;
     let mut out = io::stdout();
-    execute!(out, SetAttribute(parse_attr(attr)?), Print(text), SetAttribute(Attribute::Reset))?;
+    execute!(out, SetAttribute(attr), Print(text), SetAttribute(Attribute::Reset))?;
     Ok(())
 }
 
