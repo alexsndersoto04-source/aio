@@ -12,6 +12,23 @@
 //   curl http://127.0.0.1:8080/files/a/b/c.txt
 //
 // Procesa hasta 20 requests y se cierra solo.
+//
+// Nota tecnica: los patrones del router (`/users/{id}`) se arman con
+// std::text::concat porque el interpolador de strings de Titan
+// intercepta `{name}` como interpolacion.
+
+fn brace_open()  -> string { "{" }
+fn brace_close() -> string { "}" }
+
+fn pattern_hello() -> string {
+    "/hello/" + brace_open() + "name" + brace_close()
+}
+fn pattern_user() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close()
+}
+fn pattern_files() -> string {
+    "/files/" + brace_open() + "*rest" + brace_close()
+}
 
 fn handle(r: int, req: int) {
     let met  = std::server::method(req)
@@ -62,10 +79,10 @@ fn main() {
     // ---- 1) Router (matchit, el mismo que usa axum por dentro) ----
     let r = std::router::new()
     std::router::insert(r, "/",               "home")
-    std::router::insert(r, "/hello/{name}",   "hello")
-    std::router::insert(r, "/api/users/{id}", "get_user")
+    std::router::insert(r, pattern_hello(),   "hello")
+    std::router::insert(r, pattern_user(),    "get_user")
     std::router::insert(r, "/echo",           "echo")
-    std::router::insert(r, "/files/{*rest}",  "files")
+    std::router::insert(r, pattern_files(),   "files")
 
     // ---- 2) Arrancar el servidor ----
     let s = std::server::start("127.0.0.1:8080")
@@ -86,9 +103,6 @@ fn main() {
             print("timeout, saliendo")
         } else {
             handle(r, req)
-            // Terminar el else con un print (Nil) para que el
-            // typechecker vea el mismo tipo en ambas ramas del if
-            // (handle() por si sola devuelve Unit).
             print("---")
         }
     }
