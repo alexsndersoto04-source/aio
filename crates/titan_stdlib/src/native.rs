@@ -419,6 +419,38 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::termux::dialog",           [String, String], Any, Process),
     native!("std::termux::share",            [String], Nil, Process),
 
+    // --- Phase 6: Terminal (crossterm) ---
+    native!("std::term::print_colored",   [String, String], Nil),
+    native!("std::term::print_styled",    [String, String, String], Nil),
+    native!("std::term::print_attr",      [String, String], Nil),
+    native!("std::term::clear_screen",    [], Nil),
+    native!("std::term::clear_line",      [], Nil),
+    native!("std::term::move_to",         [Int, Int], Nil),
+    native!("std::term::hide_cursor",     [], Nil),
+    native!("std::term::show_cursor",     [], Nil),
+    native!("std::term::size",            [], Array),
+    native!("std::term::flush",           [], Nil),
+    native!("std::term::enter_alt_screen",[], Nil),
+    native!("std::term::leave_alt_screen",[], Nil),
+    native!("std::term::enable_raw",      [], Nil),
+    native!("std::term::disable_raw",     [], Nil),
+    native!("std::term::read_key",        [Int], String),
+
+    // --- Phase 6: Readline (rustyline) ---
+    native!("std::readline::prompt",              [String], String),
+    native!("std::readline::prompt_with_history", [String], String),
+    native!("std::readline::prompt_persistent",   [String, String], String),
+    native!("std::readline::prompt_secret",       [String], String),
+
+    // --- Phase 6: Progress (indicatif) ---
+    native!("std::progress::bar_new",      [Int], Int),
+    native!("std::progress::spinner_new",  [], Int),
+    native!("std::progress::set_message",  [Int, String], Nil),
+    native!("std::progress::set_position", [Int, Int], Nil),
+    native!("std::progress::increment",    [Int, Int], Nil),
+    native!("std::progress::finish",       [Int, String], Nil),
+    native!("std::progress::abandon",      [Int], Nil),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

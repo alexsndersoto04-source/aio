@@ -1,5 +1,31 @@
 # Zett / TITAN — Changelog
 
+## 0.4.0 — Phase 6: Terminal & TUI
+
+### Added
+- **`std::term::*`** — real terminal control powered by `crossterm`:
+  - `print_colored`, `print_styled`, `print_attr` (bold/italic/underline).
+  - Named colours plus custom `rgb:R,G,B` and `#RRGGBB`.
+  - `clear_screen`, `clear_line`, `move_to`, `hide_cursor`, `show_cursor`,
+    `size`, `flush`.
+  - Alt-screen / raw-mode switches: `enter_alt_screen`, `leave_alt_screen`,
+    `enable_raw`, `disable_raw`.
+  - `read_key(timeout_ms)` returning normalized names like `Enter`,
+    `Ctrl+c`, `Shift+F1`, `Up`.
+- **`std::readline::*`** — GNU-Readline-style line editing via `rustyline`:
+  - `prompt`, `prompt_with_history`, `prompt_persistent(prompt, path)`,
+    `prompt_secret` (input hidden).
+- **`std::progress::*`** — animated progress via `indicatif`:
+  - `bar_new(total)`, `spinner_new()`, `set_message`, `set_position`,
+    `increment`, `finish`, `abandon`.
+- `examples/tui.titan` demoing colors, terminal size, an animated
+  progress bar and a spinner.
+
+### Nothing removed
+All Phase 1-5 modules from 0.3.0 remain exactly as they were.
+
+---
+
 ## 0.3.0 — Phase 5: real Android hardware & OS bindings
 
 ### Added

@@ -19,6 +19,8 @@ extras = [
     "crypto_mod", "password_mod", "jwt_mod",
     # Phase 5 — Termux / Android integration
     "termux_mod",
+    # Phase 6 — Terminal & TUI
+    "term_mod", "readline_mod", "progress_mod",
 ]
 
 # Phase 1
@@ -48,6 +50,11 @@ jwt_mod      = ["dep:jsonwebtoken"]
 
 # Phase 5 — Termux / Android integration (pure std, shells out to termux-api)
 termux_mod   = []
+
+# Phase 6 — Terminal & TUI (pure Rust, tiny footprint, Termux friendly)
+term_mod     = ["dep:crossterm"]
+readline_mod = ["dep:rustyline"]
+progress_mod = ["dep:indicatif"]
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }
@@ -94,3 +101,8 @@ aes-gcm           = { version = "0.10", optional = true }
 argon2            = { version = "0.5", optional = true }
 bcrypt            = { version = "0.15", optional = true }
 jsonwebtoken      = { version = "9", optional = true }
+
+# Phase 6 — Terminal & TUI (all pure-Rust, work under Termux)
+crossterm         = { version = "0.28", optional = true }
+rustyline         = { version = "14",   optional = true, default-features = false, features = ["with-file-history"] }
+indicatif         = { version = "0.17", optional = true }

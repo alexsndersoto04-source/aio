@@ -63,6 +63,11 @@ pub mod mobile;
 // --- Phase 5: Termux / Android integration -----------------------------
 #[cfg(feature = "termux_mod")]    pub mod termux_mod;
 
+// --- Phase 6: Terminal & TUI -------------------------------------------
+#[cfg(feature = "term_mod")]      pub mod term_mod;
+#[cfg(feature = "readline_mod")]  pub mod readline_mod;
+#[cfg(feature = "progress_mod")]  pub mod progress_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

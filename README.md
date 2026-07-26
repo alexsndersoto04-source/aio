@@ -2,7 +2,7 @@
 
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM. On Termux, the compiler ships as the **`zett`** binary.
 
-> **Project status.** Version **0.3.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end. There is a real WebAssembly backend (`zett wasm`), and the standard library has grown to **18 optional modules** covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
+> **Project status.** Version **0.4.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end. There is a real WebAssembly backend (`zett wasm`), and the standard library has grown to **21 optional modules** covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, **terminal/TUI** (colors, cursor, keys, animated bars, readline with history) and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
 >
 > **Not yet functional (experimental scaffolding).** The `titan_mir` crate and the `zett native` / `zett mobile` CLI commands are placeholders: `lower_hir_to_mir` is a no-op, and the ELF/APK writers emit an incomplete header. Both commands print a warning at runtime. Use `zett build` (portable bytecode) or `zett wasm` (WebAssembly) for real artifacts.
 
@@ -37,6 +37,7 @@ target/release/titan run examples/formats.titan    # Phase 2
 target/release/titan run examples/network.titan    # Phase 3 (needs internet)
 target/release/titan run examples/security.titan   # Phase 4
 target/release/titan run examples/android.titan    # Phase 5 (needs Termux:API)
+target/release/titan run examples/tui.titan        # Phase 6
 ```
 
 Install the CLI locally:

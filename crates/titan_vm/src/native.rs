@@ -576,6 +576,82 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             stdlib::termux_mod::share(&string!()).map_err(error)?; Value::Nil
         }
 
+        // ---------------- Phase 6: terminal (crossterm) ----------------
+        #[cfg(feature = "term_mod")] "std::term::print_colored" => {
+            let color = string!(); let text = string!();
+            stdlib::term_mod::print_colored(&color, &text).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "term_mod")] "std::term::print_styled" => {
+            let fg = string!(); let bg = string!(); let text = string!();
+            stdlib::term_mod::print_styled(&fg, &bg, &text).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "term_mod")] "std::term::print_attr" => {
+            let attr = string!(); let text = string!();
+            stdlib::term_mod::print_attr(&attr, &text).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "term_mod")] "std::term::clear_screen" => { stdlib::term_mod::clear_screen().map_err(error)?; Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::clear_line"   => { stdlib::term_mod::clear_line().map_err(error)?;   Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::move_to" => {
+            let column = u16::try_from(int!()).map_err(|_| "column out of range".to_string())?;
+            let row    = u16::try_from(int!()).map_err(|_| "row out of range".to_string())?;
+            stdlib::term_mod::move_to(column, row).map_err(error)?; Value::Nil
+        }
+        #[cfg(feature = "term_mod")] "std::term::hide_cursor" => { stdlib::term_mod::hide_cursor().map_err(error)?; Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::show_cursor" => { stdlib::term_mod::show_cursor().map_err(error)?; Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::size" => {
+            let (columns, rows) = stdlib::term_mod::size().map_err(error)?;
+            Value::Array(vec![Value::Int(columns as i64), Value::Int(rows as i64)])
+        }
+        #[cfg(feature = "term_mod")] "std::term::flush"           => { stdlib::term_mod::flush().map_err(error)?;           Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::enter_alt_screen"=> { stdlib::term_mod::enter_alt_screen().map_err(error)?;Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::leave_alt_screen"=> { stdlib::term_mod::leave_alt_screen().map_err(error)?;Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::enable_raw"      => { stdlib::term_mod::enable_raw().map_err(error)?;      Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::disable_raw"     => { stdlib::term_mod::disable_raw().map_err(error)?;     Value::Nil }
+        #[cfg(feature = "term_mod")] "std::term::read_key" => {
+            let timeout = u64::try_from(int!()).map_err(|_| "timeout must be nonnegative".to_string())?;
+            Value::Str(stdlib::term_mod::read_key(timeout).map_err(error)?)
+        }
+
+        // ---------------- Phase 6: readline (rustyline) ----------------
+        #[cfg(feature = "readline_mod")] "std::readline::prompt" =>
+            Value::Str(stdlib::readline_mod::prompt(&string!()).map_err(error)?),
+        #[cfg(feature = "readline_mod")] "std::readline::prompt_with_history" =>
+            Value::Str(stdlib::readline_mod::prompt_with_history(&string!()).map_err(error)?),
+        #[cfg(feature = "readline_mod")] "std::readline::prompt_persistent" => {
+            let p = string!(); let path = string!();
+            Value::Str(stdlib::readline_mod::prompt_persistent(&p, &path).map_err(error)?)
+        }
+        #[cfg(feature = "readline_mod")] "std::readline::prompt_secret" =>
+            Value::Str(stdlib::readline_mod::prompt_secret(&string!()).map_err(error)?),
+
+        // ---------------- Phase 6: progress (indicatif) ----------------
+        #[cfg(feature = "progress_mod")] "std::progress::bar_new" => {
+            let total = u64::try_from(int!()).map_err(|_| "total must be nonnegative".to_string())?;
+            Value::Int(stdlib::progress_mod::bar_new(total))
+        }
+        #[cfg(feature = "progress_mod")] "std::progress::spinner_new" => Value::Int(stdlib::progress_mod::spinner_new()),
+        #[cfg(feature = "progress_mod")] "std::progress::set_message" => {
+            let id = int!(); let message = string!();
+            stdlib::progress_mod::set_message(id, &message); Value::Nil
+        }
+        #[cfg(feature = "progress_mod")] "std::progress::set_position" => {
+            let id = int!();
+            let position = u64::try_from(int!()).map_err(|_| "position must be nonnegative".to_string())?;
+            stdlib::progress_mod::set_position(id, position); Value::Nil
+        }
+        #[cfg(feature = "progress_mod")] "std::progress::increment" => {
+            let id = int!();
+            let delta = u64::try_from(int!()).map_err(|_| "delta must be nonnegative".to_string())?;
+            stdlib::progress_mod::increment(id, delta); Value::Nil
+        }
+        #[cfg(feature = "progress_mod")] "std::progress::finish" => {
+            let id = int!(); let message = string!();
+            stdlib::progress_mod::finish(id, &message); Value::Nil
+        }
+        #[cfg(feature = "progress_mod")] "std::progress::abandon" => {
+            stdlib::progress_mod::abandon(int!()); Value::Nil
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

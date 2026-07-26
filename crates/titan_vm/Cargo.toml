@@ -15,6 +15,7 @@ extras = [
     "http_full_mod", "dns_mod", "email_mod",
     "crypto_mod", "password_mod", "jwt_mod",
     "termux_mod",
+    "term_mod", "readline_mod", "progress_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
@@ -32,8 +33,11 @@ dns_mod       = ["titan_stdlib/dns_mod"]
 email_mod     = ["titan_stdlib/email_mod"]
 crypto_mod    = ["titan_stdlib/crypto_mod"]
 password_mod  = ["titan_stdlib/password_mod"]
-jwt_mod        = ["titan_stdlib/jwt_mod"]
+jwt_mod       = ["titan_stdlib/jwt_mod"]
 termux_mod    = ["titan_stdlib/termux_mod"]
+term_mod      = ["titan_stdlib/term_mod"]
+readline_mod  = ["titan_stdlib/readline_mod"]
+progress_mod  = ["titan_stdlib/progress_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

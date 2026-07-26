@@ -1,0 +1,46 @@
+// Demo Fase 6: Terminal & TUI.
+// Ejecutar en Termux con:
+//     zett run examples/tui.titan
+//
+// Muestra colores ANSI, tamano de terminal, cursor, spinner y barra de progreso.
+
+fn main() {
+    // ---- Colores basicos ----
+    std::term::print_colored("green", "OK: verde\n")
+    std::term::print_colored("red", "ERROR: rojo\n")
+    std::term::print_colored("yellow", "WARN: amarillo\n")
+    std::term::print_colored("cyan", "INFO: cyan\n")
+
+    // ---- Fondo + primer plano ----
+    std::term::print_styled("white", "blue", " Titulo con fondo azul \n")
+
+    // ---- Atributos ----
+    std::term::print_attr("bold", "Este texto va en negrita\n")
+    std::term::print_attr("underline", "Este texto va subrayado\n")
+
+    // ---- Colores personalizados (RGB / HEX) ----
+    std::term::print_colored("#ff8800", "Naranja custom (hex)\n")
+    std::term::print_colored("rgb:100,200,50", "Verde lima custom (rgb)\n")
+
+    // ---- Tamano de la terminal ----
+    let dim = std::term::size()
+    print("Terminal:")
+    print(dim)
+
+    // ---- Barra de progreso animada ----
+    print("---- Descargando (simulado) ----")
+    let bar = std::progress::bar_new(50)
+    std::progress::set_message(bar, "descargando datos")
+    for i in 0..50 {
+        std::progress::increment(bar, 1)
+        std::time::sleep_ms(20)
+    }
+    std::progress::finish(bar, "descarga completa!")
+
+    // ---- Spinner mientras "trabaja" ----
+    print("---- Procesando ----")
+    let sp = std::progress::spinner_new()
+    std::progress::set_message(sp, "procesando archivos...")
+    std::time::sleep_ms(1500)
+    std::progress::finish(sp, "procesamiento OK")
+}
