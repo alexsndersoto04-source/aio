@@ -447,6 +447,13 @@ fn type_from_ast(ty: &TypeExpr) -> Type {
             "float" | "f32" | "f64" => Type::Float, "bool" => Type::Bool,
             "string" | "str" => Type::String, "char" => Type::Char,
             "Array" | "Vec" if !generics.is_empty() => Type::Array(Box::new(type_from_ast(&generics[0]))),
+            // v0.16.0 QoL: bare `array` / `map` / `any` as convenient
+            // aliases so users don't have to write `-> [any]` or
+            // `Vec<Unknown>` for return types. Compatible with any
+            // concrete Array(T) via the Unknown-matches-anything rule.
+            "array" => Type::Array(Box::new(Type::Unknown)),
+            "map"   => Type::Named("map".into()),
+            "any"   => Type::Unknown,
             _ => Type::Named(name.clone()),
         },
         TypeExpr::Slice { inner } | TypeExpr::Array { inner, .. } => Type::Array(Box::new(type_from_ast(inner))),

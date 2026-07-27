@@ -1,0 +1,64 @@
+// Demo Fase 17 pt.3 - QoL: bare 'array', 'map', 'any' como aliases.
+//
+// Antes (v0.16.0):
+//   fn top_k(...) -> array { ... }
+//   -> ERROR "type mismatch: expected Named(\"array\"), found Array(Float)"
+//
+// Ahora (v0.16.0+):
+//   fn top_k(...) -> array       // = Array(Unknown), acepta cualquier array
+//   fn build(...) -> map         // = Named("map"), acepta cualquier map
+//   fn passthru(x: any) -> any   // = Unknown, acepta y devuelve cualquier cosa
+//
+// Ejecutar con:
+//     zett run examples/qol_type_aliases.titan
+
+fn main() {
+    print("---- Fase 17 pt.3: aliases 'array' / 'map' / 'any' ----")
+
+    // 'array' como return type
+    let nums = make_numbers()
+    print("nums (make_numbers -> array):")
+    print(nums)
+
+    // 'map' como return type
+    let cfg = make_config()
+    print("cfg (make_config -> map):")
+    print(cfg)
+
+    // 'any' como return type y arg type
+    let echoed = echo(42)
+    print("echo(42) -> any:")
+    print(echoed)
+
+    let echoed2 = echo("titan")
+    print("echo(\"titan\") -> any:")
+    print(echoed2)
+
+    // Se pueden mezclar: array de floats y array heterogeneo dan mismo tipo
+    let mixed = make_mixed()
+    print("mixed:")
+    print(mixed)
+
+    print("---- Listo ----")
+}
+
+fn make_numbers() -> array {
+    let xs = [1, 2, 3, 4, 5]
+    xs
+}
+
+fn make_config() -> map {
+    let c = std::map::new()
+    let c = std::map::insert(c, "version", "0.16.0")
+    let c = std::map::insert(c, "port", 8080)
+    c
+}
+
+fn echo(x: any) -> any {
+    x
+}
+
+fn make_mixed() -> array {
+    let m = ["titan", 42, true, 3.14]
+    m
+}
