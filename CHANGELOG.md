@@ -20,21 +20,33 @@
     * `argmax(v)` → index of the max element (errors on empty).
   Every fn is deliberately branchless-when-possible so rustc's release
   profile autovectorizes into ARM NEON on Termux.
-- **`examples/search.titan`** — end-to-end semantic search:
-  1. Loads MiniLM-L6-v2 tokenizer + ONNX encoder (~90 MB FP32).
-  2. Builds a mini index of ~8 documents (recipes, code, sports, ...).
-  3. Encodes every document to a 384-dim embedding via `run_bert_pooled`
-     + `normalize`.
-  4. Takes a query, embeds it the same way, and returns the top-3 docs
-     ranked by `cosine_similarity`.
-  Real MiniLM inference on your Redmi 9C, offline, no cloud, no API.
+- **`examples/vector_search.titan`** — lightweight demo of
+  `std::vector::*` with **hardcoded 4-dim embeddings** (no ONNX
+  model needed). Runs in < 1s on any device, including a 3 GB Redmi
+  9C. Demonstrates that the cosine-similarity ranking pipeline is
+  correct end-to-end.
+- **`examples/search.titan`** — full end-to-end pipeline with a real
+  MiniLM ONNX encoder. **Requires 4+ GB RAM free** — tract's graph
+  optimization pass needs ~250-800 MB peak depending on model and
+  seq_len, which does not fit in a 3 GB device with Android and other
+  apps loaded. Tested and confirmed unusable on a Redmi 9C (swap
+  thrashes indefinitely). Kept in the tree as a template for users
+  with beefier hardware; refined with defensive defaults (MiniLM-L3,
+  seq_len=64) that at least give it a chance on 4 GB devices.
 
-### Notes
+### Notes on running the full pipeline
 - MiniLM's ONNX export has hidden_size=384. Sentence embeddings are
   normalized so cosine == dot, which is faster to compute repeatedly
   when ranking many documents against one query.
 - Combines with Phase 10 (`std::kv`) to persist an embedding index to
   disk once and reload it across runs. Left as an exercise in the demo.
+- **Memory reality on Termux:** even paraphrase-MiniLM-L3-v2 (a 3-layer
+  distilled BERT, 66 MB on disk) needs ~250 MB RAM peak inside tract
+  during `into_optimized()`. Below 4 GB total RAM (before Android + other
+  apps take their cut), the process just swaps forever. Not a bug in
+  Titan or tract — it's an inherent tension between "compile the graph
+  once, run it fast forever" (tract's design) and "3 GB celus with
+  Android eating half".
 
 ## 0.14.0 — Phase 13': Wi-Fi introspection (termux-wifi-*)
 

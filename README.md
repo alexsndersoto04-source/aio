@@ -48,7 +48,8 @@ target/release/titan run examples/tokenizer.titan  # Phase 12 pt.1 (HuggingFace 
 target/release/titan run examples/onnx.titan       # Phase 12 pt.2 (ONNX inference, MNIST)
 target/release/titan run examples/sentiment.titan  # Phase 12 pt.3 (DistilBERT sentiment)
 target/release/titan run examples/wifi.titan       # Phase 13' (Wi-Fi scanning via Termux:API)
-target/release/titan run examples/search.titan     # Phase 12 pt.4 (semantic search with MiniLM)
+target/release/titan run examples/vector_search.titan  # Phase 12 pt.4 (vector math demo, runs on any device)
+target/release/titan run examples/search.titan         # Phase 12 pt.4 full pipeline (needs 4+ GB RAM)
 ```
 
 Install the CLI locally:

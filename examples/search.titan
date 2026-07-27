@@ -2,20 +2,22 @@
 // Ejecutar con:
 //     zett run examples/search.titan
 //
+// ⚠️⚠️⚠️ REQUIERE 4+ GB DE RAM LIBRE. NO CORRE EN UN REDMI 9C.
+//
+// Aun con MiniLM-L3 (66 MB) y seq_len=64, tract necesita ~250-400 MB
+// de RAM peak para optimizar el grafo. Un celu de 3 GB con Android
+// encima tiene ~40 MB libres y swappea indefinidamente sin terminar
+// (probado: se colgo 1 hora sin avanzar).
+//
+// Si tenes < 4 GB de RAM, corre en su lugar examples/vector_search.titan
+// que demuestra std::vector::* con embeddings hardcodeados en vez de
+// cargar un modelo ONNX real. Ese si corre en cualquier celu.
+//
 // Combina las 4 partes de Fase 12:
 //   * std::tokenize (pt.1) — WordPiece de MiniLM
-//   * std::onnx     (pt.2) — inferencia en tu Redmi 9C
+//   * std::onnx     (pt.2) — inferencia (needs RAM)
 //   * run_bert_pooled (pt.4) — mean pooling de sentence-transformers
 //   * std::vector   (pt.4) — cosine similarity + normalize
-//
-// Modelo por default: paraphrase-MiniLM-L3-v2 (3 capas, ~30 MB).
-// Optimizado para celus con poca RAM. Vectores de 384 dim, sirve
-// para RAG chico offline.
-//
-// ⚠️ CELUS CON 3 GB DE RAM: usa siempre L3 con seq_len=64. El L6
-// completo con seq_len=128 pide ~800 MB peak durante la optimizacion
-// de tract y en un Redmi 9C con Android + otras apps abiertas swappea
-// indefinidamente sin terminar.
 //
 // Requiere 2 archivos en $HOME:
 //   * ~/minilm-tokenizer.json   (~230 KB)

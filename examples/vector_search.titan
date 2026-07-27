@@ -1,0 +1,91 @@
+// Demo Fase 12 pt.4 (version liviana): std::vector::* con embeddings
+// hardcodeados en vez de cargar un modelo ONNX real.
+//
+// Este ejemplo NO requiere descargar modelos ni cargar tract, asi que
+// corre en menos de 1 segundo en cualquier celu (incluido un Redmi 9C
+// con 3 GB de RAM).
+//
+// Demuestra que std::vector::cosine_similarity + normalize + argmax
+// funcionan al 100% para armar busqueda semantica; la unica diferencia
+// con examples/search.titan es que aca los vectores estan escritos a
+// mano en vez de venir de MiniLM.
+//
+// Para probar el pipeline COMPLETO con MiniLM real, usa
+// examples/search.titan en un celu con 4+ GB de RAM o una PC.
+
+fn main() {
+    print("---- Fase 12 pt.4 (liviano): busqueda semantica ----")
+    print("(vectores 4-dim escritos a mano, sin cargar modelos)")
+
+    // 6 documentos con embedding 4D representando 4 conceptos:
+    // dim0 = programacion  dim1 = comida  dim2 = deportes  dim3 = jardineria
+    // Los vectores son "manuales" pero funcionan igual que uno de MiniLM.
+    let docs = [
+        "Rust programming with cargo",
+        "Italian pizza dough recipe",
+        "Football World Cup 2026 news",
+        "Growing tomatoes on a balcony",
+        "Python debugging tutorial",
+        "Chocolate cookies from scratch"
+    ]
+    let n_docs = std::collections::length(docs)
+
+    // Embeddings hardcodeados normalizados. En un uso real, estos
+    // vendrian de std::onnx::run_bert_pooled + std::vector::normalize.
+    let index = [
+        [0.95, 0.10, 0.05, 0.10],    // programacion
+        [0.05, 0.95, 0.05, 0.20],    // comida
+        [0.05, 0.05, 0.95, 0.05],    // deportes
+        [0.05, 0.30, 0.05, 0.95],    // jardineria
+        [0.95, 0.05, 0.10, 0.05],    // programacion
+        [0.05, 0.95, 0.10, 0.10]     // comida
+    ]
+
+    let queries = [
+        "how do I compile Rust code",
+        "cooking recipes for dinner",
+        "sports championship",
+        "garden vegetables"
+    ]
+    // Embeddings de query, dimension correspondiente al concepto.
+    let q_embs = [
+        [1.0, 0.0, 0.0, 0.0],   // programacion
+        [0.0, 1.0, 0.0, 0.0],   // comida
+        [0.0, 0.0, 1.0, 0.0],   // deportes
+        [0.0, 0.0, 0.0, 1.0]    // jardineria
+    ]
+    let n_queries = std::collections::length(queries)
+
+    for qi in 0..n_queries {
+        let query = queries[qi]
+        let q_raw = q_embs[qi]
+        let q = std::vector::normalize(q_raw)
+        print("---- Query: {query}")
+
+        let top3 = top_k(q, index, docs, n_docs, 3)
+        print("  Top matches:")
+        print(top3)
+    }
+
+    print("---- Listo ----")
+}
+
+fn top_k(q_emb, index, docs, n_docs: int, k: int) -> string {
+    let mut sims_mut = []
+    for i in 0..n_docs {
+        let e = index[i]
+        let s = std::vector::cosine_similarity(q_emb, e)
+        sims_mut = std::array::push(sims_mut, s)
+    }
+
+    let mut out = ""
+    for r in 0..k {
+        let best = std::vector::argmax(sims_mut)
+        let score = sims_mut[best]
+        let doc = docs[best]
+        let line = "\n  #{r}  score={score}  {doc}"
+        out = out + line
+        sims_mut = std::array::set(sims_mut, best, -2.0)
+    }
+    out
+}
