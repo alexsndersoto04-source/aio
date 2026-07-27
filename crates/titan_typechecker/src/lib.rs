@@ -491,7 +491,25 @@ fn native_compatible(expected: &Type, found: &Type) -> bool {
         _ => false,
     }
 }
-fn compatible(a: &Type, b: &Type) -> bool { a == b || matches!(a, Type::Unknown | Type::Never) || matches!(b, Type::Unknown | Type::Never) || (matches!(a, Type::Unit) && matches!(b, Type::Nil)) }
+fn compatible(a: &Type, b: &Type) -> bool {
+    // Base cases: identical types, Unknown-matches-anything, Never
+    // (bottom type) matches anything, and the historical Unit<->Nil
+    // gap so control-flow can flow either way.
+    if a == b { return true; }
+    if matches!(a, Type::Unknown | Type::Never) { return true; }
+    if matches!(b, Type::Unknown | Type::Never) { return true; }
+    if matches!(a, Type::Unit) && matches!(b, Type::Nil) { return true; }
+    // v0.16.0 QoL: recursively unify inside container types so
+    // `-> array` (= Array(Unknown)) accepts a concrete Array(Int),
+    // Array(Float), Array(Named("map")), etc. Similarly Tuple(Unknown)
+    // matches any tuple with a compatible arity.
+    match (a, b) {
+        (Type::Array(x), Type::Array(y)) => compatible(x, y),
+        (Type::Tuple(xs), Type::Tuple(ys)) => xs.len() == ys.len()
+            && xs.iter().zip(ys.iter()).all(|(x, y)| compatible(x, y)),
+        _ => false,
+    }
+}
 fn is_numeric(ty: &Type) -> bool { matches!(ty, Type::Int | Type::Float | Type::Unknown) }
 
 impl Default for TypeEnv { fn default() -> Self { Self::new() } }
