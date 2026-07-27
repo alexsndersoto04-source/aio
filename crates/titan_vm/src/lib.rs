@@ -233,6 +233,38 @@ impl Vm {
                     if let Value::Closure { function: closure_function, captures } = callable { stack.push(self.execute(closure_function, args, captures, depth + 1, debugger)?); }
                     else { return Err(VmError::Type("attempted to call a non-function value".into())); }
                 }
+                Op::TryCall(argc) => {
+                    // Phase 18: catch any runtime error from a closure call
+                    // and surface it as Result::Err(String). Success wraps
+                    // the value in Result::Ok(v). No error propagates out
+                    // of this opcode.
+                    let args = take_args(&mut stack, argc, &function.name)?;
+                    let callable = pop(&mut stack, &function.name)?;
+                    let wrapped = match callable {
+                        Value::Closure { function: cf, captures } => {
+                            match self.execute(cf, args, captures, depth + 1, debugger) {
+                                Ok(v) => Value::Enum {
+                                    name: "Result".into(),
+                                    variant: "Ok".into(),
+                                    payload: Some(Box::new(v)),
+                                },
+                                Err(e) => Value::Enum {
+                                    name: "Result".into(),
+                                    variant: "Err".into(),
+                                    payload: Some(Box::new(Value::Str(e.to_string()))),
+                                },
+                            }
+                        }
+                        _ => Value::Enum {
+                            name: "Result".into(),
+                            variant: "Err".into(),
+                            payload: Some(Box::new(Value::Str(
+                                "std::try::catch expected a closure".into(),
+                            ))),
+                        },
+                    };
+                    stack.push(wrapped);
+                }
                 Op::ArrayMap => {
                     let callable = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
                     let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("map requires a function".into())); };

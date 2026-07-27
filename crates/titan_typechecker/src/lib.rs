@@ -380,7 +380,9 @@ impl TypeEnv {
         let name = if let Expr::Ident { name, .. } = callee { Some(name.clone()) } else { None };
         if let Some(name) = &name {
             if let Some(signature) = titan_stdlib::native::lookup(name) {
-                if args.len() != signature.params.len() { self.errors.push(TypeError::Arity { expected: signature.params.len(), found: args.len() }); }
+                // std::try::catch is variadic: (fn, args...). Skip arity check.
+                let variadic = name == "std::try::catch";
+                if !variadic && args.len() != signature.params.len() { self.errors.push(TypeError::Arity { expected: signature.params.len(), found: args.len() }); }
                 for (argument, expected) in args.iter().zip(signature.params) {
                     let found = self.check_expr(argument);
                     let expected = native_type(*expected);

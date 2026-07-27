@@ -1,5 +1,64 @@
 # Zett / TITAN — Changelog
 
+## 0.17.0 — Phase 18: manejo de errores con `std::try::catch` 🛡️
+
+### 🎯 Titan ahora tiene manejo de errores real
+
+Un error de un native (archivo no existe, HTTP timeout, JSON malformado,
+etc.) ya NO mata el programa. Podés capturarlo como valor con
+`std::try::catch(closure)` y decidir qué hacer.
+
+**API:**
+```titan
+let r = std::try::catch(|| std::fs::read_text("/config.json"))
+match r {
+    Result::Ok(text) => print("cargue: " + text),
+    Result::Err(msg) => print("no pude: " + msg),
+}
+```
+
+Combinado con el operador `?` (que ya existía pero era casi inutil
+porque nada devolvia Result), ahora podés propagar errores idiomáticamente:
+
+```titan
+fn cargar_config(path) {
+    let text = std::try::catch(|| std::fs::read_text(path))?
+    let json = std::try::catch(|| std::json::parse(text))?
+    Result::Ok(json)
+}
+```
+
+Todas las natives peligrosas (fs, http, dns, json parse, database, etc.)
+se pueden envolver en `catch()` sin cambios en el resto del código.
+
+### 🔧 Cómo funciona internamente
+
+- **Codegen** (`titan_codegen`): al ver `std::try::catch(fn, args...)`
+  emite el opcode nuevo `Op::TryCall(argc)` en vez de un CallNative.
+- **VM** (`titan_vm`): `Op::TryCall` ejecuta la closure envuelta en un
+  `match Result<Value, VmError>`, convierte el `Err` en `Value::Enum {
+  Result::Err(msg) }` y sigue. Ningún error escapa.
+- **Typechecker**: `std::try::catch` declarada como variádica (skip
+  arity check) y con retorno `Any` (es Result<Ok, Err>).
+- **`?` operator**: ya sabía procesar `Result` y `Option` — ahora
+  finalmente tiene valores reales que procesar.
+
+### 📦 Ejemplo
+
+`examples/qol_try_catch.titan` — 6 casos:
+1. Leer archivo que existe
+2. Leer archivo que NO existe (capturado)
+3. Parsear JSON válido
+4. Parsear JSON malformado (capturado)
+5. DNS lookup a dominio inexistente (capturado)
+6. Función que usa `?` para propagar errores
+
+### ⚠️ No-breaking
+
+Cualquier código v0.16.0 sigue compilando y corriendo igual. `Op::TryCall`
+es un opcode nuevo, no toca los existentes. El registry de natives suma
+una entrada más (`std::try::catch`); nada se remueve.
+
 ## 0.16.0 — Phase 17 (part 1) QoL: String + Any, plus Phase 16 PDF
 
 ### 🎯 Language Quality-of-Life #1: `String + Any` just works

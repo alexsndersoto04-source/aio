@@ -261,6 +261,14 @@ pub static NATIVES: &[NativeSignature] = &[
 
     native!("std::testing::assert", [Bool, String], Nil), native!("std::testing::assert_eq", [Any, Any, String], Nil),
 
+    // --- Phase 18: exception-safe closure call ---
+    // std::try::catch(fn, args...) runs the closure `fn` with the given
+    // `args...` (0 or more), captures ANY runtime error and returns a
+    // Result::Ok(value) or Result::Err(String message). Compiled specially
+    // by titan_codegen into the TryCall opcode (not dispatched through the
+    // native table), but declared here so the typechecker knows the name.
+    native!("std::try::catch", [Any], Any),
+
     // --- Phase 1: regex ---
     native!("std::regex::is_match",     [String, String], Bool),
     native!("std::regex::find",         [String, String], String),

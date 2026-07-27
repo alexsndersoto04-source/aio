@@ -31,6 +31,13 @@ pub enum Op {
     Jump(usize), JumpIfFalse(usize),
     Call { function: usize, argc: usize }, CallNative { name: String, argc: usize },
     MakeClosure { function: usize, captures: Vec<usize> }, CallValue(usize), Try,
+    // Phase 18: exception-safe closure call. Pops (fn, args...), calls it
+    // like CallValue, but ANY runtime error (native failure, type mismatch,
+    // panic in a native, out-of-bounds, etc.) is captured and pushed as
+    // Result::Err(String); success pushes Result::Ok(value). Consumed by
+    // the `std::try::catch(fn)` builtin so .titan code can handle errors
+    // as values instead of the whole program dying.
+    TryCall(usize),
     ArrayMap, ArrayFilter, ArrayFold,
     Spawn, JoinTask, JoinTaskTimeout, CancelTask, NewChannel, ChannelSend, ChannelRecv, ChannelRecvTimeout, ChannelSelect,
     TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose,
@@ -294,6 +301,14 @@ impl AstCompiler {
                 self.emit(Op::PushLocal(local));
                 for arg in args { self.compile_expr(arg)?; }
                 self.emit(Op::CallValue(args.len()));
+                return Ok(());
+            }
+            // Phase 18: std::try::catch(fn, args...) is compiled specially
+            // because its argument is a closure that must be executed inside
+            // a try boundary. Emit the closure and its args then TryCall.
+            if name == "std::try::catch" && !args.is_empty() {
+                for arg in args { self.compile_expr(arg)?; }
+                self.emit(Op::TryCall(args.len() - 1));
                 return Ok(());
             }
             for arg in args { self.compile_expr(arg)?; }

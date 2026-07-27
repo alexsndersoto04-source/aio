@@ -1,0 +1,83 @@
+// Fase 18 QoL: manejo de errores con std::try::catch + operador ?
+//
+// Antes (v0.16.0):
+//   let text = std::fs::read_text("/no-existe.txt")
+//   -> RUNTIME ERROR: mata todo el programa.
+//
+// Ahora (v0.17.0+):
+//   let r = std::try::catch(|| std::fs::read_text("/no-existe.txt"))
+//   -> r = Result::Err("...file not found...")  (el programa sigue)
+//
+//   match r {
+//       Result::Ok(text) => print("cargue: " + text),
+//       Result::Err(msg) => print("no pude: " + msg),
+//   }
+//
+// El operador ? existe hace tiempo pero solo funciona sobre valores
+// Result / Option. std::try::catch ES el generador de Result. Juntos
+// hacen que Titan tenga manejo de errores completo.
+
+fn main() {
+    print("---- Fase 18: manejo de errores con std::try::catch ----")
+
+    // ---- Caso 1: leer un archivo que existe ----
+    let ok_path = std::dirs::home() + "/.bashrc"
+    let r1 = std::try::catch(|| std::fs::read_text(ok_path))
+    match r1 {
+        Result::Ok(text) => {
+            let n = std::text::length(text)
+            print("Ok:  " + ok_path + " (" + n + " chars)")
+        }
+        Result::Err(msg) => print("Err: " + msg),
+    }
+
+    // ---- Caso 2: leer un archivo que NO existe ----
+    let bad_path = "/data/data/com.termux/files/home/no-existe-titan-xyz.txt"
+    let r2 = std::try::catch(|| std::fs::read_text(bad_path))
+    match r2 {
+        Result::Ok(text) => print("Ok:  contenido = " + text),
+        Result::Err(msg) => print("Err: " + msg),
+    }
+
+    // ---- Caso 3: parsear JSON valido ----
+    let good_json = "{\"user\":\"juan\",\"age\":30}"
+    let r3 = std::try::catch(|| std::json::parse(good_json))
+    match r3 {
+        Result::Ok(data) => print("Ok:  JSON parseado -> " + data),
+        Result::Err(msg) => print("Err: " + msg),
+    }
+
+    // ---- Caso 4: parsear JSON invalido ----
+    let bad_json = "{esto no es JSON valido}"
+    let r4 = std::try::catch(|| std::json::parse(bad_json))
+    match r4 {
+        Result::Ok(data) => print("Ok:  " + data),
+        Result::Err(msg) => print("Err: " + msg),
+    }
+
+    // ---- Caso 5: HTTP GET a un endpoint inexistente ----
+    let r5 = std::try::catch(|| std::dns::resolve("titan-no-existe-xyz-999.invalid"))
+    match r5 {
+        Result::Ok(ips) => print("Ok:  " + ips),
+        Result::Err(msg) => print("Err: " + msg),
+    }
+
+    // ---- Caso 6: usando el operador ? para propagar ----
+    // Si algun paso falla, cargar_config devuelve Err inmediatamente.
+    let cfg = cargar_config("/no-existe.json")
+    match cfg {
+        Result::Ok(v)   => print("config cargada: " + v),
+        Result::Err(m)  => print("cargar_config fallo: " + m),
+    }
+
+    print("---- Listo — el programa NO murio nunca ----")
+}
+
+// Retorna Result. Usa ? para propagar errores.
+fn cargar_config(path) {
+    // ? sobre un Result::Err corta la funcion y devuelve ese Err.
+    // Si es Ok, extrae el valor.
+    let text = std::try::catch(|| std::fs::read_text(path))?
+    let json = std::try::catch(|| std::json::parse(text))?
+    Result::Ok(json)
+}
