@@ -1,5 +1,40 @@
 # Zett / TITAN — Changelog
 
+## 0.13.0 — Phase 12 (part 3): BERT-family multi-input inference
+
+### Added
+- **`std::onnx::load_bert(path, batch, seq_len)`** — pin both input
+  tensors (`input_ids`, `attention_mask`) to `[batch, seq_len]` of
+  `i64` before optimize. Matches the shape 99% of HuggingFace exports
+  use for DistilBERT / MiniLM / RoBERTa classifiers and encoders.
+- **`std::onnx::load_bert3(path, batch, seq_len)`** — same but pins
+  three inputs (`input_ids`, `attention_mask`, `token_type_ids`).
+  Classic BERT-base-uncased needs this third tensor.
+- **`std::onnx::run_bert(handle, shape, input_ids, attention_mask)`**
+  → `{values, shape}` — feeds a text sample through the model in one
+  call. Combined with `std::tokenize::encode()` from Phase 12 pt.1,
+  a text-to-logits pipeline fits in ~10 lines of `.titan`.
+- **`std::onnx::run_bert3(handle, shape, input_ids, attention_mask,
+  token_type_ids)`** — three-input equivalent.
+- **`std::math::exp(x)`**, **`std::math::log(x, base)`**,
+  **`std::math::to_float(int)`**, **`std::math::to_int(float)`** —
+  small additions needed to build a real softmax + int/float
+  arithmetic on top of tokenizer/model outputs without leaving Titan.
+- **`examples/sentiment.titan`** — end-to-end demo: loads a real
+  DistilBERT sentiment classifier (SST-2, 2 classes: NEGATIVE /
+  POSITIVE), tokenizes English text, runs the ONNX forward pass on
+  device, applies a numerically-stable 2-class softmax and prints
+  the sentiment label with its confidence — 100% offline, no cloud,
+  no API keys, no Python interpreter.
+
+### Notes
+- The Rust API additions are non-breaking: `load`, `load_shape`,
+  `run_f32`, `run_ids` from v0.12.0 still work unchanged.
+- Suggested model for the demo:
+  `Xenova/distilbert-base-uncased-finetuned-sst-2-english` (~65 MB
+  quantized). Download instructions are printed by the example when
+  the model file is missing.
+
 ## 0.12.0 — Phase 12 (part 2): ONNX inference on-device
 
 ### Added

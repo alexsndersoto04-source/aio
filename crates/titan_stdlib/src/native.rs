@@ -103,6 +103,11 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::math::tan", [Float], Float), native!("std::math::ln", [Float], Float),
     native!("std::math::abs", [Float], Float), native!("std::math::floor", [Float], Float),
     native!("std::math::ceil", [Float], Float), native!("std::math::round", [Float], Float),
+    // Additions in v0.13.0: exp / log / int<->float conversions.
+    native!("std::math::exp",       [Float], Float),
+    native!("std::math::log",       [Float, Float], Float),
+    native!("std::math::to_float",  [Int], Float),
+    native!("std::math::to_int",    [Float], Int),
     native!("std::stats::mean", [Array], Float), native!("std::stats::median", [Array], Float),
     native!("std::stats::quantile", [Array, Float], Float), native!("std::stats::variance", [Array], Float),
     native!("std::stats::stddev", [Array], Float),
@@ -669,6 +674,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::onnx::run_f32",      [Int, Array, Array], Map),
     // run_ids(handle, shape, ids)  → same shape, for token-id inputs (BERT-family).
     native!("std::onnx::run_ids",      [Int, Array, Array], Map),
+    // BERT-style loaders (v0.13.0): pin (batch, seq_len) on 2 or 3 int64 inputs.
+    native!("std::onnx::load_bert",    [String, Int, Int], Int, Filesystem),
+    native!("std::onnx::load_bert3",   [String, Int, Int], Int, Filesystem),
+    // run_bert(handle, shape, input_ids, attention_mask)
+    native!("std::onnx::run_bert",     [Int, Array, Array, Array], Map),
+    // run_bert3(handle, shape, input_ids, attention_mask, token_type_ids)
+    native!("std::onnx::run_bert3",    [Int, Array, Array, Array, Array], Map),
 
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),

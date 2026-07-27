@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.12.0_arm.deb"
+OUT="zett_0.13.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.12.0
+Version: 0.13.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input)
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -49,7 +49,11 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  and on-device ONNX inference via `tract-onnx` (Sonos' production
  inference engine, 100% Rust, no CUDA / cuDNN / BLAS / ONNX Runtime
  C++), able to load .onnx models, inspect their input/output shapes
- and run f32 or i64 tensor inputs entirely on the phone's CPU.
+ and run f32 or i64 tensor inputs entirely on the phone's CPU, plus
+ multi-input BERT-family loaders (input_ids + attention_mask, with
+ or without token_type_ids) so DistilBERT / MiniLM / classic BERT
+ classifiers and embedding models can be tokenized with std::tokenize
+ and forwarded through std::onnx in a single pipeline on the device.
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

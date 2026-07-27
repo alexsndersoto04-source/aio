@@ -113,6 +113,37 @@ pub fn load_with_input_shape(path: &str, input_shape: &[i64]) -> Result<i64, Onn
     Ok(insert(model))
 }
 
+/// Load a BERT-family model with two `i64` inputs (`input_ids`,
+/// `attention_mask`) both pinned to the same `[batch, seq_len]` shape.
+/// This is the shape most HuggingFace transformer ONNX exports use.
+pub fn load_bert_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, OnnxError> {
+    if batch <= 0 || seq_len <= 0 { return Err(OnnxError::BadShape); }
+    let shape = [batch as usize, seq_len as usize];
+    let model = tract_onnx::onnx()
+        .model_for_path(path).map_err(map_err)?
+        .with_input_fact(0, i64::fact(&shape).into()).map_err(map_err)?
+        .with_input_fact(1, i64::fact(&shape).into()).map_err(map_err)?
+        .into_optimized().map_err(map_err)?
+        .into_runnable().map_err(map_err)?;
+    Ok(insert(model))
+}
+
+/// Load a HuggingFace transformer that expects three `i64` inputs
+/// (`input_ids`, `attention_mask`, `token_type_ids`) — some BERT
+/// variants (e.g. classic uncased BERT) need this third tensor.
+pub fn load_bert3_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, OnnxError> {
+    if batch <= 0 || seq_len <= 0 { return Err(OnnxError::BadShape); }
+    let shape = [batch as usize, seq_len as usize];
+    let model = tract_onnx::onnx()
+        .model_for_path(path).map_err(map_err)?
+        .with_input_fact(0, i64::fact(&shape).into()).map_err(map_err)?
+        .with_input_fact(1, i64::fact(&shape).into()).map_err(map_err)?
+        .with_input_fact(2, i64::fact(&shape).into()).map_err(map_err)?
+        .into_optimized().map_err(map_err)?
+        .into_runnable().map_err(map_err)?;
+    Ok(insert(model))
+}
+
 /// Drop a model. Idempotent.
 pub fn close(handle: i64) {
     if let Ok(mut reg) = registry().lock() { reg.models.remove(&handle); }
@@ -190,6 +221,67 @@ pub fn run_i64_in_f32_out(handle: i64, input_shape: &[i64], input_data: &[i64]) 
             .map_err(map_err)?
             .into_tensor();
         let outputs = m.run(tvec!(tensor.into())).map_err(map_err)?;
+        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let out_shape: Vec<usize> = first.shape().to_vec();
+        let view = first.to_array_view::<f32>().map_err(map_err)?;
+        let values: Vec<f32> = view.iter().copied().collect();
+        Ok((values, out_shape))
+    })
+}
+
+/// Run a transformer with **two** `i64` inputs of the same shape:
+/// `input_ids` and `attention_mask`. Returns the first output as `f32`.
+/// Perfect for DistilBERT / BERT-style classifiers.
+pub fn run_two_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attention_mask: &[i64])
+    -> Result<(Vec<f32>, Vec<usize>), OnnxError>
+{
+    if input_shape.iter().any(|&d| d <= 0) { return Err(OnnxError::BadShape); }
+    let shape: Vec<usize> = input_shape.iter().map(|&d| d as usize).collect();
+    let expected: usize = shape.iter().product();
+    if input_ids.len() != expected {
+        return Err(OnnxError::ShapeMismatch { expected, found: input_ids.len() });
+    }
+    if attention_mask.len() != expected {
+        return Err(OnnxError::ShapeMismatch { expected, found: attention_mask.len() });
+    }
+
+    with(handle, |m| {
+        let ids_tensor = tract_ndarray::ArrayD::from_shape_vec(shape.clone(), input_ids.to_vec())
+            .map_err(map_err)?
+            .into_tensor();
+        let mask_tensor = tract_ndarray::ArrayD::from_shape_vec(shape, attention_mask.to_vec())
+            .map_err(map_err)?
+            .into_tensor();
+        let outputs = m.run(tvec!(ids_tensor.into(), mask_tensor.into())).map_err(map_err)?;
+        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let out_shape: Vec<usize> = first.shape().to_vec();
+        let view = first.to_array_view::<f32>().map_err(map_err)?;
+        let values: Vec<f32> = view.iter().copied().collect();
+        Ok((values, out_shape))
+    })
+}
+
+/// Run a transformer with **three** `i64` inputs of the same shape:
+/// `input_ids`, `attention_mask`, `token_type_ids`. Used by classic
+/// BERT-uncased when the token_type_ids input is not baked into the
+/// graph.
+pub fn run_three_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attention_mask: &[i64], token_type_ids: &[i64])
+    -> Result<(Vec<f32>, Vec<usize>), OnnxError>
+{
+    if input_shape.iter().any(|&d| d <= 0) { return Err(OnnxError::BadShape); }
+    let shape: Vec<usize> = input_shape.iter().map(|&d| d as usize).collect();
+    let expected: usize = shape.iter().product();
+    for data in [input_ids, attention_mask, token_type_ids] {
+        if data.len() != expected {
+            return Err(OnnxError::ShapeMismatch { expected, found: data.len() });
+        }
+    }
+
+    with(handle, |m| {
+        let ids = tract_ndarray::ArrayD::from_shape_vec(shape.clone(), input_ids.to_vec()).map_err(map_err)?.into_tensor();
+        let mask = tract_ndarray::ArrayD::from_shape_vec(shape.clone(), attention_mask.to_vec()).map_err(map_err)?.into_tensor();
+        let types = tract_ndarray::ArrayD::from_shape_vec(shape, token_type_ids.to_vec()).map_err(map_err)?.into_tensor();
+        let outputs = m.run(tvec!(ids.into(), mask.into(), types.into())).map_err(map_err)?;
         let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
         let out_shape: Vec<usize> = first.shape().to_vec();
         let view = first.to_array_view::<f32>().map_err(map_err)?;

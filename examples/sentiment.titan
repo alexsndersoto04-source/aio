@@ -1,0 +1,128 @@
+// Demo Fase 12 (parte 3): sentiment analysis end-to-end en Termux.
+// Ejecutar con:
+//     zett run examples/sentiment.titan
+//
+// Combina las dos partes anteriores:
+//   * std::tokenize (Fase 12 pt.1) — WordPiece de DistilBERT
+//   * std::onnx     (Fase 12 pt.2) — inferencia en tu Redmi 9C
+//
+// Modelo: distilbert-base-uncased-finetuned-sst-2-english exportado
+// a ONNX (quantized INT8, ~65 MB). Clasifica texto en ingles como
+// POSITIVE o NEGATIVE.
+//
+// Requiere 2 archivos en $HOME:
+//   * ~/distilbert-tokenizer.json   (~230 KB)
+//   * ~/distilbert-sentiment.onnx   (~65 MB quantized)
+//
+// El primer bloque imprime los curls exactos si faltan.
+
+fn main() {
+    let home = std::dirs::home()
+    let tok_path = home + "/distilbert-tokenizer.json"
+    let mod_path = home + "/distilbert-sentiment.onnx"
+
+    print("---- Fase 12 pt.3: sentiment analysis end-to-end ----")
+
+    let ok_tok = std::fs::exists(tok_path)
+    let ok_mod = std::fs::exists(mod_path)
+    if !ok_tok {
+        print("Falta tokenizer en {tok_path}")
+        print_download_instructions()
+        return
+    }
+    if !ok_mod {
+        print("Falta modelo en {mod_path}")
+        print_download_instructions()
+        return
+    }
+
+    // ---- 1) Cargar tokenizer y modelo ----
+    print("Cargando tokenizer ...")
+    let tok = std::tokenize::load(tok_path)
+    let vocab = std::tokenize::vocab_size(tok)
+    print("Vocabulario: {vocab} tokens")
+
+    // Distilbert-SST2 acepta shapes dinamicas [batch, seq_len].
+    // Pineamos batch=1 y seq_len=128 (el tokenizer.json de DistilBERT
+    // ya devuelve outputs padded a longitud fija de 128).
+    print("Cargando modelo ONNX (puede tardar 10-30s la primera vez) ...")
+    let seq_len = 128
+    let model = std::onnx::load_bert(mod_path, 1, seq_len)
+    print("Modelo cargado y optimizado")
+
+    let osh = std::onnx::output_shape(model, 0)
+    print("Output shape: {osh}   (esperado [1, 2] para SST-2)")
+
+    // ---- 2) Sentencias a clasificar ----
+    let frases = [
+        "This movie was absolutely fantastic! I loved every minute.",
+        "What a terrible waste of time. I want my money back.",
+        "The food was okay, nothing special but not bad either.",
+        "Best purchase I've ever made, highly recommended!",
+        "Broken on arrival and customer support was useless."
+    ]
+    let n_frases = std::collections::length(frases)
+
+    // ---- 3) Loop: tokenize -> inference -> softmax -> label ----
+    for i in 0..n_frases {
+        let frase = frases[i]
+        print("---- {i}: {frase}")
+        classify(tok, model, frase, seq_len)
+    }
+
+    std::tokenize::close(tok)
+    std::onnx::close(model)
+    print("---- Listo ----")
+}
+
+// Clasifica una frase e imprime la etiqueta con su confianza.
+fn classify(tok: int, model: int, frase: string, seq_len: int) {
+    let enc  = std::tokenize::encode(tok, frase, true)
+    let ids  = enc.ids
+    let mask = enc.attention_mask
+
+    let shape = [1, seq_len]
+    let result = std::onnx::run_bert(model, shape, ids, mask)
+    let logits = result.values
+
+    // logits = [neg_score, pos_score] para SST-2.
+    let neg = logits[0]
+    let pos = logits[1]
+    let probs = softmax2(neg, pos)
+    let p_neg = probs[0]
+    let p_pos = probs[1]
+
+    if p_pos > p_neg {
+        print("   -> POSITIVE  (confianza {p_pos})")
+    } else {
+        print("   -> NEGATIVE  (confianza {p_neg})")
+    }
+}
+
+// Softmax numericamente estable sobre 2 logits.
+// Devuelve [p(clase 0), p(clase 1)] usando std::math::exp (native).
+fn softmax2(a: float, b: float) -> array {
+    let mut m = a
+    if b > m {
+        m = b
+    }
+    let ea = std::math::exp(a - m)
+    let eb = std::math::exp(b - m)
+    let sum = ea + eb
+    [ea / sum, eb / sum]
+}
+
+fn print_download_instructions() {
+    print("")
+    print("Baja los 2 archivos con estos comandos:")
+    print("")
+    print("  # Tokenizer WordPiece (~230 KB)")
+    print("  curl -L -o ~/distilbert-tokenizer.json \\")
+    print("    https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english/resolve/main/tokenizer.json")
+    print("")
+    print("  # Modelo ONNX quantizado INT8 (~65 MB)")
+    print("  curl -L -o ~/distilbert-sentiment.onnx \\")
+    print("    https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english/resolve/main/onnx/model_quantized.onnx")
+    print("")
+    print("Y volve a correr:  zett run examples/sentiment.titan")
+}

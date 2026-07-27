@@ -133,6 +133,10 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::math::ln" => checked_float(float!().ln(), "ln domain error")?,
         "std::math::abs" => Value::Float(float!().abs()), "std::math::floor" => Value::Float(float!().floor()),
         "std::math::ceil" => Value::Float(float!().ceil()), "std::math::round" => Value::Float(float!().round()),
+        "std::math::exp"      => Value::Float(float!().exp()),
+        "std::math::log"      => { let x = float!(); let base = float!(); Value::Float(x.log(base)) }
+        "std::math::to_float" => Value::Float(int!() as f64),
+        "std::math::to_int"   => Value::Int(float!() as i64),
         "std::stats::mean" => { let values = numbers(array!())?; if values.is_empty() { return Err("mean requires at least one number".into()); } Value::Float(values.iter().sum::<f64>() / values.len() as f64) }
         "std::stats::median" => { let mut values = numbers(array!())?; Value::Float(stdlib::stats::median(&mut values).ok_or("median requires finite numbers")?) }
         "std::stats::quantile" => { let mut values = numbers(array!())?; let q = float!(); Value::Float(stdlib::stats::quantile(&mut values, q).ok_or("invalid quantile or input")?) }
@@ -1244,6 +1248,31 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             let shape = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
             let data = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
             let (values, out_shape) = stdlib::onnx_mod::run_i64_in_f32_out(h, &shape, &data).map_err(error)?;
+            Value::Map(onnx_output_to_map(values, out_shape))
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::load_bert" => {
+            let path = string!(); let batch = int!(); let seq = int!();
+            Value::Int(stdlib::onnx_mod::load_bert_shape(&path, batch, seq).map_err(error)?)
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::load_bert3" => {
+            let path = string!(); let batch = int!(); let seq = int!();
+            Value::Int(stdlib::onnx_mod::load_bert3_shape(&path, batch, seq).map_err(error)?)
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::run_bert" => {
+            let h = int!();
+            let shape = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let ids  = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let mask = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let (values, out_shape) = stdlib::onnx_mod::run_two_i64(h, &shape, &ids, &mask).map_err(error)?;
+            Value::Map(onnx_output_to_map(values, out_shape))
+        }
+        #[cfg(feature = "onnx_mod")] "std::onnx::run_bert3" => {
+            let h = int!();
+            let shape = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let ids   = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let mask  = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let types = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let (values, out_shape) = stdlib::onnx_mod::run_three_i64(h, &shape, &ids, &mask, &types).map_err(error)?;
             Value::Map(onnx_output_to_map(values, out_shape))
         }
 
