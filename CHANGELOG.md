@@ -30,7 +30,22 @@ loosening of the rule, not a breaking change.
 **Files changed:** `crates/titan_typechecker/src/lib.rs` (Add rule),
 `crates/titan_vm/src/lib.rs` (runtime `add` fn).
 
-### 📄 Phase 16: PDF generation via `printpdf` (unchanged from previous notes)
+### ⚠️ Phase 16 PDF DISABLED in default build
+
+The `printpdf` 0.7 crate turned out to have API incompatibilities I
+couldn't detect without a local Rust toolchain (no `.clone()` on
+`PdfDocumentReference`, `!Send` marker, `Mm(f32)` vs my `f64`). Rather
+than block v0.16.0's QoL fix, `pdf_mod` is now behind an opt-in
+feature — the code stays in the tree (`crates/titan_stdlib/src/pdf_mod.rs`
++ `examples/invoice.titan`) but doesn't ship in the default `.deb`.
+
+To re-enable if you want to tinker:
+```toml
+titan_stdlib = { path = "...", features = ["pdf_mod"] }
+```
+
+We'll come back to PDF with a different backend (or a printpdf
+rewrite) in a later release.
 
 ### Added
 - **`std::pdf::*`** — pure-Rust PDF writing via `printpdf` 0.7 built

@@ -41,8 +41,13 @@ extras = [
     "wifi_mod",
     # Phase 12 pt.4 — Vector math for embeddings + semantic search.
     "vector_mod",
-    # Phase 16 — PDF generation (printpdf, pure-Rust core, no C-deps)
-    "pdf_mod",
+    # Phase 16 — PDF generation (printpdf) — DISABLED by default in
+    # v0.16.0 because printpdf 0.7 has API incompatibilities (Mm(f32)
+    # vs f64, !Send PdfDocumentReference, no .clone()) that need a
+    # proper rewrite. Opt-in with `--features pdf_mod` if you want to
+    # tinker; kept in the tree so we can polish it later without losing
+    # the module scaffold.
+    # "pdf_mod",
 ]
 
 # Phase 1

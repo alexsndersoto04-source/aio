@@ -26,7 +26,7 @@ extras = [
     "onnx_mod",
     "wifi_mod",
     "vector_mod",
-    "pdf_mod",
+    # "pdf_mod",  # disabled in v0.16.0 (printpdf 0.7 API incompatibilities); opt-in only
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
