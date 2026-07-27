@@ -123,9 +123,10 @@ fn print_download_instructions() {
     print("  curl -L -o ~/distilbert-tokenizer.json \\")
     print("    https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english/resolve/main/tokenizer.json")
     print("")
-    print("  # Modelo ONNX quantizado INT8 (~65 MB)")
+    print("  # Modelo ONNX FP32 (~260 MB) - el cuantizado (model_quantized.onnx)")
+    print("  # usa ops que tract-onnx no soporta, hay que usar el FP32.")
     print("  curl -L -o ~/distilbert-sentiment.onnx \\")
-    print("    https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english/resolve/main/onnx/model_quantized.onnx")
+    print("    https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english/resolve/main/onnx/model.onnx")
     print("")
     print("Y volve a correr:  zett run examples/sentiment.titan")
 }

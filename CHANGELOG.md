@@ -31,9 +31,12 @@
 - The Rust API additions are non-breaking: `load`, `load_shape`,
   `run_f32`, `run_ids` from v0.12.0 still work unchanged.
 - Suggested model for the demo:
-  `Xenova/distilbert-base-uncased-finetuned-sst-2-english` (~65 MB
-  quantized). Download instructions are printed by the example when
-  the model file is missing.
+  `Xenova/distilbert-base-uncased-finetuned-sst-2-english` — use the
+  **FP32 `model.onnx`** (~260 MB), NOT `model_quantized.onnx`
+  (~65 MB). The quantized export uses INT8-specific ops that
+  onnxruntime handles in the browser but tract-onnx cannot analyse.
+  Download instructions printed by the example already point at the
+  right one.
 
 ## 0.12.0 — Phase 12 (part 2): ONNX inference on-device
 
