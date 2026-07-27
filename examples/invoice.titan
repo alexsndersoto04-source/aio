@@ -1,0 +1,127 @@
+// Demo Fase 16: generar un PDF real (factura A4).
+// Ejecutar con:
+//     zett run examples/invoice.titan
+//
+// Escribe ~/factura_titan.pdf. Abrilo con:
+//     termux-open ~/factura_titan.pdf
+// o
+//     xdg-open ~/factura_titan.pdf
+//
+// Pure Rust, sin C-deps, sin fontconfig. Usa la fuente built-in
+// Helvetica de PDF (una de las 14 canonicas), no hace falta embeber
+// ningun archivo TTF.
+
+fn main() {
+    let home = std::dirs::home()
+    let path = home + "/factura_titan.pdf"
+
+    print("---- Fase 16: generar un PDF real ----")
+
+    // A4 portrait: 210 x 297 mm. Coordenadas PDF: (0,0) es la esquina
+    // inferior-izquierda; y crece hacia arriba.
+    let doc = std::pdf::new("Factura #123 - Titan Demo", 210.0, 297.0)
+
+    // --- Encabezado ---
+    std::pdf::set_color(doc, 0, 0, 0.15, 0.35, 0.65)   // azul corporativo
+    std::pdf::add_rect(doc, 0, 0, 0.0, 267.0, 210.0, 30.0)  // banda superior
+
+    // Titulo en blanco sobre la banda azul.
+    std::pdf::set_color(doc, 0, 0, 1.0, 1.0, 1.0)
+    std::pdf::add_text(doc, 0, 0, "TITAN COMPUTACION S.A.", 22.0, 20.0, 280.0)
+    std::pdf::add_text(doc, 0, 0, "CUIT 30-12345678-9   Av. Siempreviva 742, Maracaibo", 10.0, 20.0, 272.0)
+
+    // --- Datos de la factura ---
+    std::pdf::set_color(doc, 0, 0, 0.0, 0.0, 0.0)
+    std::pdf::add_text(doc, 0, 0, "FACTURA A", 16.0, 20.0, 250.0)
+    std::pdf::add_text(doc, 0, 0, "N# 0001-00000123", 12.0, 20.0, 243.0)
+    std::pdf::add_text(doc, 0, 0, "Fecha: 27/07/2026", 12.0, 20.0, 236.0)
+
+    // Cliente (a la derecha).
+    std::pdf::add_text(doc, 0, 0, "Cliente:", 12.0, 130.0, 250.0)
+    std::pdf::add_text(doc, 0, 0, "Alex Sanders Soto", 12.0, 130.0, 243.0)
+    std::pdf::add_text(doc, 0, 0, "CUIT 20-98765432-1", 10.0, 130.0, 236.0)
+
+    // --- Tabla de items ---
+    // Header
+    std::pdf::set_color(doc, 0, 0, 0.85, 0.9, 0.95)
+    std::pdf::add_rect(doc, 0, 0, 20.0, 210.0, 170.0, 8.0)
+
+    std::pdf::set_color(doc, 0, 0, 0.0, 0.0, 0.0)
+    std::pdf::add_text(doc, 0, 0, "Descripcion",       10.0,  25.0, 212.0)
+    std::pdf::add_text(doc, 0, 0, "Cant.",             10.0, 105.0, 212.0)
+    std::pdf::add_text(doc, 0, 0, "P. Unit.",          10.0, 130.0, 212.0)
+    std::pdf::add_text(doc, 0, 0, "Subtotal",          10.0, 165.0, 212.0)
+
+    // Rows (aplicamos el patron: unica interpolacion por line, sin +)
+    add_row(doc,  200.0, "Licencia Titan Pro (anual)",     1.0, 12000.0)
+    add_row(doc,  192.0, "Soporte premium 24/7",           1.0,  8500.0)
+    add_row(doc,  184.0, "Sesion consultoria Rust",        4.0,  3200.0)
+    add_row(doc,  176.0, "Deploy en 5 servidores",         5.0,  1500.0)
+
+    // Linea divisoria
+    std::pdf::set_color(doc, 0, 0, 0.4, 0.4, 0.4)
+    std::pdf::add_line(doc, 0, 0, 20.0, 168.0, 190.0, 168.0, 0.5)
+
+    // --- Totales ---
+    std::pdf::set_color(doc, 0, 0, 0.0, 0.0, 0.0)
+    // 12000 + 8500 + 4*3200 + 5*1500 = 12000 + 8500 + 12800 + 7500 = 40800
+    std::pdf::add_text(doc, 0, 0, "Subtotal:",          12.0, 130.0, 160.0)
+    std::pdf::add_text(doc, 0, 0, "$ 40800.00",         12.0, 165.0, 160.0)
+    std::pdf::add_text(doc, 0, 0, "IVA 21%:",           12.0, 130.0, 153.0)
+    std::pdf::add_text(doc, 0, 0, "$  8568.00",         12.0, 165.0, 153.0)
+
+    std::pdf::set_color(doc, 0, 0, 0.15, 0.35, 0.65)
+    std::pdf::add_text(doc, 0, 0, "TOTAL:",             14.0, 130.0, 143.0)
+    std::pdf::add_text(doc, 0, 0, "$ 49368.00",         14.0, 165.0, 143.0)
+
+    // --- Pie de pagina ---
+    std::pdf::set_color(doc, 0, 0, 0.5, 0.5, 0.5)
+    std::pdf::add_line(doc, 0, 0, 20.0, 25.0, 190.0, 25.0, 0.3)
+    std::pdf::add_text(doc, 0, 0,
+        "Generado 100% en Termux por el compilador Titan (zett) - sin cloud, sin PDF libraries externas.",
+        8.0, 20.0, 18.0)
+    std::pdf::add_text(doc, 0, 0,
+        "https://github.com/alexsndersoto04-source/aio",
+        8.0, 20.0, 12.0)
+
+    // --- Segunda pagina de detalles ---
+    let p2 = std::pdf::add_page(doc, 210.0, 297.0, "Detalles")
+    std::pdf::set_color(doc, 0, 0, 0.0, 0.0, 0.0)
+    std::pdf::add_text(doc, p2, 0, "Anexo tecnico", 20.0, 20.0, 275.0)
+    std::pdf::add_text(doc, p2, 0,
+        "Este PDF fue generado programaticamente desde .titan usando std::pdf.",
+        11.0, 20.0, 260.0)
+    std::pdf::add_text(doc, p2, 0,
+        "Backend: printpdf 0.7 (pure Rust, sin azul-layout, sin fontconfig).",
+        11.0, 20.0, 252.0)
+    std::pdf::add_text(doc, p2, 0,
+        "Fuente: Helvetica (una de las 14 built-in del standard PDF).",
+        11.0, 20.0, 244.0)
+
+    // Consultar cuantas paginas tiene antes de cerrar.
+    let n = std::pdf::page_count(doc)
+    print("PDF con {n} paginas listo, guardando...")
+
+    // Guardar y cerrar
+    std::pdf::save(doc, path)
+    std::pdf::close(doc)
+
+    print("PDF generado: {path}")
+    print("Abrilo con:  termux-open {path}")
+    print("---- Listo ----")
+}
+
+// Renderiza una fila de la tabla de items.
+// pos = valor unitario, qty = cantidad. Subtotal = pos * qty.
+fn add_row(doc: int, y: float, desc: string, qty: float, unit: float) {
+    let subtotal = qty * unit
+    std::pdf::add_text(doc, 0, 0, desc,           10.0,  25.0, y)
+    // Los numeros los interpolo dentro del string (para no encadenar
+    // con + que exige String+String estricto).
+    let qty_str = "{qty}"
+    let unit_str = "{unit}"
+    let sub_str = "{subtotal}"
+    std::pdf::add_text(doc, 0, 0, qty_str,  10.0, 105.0, y)
+    std::pdf::add_text(doc, 0, 0, unit_str, 10.0, 130.0, y)
+    std::pdf::add_text(doc, 0, 0, sub_str,  10.0, 165.0, y)
+}

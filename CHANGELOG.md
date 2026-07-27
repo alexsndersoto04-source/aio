@@ -1,5 +1,48 @@
 # Zett / TITAN — Changelog
 
+## 0.16.0 — Phase 16: PDF generation (printpdf) 📄
+
+### Added
+- **`std::pdf::*`** — pure-Rust PDF writing via `printpdf` 0.7 built
+  with `default-features = false`. That drops `azul-layout`,
+  `rust-fontconfig`, HTML rendering and SVG-to-PDF — leaving just the
+  core PDF machinery (`lopdf` + `owned_ttf_parser` + `time`). No C
+  dependencies at all, compiles cleanly on Termux ARM.
+- API (opaque `i64` handles for documents; pages and layers by
+  0-based index; all coordinates in millimetres, PDF-space with y
+  growing upwards):
+    * `new(title, width_mm, height_mm)` — new document, page 0 / layer 0
+      created automatically. Common sizes: A4 portrait `(210, 297)`,
+      A4 landscape `(297, 210)`, US Letter `(216, 279)`.
+    * `add_page(handle, width, height, layer_name)` → page index.
+    * `page_count(handle)`.
+    * `add_text(handle, page, layer, text, font_size_pt, x, y)` — uses
+      the document's default Helvetica (one of PDF's 14 built-in fonts,
+      no TTF embedding needed).
+    * `set_color(handle, page, layer, r, g, b)` — sets both fill and
+      outline colours for subsequent draw calls (RGB in `[0, 1]`).
+    * `add_line(handle, page, layer, x1, y1, x2, y2, thickness_pt)`.
+    * `add_rect(handle, page, layer, x, y, w, h)` — closed 4-point
+      polygon, both fill and outline honour the current colour.
+    * `save(handle, path)` — serialize to disk.
+    * `close(handle)` — release from the process-wide registry.
+
+### Combines with
+- **Fase 7 (`std::qrcode::to_svg`)** — build a QR code SVG and drop
+  its image into a receipt PDF (via `rsvg-convert` → PNG → future
+  `add_png`; kept out of this release to avoid version conflicts with
+  the `image` crate).
+- **Fase 14 (`std::plot`)** — the same route works for embedding
+  charts once `add_png` lands.
+
+### Notes
+- PDF image embedding (`add_png`) was intentionally deferred to a
+  follow-up release. `printpdf` uses `image = 0.24`, while our Fase 7
+  modules use `image = 0.25`; adding embed today would either force
+  a version downgrade (breaking Fase 7) or upgrade `printpdf`'s deps
+  (pulling in the heavy `azul-layout` graph). We'll consolidate the
+  two once `printpdf` releases with `image = 0.25`.
+
 ## 0.15.0 — Phase 12 (part 4): Semantic search on-device 🧠🔍
 
 ### Added

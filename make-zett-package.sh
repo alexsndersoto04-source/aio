@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.15.0_arm.deb"
+OUT="zett_0.16.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.15.0
+Version: 0.16.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input, sentence-transformer pooling), Wi-Fi scanning, vector math (semantic search)
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input, sentence-transformer pooling), Wi-Fi scanning, vector math (semantic search), PDF generation
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -61,7 +61,10 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  pool of the encoder's last_hidden_state) and pure-Rust vector math
  (std::vector::dot / norm / cosine_similarity / normalize / add / sub
  / scale / argmax) for on-device semantic search over MiniLM
- embeddings.
+ embeddings, and PDF generation (std::pdf::new / add_page / add_text /
+ set_color / add_line / add_rect / save) built on printpdf 0.7 in a
+ no-defaults pure-Rust config (no azul-layout, no rust-fontconfig, no
+ HTML rendering — just the core PDF writer with the 14 built-in fonts).
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

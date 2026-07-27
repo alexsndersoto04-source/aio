@@ -26,6 +26,7 @@ extras = [
     "onnx_mod",
     "wifi_mod",
     "vector_mod",
+    "pdf_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
@@ -63,6 +64,7 @@ tokenize_mod  = ["titan_stdlib/tokenize_mod"]
 onnx_mod      = ["titan_stdlib/onnx_mod"]
 wifi_mod      = ["titan_stdlib/wifi_mod"]
 vector_mod    = ["titan_stdlib/vector_mod"]
+pdf_mod       = ["titan_stdlib/pdf_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

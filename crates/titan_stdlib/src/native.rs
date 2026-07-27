@@ -701,6 +701,19 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::vector::scale",              [Array, Float], Array),
     native!("std::vector::argmax",             [Array], Int),
 
+    // --- Phase 16: PDF generation (printpdf, pure Rust) ---
+    // Documents are opaque i64 handles. Pages / layers by 0-based index.
+    // All coords in millimetres, PDF-space (y grows upwards).
+    native!("std::pdf::new",         [String, Float, Float], Int),
+    native!("std::pdf::add_page",    [Int, Float, Float, String], Int),
+    native!("std::pdf::page_count",  [Int], Int),
+    native!("std::pdf::add_text",    [Int, Int, Int, String, Float, Float, Float], Nil),
+    native!("std::pdf::set_color",   [Int, Int, Int, Float, Float, Float], Nil),
+    native!("std::pdf::add_line",    [Int, Int, Int, Float, Float, Float, Float, Float], Nil),
+    native!("std::pdf::add_rect",    [Int, Int, Int, Float, Float, Float, Float], Nil),
+    native!("std::pdf::save",        [Int, String], Nil, Filesystem),
+    native!("std::pdf::close",       [Int], Nil),
+
     // --- Phase 13': Wi-Fi introspection (Termux:API) ---
     // Shell out to termux-wifi-*. Requires the termux-api package and
     // the Termux:API app installed on the device (same as Fase 5).

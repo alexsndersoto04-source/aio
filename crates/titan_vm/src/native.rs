@@ -1344,6 +1344,51 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             }
         }
 
+        // ---------------- Phase 16: PDF generation (printpdf) ----------------
+        #[cfg(feature = "pdf_mod")] "std::pdf::new" => {
+            let title = string!(); let w = float!(); let h = float!();
+            Value::Int(stdlib::pdf_mod::new(&title, w, h).map_err(error)?)
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::add_page" => {
+            let handle = int!(); let w = float!(); let h = float!(); let name = string!();
+            Value::Int(stdlib::pdf_mod::add_page(handle, w, h, &name).map_err(error)? as i64)
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::page_count" => {
+            Value::Int(stdlib::pdf_mod::page_count(int!()).map_err(error)? as i64)
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::add_text" => {
+            let handle = int!(); let page = nonnegative(int!())?; let layer = nonnegative(int!())?;
+            let text = string!(); let size = float!(); let x = float!(); let y = float!();
+            stdlib::pdf_mod::add_text(handle, page, layer, &text, size, x, y).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::set_color" => {
+            let handle = int!(); let page = nonnegative(int!())?; let layer = nonnegative(int!())?;
+            let r = float!(); let g = float!(); let b = float!();
+            stdlib::pdf_mod::set_color(handle, page, layer, r, g, b).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::add_line" => {
+            let handle = int!(); let page = nonnegative(int!())?; let layer = nonnegative(int!())?;
+            let x1 = float!(); let y1 = float!(); let x2 = float!(); let y2 = float!(); let t = float!();
+            stdlib::pdf_mod::add_line(handle, page, layer, x1, y1, x2, y2, t).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::add_rect" => {
+            let handle = int!(); let page = nonnegative(int!())?; let layer = nonnegative(int!())?;
+            let x = float!(); let y = float!(); let w = float!(); let h = float!();
+            stdlib::pdf_mod::add_rect(handle, page, layer, x, y, w, h).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::save" => {
+            let handle = int!(); let path = string!();
+            stdlib::pdf_mod::save(handle, &path).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "pdf_mod")] "std::pdf::close" => {
+            stdlib::pdf_mod::close(int!()); Value::Nil
+        }
+
         // ---------------- Phase 13': Wi-Fi introspection ----------------
         #[cfg(feature = "wifi_mod")] "std::wifi::scan" => {
             let aps = stdlib::wifi_mod::scan().map_err(error)?;

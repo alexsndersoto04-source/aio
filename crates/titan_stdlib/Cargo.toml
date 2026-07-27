@@ -41,6 +41,8 @@ extras = [
     "wifi_mod",
     # Phase 12 pt.4 — Vector math for embeddings + semantic search.
     "vector_mod",
+    # Phase 16 — PDF generation (printpdf, pure-Rust core, no C-deps)
+    "pdf_mod",
 ]
 
 # Phase 1
@@ -114,6 +116,14 @@ wifi_mod     = []
 # on top of std::onnx::run_bert_pooled embeddings.
 vector_mod   = []
 
+# Phase 16 — PDF generation via printpdf. NO image embedding in this
+# first cut so we don't need to reconcile the `image` 0.24 vs 0.25
+# version conflict between printpdf and Phase 7. Text, lines,
+# rectangles and colours are enough for invoices, receipts, one-page
+# reports. PNG embed can come in a later patch once image versions
+# converge.
+pdf_mod      = ["dep:printpdf"]
+
 [dependencies]
 titan_tls = { path = "../titan_tls" }
 thiserror.workspace = true
@@ -168,6 +178,13 @@ indicatif         = { version = "0.17", optional = true }
 # Phase 7 — Images & QR codes (limit `image` to codecs we really use so the
 # Termux build stays lean).
 image             = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+
+# Phase 16 — printpdf 0.7 with NO default features (no azul-layout, no
+# rust-fontconfig, no HTML rendering, no SVG-to-PDF). Just the core PDF
+# writer with lopdf + owned_ttf_parser + time. Pure Rust, no C deps.
+# The 14 built-in PDF fonts (Helvetica, Times, Courier, ...) work
+# without embedding any TTF file.
+printpdf          = { version = "0.7", optional = true, default-features = false }
 qrcode            = { version = "0.14", optional = true, default-features = false, features = ["image", "svg"] }
 
 # Phase 8 — System & OS (all pure Rust, no C deps, work on Termux/Android).
