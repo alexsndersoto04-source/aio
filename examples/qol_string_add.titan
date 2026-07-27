@@ -1,0 +1,57 @@
+// Demo Fase 17 - Quality of Life: String + Any funciona sin
+// tener que envolver todo en interpolacion "{var}".
+//
+// Antes (v0.15.0 y anteriores):
+//   let s = "count: " + 42        -> ERROR "invalid operands for Add: String and Int"
+//   let out = "hello " + doc      -> ERROR si doc era Unknown (venia de un param)
+//
+// Ahora (v0.16.0+):
+//   let s = "count: " + 42        -> "count: 42"
+//   let out = "hello " + doc      -> funciona con cualquier tipo
+//
+// Ejecutar con:
+//     zett run examples/qol_string_add.titan
+
+fn main() {
+    print("---- Fase 17: String + Any ----")
+
+    // String + Int
+    let a = "El resultado es: " + 42
+    print(a)
+
+    // String + Float
+    let b = "Pi vale " + 3.14159
+    print(b)
+
+    // String + Bool
+    let c = "Estado: " + true
+    print(c)
+
+    // String + Array (usa el mismo formato que print)
+    let arr = [1, 2, 3, 4]
+    let d = "Los numeros: " + arr
+    print(d)
+
+    // String + Unknown (venido de un param sin anotar)
+    print(concat_with_prefix("Titan"))
+    print(concat_with_prefix(123))
+    print(concat_with_prefix([9, 8, 7]))
+
+    // Simetrico: Int + String tambien funciona
+    let e = 100 + " puntos"
+    print(e)
+
+    // Concatenacion encadenada
+    let name = "juan"
+    let score = 95
+    let msg = "El usuario " + name + " sumo " + score + " puntos"
+    print(msg)
+
+    print("---- Listo ----")
+}
+
+fn concat_with_prefix(x) -> string {
+    // x es Unknown (sin anotacion). Antes esto fallaba con
+    // "invalid operands for Add: String and Unknown". Ahora anda.
+    "recibi: " + x
+}

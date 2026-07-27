@@ -1,6 +1,36 @@
 # Zett / TITAN — Changelog
 
-## 0.16.0 — Phase 16: PDF generation (printpdf) 📄
+## 0.16.0 — Phase 17 (part 1) QoL: String + Any, plus Phase 16 PDF
+
+### 🎯 Language Quality-of-Life #1: `String + Any` just works
+The `+` operator now works when **either operand is a String** — the
+other side is coerced to its `print` form via `val_to_string`. Mirrors
+JavaScript's `"x " + n` and Python's f-strings.
+
+**Before v0.16.0:**
+```titan
+let s = "count: " + 42          // typecheck ERROR
+let out = "hello " + doc        // typecheck ERROR if doc is Unknown
+```
+**Now:**
+```titan
+let s = "count: " + 42          // → "count: 42"
+let out = "hello " + doc        // works for any type of doc
+let e = 100 + " points"         // → "100 points"  (symmetric)
+```
+
+This removes the single most frequent typecheck gotcha we hit while
+writing ~20 `.titan` examples across Phases 10-15. Existing code that
+concatenated two Strings keeps working unchanged — this is a strict
+loosening of the rule, not a breaking change.
+
+**Example:** `examples/qol_string_add.titan` — verified all six patterns
+(Int, Float, Bool, Array, Unknown-from-param, symmetric).
+
+**Files changed:** `crates/titan_typechecker/src/lib.rs` (Add rule),
+`crates/titan_vm/src/lib.rs` (runtime `add` fn).
+
+### 📄 Phase 16: PDF generation via `printpdf` (unchanged from previous notes)
 
 ### Added
 - **`std::pdf::*`** — pure-Rust PDF writing via `printpdf` 0.7 built

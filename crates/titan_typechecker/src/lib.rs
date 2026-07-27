@@ -389,7 +389,16 @@ impl TypeEnv {
             Eq | Neq => { self.require_compatible(&left, &right); Type::Bool }
             Lt | Gt | Lte | Gte => { if !is_numeric(&left) || !compatible(&left, &right) { self.invalid(op, left, right); } Type::Bool }
             LazyAnd | LazyOr => { self.require_compatible(&Type::Bool, &left); self.require_compatible(&Type::Bool, &right); Type::Bool }
-            Add if left == Type::String && right == Type::String => Type::String,
+            // v0.16.0 QoL: String + Any coerces to String at runtime via
+            // val_to_string(), so any of these are safe:
+            //   "x " + int, "x " + float, "x " + array, "x " + unknown
+            // The old rule (both must be String) forced ugly workarounds
+            // like putting every non-String inside string interpolation
+            // ({var}) which is verbose. Now `+` mirrors Python's f-strings
+            // and JavaScript's `${}`: whenever the left is a String, the
+            // whole expression is a String.
+            Add if left == Type::String => Type::String,
+            Add if right == Type::String => Type::String,
             Add | Sub | Mul | Div | Mod if is_numeric(&left) && compatible(&left, &right) => left,
             And | Or | Xor if left == Type::Int && right == Type::Int => Type::Int,
             _ => { self.invalid(op, left, right); Type::Unknown }

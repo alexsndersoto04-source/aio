@@ -696,7 +696,19 @@ fn ordered<F>(stack: &mut Vec<Value>, function: &str, operation: F) -> Result<()
 fn integer_binary<F>(stack: &mut Vec<Value>, function: &str, operation: F) -> Result<(), VmError> where F: FnOnce(i64, i64) -> i64 {
     binary(stack, function, |a, b| match (a, b) { (Value::Int(a), Value::Int(b)) => Ok(Value::Int(operation(a, b))), _ => Err(VmError::Type("bitwise operation requires integers".into())) })
 }
-fn add(a: Value, b: Value) -> Result<Value, VmError> { match (a, b) { (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_add(b).ok_or(VmError::Overflow)?)), (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)), (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)), _ => Err(VmError::Type("addition requires matching numbers or strings".into())) } }
+fn add(a: Value, b: Value) -> Result<Value, VmError> {
+    match (a, b) {
+        (Value::Int(a),   Value::Int(b))   => Ok(Value::Int(a.checked_add(b).ok_or(VmError::Overflow)?)),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+        // v0.16.0 QoL: String + Any coerces the right operand via
+        // val_to_string(). Mirrors JS `"x " + n` and Python f-strings.
+        // Applies symmetrically so `n + " suffix"` also works.
+        (Value::Str(a),   Value::Str(b))   => Ok(Value::Str(a + &b)),
+        (Value::Str(a),   other)           => Ok(Value::Str(a + &val_to_string(&other))),
+        (other,           Value::Str(b))   => Ok(Value::Str(val_to_string(&other) + &b)),
+        _ => Err(VmError::Type("addition requires matching numbers or strings".into())),
+    }
+}
 fn sub(a: Value, b: Value) -> Result<Value, VmError> { match (a, b) { (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_sub(b).ok_or(VmError::Overflow)?)), (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)), _ => Err(VmError::Type("subtraction requires matching numbers".into())) } }
 fn mul(a: Value, b: Value) -> Result<Value, VmError> { match (a, b) { (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_mul(b).ok_or(VmError::Overflow)?)), (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)), _ => Err(VmError::Type("multiplication requires matching numbers".into())) } }
 fn div(a: Value, b: Value) -> Result<Value, VmError> { match (a, b) { (_, Value::Int(0)) => Err(VmError::DivisionByZero), (_, Value::Float(0.0)) => Err(VmError::DivisionByZero), (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_div(b).ok_or(VmError::Overflow)?)), (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)), _ => Err(VmError::Type("division requires matching numbers".into())) } }
