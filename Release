@@ -1,24 +1,24 @@
 Architectures: arm
 Codename: zett
 Components: .
-Date: Mon, 27 Jul 2026 18:12:55 +0000
+Date: Mon, 27 Jul 2026 18:29:26 +0000
 Description: Zett APT repository for Termux ARM
 Label: zett
 Origin: zett
 Suite: stable
 MD5Sum:
  730933e77ad16c2970ac74c0d9a78eec            46396 Packages
- 1a7df5e5dcfb4a373d6dee8a4cca113c             4887 Packages.gz
- 875621d57840da47ecbc41ecb9b46262              173 Release
+ db9daa5f64dcedcdb54d1d298a256280             4887 Packages.gz
+ c916d7f00e9da56b01f42a967912dc11              173 Release
 SHA1:
  19803a180aa9ae015f2768c42490144651e0f20d            46396 Packages
- 16496aa9524567c7f32d1f6d5e14f3305fcdc1a4             4887 Packages.gz
- 3fd73bd2936161069e672dab40be39f5d18a3fae              173 Release
+ b401510128725216939e8c6fec092bc83910b5f6             4887 Packages.gz
+ c86bf193e54538b97d65cf242f3fc1c763af2c89              173 Release
 SHA256:
  8e33f72a698bba077023fd50355c5038a298a7431df75fc9e45187848afa7eac            46396 Packages
- e5c2f380ab2498c36df81f95d5304c13222d49dd85df15399c91dad84475d988             4887 Packages.gz
- b1292987c916e77a1a54a771a7750a9a82357a8169a90ce762e5cbda23c64350              173 Release
+ 88c49a4231391503775b9cde8e6bb1a508c4102828c9759a8590ad4591d7e805             4887 Packages.gz
+ 7122b6cf4d3ac4ae79ba7ca78ab3ada03c6f679165913965def033707d8102b0              173 Release
 SHA512:
  74ffacb91e22a33d98da6d83b6a725343caf92870c751e9798cd83c84449c71bd088c694ac39654cf7bb3b8f72a5c92931d5c9b1f851e98f2f7a85715771ef87            46396 Packages
- c0bf25a430374f987a13af9cbd73207c5882dcc14cf66d653945ab6dc0e7f8091b7fa89b001ba52f79b431579c41a760b334e860e8e9aef2784fb78dc3dfbf9e             4887 Packages.gz
- 3666204ff928c414c2eb8d53a733f5d222353d22bf9404cd29aa629b7ea25440e9a9078868a496a6493ccf9aa6dc8112807493676bbfd880e8ce5f886b052b12              173 Release
+ 2cfb53aa1fad5e05bc20407869f86e5ac65110cd1def27595d0a039bfbc8506661478eec52563abfdcee9834f586c123d0babf5f45bb4807610081aa8ecb1f97             4887 Packages.gz
+ cc2d5fc8b39b3ab1e49217c9c297688feb6e3367f31f694809a51676b58326b4182f0fd909b6d96c6cbcce01e9397d9b07633e3a03576882362e5fa2a8b85407              173 Release
