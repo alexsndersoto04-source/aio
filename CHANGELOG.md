@@ -1,5 +1,45 @@
 # Zett / TITAN — Changelog
 
+## 0.14.0 — Phase 13': Wi-Fi introspection (termux-wifi-*)
+
+### Added
+- **`std::wifi::*`** — real bindings to the `termux-wifi-*` CLIs shipped
+  by the official Termux:API package. Nothing is simulated: every call
+  spawns the matching binary and surfaces exactly what Android's
+  `WifiManager` reports.
+    * `scan()` → `[{ ssid, bssid, rssi, frequency_mhz, timestamp,
+      channel_bandwidth_mhz, center_frequency_mhz }, ...]`
+      — nearby access points from the last cached scan.
+    * `connection_info()` → `{ ssid, bssid, ip, mac_address,
+      link_speed_mbps, rssi, frequency_mhz, network_id,
+      supplicant_state, hidden_ssid }` or `nil` when not connected.
+    * `set_enabled(bool)` — toggle the Wi-Fi radio (may silently
+      no-op on Android ≥ 10 with the screen locked; upstream Android
+      restriction, not a bug).
+    * `signal_bars(rssi_dbm)` → 0..=4 — pure Rust, no CLI, matches
+      Android's `WifiManager.calculateSignalLevel` heuristic. Safe to
+      call anywhere for UI rendering.
+
+### Why Wi-Fi and not Bluetooth
+Termux:API does **not** expose Bluetooth scanning / BLE. `bluetoothctl`
+/ BlueZ / `hcitool` all require Linux's BlueZ stack, which Android
+doesn't use (it uses BlueDroid). Confirmed by the Termux maintainer
+(Grimler91, 2022): *"android doesn't use bluez, so bluetoothctl cannot
+work. What you need is a termux-api 'bluetoothAPI', but no one has
+worked on writing such an API at the moment."*
+
+Rather than ship a fake `std::bluetooth::*` module (which would
+violate the project's zero-simulations rule), this release replaces
+what was going to be Phase 13 with **Phase 13'**: real Wi-Fi
+introspection using `termux-wifi-scaninfo`, `termux-wifi-connectioninfo`
+and `termux-wifi-enable` — all of which are confirmed present in the
+official termux-api package.
+
+### 📦 Ejemplo
+`examples/wifi.titan` — escanea redes cercanas, imprime SSID / RSSI /
+frecuencia / bars por cada AP, después muestra el estado de la conexión
+actual (SSID, IP, MAC, link speed).
+
 ## 0.13.0 — Phase 12 (part 3): BERT-family multi-input inference
 
 ### Added

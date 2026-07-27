@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.13.0_arm.deb"
+OUT="zett_0.14.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.13.0
+Version: 0.14.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input)
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input), Wi-Fi scanning
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -53,7 +53,10 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  multi-input BERT-family loaders (input_ids + attention_mask, with
  or without token_type_ids) so DistilBERT / MiniLM / classic BERT
  classifiers and embedding models can be tokenized with std::tokenize
- and forwarded through std::onnx in a single pipeline on the device.
+ and forwarded through std::onnx in a single pipeline on the device,
+ and Wi-Fi introspection (std::wifi::scan / connection_info / set_enabled
+ / signal_bars) via the official termux-wifi-* CLIs shipped by the
+ Termux:API package.
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

@@ -1285,6 +1285,44 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             Value::Map(onnx_output_to_map(values, out_shape))
         }
 
+        // ---------------- Phase 13': Wi-Fi introspection ----------------
+        #[cfg(feature = "wifi_mod")] "std::wifi::scan" => {
+            let aps = stdlib::wifi_mod::scan().map_err(error)?;
+            Value::Array(aps.into_iter().map(|ap| Value::Map(BTreeMap::from([
+                ("ssid".into(),                  Value::Str(ap.ssid)),
+                ("bssid".into(),                 Value::Str(ap.bssid)),
+                ("rssi".into(),                  Value::Int(ap.rssi)),
+                ("frequency_mhz".into(),         Value::Int(ap.frequency_mhz)),
+                ("timestamp".into(),             Value::Int(ap.timestamp)),
+                ("channel_bandwidth_mhz".into(), Value::Str(ap.channel_bandwidth_mhz)),
+                ("center_frequency_mhz".into(),  Value::Int(ap.center_frequency_mhz)),
+            ]))).collect())
+        }
+        #[cfg(feature = "wifi_mod")] "std::wifi::connection_info" => {
+            match stdlib::wifi_mod::connection_info().map_err(error)? {
+                Some(ci) => Value::Map(BTreeMap::from([
+                    ("ssid".into(),             Value::Str(ci.ssid)),
+                    ("bssid".into(),            Value::Str(ci.bssid)),
+                    ("ip".into(),               Value::Str(ci.ip)),
+                    ("mac_address".into(),      Value::Str(ci.mac_address)),
+                    ("link_speed_mbps".into(),  Value::Int(ci.link_speed_mbps)),
+                    ("rssi".into(),             Value::Int(ci.rssi)),
+                    ("frequency_mhz".into(),    Value::Int(ci.frequency_mhz)),
+                    ("network_id".into(),       Value::Int(ci.network_id)),
+                    ("supplicant_state".into(), Value::Str(ci.supplicant_state)),
+                    ("hidden_ssid".into(),      Value::Bool(ci.hidden_ssid)),
+                ])),
+                None => Value::Nil,
+            }
+        }
+        #[cfg(feature = "wifi_mod")] "std::wifi::set_enabled" => {
+            stdlib::wifi_mod::set_enabled(boolean!()).map_err(error)?;
+            Value::Nil
+        }
+        #[cfg(feature = "wifi_mod")] "std::wifi::signal_bars" => {
+            Value::Int(stdlib::wifi_mod::signal_bars(int!()) as i64)
+        }
+
         // ---------------- Phase 1: dirs ----------------
         #[cfg(feature = "dirs_mod")] "std::dirs::home"       => Value::Str(stdlib::dirs_mod::home()),
         #[cfg(feature = "dirs_mod")] "std::dirs::config"     => Value::Str(stdlib::dirs_mod::config()),

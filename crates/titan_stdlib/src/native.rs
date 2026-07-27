@@ -686,6 +686,19 @@ pub static NATIVES: &[NativeSignature] = &[
     // run_bert3(handle, shape, input_ids, attention_mask, token_type_ids)
     native!("std::onnx::run_bert3",    [Int, Array, Array, Array, Array], Map),
 
+    // --- Phase 13': Wi-Fi introspection (Termux:API) ---
+    // Shell out to termux-wifi-*. Requires the termux-api package and
+    // the Termux:API app installed on the device (same as Fase 5).
+    // scan() → array of {ssid, bssid, rssi, frequency_mhz, timestamp,
+    //          channel_bandwidth_mhz, center_frequency_mhz}
+    native!("std::wifi::scan",             [], Array, Network),
+    // connection_info() → { ssid, bssid, ip, mac_address, ... } or Nil.
+    native!("std::wifi::connection_info",  [], Any, Network),
+    // set_enabled(bool) — toggle the Wi-Fi radio.
+    native!("std::wifi::set_enabled",      [Bool], Nil, Network),
+    // signal_bars(rssi_dbm) → 0..=4  (pure fn, no CLI, safe on any host).
+    native!("std::wifi::signal_bars",      [Int], Int),
+
     // --- Phase 1: dirs ---
     native!("std::dirs::home",       [], String),
     native!("std::dirs::config",     [], String),

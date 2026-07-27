@@ -1,0 +1,78 @@
+// Demo Fase 13' — Wi-Fi scan y estado de conexion.
+// Ejecutar con:
+//     zett run examples/wifi.titan
+//
+// Requiere el paquete termux-api instalado y la app Termux:API:
+//   pkg install termux-api
+//
+// Y en Android Settings > Apps > Termux:API > Permisos:
+//   * Ubicacion (requerida a partir de Android 10 para ver los SSID)
+//   * Cambiar ajustes del sistema (opcional, solo para set_enabled)
+
+fn main() {
+    print("---- Fase 13': Wi-Fi via Termux:API ----")
+
+    // ---- 1) Conexion actual ----
+    print("---- Conexion actual ----")
+    let now = std::wifi::connection_info()
+    if now == nil {
+        print("No estas conectado a ninguna red Wi-Fi.")
+    } else {
+        let ssid  = now.ssid
+        let ip    = now.ip
+        let mac   = now.mac_address
+        let speed = now.link_speed_mbps
+        let rssi  = now.rssi
+        let freq  = now.frequency_mhz
+        let bars  = std::wifi::signal_bars(rssi)
+        print("SSID:            {ssid}")
+        print("IP:              {ip}")
+        print("MAC:             {mac}")
+        print("Velocidad:       {speed} Mbps")
+        print("Senal:           {rssi} dBm  ({bars}/4 bars)")
+        print("Frecuencia:      {freq} MHz")
+    }
+
+    // ---- 2) Escaneo ----
+    print("---- Redes cercanas ----")
+    let redes = std::wifi::scan()
+    let n = std::collections::length(redes)
+    print("Encontradas {n} redes.")
+    print("(Nota: Android ~limita rescans y devuelve el ultimo cache;")
+    print(" en Android 10+ hace falta permiso de Ubicacion para ver SSIDs.)")
+
+    if n == 0 {
+        print("Sin resultados. Chequea que:")
+        print("  * la app Termux:API tenga permiso de Ubicacion")
+        print("  * el Wi-Fi este encendido")
+        print("  * hayas escaneado desde la app de Wi-Fi de Android recientemente")
+    } else {
+        print_networks(redes, n)
+    }
+
+    print("---- Listo ----")
+}
+
+fn print_networks(redes: [map], n: int) {
+    for i in 0..n {
+        let ap = redes[i]
+        let ssid = ap.ssid
+        let bssid = ap.bssid
+        let rssi = ap.rssi
+        let freq = ap.frequency_mhz
+        let bars = std::wifi::signal_bars(rssi)
+        let ancho = ap.channel_bandwidth_mhz
+        // Marca visual segun bars: mas "*" = mejor senal.
+        let stars = bars_to_stars(bars)
+        print("  {stars}  {ssid}  |  {rssi} dBm  |  {freq} MHz ({ancho})  |  {bssid}")
+    }
+}
+
+// Convierte 0..=4 bars en 0..=4 asteriscos + relleno para alineacion.
+fn bars_to_stars(bars: int) -> string {
+    if bars == 4 { return "****" }
+    if bars == 3 { return "*** " }
+    if bars == 2 { return "**  " }
+    if bars == 1 { return "*   " }
+    "    "
+}

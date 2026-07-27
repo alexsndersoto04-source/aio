@@ -37,6 +37,8 @@ extras = [
     "tokenize_mod",
     # Phase 12 part 2 — Local AI: ONNX inference (tract, pure-Rust)
     "onnx_mod",
+    # Phase 13' — Wi-Fi introspection via termux-wifi-* (Termux:API)
+    "wifi_mod",
 ]
 
 # Phase 1
@@ -101,6 +103,10 @@ tokenize_mod = ["dep:tokenizers"]
 
 # Phase 12 part 2 — ONNX inference via tract (Sonos' inference engine).
 onnx_mod     = ["dep:tract-onnx"]
+
+# Phase 13' — Wi-Fi introspection. No new dep: uses serde_json + std::Command
+# to shell out to the termux-wifi-* CLIs that ship with Termux:API.
+wifi_mod     = []
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }

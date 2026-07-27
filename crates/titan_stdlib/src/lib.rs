@@ -97,6 +97,9 @@ pub mod mobile;
 // --- Phase 12 part 2: Local AI — ONNX inference (tract, pure-Rust) -----
 #[cfg(feature = "onnx_mod")]      pub mod onnx_mod;
 
+// --- Phase 13': Wi-Fi introspection via termux-wifi-* CLI --------------
+#[cfg(feature = "wifi_mod")]      pub mod wifi_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }
