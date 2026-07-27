@@ -1,0 +1,199 @@
+// Dashboard de sistema — herramienta real que combina 3 fases.
+// Ejecutar con:
+//     zett run examples/dashboard.titan
+//
+// Levanta un servidor HTTP en http://127.0.0.1:8080 que sirve:
+//   /              → HTML con stats en vivo (CPU %, RAM, disco, procesos)
+//                    Auto-refresh cada 5 segundos.
+//   /bar.svg       → Chart de barras (CPU / RAM / Swap / Disco usados)
+//   /procs.svg     → Bar chart de los 5 procesos que mas CPU consumen
+//
+// Combina:
+//   * Fase 8  (std::procfs)  — CPU %, memoria, procesos
+//   * Fase 11 (std::server)  — HTTP + router
+//   * Fase 14 (std::plot)    — SVG charts
+//   * Fase 17 QoL            — String + Any (todos los "{n} MB" etc)
+//
+// Uso real: en tu Redmi 9C corres esto, y desde otro dispositivo de
+// tu WiFi (laptop, otro celu) abris http://<IP-del-celu>:8080/ y
+// tenes un htop grafico en el navegador.
+
+fn main() {
+    let home = std::dirs::home()
+    let bar_path = home + "/dashboard_bar.svg"
+    let procs_path = home + "/dashboard_procs.svg"
+
+    // Router: 3 endpoints con matchit (mismo que usa axum)
+    let r = std::router::new()
+    std::router::insert(r, "/",          "home")
+    std::router::insert(r, "/bar.svg",   "bar")
+    std::router::insert(r, "/procs.svg", "procs")
+
+    let s = std::server::start("0.0.0.0:8080")
+    let addr = std::server::local_addr(s)
+    print("---- Dashboard listo en http://" + addr + "/")
+    print("(auto-refresh cada 5s. Ctrl+C para salir)")
+    print("desde otro dispositivo en tu WiFi:")
+    let ip = std::procfs::hostname()
+    print("  http://<IP-del-celu>:8080/     (hostname: " + ip + ")")
+
+    // Loop: acepta hasta 200 requests (~15 min con refresh 5s)
+    for i in 0..200 {
+        let req = std::server::accept(s, 60000)
+        if req < 0 {
+            print("timeout, sigo esperando...")
+        } else {
+            handle(r, req, bar_path, procs_path)
+        }
+    }
+
+    std::server::stop(s)
+    std::router::drop(r)
+    print("---- Dashboard cerrado ----")
+}
+
+fn handle(r, req, bar_path, procs_path) {
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
+
+    if hit == nil {
+        std::server::respond(req, 404, "Not Found")
+    } else {
+        let tag = hit.pattern
+
+        if tag == "home" {
+            let html = render_html()
+            std::server::respond_html(req, 200, html)
+        }
+        if tag == "bar" {
+            // Genera el SVG en el momento con datos frescos de procfs
+            render_bar_chart(bar_path)
+            let bytes = std::fs::read_bytes(bar_path)
+            std::server::respond_bytes(req, 200, "image/svg+xml", bytes)
+        }
+        if tag == "procs" {
+            render_procs_chart(procs_path)
+            let bytes = std::fs::read_bytes(procs_path)
+            std::server::respond_bytes(req, 200, "image/svg+xml", bytes)
+        }
+    }
+    print(path)
+}
+
+// ---- HTML rendering ----------------------------------------------
+
+fn render_html() -> string {
+    let host = std::procfs::hostname()
+    let os = std::procfs::os_name()
+    let kernel = std::procfs::kernel()
+    let cpus = std::procfs::cpu_count()
+    let cpu_pct = std::procfs::cpu_usage()
+    let ram_used = std::procfs::used_memory()
+    let ram_total = std::procfs::total_memory()
+    let ram_used_mb = ram_used / 1048576
+    let ram_total_mb = ram_total / 1048576
+    let swap_used = std::procfs::used_swap()
+    let swap_total = std::procfs::total_swap()
+    let swap_used_mb = swap_used / 1048576
+    let swap_total_mb = swap_total / 1048576
+    let procs = std::procfs::process_count()
+
+    // Auto-refresh cada 5s con meta http-equiv
+    let html = "<!DOCTYPE html>"
+        + "<html><head><meta charset='utf-8'>"
+        + "<meta http-equiv='refresh' content='5'>"
+        + "<title>Titan Dashboard</title>"
+        + "<style>"
+        + "body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:20px;}"
+        + "h1{color:#58a6ff;border-bottom:2px solid #30363d;padding-bottom:10px;}"
+        + ".stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin:20px 0;}"
+        + ".card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:15px;}"
+        + ".card h3{margin:0 0 8px 0;color:#8b949e;font-size:13px;text-transform:uppercase;}"
+        + ".card .val{font-size:28px;font-weight:bold;color:#58a6ff;}"
+        + ".card .sub{color:#8b949e;font-size:12px;margin-top:4px;}"
+        + "img{max-width:100%;background:white;border-radius:8px;margin:10px 0;}"
+        + "footer{color:#6e7681;font-size:12px;text-align:center;margin-top:30px;}"
+        + "</style></head><body>"
+        + "<h1>Titan System Dashboard</h1>"
+        + "<div class='stats'>"
+        + "<div class='card'><h3>Host</h3><div class='val'>" + host + "</div><div class='sub'>" + os + "</div></div>"
+        + "<div class='card'><h3>Kernel</h3><div class='val'>" + kernel + "</div></div>"
+        + "<div class='card'><h3>CPU</h3><div class='val'>" + cpu_pct + " %</div><div class='sub'>" + cpus + " cores</div></div>"
+        + "<div class='card'><h3>RAM</h3><div class='val'>" + ram_used_mb + " MB</div><div class='sub'>de " + ram_total_mb + " MB</div></div>"
+        + "<div class='card'><h3>Swap</h3><div class='val'>" + swap_used_mb + " MB</div><div class='sub'>de " + swap_total_mb + " MB</div></div>"
+        + "<div class='card'><h3>Procesos</h3><div class='val'>" + procs + "</div></div>"
+        + "</div>"
+        + "<h2>Uso de recursos</h2>"
+        + "<img src='/bar.svg?t=" + std::procfs::uptime() + "' alt='bar chart'/>"
+        + "<h2>Top procesos (CPU %)</h2>"
+        + "<img src='/procs.svg?t=" + std::procfs::uptime() + "' alt='procs chart'/>"
+        + "<footer>Generado por Titan v0.16.0 en Termux ARM &middot; refresh cada 5s</footer>"
+        + "</body></html>"
+    html
+}
+
+// ---- SVG rendering -----------------------------------------------
+
+// Bar chart de uso de recursos como porcentaje.
+fn render_bar_chart(path) {
+    let ram_used = std::procfs::used_memory()
+    let ram_total = std::procfs::total_memory()
+    let ram_pct = pct_of(ram_used, ram_total)
+
+    let swap_used = std::procfs::used_swap()
+    let swap_total = std::procfs::total_swap()
+    let swap_pct = pct_of(swap_used, swap_total)
+
+    let cpu_pct = std::procfs::cpu_usage()
+
+    // Disco: sumo el primer disco reportado
+    let disks = std::procfs::disks()
+    let mut disk_pct = 0.0
+    let n_disks = std::collections::length(disks)
+    if n_disks > 0 {
+        let d = disks[0]
+        let total = d.total
+        let avail = d.available
+        let used = total - avail
+        disk_pct = pct_of(used, total)
+    }
+
+    let labels = ["CPU %", "RAM %", "Swap %", "Disco %"]
+    let values = [cpu_pct, ram_pct, swap_pct, disk_pct]
+    std::plot::bar(path, "Uso de recursos (%)", "porcentaje", labels, values)
+}
+
+fn render_procs_chart(path) {
+    // Top 5 procesos por CPU
+    let top = std::procfs::top_processes(5)
+    let n = std::collections::length(top)
+
+    let mut labels = []
+    let mut values = []
+    for i in 0..n {
+        let p = top[i]
+        // Cada proceso es un map con {pid, name, cpu_pct, memory}
+        let name = p.name
+        let cpu = p.cpu_pct
+        labels = std::array::push(labels, name)
+        values = std::array::push(values, cpu)
+    }
+
+    if n == 0 {
+        // Fallback: si procfs no devolvio procesos (raro), evita crash
+        labels = ["sin datos"]
+        values = [0.0]
+    }
+    std::plot::bar(path, "Top procesos por CPU %", "CPU %", labels, values)
+}
+
+// pct_of(used, total) -> porcentaje como float 0..100.
+// used y total sin anotar porque pueden venir de map fields (Unknown).
+fn pct_of(used, total) -> float {
+    if total == 0 {
+        return 0.0
+    }
+    let u = std::math::to_float(used)
+    let t = std::math::to_float(total)
+    u * 100.0 / t
+}
