@@ -1284,6 +1284,65 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             let (values, out_shape) = stdlib::onnx_mod::run_three_i64(h, &shape, &ids, &mask, &types).map_err(error)?;
             Value::Map(onnx_output_to_map(values, out_shape))
         }
+        #[cfg(feature = "onnx_mod")] "std::onnx::run_bert_pooled" => {
+            let h = int!();
+            let batch = int!();
+            let seq   = int!();
+            let ids  = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let mask = array!().into_iter().map(expect_int).collect::<Result<Vec<i64>, _>>()?;
+            let (values, out_shape) = stdlib::onnx_mod::run_bert_pooled(h, batch, seq, &ids, &mask).map_err(error)?;
+            Value::Map(onnx_output_to_map(values, out_shape))
+        }
+
+        // ---------------- Phase 12 pt.4: vector math ----------------
+        #[cfg(feature = "vector_mod")] "std::vector::dot" => {
+            let a: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            let b: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            if a.len() != b.len() { return Err(format!("std::vector::dot: length mismatch {} vs {}", a.len(), b.len())); }
+            Value::Float(stdlib::vector_mod::dot(&a, &b) as f64)
+        }
+        #[cfg(feature = "vector_mod")] "std::vector::norm" => {
+            let v: Vec<f32> = array!().into_iter().map(|x| Ok(expect_float(x)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            Value::Float(stdlib::vector_mod::norm(&v) as f64)
+        }
+        #[cfg(feature = "vector_mod")] "std::vector::cosine_similarity" => {
+            let a: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            let b: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            if a.len() != b.len() { return Err(format!("std::vector::cosine_similarity: length mismatch {} vs {}", a.len(), b.len())); }
+            Value::Float(stdlib::vector_mod::cosine_similarity(&a, &b) as f64)
+        }
+        #[cfg(feature = "vector_mod")] "std::vector::normalize" => {
+            let v: Vec<f32> = array!().into_iter().map(|x| Ok(expect_float(x)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            let n = stdlib::vector_mod::normalize(&v);
+            Value::Array(n.into_iter().map(|x| Value::Float(x as f64)).collect())
+        }
+        #[cfg(feature = "vector_mod")] "std::vector::add" => {
+            let a: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            let b: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            if a.len() != b.len() { return Err(format!("std::vector::add: length mismatch {} vs {}", a.len(), b.len())); }
+            let r = stdlib::vector_mod::add(&a, &b);
+            Value::Array(r.into_iter().map(|x| Value::Float(x as f64)).collect())
+        }
+        #[cfg(feature = "vector_mod")] "std::vector::sub" => {
+            let a: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            let b: Vec<f32> = array!().into_iter().map(|v| Ok(expect_float(v)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            if a.len() != b.len() { return Err(format!("std::vector::sub: length mismatch {} vs {}", a.len(), b.len())); }
+            let r = stdlib::vector_mod::sub(&a, &b);
+            Value::Array(r.into_iter().map(|x| Value::Float(x as f64)).collect())
+        }
+        #[cfg(feature = "vector_mod")] "std::vector::scale" => {
+            let v: Vec<f32> = array!().into_iter().map(|x| Ok(expect_float(x)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            let k = float!() as f32;
+            let r = stdlib::vector_mod::scale(&v, k);
+            Value::Array(r.into_iter().map(|x| Value::Float(x as f64)).collect())
+        }
+        #[cfg(feature = "vector_mod")] "std::vector::argmax" => {
+            let v: Vec<f32> = array!().into_iter().map(|x| Ok(expect_float(x)? as f32)).collect::<Result<Vec<_>, String>>()?;
+            match stdlib::vector_mod::argmax(&v) {
+                Some(i) => Value::Int(i as i64),
+                None    => return Err("std::vector::argmax: empty vector".into()),
+            }
+        }
 
         // ---------------- Phase 13': Wi-Fi introspection ----------------
         #[cfg(feature = "wifi_mod")] "std::wifi::scan" => {

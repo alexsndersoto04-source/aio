@@ -39,6 +39,8 @@ extras = [
     "onnx_mod",
     # Phase 13' — Wi-Fi introspection via termux-wifi-* (Termux:API)
     "wifi_mod",
+    # Phase 12 pt.4 — Vector math for embeddings + semantic search.
+    "vector_mod",
 ]
 
 # Phase 1
@@ -107,6 +109,10 @@ onnx_mod     = ["dep:tract-onnx"]
 # Phase 13' — Wi-Fi introspection. No new dep: uses serde_json + std::Command
 # to shell out to the termux-wifi-* CLIs that ship with Termux:API.
 wifi_mod     = []
+
+# Phase 12 pt.4 — Vector math (pure Rust, no deps). For semantic search
+# on top of std::onnx::run_bert_pooled embeddings.
+vector_mod   = []
 
 [dependencies]
 titan_tls = { path = "../titan_tls" }

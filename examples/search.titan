@@ -1,0 +1,155 @@
+// Demo Fase 12 pt.4: busqueda semantica end-to-end en Termux.
+// Ejecutar con:
+//     zett run examples/search.titan
+//
+// Combina las 4 partes de Fase 12:
+//   * std::tokenize (pt.1) — WordPiece de MiniLM
+//   * std::onnx     (pt.2) — inferencia en tu Redmi 9C
+//   * run_bert_pooled (pt.4) — mean pooling de sentence-transformers
+//   * std::vector   (pt.4) — cosine similarity + normalize
+//
+// Modelo: sentence-transformers/all-MiniLM-L6-v2 exportado a ONNX FP32
+// (~90 MB). Convierte texto a vectores de 384 dim, sirve para RAG chico
+// offline. Aca hacemos un mini buscador sobre ~8 documentos.
+//
+// Requiere 2 archivos en $HOME:
+//   * ~/minilm-tokenizer.json   (~430 KB)
+//   * ~/minilm.onnx             (~90 MB)
+//
+// El primer bloque imprime los curls si faltan.
+
+fn main() {
+    let home = std::dirs::home()
+    let tok_path = home + "/minilm-tokenizer.json"
+    let mod_path = home + "/minilm.onnx"
+
+    print("---- Fase 12 pt.4: busqueda semantica con MiniLM ----")
+
+    let ok_tok = std::fs::exists(tok_path)
+    let ok_mod = std::fs::exists(mod_path)
+    if !ok_tok {
+        print("Falta tokenizer en {tok_path}")
+        print_download_instructions()
+        return
+    }
+    if !ok_mod {
+        print("Falta modelo en {mod_path}")
+        print_download_instructions()
+        return
+    }
+
+    // ---- 1) Cargar tokenizer y encoder ----
+    print("Cargando tokenizer ...")
+    let tok = std::tokenize::load(tok_path)
+
+    print("Cargando MiniLM ONNX (10-30s la primera vez) ...")
+    let seq_len = 128
+    let model = std::onnx::load_bert(mod_path, 1, seq_len)
+    print("Modelo cargado")
+
+    // ---- 2) Corpus a indexar ----
+    let docs = [
+        "How to compile a Rust program on Linux with cargo build --release",
+        "Recipe for authentic Italian pizza dough with tipo 00 flour",
+        "The Real Madrid football club won the Champions League in 2024",
+        "Setting up SSH keys for GitHub authentication without passwords",
+        "How to make homemade chocolate chip cookies from scratch",
+        "The best strategies for defending in a 5-a-side soccer match",
+        "Debugging a memory leak in a Python Flask web application",
+        "How to grow tomatoes on a small apartment balcony"
+    ]
+    let n_docs = std::collections::length(docs)
+    print("---- Indexando {n_docs} documentos ----")
+
+    // Cada embedding es un array de 384 floats normalizados.
+    let mut index = []
+    for i in 0..n_docs {
+        let doc = docs[i]
+        let emb = embed(tok, model, doc, seq_len)
+        index = std::array::push(index, emb)
+        print("  indexado {i}")
+    }
+
+    // ---- 3) Queries de prueba ----
+    let queries = [
+        "programming in rust language",
+        "food to cook at home",
+        "sports and football",
+        "authentication with git and github"
+    ]
+    let n_queries = std::collections::length(queries)
+
+    for qi in 0..n_queries {
+        let query = queries[qi]
+        print("---- Query: {query}")
+        let q_emb = embed(tok, model, query, seq_len)
+
+        // Ranking: cosine similarity contra cada doc.
+        let top3 = top_k(q_emb, index, docs, n_docs, 3)
+        print("  Top matches:")
+        print(top3)
+    }
+
+    std::tokenize::close(tok)
+    std::onnx::close(model)
+    print("---- Listo ----")
+}
+
+// Encode text -> [384] normalized embedding vector.
+fn embed(tok: int, model: int, text: string, seq_len: int) {
+    let enc = std::tokenize::encode_padded(tok, text, seq_len, 0, true)
+    let ids = enc.ids
+    let mask = enc.attention_mask
+
+    // run_bert_pooled devuelve { values: [batch*hidden], shape: [batch, hidden] }
+    // Como pasamos batch=1, values es un [hidden] flat de 384 floats.
+    let out = std::onnx::run_bert_pooled(model, 1, seq_len, ids, mask)
+    let raw = out.values
+
+    // Normalizar para que cosine similarity == dot product.
+    let normalized = std::vector::normalize(raw)
+    normalized
+}
+
+// top_k: devuelve un string con los `k` documentos mas similares al
+// embedding de query, en formato "  0.87  doc..."
+fn top_k(q_emb, index, docs, n_docs: int, k: int) -> string {
+    // Calcular similitud de cada doc.
+    let mut sims_mut = []
+    for i in 0..n_docs {
+        let e = index[i]
+        let s = std::vector::cosine_similarity(q_emb, e)
+        sims_mut = std::array::push(sims_mut, s)
+    }
+
+    // Encontrar y remover los k mejores.
+    let mut out = ""
+    for r in 0..k {
+        // argmax sobre sims_mut, guardar, "consumir" ese slot poniendolo a -2.
+        let best = std::vector::argmax(sims_mut)
+        let score = sims_mut[best]
+        let doc = docs[best]
+        // Formatear con 3 decimales aproximados (no hay format_float en Titan
+        // aun, imprimir el float completo es aceptable para la demo).
+        out = out + "\n  #{r}  score={score}  " + doc
+
+        // Marcar este slot para no volver a elegirlo.
+        sims_mut = std::array::set(sims_mut, best, -2.0)
+    }
+    out
+}
+
+fn print_download_instructions() {
+    print("")
+    print("Baja los 2 archivos:")
+    print("")
+    print("  # Tokenizer (~430 KB)")
+    print("  curl -L -o ~/minilm-tokenizer.json \\")
+    print("    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json")
+    print("")
+    print("  # Modelo ONNX FP32 (~90 MB)")
+    print("  curl -L -o ~/minilm.onnx \\")
+    print("    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx")
+    print("")
+    print("Y volve a correr: zett run examples/search.titan")
+}

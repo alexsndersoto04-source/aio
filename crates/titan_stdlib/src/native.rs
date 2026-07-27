@@ -685,6 +685,21 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::onnx::run_bert",     [Int, Array, Array, Array], Map),
     // run_bert3(handle, shape, input_ids, attention_mask, token_type_ids)
     native!("std::onnx::run_bert3",    [Int, Array, Array, Array, Array], Map),
+    // run_bert_pooled: sentence-transformer style — runs the encoder
+    // and mean-pools the token embeddings weighted by attention_mask.
+    // args: (handle, batch, seq_len, input_ids, attention_mask)
+    // returns { values: [Float len=batch*hidden], shape: [batch, hidden] }.
+    native!("std::onnx::run_bert_pooled", [Int, Int, Int, Array, Array], Map),
+
+    // --- Phase 12 pt.4: vector math (embeddings, semantic search) ---
+    native!("std::vector::dot",                [Array, Array], Float),
+    native!("std::vector::norm",               [Array], Float),
+    native!("std::vector::cosine_similarity",  [Array, Array], Float),
+    native!("std::vector::normalize",          [Array], Array),
+    native!("std::vector::add",                [Array, Array], Array),
+    native!("std::vector::sub",                [Array, Array], Array),
+    native!("std::vector::scale",              [Array, Float], Array),
+    native!("std::vector::argmax",             [Array], Int),
 
     // --- Phase 13': Wi-Fi introspection (Termux:API) ---
     // Shell out to termux-wifi-*. Requires the termux-api package and

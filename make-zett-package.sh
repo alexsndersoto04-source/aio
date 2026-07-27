@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.14.0_arm.deb"
+OUT="zett_0.15.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,10 +13,10 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.14.0
+Version: 0.15.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
-Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input), Wi-Fi scanning
+Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input, sentence-transformer pooling), Wi-Fi scanning, vector math (semantic search)
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
  regex, uuid, hash (SHA/BLAKE3/HMAC), random, datetime, url, dirs,
@@ -56,7 +56,12 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  and forwarded through std::onnx in a single pipeline on the device,
  and Wi-Fi introspection (std::wifi::scan / connection_info / set_enabled
  / signal_bars) via the official termux-wifi-* CLIs shipped by the
- Termux:API package.
+ Termux:API package, plus sentence-transformer style embedding
+ pooling (std::onnx::run_bert_pooled — attention-mask-weighted mean
+ pool of the encoder's last_hidden_state) and pure-Rust vector math
+ (std::vector::dot / norm / cosine_similarity / normalize / add / sub
+ / scale / argmax) for on-device semantic search over MiniLM
+ embeddings.
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"

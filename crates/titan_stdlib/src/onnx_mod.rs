@@ -290,6 +290,73 @@ pub fn run_three_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attent
     })
 }
 
+/// Run a sentence-transformer (BERT-family encoder) and pool the token
+/// embeddings into a single sentence embedding via **mean pooling
+/// weighted by `attention_mask`** (the standard technique used by
+/// sentence-transformers). Returns a flat `[hidden_size]` vector.
+///
+/// This is the pooling that MiniLM / all-MiniLM-L6-v2 / etc. expect
+/// after running their raw encoder. Doing it in Rust is much faster
+/// than looping in `.titan` (384 * seq_len fp adds per sentence).
+///
+/// The model must expose `last_hidden_state` as its FIRST output with
+/// shape `[batch, seq_len, hidden]`. Every HuggingFace ONNX export of
+/// a sentence encoder ships this layout.
+pub fn run_bert_pooled(
+    handle: i64, batch: i64, seq_len: i64,
+    input_ids: &[i64], attention_mask: &[i64],
+) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
+    if batch <= 0 || seq_len <= 0 { return Err(OnnxError::BadShape); }
+    let shape = [batch as usize, seq_len as usize];
+    let expected: usize = shape.iter().product();
+    if input_ids.len() != expected {
+        return Err(OnnxError::ShapeMismatch { expected, found: input_ids.len() });
+    }
+    if attention_mask.len() != expected {
+        return Err(OnnxError::ShapeMismatch { expected, found: attention_mask.len() });
+    }
+
+    with(handle, |m| {
+        let ids  = tract_ndarray::ArrayD::from_shape_vec(shape.to_vec(), input_ids.to_vec()).map_err(map_err)?.into_tensor();
+        let mask = tract_ndarray::ArrayD::from_shape_vec(shape.to_vec(), attention_mask.to_vec()).map_err(map_err)?.into_tensor();
+        let outputs = m.run(tvec!(ids.into(), mask.into())).map_err(map_err)?;
+        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let out_shape: Vec<usize> = first.shape().to_vec();
+        if out_shape.len() != 3 {
+            return Err(OnnxError::Tract(format!("expected [batch, seq_len, hidden] output, got {out_shape:?}")));
+        }
+        let (b, s, h) = (out_shape[0], out_shape[1], out_shape[2]);
+        if b != shape[0] || s != shape[1] {
+            return Err(OnnxError::Tract(format!("output batch/seq mismatch: expected {shape:?}, got [{b},{s},{h}]")));
+        }
+        let view = first.to_array_view::<f32>().map_err(map_err)?;
+
+        // Mean pooling weighted by attention_mask.
+        // For each batch item, sum embeddings across tokens where
+        // mask==1 and divide by count. This ignores [PAD] positions
+        // and yields the standard sentence-transformer output.
+        let mut pooled = vec![0.0f32; b * h];
+        for bi in 0..b {
+            let mut count = 0u32;
+            for si in 0..s {
+                let m_val = attention_mask[bi * s + si];
+                if m_val == 0 { continue; }
+                count += 1;
+                for hi in 0..h {
+                    pooled[bi * h + hi] += view[[bi, si, hi]];
+                }
+            }
+            if count > 0 {
+                let denom = count as f32;
+                for hi in 0..h {
+                    pooled[bi * h + hi] /= denom;
+                }
+            }
+        }
+        Ok((pooled, vec![b, h]))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

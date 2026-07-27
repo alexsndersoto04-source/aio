@@ -1,5 +1,41 @@
 # Zett / TITAN — Changelog
 
+## 0.15.0 — Phase 12 (part 4): Semantic search on-device 🧠🔍
+
+### Added
+- **`std::onnx::run_bert_pooled(handle, batch, seq_len, ids, mask)`**
+  — sentence-transformer style: runs a BERT-family encoder and applies
+  **attention-mask-weighted mean pooling** over the token dimension of
+  the raw `last_hidden_state`. Returns `{values, shape=[batch, hidden]}`.
+  Doing the pooling in Rust is way faster than looping in `.titan`
+  (for MiniLM's 128 * 384 fp adds per sentence).
+- **`std::vector::*`** — new pure-Rust module for embedding math and
+  ranking:
+    * `dot(a, b)` — dot product.
+    * `norm(v)` — L2 (Euclidean) norm.
+    * `cosine_similarity(a, b)` → `[-1, 1]`. Returns 0 for zero-vectors
+      so callers can rank without a special case.
+    * `normalize(v)` — unit L2 norm (zeros stay zeros).
+    * `add(a, b)`, `sub(a, b)`, `scale(v, k)` — element-wise ops.
+    * `argmax(v)` → index of the max element (errors on empty).
+  Every fn is deliberately branchless-when-possible so rustc's release
+  profile autovectorizes into ARM NEON on Termux.
+- **`examples/search.titan`** — end-to-end semantic search:
+  1. Loads MiniLM-L6-v2 tokenizer + ONNX encoder (~90 MB FP32).
+  2. Builds a mini index of ~8 documents (recipes, code, sports, ...).
+  3. Encodes every document to a 384-dim embedding via `run_bert_pooled`
+     + `normalize`.
+  4. Takes a query, embeds it the same way, and returns the top-3 docs
+     ranked by `cosine_similarity`.
+  Real MiniLM inference on your Redmi 9C, offline, no cloud, no API.
+
+### Notes
+- MiniLM's ONNX export has hidden_size=384. Sentence embeddings are
+  normalized so cosine == dot, which is faster to compute repeatedly
+  when ranking many documents against one query.
+- Combines with Phase 10 (`std::kv`) to persist an embedding index to
+  disk once and reload it across runs. Left as an exercise in the demo.
+
 ## 0.14.0 — Phase 13': Wi-Fi introspection (termux-wifi-*)
 
 ### Added
