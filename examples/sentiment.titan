@@ -109,7 +109,10 @@ fn softmax2(a: float, b: float) -> array {
     let ea = std::math::exp(a - m)
     let eb = std::math::exp(b - m)
     let sum = ea + eb
-    [ea / sum, eb / sum]
+    // Asigno el resultado a una variable primero: si dejaba `[ea/sum, ...]`
+    // en linea aparte, el parser interpretaba `sum[...]` como indexacion.
+    let out = [ea / sum, eb / sum]
+    out
 }
 
 fn print_download_instructions() {
