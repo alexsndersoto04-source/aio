@@ -1,0 +1,113 @@
+// Fase 20: bloques `impl` para structs.
+//
+// Los structs ahora pueden tener METODOS (funciones asociadas al tipo).
+// Hay dos formas:
+//   1) Metodos de instancia: `fn nombre(self, ...) -> ...` — se llaman con `p.nombre(args)`
+//   2) Metodos estaticos:    `fn nombre(...) -> ...`         — se llaman con `Tipo::nombre(args)`
+//
+// El dispatch de `p.method()` es DINAMICO en runtime: la VM mira el
+// tipo real del receiver (Value::Struct { name: "Point", ... }) y
+// busca "Point::method" en la tabla de metodos. Eso significa que dos
+// structs pueden compartir nombre de metodo sin colision.
+//
+// Ejecutar con:
+//     zett run examples/impl_structs.titan
+
+struct Point { x: float, y: float }
+
+impl Point {
+    // Metodo estatico: se llama `Point::origin()`, sin receiver.
+    fn origin() -> Point {
+        Point { x: 0.0, y: 0.0 }
+    }
+
+    // Otro estatico, con argumentos.
+    fn new(x: float, y: float) -> Point {
+        Point { x: x, y: y }
+    }
+
+    // Metodo de instancia: primer parametro es `self` (tipo implicito = Point).
+    fn distance_to(self, other: Point) -> float {
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        // Sin sqrt: devolvemos el cuadrado de la distancia.
+        dx * dx + dy * dy
+    }
+
+    // Metodo de instancia sin argumentos extra.
+    fn magnitude_sq(self) -> float {
+        self.x * self.x + self.y * self.y
+    }
+
+    // Metodo que devuelve un nuevo Point (funcional, no muta).
+    fn translated(self, dx: float, dy: float) -> Point {
+        Point { x: self.x + dx, y: self.y + dy }
+    }
+
+    // Metodo que devuelve string para "imprimir bonito".
+    fn show(self) -> string {
+        "(" + self.x + ", " + self.y + ")"
+    }
+}
+
+// Otro struct que TAMBIEN tiene `show()` — para probar que no hay colision.
+struct Rect { w: int, h: int }
+
+impl Rect {
+    fn area(self) -> int {
+        self.w * self.h
+    }
+
+    fn show(self) -> string {
+        "Rect(" + self.w + "x" + self.h + ")"
+    }
+
+    // Metodo estatico factory.
+    fn square(side: int) -> Rect {
+        Rect { w: side, h: side }
+    }
+}
+
+fn main() {
+    print("---- Fase 20: impl para structs ----")
+
+    // Estaticos.
+    let o = Point::origin()
+    print("origen: " + o.show())
+
+    let p = Point::new(3.0, 4.0)
+    print("p: " + p.show())
+
+    // Instancia.
+    let d = p.distance_to(o)
+    print("|p - o|^2 = " + d)          // 25.0
+
+    let m = p.magnitude_sq()
+    print("|p|^2 = " + m)              // 25.0
+
+    // Encadenado: p.translated(...).show()
+    let q = p.translated(1.0, -2.0)
+    print("q = p + (1,-2): " + q.show())    // (4.0, 2.0)
+
+    // Distancia entre puntos arbitrarios.
+    let a = Point::new(1.0, 1.0)
+    let b = Point::new(4.0, 5.0)
+    print("|a - b|^2 = " + a.distance_to(b))   // 25.0
+
+    print("---- otro struct con metodos ----")
+
+    // Rect con literal + metodos de instancia.
+    let r = Rect { w: 6, h: 4 }
+    print(r.show())                    // Rect(6x4)
+    print("area = " + r.area())        // 24
+
+    // Estatico factory.
+    let sq = Rect::square(5)
+    print(sq.show() + " area=" + sq.area())    // Rect(5x5) area=25
+
+    // Verificar que Point.show y Rect.show conviven sin colision.
+    print("puntos: " + p.show() + " " + q.show())
+    print("rects: " + r.show() + " " + sq.show())
+
+    print("---- Listo ----")
+}

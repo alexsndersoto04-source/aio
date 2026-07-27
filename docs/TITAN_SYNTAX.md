@@ -282,6 +282,56 @@ Ambos estilos coexisten.
 
 ---
 
+## Structs y métodos (`impl`) — v0.19.0
+
+Un struct declara los campos. Un bloque `impl` le agrega métodos:
+
+```titan
+struct Point { x: float, y: float }
+
+impl Point {
+    // Estático: se llama `Point::origin()`.
+    fn origin() -> Point { Point { x: 0.0, y: 0.0 } }
+
+    // Estático con args.
+    fn new(x: float, y: float) -> Point { Point { x: x, y: y } }
+
+    // Instancia: `self` como primer parámetro. Tipo inferido = Point.
+    fn distance_sq(self, other: Point) -> float {
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        dx * dx + dy * dy
+    }
+
+    fn magnitude_sq(self) -> float {
+        self.x * self.x + self.y * self.y
+    }
+}
+
+fn main() {
+    let o = Point::origin()
+    let p = Point::new(3.0, 4.0)
+    print(p.distance_sq(o))        // 25.0
+    print(p.magnitude_sq())        // 25.0
+}
+```
+
+Reglas:
+
+- **Métodos estáticos**: se llaman con `Tipo::nombre(args)` — sin
+  receiver. Útiles para constructores / factories.
+- **Métodos de instancia**: primer parámetro se llama `self`. No
+  hace falta anotar su tipo: se infiere como el tipo del `impl`.
+- **Dispatch dinámico**: `p.metodo(args)` mira el tipo real del
+  valor `p` en runtime. Dos structs distintos pueden compartir
+  nombre de método sin colisión.
+- **Encadenable**: `p.translated(1.0, 2.0).magnitude_sq()` funciona
+  siempre que cada método devuelva un valor con métodos.
+
+Ejemplo completo verificable: `examples/impl_structs.titan`.
+
+---
+
 ## Llamadas a la stdlib
 
 Las natives están organizadas por módulo:

@@ -1,5 +1,74 @@
 # Zett / TITAN — Changelog
 
+## 0.19.0 — Phase 20: `impl` para structs (métodos en tipos custom) 🧱
+
+Los structs de Titan ahora pueden tener **métodos** propios via
+bloques `impl`. Es la pieza que faltaba para modelar tipos custom
+como en Rust / Swift / Go, con dispatch dinámico basado en el
+struct real del receiver.
+
+### Nueva sintaxis
+
+```titan
+struct Point { x: float, y: float }
+
+impl Point {
+    // Método estático (sin `self`): se llama `Point::origin()`.
+    fn origin() -> Point { Point { x: 0.0, y: 0.0 } }
+
+    fn new(x: float, y: float) -> Point { Point { x: x, y: y } }
+
+    // Método de instancia: `self` como primer parámetro.
+    // Su tipo se infiere como `Point` automáticamente.
+    fn distance_sq(self, other: Point) -> float {
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        dx * dx + dy * dy
+    }
+
+    fn translated(self, dx: float, dy: float) -> Point {
+        Point { x: self.x + dx, y: self.y + dy }
+    }
+}
+
+fn main() {
+    let o = Point::origin()             // método estático
+    let p = Point::new(3.0, 4.0)
+    print(p.distance_sq(o))             // instancia -> 25.0
+    print(p.translated(1.0, -2.0).x)    // encadenable
+}
+```
+
+Dos structs distintos pueden compartir el nombre de un método sin
+colisión (`Point::show` y `Rect::show` conviven porque el dispatch
+se hace por el tipo del receiver, no por nombre global).
+
+### Bajo el capó
+
+- Nuevo opcode `Op::CallMethod { method, argc }`. La VM pop-ea el
+  receiver, mira su `Value::Struct { name, .. }` y busca
+  `"<name>::<method>"` en `module.method_table`. Dispatch en tiempo
+  constante (`HashMap` lookup).
+- Los métodos se registran con nombre calificado (`Point::distance_sq`)
+  tanto en `titan_typechecker` como en `titan_codegen`, evitando
+  colisiones con funciones libres o entre structs.
+- El primer parámetro `self` sin anotación se infiere como
+  `Type::Named(nombre_del_impl)` — permite `self.campo` y llamadas
+  `self.otro_metodo()` sin escribir el tipo.
+- Los métodos estáticos (`Point::origin()`) reutilizan el parser
+  existente para paths `::`, sin cambio de sintaxis.
+- `CompiledModule` gana un campo `method_table: HashMap<String, usize>`
+  con `#[serde(default)]`, así los `.zettbc` viejos siguen leyéndose.
+
+### Ejemplo verificable
+
+Correr `zett run examples/impl_structs.titan` — muestra 10+ casos:
+factories estáticos, distancia entre puntos, encadenamiento de
+métodos (`.translated(...).show()`), y dos structs (`Point`, `Rect`)
+compartiendo `show()` sin pisarse.
+
+---
+
 ## 0.18.0 — Phase 19: higher-order sobre arrays con closures 🎛️
 
 ### 🎯 4 operaciones nuevas: `sort_by`, `find`, `any`, `all`

@@ -126,6 +126,7 @@ mod tests {
             string_table: Vec::new(),
             struct_schemas: std::collections::HashMap::new(),
             enum_schemas: std::collections::HashMap::new(),
+            method_table: std::collections::HashMap::new(),
         }
     }
 

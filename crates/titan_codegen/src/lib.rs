@@ -48,6 +48,15 @@ pub enum Op {
     // ArrayAny / ArrayAll pop (array, closure); closure returns bool.
     //   Pushes true iff any / all elements pass. Short-circuits.
     ArraySortBy, ArrayFind, ArrayAny, ArrayAll,
+    // Phase 20: dynamic method dispatch for `impl` on structs.
+    // Stack layout when executed: [..., receiver, arg1, arg2, ..., argN].
+    // The VM pops N args, pops the receiver, reads its Value::Struct name,
+    // then looks up "<StructName>::<method>" in module.method_table and
+    // invokes it with (receiver, arg1..argN) prepended. Result is pushed.
+    // Static-associated calls like `Point::origin()` don't use this opcode
+    // — they go through the regular Op::Call because the parser folds
+    // `Point::origin` into a single qualified identifier at parse time.
+    CallMethod { method: String, argc: usize },
     Spawn, JoinTask, JoinTaskTimeout, CancelTask, NewChannel, ChannelSend, ChannelRecv, ChannelRecvTimeout, ChannelSelect,
     TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose,
     HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpAfterAdd, HttpErrorHandlerAdd, HttpDispatch,
@@ -115,6 +124,13 @@ pub struct CompiledModule {
     pub struct_schemas: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub enum_schemas: HashMap<String, Vec<String>>,
+    /// Phase 20: maps "<StructName>::<method>" to the function index in
+    /// `functions`. Populated at compile time from `impl` blocks; consumed
+    /// by the VM's `Op::CallMethod` for dynamic dispatch based on the
+    /// receiver's Value::Struct name. Static calls (`Point::origin()`)
+    /// don't need this — they resolve at compile time.
+    #[serde(default)]
+    pub method_table: HashMap<String, usize>,
 }
 
 pub struct AstCompiler {
@@ -136,31 +152,33 @@ struct LoopContext { breaks: Vec<usize>, continues: Vec<usize>, continue_target:
 impl AstCompiler {
     pub fn new() -> Self {
         Self {
-            module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new() },
+            module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new(), method_table: HashMap::new() },
             current: empty_function(), locals: Vec::new(), next_local: 0,
             strings: HashMap::new(), function_ids: HashMap::new(), enum_variants: HashMap::new(), constants: HashMap::new(), loops: Vec::new(), current_location: None,
         }
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Result<CompiledModule, CodegenError> {
-        self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new() };
+        self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new(), method_table: HashMap::new() };
         self.strings.clear(); self.function_ids.clear(); self.enum_variants.clear(); self.constants.clear();
         self.enum_variants.extend([("Option::None".into(), false), ("Option::Some".into(), true), ("Result::Ok".into(), true), ("Result::Err".into(), true)]);
         self.module.enum_schemas.insert("Option".into(), vec!["None".into(), "Some".into()]);
         self.module.enum_schemas.insert("Result".into(), vec!["Ok".into(), "Err".into()]);
         collect_struct_schemas(&program.items, &mut self.module.struct_schemas);
         collect_enum_schemas(&program.items, &mut self.module.enum_schemas);
-        let mut functions = Vec::new();
-        collect_items(&program.items, &mut functions, &mut self.constants, &mut self.enum_variants);
+        let mut functions: Vec<FunctionDecl> = Vec::new();
+        let mut method_table: HashMap<String, usize> = HashMap::new();
+        collect_items(&program.items, &mut functions, &mut self.constants, &mut self.enum_variants, &mut method_table);
         for (index, function) in functions.iter().enumerate() {
             if self.function_ids.insert(function.name.clone(), index).is_some() {
                 return Err(CodegenError::Unsupported(format!("duplicate function '{}'", function.name)));
             }
         }
+        self.module.method_table = method_table;
         let Some(entry) = self.function_ids.get("main").copied() else { return Err(CodegenError::UnknownFunction("main".into())); };
         self.module.entry = entry;
         self.module.functions = vec![empty_function(); functions.len()];
-        for (index, function) in functions.into_iter().enumerate() {
+        for (index, function) in functions.iter().enumerate() {
             let compiled = self.compile_function(function)?;
             self.module.functions[index] = compiled;
         }
@@ -245,12 +263,17 @@ impl AstCompiler {
                 match (method.as_str(), args.len()) {
                     ("len", 0) => self.emit(Op::Len), ("map", 1) => self.emit(Op::ArrayMap),
                     ("filter", 1) => self.emit(Op::ArrayFilter), ("fold", 2) => self.emit(Op::ArrayFold),
-                    // Phase 19: new higher-order methods.
+                    // Phase 19: higher-order methods.
                     ("sort_by", 1) => self.emit(Op::ArraySortBy),
                     ("find",    1) => self.emit(Op::ArrayFind),
                     ("any",     1) => self.emit(Op::ArrayAny),
                     ("all",     1) => self.emit(Op::ArrayAll),
-                    _ => return Err(CodegenError::Unsupported(format!("method call .{method}()"))),
+                    // Phase 20: dynamic method dispatch on structs. Any
+                    // unknown `.method(args)` becomes a CallMethod opcode
+                    // that resolves at runtime from the receiver's struct
+                    // name (e.g. Value::Struct { name: "Point", .. } ->
+                    // look up "Point::method" in module.method_table).
+                    _ => self.emit(Op::CallMethod { method: method.clone(), argc: args.len() }),
                 }
             }
             Expr::Index { target, index, .. } => { self.compile_expr(target)?; self.compile_expr(index)?; self.emit(Op::Index); }
@@ -679,14 +702,40 @@ fn collect_enum_schemas(items: &[Item], output: &mut HashMap<String, Vec<String>
     }
 }
 
-fn collect_items<'a>(items: &'a [Item], functions: &mut Vec<&'a FunctionDecl>, constants: &mut HashMap<String, Expr>, variants: &mut HashMap<String, bool>) {
+fn collect_items(items: &[Item], functions: &mut Vec<FunctionDecl>, constants: &mut HashMap<String, Expr>, variants: &mut HashMap<String, bool>, methods: &mut HashMap<String, usize>) {
     for item in items {
         match item {
-            Item::Function(f) => functions.push(f),
+            Item::Function(f) => functions.push(f.clone()),
             Item::Const(c) => { constants.insert(c.name.clone(), (*c.value).clone()); }
             Item::Enum(e) => for variant in &e.variants { variants.insert(format!("{}::{}", e.name, variant.name), variant.payload.is_some()); },
-            Item::Module(m) => collect_items(&m.items, functions, constants, variants),
-            Item::Impl(i) => functions.extend(i.methods.iter()), _ => {}
+            Item::Module(m) => collect_items(&m.items, functions, constants, variants, methods),
+            // Phase 20: each method inside `impl Point { ... }` becomes a
+            // regular top-level function with a qualified name like
+            // `Point::distance`. If the method's first param is named
+            // `self`, we synthesize its type annotation as `Point` so the
+            // typechecker treats field access on it correctly. The
+            // method_table gets a "Point::distance" -> function_index
+            // entry that the VM uses at runtime for dynamic dispatch of
+            // `p.distance(...)` — resolved from the receiver's struct
+            // name, so two structs can share method names safely.
+            Item::Impl(i) => {
+                let type_name = match &i.target_type {
+                    TypeExpr::Named { name, .. } => name.clone(),
+                    _ => continue,
+                };
+                for method in &i.methods {
+                    let mut renamed = method.clone();
+                    renamed.name = format!("{}::{}", type_name, method.name);
+                    if let Some(first) = renamed.params.first_mut() {
+                        if first.name == "self" && first.type_ann.is_none() {
+                            first.type_ann = Some(TypeExpr::Named { name: type_name.clone(), generics: Vec::new() });
+                        }
+                    }
+                    methods.insert(renamed.name.clone(), functions.len());
+                    functions.push(renamed);
+                }
+            }
+            _ => {}
         }
     }
 }

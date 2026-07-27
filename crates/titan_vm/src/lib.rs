@@ -265,6 +265,30 @@ impl Vm {
                     };
                     stack.push(wrapped);
                 }
+                Op::CallMethod { method, argc } => {
+                    // Phase 20: dynamic method dispatch. The stack holds
+                    // [..., receiver, arg1, ..., argN]. We pop the args
+                    // first, then the receiver, look at its runtime type
+                    // (Value::Struct { name, .. }), and invoke the
+                    // pre-registered function "<name>::<method>" with
+                    // (receiver, arg1..argN). All other receiver kinds
+                    // raise a type error — arrays, strings, numbers etc.
+                    // already have their builtin methods handled by the
+                    // matching arms above (len/map/filter/... etc.), so
+                    // reaching this point means an unknown call target.
+                    let args = take_args(&mut stack, argc, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    let type_name = match &receiver {
+                        Value::Struct { name, .. } => name.clone(),
+                        other => return Err(VmError::Type(format!("no method '{}' for value {}", method, val_to_string(other)))),
+                    };
+                    let qualified = format!("{}::{}", type_name, method);
+                    let callee = *self.module.method_table.get(&qualified).ok_or_else(|| VmError::Type(format!("undefined method '{}'", qualified)))?;
+                    let mut full_args = Vec::with_capacity(args.len() + 1);
+                    full_args.push(receiver);
+                    full_args.extend(args);
+                    stack.push(self.execute(callee, full_args, Vec::new(), depth + 1, debugger)?);
+                }
                 Op::ArrayMap => {
                     let callable = pop(&mut stack, &function.name)?; let values = array_value(pop(&mut stack, &function.name)?)?;
                     let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("map requires a function".into())); };

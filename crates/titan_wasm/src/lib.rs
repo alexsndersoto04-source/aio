@@ -3335,6 +3335,7 @@ mod tests {
             string_table: Vec::new(),
             struct_schemas: HashMap::new(),
             enum_schemas: HashMap::new(),
+            method_table: HashMap::new(),
         }
     }
 

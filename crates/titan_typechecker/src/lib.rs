@@ -180,11 +180,30 @@ impl TypeEnv {
                     self.enum_variants.insert(format!("{}::{}", enumeration.name, variant.name), variant.payload.as_ref().map(type_from_ast));
                 },
                 Item::Module(module) => self.collect_declarations(&module.items),
-                Item::Impl(block) => for method in &block.methods {
-                    self.functions.insert(method.name.clone(), FunctionSig {
-                        params: method.params.iter().map(|p| p.type_ann.as_ref().map(type_from_ast).unwrap_or(Type::Unknown)).collect(),
-                        result: method.return_type.as_ref().map(type_from_ast).unwrap_or(Type::Unit),
-                    });
+                // Phase 20: register `impl Type { fn m() {} }` methods
+                // under qualified names `Type::m` so different structs
+                // can share method names without colliding. When the
+                // first parameter is named `self` and lacks an
+                // annotation, synthesize it as Type::Named(type_name)
+                // so field access on `self` typechecks correctly.
+                Item::Impl(block) => {
+                    let type_name = match &block.target_type {
+                        TypeExpr::Named { name, .. } => Some(name.clone()),
+                        _ => None,
+                    };
+                    for method in &block.methods {
+                        let qualified = match &type_name { Some(t) => format!("{}::{}", t, method.name), None => method.name.clone() };
+                        let params: Vec<Type> = method.params.iter().enumerate().map(|(i, p)| {
+                            if i == 0 && p.name == "self" && p.type_ann.is_none() {
+                                if let Some(t) = &type_name { return Type::Named(t.clone()); }
+                            }
+                            p.type_ann.as_ref().map(type_from_ast).unwrap_or(Type::Unknown)
+                        }).collect();
+                        self.functions.insert(qualified, FunctionSig {
+                            params,
+                            result: method.return_type.as_ref().map(type_from_ast).unwrap_or(Type::Unit),
+                        });
+                    }
                 },
                 _ => {}
             }
@@ -194,7 +213,26 @@ impl TypeEnv {
     fn check_item(&mut self, item: &Item) {
         match item {
             Item::Function(function) => self.check_function(function),
-            Item::Impl(block) => for method in &block.methods { self.check_function(method); },
+            Item::Impl(block) => {
+                // Phase 20: when checking an impl method's body, `self`
+                // (if present) must resolve as the impl's target type,
+                // not Unknown. Synthesize the annotation on-the-fly in
+                // a cloned FunctionDecl so field/method access on `self`
+                // typechecks against the struct's schema.
+                let type_name = match &block.target_type {
+                    TypeExpr::Named { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
+                for method in &block.methods {
+                    let mut annotated = method.clone();
+                    if let (Some(t), Some(first)) = (&type_name, annotated.params.first_mut()) {
+                        if first.name == "self" && first.type_ann.is_none() {
+                            first.type_ann = Some(TypeExpr::Named { name: t.clone(), generics: Vec::new() });
+                        }
+                    }
+                    self.check_function(&annotated);
+                }
+            }
             Item::Module(module) => for item in &module.items { self.check_item(item); },
             Item::Const(constant) => {
                 let found = self.check_expr(&constant.value);
@@ -299,6 +337,17 @@ impl TypeEnv {
             Expr::Call { callee, args, .. } => self.check_call(callee, args),
             Expr::MethodCall { receiver, method, args, .. } => {
                 let receiver_type = self.check_expr(receiver); for arg in args { self.check_expr(arg); }
+                // Phase 20: if the receiver is a named type and
+                // <TypeName>::<method> was registered by an impl block,
+                // return that method's declared result type. Falls back
+                // to the previous Unknown behavior so method syntax on
+                // arrays/maps/etc. keeps working.
+                if let Type::Named(name) = &receiver_type {
+                    let qualified = format!("{}::{}", name, method);
+                    if let Some(sig) = self.functions.get(&qualified) {
+                        return sig.result.clone();
+                    }
+                }
                 match (method.as_str(), args.len(), receiver_type) {
                     ("len", 0, _) => Type::Int,
                     ("map", 1, Type::Array(_)) | ("filter", 1, Type::Array(_)) => Type::Array(Box::new(Type::Unknown)),
