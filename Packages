@@ -124,10 +124,10 @@ Version: 0.13.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
 Filename: ./zett_0.13.0_arm.deb
-Size: 9564132
-MD5sum: 4dbc818f0ebe5142bf4bcfee0ce5be6e
-SHA1: d4d060e627a348d94ed25bbd09454b53c7b5f775
-SHA256: 6d45a3022bd0e29c631d646e4a168b2e571385bdd8af20972a9b0c66f5520c7e
+Size: 9549500
+MD5sum: 5f9a3a594c5ae883316a16317762f987
+SHA1: 34c135cf9abfe4e161d00975edd6eaa8adb53dd8
+SHA256: 28847e935508e65f9b75a939b4d0d0dc4dc9604cfe11f6fea7f20c95dd174e3f
 Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input)
  Zett installs the TITAN Language Compiler, examples and documentation.
  Includes a modern standard library with real (non-simulated) modules:
