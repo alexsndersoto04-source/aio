@@ -332,6 +332,38 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## Destructuring en `let` — v0.22.0
+
+Para desempacar tuplas y structs directamente:
+
+```titan
+// Tupla
+let (a, b) = par
+let (lo, hi) = min_max(xs)
+let (first, _) = par                       // wildcard descarta
+
+// Struct
+let Point { x, y } = p                     // igual nombre
+let Point { x: cx, y: cy } = p             // con rename
+
+// Anidado
+let (id, Point { x, y }) = combo
+let Person { name, home: Address { city } } = ana
+```
+
+Reglas:
+
+- Después de `let`, `(` inicia patrón tupla.
+- `Ident { ... }` seguido de `=` es patrón struct.
+- `_` descarta.
+- La RHS se evalúa **una sola vez**.
+- Recursivo sin límite.
+- Enum patterns (`let Some(x) = opt`) NO — usar `match`.
+
+Ejemplo completo verificable: `examples/destructuring.titan`.
+
+---
+
 ## Traits con métodos default — v0.21.0
 
 Un `trait` define un contrato: una lista de métodos que un tipo debe

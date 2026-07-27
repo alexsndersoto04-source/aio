@@ -14,14 +14,30 @@ pub enum ParseError {
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
+/// Phase 23: intermediate representation used only during
+/// destructuring desugaring. Each part becomes either a binding, a
+/// wildcard (`_`, skip), a nested tuple, or a nested struct pattern.
+#[derive(Debug, Clone)]
+enum TuplePart {
+    Wildcard,
+    Ident(String),
+    Tuple(Vec<TuplePart>),
+    Struct(Vec<(String, TuplePart)>),
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     errors: Vec<ParseError>,
+    /// Phase 23: monotonic counter for synthetic temporaries emitted
+    /// when desugaring destructuring `let` patterns (tuple / struct).
+    /// Names use a prefix that cannot appear in user code so we never
+    /// clash with real identifiers.
+    destructure_counter: usize,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self { Self { tokens, pos: 0, errors: Vec::new() } }
+    pub fn new(tokens: Vec<Token>) -> Self { Self { tokens, pos: 0, errors: Vec::new(), destructure_counter: 0 } }
     pub fn errors(&self) -> &[ParseError] { &self.errors }
 
     pub fn parse_program(&mut self) -> Result<Program> {
@@ -225,6 +241,181 @@ impl Parser {
         Ok(TypeExpr::Named { name, generics })
     }
 
+    /// Phase 23: `let (a, b, c) = expr` desugars to
+    ///   let __destr0 = expr
+    ///   let a = __destr0[0]
+    ///   let b = __destr0[1]
+    ///   let c = __destr0[2]
+    /// Names starting with `_` (typically `_`) are skipped — the temp
+    /// still gets bound so the RHS runs exactly once. Nested patterns
+    /// are supported by recursing: `let (a, (b, c)) = expr` produces
+    /// three plain `let` statements plus an inner temp.
+    fn desugar_tuple_let(&mut self, stmts: &mut Vec<Stmt>, span: Span) -> Result<()> {
+        self.expect(TokenKind::LParen)?;
+        let mut sub_patterns: Vec<TuplePart> = Vec::new();
+        while !self.at(TokenKind::RParen) {
+            sub_patterns.push(self.parse_destructure_part()?);
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::Eq)?;
+        let value = self.parse_expr()?;
+        self.eat(TokenKind::Semicolon);
+        let temp = self.fresh_destr_name();
+        stmts.push(Stmt::Let { name: temp.clone(), type_ann: None, value, span });
+        for (index, part) in sub_patterns.into_iter().enumerate() {
+            let idx_expr = Expr::Index {
+                target: Box::new(Expr::Ident { name: temp.clone(), span }),
+                index: Box::new(Expr::Int { value: index as i64, span }),
+                span,
+            };
+            self.emit_pattern_binding(stmts, part, idx_expr, span)?;
+        }
+        Ok(())
+    }
+
+    /// Phase 23: `let Point { x, y } = expr` desugars to
+    ///   let __destr0 = expr
+    ///   let x = __destr0.x
+    ///   let y = __destr0.y
+    /// Rename shorthand `let Point { x: cx, y: cy } = expr` uses
+    /// the given local names. The struct name is only used for
+    /// documentation — Titan already has dynamic field access via
+    /// GetField, so we don't need runtime type checks. Sub-patterns
+    /// like `let Point { x: (a, b) }` recurse via emit_pattern_binding.
+    fn desugar_struct_let(&mut self, stmts: &mut Vec<Stmt>, span: Span) -> Result<()> {
+        let _struct_name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut fields: Vec<(String, TuplePart)> = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            let field = self.expect_ident()?;
+            let bound = if self.eat(TokenKind::Colon) {
+                self.parse_destructure_part()?
+            } else {
+                TuplePart::Ident(field.clone())
+            };
+            fields.push((field, bound));
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::RBrace)?;
+        self.expect(TokenKind::Eq)?;
+        let value = self.parse_expr()?;
+        self.eat(TokenKind::Semicolon);
+        let temp = self.fresh_destr_name();
+        stmts.push(Stmt::Let { name: temp.clone(), type_ann: None, value, span });
+        for (field_name, part) in fields {
+            let access = Expr::FieldAccess {
+                target: Box::new(Expr::Ident { name: temp.clone(), span }),
+                field: field_name,
+                span,
+            };
+            self.emit_pattern_binding(stmts, part, access, span)?;
+        }
+        Ok(())
+    }
+
+    /// One part inside a destructuring pattern.
+    fn parse_destructure_part(&mut self) -> Result<TuplePart> {
+        if self.eat(TokenKind::Underscore) { return Ok(TuplePart::Wildcard); }
+        if self.at(TokenKind::LParen) {
+            self.expect(TokenKind::LParen)?;
+            let mut inner = Vec::new();
+            while !self.at(TokenKind::RParen) {
+                inner.push(self.parse_destructure_part()?);
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.expect(TokenKind::RParen)?;
+            return Ok(TuplePart::Tuple(inner));
+        }
+        if let (Some(TokenKind::Ident(_)), Some(TokenKind::LBrace)) = (self.peek_kind().cloned(), self.tokens.get(self.pos + 1).map(|t| t.kind.clone())) {
+            let _struct_name = self.expect_ident()?;
+            self.expect(TokenKind::LBrace)?;
+            let mut inner = Vec::new();
+            while !self.at(TokenKind::RBrace) {
+                let field = self.expect_ident()?;
+                let bound = if self.eat(TokenKind::Colon) { self.parse_destructure_part()? } else { TuplePart::Ident(field.clone()) };
+                inner.push((field, bound));
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.expect(TokenKind::RBrace)?;
+            return Ok(TuplePart::Struct(inner));
+        }
+        self.eat(TokenKind::Mut);
+        let name = self.expect_ident()?;
+        Ok(TuplePart::Ident(name))
+    }
+
+    /// Emit `let <part> = <access>` recursively.
+    fn emit_pattern_binding(&mut self, stmts: &mut Vec<Stmt>, part: TuplePart, access: Expr, span: Span) -> Result<()> {
+        match part {
+            TuplePart::Wildcard => Ok(()),
+            TuplePart::Ident(name) => {
+                stmts.push(Stmt::Let { name, type_ann: None, value: access, span });
+                Ok(())
+            }
+            TuplePart::Tuple(parts) => {
+                let temp = self.fresh_destr_name();
+                stmts.push(Stmt::Let { name: temp.clone(), type_ann: None, value: access, span });
+                for (index, sub) in parts.into_iter().enumerate() {
+                    let idx = Expr::Index {
+                        target: Box::new(Expr::Ident { name: temp.clone(), span }),
+                        index: Box::new(Expr::Int { value: index as i64, span }),
+                        span,
+                    };
+                    self.emit_pattern_binding(stmts, sub, idx, span)?;
+                }
+                Ok(())
+            }
+            TuplePart::Struct(fields) => {
+                let temp = self.fresh_destr_name();
+                stmts.push(Stmt::Let { name: temp.clone(), type_ann: None, value: access, span });
+                for (fname, sub) in fields {
+                    let acc = Expr::FieldAccess {
+                        target: Box::new(Expr::Ident { name: temp.clone(), span }),
+                        field: fname,
+                        span,
+                    };
+                    self.emit_pattern_binding(stmts, sub, acc, span)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Phase 23: peek ahead to decide whether `Ident {` at the current
+    /// position starts a struct destructure pattern (followed by `=`
+    /// after the matching `}`) or a regular struct literal that would
+    /// belong on the RHS of a plain `let x = Point { ... }`. Scans
+    /// with LParen/LBracket/LBrace depth tracking; if any depth goes
+    /// negative we bail out and assume "not a pattern".
+    fn destructure_struct_looks_like_pattern(&self) -> bool {
+        let mut i = self.pos + 1;
+        let mut brace_depth: i32 = 0;
+        while let Some(token) = self.tokens.get(i) {
+            match &token.kind {
+                TokenKind::LBrace => brace_depth += 1,
+                TokenKind::RBrace => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        // Look at the token immediately after the matched `}`.
+                        return matches!(self.tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::Eq));
+                    }
+                    if brace_depth < 0 { return false; }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    fn fresh_destr_name(&mut self) -> String {
+        let n = self.destructure_counter;
+        self.destructure_counter += 1;
+        format!("__destr{}", n)
+    }
+
     fn parse_block_after_open(&mut self, start: Span) -> Result<Block> {
         let mut stmts = Vec::new();
         let mut final_expr = None;
@@ -233,6 +424,26 @@ impl Parser {
             if self.eat(TokenKind::Let) {
                 let span = self.previous_span();
                 self.eat(TokenKind::Mut);
+                // Phase 23: destructuring. If we see `(` or `Ident {`
+                // after the (optional) `mut`, this is a tuple or struct
+                // pattern. Desugar into a fresh temporary plus one
+                // ordinary `let` per bound name — the runtime never
+                // sees patterns, only plain identifier bindings.
+                if self.at(TokenKind::LParen) {
+                    self.desugar_tuple_let(&mut stmts, span)?;
+                    continue;
+                }
+                // Phase 23: `let Point { ... } = expr` is a struct
+                // destructure only if a `=` follows the matching `}`.
+                // Otherwise `let x = Point { .. }` (right-hand struct
+                // literal, with `x` as an identifier) is a plain let,
+                // so we mustn't consume the `Point` prematurely.
+                if let (Some(TokenKind::Ident(_)), Some(TokenKind::LBrace)) = (self.peek_kind().cloned(), self.tokens.get(self.pos + 1).map(|t| t.kind.clone())) {
+                    if self.destructure_struct_looks_like_pattern() {
+                        self.desugar_struct_let(&mut stmts, span)?;
+                        continue;
+                    }
+                }
                 let name = self.expect_ident()?;
                 let type_ann = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
                 self.expect(TokenKind::Eq)?;

@@ -1,5 +1,73 @@
 # Zett / TITAN — Changelog
 
+## 0.22.0 — Phase 23: destructuring en `let` (tuplas + structs) 🎁
+
+Ahora se pueden **desempacar** tuplas y structs directamente en el
+binding, sin campo por campo. Cero cambios en la VM, cero cambios
+en el AST — es un desazucar puramente sintáctico en el parser.
+
+### Nueva sintaxis
+
+```titan
+// Tupla
+let (a, b) = mi_par
+let (lo, hi) = min_max(xs)          // funciones que retornan tuplas
+
+// Struct
+struct Point { x: int, y: int }
+let Point { x, y } = p              // nombres iguales al campo
+let Point { x: cx, y: cy } = p      // con rename
+
+// Wildcards para descartar
+let (primero, _) = par
+
+// Anidado
+let (first, (second, third)) = nested
+let (id, Point { x, y }) = combo
+
+// Struct dentro de struct
+struct Address { city: string, zip: int }
+struct Person { name: string, age: int, home: Address }
+let Person { name, age, home: Address { city, zip } } = ana
+```
+
+### Reglas
+
+- Después de `let` (o `let mut`), si viene `(` → patrón tupla.
+- Si viene `Ident {` y después de `}` viene `=` → patrón struct.
+- Sin ambos, sigue el `let x = ...` de siempre.
+- `_` como parte descarta el valor pero el temp igual se evalúa.
+- La RHS **se evalúa una sola vez**: `let (a, b) = calcular()`
+  llama `calcular()` una vez, guarda el resultado en un temp y
+  desde ahí bindea `a` y `b`.
+- Patrones anidados funcionan recursivamente sin límite de
+  profundidad.
+
+### Bajo el capó
+
+- El parser genera un `let __destr<N>` (nombre reservado interno,
+  el `__` inicial evita colisiones con identificadores del usuario)
+  y luego un `let` por cada nombre bindeado, indexando la tupla
+  con `[i]` o los campos del struct con `.field`.
+- Ejemplo: `let (a, b) = par` se compila igual que si el usuario
+  hubiera escrito:
+  ```titan
+  let __destr0 = par
+  let a = __destr0[0]
+  let b = __destr0[1]
+  ```
+- Como no hay opcodes nuevos, los `.zettbc` viejos siguen ejecutando.
+- Enum patterns (`let Some(x) = opt`) NO están soportados — para
+  eso hay que usar `match` de siempre.
+
+### Ejemplo verificable
+
+`zett run examples/destructuring.titan` — 10 casos cubriendo tupla
+simple, tupla-desde-función, wildcards, struct con y sin rename,
+tuplas anidadas, structs anidados, y combinaciones de ambos.
+
+---
+
 ## 0.21.0 — Phase 22: traits con métodos default 🧬
 
 Los traits ya se parseaban desde hace muchas versiones (`trait X { fn foo(); }`),

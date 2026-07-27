@@ -1,0 +1,106 @@
+// Fase 23: destructuring en `let`.
+//
+// Ahora se puede unpackear tuplas y structs directamente en el
+// binding, sin ir campo por campo:
+//
+//   let (a, b) = mi_tupla
+//   let Point { x, y } = mi_punto
+//   let Point { x: cx, y: cy } = mi_punto     // con rename
+//   let (a, _) = t                             // wildcard
+//   let (a, (b, c)) = anidado                  // recursivo
+//   let Person { name, address: Address { city } } = p    // mezclado
+//
+// Es puramente sintactico: cada patron se desazucara a un
+// temporario + un `let` por cada nombre. La VM y el runtime no ven
+// patrones — solo los bindings finales.
+//
+// Ejecutar con:
+//     zett run examples/destructuring.titan
+
+struct Point { x: int, y: int }
+struct Address { city: string, zip: int }
+struct Person { name: string, age: int, home: Address }
+
+fn origin() -> Point {
+    Point { x: 0, y: 0 }
+}
+
+// Devolver multiples valores como tupla es idiomatico ahora.
+fn min_max(xs: [int]) -> (int, int) {
+    let mut lo = xs[0]
+    let mut hi = xs[0]
+    for x in xs {
+        if x < lo { lo = x }
+        if x > hi { hi = x }
+    }
+    (lo, hi)
+}
+
+// Devolver un struct + un flag.
+fn analizar(xs: [int]) -> (Point, bool) {
+    let (lo, hi) = min_max(xs)
+    let p = Point { x: lo, y: hi }
+    let bien = hi > lo
+    (p, bien)
+}
+
+fn main() {
+    print("---- Fase 23: destructuring en let ----")
+
+    // 1) Tupla simple
+    let par = (10, 20)
+    let (a, b) = par
+    print("a=" + a + " b=" + b)
+
+    // 2) Tupla desde funcion que retorna multiples valores
+    let (lo, hi) = min_max([3, 1, 4, 1, 5, 9, 2, 6])
+    print("min=" + lo + " max=" + hi)
+
+    // 3) Wildcard: descartar un campo
+    let (primero, _) = (100, 999)
+    print("primero=" + primero)
+
+    // 4) Struct destructure — nombres iguales al campo
+    let p = Point { x: 3, y: 4 }
+    let Point { x, y } = p
+    print("x=" + x + " y=" + y)
+
+    // 5) Struct destructure con rename (evita colisiones)
+    let o = origin()
+    let Point { x: ox, y: oy } = o
+    print("origen: (" + ox + ", " + oy + ")")
+
+    // 6) Anidado: tupla dentro de tupla
+    let nested = (1, (2, 3))
+    let (first, (second, third)) = nested
+    print("first=" + first + " second=" + second + " third=" + third)
+
+    // 7) Struct dentro de struct
+    let ana = Person {
+        name: "Ana",
+        age: 30,
+        home: Address { city: "Maracaibo", zip: 4001 }
+    }
+    let Person { name, age, home: Address { city, zip } } = ana
+    print(name + " (" + age + ") vive en " + city + " " + zip)
+
+    // 8) Tupla que contiene un struct
+    let (punto, ok) = analizar([7, 2, 9, 1, 8])
+    let Point { x: mn, y: mx } = punto
+    print("min=" + mn + " max=" + mx + " valido=" + ok)
+
+    // 9) Tupla con rename via struct dentro
+    // Aca combinamos: destructure la tupla, luego destructure el struct.
+    let combo = (99, Point { x: 7, y: 8 })
+    let (id, Point { x: px, y: py }) = combo
+    print("id=" + id + " -> (" + px + ", " + py + ")")
+
+    // 10) La RHS puede ser CUALQUIER expresion — se evalua UNA sola vez.
+    // Aca la tupla viene de min_max sobre un array literal — el desazucar
+    // solo llama a min_max una vez, guarda en un temp y desde ahi indexa
+    // sus dos posiciones para bindear u y v.
+    let (u, v) = min_max([42, 17, 99, 3, 55, 8])
+    print("u=" + u + " v=" + v)
+
+    print("---- Listo ----")
+}
