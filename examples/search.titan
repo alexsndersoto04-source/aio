@@ -8,15 +8,20 @@
 //   * run_bert_pooled (pt.4) — mean pooling de sentence-transformers
 //   * std::vector   (pt.4) — cosine similarity + normalize
 //
-// Modelo: sentence-transformers/all-MiniLM-L6-v2 exportado a ONNX FP32
-// (~90 MB). Convierte texto a vectores de 384 dim, sirve para RAG chico
-// offline. Aca hacemos un mini buscador sobre ~8 documentos.
+// Modelo por default: paraphrase-MiniLM-L3-v2 (3 capas, ~30 MB).
+// Optimizado para celus con poca RAM. Vectores de 384 dim, sirve
+// para RAG chico offline.
+//
+// ⚠️ CELUS CON 3 GB DE RAM: usa siempre L3 con seq_len=64. El L6
+// completo con seq_len=128 pide ~800 MB peak durante la optimizacion
+// de tract y en un Redmi 9C con Android + otras apps abiertas swappea
+// indefinidamente sin terminar.
 //
 // Requiere 2 archivos en $HOME:
-//   * ~/minilm-tokenizer.json   (~430 KB)
-//   * ~/minilm.onnx             (~90 MB)
+//   * ~/minilm-tokenizer.json   (~230 KB)
+//   * ~/minilm.onnx             (~30 MB si L3, ~90 MB si L6)
 //
-// El primer bloque imprime los curls si faltan.
+// El primer bloque imprime los curls exactos si faltan.
 
 fn main() {
     let home = std::dirs::home()
@@ -42,21 +47,24 @@ fn main() {
     print("Cargando tokenizer ...")
     let tok = std::tokenize::load(tok_path)
 
-    print("Cargando MiniLM ONNX (10-30s la primera vez) ...")
-    let seq_len = 128
+    // seq_len chico -> memoria peak baja (atencion es O(n^2)).
+    // Para queries y docs cortos (menos de 20 palabras en ingles) sobra.
+    let seq_len = 64
+    print("Cargando MiniLM ONNX con seq_len={seq_len} ...")
+    print("  (30-90s en tu celu — tract optimiza el grafo antes de correr)")
     let model = std::onnx::load_bert(mod_path, 1, seq_len)
-    print("Modelo cargado")
+    print("Modelo cargado y optimizado")
 
-    // ---- 2) Corpus a indexar ----
+    // ---- 2) Corpus a indexar (mantengo docs cortos para caber en seq_len=64) ----
     let docs = [
-        "How to compile a Rust program on Linux with cargo build --release",
-        "Recipe for authentic Italian pizza dough with tipo 00 flour",
-        "The Real Madrid football club won the Champions League in 2024",
-        "Setting up SSH keys for GitHub authentication without passwords",
-        "How to make homemade chocolate chip cookies from scratch",
-        "The best strategies for defending in a 5-a-side soccer match",
-        "Debugging a memory leak in a Python Flask web application",
-        "How to grow tomatoes on a small apartment balcony"
+        "How to compile a Rust program with cargo",
+        "Recipe for Italian pizza dough with 00 flour",
+        "Real Madrid won the Champions League in 2024",
+        "SSH keys setup for GitHub authentication",
+        "Chocolate chip cookies from scratch recipe",
+        "Defending strategies in 5-a-side soccer",
+        "Debug memory leak in Python Flask app",
+        "Growing tomatoes on a small balcony"
     ]
     let n_docs = std::collections::length(docs)
     print("---- Indexando {n_docs} documentos ----")
@@ -72,10 +80,10 @@ fn main() {
 
     // ---- 3) Queries de prueba ----
     let queries = [
-        "programming in rust language",
+        "programming in rust",
         "food to cook at home",
         "sports and football",
-        "authentication with git and github"
+        "git authentication"
     ]
     let n_queries = std::collections::length(queries)
 
@@ -143,13 +151,19 @@ fn top_k(q_emb, index, docs, n_docs: int, k: int) -> string {
 
 fn print_download_instructions() {
     print("")
-    print("Baja los 2 archivos:")
+    print("Baja los 2 archivos (opcion L3, recomendado para celus 3 GB):")
     print("")
-    print("  # Tokenizer (~430 KB)")
+    print("  # Tokenizer (~230 KB)")
+    print("  curl -L -o ~/minilm-tokenizer.json \\")
+    print("    https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2/resolve/main/tokenizer.json")
+    print("")
+    print("  # Modelo ONNX L3 FP32 (~30 MB, mucho mas rapido de optimizar)")
+    print("  curl -L -o ~/minilm.onnx \\")
+    print("    https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2/resolve/main/onnx/model.onnx")
+    print("")
+    print("Alternativa L6 (mas preciso pero pide ~800 MB de RAM peak):")
     print("  curl -L -o ~/minilm-tokenizer.json \\")
     print("    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json")
-    print("")
-    print("  # Modelo ONNX FP32 (~90 MB)")
     print("  curl -L -o ~/minilm.onnx \\")
     print("    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx")
     print("")
