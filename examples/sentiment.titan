@@ -101,7 +101,7 @@ fn classify(tok: int, model: int, frase: string, seq_len: int) {
 
 // Softmax numericamente estable sobre 2 logits.
 // Devuelve [p(clase 0), p(clase 1)] usando std::math::exp (native).
-fn softmax2(a: float, b: float) -> array {
+fn softmax2(a: float, b: float) -> [float] {
     let mut m = a
     if b > m {
         m = b
