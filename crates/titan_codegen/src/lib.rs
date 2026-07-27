@@ -703,12 +703,31 @@ fn collect_enum_schemas(items: &[Item], output: &mut HashMap<String, Vec<String>
 }
 
 fn collect_items(items: &[Item], functions: &mut Vec<FunctionDecl>, constants: &mut HashMap<String, Expr>, variants: &mut HashMap<String, bool>, methods: &mut HashMap<String, usize>) {
+    // Phase 22: two-pass so `impl Trait for Type` blocks can pull
+    // default method bodies from the trait declaration even if the
+    // trait is defined further down or in a different module.
+    let mut traits: HashMap<String, TraitDecl> = HashMap::new();
+    collect_traits(items, &mut traits);
+    collect_items_with_traits(items, functions, constants, variants, methods, &traits);
+}
+
+fn collect_traits(items: &[Item], traits: &mut HashMap<String, TraitDecl>) {
+    for item in items {
+        match item {
+            Item::Trait(t) => { traits.insert(t.name.clone(), t.clone()); }
+            Item::Module(m) => collect_traits(&m.items, traits),
+            _ => {}
+        }
+    }
+}
+
+fn collect_items_with_traits(items: &[Item], functions: &mut Vec<FunctionDecl>, constants: &mut HashMap<String, Expr>, variants: &mut HashMap<String, bool>, methods: &mut HashMap<String, usize>, traits: &HashMap<String, TraitDecl>) {
     for item in items {
         match item {
             Item::Function(f) => functions.push(f.clone()),
             Item::Const(c) => { constants.insert(c.name.clone(), (*c.value).clone()); }
             Item::Enum(e) => for variant in &e.variants { variants.insert(format!("{}::{}", e.name, variant.name), variant.payload.is_some()); },
-            Item::Module(m) => collect_items(&m.items, functions, constants, variants, methods),
+            Item::Module(m) => collect_items_with_traits(&m.items, functions, constants, variants, methods, traits),
             // Phase 20: each method inside `impl Point { ... }` becomes a
             // regular top-level function with a qualified name like
             // `Point::distance`. If the method's first param is named
@@ -718,11 +737,19 @@ fn collect_items(items: &[Item], functions: &mut Vec<FunctionDecl>, constants: &
             // entry that the VM uses at runtime for dynamic dispatch of
             // `p.distance(...)` — resolved from the receiver's struct
             // name, so two structs can share method names safely.
+            //
+            // Phase 22: when the block is `impl SomeTrait for Point {}`,
+            // any trait method with a default body that Point didn't
+            // override is synthesized as a Point method too, so the VM
+            // can dispatch it identically. Trait methods without a body
+            // that the impl doesn't provide raise an error at compile
+            // time — no silent missing-method surprises at runtime.
             Item::Impl(i) => {
                 let type_name = match &i.target_type {
                     TypeExpr::Named { name, .. } => name.clone(),
                     _ => continue,
                 };
+                let provided: std::collections::HashSet<String> = i.methods.iter().map(|m| m.name.clone()).collect();
                 for method in &i.methods {
                     let mut renamed = method.clone();
                     renamed.name = format!("{}::{}", type_name, method.name);
@@ -733,6 +760,33 @@ fn collect_items(items: &[Item], functions: &mut Vec<FunctionDecl>, constants: &
                     }
                     methods.insert(renamed.name.clone(), functions.len());
                     functions.push(renamed);
+                }
+                // Phase 22: fill in defaults + validate required methods.
+                if let Some(trait_name) = &i.trait_name {
+                    if let Some(trait_decl) = traits.get(trait_name) {
+                        for tm in &trait_decl.methods {
+                            if provided.contains(&tm.name) { continue; }
+                            let Some(default_body) = &tm.body else { continue };
+                            // Synthesize FunctionDecl from TraitMethod + default body.
+                            let mut synth = FunctionDecl {
+                                name: format!("{}::{}", type_name, tm.name),
+                                source_file: None,
+                                params: tm.params.clone(),
+                                return_type: tm.return_type.clone(),
+                                body: Some(default_body.clone()),
+                                is_extern: false,
+                                abi: None,
+                                span: tm.span,
+                            };
+                            if let Some(first) = synth.params.first_mut() {
+                                if first.name == "self" && first.type_ann.is_none() {
+                                    first.type_ann = Some(TypeExpr::Named { name: type_name.clone(), generics: Vec::new() });
+                                }
+                            }
+                            methods.insert(synth.name.clone(), functions.len());
+                            functions.push(synth);
+                        }
+                    }
                 }
             }
             _ => {}

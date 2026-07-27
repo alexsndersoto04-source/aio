@@ -47,6 +47,9 @@ pub struct TypeEnv {
     functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, HashMap<String, Type>>,
     enum_variants: HashMap<String, Option<Type>>,
+    /// Phase 22: trait declarations indexed by name, so `impl Trait for
+    /// Type` blocks can pull default method bodies + signatures.
+    traits: HashMap<String, TraitDecl>,
     errors: Vec<TypeError>,
     return_type: Type,
     loop_depth: usize,
@@ -154,7 +157,7 @@ impl TypeEnv {
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),
         ]);
-        Self { scopes: vec![HashMap::new()], functions, structs: HashMap::new(), enum_variants, errors: Vec::new(), return_type: Type::Unknown, loop_depth: 0 }
+        Self { scopes: vec![HashMap::new()], functions, structs: HashMap::new(), enum_variants, traits: HashMap::new(), errors: Vec::new(), return_type: Type::Unknown, loop_depth: 0 }
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<TypeError>> {
@@ -164,7 +167,20 @@ impl TypeEnv {
         if self.errors.is_empty() { Ok(()) } else { Err(std::mem::take(&mut self.errors)) }
     }
 
+    fn collect_traits(&mut self, items: &[Item]) {
+        for item in items {
+            match item {
+                Item::Trait(t) => { self.traits.insert(t.name.clone(), t.clone()); }
+                Item::Module(m) => self.collect_traits(&m.items),
+                _ => {}
+            }
+        }
+    }
+
     fn collect_declarations(&mut self, items: &[Item]) {
+        // Phase 22: first pass — traits only, so `impl Trait for T`
+        // blocks can look up default bodies regardless of file order.
+        self.collect_traits(items);
         for item in items {
             match item {
                 Item::Function(function) => {
@@ -186,12 +202,19 @@ impl TypeEnv {
                 // first parameter is named `self` and lacks an
                 // annotation, synthesize it as Type::Named(type_name)
                 // so field access on `self` typechecks correctly.
+                //
+                // Phase 22: for `impl Trait for Type { ... }` we also
+                // inherit signatures (and eventually bodies via codegen)
+                // for every trait method with a default body that this
+                // impl doesn't override.
                 Item::Impl(block) => {
                     let type_name = match &block.target_type {
                         TypeExpr::Named { name, .. } => Some(name.clone()),
                         _ => None,
                     };
+                    let mut provided: HashSet<String> = HashSet::new();
                     for method in &block.methods {
+                        provided.insert(method.name.clone());
                         let qualified = match &type_name { Some(t) => format!("{}::{}", t, method.name), None => method.name.clone() };
                         let params: Vec<Type> = method.params.iter().enumerate().map(|(i, p)| {
                             if i == 0 && p.name == "self" && p.type_ann.is_none() {
@@ -204,6 +227,41 @@ impl TypeEnv {
                             result: method.return_type.as_ref().map(type_from_ast).unwrap_or(Type::Unit),
                         });
                     }
+                    // Phase 22: inherit default-method signatures from
+                    // the trait, and report a UnknownVariable error if a
+                    // required method (no default body) is missing.
+                    if let (Some(trait_name), Some(type_name)) = (&block.trait_name, &type_name) {
+                        if let Some(trait_decl) = self.traits.get(trait_name).cloned() {
+                            for tm in &trait_decl.methods {
+                                if provided.contains(&tm.name) { continue; }
+                                let qualified = format!("{}::{}", type_name, tm.name);
+                                let params: Vec<Type> = tm.params.iter().enumerate().map(|(i, p)| {
+                                    if i == 0 && p.name == "self" && p.type_ann.is_none() {
+                                        return Type::Named(type_name.clone());
+                                    }
+                                    p.type_ann.as_ref().map(type_from_ast).unwrap_or(Type::Unknown)
+                                }).collect();
+                                if tm.body.is_some() {
+                                    // Default provided by trait — register signature so calls typecheck.
+                                    self.functions.insert(qualified, FunctionSig {
+                                        params,
+                                        result: tm.return_type.as_ref().map(type_from_ast).unwrap_or(Type::Unit),
+                                    });
+                                } else {
+                                    // Required method missing.
+                                    self.errors.push(TypeError::UnknownVariable {
+                                        name: format!("impl {} for {}: missing required method '{}'", trait_name, type_name, tm.name),
+                                    });
+                                }
+                            }
+                        } else {
+                            self.errors.push(TypeError::UnknownVariable { name: format!("trait '{}'", trait_name) });
+                        }
+                    }
+                },
+                Item::Trait(trait_decl) => {
+                    // Phase 22: record so impls can look up defaults later.
+                    self.traits.insert(trait_decl.name.clone(), trait_decl.clone());
                 },
                 _ => {}
             }
@@ -223,6 +281,7 @@ impl TypeEnv {
                     TypeExpr::Named { name, .. } => Some(name.clone()),
                     _ => None,
                 };
+                let provided: HashSet<String> = block.methods.iter().map(|m| m.name.clone()).collect();
                 for method in &block.methods {
                     let mut annotated = method.clone();
                     if let (Some(t), Some(first)) = (&type_name, annotated.params.first_mut()) {
@@ -231,6 +290,35 @@ impl TypeEnv {
                         }
                     }
                     self.check_function(&annotated);
+                }
+                // Phase 22: also typecheck inherited defaults, treating
+                // them as if declared on this type — catches errors
+                // early when a default body references self.field but
+                // the impl target doesn't have such a field, etc.
+                if let (Some(trait_name), Some(t)) = (&block.trait_name, &type_name) {
+                    if let Some(trait_decl) = self.traits.get(trait_name).cloned() {
+                        for tm in &trait_decl.methods {
+                            if provided.contains(&tm.name) { continue; }
+                            let Some(body) = tm.body.clone() else { continue };
+                            let synth = FunctionDecl {
+                                name: format!("{}::{}", t, tm.name),
+                                source_file: None,
+                                params: tm.params.iter().enumerate().map(|(i, p)| {
+                                    let mut cloned = p.clone();
+                                    if i == 0 && cloned.name == "self" && cloned.type_ann.is_none() {
+                                        cloned.type_ann = Some(TypeExpr::Named { name: t.clone(), generics: Vec::new() });
+                                    }
+                                    cloned
+                                }).collect(),
+                                return_type: tm.return_type.clone(),
+                                body: Some(body),
+                                is_extern: false,
+                                abi: None,
+                                span: tm.span,
+                            };
+                            self.check_function(&synth);
+                        }
+                    }
                 }
             }
             Item::Module(module) => for item in &module.items { self.check_item(item); },

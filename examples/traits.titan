@@ -1,0 +1,147 @@
+// Fase 22: traits con metodos default.
+//
+// Un `trait` define un CONTRATO — una lista de metodos que un tipo
+// debe implementar para "ser" ese trait. Cada metodo puede tener:
+//   - Solo firma:  `fn draw(self);`     -> obligatorio
+//   - Body default: `fn label(self) -> string { "unnamed" }` -> opcional
+//
+// Los tipos se conectan con `impl Trait for Tipo { ... }`. Si un
+// tipo NO provee un metodo con default, hereda el body del trait
+// automaticamente. Si NO provee un metodo obligatorio, el compilador
+// aborta con un error claro antes de correr nada.
+//
+// Ejecutar con:
+//     zett run examples/traits.titan
+
+// ---------- 1) Trait basico con dos metodos default ----------
+
+trait Greetable {
+    // Requerido: cada tipo debe implementar este.
+    fn name(self) -> string;
+
+    // Default: se puede sobreescribir o no.
+    fn greet(self) -> string {
+        "Hola, " + self.name() + "!"
+    }
+
+    // Default que usa otro default (llamadas cruzadas via self).
+    fn shout(self) -> string {
+        self.greet() + "!!!"
+    }
+}
+
+// ---------- 2) Tipo que SOLO implementa lo requerido ----------
+
+struct Person { first: string }
+
+impl Greetable for Person {
+    // Solo `name` — hereda `greet` y `shout` sin escribirlos.
+    fn name(self) -> string {
+        self.first
+    }
+}
+
+// ---------- 3) Tipo que sobreescribe el default ----------
+
+struct Robot { model: string, serial: int }
+
+impl Greetable for Robot {
+    fn name(self) -> string {
+        "Robot-" + self.model
+    }
+
+    // Redefine greet para dar formato militar.
+    fn greet(self) -> string {
+        "UNIT " + self.name() + " #" + self.serial + " REPORTING"
+    }
+    // No sobreescribe shout -> hereda el default.
+}
+
+// ---------- 4) Trait con multiples defaults encadenados ----------
+
+trait Countable {
+    fn count(self) -> int;
+
+    fn is_empty(self) -> bool {
+        self.count() == 0
+    }
+
+    fn is_singleton(self) -> bool {
+        self.count() == 1
+    }
+
+    fn describe(self) -> string {
+        if self.is_empty() {
+            "vacio"
+        } else if self.is_singleton() {
+            "1 solo"
+        } else {
+            self.count() + " items"
+        }
+    }
+}
+
+struct Bag { items: [int] }
+
+impl Countable for Bag {
+    fn count(self) -> int {
+        len(self.items)
+    }
+    // Hereda is_empty, is_singleton, describe.
+}
+
+// ---------- 5) Un tipo que implementa DOS traits ----------
+
+struct Product { title: string, stock: int }
+
+impl Greetable for Product {
+    fn name(self) -> string {
+        self.title
+    }
+    // Hereda greet, shout.
+}
+
+impl Countable for Product {
+    fn count(self) -> int {
+        self.stock
+    }
+    // Hereda todo lo demas.
+}
+
+fn main() {
+    print("---- Fase 22: traits con metodos default ----")
+
+    // Person hereda greet + shout, solo escribio name.
+    let ana = Person { first: "Ana" }
+    print(ana.name())       // Ana
+    print(ana.greet())      // Hola, Ana!
+    print(ana.shout())      // Hola, Ana!!!!
+
+    // Robot sobreescribe greet, hereda shout.
+    let r2d2 = Robot { model: "R2D2", serial: 42 }
+    print(r2d2.name())      // Robot-R2D2
+    print(r2d2.greet())     // UNIT Robot-R2D2 #42 REPORTING
+    print(r2d2.shout())     // UNIT Robot-R2D2 #42 REPORTING!!!
+
+    print("---- Countable con defaults encadenados ----")
+
+    let vacio = Bag { items: [] }
+    let uno = Bag { items: [42] }
+    let muchos = Bag { items: [1, 2, 3, 4, 5] }
+
+    print("vacio: " + vacio.describe() + " (empty=" + vacio.is_empty() + ")")
+    print("uno: " + uno.describe() + " (singleton=" + uno.is_singleton() + ")")
+    print("muchos: " + muchos.describe() + " (count=" + muchos.count() + ")")
+
+    print("---- Un tipo con DOS traits ----")
+
+    let pan = Product { title: "Pan integral", stock: 3 }
+    print(pan.greet())              // Hola, Pan integral! (via Greetable)
+    print(pan.describe())           // 3 items                (via Countable)
+    print(pan.name() + " tiene " + pan.count() + " unidades")
+
+    let agotado = Product { title: "Cafe", stock: 0 }
+    print(agotado.name() + ": " + agotado.describe())   // Cafe: vacio
+
+    print("---- Listo ----")
+}

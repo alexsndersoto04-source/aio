@@ -332,6 +332,49 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## Traits con métodos default — v0.21.0
+
+Un `trait` define un contrato: una lista de métodos que un tipo debe
+implementar. Cada método puede tener body default o solo firma.
+
+```titan
+trait Greetable {
+    fn name(self) -> string;              // requerido
+    fn greet(self) -> string {            // default
+        "Hola, " + self.name() + "!"
+    }
+}
+
+struct Person { first: string }
+
+impl Greetable for Person {
+    fn name(self) -> string { self.first }
+    // greet se hereda del trait automáticamente.
+}
+
+fn main() {
+    let p = Person { first: "Ana" }
+    print(p.greet())    // "Hola, Ana!"
+}
+```
+
+Reglas:
+
+- Trait declarado con `trait Name { ... }`, dentro solo van `fn` con
+  o sin body.
+- `fn foo();` (con `;`) es **obligatorio** — el impl debe proveerlo.
+- `fn foo() { ... }` (con body) es **default** — el impl puede
+  omitirlo y hereda ese body.
+- El impl se conecta con `impl Trait for Type { ... }`.
+- Los defaults pueden llamarse entre sí via `self.otro()` — el
+  dispatch es dinámico (Fase 20).
+- Un mismo struct puede implementar múltiples traits sin colisión.
+- Si un método requerido falta en el impl, error en compilación.
+
+Ejemplo completo verificable: `examples/traits.titan`.
+
+---
+
 ## Módulos custom con `import` — v0.20.0
 
 Un proyecto Titan puede tener varios archivos `.titan`. Un archivo

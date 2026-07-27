@@ -1,5 +1,100 @@
 # Zett / TITAN — Changelog
 
+## 0.21.0 — Phase 22: traits con métodos default 🧬
+
+Los traits ya se parseaban desde hace muchas versiones (`trait X { fn foo(); }`),
+pero no se conectaban con `impl Trait for Type` ni admitían defaults.
+Ahora sí: polimorfismo real con herencia de métodos.
+
+### Nueva sintaxis útil
+
+```titan
+trait Greetable {
+    // Requerido: cada tipo debe implementarlo.
+    fn name(self) -> string;
+
+    // Default: el impl lo puede omitir y hereda este body.
+    fn greet(self) -> string {
+        "Hola, " + self.name() + "!"
+    }
+
+    // Los defaults pueden llamar a otros métodos del propio trait
+    // via `self.metodo()` — el dispatch dinámico se encarga.
+    fn shout(self) -> string {
+        self.greet() + "!!!"
+    }
+}
+
+struct Person { first: string }
+
+impl Greetable for Person {
+    fn name(self) -> string { self.first }
+    // greet y shout se heredan automáticamente.
+}
+
+struct Robot { model: string, serial: int }
+
+impl Greetable for Robot {
+    fn name(self) -> string { "Robot-" + self.model }
+
+    // Sobreescribe el default.
+    fn greet(self) -> string {
+        "UNIT " + self.name() + " #" + self.serial + " REPORTING"
+    }
+    // shout hereda el default -> usa la versión sobreescrita de greet.
+}
+```
+
+Un mismo struct puede implementar **múltiples** traits:
+
+```titan
+struct Product { title: string, stock: int }
+
+impl Greetable for Product {
+    fn name(self) -> string { self.title }
+}
+
+impl Countable for Product {
+    fn count(self) -> int { self.stock }
+}
+```
+
+### Validación en tiempo de compilación
+
+- **Método requerido faltante**: si `impl Foo for T` no provee un método
+  que Foo declara sin default (`fn foo();`), el typechecker aborta con
+  `missing required method 'foo'` antes de correr nada.
+- **Trait desconocido**: `impl NoExiste for T` da error inmediato.
+- **Los defaults se typecheckean como si fueran del impl**: si el body
+  del default llama `self.campo` y el tipo no tiene ese campo, se
+  reporta ahí mismo.
+
+### Bajo el capó
+
+- `TraitMethod` gana un `body: Option<Block>`. Reutiliza el parser
+  existente de `fn` que ya distingue `;` (sin body) de `{ ... }`.
+- Codegen: cuando ve `impl Trait for Type { ... }`, para cada método
+  del trait con body y que el impl no override, sintetiza un
+  `FunctionDecl` con nombre `Type::metodo` y lo registra en la
+  `method_table` — el runtime lo dispatcha idéntico a un método
+  escrito a mano.
+- Los defaults que llaman `self.otro_metodo()` funcionan porque el
+  dispatch de Fase 20 es dinámico: en runtime se resuelve `Type::otro_metodo`
+  contra el tipo real del receiver, no contra el trait.
+- Cero cambios en la VM — la infraestructura de Fase 20 alcanza.
+
+### Ejemplo verificable
+
+`zett run examples/traits.titan` — cubre:
+
+1. Trait con método requerido + 2 defaults encadenados
+2. Struct que hereda los dos defaults
+3. Struct que sobreescribe uno y hereda el otro
+4. Trait con 3 defaults encadenados (`describe` usa `is_empty`+`is_singleton`+`count`)
+5. Struct que implementa **DOS** traits distintos sin colisión
+
+---
+
 ## 0.20.0 — Phase 21: proyectos multi-archivo con `import` 📦
 
 Titan ya tenía todo el andamiaje de carga multi-archivo en

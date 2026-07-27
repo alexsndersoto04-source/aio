@@ -131,8 +131,18 @@ impl Parser {
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
         while !self.at(TokenKind::RBrace) {
+            // Phase 22: parse_function already handles both `fn foo();`
+            // (required, no body) and `fn foo() { ... }` (default body).
+            // We just carry the body through into the TraitMethod so
+            // impls can pick up defaults for methods they don't override.
             let function = self.parse_function()?;
-            methods.push(TraitMethod { name: function.name, params: function.params, return_type: function.return_type, span: function.span });
+            methods.push(TraitMethod {
+                name: function.name,
+                params: function.params,
+                return_type: function.return_type,
+                body: function.body,
+                span: function.span,
+            });
         }
         self.expect(TokenKind::RBrace)?;
         Ok(TraitDecl { name, methods, span })

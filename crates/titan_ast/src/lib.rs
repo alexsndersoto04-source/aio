@@ -85,6 +85,10 @@ pub struct TraitMethod {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
+    /// Phase 22: optional default body. When present, structs that
+    /// `impl Trait for Type` without providing this method get the
+    /// default automatically. When None, the impl must provide it.
+    pub body: Option<Block>,
     pub span: Span,
 }
 
