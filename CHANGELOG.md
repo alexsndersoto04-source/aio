@@ -1,5 +1,75 @@
 # Zett / TITAN — Changelog
 
+## 0.23.0 — Phase 24: pipeline `|>` y spaceship `<=>` 🚀
+
+Dos operadores de programación funcional que hacían falta para
+escribir código idiomático de verdad — ambos son puro desazucar
+sintáctico en el parser, cero cambios en la VM.
+
+### Pipeline `|>`
+
+```titan
+// Antes: cuadrar(dobla(sumar_1(x)))    (leer de adentro hacia afuera)
+// Ahora: x |> sumar_1 |> dobla |> cuadrar   (leer de izquierda a derecha)
+
+let total = [1, 2, 3, 4]
+    |> map(|x| x * x)
+    |> fold(0, |acc, x| acc + x)
+// == fold(map([1,2,3,4], |x| x*x), 0, |acc, x| acc + x)
+```
+
+Reglas:
+
+- `x |> f` es azúcar de `f(x)`.
+- `x |> f(a, b)` es azúcar de `f(x, a, b)` — el valor pipeado
+  siempre va como **primer argumento**.
+- Precedencia mínima (0): `a + 1 |> print` es `(a+1) |> print`.
+- Left-associative y encadenable sin límite.
+
+### Spaceship `<=>`
+
+```titan
+print(3 <=> 5)                       // -1
+print(5 <=> 5)                       //  0
+print(7 <=> 5)                       //  1
+
+// Ideal para sort_by — reemplaza el clásico
+//   |a, b| if a < b { -1 } else if a > b { 1 } else { 0 }
+let asc  = sort_by(data, |a, b| a <=> b)
+let desc = sort_by(data, |a, b| b <=> a)
+
+// Sobre structs (Fase 20 + Fase 24)
+let por_precio = sort_by(productos, |a, b| a.precio <=> b.precio)
+```
+
+Reglas:
+
+- `a <=> b` devuelve `int`: `-1` si `a<b`, `0` si `a==b`, `1` si `a>b`.
+- Cada lado se evalúa **una sola vez** (usa dos temporarios
+  sintéticos como en Fase 23).
+- Funciona sobre `int` y `float` (los tipos que el runtime ordena).
+- Misma precedencia que los comparadores clásicos (7).
+
+### Bajo el capó
+
+- Lexer: tokens nuevos `PipeGt` (`|>`) y `Spaceship` (`<=>`).
+- Parser: `|>` se convierte en un `Expr::Call` con el LHS
+  insertado al principio de los args. `<=>` se convierte en un
+  `Expr::Block` con dos `let __destr<N>` + un `if a<b { -1 } else
+  if a>b { 1 } else { 0 }`, garantizando evaluación única de cada lado.
+- Cero cambios en `BinaryOp`, typechecker o VM — todo se apoya en
+  la infraestructura existente. Los `.zettbc` viejos siguen
+  cargando sin cambios.
+
+### Ejemplo verificable
+
+`zett run examples/pipeline_spaceship.titan` — 10 casos cubriendo
+pipeline básico, encadenado, con múltiples args, combinado con
+higher-order (Fase 19), spaceship sobre int/float, sort ascendente
+y descendente, y sort sobre structs por campo.
+
+---
+
 ## 0.22.0 — Phase 23: destructuring en `let` (tuplas + structs) 🎁
 
 Ahora se pueden **desempacar** tuplas y structs directamente en el

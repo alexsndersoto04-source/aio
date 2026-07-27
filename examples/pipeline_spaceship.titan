@@ -1,0 +1,106 @@
+// Fase 24: operador pipeline `|>` y comparador spaceship `<=>`.
+//
+// `x |> f`        == `f(x)`
+// `x |> f(a, b)`  == `f(x, a, b)`   (el pipe siempre inyecta a la IZQUIERDA)
+// `a <=> b`       == -1 si a<b, 0 si a==b, 1 si a>b
+//
+// Los dos son puro desazucar sintactico — la VM ni se entera. El
+// pipe se convierte en una `Call` normal. El spaceship se convierte
+// en un `if/else` que evalua cada lado UNA sola vez usando temps.
+//
+// Ejecutar con:
+//     zett run examples/pipeline_spaceship.titan
+
+fn dobla(x: int) -> int {
+    x * 2
+}
+
+fn mas(a: int, b: int) -> int {
+    a + b
+}
+
+fn cuadrar(x: int) -> int {
+    x * x
+}
+
+fn positivo(x: int) -> bool {
+    x > 0
+}
+
+fn describir(n: int) -> string {
+    if n < 0 {
+        return "negativo (" + n + ")"
+    }
+    if n == 0 {
+        return "cero"
+    }
+    return "positivo (" + n + ")"
+}
+
+fn main() {
+    print("---- Fase 24: pipeline y spaceship ----")
+
+    // 1) Pipeline basico: x |> f  ==  f(x)
+    let a = 5 |> dobla
+    print("5 |> dobla = " + a)                  // 10
+
+    // 2) Pipeline encadenado: se lee izquierda a derecha
+    let b = 3 |> dobla |> cuadrar
+    // Equivale a cuadrar(dobla(3)) = cuadrar(6) = 36
+    print("3 |> dobla |> cuadrar = " + b)       // 36
+
+    // 3) Pipeline con funcion que toma varios args
+    let c = 10 |> mas(5)
+    // Equivale a mas(10, 5) — el valor pipeado va como PRIMER argumento
+    print("10 |> mas(5) = " + c)                // 15
+
+    // 4) Pipeline combinado con higher-order (Fase 19)
+    let nums = [1, 2, 3, 4, 5, -1, -2]
+    let solo_pos = nums |> filter(|n| positivo(n))
+    print("positivos: " + solo_pos)             // [1, 2, 3, 4, 5]
+
+    // 5) Pipeline masivo con predicados legibles
+    let suma_de_cuadrados = [1, 2, 3, 4] |> map(|x| cuadrar(x)) |> fold(0, |acc, x| acc + x)
+    print("suma de cuadrados: " + suma_de_cuadrados)   // 30
+
+    print("---- Spaceship: -1 / 0 / 1 ----")
+
+    // 6) Basico
+    print("3 <=> 5 = " + (3 <=> 5))             // -1
+    print("5 <=> 5 = " + (5 <=> 5))             // 0
+    print("7 <=> 5 = " + (7 <=> 5))             // 1
+
+    // 7) Aplicado sobre floats
+    print("1.5 <=> 2.0 = " + (1.5 <=> 2.0))     // -1
+    print("2.0 <=> 2.0 = " + (2.0 <=> 2.0))     // 0
+
+    // 8) Sort_by usando spaceship — mucho mas limpio que el
+    //    comparador manual con dos if.
+    let data = [7, 2, 9, 4, 1, 8, 3]
+    let asc = sort_by(data, |a, b| a <=> b)
+    let desc = sort_by(data, |a, b| b <=> a)
+    print("asc:  " + asc)
+    print("desc: " + desc)
+
+    // 9) Ordenar structs por un campo — Fase 20 + Fase 24 combinados
+    let productos = [
+        Prod { nombre: "pan", precio: 8 },
+        Prod { nombre: "leche", precio: 25 },
+        Prod { nombre: "manzana", precio: 15 }
+    ]
+    let por_precio = sort_by(productos, |a, b| a.precio <=> b.precio)
+    for p in por_precio {
+        print("  " + p.nombre + ": $" + p.precio)
+    }
+
+    // 10) Combinacion final — pipeline con describir para clasificar
+    print("---- pipeline + describir ----")
+    let vals = [-3, 0, 7]
+    for v in vals {
+        print(v |> describir)
+    }
+
+    print("---- Listo ----")
+}
+
+struct Prod { nombre: string, precio: int }

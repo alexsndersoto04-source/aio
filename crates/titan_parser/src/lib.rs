@@ -504,7 +504,39 @@ impl Parser {
 
     fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr> {
         let mut left = self.parse_unary()?;
-        while let Some((op, precedence)) = self.binary_op() {
+        loop {
+            // Phase 24: `|>` pipeline is desugared in the parser. It
+            // has the lowest precedence (0) so that `x + 1 |> print`
+            // groups as `(x + 1) |> print`. Right-hand side must be
+            // either an identifier (turned into `f(x)`) or a call
+            // (turned into `f(x, existing_args...)`), so `x |> f(a)`
+            // becomes `f(x, a)`. Encadenable via left-associativity.
+            if matches!(self.peek_kind(), Some(TokenKind::PipeGt)) && min_precedence == 0 {
+                self.advance();
+                let callee = self.parse_unary()?;
+                let span = left.span();
+                left = match callee {
+                    Expr::Call { callee, args, .. } => {
+                        let mut new_args = vec![left];
+                        new_args.extend(args);
+                        Expr::Call { callee, args: new_args, span }
+                    }
+                    other => Expr::Call { callee: Box::new(other), args: vec![left], span },
+                };
+                continue;
+            }
+            // Phase 24: `<=>` spaceship. Desugars to an if-else that
+            // evaluates each side exactly once via let temporaries.
+            // We build the desugar inline so no BinaryOp::Cmp needs to
+            // be added — keeps the VM/typechecker untouched.
+            if matches!(self.peek_kind(), Some(TokenKind::Spaceship)) && 7 >= min_precedence {
+                self.advance();
+                let right = self.parse_binary(8)?;
+                let span = left.span();
+                left = self.build_spaceship(left, right, span);
+                continue;
+            }
+            let Some((op, precedence)) = self.binary_op() else { break };
             if precedence < min_precedence { break; }
             self.advance();
             let right = self.parse_binary(precedence + 1)?;
@@ -512,6 +544,62 @@ impl Parser {
             left = Expr::Binary { left: Box::new(left), op, right: Box::new(right), span };
         }
         Ok(left)
+    }
+
+    /// Phase 24: build the desugar for `a <=> b` — evaluates each
+    /// side once via a synthetic temp, then returns -1 / 0 / 1.
+    /// Emitted as a Block expression so the temporaries stay scoped
+    /// and don't leak into the surrounding function.
+    fn build_spaceship(&mut self, left: Expr, right: Expr, span: Span) -> Expr {
+        let ta = self.fresh_destr_name();
+        let tb = self.fresh_destr_name();
+        let load_a = || Expr::Ident { name: ta.clone(), span };
+        let load_b = || Expr::Ident { name: tb.clone(), span };
+        let cmp = Expr::If {
+            condition: Box::new(Expr::Binary {
+                left: Box::new(load_a()),
+                op: BinaryOp::Lt,
+                right: Box::new(load_b()),
+                span,
+            }),
+            then_branch: Block {
+                stmts: Vec::new(),
+                final_expr: Some(Box::new(Expr::Unary { op: UnaryOp::Neg, expr: Box::new(Expr::Int { value: 1, span }), span })),
+                span,
+            },
+            else_branch: Some(Block {
+                stmts: Vec::new(),
+                final_expr: Some(Box::new(Expr::If {
+                    condition: Box::new(Expr::Binary {
+                        left: Box::new(load_a()),
+                        op: BinaryOp::Gt,
+                        right: Box::new(load_b()),
+                        span,
+                    }),
+                    then_branch: Block {
+                        stmts: Vec::new(),
+                        final_expr: Some(Box::new(Expr::Int { value: 1, span })),
+                        span,
+                    },
+                    else_branch: Some(Block {
+                        stmts: Vec::new(),
+                        final_expr: Some(Box::new(Expr::Int { value: 0, span })),
+                        span,
+                    }),
+                    span,
+                })),
+                span,
+            }),
+            span,
+        };
+        Expr::Block(Box::new(Block {
+            stmts: vec![
+                Stmt::Let { name: ta, type_ann: None, value: left, span },
+                Stmt::Let { name: tb, type_ann: None, value: right, span },
+            ],
+            final_expr: Some(Box::new(cmp)),
+            span,
+        }))
     }
 
     fn binary_op(&self) -> Option<(BinaryOp, u8)> {

@@ -25,6 +25,10 @@ pub enum TokenKind {
     Bang, Question, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
     ThinArrow, FatArrow, EqEq, NotEq, LtEq, GtEq, Lt, Gt, LazyAnd,
     LazyOr, ColonColon, Eq, Range, RangeInclusive,
+    // Phase 24: `|>` pipeline (`x |> f` == `f(x)`) and `<=>` spaceship
+    // (`a <=> b` == -1 / 0 / 1 like C's compareTo — perfect for
+    // sort_by comparators).
+    PipeGt, Spaceship,
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Comma, Semicolon, Colon, Dot, Underscore,
     IntLit(String), FloatLit(String), StringLit(String), CharLit(char),
@@ -130,13 +134,13 @@ impl Lexer {
             '/' => if self.eat('=') { TokenKind::SlashEq } else { TokenKind::Slash },
             '%' => if self.eat('=') { TokenKind::PercentEq } else { TokenKind::Percent },
             '&' => if self.eat('&') { TokenKind::LazyAnd } else { TokenKind::Ampersand },
-            '|' => if self.eat('|') { TokenKind::LazyOr } else { TokenKind::Pipe },
+            '|' => if self.eat('|') { TokenKind::LazyOr } else if self.eat('>') { TokenKind::PipeGt } else { TokenKind::Pipe },
             '^' => TokenKind::Caret,
             '~' => TokenKind::Tilde,
             '?' => TokenKind::Question,
             '!' => if self.eat('=') { TokenKind::NotEq } else { TokenKind::Bang },
             '=' => if self.eat('=') { TokenKind::EqEq } else if self.eat('>') { TokenKind::FatArrow } else { TokenKind::Eq },
-            '<' => if self.eat('=') { TokenKind::LtEq } else { TokenKind::Lt },
+            '<' => if self.eat('=') { if self.eat('>') { TokenKind::Spaceship } else { TokenKind::LtEq } } else { TokenKind::Lt },
             '>' => if self.eat('=') { TokenKind::GtEq } else { TokenKind::Gt },
             '(' => TokenKind::LParen, ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace, '}' => TokenKind::RBrace,

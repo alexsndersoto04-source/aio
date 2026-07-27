@@ -332,6 +332,38 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## Operadores `|>` pipeline y `<=>` spaceship — v0.23.0
+
+### Pipeline
+
+```titan
+x |> f              // == f(x)
+x |> f(a, b)        // == f(x, a, b) — LHS va como PRIMER arg
+x |> f |> g         // == g(f(x)) — encadenable, left-assoc
+
+// Combina brutal con higher-order:
+[1, 2, 3] |> map(|x| x*x) |> fold(0, |acc, x| acc + x)
+```
+
+Precedencia mínima: `a + 1 |> print` agrupa como `(a+1) |> print`.
+
+### Spaceship
+
+```titan
+a <=> b             // -1 si a<b, 0 si a==b, 1 si a>b (solo int/float)
+
+// Reemplaza el comparador manual en sort_by:
+sort_by(xs, |a, b| a <=> b)              // asc
+sort_by(xs, |a, b| b <=> a)              // desc
+sort_by(items, |x, y| x.precio <=> y.precio)   // por campo
+```
+
+Cada lado se evalúa una sola vez (usa dos temps internos).
+
+Ejemplo completo: `examples/pipeline_spaceship.titan`.
+
+---
+
 ## Destructuring en `let` — v0.22.0
 
 Para desempacar tuplas y structs directamente:
