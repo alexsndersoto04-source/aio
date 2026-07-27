@@ -26,6 +26,10 @@ fn origin() -> Point {
 }
 
 // Devolver multiples valores como tupla es idiomatico ahora.
+//
+// Nota: usamos `return` explicito porque un `(` al inicio de linea
+// se pega a la linea anterior como si fuera una llamada de funcion
+// (gotcha conocido del parser de Titan, ver docs/TITAN_SYNTAX.md).
 fn min_max(xs: [int]) -> (int, int) {
     let mut lo = xs[0]
     let mut hi = xs[0]
@@ -33,7 +37,7 @@ fn min_max(xs: [int]) -> (int, int) {
         if x < lo { lo = x }
         if x > hi { hi = x }
     }
-    (lo, hi)
+    return (lo, hi)
 }
 
 // Devolver un struct + un flag.
@@ -41,7 +45,7 @@ fn analizar(xs: [int]) -> (Point, bool) {
     let (lo, hi) = min_max(xs)
     let p = Point { x: lo, y: hi }
     let bien = hi > lo
-    (p, bien)
+    return (p, bien)
 }
 
 fn main() {
