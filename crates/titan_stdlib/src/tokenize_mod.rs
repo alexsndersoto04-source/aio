@@ -123,6 +123,56 @@ pub fn encode(handle: i64, text: &str, add_special_tokens: bool) -> Result<Encod
     })
 }
 
+/// Encode `text` and pad / truncate to exactly `max_length` tokens.
+/// Padding uses `pad_id` for `ids` / `type_ids` / `special_tokens_mask`
+/// and `0` for the `attention_mask` so downstream models correctly
+/// ignore padded positions. Perfect for BERT-family transformers where
+/// the ONNX graph is compiled for a fixed sequence length.
+pub fn encode_padded(handle: i64, text: &str, max_length: usize, pad_id: u32, add_special_tokens: bool) -> Result<Encoding, TokenizeError> {
+    with(handle, |t| {
+        let e = t.encode(text, add_special_tokens).map_err(|e| TokenizeError::Backend(e.to_string()))?;
+        let mut ids     = e.get_ids().to_vec();
+        let mut tokens  = e.get_tokens().to_vec();
+        let mut types   = e.get_type_ids().to_vec();
+        let mut mask    = e.get_attention_mask().to_vec();
+        let mut special = e.get_special_tokens_mask().to_vec();
+
+        if ids.len() > max_length {
+            // Truncate — keep the last special token (usually [SEP]) if the
+            // encoding started with special tokens, so BERT doesn't lose
+            // its sentence separator on very long inputs.
+            let last = ids.last().copied();
+            let last_tok = tokens.last().cloned();
+            let last_type = types.last().copied();
+            let last_mask = mask.last().copied();
+            let last_spec = special.last().copied();
+            ids.truncate(max_length);
+            tokens.truncate(max_length);
+            types.truncate(max_length);
+            mask.truncate(max_length);
+            special.truncate(max_length);
+            if add_special_tokens {
+                if let Some(v) = last     { ids[max_length - 1]     = v; }
+                if let Some(v) = last_tok { tokens[max_length - 1]  = v; }
+                if let Some(v) = last_type{ types[max_length - 1]   = v; }
+                if let Some(v) = last_mask{ mask[max_length - 1]    = v; }
+                if let Some(v) = last_spec{ special[max_length - 1] = v; }
+            }
+        } else {
+            let pad = max_length - ids.len();
+            ids.extend(std::iter::repeat(pad_id).take(pad));
+            tokens.extend(std::iter::repeat("[PAD]".to_string()).take(pad));
+            types.extend(std::iter::repeat(0).take(pad));
+            mask.extend(std::iter::repeat(0).take(pad));
+            special.extend(std::iter::repeat(1).take(pad));
+        }
+
+        Ok(Encoding {
+            ids, tokens, type_ids: types, attention_mask: mask, special_tokens_mask: special,
+        })
+    })
+}
+
 /// Encode a batch of texts in one call. Uses the tokenizer's internal
 /// parallelism (rayon) when the batch is large.
 pub fn encode_batch(handle: i64, texts: &[String], add_special_tokens: bool) -> Result<Vec<Encoding>, TokenizeError> {

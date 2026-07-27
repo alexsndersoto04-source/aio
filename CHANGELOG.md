@@ -20,6 +20,13 @@
   **`std::math::to_float(int)`**, **`std::math::to_int(float)`** —
   small additions needed to build a real softmax + int/float
   arithmetic on top of tokenizer/model outputs without leaving Titan.
+- **`std::tokenize::encode_padded(handle, text, max_length, pad_id, add_special_tokens)`**
+  — encode + pad-to-max_length or truncate. Necessary when the ONNX
+  transformer graph was compiled with a fixed `[batch, seq_len]` input
+  shape (which is the norm — MiniLM's tokenizer.json ships with
+  padding baked in, but DistilBERT's doesn't). Uses `pad_id` for
+  `ids` / `type_ids` / `special_tokens_mask` and `0` for `attention_mask`
+  so downstream transformers correctly ignore padded positions.
 - **`examples/sentiment.titan`** — end-to-end demo: loads a real
   DistilBERT sentiment classifier (SST-2, 2 classes: NEGATIVE /
   POSITIVE), tokenizes English text, runs the ONNX forward pass on

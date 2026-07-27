@@ -77,7 +77,10 @@ fn main() {
 
 // Clasifica una frase e imprime la etiqueta con su confianza.
 fn classify(tok: int, model: int, frase: string, seq_len: int) {
-    let enc  = std::tokenize::encode(tok, frase, true)
+    // encode_padded rellena con [PAD] hasta seq_len (o trunca si es mas
+    // larga). pad_id=0 es el estandar de BERT / DistilBERT. Necesitamos
+    // shape fijo porque compilamos el grafo con load_bert(1, 128).
+    let enc  = std::tokenize::encode_padded(tok, frase, seq_len, 0, true)
     let ids  = enc.ids
     let mask = enc.attention_mask
 

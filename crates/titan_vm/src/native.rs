@@ -1178,6 +1178,15 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             let enc = stdlib::tokenize_mod::encode(h, &text, special).map_err(error)?;
             Value::Map(encoding_to_map(enc))
         }
+        #[cfg(feature = "tokenize_mod")] "std::tokenize::encode_padded" => {
+            let h = int!(); let text = string!();
+            let max_length = nonnegative(int!())?;
+            let pad_raw = int!();
+            let pad_id = u32::try_from(pad_raw).map_err(|_| "pad_id out of u32 range".to_string())?;
+            let special = boolean!();
+            let enc = stdlib::tokenize_mod::encode_padded(h, &text, max_length, pad_id, special).map_err(error)?;
+            Value::Map(encoding_to_map(enc))
+        }
         #[cfg(feature = "tokenize_mod")] "std::tokenize::encode_batch" => {
             let h = int!();
             let texts = array!().into_iter().map(expect_string).collect::<Result<Vec<_>, _>>()?;

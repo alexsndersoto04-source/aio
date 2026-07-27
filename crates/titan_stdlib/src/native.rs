@@ -650,6 +650,10 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::tokenize::vocab_size",   [Int], Int),
     // encode returns { ids, tokens, type_ids, attention_mask, special_tokens_mask } map.
     native!("std::tokenize::encode",       [Int, String, Bool], Map),
+    // encode_padded: encode + pad-to-max_length or truncate. For BERT-family
+    // models compiled with a fixed [batch, seq_len] input shape.
+    // args: (handle, text, max_length, pad_id, add_special_tokens) -> map.
+    native!("std::tokenize::encode_padded", [Int, String, Int, Int, Bool], Map),
     // encode_batch takes an array of strings, returns an array of the same map shape.
     native!("std::tokenize::encode_batch", [Int, Array, Bool], Array),
     // decode: array of ids -> string.
