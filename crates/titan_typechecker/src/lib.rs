@@ -322,7 +322,17 @@ impl TypeEnv {
             Expr::If { condition, then_branch, else_branch, .. } => {
                 let condition = self.check_expr(condition); self.require_compatible(&Type::Bool, &condition);
                 let a = self.check_block(then_branch);
-                if let Some(other) = else_branch { let b = self.check_block(other); self.require_compatible(&a, &b); a } else { Type::Unit }
+                if let Some(other) = else_branch {
+                    let b = self.check_block(other);
+                    // v0.16.0 QoL: if the two branches yield different
+                    // types (typical case: one ends in `print` -> Nil, the
+                    // other ends in a `handle()` call -> Unit), don't
+                    // error out — just widen to Unknown. The result of
+                    // the if-expression is then only usable as an
+                    // Unknown, which mirrors what the runtime already
+                    // does with mixed control flow.
+                    if compatible(&a, &b) { a } else { Type::Unknown }
+                } else { Type::Unit }
             }
             Expr::Match { scrutinee, arms, .. } => {
                 let subject = self.check_expr(scrutinee); let mut result = Type::Unknown; let mut wildcard = false; let mut bools = HashSet::new();

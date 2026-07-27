@@ -1,0 +1,59 @@
+// Demo Fase 17 pt.4 - QoL: if/else con ramas de tipo distinto.
+//
+// Antes (v0.16.0):
+//   if cond { print("hola") } else { do_something() }
+//   -> ERROR "type mismatch: expected Nil, found Unit"
+//   (print devuelve Nil, funciones sin -> devuelven Unit)
+//
+// Ahora (v0.16.0+):
+//   if cond { ... } else { ... }
+//   -> si las ramas coinciden, mantiene el tipo comun
+//   -> si difieren, degrada a Unknown SIN error
+//
+// Ejecutar con:
+//     zett run examples/qol_if_branches.titan
+
+fn side_effect() {
+    print("  side effect ejecutado")
+}
+
+fn main() {
+    print("---- Fase 17 pt.4: if/else con ramas de distinto tipo ----")
+
+    // Patron 1: una rama es print (Nil), la otra llama a una fn (Unit)
+    let n = 5
+    if n > 3 {
+        print("n es grande: {n}")
+    } else {
+        side_effect()
+    }
+
+    // Patron 2: una rama devuelve un valor, la otra un print
+    if n > 100 {
+        print("no llega aca")
+    } else {
+        side_effect()
+    }
+
+    // Patron 3: mezcla entre tipo primitivo y control flow
+    let x = 42
+    if x == 42 {
+        print("respuesta correcta")
+    } else {
+        print("otra respuesta")
+    }
+
+    // Patron 4: encadenamiento (nested if/else)
+    let user = "juan"
+    if user == "juan" {
+        print("hola juan")
+    } else {
+        if user == "maria" {
+            print("hola maria")
+        } else {
+            side_effect()
+        }
+    }
+
+    print("---- Listo ----")
+}
