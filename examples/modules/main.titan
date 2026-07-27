@@ -1,0 +1,56 @@
+// Fase 21: proyectos multi-archivo con `import`.
+//
+// Este archivo es el ENTRY del "proyecto". Titan busca los imports
+// relativos a la carpeta que lo contiene (`examples/modules/`).
+//
+// Ejecutar con:
+//     zett run examples/modules/main.titan
+//
+// El loader (titan_pkg::SourceProject) resuelve cada import asi:
+//   - `import geometry`      -> examples/modules/geometry.titan
+//   - `import util::text`    -> examples/modules/util/text.titan
+//   - `import util::math`    -> examples/modules/util/math.titan
+//
+// Todos los structs, impls y funciones importados quedan disponibles
+// en un unico namespace plano — como si estuvieran definidos aca.
+// Es simple pero previene ciclos (a importa b y b importa a aborta),
+// detecta imports que escapan del source root, y evita cargar dos
+// veces el mismo archivo.
+
+import geometry
+import util::text
+import util::math
+
+fn main() {
+    print("---- Fase 21: proyectos multi-archivo con import ----")
+
+    // Structs + impl desde geometry.titan (Fase 20)
+    let p = Point::new(3.0, 4.0)
+    let o = Point::origin()
+    print("p = " + p.show())
+    print("origen = " + o.show())
+    print("|p|^2 = " + p.magnitude_sq())
+    print("|p - o|^2 = " + p.distance_sq(o))
+
+    // Funciones libres desde util/math.titan
+    let s = sum([1, 2, 3, 4, 5])
+    let m = max_of([7, 2, 9, 4, 1])
+    print("suma [1..5] = " + s)
+    print("max = " + m)
+
+    // Funciones desde util/text.titan
+    let saludo = greet("mundo")
+    print(saludo)
+    print("repetir x3: " + repeat_str("ha", 3))
+
+    // Combinar: factory de otro modulo + metodo
+    let r = Rect::square(6)
+    print(r.show() + " area = " + r.area())
+
+    // Otra combinacion: usar helpers de math sobre coords de un Point
+    let ps = [Point::new(1.0, 2.0), Point::new(4.0, 6.0), Point::new(-1.0, 3.0)]
+    let mags = map(ps, |q| q.magnitude_sq())
+    print("magnitudes^2 = " + mags)
+
+    print("---- Listo ----")
+}

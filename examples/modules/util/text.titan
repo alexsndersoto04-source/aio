@@ -1,0 +1,21 @@
+// Fase 21: submodulo `util::text`.
+//
+// Se carga con `import util::text`. Convive con `util::math` en la
+// misma carpeta `util/`. Cada archivo aporta sus items al programa
+// final sin colisionar mientras los nombres sean unicos.
+
+fn greet(name: string) -> string {
+    "Hola, " + name + "!"
+}
+
+// El nombre `repeat` colisionaria con posibles builtins futuros —
+// uso `repeat_str` para dejar claro que es de este modulo.
+fn repeat_str(s: string, n: int) -> string {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out = out + s
+        i = i + 1
+    }
+    out
+}

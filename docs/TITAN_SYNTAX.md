@@ -332,6 +332,53 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## Módulos custom con `import` — v0.20.0
+
+Un proyecto Titan puede tener varios archivos `.titan`. Un archivo
+carga a otro con `import`:
+
+```titan
+// examples/modules/main.titan
+import geometry           // carga geometry.titan
+import util::text         // carga util/text.titan
+import util::math         // carga util/math.titan
+
+fn main() {
+    let p = Point::new(3.0, 4.0)   // Point definido en geometry.titan
+    print(greet("mundo"))           // greet definido en util/text.titan
+    print(sum([1, 2, 3]))           // sum definido en util/math.titan
+}
+```
+
+Estructura:
+
+```
+examples/modules/
+├── main.titan
+├── geometry.titan
+└── util/
+    ├── math.titan
+    └── text.titan
+```
+
+Reglas:
+
+- `import a::b` busca `a/b.titan` o `a/b/mod.titan`.
+- Sin `Titan.toml`, el "source root" es la carpeta del entry.
+  Con `Titan.toml`, es `<root>/src/` (estilo Cargo).
+- Todos los items (structs, impls, funciones, consts, enums) van a
+  un **namespace plano**: `Point::new()` funciona directo,
+  no hace falta `geometry::Point::new()`.
+- **Ciclos** (a importa b, b importa a) → error claro.
+- **Escape** (`import ../../secreto`) → error.
+- **Sin doble carga**: importar el mismo archivo desde dos módulos
+  distintos no lo duplica.
+- `import std::...` se ignora (la stdlib es nativa, no `.titan`).
+
+Ejemplo completo verificable: `examples/modules/main.titan`.
+
+---
+
 ## Llamadas a la stdlib
 
 Las natives están organizadas por módulo:

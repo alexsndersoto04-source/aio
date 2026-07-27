@@ -1,5 +1,80 @@
 # Zett / TITAN — Changelog
 
+## 0.20.0 — Phase 21: proyectos multi-archivo con `import` 📦
+
+Titan ya tenía todo el andamiaje de carga multi-archivo en
+`titan_pkg::SourceProject` (parser reconoce `import a::b`, loader
+resuelve rutas, detecta ciclos, previene escape del source root),
+pero nunca se había demostrado end-to-end con un ejemplo. Esta
+versión lo verifica y lo documenta.
+
+### Cómo funciona
+
+```titan
+// examples/modules/main.titan
+import geometry
+import util::text
+import util::math
+
+fn main() {
+    let p = Point::new(3.0, 4.0)   // viene de geometry.titan
+    print(greet("mundo"))           // viene de util/text.titan
+    let s = sum([1, 2, 3])          // viene de util/math.titan
+    print(s)
+}
+```
+
+Estructura de archivos:
+
+```
+examples/modules/
+├── main.titan
+├── geometry.titan
+└── util/
+    ├── math.titan
+    └── text.titan
+```
+
+Reglas de resolución (implementadas por `titan_pkg::SourceProject::load`):
+
+- `import geometry` → busca `<dir_del_entry>/geometry.titan`
+  o `<dir_del_entry>/geometry/mod.titan`.
+- `import util::math` → busca `util/math.titan` o `util/math/mod.titan`.
+- Si hay un `Titan.toml` en algún ancestro, el source root pasa a
+  ser `<root>/src/` (comportamiento tipo Cargo). Sin manifiesto,
+  el source root es la carpeta del entry.
+- Todos los items importados quedan en un **namespace plano**:
+  `Point::new()` funciona directo, sin `geometry::Point::new()`.
+- **Ciclos detectados**: si `a.titan` importa `b.titan` y viceversa,
+  el compilador aborta con `ImportCycle: a -> b -> a`.
+- **Escape del root prevenido**: `import ../../secreto` falla con
+  `ImportEscapesRoot`.
+- **Sin doble carga**: cada archivo se parsea y typechecka una sola
+  vez, incluso si dos módulos lo importan.
+- `import std::...` se ignora (la stdlib son natives, no `.titan`).
+
+### Ejemplo verificable
+
+```bash
+zett run examples/modules/main.titan
+```
+
+Combina Fase 20 (impl para structs) con imports: define `Point`
+y `Rect` en `geometry.titan`, funciones libres en `util/math.titan`
+y `util/text.titan`, y las usa todas desde `main.titan`.
+
+### Bajo el capó
+
+- Cero cambios en el compilador — Fase 21 fue puramente ejercitar,
+  verificar y documentar la infraestructura ya construida.
+- El loader vive en `crates/titan_pkg/src/project.rs`, expuesto via
+  `titan_pkg::SourceProject::load(entry_path)`.
+- `zett run archivo.titan` invoca `load_and_compile()` que a su vez
+  llama `SourceProject::load` — así que import funciona con todos
+  los subcomandos que compilan (`run`, `build`, `wasm`, `check`).
+
+---
+
 ## 0.19.0 — Phase 20: `impl` para structs (métodos en tipos custom) 🧱
 
 Los structs de Titan ahora pueden tener **métodos** propios via

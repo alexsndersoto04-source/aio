@@ -1,0 +1,20 @@
+// Fase 21: submodulo `util::math`.
+//
+// Se carga cuando `main.titan` hace `import util::math`.
+// El loader busca `<carpeta_del_entry>/util/math.titan`
+// (o alternativamente `util/math/mod.titan`).
+//
+// Aca demostramos funciones libres — las que devuelven int/float
+// con anotaciones explicitas para ejercitar el typechecker.
+
+fn sum(xs: [int]) -> int {
+    fold(xs, 0, |acc, x| acc + x)
+}
+
+fn max_of(xs: [int]) -> int {
+    fold(xs, xs[0], |acc, x| if x > acc { x } else { acc })
+}
+
+fn double(x: int) -> int {
+    x * 2
+}

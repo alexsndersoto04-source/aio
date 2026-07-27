@@ -1,0 +1,51 @@
+// Fase 21: modulo `geometry` — structs y sus impls.
+//
+// Este archivo se carga cuando `main.titan` hace `import geometry`.
+// El loader busca `<carpeta_del_entry>/geometry.titan`.
+//
+// Nota: los items definidos aca (Point, Rect, sus impls) quedan
+// disponibles con su nombre corto — Titan aplana todos los imports
+// en un unico namespace plano. Si quisieras aislarlos habria que
+// usar `mod {}` (bloques modulares) que ya existen en la sintaxis.
+
+struct Point { x: float, y: float }
+
+impl Point {
+    fn origin() -> Point {
+        Point { x: 0.0, y: 0.0 }
+    }
+
+    fn new(x: float, y: float) -> Point {
+        Point { x: x, y: y }
+    }
+
+    fn distance_sq(self, other: Point) -> float {
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        dx * dx + dy * dy
+    }
+
+    fn magnitude_sq(self) -> float {
+        self.x * self.x + self.y * self.y
+    }
+
+    fn show(self) -> string {
+        "(" + self.x + ", " + self.y + ")"
+    }
+}
+
+struct Rect { w: int, h: int }
+
+impl Rect {
+    fn square(side: int) -> Rect {
+        Rect { w: side, h: side }
+    }
+
+    fn area(self) -> int {
+        self.w * self.h
+    }
+
+    fn show(self) -> string {
+        "Rect(" + self.w + "x" + self.h + ")"
+    }
+}
