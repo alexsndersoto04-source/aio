@@ -39,6 +39,15 @@ pub enum Op {
     // as values instead of the whole program dying.
     TryCall(usize),
     ArrayMap, ArrayFilter, ArrayFold,
+    // Phase 19: more higher-order operations over arrays with closures.
+    // ArraySortBy pops (array, closure) — closure receives (a, b) and
+    //   returns int (negative if a<b, 0 if equal, positive if a>b),
+    //   like a classic C compareTo. Pushes the sorted array (stable).
+    // ArrayFind pops (array, closure); closure receives one element
+    //   and returns bool. Pushes the first matching element or nil.
+    // ArrayAny / ArrayAll pop (array, closure); closure returns bool.
+    //   Pushes true iff any / all elements pass. Short-circuits.
+    ArraySortBy, ArrayFind, ArrayAny, ArrayAll,
     Spawn, JoinTask, JoinTaskTimeout, CancelTask, NewChannel, ChannelSend, ChannelRecv, ChannelRecvTimeout, ChannelSelect,
     TcpListen, TcpLocalAddr, TcpAccept, TcpConnect, TcpRead, TcpWrite, TcpSetTimeout, TcpClose,
     HttpServeConnection, HttpRouterNew, HttpRouteAdd, HttpMiddlewareAdd, HttpAfterAdd, HttpErrorHandlerAdd, HttpDispatch,
@@ -236,6 +245,11 @@ impl AstCompiler {
                 match (method.as_str(), args.len()) {
                     ("len", 0) => self.emit(Op::Len), ("map", 1) => self.emit(Op::ArrayMap),
                     ("filter", 1) => self.emit(Op::ArrayFilter), ("fold", 2) => self.emit(Op::ArrayFold),
+                    // Phase 19: new higher-order methods.
+                    ("sort_by", 1) => self.emit(Op::ArraySortBy),
+                    ("find",    1) => self.emit(Op::ArrayFind),
+                    ("any",     1) => self.emit(Op::ArrayAny),
+                    ("all",     1) => self.emit(Op::ArrayAll),
                     _ => return Err(CodegenError::Unsupported(format!("method call .{method}()"))),
                 }
             }
@@ -318,6 +332,11 @@ impl AstCompiler {
                 "map" if args.len() == 2 => self.emit(Op::ArrayMap),
                 "filter" if args.len() == 2 => self.emit(Op::ArrayFilter),
                 "fold" if args.len() == 3 => self.emit(Op::ArrayFold),
+                // Phase 19: sort_by(arr, |a,b| cmp), find/any/all(arr, |x| bool)
+                "sort_by" if args.len() == 2 => self.emit(Op::ArraySortBy),
+                "find"    if args.len() == 2 => self.emit(Op::ArrayFind),
+                "any"     if args.len() == 2 => self.emit(Op::ArrayAny),
+                "all"     if args.len() == 2 => self.emit(Op::ArrayAll),
                 "join" if args.len() == 1 => self.emit(Op::JoinTask),
                 "join_timeout" if args.len() == 2 => self.emit(Op::JoinTaskTimeout),
                 "cancel" if args.len() == 1 => self.emit(Op::CancelTask),

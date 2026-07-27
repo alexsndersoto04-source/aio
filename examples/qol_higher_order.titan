@@ -1,0 +1,88 @@
+// Fase 19 QoL: higher-order sobre arrays con closures.
+//
+// Antes solo teniamos: map, filter, fold (que ya funcionaban).
+// Ahora sumamos: sort_by, find, any, all.
+//
+// Ejecutar con:
+//     zett run examples/qol_higher_order.titan
+
+fn main() {
+    print("---- Fase 19: higher-order + closures ----")
+
+    let nums = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]
+
+    // map (ya existia): elevar al cuadrado
+    let sq = map(nums, |n| n * n)
+    print("cuadrados: " + sq)
+
+    // filter (ya existia): mayores a 3
+    let big = filter(nums, |n| n > 3)
+    print("> 3: " + big)
+
+    // fold (ya existia): sumar todo
+    let total = fold(nums, 0, |acc, n| acc + n)
+    print("suma total: " + total)
+
+    // ---- NUEVOS en Fase 19 ----
+
+    // find: primer elemento mayor a 4
+    let primero = find(nums, |n| n > 4)
+    print("primero > 4: " + primero)
+
+    // find sin match -> nil
+    let nada = find(nums, |n| n > 100)
+    print("primero > 100: " + nada)
+
+    // any: hay algun impar?
+    let hay_impar = any(nums, |n| n % 2 == 1)
+    print("hay impar: " + hay_impar)
+
+    // all: todos son positivos?
+    let todos_pos = all(nums, |n| n > 0)
+    print("todos positivos: " + todos_pos)
+
+    // all: todos son mayores a 3?
+    let todos_grandes = all(nums, |n| n > 3)
+    print("todos > 3: " + todos_grandes)
+
+    // sort_by: ordenar ascendente
+    let asc = sort_by(nums, |a, b| a - b)
+    print("ordenado asc: " + asc)
+
+    // sort_by: ordenar descendente
+    let desc = sort_by(nums, |a, b| b - a)
+    print("ordenado desc: " + desc)
+
+    // ---- Caso real: ordenar productos por precio ----
+    let p1 = std::map::new()
+    let p1 = std::map::insert(p1, "nombre", "manzana")
+    let p1 = std::map::insert(p1, "precio", 15)
+
+    let p2 = std::map::new()
+    let p2 = std::map::insert(p2, "nombre", "pan")
+    let p2 = std::map::insert(p2, "precio", 8)
+
+    let p3 = std::map::new()
+    let p3 = std::map::insert(p3, "nombre", "leche")
+    let p3 = std::map::insert(p3, "precio", 25)
+
+    let productos = [p1, p2, p3]
+
+    // ordenar por precio ascendente
+    let baratos = sort_by(productos, |a, b| a.precio - b.precio)
+    print("---- Productos ordenados por precio ----")
+    for i in 0..3 {
+        let p = baratos[i]
+        print("  " + p.nombre + ": $" + p.precio)
+    }
+
+    // encontrar el primero caro
+    let caro = find(productos, |p| p.precio > 20)
+    print("primer producto caro: " + caro.nombre)
+
+    // hay alguno gratis?
+    let gratis = any(productos, |p| p.precio == 0)
+    print("hay algo gratis: " + gratis)
+
+    print("---- Listo ----")
+}

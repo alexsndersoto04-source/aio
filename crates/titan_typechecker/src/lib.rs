@@ -61,6 +61,11 @@ impl TypeEnv {
         functions.insert("map".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
         functions.insert("filter".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
         functions.insert("fold".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown, Type::Unknown], result: Type::Unknown });
+        // Phase 19: sort_by(arr, |a,b| cmp) -> arr;  find/any/all(arr, |x| bool)
+        functions.insert("sort_by".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Array(Box::new(Type::Unknown)) });
+        functions.insert("find".into(),    FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Unknown });
+        functions.insert("any".into(),     FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Bool });
+        functions.insert("all".into(),     FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Bool });
         functions.insert("join".into(), FunctionSig { params: vec![Type::Named("Task".into())], result: Type::Unknown });
         functions.insert("join_timeout".into(), FunctionSig { params: vec![Type::Named("Task".into()), Type::Int], result: Type::Named("Option".into()) });
         functions.insert("cancel".into(), FunctionSig { params: vec![Type::Named("Task".into())], result: Type::Bool });

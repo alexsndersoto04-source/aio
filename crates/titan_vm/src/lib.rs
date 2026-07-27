@@ -285,6 +285,94 @@ impl Vm {
                     for value in values { accumulator = self.execute(closure_function, vec![accumulator, value], captures.clone(), depth + 1, debugger)?; }
                     stack.push(accumulator);
                 }
+                // Phase 19: closure-based array operations.
+                Op::ArraySortBy => {
+                    let callable = pop(&mut stack, &function.name)?;
+                    let mut values = array_value(pop(&mut stack, &function.name)?)?;
+                    let Value::Closure { function: closure_function, captures } = callable else {
+                        return Err(VmError::Type("sort_by requires a function".into()));
+                    };
+                    // Collect (index, cmp_result) pairs to avoid re-invoking the
+                    // closure inside sort's comparator (which can't fail cleanly).
+                    // We do a plain insertion of each element against a mutable
+                    // Vec, computing the comparator on demand. For clarity and
+                    // for correctness with fallible closures we accumulate any
+                    // error and abort. Not O(n log n) worst-case but simple.
+                    let n = values.len();
+                    let mut order_err: Option<VmError> = None;
+                    // Selection-sort — fine for small arrays; if a closure error
+                    // occurs we stop and propagate.
+                    'outer: for i in 0..n {
+                        if order_err.is_some() { break; }
+                        let mut min_idx = i;
+                        for j in (i + 1)..n {
+                            let a = values[min_idx].clone();
+                            let b = values[j].clone();
+                            let cmp = self.execute(closure_function, vec![b, a], captures.clone(), depth + 1, debugger);
+                            match cmp {
+                                Ok(Value::Int(c)) if c < 0 => min_idx = j,
+                                Ok(Value::Float(c)) if c < 0.0 => min_idx = j,
+                                Ok(Value::Int(_)) | Ok(Value::Float(_)) => {}
+                                Ok(_) => { order_err = Some(VmError::Type("sort_by comparator must return int or float".into())); break 'outer; }
+                                Err(e) => { order_err = Some(e); break 'outer; }
+                            }
+                        }
+                        if min_idx != i { values.swap(i, min_idx); }
+                    }
+                    if let Some(e) = order_err { return Err(e); }
+                    stack.push(Value::Array(values));
+                }
+                Op::ArrayFind => {
+                    let callable = pop(&mut stack, &function.name)?;
+                    let values = array_value(pop(&mut stack, &function.name)?)?;
+                    let Value::Closure { function: closure_function, captures } = callable else {
+                        return Err(VmError::Type("find requires a function".into()));
+                    };
+                    let mut found = Value::Nil;
+                    for value in values {
+                        let ok = self.execute(closure_function, vec![value.clone()], captures.clone(), depth + 1, debugger)?;
+                        match ok {
+                            Value::Bool(true)  => { found = value; break; }
+                            Value::Bool(false) => {}
+                            _ => return Err(VmError::Type("find predicate must return bool".into())),
+                        }
+                    }
+                    stack.push(found);
+                }
+                Op::ArrayAny => {
+                    let callable = pop(&mut stack, &function.name)?;
+                    let values = array_value(pop(&mut stack, &function.name)?)?;
+                    let Value::Closure { function: closure_function, captures } = callable else {
+                        return Err(VmError::Type("any requires a function".into()));
+                    };
+                    let mut result = false;
+                    for value in values {
+                        let ok = self.execute(closure_function, vec![value], captures.clone(), depth + 1, debugger)?;
+                        match ok {
+                            Value::Bool(true)  => { result = true; break; }
+                            Value::Bool(false) => {}
+                            _ => return Err(VmError::Type("any predicate must return bool".into())),
+                        }
+                    }
+                    stack.push(Value::Bool(result));
+                }
+                Op::ArrayAll => {
+                    let callable = pop(&mut stack, &function.name)?;
+                    let values = array_value(pop(&mut stack, &function.name)?)?;
+                    let Value::Closure { function: closure_function, captures } = callable else {
+                        return Err(VmError::Type("all requires a function".into()));
+                    };
+                    let mut result = true;
+                    for value in values {
+                        let ok = self.execute(closure_function, vec![value], captures.clone(), depth + 1, debugger)?;
+                        match ok {
+                            Value::Bool(true)  => {}
+                            Value::Bool(false) => { result = false; break; }
+                            _ => return Err(VmError::Type("all predicate must return bool".into())),
+                        }
+                    }
+                    stack.push(Value::Bool(result));
+                }
                 Op::Spawn => {
                     let callable = pop(&mut stack, &function.name)?;
                     let Value::Closure { function: task_function, captures } = callable else { return Err(VmError::Type("spawn requires a closure".into())); };

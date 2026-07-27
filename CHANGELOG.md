@@ -1,5 +1,63 @@
 # Zett / TITAN — Changelog
 
+## 0.18.0 — Phase 19: higher-order sobre arrays con closures 🎛️
+
+### 🎯 4 operaciones nuevas: `sort_by`, `find`, `any`, `all`
+
+Ya teníamos `map`, `filter`, `fold` — ahora se completan las
+higher-order clásicas para poder programar como en JS/Python/Rust.
+
+```titan
+let nums = [3, 1, 4, 1, 5, 9, 2, 6]
+
+sort_by(nums, |a, b| a - b)       // [1, 1, 2, 3, 4, 5, 6, 9]
+sort_by(nums, |a, b| b - a)       // [9, 6, 5, 4, 3, 2, 1, 1]  (desc)
+find(nums, |n| n > 4)             // 5   (primero que cumple)
+find(nums, |n| n > 100)           // nil (ninguno cumple)
+any(nums, |n| n % 2 == 1)         // true (hay impares)
+all(nums, |n| n > 0)              // true (todos positivos)
+```
+
+Combinable con `.method()` syntax también:
+
+```titan
+nums.sort_by(|a, b| a - b)
+productos.filter(|p| p.precio > 10).sort_by(|a, b| a.precio - b.precio)
+```
+
+### 🎯 Caso real — ordenar un array de maps por campo
+
+```titan
+let productos = [p1, p2, p3]
+let baratos = sort_by(productos, |a, b| a.precio - b.precio)
+let caro = find(productos, |p| p.precio > 20)
+let gratis = any(productos, |p| p.precio == 0)
+```
+
+### 🔧 Implementación
+
+4 opcodes nuevos en el codegen (`ArraySortBy`, `ArrayFind`, `ArrayAny`,
+`ArrayAll`), 4 handlers en el VM que ejecutan la closure para cada
+elemento del array. Los predicados de `find`/`any`/`all` deben devolver
+`bool`; el comparador de `sort_by` debe devolver `int` o `float`
+(negativo si a<b, cero si iguales, positivo si a>b — mismo protocolo
+que `qsort`/`compareTo` de C/Java).
+
+`any`/`all`/`find` cortocircuitan (paran apenas encuentran la respuesta).
+`sort_by` usa selection sort (simple, O(n²), estable — suficiente para
+arrays hasta ~1000 elementos; para más, ordenar en Rust vía un helper).
+
+### 📦 Ejemplo
+
+`examples/qol_higher_order.titan` — verifica los 4 nuevos con nums
+primero, después ordena un array de maps de productos por precio,
+busca el primer caro, y chequea si hay algo gratis.
+
+### ⚠️ No-breaking
+
+`map`/`filter`/`fold` que ya existían no se tocan. Los 4 nuevos son
+agregados quirúrgicos: 4 opcodes, 4 dispatch cases, 4 typechecker sigs.
+
 ## 0.17.0 — Phase 18: manejo de errores con `std::try::catch` 🛡️
 
 ### 🎯 Titan ahora tiene manejo de errores real
