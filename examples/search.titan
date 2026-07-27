@@ -129,9 +129,11 @@ fn top_k(q_emb, index, docs, n_docs: int, k: int) -> string {
         let best = std::vector::argmax(sims_mut)
         let score = sims_mut[best]
         let doc = docs[best]
-        // Formatear con 3 decimales aproximados (no hay format_float en Titan
-        // aun, imprimir el float completo es aceptable para la demo).
-        out = out + "\n  #{r}  score={score}  " + doc
+        // Interpolamos todo dentro del string: `+` en Titan exige String+String,
+        // y `doc` viene de un param sin anotar (Unknown), asi que un
+        // `out + doc` fallaria. La interpolacion `{doc}` si acepta Unknown.
+        let line = "\n  #{r}  score={score}  {doc}"
+        out = out + line
 
         // Marcar este slot para no volver a elegirlo.
         sims_mut = std::array::set(sims_mut, best, -2.0)
