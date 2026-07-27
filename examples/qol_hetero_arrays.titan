@@ -1,0 +1,56 @@
+// Demo Fase 17 pt.2 - QoL: arrays literales heterogeneos.
+//
+// Antes (v0.16.0 y anteriores):
+//   let series = ["CPU", xs, ys]
+//   -> ERROR "type mismatch: expected String, found Array(Float)"
+//
+// Ahora (v0.16.0+):
+//   let series = ["CPU", xs, ys]        -> Array(Unknown), sin error
+//   let mixed  = [1, "dos", 3.0, true]  -> Array(Unknown), sin error
+//   let coords = [[1, 2], [3, 4], [5]]  -> Array(Unknown) (subarrays de largos distintos)
+//
+// El runtime siempre supo manejar arrays heterogeneos - la
+// restriccion era puramente del static typechecker.
+//
+// Ejecutar con:
+//     zett run examples/qol_hetero_arrays.titan
+
+fn main() {
+    print("---- Fase 17 pt.2: arrays heterogeneos ----")
+
+    // Caso clasico que rompio charts.titan: [label, xs, ys]
+    let xs = [1.0, 2.0, 3.0]
+    let ys = [10.0, 20.0, 30.0]
+    let serie_cpu = ["CPU %", xs, ys]
+    print("serie_cpu:")
+    print(serie_cpu)
+
+    // Mezcla libre de tipos primitivos
+    let mixto = [1, "dos", 3.0, true, nil]
+    print("mixto:")
+    print(mixto)
+
+    // Array de dicts (map) con distinta forma
+    let usuario1 = std::map::new()
+    let usuario1 = std::map::insert(usuario1, "nombre", "juan")
+    let usuario1 = std::map::insert(usuario1, "edad", 30)
+
+    let usuario2 = std::map::new()
+    let usuario2 = std::map::insert(usuario2, "nombre", "maria")
+    let usuario2 = std::map::insert(usuario2, "email", "maria@titan.dev")
+
+    let users = [usuario1, usuario2]
+    print("users:")
+    print(users)
+
+    // Homogeneos siguen funcionando (chequeo de regresion)
+    let numeros = [1, 2, 3, 4, 5]
+    let strings = ["a", "b", "c"]
+    let bools = [true, false, true]
+    print("homogeneos:")
+    print(numeros)
+    print(strings)
+    print(bools)
+
+    print("---- Listo ----")
+}

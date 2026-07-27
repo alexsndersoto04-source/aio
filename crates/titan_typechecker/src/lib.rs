@@ -246,9 +246,25 @@ impl TypeEnv {
                 .or_else(|| self.enum_variants.get(name).and_then(|payload| if payload.is_none() { name.split_once("::").map(|(e, _)| Type::Named(e.into())) } else { None }))
                 .unwrap_or_else(|| { self.errors.push(TypeError::UnknownVariable { name: name.clone() }); Type::Unknown }),
             Expr::Array { elements, .. } => {
-                let ty = elements.first().map(|e| self.check_expr(e)).unwrap_or(Type::Unknown);
-                for element in elements.iter().skip(1) { let found = self.check_expr(element); self.require_compatible(&ty, &found); }
-                Type::Array(Box::new(ty))
+                // v0.16.0 QoL: allow heterogeneous array literals.
+                // Rule:
+                //   * empty        -> Array(Unknown)
+                //   * homogeneous  -> Array(T)  (T = element type)
+                //   * heterogeneous-> Array(Unknown), NO error emitted
+                //     so users can freely mix types like [label_string, xs_array, ys_array]
+                //     without the typechecker rejecting them.
+                // Runtime already stores every Value uniformly and works
+                // fine with mixed arrays — the old rule was purely a
+                // static-typing artefact that caused more pain than help.
+                let types: Vec<Type> = elements.iter().map(|e| self.check_expr(e)).collect();
+                let inner = match types.first() {
+                    None       => Type::Unknown,
+                    Some(head) => {
+                        if types.iter().skip(1).all(|t| compatible(head, t)) { head.clone() }
+                        else { Type::Unknown }
+                    }
+                };
+                Type::Array(Box::new(inner))
             }
             Expr::Tuple { elements, .. } => Type::Tuple(elements.iter().map(|e| self.check_expr(e)).collect()),
             Expr::StructLit { name, fields, .. } => {
