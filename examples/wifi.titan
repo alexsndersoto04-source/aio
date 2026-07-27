@@ -48,12 +48,17 @@ fn main() {
         print("  * hayas escaneado desde la app de Wi-Fi de Android recientemente")
     } else {
         print_networks(redes, n)
+        print("(fin del listado)")
     }
 
     print("---- Listo ----")
 }
 
-fn print_networks(redes: [map], n: int) {
+// redes viene de std::wifi::scan() cuyo native declara return Array (sin
+// parametro), asi que el typechecker lo ve como Array(Unknown). Si lo
+// anoto aca como [map] no unifica (bug conocido). Sin anotacion, el
+// parametro defaultea a Unknown y todo compila y corre.
+fn print_networks(redes, n: int) {
     for i in 0..n {
         let ap = redes[i]
         let ssid = ap.ssid
