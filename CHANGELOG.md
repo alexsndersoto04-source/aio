@@ -1,5 +1,94 @@
 # Zett / TITAN — Changelog
 
+## 0.29.0 — Phase 30: `const` con expresiones + sintaxis literal `#{...}` para maps 🗺️
+
+Dos features complementarias que hacen las **constantes de configuración**
+sean naturales de escribir. Antes había que armar cada map con `std::map::insert`
+encadenado — verboso y poco declarativo. Ahora:
+
+### Constantes con cualquier expresión
+
+Las `const` ya aceptaban cualquier expresión gracias a la infraestructura
+existente, pero esta fase lo demuestra y documenta oficialmente:
+
+```titan
+const NUMEROS   = [1, 2, 3, 4, 5]
+const NOMBRES   = ["ana", "juan", "maria"]
+const CUADRADOS = map(NUMEROS, |n| n * n)     // fn calls funcionan
+const SALUDO    = "Hola desde Titan"
+```
+
+Cualquier expresión Titan válida sirve como valor de una `const` — arrays,
+strings interpolados, llamadas a funciones libres, higher-order, spread `..`,
+combinaciones. Se re-evalúa lazy en cada uso (cada acceso corre la
+expresión); útil para expresiones puras, cuidado con side effects.
+
+### Nueva sintaxis: `#{ ... }` para maps literales
+
+```titan
+const CONFIG = #{
+    "puerto":   8080,
+    "host":     "127.0.0.1",
+    "debug":    true,
+    "max_conn": 100,
+}
+
+// Keys como identificadores (sin comillas) — mismo efecto
+const USUARIO = #{
+    nombre: "Alex",
+    edad:   30,
+    tags:   ["premium", "verificado"],
+}
+
+// Anidable — maps dentro de maps
+const RESPUESTA_API = #{
+    status: 200,
+    body:   #{
+        message: "OK",
+        data:    #{ count: 3, items: ["a", "b", "c"] },
+    },
+}
+
+// Acceso natural con `.campo` (Map ya soporta field access desde antes)
+print(CONFIG.puerto)                       // 8080
+print(RESPUESTA_API.body.data.count)       // 3
+```
+
+También funciona **dinámicamente**, no solo en `const`:
+
+```titan
+fn crear_perfil(nombre: string, edad: int) -> map {
+    return #{
+        nombre:  nombre,
+        edad:    edad,
+        creado:  std::datetime::now(),
+    }
+}
+```
+
+### Bajo el capó
+
+- Lexer: nuevo token `HashLBrace` para `#{`. `#` sin `{` es error
+  claro (`stray '#' — did you mean '#{'?`).
+- Parser: `#{ k1: v1, k2: v2 }` se desazucara al pipeline:
+  `std::map::insert(std::map::insert(std::map::new(), "k1", v1), "k2", v2)`.
+- Keys pueden ser string literals (`"foo"`) o identificadores (`foo`)
+  — el parser los normaliza a string. Los valores son cualquier `Expr`.
+- Los `#{}` se anidan naturalmente porque el valor puede ser otro `#{}`.
+- Cero cambios en typechecker/codegen/VM — todo se apoya en los
+  natives `std::map::new` y `std::map::insert` que existen desde
+  hace decenas de versiones.
+
+### Ejemplo verificable
+
+`zett run examples/const_and_maps.titan` — 6 escenarios:
+constantes con arrays y map()+higher-order, config de servidor,
+usuario con tags anidados, respuesta API de 3 niveles de profundidad,
+iteración con `for` destructuring sobre const array, map dinámico
+dentro de una función con string interpolación.
+
+---
+
 ## 0.28.0 — Phase 29: `for` con destructuring 🔄
 
 Extiende Fase 23 (destructuring en `let`) al loop `for`. Ahora se

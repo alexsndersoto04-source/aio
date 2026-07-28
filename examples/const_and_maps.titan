@@ -1,0 +1,123 @@
+// Fase 30: const con arrays/maps + sintaxis literal `#{...}`.
+//
+// Dos features complementarias:
+//
+// 1) `const` ahora acepta cualquier expresion como valor:
+//    arrays, strings interpolados, llamadas a fns, spreads,
+//    combinaciones de higher-order — no solo primitivos.
+//
+// 2) Sintaxis literal para maps: `#{ "clave": valor, ... }`.
+//    Nueva sintaxis del lenguaje. Se desazucara en el parser a
+//    `std::map::insert(std::map::insert(std::map::new(), "k", v)...)`.
+//    Las claves pueden ser strings entre comillas o identificadores
+//    sueltos (que se tratan como strings). Los valores son cualquier
+//    expresion valida en Titan.
+//
+// Ejecutar con:
+//     zett run examples/const_and_maps.titan
+
+// ---------------- Constantes con arrays ----------------
+
+const NUMEROS = [1, 2, 3, 4, 5]
+const NOMBRES = ["ana", "juan", "maria", "carlos"]
+
+// Const que usa spread (Fase 28) + higher-order en el value
+const CUADRADOS = map(NUMEROS, |n| n * n)
+
+// Const string (simple)
+const SALUDO = "Hola desde Titan v0.29 con const!"
+
+// ---------------- Sintaxis literal de mapas ----------------
+
+const CONFIG = #{
+    "puerto":   8080,
+    "host":     "127.0.0.1",
+    "debug":    true,
+    "max_conn": 100,
+}
+
+// Sin comillas (keys como identificadores) — mas conciso
+const USUARIO = #{
+    nombre: "Alex",
+    edad:   30,
+    activo: true,
+    tags:   ["premium", "verificado"],
+}
+
+// Mapa anidado con maps adentro
+const RESPUESTA_API = #{
+    status: 200,
+    body:   #{
+        message: "OK",
+        data:    #{
+            count: 3,
+            items: ["a", "b", "c"],
+        },
+    },
+    headers: #{
+        content_type: "application/json",
+    },
+}
+
+// ---------------- Uso ----------------
+
+fn main() {
+    print("---- Fase 30: const + #{...} ----")
+    print("")
+
+    // 1) Const con arrays
+    print("---- constantes basicas ----")
+    print("NUMEROS:   " + NUMEROS)
+    print("NOMBRES:   " + NOMBRES)
+    print("CUADRADOS: " + CUADRADOS)
+    print("SALUDO:    " + SALUDO)
+
+    // 2) Config como map literal
+    print("")
+    print("---- CONFIG (map literal) ----")
+    print("puerto:   " + CONFIG.puerto)
+    print("host:     " + CONFIG.host)
+    print("debug:    " + CONFIG.debug)
+    print("max_conn: " + CONFIG.max_conn)
+
+    // 3) Usuario con tags anidados
+    print("")
+    print("---- USUARIO ----")
+    print("nombre:   " + USUARIO.nombre)
+    print("edad:     " + USUARIO.edad)
+    print("activo:   " + USUARIO.activo)
+    print("tags:     " + USUARIO.tags)
+
+    // 4) Respuesta API con nested maps
+    print("")
+    print("---- RESPUESTA_API (mapas anidados) ----")
+    print("status:            " + RESPUESTA_API.status)
+    print("body.message:      " + RESPUESTA_API.body.message)
+    print("body.data.count:   " + RESPUESTA_API.body.data.count)
+    print("body.data.items:   " + RESPUESTA_API.body.data.items)
+    print("headers.ct:        " + RESPUESTA_API.headers.content_type)
+
+    // 5) Combinacion: iterar sobre const array + destructure (Fase 29)
+    print("")
+    print("---- combinacion: for con const array ----")
+    let pares = map(NUMEROS, |n| (n, n * n))
+    for (n, cuad) in pares {
+        print("  " + n + "^2 = " + cuad)
+    }
+
+    // 6) Map dinamico: crear un map en runtime con la misma sintaxis
+    print("")
+    print("---- map dinamico dentro de una fn ----")
+    let hora = 15
+    let saludo_map = #{
+        hora:    hora,
+        mensaje: "Son las {hora}:00",
+        urgente: hora > 22,
+    }
+    print("hora:    " + saludo_map.hora)
+    print("mensaje: " + saludo_map.mensaje)
+    print("urgente: " + saludo_map.urgente)
+
+    print("")
+    print("---- Listo ----")
+}

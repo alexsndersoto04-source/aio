@@ -21,6 +21,9 @@ pub enum TokenKind {
     Let, Mut, Fn, Return, If, Else, Match, For, While, Loop,
     Break, Continue, In, Struct, Enum, Trait, Impl, Module, Import,
     Pub, Const, Unsafe, Spawn, Go, True, False, Nil, Self_, As, Extern, Type,
+    // Phase 30: `#{` opens a map literal, e.g. #{"key": value, "k2": v2}
+    // Desugared in the parser to std::map::new + insert calls.
+    HashLBrace,
     Plus, Minus, Star, Slash, Percent, Ampersand, Pipe, Caret, Tilde,
     Bang, Question, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
     ThinArrow, FatArrow, EqEq, NotEq, LtEq, GtEq, Lt, Gt, LazyAnd,
@@ -137,6 +140,9 @@ impl Lexer {
             '|' => if self.eat('|') { TokenKind::LazyOr } else if self.eat('>') { TokenKind::PipeGt } else { TokenKind::Pipe },
             '^' => TokenKind::Caret,
             '~' => TokenKind::Tilde,
+            // Phase 30: `#{` for map literals. Bare `#` currently
+            // has no other meaning in Titan so we can dedicate it.
+            '#' => if self.eat('{') { TokenKind::HashLBrace } else { TokenKind::Error("stray '#' — did you mean '#{'?".into()) },
             '?' => TokenKind::Question,
             '!' => if self.eat('=') { TokenKind::NotEq } else { TokenKind::Bang },
             '=' => if self.eat('=') { TokenKind::EqEq } else if self.eat('>') { TokenKind::FatArrow } else { TokenKind::Eq },

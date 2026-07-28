@@ -755,6 +755,28 @@ impl Parser {
                 }
             }
             Some(TokenKind::LBrace) => { self.advance(); Ok(Expr::Block(Box::new(self.parse_block_after_open(span)?))) }
+            // Phase 30: `#{ "k1": v1, "k2": v2 }` map literal.
+            // Desugars to `std::map::insert(std::map::insert(std::map::new(), "k1", v1), "k2", v2)`
+            // so any expression valid as value works. Keys can be
+            // string literals OR bare identifiers (treated as strings)
+            // for ergonomic access — mirrors JS object literal syntax.
+            Some(TokenKind::HashLBrace) => {
+                self.advance();
+                let mut entries: Vec<(String, Expr)> = Vec::new();
+                while !self.at(TokenKind::RBrace) {
+                    let key = match self.peek_kind().cloned() {
+                        Some(TokenKind::StringLit(s)) => { self.advance(); s }
+                        Some(TokenKind::Ident(s))     => { self.advance(); s }
+                        _ => return Err(self.expected("a string literal or identifier as map key")),
+                    };
+                    self.expect(TokenKind::Colon)?;
+                    let value = self.parse_expr()?;
+                    entries.push((key, value));
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
+                self.expect(TokenKind::RBrace)?;
+                Ok(build_map_literal(entries, span))
+            }
             Some(TokenKind::Pipe) | Some(TokenKind::LazyOr) => self.parse_closure(),
             Some(TokenKind::If) => self.parse_if(),
             Some(TokenKind::While) => self.parse_while(),
@@ -1086,6 +1108,23 @@ fn build_spread_array(parts: Vec<ArrayPart>, span: Span) -> Expr {
             args: vec![acc, right],
             span,
         }
+    })
+}
+
+/// Phase 30: build the call chain for `#{ "k1": v1, "k2": v2 }`.
+/// Result: `std::map::insert(std::map::insert(std::map::new(), "k1", v1), "k2", v2)`.
+/// Same shape as build_spread_array — no new opcodes, everything
+/// resolves through existing stdlib natives already registered.
+fn build_map_literal(entries: Vec<(String, Expr)>, span: Span) -> Expr {
+    let empty = Expr::Call {
+        callee: Box::new(Expr::Ident { name: "std::map::new".into(), span }),
+        args: Vec::new(),
+        span,
+    };
+    entries.into_iter().fold(empty, |acc, (key, value)| Expr::Call {
+        callee: Box::new(Expr::Ident { name: "std::map::insert".into(), span }),
+        args: vec![acc, Expr::String { value: key, span }, value],
+        span,
     })
 }
 

@@ -332,6 +332,52 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## `const` con expresiones + maps literales `#{...}` — v0.29.0
+
+Const acepta cualquier expresión (arrays, calls, higher-order):
+
+```titan
+const NUMEROS   = [1, 2, 3, 4, 5]
+const CUADRADOS = map(NUMEROS, |n| n * n)
+```
+
+Maps literales con `#{...}`:
+
+```titan
+const CONFIG = #{
+    "puerto": 8080,           // key con comillas
+    host:     "127.0.0.1",    // key como identificador (equivalente)
+    debug:    true,
+}
+
+// Acceso natural
+print(CONFIG.puerto)          // 8080
+print(CONFIG.host)            // "127.0.0.1"
+
+// Anidable
+const NESTED = #{
+    outer: #{
+        inner: #{ deep: 42 },
+    },
+}
+print(NESTED.outer.inner.deep)   // 42
+
+// Dinámico (dentro de fns), no solo const
+fn perfil(nombre: string) -> map {
+    return #{ nombre: nombre, creado: std::datetime::now() }
+}
+```
+
+Detalles:
+- Keys pueden ser `"string"` o `identificador` (equivalente).
+- Values son cualquier expresión válida.
+- Desazucar puro en el parser → `std::map::insert(std::map::new(), "k", v)`.
+- Const con expresiones se re-evalúa lazy en cada uso.
+
+Ejemplo completo: `examples/const_and_maps.titan`.
+
+---
+
 ## `for` con destructuring — v0.28.0
 
 Extiende Fase 22 (destructuring en `let`) al loop `for`:
