@@ -411,7 +411,13 @@ impl TypeEnv {
                 // Runtime already stores every Value uniformly and works
                 // fine with mixed arrays — the old rule was purely a
                 // static-typing artefact that caused more pain than help.
-                let types: Vec<Type> = elements.iter().map(|e| self.check_expr(e)).collect();
+                // Phase 28: resolve aliases per-element so a literal like
+                // [Named("Tag"), ...] (where `type Tag = string`) unifies
+                // to Array(String) — otherwise a struct field typed as
+                // `tags: [string]` receives `Array(Named("Tag"))` and the
+                // require_compatible check against the field type fails
+                // deep inside the container (compatible doesn't hop aliases).
+                let types: Vec<Type> = elements.iter().map(|e| { let t = self.check_expr(e); self.resolve_alias(&t) }).collect();
                 let inner = match types.first() {
                     None       => Type::Unknown,
                     Some(head) => {
@@ -435,6 +441,10 @@ impl TypeEnv {
             }
             Expr::Binary { left, op, right, .. } => {
                 let left = self.check_expr(left); let right = self.check_expr(right);
+                // Phase 28: normalize both sides through type aliases
+                // so `Score >= int` (where `type Score = int`) works.
+                let left = self.resolve_alias(&left);
+                let right = self.resolve_alias(&right);
                 self.check_binary(*op, left, right)
             }
             Expr::Range { start, end, .. } => {
@@ -603,20 +613,34 @@ impl TypeEnv {
     /// Phase 28: expand any user-defined `type Alias = Existing` before
     /// checking. Bounded loop (16 hops) so a chain `type A = B; type B
     /// = int` resolves cleanly, and any cycle breaks out safely.
+    /// Recurses INTO container types (Array, Tuple, Function) so
+    /// `Array(Named("Tag"))` becomes `Array(String)` when `type Tag =
+    /// string` is declared — otherwise deep container comparisons never
+    /// hop aliases inside their generic parameters.
     fn resolve_alias(&self, ty: &Type) -> Type {
+        // Step 1: unwrap the outermost alias chain (16 hops max).
         let mut current = ty.clone();
         for _ in 0..16 {
             let next = match &current {
                 Type::Named(name) => match self.type_aliases.get(name) {
                     Some(target) => target.clone(),
-                    None => return current,
+                    None => break,
                 },
-                _ => return current,
+                _ => break,
             };
-            if next == current { return current; }
+            if next == current { break; }
             current = next;
         }
-        current
+        // Step 2: recurse into containers so nested aliases also expand.
+        match current {
+            Type::Array(inner) => Type::Array(Box::new(self.resolve_alias(&inner))),
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|t| self.resolve_alias(t)).collect()),
+            Type::Function(params, ret) => Type::Function(
+                params.iter().map(|t| self.resolve_alias(t)).collect(),
+                Box::new(self.resolve_alias(&ret)),
+            ),
+            other => other,
+        }
     }
     fn require_compatible(&mut self, expected: &Type, found: &Type) {
         let expected_r = self.resolve_alias(expected);
