@@ -1,5 +1,84 @@
 # Zett / TITAN — Changelog
 
+## 0.30.0 — Phase 31: `std::async` + primer módulo de la stdlib escrito en TITAN 🕰️
+
+Dos cosas importantes en un release:
+
+1. **El primer módulo `std::` de la stdlib escrito en TITAN**, no en Rust.
+2. **`std::async`** con delay/measure/retry/retry_backoff/timeout.
+
+### El cambio arquitectónico
+
+Antes: si querías agregar algo a `std::`, tenías que escribirlo en
+Rust dentro de `crates/titan_stdlib/`, registrarlo como native,
+compilar el binario, empaquetar. Cada función `std::` era código
+Rust nativo.
+
+Ahora: `import std::algo` **también busca** archivos `.titan` en:
+
+- `$ZETT_STDLIB_DIR/<algo>.titan` (override para desarrollo)
+- `<exe_dir>/../share/zett/stdlib/<algo>.titan` (instalación normal)
+- `<exe_dir>/stdlib/<algo>.titan` (build local)
+- `<cwd>/stdlib/<algo>.titan` (fallback)
+
+Si encuentra el archivo, lo carga como un módulo Titan normal.
+Si no, cae al comportamiento anterior (asume nativo, no hace nada).
+
+**Esto abre la puerta a una stdlib enteramente escrita en Titan**,
+crecible sin recompilar el compilador. Cada módulo nuevo es un
+archivo `.titan` que se agrega al `.deb`.
+
+### `std::async`
+
+Módulo Titan puro con 5 funciones para operaciones que fallan:
+
+```titan
+import std::async
+
+// Sleep
+delay(500)
+
+// Medir cuánto tarda una función
+let (resultado, ms) = measure(|| llamar_api())
+
+// Reintentar hasta N veces con delay constante
+let r = retry(|| fetch_api(url), 3, 500)
+
+// Reintentar con backoff exponencial (100ms, 200ms, 400ms...)
+let r = retry_backoff(|| fetch_api(url), 5, 100)
+
+// Marcar como error si tarda más de max_ms
+let r = timeout(|| operacion(), 2000)
+```
+
+Todas devuelven `Result::Ok(v)` en éxito o `Result::Err(msg)` en falla.
+Combinable con `std::try::catch` (Fase 18) y enums custom (Fase 27).
+
+### Ejemplo verificable
+
+`zett run examples/async_demo.titan` — 7 escenarios:
+
+- `delay(300)` — sleep de 300ms verificado con timing
+- `measure(api_rapida)` — devuelve `(resultado, 50ms aprox)`
+- `retry` sobre API flaky que falla 2 veces y sale a la 3ra
+- `retry` que se rinde después de N intentos (API muerta)
+- `retry_backoff` con esperas 100→200→400ms
+- `timeout` que cumple (API rápida en 50ms, límite 500ms)
+- `timeout` que excede (API lenta 1200ms, límite 500ms)
+
+### Bajo el capó
+
+- `crates/titan_pkg/src/project.rs`: nueva `resolve_stdlib_module`
+  con 4 candidates de búsqueda + walk-up de 5 niveles para dev.
+- `Loader::visit` chequea `resolve_stdlib_module` antes del skip
+  tradicional del `std::` — solo skip si no encuentra archivo.
+- `make-zett-package.sh` empaqueta `stdlib/*.titan` en el `.deb`
+  bajo `share/zett/stdlib/`.
+- Cero cambios en el compilador — el módulo Titan usa closures,
+  match, if, while, todo lo que ya existía.
+
+---
+
 ## 0.29.0 — Phase 30: `const` con expresiones + sintaxis literal `#{...}` para maps 🗺️
 
 Dos features complementarias que hacen las **constantes de configuración**

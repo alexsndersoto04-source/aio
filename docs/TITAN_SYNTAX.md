@@ -332,6 +332,36 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## `std::async` — utilidades de reintento y tiempo — v0.30.0
+
+Primer módulo `std::` escrito en Titan (no en Rust). Se importa
+con `import std::async` — el loader lo carga desde el `.deb`.
+
+```titan
+import std::async
+
+delay(500)                              // sleep bloqueante ms
+
+let (r, ms) = measure(|| foo())         // (resultado, ms transcurridos)
+
+let r = retry(|| fetch(url), 3, 500)    // 3 intentos, 500ms entre cada
+let r = retry_backoff(|| fetch(url), 5, 100)  // 100→200→400→800ms
+
+let r = timeout(|| lenta(), 2000)       // Err si excede 2000ms
+```
+
+Todas devuelven `Result::Ok(v)` o `Result::Err(msg)`, combinable
+con `std::try::catch` (Fase 18).
+
+**Cómo se agrega otro módulo `std::` en Titan puro:**
+Poner `<nombre>.titan` en `stdlib/` del repositorio; el `.deb`
+lo empaqueta automáticamente en `$PREFIX/share/zett/stdlib/`. El
+loader lo encuentra al hacer `import std::<nombre>`.
+
+Ejemplo completo: `examples/async_demo.titan`.
+
+---
+
 ## `const` con expresiones + maps literales `#{...}` — v0.29.0
 
 Const acepta cualquier expresión (arrays, calls, higher-order):

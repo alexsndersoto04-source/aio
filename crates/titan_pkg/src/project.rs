@@ -97,7 +97,19 @@ impl Loader {
         self.stack.push(path.clone());
         for item in &program.items {
             if let Item::Import(import) = item {
-                if import.path.first().map(String::as_str) == Some("std") { continue; }
+                if import.path.first().map(String::as_str) == Some("std") {
+                    // Phase 31: `import std::algo` may resolve to a
+                    // Titan-native stdlib file at
+                    //   $ZETT_STDLIB_DIR/<algo>.titan  or
+                    //   <exe_dir>/../share/zett/stdlib/<algo>.titan
+                    // If found, load it as a regular module. If not,
+                    // skip silently — the traditional behavior — so
+                    // pure-Rust natives like std::sqlite keep working.
+                    if let Some(candidate) = resolve_stdlib_module(&import.path) {
+                        self.visit(&candidate)?;
+                    }
+                    continue;
+                }
                 let imported = self.resolve_import(&import.path, &path)?;
                 self.visit(&imported)?;
             }
@@ -212,6 +224,61 @@ pub fn create_project(path: impl AsRef<Path>, name: &str) -> Result<PathBuf, Pro
 }
 
 fn relative_display(path: &Path, root: &Path) -> String { path.strip_prefix(root).unwrap_or(path).display().to_string() }
+
+/// Phase 31: resolve `std::algo` imports to Titan-native stdlib files.
+///
+/// Search order:
+///   1. `$ZETT_STDLIB_DIR/<algo>.titan` (env override, useful for dev)
+///   2. `<exe_dir>/../share/zett/stdlib/<algo>.titan` (installed layout)
+///   3. `<exe_dir>/stdlib/<algo>.titan` (dev/build layout)
+///
+/// Supports nested paths: `import std::async::retry` -> `async/retry.titan`
+/// or `async/retry/mod.titan`. Returns None if nothing exists — the
+/// loader then falls back to the native-module assumption.
+pub fn resolve_stdlib_module(segments: &[String]) -> Option<PathBuf> {
+    if segments.len() < 2 { return None; }
+    let relative = segments[1..].iter().fold(PathBuf::new(), |p, s| p.join(s));
+    let candidates_from = |base: PathBuf| -> Vec<PathBuf> {
+        vec![
+            base.join(&relative).with_extension("titan"),
+            base.join(&relative).join("mod.titan"),
+        ]
+    };
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = std::env::var("ZETT_STDLIB_DIR") {
+        roots.push(PathBuf::from(dir));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            roots.push(exe_dir.join("..").join("share").join("zett").join("stdlib"));
+            roots.push(exe_dir.join("stdlib"));
+            // Dev layout: `./target/release/titan` runs from a repo
+            // that has `stdlib/` at the root. Walk up until we find
+            // it (max 5 levels so we never wander too far).
+            let mut probe = exe_dir.to_path_buf();
+            for _ in 0..5 {
+                let candidate = probe.join("stdlib");
+                if candidate.is_dir() {
+                    roots.push(candidate);
+                    break;
+                }
+                if !probe.pop() { break; }
+            }
+        }
+    }
+    // Fallback final: CWD/stdlib for ad-hoc dev.
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join("stdlib"));
+    }
+    for root in roots {
+        for candidate in candidates_from(root) {
+            if candidate.is_file() {
+                return candidate.canonicalize().ok();
+            }
+        }
+    }
+    None
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,148 @@
+// Fase 31: std::async — primer modulo de la stdlib escrito en Titan.
+//
+// Este es un momento historico chico para Titan: la primera vez que
+// un modulo de `std::` se carga desde un archivo .titan (no desde
+// codigo Rust). El loader busca el modulo en
+//   $PREFIX/share/zett/stdlib/async.titan  (instalado con el .deb)
+//   o ./stdlib/async.titan                  (desarrollo)
+//
+// Funciones que expone std::async:
+//   delay(ms)                        — sleep bloqueante
+//   measure(fn)                      — (resultado, ms_transcurridos)
+//   retry(fn, veces, delay_ms)       — reintenta con delay constante
+//   retry_backoff(fn, veces, base)   — reintenta con backoff exponencial
+//   timeout(fn, max_ms)              — mide y reporta si excede
+//
+// Todas trabajan con closures y `Result::Ok/Err` — combinables con
+// std::try::catch (Fase 18) y enums custom (Fase 27).
+//
+// Ejecutar con:
+//     zett run examples/async_demo.titan
+
+import std::async
+
+// Contador de intentos guardado en un archivo temporal. El "numero"
+// es simplemente la LONGITUD del contenido — asi evitamos necesitar
+// parse_int (que no existe en la stdlib hoy). Cada intento agrega
+// una letra "x" al archivo, y len_text nos da el conteo.
+const CONTADOR_PATH = "/tmp/titan_async_demo_contador"
+
+fn reset_contador() {
+    std::fs::write_text(CONTADOR_PATH, "")
+}
+
+fn incrementar() -> int {
+    let actual = std::try::catch(|| std::fs::read_text(CONTADOR_PATH))
+    let previo = match actual {
+        Result::Ok(s) => s,
+        Result::Err(_) => "",
+    }
+    let siguiente = previo + "x"
+    std::fs::write_text(CONTADOR_PATH, siguiente)
+    return std::text::length(siguiente)
+}
+
+// Simula una API que falla las primeras 2 veces y funciona a la 3ra.
+// Para "tirar error" hacemos una division por cero — el runtime la
+// convierte en VmError y try::catch la captura como Result::Err.
+fn api_flaky() -> string {
+    let intento = incrementar()
+    print("  [api] intento #" + intento)
+    if intento < 3 {
+        let cero = 0
+        let x = 1 / cero
+        return "no-alcanza"
+    }
+    return "datos-ok-en-intento-" + intento
+}
+
+// Api que SIEMPRE falla — para probar el caso donde retry se rinde.
+fn api_muerta() -> string {
+    let cero = 0
+    let x = 1 / cero
+    return "no-alcanza"
+}
+
+// Api que siempre funciona pero tarda mucho — para probar timeout.
+fn api_lenta() -> string {
+    delay(1200)
+    return "resultado-lento"
+}
+
+// Api rapida, para el otro lado del timeout.
+fn api_rapida() -> string {
+    delay(50)
+    return "resultado-rapido"
+}
+
+fn main() {
+    print("---- Fase 31: std::async ----")
+    print("")
+
+    // 1) delay basico
+    print("---- delay(300) ----")
+    let start = std::time::unix_millis()
+    delay(300)
+    let dur = std::time::unix_millis() - start
+    print("dormi " + dur + "ms (esperado ~300)")
+
+    // 2) measure — cuanto tardo una operacion
+    print("")
+    print("---- measure(api_rapida) ----")
+    let resultado = measure(|| api_rapida())
+    let (valor, ms) = resultado
+    print("valor: " + valor)
+    print("ms:    " + ms)
+
+    // 3) retry — la api falla 2 veces y funciona a la 3ra
+    print("")
+    print("---- retry(api_flaky, 5, 200) ----")
+    reset_contador()
+    let r1 = retry(|| api_flaky(), 5, 200)
+    match r1 {
+        Result::Ok(v) => print("EXITO: " + v),
+        Result::Err(e) => print("FALLO: " + e),
+    }
+
+    // 4) retry se rinde despues de N intentos
+    print("")
+    print("---- retry(api_muerta, 3, 100) ----")
+    let r2 = retry(|| api_muerta(), 3, 100)
+    match r2 {
+        Result::Ok(v) => print("EXITO (inesperado): " + v),
+        Result::Err(e) => print("se rindio: " + e),
+    }
+
+    // 5) retry_backoff — mismo caso pero con esperas crecientes
+    print("")
+    print("---- retry_backoff(api_flaky, 5, 100) ----")
+    reset_contador()
+    let start_b = std::time::unix_millis()
+    let r3 = retry_backoff(|| api_flaky(), 5, 100)
+    let dur_b = std::time::unix_millis() - start_b
+    match r3 {
+        Result::Ok(v) => print("EXITO: " + v + " (tardo " + dur_b + "ms total)"),
+        Result::Err(e) => print("FALLO: " + e),
+    }
+
+    // 6) timeout — api rapida cumple
+    print("")
+    print("---- timeout(api_rapida, 500) ----")
+    let t1 = timeout(|| api_rapida(), 500)
+    match t1 {
+        Result::Ok(v) => print("en tiempo: " + v),
+        Result::Err(e) => print("timeout: " + e),
+    }
+
+    // 7) timeout — api lenta lo excede
+    print("")
+    print("---- timeout(api_lenta, 500) ----")
+    let t2 = timeout(|| api_lenta(), 500)
+    match t2 {
+        Result::Ok(v) => print("en tiempo: " + v),
+        Result::Err(e) => print("timeout: " + e),
+    }
+
+    print("")
+    print("---- Listo ----")
+}

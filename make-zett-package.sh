@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.29.0_arm.deb"
+OUT="zett_0.30.0_arm.deb"
 
 rm -rf "$ROOT" "$OUT"
 
@@ -13,7 +13,7 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.29.0
+Version: 0.30.0
 Architecture: arm
 Maintainer: Alex Sanders Soto
 Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input, sentence-transformer pooling), Wi-Fi scanning, vector math (semantic search), PDF generation
@@ -68,6 +68,11 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
 EOF
 
 install -m 755 target/release/titan "$ROOT$PREFIX/bin/zett"
+
+# Phase 31: bundle the Titan-native stdlib modules (async, etc.) so
+# `import std::async` resolves to $PREFIX/share/zett/stdlib/async.titan.
+mkdir -p "$ROOT$PREFIX/share/zett/stdlib"
+cp -a stdlib/. "$ROOT$PREFIX/share/zett/stdlib/"
 
 cp -a crates docs examples "$ROOT$PREFIX/share/zett/source/"
 cp -a Cargo.toml Cargo.lock README.md LICENSE rust-toolchain.toml \
