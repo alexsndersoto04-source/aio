@@ -25,7 +25,9 @@ type UserId = string
 type Score  = int
 type Ratio  = float
 type Tag    = string
-type Handler = fn(int) -> string
+// Nota: los tipos funcion como alias (type Handler = fn(int) -> string)
+// aun no estan soportados en el parser de tipos — se agregara en una
+// fase futura. Los aliases actuales cubren tipos base y named/generics.
 
 struct Player {
     id: UserId,
