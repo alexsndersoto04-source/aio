@@ -1,5 +1,105 @@
 # Zett / TITAN — Changelog
 
+## 0.26.0 — Phase 27: enums-con-payload como errores custom 🎯
+
+Titan ya tenía `enum X { A, B(int) }` funcionando en el parser, AST,
+typechecker, codegen y VM desde hace muchas versiones — pero nunca
+se había demostrado que sirven para el caso de uso rey: **errores
+custom tipados** al estilo Rust/Elm/Haskell.
+
+Con esta fase queda claro que Titan tiene manejo de errores de
+nivel industrial: propagación con `?`, exhaustividad implícita en
+`match`, y contexto por variante en el payload.
+
+### Nueva forma idiomática
+
+```titan
+enum ApiError {
+    NotFound(string),          // id que no existio
+    BadInput(string),          // nombre del campo invalido
+    Unauthorized,              // variante SIN payload
+    Conflict(string),
+    RateLimited(int),          // segundos hasta reintentar
+}
+
+// Funciones retornan Result<T, ApiError>
+fn find_user(id: string) -> any {
+    if id == "" { return Result::Err(ApiError::BadInput("id")) }
+    if id == "42" { return Result::Ok(build_user(id)) }
+    return Result::Err(ApiError::NotFound(id))
+}
+
+// El operador `?` propaga el error automáticamente,
+// atravesando cuantos niveles haga falta:
+fn describe_user(id: string) -> any {
+    let user = find_user(id)?          // Si Err, sale de esta fn con ese Err
+    let name = std::map::get(user, "name")
+    return Result::Ok("Usuario " + id + " se llama " + name)
+}
+
+fn handle_request(token: string, user_id: string) -> any {
+    require_auth(token)?               // ? propaga Unauthorized
+    check_rate_limit(user_id)?         // ? propaga RateLimited(30)
+    describe_user(user_id)?            // ? propaga NotFound o BadInput
+}
+```
+
+### Pattern matching con contexto extraído
+
+```titan
+match resultado {
+    Result::Ok(v) => print("OK: " + v),
+    Result::Err(err) => match err {
+        ApiError::NotFound(id)      => print("no existe: " + id),
+        ApiError::BadInput(field)   => print("campo: " + field),
+        ApiError::Unauthorized      => print("sin auth"),
+        ApiError::Conflict(what)    => print("dup: " + what),
+        ApiError::RateLimited(secs) => print("esperar " + secs + "s"),
+    }
+}
+```
+
+### Mapear errores a codigos HTTP
+
+```titan
+fn http_status(err: ApiError) -> int {
+    match err {
+        ApiError::NotFound(_)    => 404,
+        ApiError::BadInput(_)    => 400,
+        ApiError::Unauthorized   => 401,
+        ApiError::Conflict(_)    => 409,
+        ApiError::RateLimited(_) => 429,
+    }
+}
+```
+
+### Ejemplo verificable
+
+`zett run examples/custom_errors.titan` — 10 escenarios:
+
+1. Camino feliz — Ok con struct dentro
+2. NotFound(id) — payload con contexto
+3. BadInput(field) — validación
+4. Conflict(name) — recurso duplicado
+5. BadInput otro campo
+6. `?` operator propagando desde función anidada
+7. Camino feliz vía `?`
+8. Handler completo — auth OK
+9. Unauthorized sin payload
+10. RateLimited(30) — payload int
+11. Propagación de NotFound cruzando 3 niveles de funciones
+
+### Bajo el capó
+
+- Cero cambios en el compilador — la infraestructura (parser,
+  `enum_variants: HashMap<String, Option<Type>>` en typechecker,
+  `Op::NewEnum/EnumIs/EnumPayload` en VM, `Pattern::Enum` en match)
+  ya estaba desde hace varias versiones.
+- Esta fase la ejercita, verifica end-to-end, y documenta como
+  parte oficial del lenguaje.
+
+---
+
 ## 0.25.0 — Phase 26: REST API completa en TITAN 🏢
 
 **La prueba viviente.** No es una feature del lenguaje — es un

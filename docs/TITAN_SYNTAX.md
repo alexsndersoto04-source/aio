@@ -332,6 +332,53 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## Errores custom con enums — v0.26.0
+
+```titan
+enum ApiError {
+    NotFound(string),
+    BadInput(string),
+    Unauthorized,               // sin payload
+    RateLimited(int),
+}
+
+fn find_user(id: string) -> any {
+    if id == "" { return Result::Err(ApiError::BadInput("id")) }
+    return Result::Ok(build_user(id))
+}
+
+// El operador `?` propaga el error tipado hacia arriba.
+fn describe(id: string) -> any {
+    let u = find_user(id)?      // si Err, salimos con ese Err
+    return Result::Ok(u.name)
+}
+
+// Extraer contexto con match:
+match describe("99") {
+    Result::Ok(msg) => print(msg),
+    Result::Err(err) => match err {
+        ApiError::NotFound(id)      => print("no existe: " + id),
+        ApiError::BadInput(field)   => print("campo: " + field),
+        ApiError::Unauthorized      => print("sin auth"),
+        ApiError::RateLimited(secs) => print("esperar " + secs),
+    }
+}
+```
+
+Reglas:
+
+- `enum X { ... }` en top-level; variantes con `,` como separador.
+- Variantes con payload: `Name(tipo)` — 0 o 1 payload por variante.
+- Variantes sin payload: solo el nombre.
+- Se construyen con `X::Variant` (sin payload) o `X::Variant(val)`.
+- `Result::Err(cualquierEnum)` es idiomático para errores tipados.
+- El operador `?` funciona con cualquier `Result` — propaga limpio.
+- El pattern del inner en match debe ser `Ident` o `_` (no anidado).
+
+Ejemplo completo: `examples/custom_errors.titan`.
+
+---
+
 ## JSON completo (`std::json`) — v0.24.0
 
 ```titan

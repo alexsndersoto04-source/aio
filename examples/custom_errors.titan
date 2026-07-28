@@ -1,0 +1,175 @@
+// Fase 27: enums-con-payload como ERRORES CUSTOM tipados.
+//
+// Titan ya tenia Result::Ok/Err (built-in) desde siempre, pero el
+// payload de Err era siempre un string generico. Con enums custom
+// podemos definir un TIPO de error especifico por dominio, con
+// varias variantes discriminadas — igual que Rust, Elm, Haskell.
+//
+// Beneficios:
+//   1) El compilador te obliga a manejar cada variante en el match
+//      (o poner explicitamente el wildcard _).
+//   2) Cada error lleva SOLO la info que necesita — NotFound(id),
+//      BadInput(campo), DbFailure(codigo) — no un string opaco.
+//   3) El operador `?` sigue funcionando: propaga el error tipado
+//      hacia arriba en la pila de funciones.
+//   4) Combinable con std::try::catch para atrapar cualquier error.
+//
+// Ejecutar con:
+//     zett run examples/custom_errors.titan
+
+// ---------------- Definicion del error ----------------
+
+// Error de una API tipo REST. Cada variante lleva contexto util.
+enum ApiError {
+    NotFound(string),          // id que no existio
+    BadInput(string),          // nombre del campo invalido
+    Unauthorized,              // sin payload — es un enum tag puro
+    Conflict(string),          // recurso duplicado
+    RateLimited(int),          // segundos hasta poder reintentar
+}
+
+// Convierte un ApiError a un mensaje humano. Es como un `impl
+// Display for ApiError` en Rust — expresado con un simple match.
+fn describe(err: ApiError) -> string {
+    match err {
+        ApiError::NotFound(id)      => "no existe el recurso con id=" + id,
+        ApiError::BadInput(field)   => "campo invalido: " + field,
+        ApiError::Unauthorized      => "no autenticado",
+        ApiError::Conflict(what)    => "conflicto: " + what + " ya existe",
+        ApiError::RateLimited(secs) => "rate limit — reintentar en " + secs + "s",
+    }
+}
+
+// Convierte a un codigo HTTP (los REST hacen esto todo el tiempo).
+fn http_status(err: ApiError) -> int {
+    match err {
+        ApiError::NotFound(_)    => 404,
+        ApiError::BadInput(_)    => 400,
+        ApiError::Unauthorized   => 401,
+        ApiError::Conflict(_)    => 409,
+        ApiError::RateLimited(_) => 429,
+    }
+}
+
+// ---------------- Funciones que USAN los errores ----------------
+
+// "Base de datos" en memoria (map global fingido). Buscar por id.
+// Retorna Result::Ok(usuario) o Result::Err(ApiError).
+fn find_user(id: string) -> any {
+    if id == "" {
+        return Result::Err(ApiError::BadInput("id"))
+    }
+    if id == "42" {
+        let user = std::map::new()
+        let user = std::map::insert(user, "id", "42")
+        let user = std::map::insert(user, "name", "Ada Lovelace")
+        return Result::Ok(user)
+    }
+    return Result::Err(ApiError::NotFound(id))
+}
+
+fn create_user(id: string, name: string) -> any {
+    if id == "" {
+        return Result::Err(ApiError::BadInput("id"))
+    }
+    if name == "" {
+        return Result::Err(ApiError::BadInput("name"))
+    }
+    if id == "42" {
+        return Result::Err(ApiError::Conflict("user " + id))
+    }
+    let user = std::map::new()
+    let user = std::map::insert(user, "id", id)
+    let user = std::map::insert(user, "name", name)
+    return Result::Ok(user)
+}
+
+// Combina dos operaciones con el operador `?`. Si `find_user` retorna
+// Err, `?` lo propaga directo hacia afuera de esta funcion — sin
+// necesidad de escribir match. Mismo modelo que Rust.
+fn describe_user(id: string) -> any {
+    let user = find_user(id)?
+    let name = std::map::get(user, "name")
+    return Result::Ok("Usuario " + id + " se llama " + name)
+}
+
+// Rate limiter simulado. Retorna un Err si el user X pidio mucho.
+fn check_rate_limit(user_id: string) -> any {
+    if user_id == "spammer" {
+        return Result::Err(ApiError::RateLimited(30))
+    }
+    return Result::Ok(true)
+}
+
+// Requerir autenticacion. `token` vacio = sin auth.
+fn require_auth(token: string) -> any {
+    if token == "" {
+        return Result::Err(ApiError::Unauthorized)
+    }
+    return Result::Ok(token)
+}
+
+// Handler de "endpoint" — combina TODO usando `?` para propagar
+// cualquier error del pipeline hacia el nivel superior.
+fn handle_request(token: string, user_id: string) -> any {
+    require_auth(token)?
+    check_rate_limit(user_id)?
+    let mensaje = describe_user(user_id)?
+    return Result::Ok(mensaje)
+}
+
+// ---------------- Main: demostracion ----------------
+
+fn probar(titulo: string, resultado: any) {
+    print("---- " + titulo + " ----")
+    match resultado {
+        Result::Ok(v) => print("OK: " + v),
+        Result::Err(err) => {
+            let status = http_status(err)
+            let msg = describe(err)
+            print("ERR [HTTP " + status + "] " + msg)
+        }
+    }
+}
+
+fn main() {
+    print("---- Fase 27: enums-con-payload como errores custom ----")
+    print("")
+
+    // 1) Camino feliz — user 42 existe
+    probar("find_user(\"42\")", find_user("42"))
+
+    // 2) Not found — variante con payload string
+    probar("find_user(\"99\")", find_user("99"))
+
+    // 3) Bad input — id vacio
+    probar("find_user(\"\")", find_user(""))
+
+    // 4) Conflict — al crear un id que ya existe
+    probar("create_user(\"42\", \"...\")", create_user("42", "Otra Ada"))
+
+    // 5) Bad input al crear — name vacio
+    probar("create_user(\"1\", \"\")", create_user("1", ""))
+
+    // 6) `?` propaga: describe_user llama find_user y si falla se
+    //    devuelve directo el Err de find_user. Sin match manual.
+    probar("describe_user(\"42\")", describe_user("42"))
+    probar("describe_user(\"77\")", describe_user("77"))
+
+    // 7) Handler completo — auth OK, no spammer, usuario existe
+    probar("handle_request(\"tok\", \"42\")", handle_request("tok", "42"))
+
+    // 8) Handler sin token — Unauthorized (variante sin payload)
+    probar("handle_request(\"\", \"42\")", handle_request("", "42"))
+
+    // 9) Handler con spammer — RateLimited(30)
+    probar("handle_request(\"tok\", \"spammer\")", handle_request("tok", "spammer"))
+
+    // 10) Handler con user inexistente — se propaga el NotFound
+    //     desde describe_user -> find_user, atraviesa 3 niveles
+    //     de funciones sin necesitar match en el medio.
+    probar("handle_request(\"tok\", \"999\")", handle_request("tok", "999"))
+
+    print("")
+    print("---- Listo ----")
+}
