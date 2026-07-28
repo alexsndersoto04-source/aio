@@ -1,5 +1,91 @@
 # Zett / TITAN — Changelog
 
+## 0.27.0 — Phase 28: type aliases + spread `..` en arrays 🧵
+
+Dos QoL del lenguaje que hacen el código más limpio sin cambiar
+la semántica. Type aliases dan **documentación viva y refactor
+gratis** — cambiar el tipo de un dominio en un solo lugar. Spread
+elimina el fold manual para concatenar arrays.
+
+### Type aliases — `type X = Y`
+
+```titan
+type UserId = string
+type Score  = int
+type Ratio  = float
+type Handler = fn(int) -> string
+
+struct Player {
+    id: UserId,
+    score: Score,
+    tags: [string],
+}
+
+fn describe_score(s: Score) -> string {
+    if s >= 100 { return "excelente" }
+    return "bueno"
+}
+```
+
+Reglas:
+
+- `type Name = ExistingType` a nivel top-level (no dentro de funciones).
+- Los aliases son **intercambiables 100%** con el tipo real — cero
+  costo en runtime, cero cambios en la VM.
+- Chain de aliases funciona: `type A = B; type B = int` → A es Int.
+- El typechecker expande aliases lazy en `require_compatible`,
+  así ambos lados de una comparación se normalizan.
+- Si mañana `UserId` pasa a ser `int` en vez de `string`, cambiás
+  la definición y todas las firmas siguen funcionando.
+
+### Spread `..` en literales de array
+
+```titan
+let a = [1, 2, 3]
+let b = [10, 20, 30]
+
+let concat  = [..a, ..b]                // [1,2,3,10,20,30]
+let mezcla  = [0, ..a, 99, ..b, 100]    // [0,1,2,3,99,10,20,30,100]
+let prefix  = [-1, ..a]                 // [-1,1,2,3]
+let suffix  = [..b, 999]                // [10,20,30,999]
+```
+
+Combinable con higher-order (Fase 19) y pipeline (Fase 24):
+
+```titan
+let cuadrados = [..map(a, |x| x*x), ..map(b, |x| x*x)]
+let total = [..a, ..b] |> fold(0, |acc, x| acc + x)
+```
+
+Reglas:
+
+- `..` como prefijo de un elemento en un literal de array indica spread.
+- Los ranges (`0..10`) **NO** se ven afectados — como siempre, van
+  entre dos expresiones, no al inicio de un elemento.
+- Bajo el capó se desazucara a `std::array::concat` (que ya existía
+  desde v0.2). Cero cambios en la VM.
+
+### Ejemplo verificable
+
+`zett run examples/aliases_spread.titan` — 10 escenarios cubriendo
+aliases en fn signatures, struct fields, spreads simples y anidados,
+combinación con map/fold, spreads de field accesses.
+
+### Bajo el capó
+
+- Lexer: keyword nueva `type` → `TokenKind::Type`.
+- AST: `Item::TypeAlias(TypeAliasDecl)`.
+- Parser: `parse_type_alias` (top-level) y detección de `..` como
+  primer token de un elemento en array literal, que desazucara a
+  `Expr::Call { callee: "std::array::concat", args: [...] }`.
+- Typechecker: `type_aliases: HashMap<String, Type>` + helper
+  `resolve_alias` (16 hops max) + `require_compatible` normaliza
+  ambos lados antes de comparar.
+- Codegen y VM: cero cambios. Type aliases son puramente estáticos,
+  spread es puro desazucar.
+
+---
+
 ## 0.26.0 — Phase 27: enums-con-payload como errores custom 🎯
 
 Titan ya tenía `enum X { A, B(int) }` funcionando en el parser, AST,

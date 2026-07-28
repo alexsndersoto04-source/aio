@@ -1,0 +1,102 @@
+// Fase 28: type aliases + spread `..` en literales de array.
+//
+// Type aliases:
+//   type UserId = string
+//   type Callback = fn(int, string) -> bool
+//   type Score = int
+//
+// Son puros nombres para tipos que ya existen. Cero costo runtime,
+// solo documentacion mas clara. Se pueden usar en cualquier
+// anotacion — params, return types, struct fields, const.
+//
+// Spread (`..`):
+//   let todo = [..primeros, 99, ..ultimos]
+//   let saludo_completo = [inicio, ..middle, final]
+//
+// Concatena arrays con valores sueltos en un solo literal. Se
+// desazucara a std::array::concat en el parser (cero cambios en VM).
+//
+// Ejecutar con:
+//     zett run examples/aliases_spread.titan
+
+// ---------------- Type aliases ----------------
+
+type UserId = string
+type Score  = int
+type Ratio  = float
+type Tag    = string
+type Handler = fn(int) -> string
+
+struct Player {
+    id: UserId,
+    score: Score,
+    tags: [Tag],
+}
+
+// Los aliases son intercambiables con el tipo real: aca `UserId`
+// es lo mismo que `string`, `Score` es lo mismo que `int`.
+fn make_player(id: UserId, score: Score, tags: [Tag]) -> Player {
+    return Player { id: id, score: score, tags: tags }
+}
+
+fn describe_score(score: Score) -> string {
+    if score >= 100 { return "excelente" }
+    if score >= 50  { return "bueno" }
+    return "principiante"
+}
+
+// ---------------- Spread en arrays ----------------
+
+fn main() {
+    print("---- Fase 28: type aliases + spread ----")
+    print("")
+
+    // 1) Usar los aliases en fn calls como si fueran los tipos base
+    let jugador = make_player("alex-01", 87, ["ninja", "veloz"])
+    print("jugador: " + jugador.id + " -> " + jugador.score + " (" + describe_score(jugador.score) + ")")
+    print("tags: " + jugador.tags)
+
+    // 2) Spread basico: concatenar dos arrays
+    let a = [1, 2, 3]
+    let b = [10, 20, 30]
+    let concat = [..a, ..b]
+    print("concat: " + concat)                    // [1, 2, 3, 10, 20, 30]
+
+    // 3) Spread con valores en el medio
+    let mezcla = [0, ..a, 99, ..b, 100]
+    print("mezcla: " + mezcla)                    // [0, 1, 2, 3, 99, 10, 20, 30, 100]
+
+    // 4) Solo prefijos y sufijos
+    let solo_prefix = [-1, ..a]
+    let solo_suffix = [..b, 999]
+    print("prefix:  " + solo_prefix)              // [-1, 1, 2, 3]
+    print("suffix:  " + solo_suffix)              // [10, 20, 30, 999]
+
+    // 5) Spread combinable con higher-order (Fase 19)
+    let cuadrados_a = map(a, |x| x * x)
+    let cuadrados_b = map(b, |x| x * x)
+    let todos_cuadrados = [..cuadrados_a, ..cuadrados_b]
+    print("cuadrados: " + todos_cuadrados)        // [1, 4, 9, 100, 400, 900]
+
+    // 6) Spread con arrays de strings (mixing con literales)
+    let base_tags = ["ninja", "veloz"]
+    let nuevos_tags = [..base_tags, "premium", "verificado"]
+    print("tags ampliados: " + nuevos_tags)
+
+    // 7) Spread desde el resultado de una funcion
+    let tag_list = [..jugador.tags, "activo"]
+    print("con activo: " + tag_list)
+
+    // 8) Spread en pipeline (Fase 24)
+    let sumario = [..a, ..b] |> fold(0, |acc, x| acc + x)
+    print("suma total: " + sumario)               // 66
+
+    // 9) Aliases en constantes
+    let record_score: Score = 250
+    print("record: " + record_score + " (" + describe_score(record_score) + ")")
+
+    // 10) Aliases anidados: puede haber una cadena
+    // (type Nickname = UserId = string funciona igual)
+    print("")
+    print("---- Listo ----")
+}

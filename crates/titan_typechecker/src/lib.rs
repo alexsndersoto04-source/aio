@@ -50,6 +50,10 @@ pub struct TypeEnv {
     /// Phase 22: trait declarations indexed by name, so `impl Trait for
     /// Type` blocks can pull default method bodies + signatures.
     traits: HashMap<String, TraitDecl>,
+    /// Phase 28: `type Alias = Existing` map. Resolved lazily in
+    /// `resolve_alias` after `type_from_ast` produces a Type::Named that
+    /// doesn't match any built-in or user-declared struct/enum.
+    type_aliases: HashMap<String, Type>,
     errors: Vec<TypeError>,
     return_type: Type,
     loop_depth: usize,
@@ -157,7 +161,7 @@ impl TypeEnv {
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),
         ]);
-        Self { scopes: vec![HashMap::new()], functions, structs: HashMap::new(), enum_variants, traits: HashMap::new(), errors: Vec::new(), return_type: Type::Unknown, loop_depth: 0 }
+        Self { scopes: vec![HashMap::new()], functions, structs: HashMap::new(), enum_variants, traits: HashMap::new(), type_aliases: HashMap::new(), errors: Vec::new(), return_type: Type::Unknown, loop_depth: 0 }
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<TypeError>> {
@@ -177,9 +181,29 @@ impl TypeEnv {
         }
     }
 
+    /// Phase 28: pre-collect `type Alias = Existing` before anything else
+    /// so aliases can appear in ANY signature (including fns defined
+    /// earlier than the alias) without file-order issues. The target is
+    /// stored raw as Type; expansion happens lazily via resolve_alias
+    /// during compatibility checks and field/method lookups.
+    fn collect_type_aliases(&mut self, items: &[Item]) {
+        for item in items {
+            match item {
+                Item::TypeAlias(t) => {
+                    let target = type_from_ast(&t.target);
+                    self.type_aliases.insert(t.name.clone(), target);
+                }
+                Item::Module(m) => self.collect_type_aliases(&m.items),
+                _ => {}
+            }
+        }
+    }
+
     fn collect_declarations(&mut self, items: &[Item]) {
-        // Phase 22: first pass — traits only, so `impl Trait for T`
-        // blocks can look up default bodies regardless of file order.
+        // Phase 28: first pass — type aliases so signatures can reference them.
+        self.collect_type_aliases(items);
+        // Phase 22: second pass — traits, so `impl Trait for T` blocks
+        // can look up default bodies regardless of file order.
         self.collect_traits(items);
         for item in items {
             match item {
@@ -576,7 +600,31 @@ impl TypeEnv {
     }
 
     fn invalid(&mut self, op: BinaryOp, left: Type, right: Type) { self.errors.push(TypeError::InvalidOperands { operator: format!("{op:?}"), left, right }); }
-    fn require_compatible(&mut self, expected: &Type, found: &Type) { if !compatible(expected, found) { self.errors.push(TypeError::Mismatch { expected: expected.clone(), found: found.clone() }); } }
+    /// Phase 28: expand any user-defined `type Alias = Existing` before
+    /// checking. Bounded loop (16 hops) so a chain `type A = B; type B
+    /// = int` resolves cleanly, and any cycle breaks out safely.
+    fn resolve_alias(&self, ty: &Type) -> Type {
+        let mut current = ty.clone();
+        for _ in 0..16 {
+            let next = match &current {
+                Type::Named(name) => match self.type_aliases.get(name) {
+                    Some(target) => target.clone(),
+                    None => return current,
+                },
+                _ => return current,
+            };
+            if next == current { return current; }
+            current = next;
+        }
+        current
+    }
+    fn require_compatible(&mut self, expected: &Type, found: &Type) {
+        let expected_r = self.resolve_alias(expected);
+        let found_r = self.resolve_alias(found);
+        if !compatible(&expected_r, &found_r) {
+            self.errors.push(TypeError::Mismatch { expected: expected.clone(), found: found.clone() });
+        }
+    }
     fn bind_pattern(&mut self, pattern: &Pattern, subject: &Type, wildcard: &mut bool, bools: &mut HashSet<bool>) {
         match pattern {
             Pattern::Wildcard { .. } => *wildcard = true,

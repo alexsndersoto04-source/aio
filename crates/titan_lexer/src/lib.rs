@@ -20,7 +20,7 @@ impl Span {
 pub enum TokenKind {
     Let, Mut, Fn, Return, If, Else, Match, For, While, Loop,
     Break, Continue, In, Struct, Enum, Trait, Impl, Module, Import,
-    Pub, Const, Unsafe, Spawn, Go, True, False, Nil, Self_, As, Extern,
+    Pub, Const, Unsafe, Spawn, Go, True, False, Nil, Self_, As, Extern, Type,
     Plus, Minus, Star, Slash, Percent, Ampersand, Pipe, Caret, Tilde,
     Bang, Question, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
     ThinArrow, FatArrow, EqEq, NotEq, LtEq, GtEq, Lt, Gt, LazyAnd,
@@ -249,6 +249,9 @@ impl Lexer {
             "unsafe" => TokenKind::Unsafe, "spawn" => TokenKind::Spawn, "go" => TokenKind::Go,
             "true" => TokenKind::True, "false" => TokenKind::False, "nil" => TokenKind::Nil,
             "self" => TokenKind::Self_, "as" => TokenKind::As, "extern" => TokenKind::Extern,
+            // Phase 28: `type Alias = ExistingType` for typed
+            // documentation without runtime cost.
+            "type" => TokenKind::Type,
             _ => TokenKind::Ident(ident),
         }
     }

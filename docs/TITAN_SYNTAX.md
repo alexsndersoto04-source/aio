@@ -332,6 +332,39 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## Type aliases + spread `..` — v0.27.0
+
+Aliases:
+
+```titan
+type UserId = string
+type Score  = int
+type Handler = fn(int) -> string
+
+fn find(id: UserId) -> Player { ... }   // igual que `id: string`
+```
+
+Cero costo runtime. Cambiás la definición y todas las firmas se
+adaptan. Chain permitido: `type A = B; type B = int` funciona.
+
+Spread en literales de array:
+
+```titan
+let a = [1, 2, 3]
+let b = [10, 20, 30]
+
+[..a, ..b]                  // [1,2,3,10,20,30]
+[0, ..a, 99, ..b, 100]      // [0,1,2,3,99,10,20,30,100]
+[..map(a, |x| x*x), 999]    // spread + higher-order
+```
+
+`..` **al inicio** de un elemento indica spread. Los ranges
+`0..10` no se ven afectados (van entre dos expresiones).
+
+Ejemplo completo: `examples/aliases_spread.titan`.
+
+---
+
 ## Errores custom con enums — v0.26.0
 
 ```titan

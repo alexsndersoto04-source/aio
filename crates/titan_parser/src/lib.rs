@@ -65,8 +65,19 @@ impl Parser {
             Some(TokenKind::Module) => self.parse_module().map(Item::Module),
             Some(TokenKind::Import) => self.parse_import().map(Item::Import),
             Some(TokenKind::Const) => self.parse_const().map(Item::Const),
-            _ => Err(self.expected("a declaration (fn, struct, enum, trait, impl, mod, import or const)")),
+            Some(TokenKind::Type) => self.parse_type_alias().map(Item::TypeAlias),
+            _ => Err(self.expected("a declaration (fn, struct, enum, trait, impl, mod, import, const or type)")),
         }
+    }
+
+    /// Phase 28: parse `type UserId = string` at top level.
+    fn parse_type_alias(&mut self) -> Result<TypeAliasDecl> {
+        let span = self.expect(TokenKind::Type)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Eq)?;
+        let target = self.parse_type()?;
+        self.eat(TokenKind::Semicolon);
+        Ok(TypeAliasDecl { name, target, span })
     }
 
     fn parse_function(&mut self) -> Result<FunctionDecl> {
@@ -715,10 +726,33 @@ impl Parser {
             }
             Some(TokenKind::LBracket) => {
                 self.advance();
-                let mut elements = Vec::new();
-                while !self.at(TokenKind::RBracket) { elements.push(self.parse_expr()?); if !self.eat(TokenKind::Comma) { break; } }
+                // Phase 28: array literal with optional spread (`..expr`).
+                // Elements without `..` are collected into inline chunks
+                // (plain Array literals). Elements with `..` inject an
+                // existing array. The final expression concatenates all
+                // chunks left-to-right using std::array::concat, which
+                // already exists as a native. Pure array literals stay
+                // as `Expr::Array` (no wrapping) so nothing regresses.
+                let mut parts: Vec<ArrayPart> = Vec::new();
+                let mut had_spread = false;
+                while !self.at(TokenKind::RBracket) {
+                    if self.eat(TokenKind::Range) {
+                        had_spread = true;
+                        let value = self.parse_expr()?;
+                        parts.push(ArrayPart::Spread(value));
+                    } else {
+                        let value = self.parse_expr()?;
+                        parts.push(ArrayPart::Item(value));
+                    }
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
                 self.expect(TokenKind::RBracket)?;
-                Ok(Expr::Array { elements, span })
+                if !had_spread {
+                    let elements = parts.into_iter().map(|p| match p { ArrayPart::Item(e) => e, ArrayPart::Spread(_) => unreachable!() }).collect();
+                    Ok(Expr::Array { elements, span })
+                } else {
+                    Ok(build_spread_array(parts, span))
+                }
             }
             Some(TokenKind::LBrace) => { self.advance(); Ok(Expr::Block(Box::new(self.parse_block_after_open(span)?))) }
             Some(TokenKind::Pipe) | Some(TokenKind::LazyOr) => self.parse_closure(),
@@ -867,7 +901,7 @@ impl Parser {
     fn message(&self, message: &str) -> ParseError { let s = self.span(); ParseError::Message { message: message.into(), line: s.line, column: s.column } }
     fn synchronize_item(&mut self) {
         while !self.at(TokenKind::Eof) {
-            if self.at_any(&[TokenKind::Fn, TokenKind::Extern, TokenKind::Struct, TokenKind::Enum, TokenKind::Trait, TokenKind::Impl, TokenKind::Module, TokenKind::Import, TokenKind::Const]) { return; }
+            if self.at_any(&[TokenKind::Fn, TokenKind::Extern, TokenKind::Struct, TokenKind::Enum, TokenKind::Trait, TokenKind::Impl, TokenKind::Module, TokenKind::Import, TokenKind::Const, TokenKind::Type]) { return; }
             self.advance();
         }
     }
@@ -890,6 +924,52 @@ fn valid_interpolation(value: &str) -> bool {
     if !value.ends_with(')') || !valid_path(function.trim()) { return false; }
     let arguments = &arguments[..arguments.len().saturating_sub(1)];
     arguments.trim().is_empty() || arguments.split(',').map(str::trim).all(|argument| !argument.is_empty() && (valid_path(argument) || argument.parse::<i64>().is_ok()))
+}
+
+/// Phase 28: pieces of an array literal with spread.
+#[derive(Debug, Clone)]
+enum ArrayPart {
+    Item(Expr),
+    Spread(Expr),
+}
+
+/// Phase 28: build the concat chain for `[..a, x, y, ..b, z]`. The result is
+/// `concat(concat(concat(a, [x, y]), b), [z])`. Adjacent Items collapse into
+/// one small Array literal to minimize call chains.
+fn build_spread_array(parts: Vec<ArrayPart>, span: Span) -> Expr {
+    // Fold parts into a list of chunks (either a spread expr or a Vec<Expr>
+    // of items) so we don't emit an empty [] between every pair of spreads.
+    enum Chunk { Spread(Expr), Items(Vec<Expr>) }
+    let mut chunks: Vec<Chunk> = Vec::new();
+    for part in parts {
+        match part {
+            ArrayPart::Spread(e) => chunks.push(Chunk::Spread(e)),
+            ArrayPart::Item(e) => match chunks.last_mut() {
+                Some(Chunk::Items(v)) => v.push(e),
+                _ => chunks.push(Chunk::Items(vec![e])),
+            },
+        }
+    }
+    let concat_name = |sp: Span| Expr::Ident { name: "std::array::concat".into(), span: sp };
+    let chunk_to_expr = |c: Chunk, sp: Span| -> Expr {
+        match c {
+            Chunk::Spread(e) => e,
+            Chunk::Items(v) => Expr::Array { elements: v, span: sp },
+        }
+    };
+    let mut iter = chunks.into_iter();
+    let first = match iter.next() {
+        Some(c) => chunk_to_expr(c, span),
+        None => return Expr::Array { elements: Vec::new(), span },
+    };
+    iter.fold(first, |acc, chunk| {
+        let right = chunk_to_expr(chunk, span);
+        Expr::Call {
+            callee: Box::new(concat_name(span)),
+            args: vec![acc, right],
+            span,
+        }
+    })
 }
 
 fn valid_identifier(value: &str) -> bool {

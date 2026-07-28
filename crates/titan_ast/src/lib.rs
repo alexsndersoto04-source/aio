@@ -22,6 +22,17 @@ pub enum Item {
     Module(ModuleDecl),
     Import(ImportDecl),
     Const(ConstDecl),
+    /// Phase 28: `type Name = ExistingType` — pure type-level rename.
+    /// No runtime cost; the typechecker resolves aliases before doing
+    /// compatibility checks. Cannot be recursive (T = T is rejected).
+    TypeAlias(TypeAliasDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeAliasDecl {
+    pub name: String,
+    pub target: TypeExpr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
