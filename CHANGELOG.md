@@ -1,5 +1,92 @@
 # Zett / TITAN — Changelog
 
+## 0.24.0 — Phase 25-B: `std::json` completo + integración HTTP end-to-end 🌐
+
+El módulo `std::json` ya estaba implementado a nivel runtime desde
+hace varias versiones (usa `serde_json` — el crate JSON estándar de
+todo el ecosistema Rust), pero nunca se había demostrado
+end-to-end con un ejemplo público ni documentado como API pública
+del lenguaje. Esta versión lo cierra: ejemplo real que consume la
+API pública de GitHub, extrae campos con paths RFC 6901, y compone
+un JSON de respuesta enriquecido.
+
+### API disponible
+
+```titan
+// Parsear un string JSON -> Value nativo de Titan
+let obj = std::json::parse("{\"nombre\":\"Ana\",\"edad\":30}")
+print(obj.nombre)                          // "Ana"    (acceso con .)
+print(obj.edad)                            // 30
+
+// Serializar de vuelta
+std::json::stringify(obj)                  // "{\"nombre\":\"Ana\",\"edad\":30}"
+std::json::pretty(obj)                     // formato indentado
+
+// JSON Pointer RFC 6901 (como XPath para JSON)
+std::json::pointer(obj, "/direccion/ciudad")
+std::json::pointer(obj, "/hobbies/0")
+
+// Merge Patch RFC 7396 (b sobreescribe a; null en b borra)
+std::json::merge(base, patch)
+
+// Aplanar estructura anidada a lista de (path, valor)
+std::json::flatten(obj)                    // [("/nombre", "Ana"), ("/edad", 30), ...]
+```
+
+### Conversiones automáticas
+
+- JSON `Object` ↔ Titan `Map` (accesible con `.campo`)
+- JSON `Array`  ↔ Titan `Array` (accesible con `[i]`)
+- JSON `Number` → Titan `Int` si entero, `Float` si decimal
+- JSON `String` ↔ Titan `String`
+- JSON `Bool`   ↔ Titan `Bool`
+- JSON `null`   ↔ Titan `Nil`
+- Titan `Struct` → JSON `Object` (usa sus campos como keys)
+- Titan `Enum`   → JSON `{"type":..., "variant":..., "payload":...}`
+
+### Integración HTTP
+
+Ya existía desde antes pero acá se demuestra:
+
+```titan
+// GET con parse automático a Value de Titan
+let user = std::http_full::get_json(
+    "https://api.github.com/users/torvalds",
+    headers, opts
+)
+print(user.login)              // acceso directo con .
+print(user.followers)
+
+// POST con payload JSON auto-serializado
+let respuesta = std::http_full::post_json(url, payload, headers, opts)
+```
+
+### Ejemplo verificable
+
+`zett run examples/json_api.titan` — 7 escenarios:
+
+1. Parse local de un JSON complejo con nested objects y arrays
+2. Acceso con `.campo` y `[i]` sobre el resultado
+3. JSON Pointer paths (`/direccion/cp`, `/hobbies/1`)
+4. Stringify compacto y pretty
+5. Merge Patch con borrado explícito via `null`
+6. Flatten a lista de (path, valor)
+7. **API HTTPS real de GitHub** con manejo de errores via
+   `std::try::catch` (Fase 18) — si estás offline no crashea,
+   avisa y el resto del ejemplo sigue.
+
+### Bajo el capó
+
+- Cero cambios en el compilador — Fase 25-B es puramente
+  ejercitar, verificar y documentar la infraestructura ya
+  construida.
+- La conversión `Value ↔ serde_json::Value` vive en
+  `crates/titan_vm/src/native.rs` (`to_json` / `from_json`).
+- La implementación de merge/flatten/pointer vive en
+  `crates/titan_stdlib/src/json.rs`, con test unitario propio.
+
+---
+
 ## 0.23.0 — Phase 24: pipeline `|>` y spaceship `<=>` 🚀
 
 Dos operadores de programación funcional que hacían falta para

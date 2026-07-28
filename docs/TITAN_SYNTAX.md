@@ -332,6 +332,49 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## JSON completo (`std::json`) — v0.24.0
+
+```titan
+// Parsear -> Value nativo (objects son Map, arrays son Array)
+let obj = std::json::parse(text)
+print(obj.nombre)                          // acceso con .
+print(obj.hobbies[0])                      // acceso con [i]
+print(obj.direccion.ciudad)                // anidado
+
+// Serializar
+std::json::stringify(x)                    // compacto
+std::json::pretty(x)                       // indentado
+
+// JSON Pointer (paths estilo XPath)
+std::json::pointer(x, "/direccion/cp")
+std::json::pointer(x, "/hobbies/1")
+
+// Merge Patch (b sobre a; null en b borra la clave)
+std::json::merge(base, patch)
+
+// Aplanar -> [(path, valor)]
+std::json::flatten(x)
+```
+
+Integración con HTTP:
+
+```titan
+// GET con parse automático
+let user = std::http_full::get_json(url, headers, opts)
+print(user.login)
+
+// POST con serialización automática del payload
+let resp = std::http_full::post_json(url, payload, headers, opts)
+```
+
+Conversiones: Object↔Map, Array↔Array, Number→Int o Float según,
+String↔String, Bool↔Bool, null↔Nil. Los structs de Titan también
+se pueden pasar directo — sus campos son las keys del JSON.
+
+Ejemplo completo: `examples/json_api.titan`.
+
+---
+
 ## Operadores `|>` pipeline y `<=>` spaceship — v0.23.0
 
 ### Pipeline

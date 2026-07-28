@@ -1,0 +1,138 @@
+// Fase 25-B: modulo std::json completo + integracion HTTP real.
+//
+// Este ejemplo demuestra el flujo completo de trabajar con APIs
+// modernas — parsear JSON de una API real, extraer campos con
+// pointer paths, componer un JSON de salida, serializar a string.
+//
+// Funciones que usamos:
+//   std::json::parse(text)           -> Value    (Object -> Map, Array -> Array, etc.)
+//   std::json::stringify(any)        -> String   (compacto)
+//   std::json::pretty(any)           -> String   (indentado)
+//   std::json::pointer(json, path)   -> Value    (RFC 6901 "/user/name")
+//   std::json::merge(a, b)           -> Value    (RFC 7396 merge patch)
+//   std::json::flatten(json)         -> [(path, value)]
+//
+// Y para APIs reales:
+//   std::http_full::get_json(url, headers, opts)   -> Value directo, ya parseado
+//
+// Ejecutar con:
+//     zett run examples/json_api.titan
+//
+// Requiere internet. Si estas offline, salta la parte de la API
+// (arranca en el cartel "---- API remota ----" y avisa el error).
+
+fn main() {
+    print("---- Fase 25-B: std::json completo ----")
+
+    // ---------------------------------------------------------
+    // 1) PARSE local — de un string JSON a estructura Titan
+    // ---------------------------------------------------------
+    let texto = "{\"nombre\":\"Ana\",\"edad\":30,\"activo\":true,\"hobbies\":[\"leer\",\"correr\"],\"direccion\":{\"ciudad\":\"Maracaibo\",\"cp\":4001}}"
+    let persona = std::json::parse(texto)
+
+    // Los objetos JSON se convierten a Map que Titan trata como structs
+    // dinamicos — accedes con . directamente.
+    print("nombre: " + persona.nombre)
+    print("edad:   " + persona.edad)
+    print("activo: " + persona.activo)
+    print("primer hobby: " + persona.hobbies[0])
+    print("ciudad: " + persona.direccion.ciudad)
+
+    // ---------------------------------------------------------
+    // 2) POINTER — acceso por path RFC 6901 (como XPath para JSON)
+    // ---------------------------------------------------------
+    print("---- pointer /direccion/cp = " + std::json::pointer(persona, "/direccion/cp"))
+    print("---- pointer /hobbies/1 = " + std::json::pointer(persona, "/hobbies/1"))
+
+    // Path invalido -> nil
+    let no_existe = std::json::pointer(persona, "/no/existe")
+    print("no existe: " + no_existe)
+
+    // ---------------------------------------------------------
+    // 3) STRINGIFY — compacto y pretty
+    // ---------------------------------------------------------
+    print("---- stringify compacto ----")
+    print(std::json::stringify(persona))
+    print("---- pretty ----")
+    print(std::json::pretty(persona))
+
+    // ---------------------------------------------------------
+    // 4) MERGE — RFC 7396 merge patch (b sobreescribe a)
+    // ---------------------------------------------------------
+    let base    = std::json::parse("{\"tema\":\"claro\",\"idioma\":\"es\",\"opciones\":{\"debug\":false,\"cache\":true}}")
+    let patch   = std::json::parse("{\"tema\":\"oscuro\",\"opciones\":{\"debug\":true,\"cache\":null}}")
+    let merged  = std::json::merge(base, patch)
+    // tema pasa a "oscuro", debug pasa a true, cache se BORRA (null),
+    // idioma se preserva.
+    print("---- merged ----")
+    print(std::json::pretty(merged))
+
+    // ---------------------------------------------------------
+    // 5) FLATTEN — aplana estructura anidada a lista de (path, valor)
+    // ---------------------------------------------------------
+    print("---- flatten ----")
+    let plano = std::json::flatten(persona)
+    for pair in plano {
+        print("  " + pair[0] + " = " + pair[1])
+    }
+
+    // ---------------------------------------------------------
+    // 6) CONSTRUIR JSON desde struct/map de Titan
+    // ---------------------------------------------------------
+    let reporte = std::map::new()
+    let reporte = std::map::insert(reporte, "generado_en", std::datetime::now())
+    let reporte = std::map::insert(reporte, "usuario", persona.nombre)
+    let reporte = std::map::insert(reporte, "tags", ["fase-25", "json", "real"])
+
+    print("---- reporte construido en Titan ----")
+    print(std::json::pretty(reporte))
+
+    // ---------------------------------------------------------
+    // 7) API REMOTA REAL — GitHub API (publica, sin auth)
+    // ---------------------------------------------------------
+    print("---- API remota: github.com/users/torvalds ----")
+
+    let headers = std::map::new()
+    let headers = std::map::insert(headers, "User-Agent", "titan-fase25b")
+
+    let opts = std::map::new()
+    let opts = std::map::insert(opts, "timeout_ms", 15000)
+    let opts = std::map::insert(opts, "verify_tls", true)
+
+    // std::try::catch para manejar problemas de red sin crashear
+    let intento = std::try::catch(|| std::http_full::get_json("https://api.github.com/users/torvalds", headers, opts))
+
+    match intento {
+        Result::Ok(user) => {
+            // Ya viene parseado — accedemos con . directo
+            print("login:     " + user.login)
+            print("nombre:    " + user.name)
+            print("empresa:   " + user.company)
+            print("blog:      " + user.blog)
+            print("seguidores: " + user.followers)
+            print("repos pub: " + user.public_repos)
+            print("creado:    " + user.created_at)
+
+            // Combinamos con las funciones locales — merge con
+            // nuestros metadatos para armar una respuesta enriquecida.
+            let extras = std::map::new()
+            let extras = std::map::insert(extras, "consultado_por", "titan-cli")
+            let extras = std::map::insert(extras, "fase", "25-B")
+
+            let combinado = std::json::merge(user, extras)
+            print("---- respuesta enriquecida (pretty) ----")
+            // Solo mostramos algunos campos usando pointer, no todo
+            // el JSON de github que es enorme.
+            print("  login:          " + std::json::pointer(combinado, "/login"))
+            print("  seguidores:     " + std::json::pointer(combinado, "/followers"))
+            print("  consultado_por: " + std::json::pointer(combinado, "/consultado_por"))
+            print("  fase:           " + std::json::pointer(combinado, "/fase"))
+        }
+        Result::Err(msg) => {
+            print("(sin internet o error de API: " + msg + ")")
+            print("(el resto del ejemplo funciona igual sin conexion)")
+        }
+    }
+
+    print("---- Listo ----")
+}
