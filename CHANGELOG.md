@@ -1,5 +1,60 @@
 # Zett / TITAN — Changelog
 
+## 0.28.0 — Phase 29: `for` con destructuring 🔄
+
+Extiende Fase 23 (destructuring en `let`) al loop `for`. Ahora se
+puede desempacar tuplas y structs directo en el patrón del loop,
+sin escribir un `let (a, b) = item` a mano dentro del cuerpo.
+
+### Nueva sintaxis
+
+```titan
+// Tupla
+for (a, b) in pares {
+    print(a + " -> " + b)
+}
+
+// Struct
+struct Point { x: int, y: int }
+for Point { x, y } in puntos {
+    print("(" + x + ", " + y + ")")
+}
+
+// Con rename
+for Point { x: cx, y: cy } in puntos { ... }
+
+// Wildcard (descartar campo)
+for (first, _, last) in triples { ... }
+
+// Anidado — tupla dentro de tupla, struct dentro de tupla
+for (id, (a, b)) in anidado { ... }
+for (id, Point { x, y }) in etiquetados { ... }
+
+// Combinable con higher-order y pipeline
+let filtered = numeros |> filter(|n| n > 3) |> map(|n| (n, n * n))
+for (n, cuadrado) in filtered { ... }
+```
+
+### Bajo el capó
+
+- El parser reconoce `(` o `Ident { ... } in` después del `for`.
+- Desazucar puro: `for (a, b) in xs { body }` se transforma en
+  `for __destr<N> in xs { let (a, b) = __destr<N>; body }`.
+- Reusa `emit_pattern_binding` / `fresh_destr_name` / `TuplePart`
+  de Fase 23 — cero código nuevo en typechecker/codegen/VM.
+- Lookahead con seguimiento de profundidad de braces distingue el
+  patrón struct real (`for Point { x, y } in xs`) de un `for x { ... }`
+  degenerado.
+
+### Ejemplo verificable
+
+`zett run examples/for_destructuring.titan` — 8 escenarios: tupla
+simple, tupla con wildcard, struct básico, struct con rename, struct
+en pipeline con higher-order, tupla anidada dentro de tupla, tupla
+que contiene struct, y combinación con `map`+`filter`.
+
+---
+
 ## 0.27.0 — Phase 28: type aliases + spread `..` en arrays 🧵
 
 Dos QoL del lenguaje que hacen el código más limpio sin cambiar

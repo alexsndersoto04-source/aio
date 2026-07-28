@@ -1,0 +1,99 @@
+// Fase 29: for con destructuring — tupla y struct.
+//
+// Extiende Fase 23 (destructuring en let) al loop for:
+//
+//   for (x, y) in coordenadas { ... }
+//   for Point { x, y } in puntos { ... }
+//   for (nombre, edad) in std::map::pairs(m) { ... }
+//   for Producto { titulo, precio } in inventario { ... }
+//
+// Es puramente sintactico — el parser desazucara a un `for __item in xs`
+// mas un `let (x, y) = __item` (que ya funcionaba). Cero cambios en la
+// VM, cero opcodes nuevos. Todas las variantes de patterns de Fase 23
+// funcionan aca tambien: wildcards `_`, rename `x: cx`, anidados.
+//
+// Ejecutar con:
+//     zett run examples/for_destructuring.titan
+
+struct Point { x: int, y: int }
+struct Producto { titulo: string, precio: int }
+
+fn main() {
+    print("---- Fase 29: for con destructuring ----")
+    print("")
+
+    // 1) Tupla simple: for (a, b) in pares
+    let pares = [(1, 10), (2, 20), (3, 30)]
+    print("---- for (a, b) in pares ----")
+    for (a, b) in pares {
+        print("  " + a + " -> " + b)
+    }
+
+    // 2) Tupla con wildcard: descartar un campo
+    let coords = [(10, 20, 30), (40, 50, 60)]
+    print("---- solo primer y ultimo (medio descartado) ----")
+    for (first, _, last) in coords {
+        print("  " + first + " .. " + last)
+    }
+
+    // 3) Struct: for Point { x, y } in puntos
+    let puntos = [
+        Point { x: 1, y: 2 },
+        Point { x: 3, y: 4 },
+        Point { x: 5, y: 6 }
+    ]
+    print("---- for Point { x, y } in puntos ----")
+    for Point { x, y } in puntos {
+        print("  (" + x + ", " + y + ")")
+    }
+
+    // 4) Struct con rename: for Point { x: cx, y: cy }
+    print("---- con rename (x -> cx, y -> cy) ----")
+    for Point { x: cx, y: cy } in puntos {
+        print("  cx=" + cx + " cy=" + cy)
+    }
+
+    // 5) Combinacion: struct + higher-order.
+    // Sumar todos los precios de un inventario.
+    let inventario = [
+        Producto { titulo: "pan",    precio: 8 },
+        Producto { titulo: "leche",  precio: 25 },
+        Producto { titulo: "cafe",   precio: 40 }
+    ]
+    print("---- inventario (for Producto { titulo, precio } in ...) ----")
+    let mut total = 0
+    for Producto { titulo, precio } in inventario {
+        print("  " + titulo + ": $" + precio)
+        total = total + precio
+    }
+    print("total = $" + total)
+
+    // 6) Tupla anidada dentro de tupla
+    let anidado = [(1, (10, 100)), (2, (20, 200)), (3, (30, 300))]
+    print("---- tupla anidada: for (id, (a, b)) in ... ----")
+    for (id, (a, b)) in anidado {
+        print("  #" + id + ": a=" + a + " b=" + b)
+    }
+
+    // 7) Tupla que contiene struct
+    let etiquetados = [
+        (100, Point { x: 1, y: 1 }),
+        (200, Point { x: 2, y: 2 })
+    ]
+    print("---- for (id, Point { x, y }) in etiquetados ----")
+    for (id, Point { x, y }) in etiquetados {
+        print("  #" + id + " -> (" + x + ", " + y + ")")
+    }
+
+    // 8) Combinable con pipeline (Fase 24): filtrar antes del for.
+    let numeros = [1, 2, 3, 4, 5, 6, 7, 8]
+    let pares_con_indice = map(numeros, |n| (n, n * 2))
+    let mayores = filter(pares_con_indice, |t| t[1] > 6)
+    print("---- pipeline + destructure: valores * 2 > 6 ----")
+    for (n, doble) in mayores {
+        print("  " + n + " -> " + doble)
+    }
+
+    print("")
+    print("---- Listo ----")
+}

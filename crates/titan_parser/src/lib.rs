@@ -821,11 +821,128 @@ impl Parser {
 
     fn parse_for(&mut self) -> Result<Expr> {
         let span = self.expect(TokenKind::For)?;
+        // Phase 29: `for (a, b) in xs` and `for Point { x, y } in xs`
+        // desugar to a bind-then-destructure pattern:
+        //   for __item0 in xs {
+        //       let (a, b) = __item0
+        //       ...
+        //   }
+        // Same principle as Phase 23 destructuring in `let`: we never
+        // touch codegen/typechecker/VM — the destructuring `let` we
+        // already have does all the heavy lifting. Zero new opcodes.
+        if self.at(TokenKind::LParen) {
+            return self.desugar_for_tuple(span);
+        }
+        if let (Some(TokenKind::Ident(_)), Some(TokenKind::LBrace)) = (self.peek_kind().cloned(), self.tokens.get(self.pos + 1).map(|t| t.kind.clone())) {
+            // Only treat as struct destructure when a matching `}` is
+            // followed by `in` (the for keyword). Otherwise it might
+            // just be `for x { ... }` (weird, but plain-ident branch
+            // covers it later). Reuse the same lookahead helper we
+            // built in Phase 23 for `let Point { ... } = expr` — for
+            // us the terminator is `in` instead of `=`.
+            if self.destructure_struct_looks_like_for_pattern() {
+                return self.desugar_for_struct(span);
+            }
+        }
         let pattern = Box::new(self.parse_pattern()?);
         self.expect(TokenKind::In)?;
         let iterator = Box::new(self.parse_expr()?);
         self.expect(TokenKind::LBrace)?;
         let body = self.parse_block_after_open(span)?;
+        Ok(Expr::For { pattern, iterator, body, span })
+    }
+
+    /// Phase 29: lookahead — is `Ident { ... }` followed by `in`?
+    /// Scans with brace-depth tracking so nested `{}` inside the
+    /// pattern don't confuse us. Returns false at EOF or unmatched.
+    fn destructure_struct_looks_like_for_pattern(&self) -> bool {
+        let mut i = self.pos + 1;
+        let mut brace_depth: i32 = 0;
+        while let Some(token) = self.tokens.get(i) {
+            match &token.kind {
+                TokenKind::LBrace => brace_depth += 1,
+                TokenKind::RBrace => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        return matches!(self.tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::In));
+                    }
+                    if brace_depth < 0 { return false; }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// Phase 29: build the desugar for `for (a, b, ..) in xs { ... }`.
+    /// Produces an Expr::For whose pattern is a plain Ident (`__foritem`)
+    /// and whose body starts with a `let (a, b, ..) = __foritem` stmt
+    /// synthesized via parse_destructure_part + emit_pattern_binding
+    /// (the same helpers from Phase 23).
+    fn desugar_for_tuple(&mut self, span: Span) -> Result<Expr> {
+        self.expect(TokenKind::LParen)?;
+        let mut sub_patterns: Vec<TuplePart> = Vec::new();
+        while !self.at(TokenKind::RParen) {
+            sub_patterns.push(self.parse_destructure_part()?);
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::In)?;
+        let iterator = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::LBrace)?;
+        let temp = self.fresh_destr_name();
+        let mut body = self.parse_block_after_open(span)?;
+        // Prepend one binding per named part; wildcards contribute nothing.
+        let mut extra: Vec<Stmt> = Vec::new();
+        for (index, part) in sub_patterns.into_iter().enumerate() {
+            let idx_expr = Expr::Index {
+                target: Box::new(Expr::Ident { name: temp.clone(), span }),
+                index: Box::new(Expr::Int { value: index as i64, span }),
+                span,
+            };
+            self.emit_pattern_binding(&mut extra, part, idx_expr, span)?;
+        }
+        extra.append(&mut body.stmts);
+        body.stmts = extra;
+        let pattern = Box::new(Pattern::Ident { name: temp, span });
+        Ok(Expr::For { pattern, iterator, body, span })
+    }
+
+    /// Phase 29: `for Point { x, y } in xs { ... }` variant.
+    fn desugar_for_struct(&mut self, span: Span) -> Result<Expr> {
+        let _struct_name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut fields: Vec<(String, TuplePart)> = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            let field = self.expect_ident()?;
+            let bound = if self.eat(TokenKind::Colon) {
+                self.parse_destructure_part()?
+            } else {
+                TuplePart::Ident(field.clone())
+            };
+            fields.push((field, bound));
+            if !self.eat(TokenKind::Comma) { break; }
+        }
+        self.expect(TokenKind::RBrace)?;
+        self.expect(TokenKind::In)?;
+        let iterator = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::LBrace)?;
+        let temp = self.fresh_destr_name();
+        let mut body = self.parse_block_after_open(span)?;
+        let mut extra: Vec<Stmt> = Vec::new();
+        for (field_name, part) in fields {
+            let access = Expr::FieldAccess {
+                target: Box::new(Expr::Ident { name: temp.clone(), span }),
+                field: field_name,
+                span,
+            };
+            self.emit_pattern_binding(&mut extra, part, access, span)?;
+        }
+        extra.append(&mut body.stmts);
+        body.stmts = extra;
+        let pattern = Box::new(Pattern::Ident { name: temp, span });
         Ok(Expr::For { pattern, iterator, body, span })
     }
 

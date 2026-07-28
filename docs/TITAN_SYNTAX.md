@@ -332,6 +332,27 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## `for` con destructuring — v0.28.0
+
+Extiende Fase 22 (destructuring en `let`) al loop `for`:
+
+```titan
+for (a, b) in pares { ... }                    // tupla
+for Point { x, y } in puntos { ... }           // struct
+for Point { x: cx, y: cy } in puntos { ... }   // rename
+for (first, _, last) in triples { ... }        // wildcard
+for (id, (a, b)) in anidados { ... }           // anidado
+for (id, Point { x, y }) in etiquetados { ... } // combinado
+```
+
+Reglas: mismas que Fase 22. El azúcar se resuelve en el parser
+como un `for __item in xs { let PATTERN = __item; body }`. Cero
+cambios en runtime.
+
+Ejemplo completo: `examples/for_destructuring.titan`.
+
+---
+
 ## Type aliases + spread `..` — v0.27.0
 
 Aliases:
