@@ -14,18 +14,14 @@ fn open_and_migrate() -> int {
 
     // Migraciones idempotentes: cada una se aplica una sola vez y
     // se registra en una tabla interna schema_migrations.
-    let migraciones = [
-        {
-            "version": 1,
-            "name": "create_users",
-            "sql": "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);"
-        },
-        {
-            "version": 2,
-            "name": "create_posts",
-            "sql": "CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id));"
-        }
-    ]
+    //
+    // Titan no tiene sintaxis literal para maps con quoted keys estilo
+    // JSON (los `{...}` en expr-position son bloques de codigo, no maps).
+    // La solucion idiomatica es parsear las migraciones como JSON string
+    // via std::json::parse — el runtime las convierte al Array<Map> que
+    // std::sqlite::migrate espera.
+    let migraciones_json = "[{\"version\":1,\"name\":\"create_users\",\"sql\":\"CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);\"},{\"version\":2,\"name\":\"create_posts\",\"sql\":\"CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id));\"}]"
+    let migraciones = std::json::parse(migraciones_json)
     std::sqlite::migrate(db, migraciones)
     return db
 }
