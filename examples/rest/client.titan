@@ -1,0 +1,175 @@
+// ============================================================
+// Fase 26: Cliente REST que consume el server en main.titan
+// ============================================================
+//
+// Corre este cliente en OTRA sesion de Termux (Sesiones -> Nueva)
+// DESPUES de haber arrancado el servidor con:
+//     zett run examples/rest/main.titan
+//
+// El cliente hace un tour completo:
+//   1) GET /health
+//   2) POST /api/register (crea "alex")
+//   3) POST /api/login  -> obtiene JWT
+//   4) GET /api/users
+//   5) POST /api/posts (con auth) x 3
+//   6) GET /api/posts
+//   7) GET /api/posts/<id>
+//   8) DELETE /api/posts/<id>
+//   9) GET /api/posts (verifica que se borro)
+//  10) Intento sin auth -> espera 401
+//
+// Todo usando std::http_full con auto-parse de JSON.
+
+const BASE = "http://127.0.0.1:8080"
+
+fn empty_headers() -> map { return std::map::new() }
+
+fn opts() -> map {
+    let o = std::map::new()
+    let o = std::map::insert(o, "timeout_ms", 5000)
+    let o = std::map::insert(o, "verify_tls", false)
+    return o
+}
+
+fn headers_with_auth(token: string) -> map {
+    let h = std::map::new()
+    let h = std::map::insert(h, "Authorization", "Bearer " + token)
+    return h
+}
+
+fn banner(titulo: string) {
+    print("")
+    print("======== " + titulo + " ========")
+}
+
+fn main() {
+    print("---- Fase 26: cliente REST ----")
+    print("Conectando a " + BASE)
+
+    // 1) health
+    banner("1) GET /health")
+    let health = std::http_full::get_json(BASE + "/health", empty_headers(), opts())
+    print("status:  " + health.status)
+    print("service: " + health.service)
+
+    // 2) register
+    banner("2) POST /api/register")
+    let reg_payload = std::map::new()
+    let reg_payload = std::map::insert(reg_payload, "username", "alex")
+    let reg_payload = std::map::insert(reg_payload, "password", "secret123")
+    // Nota: post_json tira error si el server responde 4xx/5xx (comportamiento
+    // por defecto de ureq). Envolvemos con try::catch para poder continuar
+    // aunque el usuario ya exista de una corrida previa.
+    let reg_intento = std::try::catch(|| std::http_full::post_json(BASE + "/api/register", reg_payload, empty_headers(), opts()))
+    match reg_intento {
+        Result::Ok(reg) => print("creado: " + reg.username + " id=" + reg.id),
+        Result::Err(e) => print("(no se pudo crear, seguimos igual: " + e + ")"),
+    }
+
+    // 3) login -> JWT
+    banner("3) POST /api/login")
+    let login_payload = std::map::new()
+    let login_payload = std::map::insert(login_payload, "username", "alex")
+    let login_payload = std::map::insert(login_payload, "password", "secret123")
+    let login_intento = std::try::catch(|| std::http_full::post_json(BASE + "/api/login", login_payload, empty_headers(), opts()))
+    let mut token = ""
+    let mut user_id = ""
+    match login_intento {
+        Result::Ok(l) => {
+            token = std::map::get(l, "token")
+            user_id = std::map::get(l, "user_id")
+            let expires = std::map::get(l, "expires_in")
+            print("token OK (expires_in=" + expires + "s)")
+            print("user_id: " + user_id)
+        }
+        Result::Err(e) => {
+            print("ERROR de login: " + e)
+            return
+        }
+    }
+
+    // 4) users
+    banner("4) GET /api/users")
+    let users = std::http_full::get_json(BASE + "/api/users", empty_headers(), opts())
+    print("count: " + users.count)
+    for u in users.users {
+        print("  - " + u.username + " (id=" + u.id + ")")
+    }
+
+    // 5) crear 3 posts con auth
+    banner("5) POST /api/posts x3 (con JWT)")
+    let auth_h = headers_with_auth(token)
+    let titulos = ["Primer post", "Titan compila", "El rascacielos"]
+    let cuerpos = [
+        "Hola desde Titan Fase 26.",
+        "El compilador y la stdlib estan en un solo binario.",
+        "Cada Fase preserva las anteriores."
+    ]
+    let mut post_ids = []
+    for i in 0..3 {
+        let p = std::map::new()
+        let p = std::map::insert(p, "title", titulos[i])
+        let p = std::map::insert(p, "body", cuerpos[i])
+        let creado = std::http_full::post_json(BASE + "/api/posts", p, auth_h, opts())
+        print("creado: " + creado.id + " -> " + creado.title)
+        post_ids = std::array::push(post_ids, creado.id)
+    }
+
+    // 6) listar todos
+    banner("6) GET /api/posts")
+    let posts = std::http_full::get_json(BASE + "/api/posts", empty_headers(), opts())
+    print("total posts: " + posts.count)
+    for p in posts.posts {
+        print("  [" + p.author + "] " + p.title)
+    }
+
+    // 7) get uno solo
+    banner("7) GET /api/posts/<id>")
+    let uno = std::http_full::get_json(BASE + "/api/posts/" + post_ids[0], empty_headers(), opts())
+    print("titulo: " + uno.title)
+    print("cuerpo: " + uno.body)
+    print("autor:  " + uno.author)
+
+    // 8) delete
+    banner("8) DELETE /api/posts/<id>")
+    let del_opts = std::map::new()
+    let del_opts = std::map::insert(del_opts, "timeout_ms", 5000)
+    let del_opts = std::map::insert(del_opts, "verify_tls", false)
+    let del_opts = std::map::insert(del_opts, "method", "DELETE")
+    // Usamos std::http_full::request para poder mandar DELETE con auth.
+    // Envuelto en try::catch por si el server responde 4xx (aunque no
+    // deberia, ya que el post fue creado por este mismo usuario).
+    let del_intento = std::try::catch(|| std::http_full::request("DELETE", BASE + "/api/posts/" + post_ids[0], auth_h, std::encoding::utf8_encode(""), del_opts))
+    match del_intento {
+        Result::Ok(del_resp) => {
+            print("status: " + del_resp.status)
+            let texto = std::encoding::utf8_decode(del_resp.body)
+            let del_body = std::json::parse(texto)
+            if del_body.deleted != nil {
+                print("borrado: " + del_body.deleted)
+            } else {
+                print("respuesta: " + texto)
+            }
+        }
+        Result::Err(e) => print("error: " + e),
+    }
+
+    // 9) verificar borrado
+    banner("9) GET /api/posts (verificacion)")
+    let posts2 = std::http_full::get_json(BASE + "/api/posts", empty_headers(), opts())
+    print("total posts ahora: " + posts2.count + " (deberia ser 2)")
+
+    // 10) intento sin auth
+    banner("10) POST /api/posts sin auth (espera 401)")
+    let sin_auth_payload = std::map::new()
+    let sin_auth_payload = std::map::insert(sin_auth_payload, "title", "hackeo")
+    let sin_auth_payload = std::map::insert(sin_auth_payload, "body", "no deberia entrar")
+    let intento = std::try::catch(|| std::http_full::post_json(BASE + "/api/posts", sin_auth_payload, empty_headers(), opts()))
+    match intento {
+        Result::Ok(r) => print("(NO esperado — el server dejo pasar): " + std::json::stringify(r)),
+        Result::Err(e) => print("rechazado correctamente: " + e),
+    }
+
+    print("")
+    print("---- Cliente terminado. API funcionando end-to-end ----")
+}

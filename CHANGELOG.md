@@ -1,5 +1,104 @@
 # Zett / TITAN — Changelog
 
+## 0.25.0 — Phase 26: REST API completa en TITAN 🏢
+
+**La prueba viviente.** No es una feature del lenguaje — es un
+proyecto real de ~400 líneas de código Titan puro que combina
+TODA la stack construida hasta ahora en una aplicación funcional.
+
+Este es el momento en que Titan deja de ser un lenguaje de juguete
+y se demuestra como plataforma capaz de construir servicios web
+reales, con la misma arquitectura de un backend de producción
+(Express/Flask/Axum/Gin), corriendo en un celular.
+
+### Arquitectura del proyecto
+
+```
+examples/rest/
+├── main.titan     — servidor HTTP + router + dispatcher (300 líneas)
+├── db.titan       — capa SQL: users, posts, migraciones (90 líneas)
+└── client.titan   — cliente que consume la API (150 líneas)
+```
+
+### Stack usado (todas las Fases combinadas)
+
+| Componente        | Módulo Titan            | Fase |
+|-------------------|-------------------------|------|
+| Servidor HTTP     | `std::server`           | 11   |
+| Router radix-tree | `std::router` (matchit) | 11   |
+| Base de datos     | `std::sqlite::memory`   | 12   |
+| Migraciones       | `std::sqlite::migrate`  | 12   |
+| JSON              | `std::json` (Fase 25-B) | 12   |
+| Password hashing  | `std::password::argon2` | 4    |
+| JWT               | `std::jwt::hs256`       | 4    |
+| UUID v4           | `std::uuid::v4`         | 1    |
+| Timestamps        | `std::datetime::now`    | 1    |
+| Manejo de errores | `std::try::catch`       | 18   |
+| Multi-archivo     | `import db` / `import auth` | 21 |
+| Higher-order      | `for u in users`        | 19   |
+| Cliente HTTPS     | `std::http_full`        | 3    |
+
+### Endpoints REST
+
+```
+GET    /health                  — status
+POST   /api/register            — crear usuario (public)
+POST   /api/login               — obtener JWT (public)
+GET    /api/users               — listar usuarios (public)
+GET    /api/posts               — listar posts (public)
+GET    /api/posts/<id>          — un post (public)
+POST   /api/posts               — crear post (requiere JWT)
+DELETE /api/posts/<id>          — borrar (requiere JWT, solo dueño)
+```
+
+### Flujo de autenticación
+
+1. `POST /api/register` → hashea la password con **argon2id** (el
+   estándar OWASP), guarda en SQLite.
+2. `POST /api/login` → verifica el hash. Si OK, emite un **JWT
+   HS256** con claims `sub`, `username`, `iss`, `iat`, `exp`.
+3. Endpoints protegidos leen `Authorization: Bearer <token>`,
+   verifican firma + expiración, extraen `sub` = user_id.
+4. Cada operación de escritura de posts respeta ownership.
+
+### Ejemplo verificable end-to-end
+
+Terminal 1 (servidor):
+```bash
+zett run examples/rest/main.titan
+# → http://127.0.0.1:8080 escuchando
+```
+
+Terminal 2 (cliente):
+```bash
+zett run examples/rest/client.titan
+# → hace un tour completo: health, register, login,
+#   crea 3 posts, lista, GET individual, DELETE,
+#   verifica que borró, y prueba que sin JWT recibe 401.
+```
+
+También se puede probar con `curl` clásico:
+```bash
+curl -X POST http://127.0.0.1:8080/api/register \
+     -H 'Content-Type: application/json' \
+     -d '{"username":"alex","password":"secret123"}'
+```
+
+### Bajo el capó
+
+- **Cero cambios en el compilador**. Esta fase es puramente
+  aplicativa — demuestra que la stack construida hasta v0.24.0
+  ya es suficiente para escribir servicios web serios.
+- El servidor procesa hasta 40 requests y se cierra solo (para
+  demos reproducibles). Cambiando `0..40` a `loop { ... }` lo
+  volvés permanente.
+- SQLite en memoria: fresh state cada arranque, perfecto para
+  demos. Con `std::sqlite::open(path)` pasa a persistente.
+- El secret JWT está hardcodeado con fines demostrativos. En
+  producción vendría de env vars o `std::dirs::secret_file`.
+
+---
+
 ## 0.24.0 — Phase 25-B: `std::json` completo + integración HTTP end-to-end 🌐
 
 El módulo `std::json` ya estaba implementado a nivel runtime desde

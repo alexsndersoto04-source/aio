@@ -1,0 +1,120 @@
+// Fase 26 - modulo db: setup de SQLite en memoria + migraciones.
+//
+// Se importa desde main.titan como `import db`. Todos los items
+// definidos aca (open_and_migrate, insert_user, etc.) quedan en el
+// namespace plano del proyecto.
+//
+// Usamos SQLite EN MEMORIA (std::sqlite::memory()) porque:
+//  1) no necesita permisos de disco especiales en Termux
+//  2) arranca vacio cada vez -> ejemplo reproducible
+//  3) suficiente para demo; con std::sqlite::open(path) seria persistente
+
+fn open_and_migrate() -> int {
+    let db = std::sqlite::memory()
+
+    // Migraciones idempotentes: cada una se aplica una sola vez y
+    // se registra en una tabla interna schema_migrations.
+    let migraciones = [
+        {
+            "version": 1,
+            "name": "create_users",
+            "sql": "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);"
+        },
+        {
+            "version": 2,
+            "name": "create_posts",
+            "sql": "CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id));"
+        }
+    ]
+    std::sqlite::migrate(db, migraciones)
+    return db
+}
+
+// ---------- Usuarios ----------
+
+fn create_user(db: int, username: string, password: string) -> map {
+    let id = std::uuid::v4()
+    let hash = std::password::hash_argon2(password)
+    let now = std::datetime::now()
+    std::sqlite::execute(
+        db,
+        "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        [id, username, hash, now]
+    )
+    let user = std::map::new()
+    let user = std::map::insert(user, "id", id)
+    let user = std::map::insert(user, "username", username)
+    let user = std::map::insert(user, "created_at", now)
+    return user
+}
+
+fn find_user_by_username(db: int, username: string) -> any {
+    let rows = std::sqlite::query(
+        db,
+        "SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
+        [username]
+    )
+    if len(rows) == 0 {
+        return nil
+    }
+    return rows[0]
+}
+
+fn list_users(db: int) -> array {
+    let rows = std::sqlite::query(
+        db,
+        "SELECT id, username, created_at FROM users ORDER BY created_at ASC",
+        []
+    )
+    return rows
+}
+
+// ---------- Posts ----------
+
+fn create_post(db: int, user_id: string, title: string, body: string) -> map {
+    let id = std::uuid::v4()
+    let now = std::datetime::now()
+    std::sqlite::execute(
+        db,
+        "INSERT INTO posts (id, user_id, title, body, created_at) VALUES (?, ?, ?, ?, ?)",
+        [id, user_id, title, body, now]
+    )
+    let post = std::map::new()
+    let post = std::map::insert(post, "id", id)
+    let post = std::map::insert(post, "user_id", user_id)
+    let post = std::map::insert(post, "title", title)
+    let post = std::map::insert(post, "body", body)
+    let post = std::map::insert(post, "created_at", now)
+    return post
+}
+
+fn list_posts(db: int) -> array {
+    let rows = std::sqlite::query(
+        db,
+        "SELECT p.id, p.user_id, u.username as author, p.title, p.body, p.created_at FROM posts p JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC",
+        []
+    )
+    return rows
+}
+
+fn find_post(db: int, post_id: string) -> any {
+    let rows = std::sqlite::query(
+        db,
+        "SELECT p.id, p.user_id, u.username as author, p.title, p.body, p.created_at FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ?",
+        [post_id]
+    )
+    if len(rows) == 0 {
+        return nil
+    }
+    return rows[0]
+}
+
+fn delete_post(db: int, post_id: string, user_id: string) -> int {
+    // Solo el dueño puede borrar. Retorna filas afectadas (0 o 1).
+    let count = std::sqlite::execute(
+        db,
+        "DELETE FROM posts WHERE id = ? AND user_id = ?",
+        [post_id, user_id]
+    )
+    return count
+}

@@ -1,0 +1,58 @@
+// Fase 26 - modulo auth: emision y verificacion de JWT.
+//
+// Se importa desde main.titan como `import auth`.
+//
+// JWT (JSON Web Tokens) es el estandar de la industria para
+// autenticacion en APIs REST. Un token es basicamente:
+//   header.payload.firma
+// donde firma se calcula con HMAC-SHA256 usando un secreto que
+// solo conoce el servidor. Si alguien modifica el payload, la
+// firma no cuadra y el token queda invalidado.
+
+const SECRET_HEX = "9a3c0f4b7d8e2a5c1f6b8d9e0a3c5f7b9d1e2a4c6f8b0d3e5a7c9f1b2d4e6a8c"
+
+fn secret_bytes() -> bytes {
+    return std::encoding::hex_decode(SECRET_HEX)
+}
+
+// Emite un JWT con las claims tipicas (sub, iss, exp, iat).
+// exp = ahora + 3600s (1 hora).
+fn issue_token(user_id: string, username: string) -> string {
+    let ahora = std::datetime::now()
+    let claims = std::map::new()
+    let claims = std::map::insert(claims, "sub", user_id)
+    let claims = std::map::insert(claims, "username", username)
+    let claims = std::map::insert(claims, "iss", "titan-rest-api")
+    let claims = std::map::insert(claims, "iat", ahora)
+    let claims = std::map::insert(claims, "exp", ahora + 3600)
+    return std::jwt::sign_hs256(claims, secret_bytes())
+}
+
+// Verifica un token y retorna las claims si es valido, nil si no.
+// Envuelto en try::catch porque verify_hs256 tira error si el token
+// es invalido/expirado — asi la ruta puede responder 401 limpio.
+fn verify_token(token: string) -> any {
+    let intento = std::try::catch(|| std::jwt::verify_hs256(token, secret_bytes(), "", "titan-rest-api"))
+    match intento {
+        Result::Ok(claims) => claims,
+        Result::Err(_) => nil,
+    }
+}
+
+// Extrae el token de un header "Authorization: Bearer XXX".
+// Retorna string vacio si el header no cumple el formato.
+// Usamos std::text::replace en vez de substring (que no existe)
+// porque replace elimina el prefijo si esta presente, y no hace
+// nada si no lo esta — logica clean sin hacer aritmetica de indices.
+fn extract_bearer(auth_header: string) -> string {
+    if auth_header == "" {
+        return ""
+    }
+    if std::text::starts_with(auth_header, "Bearer ") {
+        return std::text::replace(auth_header, "Bearer ", "")
+    }
+    if std::text::starts_with(auth_header, "bearer ") {
+        return std::text::replace(auth_header, "bearer ", "")
+    }
+    return ""
+}

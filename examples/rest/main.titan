@@ -1,0 +1,334 @@
+// ============================================================
+// Fase 26: API REST completa en TITAN
+// ============================================================
+//
+// Este es el archivo principal. Se importa `db` y `auth` como
+// modulos separados (Fase 21). El resultado combina TODA la
+// stack de features que hemos construido:
+//
+//   * Fase 11: std::server + std::router (HTTP + matchit)
+//   * Fase 12: std::sqlite (persistencia con SQL)
+//   * Fase 18: std::try::catch (manejo de errores real)
+//   * Fase 19: sort_by / find / filter (higher-order)
+//   * Fase 20: impl (metodos en structs — pocos aca porque preferimos
+//              maps para modelar recursos JSON)
+//   * Fase 21: import de otros archivos .titan
+//   * Fase 22: (traits — no requerido aca)
+//   * Fase 23: destructuring (let (a, b) = ...)
+//   * Fase 24: pipeline |> y spaceship <=>
+//   * Fase 25-B: std::json (parse, stringify)
+//   * Cripto: std::password::argon2, std::jwt::hs256, std::uuid::v4
+//
+// Ejecutar:
+//     zett run examples/rest/main.titan
+//
+// Bindea 127.0.0.1:8080 y procesa hasta 40 requests. Desde otra
+// sesion de Termux (Sesiones -> Nueva) probar los endpoints con
+// examples/rest/client.titan.
+
+import db
+import auth
+
+// ---------- Helpers de respuesta ----------
+
+fn json_response(req: int, status: int, obj: any) {
+    let body = std::json::stringify(obj)
+    std::server::respond_json(req, status, body)
+}
+
+fn error_response(req: int, status: int, msg: string) {
+    let err = std::map::new()
+    let err = std::map::insert(err, "error", msg)
+    let err = std::map::insert(err, "status", status)
+    json_response(req, status, err)
+}
+
+// Parsea el body del request como JSON. Devuelve nil si falla.
+fn parse_body(req: int) -> any {
+    let raw = std::server::body_text(req)
+    if raw == "" {
+        return nil
+    }
+    let intento = std::try::catch(|| std::json::parse(raw))
+    match intento {
+        Result::Ok(v) => v,
+        Result::Err(_) => nil,
+    }
+}
+
+// Requiere autenticacion. Retorna las claims del JWT o nil.
+// Si retorna nil ya respondio 401 al cliente — el caller solo
+// debe hacer `return`.
+fn require_auth(req: int) -> any {
+    // std::server::header retorna nil si no existe, string si si.
+    let auth_header = std::server::header(req, "authorization")
+    if auth_header == nil {
+        error_response(req, 401, "missing Authorization header")
+        return nil
+    }
+    let token = extract_bearer(auth_header)
+    if token == "" {
+        error_response(req, 401, "malformed Authorization header (expected: Bearer <token>)")
+        return nil
+    }
+    let claims = verify_token(token)
+    if claims == nil {
+        error_response(req, 401, "invalid or expired token")
+        return nil
+    }
+    return claims
+}
+
+// ---------- Patterns del router ----------
+// `{param}` en string literal choca con string interpolation, asi que
+// los armamos con concat. Es un gotcha conocido del parser (docs).
+
+fn brace_open()  -> string { "{" }
+fn brace_close() -> string { "}" }
+
+fn pattern_posts_id() -> string {
+    return "/api/posts/" + brace_open() + "id" + brace_close()
+}
+fn pattern_users_id() -> string {
+    return "/api/users/" + brace_open() + "id" + brace_close()
+}
+
+// ---------- Handlers de endpoints ----------
+
+fn handle_health(req: int) {
+    let ok = std::map::new()
+    let ok = std::map::insert(ok, "status", "ok")
+    let ok = std::map::insert(ok, "service", "titan-rest-api")
+    let ok = std::map::insert(ok, "time", std::datetime::now())
+    json_response(req, 200, ok)
+}
+
+fn handle_register(req: int, database: int) {
+    let body = parse_body(req)
+    if body == nil {
+        error_response(req, 400, "invalid JSON body")
+        return
+    }
+    // std::map::get retorna nil si el campo no existe — asi evitamos
+    // el error UnknownField que tira el acceso con . cuando la clave
+    // no esta presente en el Map.
+    let username = std::map::get(body, "username")
+    let password = std::map::get(body, "password")
+    if username == nil {
+        error_response(req, 400, "missing field: username")
+        return
+    }
+    if password == nil {
+        error_response(req, 400, "missing field: password")
+        return
+    }
+    let existente = find_user_by_username(database, username)
+    if existente != nil {
+        error_response(req, 409, "username already taken")
+        return
+    }
+    let user = create_user(database, username, password)
+    json_response(req, 201, user)
+}
+
+fn handle_login(req: int, database: int) {
+    let body = parse_body(req)
+    if body == nil {
+        error_response(req, 400, "invalid JSON body")
+        return
+    }
+    let username = std::map::get(body, "username")
+    let password = std::map::get(body, "password")
+    if username == nil {
+        error_response(req, 400, "missing field: username")
+        return
+    }
+    if password == nil {
+        error_response(req, 400, "missing field: password")
+        return
+    }
+    let user = find_user_by_username(database, username)
+    if user == nil {
+        error_response(req, 401, "invalid credentials")
+        return
+    }
+    let hash = std::map::get(user, "password_hash")
+    let ok = std::password::verify_argon2(hash, password)
+    if !ok {
+        error_response(req, 401, "invalid credentials")
+        return
+    }
+    let user_id = std::map::get(user, "id")
+    let user_username = std::map::get(user, "username")
+    let token = issue_token(user_id, user_username)
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "token", token)
+    let resp = std::map::insert(resp, "user_id", user_id)
+    let resp = std::map::insert(resp, "expires_in", 3600)
+    json_response(req, 200, resp)
+}
+
+fn handle_list_users(req: int, database: int) {
+    let users = list_users(database)
+    let wrap = std::map::new()
+    let wrap = std::map::insert(wrap, "users", users)
+    let wrap = std::map::insert(wrap, "count", len(users))
+    json_response(req, 200, wrap)
+}
+
+fn handle_list_posts(req: int, database: int) {
+    let posts = list_posts(database)
+    let wrap = std::map::new()
+    let wrap = std::map::insert(wrap, "posts", posts)
+    let wrap = std::map::insert(wrap, "count", len(posts))
+    json_response(req, 200, wrap)
+}
+
+fn handle_get_post(req: int, database: int, post_id: string) {
+    let post = find_post(database, post_id)
+    if post == nil {
+        error_response(req, 404, "post not found")
+        return
+    }
+    json_response(req, 200, post)
+}
+
+fn handle_create_post(req: int, database: int) {
+    let claims = require_auth(req)
+    if claims == nil { return }
+
+    let body = parse_body(req)
+    if body == nil {
+        error_response(req, 400, "invalid JSON body")
+        return
+    }
+    let title = std::map::get(body, "title")
+    let content = std::map::get(body, "body")
+    if title == nil {
+        error_response(req, 400, "missing field: title")
+        return
+    }
+    if content == nil {
+        error_response(req, 400, "missing field: body")
+        return
+    }
+    let user_id = std::map::get(claims, "sub")
+    let post = create_post(database, user_id, title, content)
+    json_response(req, 201, post)
+}
+
+fn handle_delete_post(req: int, database: int, post_id: string) {
+    let claims = require_auth(req)
+    if claims == nil { return }
+
+    let user_id = std::map::get(claims, "sub")
+    let count = delete_post(database, post_id, user_id)
+    if count == 0 {
+        error_response(req, 404, "post not found or not owned by you")
+        return
+    }
+    let ok = std::map::new()
+    let ok = std::map::insert(ok, "deleted", post_id)
+    json_response(req, 200, ok)
+}
+
+// ---------- Dispatcher ----------
+
+fn dispatch(r: int, database: int, req: int) {
+    let met = std::server::method(req)
+    let ruta = std::server::path(req)
+    print("[req] " + met + " " + ruta)
+
+    let hit = std::router::at(r, ruta)
+    if hit == nil {
+        error_response(req, 404, "route not found: " + met + " " + ruta)
+        return
+    }
+    let tag = hit.pattern
+    let params = hit.params
+
+    if tag == "health" {
+        handle_health(req)
+        return
+    }
+    if tag == "register" {
+        if met != "POST" { error_response(req, 405, "method not allowed"); return }
+        handle_register(req, database); return
+    }
+    if tag == "login" {
+        if met != "POST" { error_response(req, 405, "method not allowed"); return }
+        handle_login(req, database); return
+    }
+    if tag == "users" {
+        if met != "GET" { error_response(req, 405, "method not allowed"); return }
+        handle_list_users(req, database); return
+    }
+    if tag == "posts_col" {
+        if met == "GET"  { handle_list_posts(req, database); return }
+        if met == "POST" { handle_create_post(req, database); return }
+        error_response(req, 405, "method not allowed"); return
+    }
+    if tag == "posts_id" {
+        let post_id = params.id
+        if met == "GET"    { handle_get_post(req, database, post_id); return }
+        if met == "DELETE" { handle_delete_post(req, database, post_id); return }
+        error_response(req, 405, "method not allowed"); return
+    }
+    error_response(req, 500, "unhandled route tag: " + tag)
+}
+
+// ---------- Bootstrap ----------
+
+fn main() {
+    print("---- Fase 26: REST API en TITAN ----")
+    print("(SQLite en memoria, JWT HS256, argon2id, UUIDv4, JSON)")
+
+    let database = open_and_migrate()
+    print("[db] migraciones OK")
+
+    // Router matchit — mismo que usa axum.
+    let r = std::router::new()
+    std::router::insert(r, "/health",              "health")
+    std::router::insert(r, "/api/register",        "register")
+    std::router::insert(r, "/api/login",           "login")
+    std::router::insert(r, "/api/users",           "users")
+    std::router::insert(r, "/api/posts",           "posts_col")
+    std::router::insert(r, pattern_posts_id(),     "posts_id")
+    std::router::insert(r, pattern_users_id(),     "user_detail")
+
+    let s = std::server::start("127.0.0.1:8080")
+    let addr = std::server::local_addr(s)
+    print("[server] escuchando en http://" + addr)
+    print("")
+    print("Endpoints disponibles:")
+    print("  GET    /health                  (publico)")
+    print("  POST   /api/register            (publico)  body: {\"username\":\"x\",\"password\":\"y\"}")
+    print("  POST   /api/login               (publico)  body: idem -> retorna JWT")
+    print("  GET    /api/users               (publico)  lista de usuarios")
+    print("  GET    /api/posts               (publico)  lista de posts")
+    print("  GET    /api/posts/<id>          (publico)")
+    print("  POST   /api/posts               (auth JWT) body: {\"title\":\"...\",\"body\":\"...\"}")
+    print("  DELETE /api/posts/<id>          (auth JWT) solo el dueno")
+    print("")
+    print("En otra sesion de Termux: zett run examples/rest/client.titan")
+    print("O con curl:  curl -X POST http://127.0.0.1:8080/api/register \\")
+    print("               -H 'Content-Type: application/json' \\")
+    print("               -d '{\"username\":\"alex\",\"password\":\"secret123\"}'")
+    print("")
+    print("Aceptando hasta 40 requests (timeout 60s/c)...")
+    print("")
+
+    for i in 0..40 {
+        let req = std::server::accept(s, 60000)
+        if req < 0 {
+            print("[server] timeout, saliendo del loop")
+        } else {
+            dispatch(r, database, req)
+        }
+    }
+
+    std::server::stop(s)
+    std::router::drop(r)
+    std::sqlite::close(database)
+    print("[server] detenido. Bye.")
+}
