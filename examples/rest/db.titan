@@ -9,7 +9,7 @@
 //  2) arranca vacio cada vez -> ejemplo reproducible
 //  3) suficiente para demo; con std::sqlite::open(path) seria persistente
 
-fn open_and_migrate() -> int {
+fn open_and_migrate() -> Sqlite {
     let db = std::sqlite::memory()
 
     // Migraciones idempotentes: cada una se aplica una sola vez y
@@ -28,7 +28,7 @@ fn open_and_migrate() -> int {
 
 // ---------- Usuarios ----------
 
-fn create_user(db: int, username: string, password: string) -> map {
+fn create_user(db: Sqlite, username: string, password: string) -> map {
     let id = std::uuid::v4()
     let hash = std::password::hash_argon2(password)
     let now = std::datetime::now()
@@ -44,7 +44,7 @@ fn create_user(db: int, username: string, password: string) -> map {
     return user
 }
 
-fn find_user_by_username(db: int, username: string) -> any {
+fn find_user_by_username(db: Sqlite, username: string) -> any {
     let rows = std::sqlite::query(
         db,
         "SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
@@ -56,7 +56,7 @@ fn find_user_by_username(db: int, username: string) -> any {
     return rows[0]
 }
 
-fn list_users(db: int) -> array {
+fn list_users(db: Sqlite) -> array {
     let rows = std::sqlite::query(
         db,
         "SELECT id, username, created_at FROM users ORDER BY created_at ASC",
@@ -67,7 +67,7 @@ fn list_users(db: int) -> array {
 
 // ---------- Posts ----------
 
-fn create_post(db: int, user_id: string, title: string, body: string) -> map {
+fn create_post(db: Sqlite, user_id: string, title: string, body: string) -> map {
     let id = std::uuid::v4()
     let now = std::datetime::now()
     std::sqlite::execute(
@@ -84,7 +84,7 @@ fn create_post(db: int, user_id: string, title: string, body: string) -> map {
     return post
 }
 
-fn list_posts(db: int) -> array {
+fn list_posts(db: Sqlite) -> array {
     let rows = std::sqlite::query(
         db,
         "SELECT p.id, p.user_id, u.username as author, p.title, p.body, p.created_at FROM posts p JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC",
@@ -93,7 +93,7 @@ fn list_posts(db: int) -> array {
     return rows
 }
 
-fn find_post(db: int, post_id: string) -> any {
+fn find_post(db: Sqlite, post_id: string) -> any {
     let rows = std::sqlite::query(
         db,
         "SELECT p.id, p.user_id, u.username as author, p.title, p.body, p.created_at FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ?",
@@ -105,7 +105,7 @@ fn find_post(db: int, post_id: string) -> any {
     return rows[0]
 }
 
-fn delete_post(db: int, post_id: string, user_id: string) -> int {
+fn delete_post(db: Sqlite, post_id: string, user_id: string) -> int {
     // Solo el dueño puede borrar. Retorna filas afectadas (0 o 1).
     let count = std::sqlite::execute(
         db,

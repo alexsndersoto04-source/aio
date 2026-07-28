@@ -103,7 +103,7 @@ fn handle_health(req: int) {
     json_response(req, 200, ok)
 }
 
-fn handle_register(req: int, database: int) {
+fn handle_register(req: int, database: Sqlite) {
     let body = parse_body(req)
     if body == nil {
         error_response(req, 400, "invalid JSON body")
@@ -131,7 +131,7 @@ fn handle_register(req: int, database: int) {
     json_response(req, 201, user)
 }
 
-fn handle_login(req: int, database: int) {
+fn handle_login(req: int, database: Sqlite) {
     let body = parse_body(req)
     if body == nil {
         error_response(req, 400, "invalid JSON body")
@@ -168,7 +168,7 @@ fn handle_login(req: int, database: int) {
     json_response(req, 200, resp)
 }
 
-fn handle_list_users(req: int, database: int) {
+fn handle_list_users(req: int, database: Sqlite) {
     let users = list_users(database)
     let wrap = std::map::new()
     let wrap = std::map::insert(wrap, "users", users)
@@ -176,7 +176,7 @@ fn handle_list_users(req: int, database: int) {
     json_response(req, 200, wrap)
 }
 
-fn handle_list_posts(req: int, database: int) {
+fn handle_list_posts(req: int, database: Sqlite) {
     let posts = list_posts(database)
     let wrap = std::map::new()
     let wrap = std::map::insert(wrap, "posts", posts)
@@ -184,7 +184,7 @@ fn handle_list_posts(req: int, database: int) {
     json_response(req, 200, wrap)
 }
 
-fn handle_get_post(req: int, database: int, post_id: string) {
+fn handle_get_post(req: int, database: Sqlite, post_id: string) {
     let post = find_post(database, post_id)
     if post == nil {
         error_response(req, 404, "post not found")
@@ -193,7 +193,7 @@ fn handle_get_post(req: int, database: int, post_id: string) {
     json_response(req, 200, post)
 }
 
-fn handle_create_post(req: int, database: int) {
+fn handle_create_post(req: int, database: Sqlite) {
     let claims = require_auth(req)
     if claims == nil { return }
 
@@ -217,7 +217,7 @@ fn handle_create_post(req: int, database: int) {
     json_response(req, 201, post)
 }
 
-fn handle_delete_post(req: int, database: int, post_id: string) {
+fn handle_delete_post(req: int, database: Sqlite, post_id: string) {
     let claims = require_auth(req)
     if claims == nil { return }
 
@@ -234,7 +234,7 @@ fn handle_delete_post(req: int, database: int, post_id: string) {
 
 // ---------- Dispatcher ----------
 
-fn dispatch(r: int, database: int, req: int) {
+fn dispatch(r: int, database: Sqlite, req: int) {
     let met = std::server::method(req)
     let ruta = std::server::path(req)
     print("[req] " + met + " " + ruta)
