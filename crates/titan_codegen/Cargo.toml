@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 titan_ast = { path = "../titan_ast" }
 titan_lexer = { path = "../titan_lexer" }
-titan_mir = { path = "../titan_mir" }
 titan_typechecker = { path = "../titan_typechecker" }
 titan_stdlib = { path = "../titan_stdlib" }
 serde.workspace = true

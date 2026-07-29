@@ -86,15 +86,8 @@ a real `TITAN-BYTECODE 1` `.tbc` container, and discovers `tests/*.titan`.
 
 ## What is NOT validated
 
-The following are **not** covered by this record and, in some cases, are
-known to be non-functional in the current tree:
+The following are **not** covered by this record:
 
-- `titan native` — the MIR lowerer is a no-op; the ELF writer emits only a
-  truncated header. Output is not a loadable Linux `.so` or executable.
-- `titan mobile` — writes the same stub ELF with an `.apk` extension. It is
-  not a real Android APK and cannot be installed.
 - Cross-platform CI: no `.github/workflows` yet; validation is manual.
 - Windows / macOS / desktop Linux / iOS / browser have not been retested for
   this revision.
-
-Contributions to close any of these gaps are welcome.

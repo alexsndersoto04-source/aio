@@ -21,8 +21,6 @@ titan_codegen = { path = "../titan_codegen" }
 titan_vm = { path = "../titan_vm", default-features = false }
 titan_pkg = { path = "../titan_pkg" }
 titan_wasm = { path = "../titan_wasm" }
-titan_hir = { path = "../titan_hir" }
-titan_mir = { path = "../titan_mir" }
 serde_json.workspace = true
 clap.workspace = true
 thiserror.workspace = true

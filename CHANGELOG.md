@@ -1,5 +1,39 @@
 # Zett / TITAN — Changelog
 
+## 0.32.0 — Phase 33: eliminación de comandos experimentales 🧹
+
+Se remueven del código dos comandos que nunca funcionaron:
+
+- **`zett native`** — el crate `titan_mir` completo (739 líneas) más
+  la función `cmd_native` (75 líneas). El MIR lowerer era un no-op
+  y los backends ARM64/x86_64 solo emitían headers ELF truncados
+  que Linux/Android no cargaban.
+- **`zett mobile`** — 25 líneas más en el CLI. Escribía el mismo
+  stub ELF con extensión `.apk`, no era un APK real.
+
+También se elimina el crate `titan_hir` (117 líneas) que solo se
+usaba desde `titan_mir` y `cmd_mobile`.
+
+### Resultado
+
+- Titan pasa de 23.961 a 23.070 líneas de Rust (**891 líneas menos**).
+- Todos los comandos que quedan (`run`, `build`, `wasm`, `debug`,
+  `exec`, `test`, `repl`, `new`, `add`, `fetch`, `publish`, `keygen`,
+  `pack`, `check`, `version`) funcionan sin warnings ni promesas rotas.
+- README y docs limpiados — se elimina toda mención a "experimental",
+  "not functional", "not loadable", "not a real APK".
+
+### Bajo el capó
+
+- `crates/titan_hir/` y `crates/titan_mir/` borrados en su totalidad.
+- `Cargo.toml` del workspace ya no los lista como members.
+- `titan_cli` y `titan_codegen` ya no dependen de ellos.
+- `zett wasm` sigue intacto (no era el comando roto, solo `native` lo era).
+- Los 32 releases anteriores siguen funcionando idéntico — `zett run`
+  no toca nada de lo removido.
+
+---
+
 ## 0.31.0 — Phase 32: LIMPIEZA — cerrar todos los huecos pendientes del núcleo 🧹
 
 Sin nuevas features grandes — se cierran de una vez todos los

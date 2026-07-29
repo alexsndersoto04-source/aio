@@ -30,16 +30,6 @@ pub enum Command {
     Build { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
     /// Compile a file or project to standalone WebAssembly plus standard/logical source maps
     Wasm { #[arg(default_value = ".")] input: String, #[arg(short, long)] output: Option<String> },
-    /// [EXPERIMENTAL — NOT PRODUCTION-READY] Emit a stub ELF from partial MIR.
-    /// The MIR lowerer is currently a no-op (`lower_hir_to_mir` returns an empty module),
-    /// so this command produces headers-only ELF files that are NOT loadable by Linux/Android.
-    /// Use `titan build` (bytecode) or `titan wasm` (WebAssembly) for real artifacts.
-    Native {
-        #[arg(default_value = ".")] input: String,
-        #[arg(short, long)] output: Option<String>,
-        #[arg(long, default_value = "arm64")] arch: String,
-        #[arg(long, default_value = "exec")] format: String,
-    },
     /// Interactive bytecode debugger with breakpoints and stack inspection
     Debug {
         #[arg(default_value = ".")] input: String,
@@ -60,15 +50,6 @@ pub enum Command {
     Repl,
     /// Print version details
     Version,
-    /// [EXPERIMENTAL — NOT AN APK] Placeholder for Android packaging.
-    /// This does NOT produce a real .apk: it writes the same stub ELF as `titan native`
-    /// with an .apk extension. A real APK requires AndroidManifest.xml, DEX/native libs
-    /// packaged in a signed ZIP, none of which is implemented.
-    Mobile {
-        #[arg(default_value = ".")] input: String,
-        #[arg(long, default_value = "android-arm64")] target: String,
-        #[arg(short, long)] output: Option<String>,
-    },
 }
 
 fn main() {
@@ -83,12 +64,11 @@ fn main() {
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Wasm { input, output } => cmd_wasm(&input, output),
-        Command::Native { input, output, arch, format } => cmd_native(&input, output, &arch, &format),
         Command::Debug { input, breakpoints, sandbox } => cmd_debug(&input, &breakpoints, sandbox),
         Command::Exec { input, sandbox } => cmd_exec(&input, sandbox),
         Command::Run { input, sandbox, args } => cmd_run(&input, sandbox, args),
         Command::Test { input, sandbox } => cmd_test(&input, sandbox),
-        Command::Mobile { input, target, output } => cmd_mobile(&input, &target, output),
+
         Command::Repl => cmd_repl(),
         Command::Version => cmd_version(),
     }
@@ -242,81 +222,6 @@ fn cmd_wasm(input: &str, output: Option<String>) {
     println!("STANDARD SOURCE MAP: {}", standard_map_target.display());
 }
 
-fn cmd_native(input: &str, output: Option<String>, arch: &str, format: &str) {
-    eprintln!("WARNING: `titan native` is experimental and NOT production-ready.");
-    eprintln!("         The MIR lowerer is currently a no-op, so this command emits");
-    eprintln!("         a stub ELF header that Linux/Android will NOT load or execute.");
-    eprintln!("         Use `titan build` (bytecode) or `titan wasm` (WebAssembly) instead.");
-    eprintln!();
-    let project = if format == "object" || format == "dylib" || format == "shared" || format == "so" {
-        let entry = titan_pkg::default_entry(input);
-        let proj = titan_pkg::SourceProject::load(&entry)
-            .unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error.to_string()));
-        let mut types = titan_typechecker::TypeEnv::new();
-        types.check_program(&proj.program)
-            .unwrap_or_else(|errors| fatal_message("COMPILATION FAILED", &errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")));
-        proj
-    } else {
-        let (proj, _module) = load_and_compile(input)
-            .unwrap_or_else(|error| fatal_message("COMPILATION FAILED", &error));
-        proj
-    };
-    let target = output.map(PathBuf::from).unwrap_or_else(|| {
-        let name = project
-            .root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("program");
-        let ext = match format {
-            "object" => ".o",
-            "dylib" | "shared" | "so" => ".so",
-            _ => "",
-        };
-        project.root.join("target").join(format!("{name}{ext}"))
-    });
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).unwrap_or_else(|error| fatal("NATIVE BUILD ERROR", error));
-    }
-    let architecture = match arch {
-        "arm64" | "aarch64" => titan_mir::elf::Architecture::Arm64,
-        "x86_64" | "amd64" => titan_mir::elf::Architecture::X86_64,
-        other => fatal_message("NATIVE BUILD ERROR", &format!("Unsupported architecture: {other}. Use 'arm64' or 'x86_64'.")),
-    };
-    let hir = titan_hir::lower_to_hir(&project.program);
-    let mut mir = titan_mir::lower_hir_to_mir(&hir);
-    titan_mir::optimize::optimize_module(&mut mir);
-    if mir.functions.is_empty() {
-        fatal_message("NATIVE BUILD ERROR", "No functions found in module to compile natively.");
-    }
-    let bytes = if format == "object" || format == "dylib" || format == "shared" || format == "so" {
-        let mut functions = Vec::new();
-        for f in &mir.functions {
-            let code = match architecture {
-                titan_mir::elf::Architecture::Arm64 => titan_mir::arm64::emit_arm64(f).bytes,
-                titan_mir::elf::Architecture::X86_64 => titan_mir::x86_64::emit_x86_64(f).bytes,
-            };
-            functions.push((f.name.clone(), code));
-        }
-        let elf_funcs: Vec<_> = functions.iter().map(|(name, code)| titan_mir::elf::ElfFunction { name, code }).collect();
-        if format == "object" {
-            titan_mir::elf::emit_elf_object(architecture, &elf_funcs)
-        } else {
-            titan_mir::elf::emit_elf_dylib(architecture, &elf_funcs)
-        }
-    } else {
-        let main_func = mir.functions.iter().find(|f| f.name == "main").unwrap_or(&mir.functions[0]);
-        titan_mir::elf::emit_standalone_executable(architecture, main_func)
-    };
-    fs::write(&target, &bytes).unwrap_or_else(|error| fatal("NATIVE BUILD ERROR", error));
-    #[cfg(unix)]
-    if format != "object" {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
-    }
-    println!("NATIVE: {} -> {} ({})", project.entry.display(), target.display(), arch);
-    println!("  Functions lowered: {}", mir.functions.len());
-    println!("  Output size: {} bytes ({format})", bytes.len());
-}
 
 fn percent_encode_path_segment(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -387,30 +292,6 @@ fn cmd_repl() {
     }
 }
 
-fn cmd_mobile(input: &str, target: &str, output: Option<String>) {
-    eprintln!("WARNING: `titan mobile` does NOT produce a real Android APK.");
-    eprintln!("         It writes the same stub ELF as `titan native` with an .apk extension.");
-    eprintln!("         A real APK needs AndroidManifest.xml, DEX/native libs, and ZIP signing,");
-    eprintln!("         none of which is implemented yet. Do NOT try to install the output.");
-    eprintln!();
-    let input_path = Path::new(input);
-    let root = titan_pkg::find_project_root(input_path).unwrap_or_else(|| input_path.to_path_buf());
-    println!("TITAN Mobile Packager -> target={target}");
-    let (proj, _) = load_and_compile_path(input_path).unwrap_or_else(|error| fatal("COMPILATION ERROR", error));
-    let hir = titan_hir::lower_to_hir(&proj.program);
-    let mut mir = titan_mir::lower_hir_to_mir(&hir);
-    titan_mir::optimize::optimize_module(&mut mir);
-    let main_func = mir.functions.iter().find(|f| f.name == "main").or_else(|| mir.functions.first()).unwrap_or_else(|| fatal_message("LINK ERROR", "no main function found for mobile target"));
-    let arch = match target {
-        "android-arm64" | "arm64" | "aarch64" => titan_mir::elf::Architecture::Arm64,
-        "x86_64" => titan_mir::elf::Architecture::X86_64,
-        _ => fatal_message("MOBILE ERROR", &format!("unsupported target arch: {target}. Supported: android-arm64, x86_64")),
-    };
-    let so_bytes = titan_mir::elf::emit_elf_dylib(arch, &[titan_mir::elf::ElfFunction { name: &main_func.name, code: &titan_mir::arm64::emit_arm64(main_func).bytes }]);
-    let out_file = output.unwrap_or_else(|| format!("{}.apk", root.file_name().map_or("app".into(), |n| n.to_string_lossy())));
-    fs::write(&out_file, &so_bytes).unwrap_or_else(|error| fatal("MOBILE ERROR", error));
-    println!("Successfully built Android/Mobile artifact: {out_file} ({} bytes)", so_bytes.len());
-}
 
 fn cmd_version() { println!("TITAN Language Compiler v{}", env!("CARGO_PKG_VERSION")); }
 
