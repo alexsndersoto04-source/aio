@@ -332,6 +332,45 @@ Ejemplo completo verificable: `examples/impl_structs.titan`.
 
 ---
 
+## Fixes de limpieza — v0.31.0
+
+### Tipos función como anotaciones
+```titan
+type Callback = fn(int) -> int
+type Predicate = fn(int) -> bool
+type Producer = fn() -> string
+
+fn aplicar(x: int, cb: Callback) -> int { cb(x) }
+```
+
+### `let _ = expr` para descartar
+```titan
+let _ = calcular()          // side effect, resultado descartado
+let _ = 1 + 2 + 3
+```
+
+### Sintaxis `.N` para tuplas
+```titan
+let t = (10, 20, 30)
+print(t.0)                  // 10 — igual que t[0]
+print(t.1)                  // 20
+print(t.2)                  // 30
+```
+
+### Parse y substring en `std::text`
+```titan
+match std::text::parse_int("42") {
+    Option::Some(n) => print(n),
+    Option::None    => print("no es int"),
+}
+std::text::parse_float("3.14")           // Option::Some(3.14)
+std::text::substring("año", 0, 2)        // "añ" (Unicode chars, no bytes)
+```
+
+Ejemplo completo: `examples/fixes_v032.titan`.
+
+---
+
 ## `std::async` — utilidades de reintento y tiempo — v0.30.0
 
 Primer módulo `std::` escrito en Titan (no en Rust). Se importa

@@ -223,6 +223,27 @@ impl Parser {
             let is_mut = self.eat(TokenKind::Mut);
             return Ok(TypeExpr::Reference { inner: Box::new(self.parse_type()?), is_mut });
         }
+        // Phase 32: function types as first-class type expressions.
+        //   fn(int) -> string
+        //   fn() -> bool
+        //   fn(int, string) -> Point
+        // Allows aliases like `type Handler = fn(int) -> string` and
+        // signatures like `fn call(cb: fn(int) -> bool)`.
+        if self.eat(TokenKind::Fn) {
+            self.expect(TokenKind::LParen)?;
+            let mut params = Vec::new();
+            while !self.at(TokenKind::RParen) {
+                params.push(self.parse_type()?);
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.expect(TokenKind::RParen)?;
+            let return_type = if self.eat(TokenKind::ThinArrow) {
+                Box::new(self.parse_type()?)
+            } else {
+                Box::new(TypeExpr::Unit)
+            };
+            return Ok(TypeExpr::Function { params, return_type });
+        }
         if self.eat(TokenKind::LBracket) {
             let inner = Box::new(self.parse_type()?);
             if self.eat(TokenKind::Semicolon) {
@@ -455,7 +476,16 @@ impl Parser {
                         continue;
                     }
                 }
-                let name = self.expect_ident()?;
+                // Phase 32: `let _ = expr` — wildcard binding. Se
+                // evalua la expresion (para side effects) pero no
+                // se bindea a ningun nombre. Util para descartar
+                // resultados sin ensuciar el scope con variables no
+                // usadas. Se desazucara a un __discardN unico.
+                let name = if self.eat(TokenKind::Underscore) {
+                    self.fresh_destr_name()
+                } else {
+                    self.expect_ident()?
+                };
                 let type_ann = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
                 self.expect(TokenKind::Eq)?;
                 let value = self.parse_expr()?;
@@ -663,8 +693,21 @@ impl Parser {
                 let span = expr.span();
                 expr = Expr::Index { target: Box::new(expr), index: Box::new(index), span };
             } else if self.eat(TokenKind::Dot) {
-                let name = self.expect_ident()?;
                 let span = expr.span();
+                // Phase 32: tuple indexing with `.0`, `.1`, `.2` etc.
+                // Desugars to `expr[N]` which the existing Op::Index
+                // handles for both Value::Tuple and Value::Array.
+                if let Some(TokenKind::IntLit(value)) = self.peek_kind().cloned() {
+                    self.advance();
+                    let index = parse_int(&value, span)?;
+                    expr = Expr::Index {
+                        target: Box::new(expr),
+                        index: Box::new(Expr::Int { value: index, span }),
+                        span,
+                    };
+                    continue;
+                }
+                let name = self.expect_ident()?;
                 if self.eat(TokenKind::LParen) {
                     let mut args = Vec::new();
                     while !self.at(TokenKind::RParen) {

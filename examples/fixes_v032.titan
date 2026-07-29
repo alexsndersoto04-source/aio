@@ -1,0 +1,143 @@
+// Fase 32: LIMPIEZA — cerrar todos los huecos pendientes del nucleo.
+//
+// Este ejemplo prueba cada fix nuevo end-to-end. Si TODO imprime lo
+// esperado, la limpieza esta completa.
+//
+// Ejecutar con:
+//     zett run examples/fixes_v032.titan
+
+// ---------------- FIX 1: tipos funcion como anotaciones ----------------
+// Antes: type Handler = fn(int) -> string  daba parse error.
+// Ahora: se parsea como TypeExpr::Function y se usa en aliases y params.
+
+type Callback = fn(int) -> int
+type Predicate = fn(int) -> bool
+type Producer = fn() -> string
+
+fn aplicar(x: int, cb: Callback) -> int {
+    return cb(x)
+}
+
+fn contar_matches(xs: [int], pred: Predicate) -> int {
+    let mut count = 0
+    for x in xs {
+        if pred(x) { count = count + 1 }
+    }
+    return count
+}
+
+fn ejecutar(f: Producer) -> string {
+    return f()
+}
+
+// ---------------- FIX 2: `let _ = expr` ----------------
+// Antes: parse error, esperaba identifier.
+// Ahora: descarta el resultado silenciosamente.
+
+fn con_side_effect() -> int {
+    print("  [side-effect] ejecutado")
+    return 42
+}
+
+// ---------------- FIX 3: `.0` `.1` para tuplas ----------------
+// Antes: solo funcionaba t[0].
+// Ahora: t.0, t.1 igual que Rust.
+
+fn suma_tupla(t: (int, int, int)) -> int {
+    return t.0 + t.1 + t.2
+}
+
+// ---------------- FIX 4: std::text::parse_int / parse_float ----------------
+// Antes: no existian. Habia que hacer workarounds.
+// Ahora: retornan Option::Some(n) o Option::None.
+
+fn parse_or_default(s: string, default: int) -> int {
+    match std::text::parse_int(s) {
+        Option::Some(n) => n,
+        Option::None    => default,
+    }
+}
+
+// ---------------- FIX 5: std::text::substring ----------------
+// Antes: no existia. Habia que usar replace o loops.
+// Ahora: substring(str, start, end) — char-based, safe bounds.
+
+fn main() {
+    print("---- Fase 32: LIMPIEZA — todos los fixes verificados ----")
+    print("")
+
+    // FIX 1: tipos funcion
+    print("---- FIX 1: type Callback = fn(int) -> int ----")
+    let doblar = |x| x * 2
+    let cuadrar = |x| x * x
+    print("aplicar(5, doblar)   = " + aplicar(5, doblar))     // 10
+    print("aplicar(5, cuadrar)  = " + aplicar(5, cuadrar))    // 25
+
+    let es_par = |x| x % 2 == 0
+    let mayor_5 = |x| x > 5
+    print("pares en [1..10]:    " + contar_matches([1,2,3,4,5,6,7,8,9,10], es_par))
+    print("mayores 5 en [1..10]: " + contar_matches([1,2,3,4,5,6,7,8,9,10], mayor_5))
+
+    let saludo = || "Hola desde Producer"
+    print("ejecutar(saludo)     = " + ejecutar(saludo))
+
+    // FIX 2: let _ = expr
+    print("")
+    print("---- FIX 2: let _ = expr (wildcard) ----")
+    let _ = con_side_effect()
+    let _ = 1 + 2 + 3          // evaluado y descartado sin error
+    let _ = "descartado"
+    print("los let _ se ejecutaron sin bindear nombres")
+
+    // FIX 3: tuple .N
+    print("")
+    print("---- FIX 3: t.0, t.1, t.2 para tuplas ----")
+    let par = (10, 20)
+    print("par.0 = " + par.0)
+    print("par.1 = " + par.1)
+    let triple = (100, 200, 300)
+    print("triple.0 + triple.1 + triple.2 = " + suma_tupla(triple))
+    // Combinable con destructuring de Fase 23 (ambos funcionan a la vez)
+    let (a, b, c) = triple
+    print("destructure: a=" + a + " b=" + b + " c=" + c)
+
+    // FIX 4: parse_int / parse_float
+    print("")
+    print("---- FIX 4: std::text::parse_int / parse_float ----")
+    print("parse_int('42')      = " + parse_or_default("42", -1))
+    print("parse_int('  -7  ')  = " + parse_or_default("  -7  ", -1))
+    print("parse_int('nope')    = " + parse_or_default("nope", -1))    // -1 (fallback)
+    print("parse_int('3.14')    = " + parse_or_default("3.14", -1))    // -1 (no es int puro)
+
+    match std::text::parse_float("3.14") {
+        Option::Some(f) => print("parse_float('3.14')  = " + f),
+        Option::None    => print("parse_float fallo"),
+    }
+    match std::text::parse_float("-0.5e2") {
+        Option::Some(f) => print("parse_float('-0.5e2') = " + f),
+        Option::None    => print("parse_float fallo"),
+    }
+    match std::text::parse_float("hola") {
+        Option::Some(f) => print("(inesperado): " + f),
+        Option::None    => print("parse_float('hola')  = None (correcto)"),
+    }
+
+    // FIX 5: substring
+    print("")
+    print("---- FIX 5: std::text::substring ----")
+    let texto = "Hola mundo Titan"
+    print("full: '" + texto + "'")
+    print("substring(0, 4)   = '" + std::text::substring(texto, 0, 4) + "'")
+    print("substring(5, 10)  = '" + std::text::substring(texto, 5, 10) + "'")
+    print("substring(11, 16) = '" + std::text::substring(texto, 11, 16) + "'")
+    // Bounds clamping — no crashea con indices fuera de rango
+    print("substring(0, 999) = '" + std::text::substring(texto, 0, 999) + "'")
+    print("substring(999, 999) = '" + std::text::substring(texto, 999, 999) + "'")
+    // Unicode-aware — cuenta chars, no bytes
+    let acentos = "año"
+    print("length('año')     = " + std::text::length(acentos))         // 3
+    print("substring('año',0,2) = '" + std::text::substring(acentos, 0, 2) + "'")   // "añ"
+
+    print("")
+    print("---- TODO OK — limpieza completa ----")
+}

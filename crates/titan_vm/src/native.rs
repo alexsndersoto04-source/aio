@@ -36,6 +36,23 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::text::ends_with" => { let text = string!(); Value::Bool(text.ends_with(&string!())) }
         "std::text::replace" => { let text = string!(); let from = string!(); Value::Str(text.replace(&from, &string!())) }
         "std::text::truncate" => { let text = string!(); let max = nonnegative(int!())?; Value::Str(stdlib::text::truncate(&text, max, &string!())) }
+        // Phase 32: parseo desde string y substring por chars.
+        // parse_int / parse_float retornan Option::None si falla el parseo,
+        // Option::Some(n) si tiene exito — asi el usuario decide con match.
+        "std::text::parse_int" => match stdlib::text::parse_int(&string!()) {
+            Some(n) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Int(n))) },
+            None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+        },
+        "std::text::parse_float" => match stdlib::text::parse_float(&string!()) {
+            Some(f) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Float(f))) },
+            None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+        },
+        "std::text::substring" => {
+            let text = string!();
+            let start = nonnegative(int!())?;
+            let end   = nonnegative(int!())?;
+            Value::Str(stdlib::text::substring(&text, start, end))
+        }
         "std::text::words" => Value::Array(string!().split_whitespace().map(|v| Value::Str(v.into())).collect()),
         "std::text::lines" => Value::Array(string!().lines().map(|v| Value::Str(v.into())).collect()),
 

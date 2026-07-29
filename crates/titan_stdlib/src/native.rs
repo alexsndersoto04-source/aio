@@ -32,6 +32,13 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::text::hash64", [String], Int), native!("std::text::contains", [String, String], Bool),
     native!("std::text::starts_with", [String, String], Bool), native!("std::text::ends_with", [String, String], Bool),
     native!("std::text::replace", [String, String, String], String), native!("std::text::truncate", [String, Int, String], String),
+    // Phase 32: parseo de numeros desde string + substring por chars.
+    // parse_int / parse_float retornan Option (nil si el parseo falla).
+    // substring(str, start, end) devuelve los chars en [start, end),
+    // clampeando a la longitud real.
+    native!("std::text::parse_int",   [String], Any),
+    native!("std::text::parse_float", [String], Any),
+    native!("std::text::substring",   [String, Int, Int], String),
     native!("std::text::words", [String], Array), native!("std::text::lines", [String], Array),
 
     native!("std::encoding::hex_encode", [Bytes], String), native!("std::encoding::hex_decode", [String], Bytes),

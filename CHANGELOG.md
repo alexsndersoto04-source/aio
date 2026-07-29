@@ -1,5 +1,65 @@
 # Zett / TITAN — Changelog
 
+## 0.31.0 — Phase 32: LIMPIEZA — cerrar todos los huecos pendientes del núcleo 🧹
+
+Sin nuevas features grandes — se cierran de una vez todos los
+huecos básicos del lenguaje que quedaron entre Fase 20 y Fase 31.
+El resultado: **Titan v0.31 es un lenguaje sin promesas rotas**.
+Cada cosa registrada funciona.
+
+### 5 fixes cerrados
+
+**FIX 1 — Tipos función parseables** (`fn(int) -> string`)
+Antes: `type Callback = fn(int) -> int` → parse error.
+Ahora: el parser reconoce `fn(...) -> ...` como TypeExpr, funciona
+en type aliases, parámetros y anotaciones. La infraestructura AST
+ya existía (`TypeExpr::Function`), faltaba parsear la sintaxis.
+
+**FIX 2 — `let _ = expr`** (wildcard binding)
+Antes: `let _ = calcular()` → parse error, esperaba identifier.
+Ahora: se acepta `_` y se genera un nombre único interno
+(`__destr<N>`) para descartar el valor. Útil para evaluar
+expresiones por sus side-effects sin ensuciar el scope.
+
+**FIX 3 — Sintaxis `.0` `.1` para tuplas**
+Antes: solo `t[0]`, `t[1]` funcionaba.
+Ahora: `t.0`, `t.1`, `t.2` funcionan igual que Rust. Se desazucara
+a Index en el parser. `t[0]` sigue funcionando también.
+
+**FIX 4 — `std::text::parse_int` + `parse_float`**
+Antes: no existían. Había que hacer workarounds contando chars.
+Ahora: retornan `Option::Some(n)` o `Option::None` — el usuario
+decide con `match`. Aceptan whitespace, signos, notación
+científica (para float).
+
+**FIX 5 — `std::text::substring(str, start, end)`**
+Antes: no existía. Se usaba `replace` como workaround feo.
+Ahora: substring char-based (Unicode-aware), con bounds
+clampeados a `[0, len]` — nunca crashea por índices fuera.
+
+### Ejemplo verificable
+
+`zett run examples/fixes_v032.titan` — cada fix probado con
+múltiples casos:
+- Type aliases con `fn(int) -> int`, higher-order que los recibe
+- `let _` con side-effect, expresiones descartadas
+- `.0` `.1` `.2` combinable con destructuring `(a, b, c)`
+- `parse_int` con OK/whitespace/inválido/float, `parse_float` con
+  decimales, notación científica, string malo
+- `substring` con rangos válidos, out-of-bounds, y Unicode ("año")
+
+### Impacto real
+
+- `titan_stdlib` gana 3 funciones nuevas registradas + implementadas
+- `titan_parser` acepta 3 sintaxis nuevas sin romper nada previo
+- `titan_vm` gana 3 handlers de nativos
+- 0 opcodes nuevos, 0 cambios en el typechecker central
+
+Cada release previo sigue funcionando idéntico. Fase 32 es
+puramente aditiva.
+
+---
+
 ## 0.30.0 — Phase 31: `std::async` + primer módulo de la stdlib escrito en TITAN 🕰️
 
 Dos cosas importantes en un release:

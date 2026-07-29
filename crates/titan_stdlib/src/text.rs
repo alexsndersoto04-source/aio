@@ -34,6 +34,23 @@ pub fn slugify(text: &str) -> String {
     }
     result
 }
+/// Parse a signed decimal integer. Returns None if the string is
+/// empty, malformed, or out of i64 range. Trims whitespace first.
+pub fn parse_int(text: &str) -> Option<i64> { text.trim().parse::<i64>().ok() }
+
+/// Parse a floating-point number (accepts "3.14", "-0.5", "1e10", etc.)
+pub fn parse_float(text: &str) -> Option<f64> { text.trim().parse::<f64>().ok() }
+
+/// Character-based substring. Titan's other string ops are Unicode-aware,
+/// so we count chars not bytes. Bounds are clamped to [0, len] and if
+/// end < start we return empty string.
+pub fn substring(text: &str, start: usize, end: usize) -> String {
+    let len = length(text);
+    let start = start.min(len);
+    let end = end.min(len).max(start);
+    text.chars().skip(start).take(end - start).collect()
+}
+
 pub fn levenshtein(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect(); let mut previous: Vec<usize> = (0..=b.len()).collect();
     for (i, ac) in a.chars().enumerate() {
