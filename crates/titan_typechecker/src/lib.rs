@@ -575,6 +575,10 @@ impl TypeEnv {
             }
         }
         let ty = self.check_expr(callee);
+        // Phase 32 fix: expand type aliases so `Named("Callback")`
+        // (where `type Callback = fn(int) -> int`) resolves to the
+        // real Function(...) shape before the callable check.
+        let ty = self.resolve_alias(&ty);
         match ty {
             Type::Function(params, result) => {
                 if params.len() != args.len() && name.as_deref() != Some("print") && name.as_deref() != Some("println") { self.errors.push(TypeError::Arity { expected: params.len(), found: args.len() }); }
@@ -723,6 +727,14 @@ fn compatible(a: &Type, b: &Type) -> bool {
         (Type::Array(x), Type::Array(y)) => compatible(x, y),
         (Type::Tuple(xs), Type::Tuple(ys)) => xs.len() == ys.len()
             && xs.iter().zip(ys.iter()).all(|(x, y)| compatible(x, y)),
+        // Phase 32 fix: function types are compatible when their arity
+        // matches and every param + return type is compatible
+        // (recursively). Combined with Unknown-matches-anything this
+        // means a closure |x| x*2 (Function([Unknown], Unknown)) satisfies
+        // any concrete signature like fn(int) -> int.
+        (Type::Function(ap, ar), Type::Function(bp, br)) => ap.len() == bp.len()
+            && ap.iter().zip(bp.iter()).all(|(x, y)| compatible(x, y))
+            && compatible(ar, br),
         _ => false,
     }
 }
