@@ -189,7 +189,9 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::fs::copy" => { let from = string!(); Value::Int(i64::try_from(stdlib::io::copy(from, string!()).map_err(error)?).map_err(error)?) }
         "std::fs::rename" => { let from = string!(); stdlib::io::rename(from, string!()).map_err(error)?; Value::Nil }
 
-        "std::process::run" => { let program = string!(); process_output(stdlib::process::CommandSpec::new(program).args(strings(array!())?).output().map_err(error)?) }
+        // Legacy run(program, args): superseded by Phase 34's process_mod::run(command).
+        // When process_mod is on this arm would be an unreachable duplicate match arm.
+        #[cfg(not(feature = "process_mod"))] "std::process::run" => { let program = string!(); process_output(stdlib::process::CommandSpec::new(program).args(strings(array!())?).output().map_err(error)?) }
         "std::process::run_timeout" => { let program = string!(); let arguments = strings(array!())?; let timeout = u64::try_from(int!()).map_err(|_| "timeout must be nonnegative")?; process_output(stdlib::process::CommandSpec::new(program).args(arguments).output_timeout(Duration::from_millis(timeout)).map_err(error)?) }
         "std::env::get" => std::env::var(string!()).map(Value::Str).unwrap_or(Value::Nil),
         "std::env::args" => Value::Array(std::env::args().map(Value::Str).collect()),
@@ -341,15 +343,18 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             let second = u32::try_from(int!()).map_err(|_| "second out of range".to_string())?;
             Value::Int(stdlib::datetime_mod::utc_ymd_hms(year, month, day, hour, minute, second))
         }
-        #[cfg(feature = "datetime_mod")] "std::datetime::add_seconds"  => { let ts = int!(); let s = int!(); Value::Int(stdlib::datetime_mod::add_seconds(ts, s)) }
+        // Phase 34's datetime_ext_mod provides these same 8 names; when both
+        // features are on, datetime_ext wins and these legacy arms would be
+        // unreachable duplicates — hence the not(datetime_ext_mod) gate.
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::add_seconds"  => { let ts = int!(); let s = int!(); Value::Int(stdlib::datetime_mod::add_seconds(ts, s)) }
         #[cfg(feature = "datetime_mod")] "std::datetime::add_days"     => { let ts = int!(); let d = int!(); Value::Int(stdlib::datetime_mod::add_days(ts, d)) }
-        #[cfg(feature = "datetime_mod")] "std::datetime::diff_seconds" => { let a = int!(); let b = int!(); Value::Int(stdlib::datetime_mod::diff_seconds(a, b)) }
-        #[cfg(feature = "datetime_mod")] "std::datetime::year"    => Value::Int(stdlib::datetime_mod::year(int!()).map_err(error)? as i64),
-        #[cfg(feature = "datetime_mod")] "std::datetime::month"   => Value::Int(stdlib::datetime_mod::month(int!()).map_err(error)? as i64),
-        #[cfg(feature = "datetime_mod")] "std::datetime::day"     => Value::Int(stdlib::datetime_mod::day(int!()).map_err(error)? as i64),
-        #[cfg(feature = "datetime_mod")] "std::datetime::hour"    => Value::Int(stdlib::datetime_mod::hour(int!()).map_err(error)? as i64),
-        #[cfg(feature = "datetime_mod")] "std::datetime::minute"  => Value::Int(stdlib::datetime_mod::minute(int!()).map_err(error)? as i64),
-        #[cfg(feature = "datetime_mod")] "std::datetime::second"  => Value::Int(stdlib::datetime_mod::second(int!()).map_err(error)? as i64),
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::diff_seconds" => { let a = int!(); let b = int!(); Value::Int(stdlib::datetime_mod::diff_seconds(a, b)) }
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::year"    => Value::Int(stdlib::datetime_mod::year(int!()).map_err(error)? as i64),
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::month"   => Value::Int(stdlib::datetime_mod::month(int!()).map_err(error)? as i64),
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::day"     => Value::Int(stdlib::datetime_mod::day(int!()).map_err(error)? as i64),
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::hour"    => Value::Int(stdlib::datetime_mod::hour(int!()).map_err(error)? as i64),
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::minute"  => Value::Int(stdlib::datetime_mod::minute(int!()).map_err(error)? as i64),
+        #[cfg(all(feature = "datetime_mod", not(feature = "datetime_ext_mod")))] "std::datetime::second"  => Value::Int(stdlib::datetime_mod::second(int!()).map_err(error)? as i64),
         #[cfg(feature = "datetime_mod")] "std::datetime::weekday" => Value::Int(stdlib::datetime_mod::weekday(int!()).map_err(error)? as i64),
         #[cfg(feature = "datetime_mod")] "std::datetime::format_offset" => {
             let ts = int!(); let fmt = string!();

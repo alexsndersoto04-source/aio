@@ -26,6 +26,8 @@ extras = [
     "onnx_mod",
     "wifi_mod",
     "vector_mod",
+    # Phase 34 — process control, advanced collections, extended datetime.
+    "process_mod", "collections_mod", "datetime_ext_mod",
     # "pdf_mod",  # disabled in v0.16.0 (printpdf 0.7 API incompatibilities); opt-in only
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
@@ -65,6 +67,10 @@ onnx_mod      = ["titan_stdlib/onnx_mod"]
 wifi_mod      = ["titan_stdlib/wifi_mod"]
 vector_mod    = ["titan_stdlib/vector_mod"]
 pdf_mod       = ["titan_stdlib/pdf_mod"]
+# Phase 34 — process control, advanced collections, extended datetime.
+process_mod       = ["titan_stdlib/process_mod"]
+collections_mod   = ["titan_stdlib/collections_mod"]
+datetime_ext_mod  = ["titan_stdlib/datetime_ext_mod"]
 
 [dependencies]
 titan_codegen = { path = "../titan_codegen" }

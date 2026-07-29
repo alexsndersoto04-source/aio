@@ -136,7 +136,11 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::fs::list_dir", [String], Array, Filesystem), native!("std::fs::file_size", [String], Int, Filesystem),
     native!("std::fs::copy", [String, String], Int, Filesystem), native!("std::fs::rename", [String, String], Nil, Filesystem),
 
-    native!("std::process::run", [String, Array], Map, Process),
+    // Phase 34 redefines std::process::run as run(command): the single canonical
+    // signature lives in the "Phase 34: std::process" section below. Keeping the
+    // legacy run(program, args) entry here shadowed it (lookup() returns the
+    // first NATIVES match) and broke `run("cmd")` calls with
+    // "function expected 2 arguments, found 1".
     native!("std::process::run_timeout", [String, Array, Int], Map, Process),
     native!("std::env::get", [String], String, Environment), native!("std::env::args", [], Array, Environment),
     native!("std::env::current_dir", [], String, Environment),
@@ -845,28 +849,22 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::collections::graph_drop",          [Int], Bool),
 
     // ------------------- Phase 34: std::datetime extendido -------------------
-    // Componentes
-    native!("std::datetime::year",          [Int], Int),
-    native!("std::datetime::month",         [Int], Int),
-    native!("std::datetime::day",           [Int], Int),
-    native!("std::datetime::hour",          [Int], Int),
-    native!("std::datetime::minute",        [Int], Int),
-    native!("std::datetime::second",        [Int], Int),
+    // Componentes (year/month/day/hour/minute/second ya están declarados en la
+    // sección de datetime_mod arriba con firmas idénticas — no repetir aquí:
+    // lookup() devuelve la primera coincidencia y los duplicados solo ensucian).
     native!("std::datetime::day_of_week",   [Int], Int),
     native!("std::datetime::day_of_year",   [Int], Int),
     native!("std::datetime::week_of_year",  [Int], Int),
     native!("std::datetime::quarter",       [Int], Int),
     native!("std::datetime::is_leap_year",  [Int], Bool),
     native!("std::datetime::days_in_month", [Int, Int], Int),
-    // Aritmética
-    native!("std::datetime::add_seconds",   [Int, Int], Int),
+    // Aritmética (add_seconds y diff_seconds ya están en datetime_mod arriba)
     native!("std::datetime::add_minutes",   [Int, Int], Int),
     native!("std::datetime::add_hours",     [Int, Int], Int),
     native!("std::datetime::add_days_ext",  [Int, Int], Int),
     native!("std::datetime::add_weeks",     [Int, Int], Int),
     native!("std::datetime::add_months",    [Int, Int], Int),
     native!("std::datetime::add_years",     [Int, Int], Int),
-    native!("std::datetime::diff_seconds",  [Int, Int], Int),
     native!("std::datetime::diff_minutes",  [Int, Int], Int),
     native!("std::datetime::diff_hours",    [Int, Int], Int),
     native!("std::datetime::diff_days",     [Int, Int], Int),
