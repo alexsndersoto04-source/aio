@@ -106,6 +106,11 @@ pub mod mobile;
 // --- Phase 16: PDF generation (printpdf, pure-Rust core) ---------------
 #[cfg(feature = "pdf_mod")]       pub mod pdf_mod;
 
+// --- Phase 34: process, collections avanzadas, datetime extendido ---
+#[cfg(feature = "process_mod")]      pub mod process_mod;
+#[cfg(feature = "collections_mod")]  pub mod collections_mod;
+#[cfg(feature = "datetime_ext_mod")] pub mod datetime_ext_mod;
+
 pub fn print(value: &str) { println!("{}", value); }
 pub fn eprint(value: &str) { eprintln!("{}", value); }
 pub fn args() -> Vec<String> { std::env::args().collect() }

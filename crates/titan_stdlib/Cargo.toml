@@ -48,6 +48,8 @@ extras = [
     # tinker; kept in the tree so we can polish it later without losing
     # the module scaffold.
     # "pdf_mod",
+    # Phase 34 — process control, collections avanzadas, datetime extendido.
+    "process_mod", "collections_mod", "datetime_ext_mod",
 ]
 
 # Phase 1
@@ -129,6 +131,15 @@ vector_mod   = []
 # converge.
 pdf_mod      = ["dep:printpdf"]
 
+# Phase 34 — Process control, advanced collections, datetime extended.
+# process_mod: uses std::process + nix for POSIX signals. Zero dependencias
+# de C, tudo Rust puro. collections_mod: implementaciones a mano encima
+# de BTreeSet/VecDeque/BinaryHeap + indexmap para OrderedMap. datetime_ext:
+# extiende chrono (ya usado por datetime_mod) con chrono-tz para timezones.
+process_mod       = ["dep:nix"]
+collections_mod   = ["dep:indexmap"]
+datetime_ext_mod  = ["datetime_mod", "dep:chrono-tz"]
+
 [dependencies]
 titan_tls = { path = "../titan_tls" }
 thiserror.workspace = true
@@ -149,6 +160,11 @@ rand_chacha  = { version = "0.9", optional = true }
 chrono       = { version = "0.4", optional = true, default-features = false, features = ["clock", "serde"] }
 url          = { version = "2", optional = true }
 dirs         = { version = "5", optional = true }
+
+# Phase 34 — process control, collections, datetime extended.
+nix          = { version = "0.29", optional = true, default-features = false, features = ["signal"] }
+indexmap     = { version = "2", optional = true }
+chrono-tz    = { version = "0.10", optional = true, default-features = false }
 
 # Phase 2 — formats & compression
 flate2       = { version = "1", optional = true }

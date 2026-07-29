@@ -1464,8 +1464,413 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         #[cfg(feature = "dirs_mod")] "std::dirs::temp"       => Value::Str(stdlib::dirs_mod::temp()),
         #[cfg(feature = "dirs_mod")] "std::dirs::current"    => Value::Str(stdlib::dirs_mod::current()),
 
+        // ---------------- Phase 34: std::process ----------------
+        #[cfg(feature = "process_mod")] "std::process::run" => {
+            let out = stdlib::process_mod::run(&string!()).map_err(|e| e.to_string())?;
+            process_output_to_value(out)
+        }
+        #[cfg(feature = "process_mod")] "std::process::run_with_input" => {
+            let cmd = string!();
+            let input = bytes!();
+            let out = stdlib::process_mod::run_with_input(&cmd, &input).map_err(|e| e.to_string())?;
+            process_output_to_value(out)
+        }
+        #[cfg(feature = "process_mod")] "std::process::shell" => {
+            let out = stdlib::process_mod::shell(&string!()).map_err(|e| e.to_string())?;
+            process_output_to_value(out)
+        }
+        #[cfg(feature = "process_mod")] "std::process::pipe" => {
+            let arr = array!();
+            let cmds: Vec<String> = arr.into_iter().map(expect_string).collect::<Result<_, _>>()?;
+            let out = stdlib::process_mod::pipe(&cmds).map_err(|e| e.to_string())?;
+            process_output_to_value(out)
+        }
+        #[cfg(feature = "process_mod")] "std::process::spawn" => {
+            let h = stdlib::process_mod::spawn_bg(&string!()).map_err(|e| e.to_string())?;
+            Value::Int(h as i64)
+        }
+        #[cfg(feature = "process_mod")] "std::process::spawn_wait" => {
+            let h = u64::try_from(int!()).map_err(|_| "spawn_wait handle must be nonneg".to_string())?;
+            let out = stdlib::process_mod::spawn_wait(h).map_err(|e| e.to_string())?;
+            process_output_to_value(out)
+        }
+        #[cfg(feature = "process_mod")] "std::process::spawn_poll" => {
+            let h = u64::try_from(int!()).map_err(|_| "spawn_poll handle must be nonneg".to_string())?;
+            match stdlib::process_mod::spawn_poll(h).map_err(|e| e.to_string())? {
+                Some(code) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Int(code as i64))) },
+                None       => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+            }
+        }
+        #[cfg(feature = "process_mod")] "std::process::spawn_kill" => {
+            let h = u64::try_from(int!()).map_err(|_| "spawn_kill handle must be nonneg".to_string())?;
+            stdlib::process_mod::spawn_kill(h).map_err(|e| e.to_string())?;
+            Value::Nil
+        }
+        #[cfg(feature = "process_mod")] "std::process::spawn_pid" => {
+            let h = u64::try_from(int!()).map_err(|_| "spawn_pid handle must be nonneg".to_string())?;
+            let pid = stdlib::process_mod::spawn_pid(h).map_err(|e| e.to_string())?;
+            Value::Int(pid as i64)
+        }
+        #[cfg(feature = "process_mod")] "std::process::env_get" => {
+            match stdlib::process_mod::env_get(&string!()) {
+                Some(v) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Str(v))) },
+                None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+            }
+        }
+        #[cfg(feature = "process_mod")] "std::process::env_set" => {
+            let name = string!();
+            let value = string!();
+            stdlib::process_mod::env_set(&name, &value);
+            Value::Nil
+        }
+        #[cfg(feature = "process_mod")] "std::process::env_unset" => {
+            stdlib::process_mod::env_unset(&string!());
+            Value::Nil
+        }
+        #[cfg(feature = "process_mod")] "std::process::env_vars" => {
+            Value::Array(stdlib::process_mod::env_vars().into_iter()
+                .map(|(k, v)| Value::Tuple(vec![Value::Str(k), Value::Str(v)]))
+                .collect())
+        }
+        #[cfg(feature = "process_mod")] "std::process::working_dir" => {
+            Value::Str(stdlib::process_mod::working_dir().map_err(|e| e.to_string())?)
+        }
+        #[cfg(feature = "process_mod")] "std::process::set_working_dir" => {
+            stdlib::process_mod::set_working_dir(&string!()).map_err(|e| e.to_string())?;
+            Value::Nil
+        }
+        #[cfg(feature = "process_mod")] "std::process::self_pid" => Value::Int(stdlib::process_mod::self_pid() as i64),
+        #[cfg(feature = "process_mod")] "std::process::hostname" => Value::Str(stdlib::process_mod::hostname()),
+        #[cfg(feature = "process_mod")] "std::process::username" => Value::Str(stdlib::process_mod::username()),
+        #[cfg(feature = "process_mod")] "std::process::args" => {
+            Value::Array(stdlib::process_mod::args().into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "process_mod")] "std::process::send_signal" => {
+            let pid = int!() as i32;
+            let sig = int!() as i32;
+            stdlib::process_mod::send_signal(pid, sig).map_err(|e| e.to_string())?;
+            Value::Nil
+        }
+        #[cfg(feature = "process_mod")] "std::process::exit" => {
+            stdlib::process_mod::exit(int!() as i32);
+        }
+
+        // ---------------- Phase 34: std::collections ----------------
+        #[cfg(feature = "collections_mod")] "std::collections::set_new" => Value::Int(stdlib::collections_mod::set_new() as i64),
+        #[cfg(feature = "collections_mod")] "std::collections::set_from" => {
+            let arr = array!();
+            let items: Vec<String> = arr.into_iter().map(expect_string).collect::<Result<_, _>>()?;
+            Value::Int(stdlib::collections_mod::set_from(items) as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_add" => {
+            let h = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Bool(stdlib::collections_mod::set_add(h, string!())?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_remove" => {
+            let h = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Bool(stdlib::collections_mod::set_remove(h, &string!())?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_contains" => {
+            let h = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Bool(stdlib::collections_mod::set_contains(h, &string!())?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_len" => {
+            let h = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Int(stdlib::collections_mod::set_len(h)? as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_to_array" => {
+            let h = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Array(stdlib::collections_mod::set_to_array(h)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_union" => {
+            let a = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            let b = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Int(stdlib::collections_mod::set_union(a, b)? as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_intersect" => {
+            let a = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            let b = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Int(stdlib::collections_mod::set_intersect(a, b)? as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_difference" => {
+            let a = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            let b = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Int(stdlib::collections_mod::set_difference(a, b)? as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_is_subset" => {
+            let a = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            let b = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Bool(stdlib::collections_mod::set_is_subset(a, b)?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::set_drop" => {
+            let h = u64::try_from(int!()).map_err(|_| "set handle must be nonneg".to_string())?;
+            Value::Bool(stdlib::collections_mod::set_drop(h))
+        }
+        // Deque
+        #[cfg(feature = "collections_mod")] "std::collections::deque_new" => Value::Int(stdlib::collections_mod::deque_new() as i64),
+        #[cfg(feature = "collections_mod")] "std::collections::deque_push_front" => {
+            let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
+            stdlib::collections_mod::deque_push_front(h, string!())?;
+            Value::Nil
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::deque_push_back" => {
+            let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
+            stdlib::collections_mod::deque_push_back(h, string!())?;
+            Value::Nil
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::deque_pop_front" => {
+            let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
+            match stdlib::collections_mod::deque_pop_front(h)? {
+                Some(v) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Str(v))) },
+                None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+            }
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::deque_pop_back" => {
+            let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
+            match stdlib::collections_mod::deque_pop_back(h)? {
+                Some(v) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Str(v))) },
+                None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+            }
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::deque_len" => {
+            let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
+            Value::Int(stdlib::collections_mod::deque_len(h)? as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::deque_to_array" => {
+            let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
+            Value::Array(stdlib::collections_mod::deque_to_array(h)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::deque_drop" => {
+            let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
+            Value::Bool(stdlib::collections_mod::deque_drop(h))
+        }
+        // PriorityQueue
+        #[cfg(feature = "collections_mod")] "std::collections::pq_new_max" => Value::Int(stdlib::collections_mod::pq_new_max() as i64),
+        #[cfg(feature = "collections_mod")] "std::collections::pq_new_min" => Value::Int(stdlib::collections_mod::pq_new_min() as i64),
+        #[cfg(feature = "collections_mod")] "std::collections::pq_push" => {
+            let h = u64::try_from(int!()).map_err(|_| "pq handle".to_string())?;
+            let item = string!();
+            let pri = int!();
+            stdlib::collections_mod::pq_push(h, item, pri)?;
+            Value::Nil
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::pq_pop" => {
+            let h = u64::try_from(int!()).map_err(|_| "pq handle".to_string())?;
+            match stdlib::collections_mod::pq_pop(h)? {
+                Some(v) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Str(v))) },
+                None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+            }
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::pq_peek" => {
+            let h = u64::try_from(int!()).map_err(|_| "pq handle".to_string())?;
+            match stdlib::collections_mod::pq_peek(h)? {
+                Some(v) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(Value::Str(v))) },
+                None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+            }
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::pq_len" => {
+            let h = u64::try_from(int!()).map_err(|_| "pq handle".to_string())?;
+            Value::Int(stdlib::collections_mod::pq_len(h)? as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::pq_drop" => {
+            let h = u64::try_from(int!()).map_err(|_| "pq handle".to_string())?;
+            Value::Bool(stdlib::collections_mod::pq_drop(h))
+        }
+        // OrderedMap
+        #[cfg(feature = "collections_mod")] "std::collections::omap_new" => Value::Int(stdlib::collections_mod::omap_new() as i64),
+        #[cfg(feature = "collections_mod")] "std::collections::omap_insert" => {
+            let h = u64::try_from(int!()).map_err(|_| "omap handle".to_string())?;
+            let k = string!();
+            let v = to_json(take!())?;
+            stdlib::collections_mod::omap_insert(h, k, v)?;
+            Value::Nil
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::omap_get" => {
+            let h = u64::try_from(int!()).map_err(|_| "omap handle".to_string())?;
+            match stdlib::collections_mod::omap_get(h, &string!())? {
+                Some(v) => Value::Enum { name: "Option".into(), variant: "Some".into(), payload: Some(Box::new(from_json(v)?)) },
+                None    => Value::Enum { name: "Option".into(), variant: "None".into(), payload: None },
+            }
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::omap_remove" => {
+            let h = u64::try_from(int!()).map_err(|_| "omap handle".to_string())?;
+            Value::Bool(stdlib::collections_mod::omap_remove(h, &string!())?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::omap_keys" => {
+            let h = u64::try_from(int!()).map_err(|_| "omap handle".to_string())?;
+            Value::Array(stdlib::collections_mod::omap_keys(h)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::omap_len" => {
+            let h = u64::try_from(int!()).map_err(|_| "omap handle".to_string())?;
+            Value::Int(stdlib::collections_mod::omap_len(h)? as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::omap_drop" => {
+            let h = u64::try_from(int!()).map_err(|_| "omap handle".to_string())?;
+            Value::Bool(stdlib::collections_mod::omap_drop(h))
+        }
+        // Counter
+        #[cfg(feature = "collections_mod")] "std::collections::counter_from" => {
+            let arr = array!();
+            let items: Vec<String> = arr.into_iter().map(expect_string).collect::<Result<_, _>>()?;
+            Value::Int(stdlib::collections_mod::counter_from(items) as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::counter_add" => {
+            let h = u64::try_from(int!()).map_err(|_| "counter handle".to_string())?;
+            let item = string!();
+            let delta = int!();
+            stdlib::collections_mod::counter_add(h, item, delta)?;
+            Value::Nil
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::counter_count" => {
+            let h = u64::try_from(int!()).map_err(|_| "counter handle".to_string())?;
+            Value::Int(stdlib::collections_mod::counter_count(h, &string!())?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::counter_most_common" => {
+            let h = u64::try_from(int!()).map_err(|_| "counter handle".to_string())?;
+            let n = int!() as usize;
+            let items = stdlib::collections_mod::counter_most_common(h, n)?;
+            Value::Array(items.into_iter().map(|(k, v)| Value::Tuple(vec![Value::Str(k), Value::Int(v)])).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::counter_total" => {
+            let h = u64::try_from(int!()).map_err(|_| "counter handle".to_string())?;
+            Value::Int(stdlib::collections_mod::counter_total(h)?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::counter_drop" => {
+            let h = u64::try_from(int!()).map_err(|_| "counter handle".to_string())?;
+            Value::Bool(stdlib::collections_mod::counter_drop(h))
+        }
+        // Graph
+        #[cfg(feature = "collections_mod")] "std::collections::graph_new" => {
+            Value::Int(stdlib::collections_mod::graph_new(boolean!()) as i64)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_add_node" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            stdlib::collections_mod::graph_add_node(h, string!())?;
+            Value::Nil
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_add_edge" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            let from = string!();
+            let to = string!();
+            let weight = int!();
+            stdlib::collections_mod::graph_add_edge(h, from, to, weight)?;
+            Value::Nil
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_neighbors" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            Value::Array(stdlib::collections_mod::graph_neighbors(h, &string!())?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_bfs" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            Value::Array(stdlib::collections_mod::graph_bfs(h, &string!())?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_dfs" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            Value::Array(stdlib::collections_mod::graph_dfs(h, &string!())?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_shortest_path" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            let start = string!();
+            let end = string!();
+            Value::Array(stdlib::collections_mod::graph_shortest_path(h, &start, &end)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_topological_sort" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            Value::Array(stdlib::collections_mod::graph_topological_sort(h)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_has_cycle" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            Value::Bool(stdlib::collections_mod::graph_has_cycle(h)?)
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_nodes" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            Value::Array(stdlib::collections_mod::graph_nodes(h)?.into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "collections_mod")] "std::collections::graph_drop" => {
+            let h = u64::try_from(int!()).map_err(|_| "graph handle".to_string())?;
+            Value::Bool(stdlib::collections_mod::graph_drop(h))
+        }
+
+        // ---------------- Phase 34: std::datetime extendido ----------------
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::year"         => Value::Int(stdlib::datetime_ext_mod::year(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::month"        => Value::Int(stdlib::datetime_ext_mod::month(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::day"          => Value::Int(stdlib::datetime_ext_mod::day(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::hour"         => Value::Int(stdlib::datetime_ext_mod::hour(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::minute"       => Value::Int(stdlib::datetime_ext_mod::minute(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::second"       => Value::Int(stdlib::datetime_ext_mod::second(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::day_of_week"  => Value::Int(stdlib::datetime_ext_mod::day_of_week(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::day_of_year"  => Value::Int(stdlib::datetime_ext_mod::day_of_year(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::week_of_year" => Value::Int(stdlib::datetime_ext_mod::week_of_year(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::quarter"      => Value::Int(stdlib::datetime_ext_mod::quarter(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::is_leap_year" => Value::Bool(stdlib::datetime_ext_mod::is_leap_year(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::days_in_month" => {
+            let y = int!(); let m = int!();
+            Value::Int(stdlib::datetime_ext_mod::days_in_month(y, m))
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::add_seconds" => { let ts = int!(); let n = int!(); Value::Int(stdlib::datetime_ext_mod::add_seconds(ts, n)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::add_minutes" => { let ts = int!(); let n = int!(); Value::Int(stdlib::datetime_ext_mod::add_minutes(ts, n)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::add_hours"   => { let ts = int!(); let n = int!(); Value::Int(stdlib::datetime_ext_mod::add_hours(ts, n)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::add_days_ext"=> { let ts = int!(); let n = int!(); Value::Int(stdlib::datetime_ext_mod::add_days(ts, n)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::add_weeks"   => { let ts = int!(); let n = int!(); Value::Int(stdlib::datetime_ext_mod::add_weeks(ts, n)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::add_months"  => { let ts = int!(); let n = int!(); Value::Int(stdlib::datetime_ext_mod::add_months(ts, n)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::add_years"   => { let ts = int!(); let n = int!(); Value::Int(stdlib::datetime_ext_mod::add_years(ts, n)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::diff_seconds"=> { let a = int!(); let b = int!(); Value::Int(stdlib::datetime_ext_mod::diff_seconds(a, b)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::diff_minutes"=> { let a = int!(); let b = int!(); Value::Int(stdlib::datetime_ext_mod::diff_minutes(a, b)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::diff_hours"  => { let a = int!(); let b = int!(); Value::Int(stdlib::datetime_ext_mod::diff_hours(a, b)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::diff_days"   => { let a = int!(); let b = int!(); Value::Int(stdlib::datetime_ext_mod::diff_days(a, b)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::is_before"   => { let a = int!(); let b = int!(); Value::Bool(stdlib::datetime_ext_mod::is_before(a, b)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::is_after"    => { let a = int!(); let b = int!(); Value::Bool(stdlib::datetime_ext_mod::is_after(a, b)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::is_same_day" => { let a = int!(); let b = int!(); Value::Bool(stdlib::datetime_ext_mod::is_same_day(a, b)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::to_timezone" => {
+            let ts = int!(); let tz = string!();
+            Value::Str(stdlib::datetime_ext_mod::to_timezone(ts, &tz)?)
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::timezone_offset_seconds" => {
+            let ts = int!(); let tz = string!();
+            Value::Int(stdlib::datetime_ext_mod::timezone_offset_seconds(ts, &tz)?)
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::common_timezones" => {
+            Value::Array(stdlib::datetime_ext_mod::common_timezones().into_iter().map(Value::Str).collect())
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::to_iso" => Value::Str(stdlib::datetime_ext_mod::to_iso(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::from_iso" => Value::Int(stdlib::datetime_ext_mod::from_iso(&string!())?),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::humanize" => { let ts = int!(); let now = int!(); Value::Str(stdlib::datetime_ext_mod::humanize(ts, now)) }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::is_weekend" => Value::Bool(stdlib::datetime_ext_mod::is_weekend(int!())),
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::business_days_between" => {
+            let a = int!(); let b = int!();
+            Value::Int(stdlib::datetime_ext_mod::business_days_between(a, b))
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::next_weekday" => {
+            let ts = int!(); let dow = int!();
+            Value::Int(stdlib::datetime_ext_mod::next_weekday(ts, dow))
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::from_ymd" => {
+            let y = int!(); let m = int!(); let d = int!();
+            Value::Int(stdlib::datetime_ext_mod::from_ymd(y, m, d)?)
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::from_ymd_hms" => {
+            let y = int!(); let m = int!(); let d = int!();
+            let h = int!(); let mi = int!(); let s = int!();
+            Value::Int(stdlib::datetime_ext_mod::from_ymd_hms(y, m, d, h, mi, s)?)
+        }
+        #[cfg(feature = "datetime_ext_mod")] "std::datetime::range_ext" => {
+            let start = int!(); let end = int!(); let step = int!();
+            Value::Array(stdlib::datetime_ext_mod::range(start, end, step).into_iter().map(Value::Int).collect())
+        }
+
         _ => return Err("registered function has no VM implementation".into()),
     })
+}
+
+/// Helper: convierte un ProcessOutput a un Titan Value::Map con las 4 keys.
+#[cfg(feature = "process_mod")]
+fn process_output_to_value(out: stdlib::process_mod::ProcessOutput) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert("stdout".into(), Value::Str(out.stdout));
+    m.insert("stderr".into(), Value::Str(out.stderr));
+    m.insert("exit_code".into(), Value::Int(out.exit_code as i64));
+    m.insert("duration_ms".into(), Value::Int(out.duration_ms as i64));
+    Value::Map(m)
 }
 
 fn metrics_snapshot(snapshot:stdlib::metrics::Snapshot)->Value{let counters=snapshot.counters.into_iter().map(|(name,value)|(name,Value::Int(i64::try_from(value).unwrap_or(i64::MAX)))).collect();let gauges=snapshot.gauges.into_iter().map(|(name,value)|(name,Value::Float(value))).collect();let histograms=snapshot.histograms.into_iter().map(|(name,value)|(name,Value::Map(BTreeMap::from([("count".into(),Value::Int(i64::try_from(value.count).unwrap_or(i64::MAX))),("sum".into(),Value::Float(value.sum)),("min".into(),Value::Float(value.min)),("max".into(),Value::Float(value.max))])))).collect();Value::Map(BTreeMap::from([("counters".into(),Value::Map(counters)),("gauges".into(),Value::Map(gauges)),("histograms".into(),Value::Map(histograms))]))}

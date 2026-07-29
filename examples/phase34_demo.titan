@@ -1,0 +1,175 @@
+// Fase 34: std::process + std::collections + std::datetime extendido.
+//
+// Este ejemplo prueba los 3 modulos nuevos end-to-end. Cada seccion
+// demuestra features reales, no wrappers vacios.
+//
+// Ejecutar con:
+//     zett run examples/phase34_demo.titan
+
+fn banner(titulo: string) {
+    print("")
+    print("======== " + titulo + " ========")
+}
+
+fn main() {
+    print("---- Fase 34: process + collections + datetime ext ----")
+
+    // ============================================================
+    // A) std::process — ejecutar comandos del sistema
+    // ============================================================
+
+    banner("A1) std::process::run('echo hola-titan')")
+    let out = std::process::run("echo hola-titan")
+    print("stdout:      " + std::text::trim(out.stdout))
+    print("exit_code:   " + out.exit_code)
+    print("duration_ms: " + out.duration_ms)
+
+    banner("A2) shell con pipes")
+    let piped = std::process::shell("echo hello | tr a-z A-Z")
+    print("resultado: " + std::text::trim(piped.stdout))
+
+    banner("A3) hostname + username + self_pid")
+    print("hostname: " + std::process::hostname())
+    print("user:     " + std::process::username())
+    print("pid:      " + std::process::self_pid())
+
+    banner("A4) env vars")
+    std::process::env_set("TITAN_DEMO_VAR", "activo")
+    match std::process::env_get("TITAN_DEMO_VAR") {
+        Option::Some(v) => print("TITAN_DEMO_VAR = " + v),
+        Option::None    => print("no set"),
+    }
+    std::process::env_unset("TITAN_DEMO_VAR")
+
+    banner("A5) pipe encadenado")
+    let chain = std::process::pipe(["echo linea1 linea2 linea3", "wc -w"])
+    print("word count: " + std::text::trim(chain.stdout))
+
+    // ============================================================
+    // B) std::collections — Set, PriorityQueue, Counter, Graph
+    // ============================================================
+
+    banner("B1) Set — union / intersection")
+    let a = std::collections::set_from(["manzana", "pera", "uva"])
+    let b = std::collections::set_from(["pera", "uva", "kiwi", "mango"])
+    let unidos = std::collections::set_union(a, b)
+    let comunes = std::collections::set_intersect(a, b)
+    print("union:        " + std::collections::set_to_array(unidos))
+    print("intersect:    " + std::collections::set_to_array(comunes))
+    print("len(union):   " + std::collections::set_len(unidos))
+    print("contains uva? " + std::collections::set_contains(unidos, "uva"))
+
+    banner("B2) PriorityQueue min — task scheduler")
+    let cola = std::collections::pq_new_min()
+    std::collections::pq_push(cola, "backup diario",    5)
+    std::collections::pq_push(cola, "reiniciar server", 1)
+    std::collections::pq_push(cola, "enviar reporte",   3)
+    std::collections::pq_push(cola, "limpiar cache",    2)
+    print("orden por prioridad (menor = urgente):")
+    while std::collections::pq_len(cola) > 0 {
+        match std::collections::pq_pop(cola) {
+            Option::Some(t) => print("  -> " + t),
+            Option::None    => print("(vacio)"),
+        }
+    }
+
+    banner("B3) Counter — analisis de frecuencias")
+    let palabras = std::text::words("el gato come pescado el perro come carne el gato duerme")
+    let c = std::collections::counter_from(palabras)
+    print("total palabras: " + std::collections::counter_total(c))
+    print("top 3 mas comunes:")
+    let top = std::collections::counter_most_common(c, 3)
+    for pair in top {
+        print("  " + pair.0 + ": " + pair.1)
+    }
+
+    banner("B4) Graph — pathfinding con Dijkstra")
+    // Grafo de ciudades con distancias (km):
+    //   Caracas - Valencia:  150
+    //   Valencia - Maracay:   50
+    //   Maracay - Barquisimeto: 300
+    //   Caracas - Barquisimeto: 600
+    //   Barquisimeto - Maracaibo: 300
+    let g = std::collections::graph_new(false)
+    std::collections::graph_add_edge(g, "Caracas",      "Valencia",     150)
+    std::collections::graph_add_edge(g, "Valencia",     "Maracay",       50)
+    std::collections::graph_add_edge(g, "Maracay",      "Barquisimeto", 300)
+    std::collections::graph_add_edge(g, "Caracas",      "Barquisimeto", 600)
+    std::collections::graph_add_edge(g, "Barquisimeto", "Maracaibo",    300)
+
+    let ruta = std::collections::graph_shortest_path(g, "Caracas", "Maracaibo")
+    print("Ruta optima Caracas -> Maracaibo:")
+    for ciudad in ruta {
+        print("  * " + ciudad)
+    }
+
+    banner("B5) Graph dirigido + topological sort — orden de compilacion")
+    let deps = std::collections::graph_new(true)
+    // Si "a depende de b", agrego arista b -> a (b antes que a).
+    std::collections::graph_add_edge(deps, "lexer",        "parser",       0)
+    std::collections::graph_add_edge(deps, "parser",       "typechecker",  0)
+    std::collections::graph_add_edge(deps, "typechecker",  "codegen",      0)
+    std::collections::graph_add_edge(deps, "codegen",      "vm",           0)
+    std::collections::graph_add_edge(deps, "ast",          "parser",       0)
+    std::collections::graph_add_edge(deps, "ast",          "typechecker",  0)
+    let orden = std::collections::graph_topological_sort(deps)
+    print("Orden de compilacion:")
+    for mod_name in orden {
+        print("  " + mod_name)
+    }
+
+    // ============================================================
+    // C) std::datetime extendido — timezones, aritmetica, humano
+    // ============================================================
+
+    banner("C1) Fecha construida + componentes")
+    let cumple = std::datetime::from_ymd(1990, 3, 15)
+    print("cumple:        " + std::datetime::to_iso(cumple))
+    print("año:           " + std::datetime::year(cumple))
+    print("mes:           " + std::datetime::month(cumple))
+    print("dia:           " + std::datetime::day(cumple))
+    print("dia semana:    " + std::datetime::day_of_week(cumple) + " (0=lun)")
+    print("dia año:       " + std::datetime::day_of_year(cumple))
+    print("es bisiesto?   " + std::datetime::is_leap_year(1990))
+    print("dias en feb:   " + std::datetime::days_in_month(1990, 2))
+
+    banner("C2) Aritmetica de meses (respeta fin de mes)")
+    let jan31 = std::datetime::from_ymd(2024, 1, 31)
+    let feb   = std::datetime::add_months(jan31, 1)
+    print("2024-01-31 + 1 mes: " + std::datetime::to_iso(feb))
+    let un_ano = std::datetime::add_years(jan31, 1)
+    print("2024-01-31 + 1 año: " + std::datetime::to_iso(un_ano))
+
+    banner("C3) Diferencias")
+    let hoy = std::time::unix_seconds()
+    let hace_un_ano = std::datetime::add_years(hoy, -1)
+    print("dias en 1 año: " + std::datetime::diff_days(hoy, hace_un_ano))
+    print("horas:         " + std::datetime::diff_hours(hoy, hace_un_ano))
+
+    banner("C4) Formato humano — 'hace X'")
+    let now = 1000000
+    print("hace 30 seg:   " + std::datetime::humanize(now - 30, now))
+    print("hace 5 min:    " + std::datetime::humanize(now - 300, now))
+    print("hace 2 horas:  " + std::datetime::humanize(now - 7200, now))
+    print("en 3 dias:     " + std::datetime::humanize(now + 259200, now))
+    print("en 2 semanas:  " + std::datetime::humanize(now + 1209600, now))
+
+    banner("C5) Timezones")
+    let epoch_2024 = 1704067200   // 2024-01-01 00:00:00 UTC
+    print("UTC:               " + std::datetime::to_iso(epoch_2024))
+    print("America/Caracas:   " + std::datetime::to_timezone(epoch_2024, "America/Caracas"))
+    print("Europe/Madrid:     " + std::datetime::to_timezone(epoch_2024, "Europe/Madrid"))
+    print("Asia/Tokyo:        " + std::datetime::to_timezone(epoch_2024, "Asia/Tokyo"))
+    print("offset Caracas:    " + std::datetime::timezone_offset_seconds(epoch_2024, "America/Caracas") + "s")
+
+    banner("C6) Dias laborales y proximo dia de semana")
+    let lun_20240101 = std::datetime::from_ymd(2024, 1, 1)
+    let dom_20240107 = std::datetime::from_ymd(2024, 1, 7)
+    print("lun-dom laborales: " + std::datetime::business_days_between(lun_20240101, dom_20240107))
+    let jue_desde_lun = std::datetime::next_weekday(lun_20240101, 3)   // 3 = jueves
+    print("proximo jueves:    " + std::datetime::to_iso(jue_desde_lun))
+    print("es weekend?        " + std::datetime::is_weekend(dom_20240107))
+
+    print("")
+    print("---- TODO OK — 3 modulos nuevos completos ----")
+}

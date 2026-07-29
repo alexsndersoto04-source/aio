@@ -1,5 +1,110 @@
 # Zett / TITAN — Changelog
 
+## 0.33.0 — Phase 34: 3 módulos nuevos serios (process + collections + datetime) 🏗️
+
+Tres módulos completos, sin humo, sin stubs. Cada uno con
+implementación real backend Rust production-grade, ~110 nuevas
+natives registradas, ejemplo verificable end-to-end.
+
+### `std::process` — Control total del sistema operativo
+
+Backend: `std::process::Command` nativo + `nix` para señales POSIX.
+
+- `run(cmd)` — ejecuta y retorna `{stdout, stderr, exit_code, duration_ms}`
+- `run_with_input(cmd, bytes)` — pasa datos por stdin
+- `shell(cmd)` — vía `sh -c`, permite pipes/redirs/glob
+- `pipe([cmd1, cmd2, cmd3])` — encadena stdout→stdin en cascada
+- `spawn(cmd)` → handle Int para procesos en background
+- `spawn_wait(h)`, `spawn_poll(h) → Option<int>`, `spawn_kill(h)`, `spawn_pid(h)`
+- `env_get`, `env_set`, `env_unset`, `env_vars` — variables de entorno
+- `working_dir`, `set_working_dir` — cwd
+- `self_pid`, `hostname`, `username`, `args` — info del sistema
+- `send_signal(pid, sig)` — señales POSIX (HUP=1, INT=2, KILL=9, TERM=15…)
+- `exit(code)` — termina el proceso
+
+### `std::collections` — Estructuras de datos avanzadas
+
+Backend: `BTreeSet`, `VecDeque`, `BinaryHeap` de Rust std + `indexmap`.
+Handles Int estables, drop explícito para limpiar memoria.
+
+**Set** (11 fns): `new`, `from`, `add`, `remove`, `contains`, `len`,
+`to_array`, `union`, `intersect`, `difference`, `is_subset`, `drop`
+
+**Deque** (8 fns): `new`, `push_front/back`, `pop_front/back`,
+`len`, `to_array`, `drop`
+
+**PriorityQueue** (7 fns): `new_max`/`new_min`, `push(item, priority)`,
+`pop`, `peek`, `len`, `drop`. Estable (FIFO en empate).
+
+**OrderedMap** (7 fns): map que preserva orden de inserción. `new`,
+`insert`, `get`, `remove`, `keys`, `len`, `drop`. Valores son
+cualquier tipo Titan (via JSON internamente).
+
+**Counter** (6 fns): frecuencia de items. `from(array)`, `add(item, delta)`,
+`count`, `most_common(n)`, `total`, `drop`.
+
+**Graph** (11 fns): dirigido y no-dirigido, ponderado.
+- `new(directed)`, `add_node`, `add_edge(from, to, weight)`
+- `neighbors(node)`, `bfs(start)`, `dfs(start)`
+- `shortest_path(start, end)` — **Dijkstra completo con binary heap**
+- `topological_sort()` — Kahn's algorithm, detecta ciclos
+- `has_cycle()` — DFS con 3 estados para directed, BFS-parent para undirected
+- `nodes()`, `drop`
+
+### `std::datetime` extendido — Manejo profesional de tiempo
+
+Backend: `chrono` (ya usado) + `chrono-tz` para timezones (~600 zonas).
+
+**Componentes** (12 fns): `year`, `month`, `day`, `hour`, `minute`, `second`,
+`day_of_week` (0=lun), `day_of_year`, `week_of_year`, `quarter`,
+`is_leap_year`, `days_in_month`.
+
+**Aritmética** (11 fns): `add_seconds/minutes/hours/days_ext/weeks/months/years`,
+`diff_seconds/minutes/hours/days`. `add_months` respeta fin de mes
+(2024-01-31 + 1 mes = 2024-02-29 correctamente).
+
+**Comparaciones** (3 fns): `is_before`, `is_after`, `is_same_day`.
+
+**Timezones** (3 fns):
+- `to_timezone(ts, "America/Caracas")` — convierte a cualquier zona
+- `timezone_offset_seconds(ts, "Europe/Madrid")`
+- `common_timezones()` — lista curada de zonas latinoamericanas + globales
+
+**Formato** (2 fns): `to_iso`, `from_iso` (RFC 3339).
+
+**Humano** (1 fn): `humanize(ts, now)` → "hace 3 horas", "en 2 días",
+"ahora" (en español).
+
+**Calendarios** (4 fns): `is_weekend`, `business_days_between`,
+`next_weekday(ts, dow)`, `range_ext(start, end, step)`.
+
+**Construcción** (2 fns): `from_ymd(y, m, d)`, `from_ymd_hms(y, m, d, h, mi, s)`.
+
+### Ejemplo verificable
+
+`zett run examples/phase34_demo.titan` — cubre:
+- 5 escenarios de process (echo, shell con pipe, hostname/user/pid,
+  env vars, pipe encadenado con wc)
+- 5 escenarios de collections (Set con union/intersect, PriorityQueue
+  para task scheduling, Counter con análisis de palabras, Graph
+  con **ruta óptima Caracas→Maracaibo por Dijkstra**, topological
+  sort de dependencias tipo compilador)
+- 6 escenarios de datetime (fecha componentes, aritmética con fin de
+  mes, diferencias, humanize en español, timezones para 4 ciudades
+  incluyendo Caracas/Madrid/Tokyo, dias laborales y proximo weekday)
+
+### Bajo el capó
+
+- 3 crates externos nuevos como dependencias opcionales:
+  `nix 0.29`, `indexmap 2`, `chrono-tz 0.10`.
+- Cada estructura de collections vive en un registro global thread-safe
+  (Mutex<HashMap<u64, T>>) con handles Int estables tipo sqlite.
+- Sin cambios en el compilador (lexer/parser/typechecker/codegen/VM).
+- Titan pasa de 23.070 a **~26.400 líneas Rust** (~3.300 nuevas).
+- **~110 natives nuevas registradas** en `native.rs` + handlers en VM.
+
+---
+
 ## 0.32.0 — Phase 33: eliminación de comandos experimentales 🧹
 
 Se remueven del código dos comandos que nunca funcionaron:
