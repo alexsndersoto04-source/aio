@@ -4,7 +4,7 @@
 //! para zonas horarias. Todas las fns aceptan segundos Unix (i64) como
 //! representacion intermedia, para no exponer tipos de chrono al VM.
 
-use chrono::{DateTime, TimeZone, Utc, Datelike, Timelike, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, TimeZone, Utc, Datelike, Timelike, NaiveDate, NaiveDateTime, Offset};
 use chrono_tz::Tz;
 
 // ---------------- Componentes de una fecha ----------------
