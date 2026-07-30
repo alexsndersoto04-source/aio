@@ -812,14 +812,14 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             stdlib::fswatch_mod::close(int!()); Value::Nil
         }
 
-        // ---------------- Phase 8: Unix signals ----------------
-        #[cfg(feature = "signals_mod")] "std::signals::install" => {
+        // ------- Phase 8: Unix signals (POSIX: no existen en Windows) -------
+        #[cfg(all(feature = "signals_mod", unix))] "std::signals::install" => {
             stdlib::signals_mod::install(&string!()).map_err(error)?; Value::Nil
         }
-        #[cfg(feature = "signals_mod")] "std::signals::pending" => {
+        #[cfg(all(feature = "signals_mod", unix))] "std::signals::pending" => {
             Value::Int(stdlib::signals_mod::pending(&string!()).map_err(error)? as i64)
         }
-        #[cfg(feature = "signals_mod")] "std::signals::wait_any" => {
+        #[cfg(all(feature = "signals_mod", unix))] "std::signals::wait_any" => {
             let timeout = u64::try_from(int!()).unwrap_or(1000);
             Value::Str(stdlib::signals_mod::wait_any(timeout).map_err(error)?)
         }

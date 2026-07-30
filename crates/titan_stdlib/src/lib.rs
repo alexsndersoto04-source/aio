@@ -75,7 +75,7 @@ pub mod mobile;
 // --- Phase 8: System & OS ----------------------------------------------
 #[cfg(feature = "procfs_mod")]    pub mod procfs_mod;
 #[cfg(feature = "fswatch_mod")]   pub mod fswatch_mod;
-#[cfg(feature = "signals_mod")]   pub mod signals_mod;
+#[cfg(all(feature = "signals_mod", unix))]   pub mod signals_mod;
 
 // --- Phase 9: Audio (WAV synthesis / I/O + Termux media playback) ------
 #[cfg(feature = "audio_mod")]     pub mod audio_mod;
