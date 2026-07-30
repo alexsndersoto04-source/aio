@@ -13,9 +13,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use notify::{recommended_watcher, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -32,7 +32,9 @@ fn nerr(error: impl std::fmt::Display) -> FsWatchError { FsWatchError::Notify(er
 
 struct WatcherEntry {
     _watcher: RecommendedWatcher,
-    events: mpsc::Receiver<notify::Result<notify::Event>>,
+    events: mpsc::Receiver<notify::Result<Event>>,
+    root: PathBuf,
+    root_existed: bool,
 }
 
 struct Registry { entries: HashMap<i64, WatcherEntry>, next_id: i64 }
@@ -62,13 +64,46 @@ fn describe(event: &notify::Event) -> String {
 
 // ---------------- One-shot -------------------------------------------
 
+/// Receive the first REAL event within `timeout`, preserving the remaining
+/// budget across discards. Phantom events that predate the watch are dropped:
+/// FSEvents (macOS) coalesces its journal and may deliver a `create` for the
+/// watched root even though it already existed when we registered — a stale
+/// echo from the past, not something that happened while watching. A `create`
+/// of a path that existed at registration time is logically impossible.
+fn recv_fresh(
+    rx: &mpsc::Receiver<notify::Result<Event>>,
+    timeout: Duration,
+    root: &PathBuf,
+    root_existed: bool,
+) -> Result<notify::Result<Event>, mpsc::RecvTimeoutError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let now = Instant::now();
+        if now >= deadline { return Err(mpsc::RecvTimeoutError::Timeout); }
+        match rx.recv_timeout(deadline - now) {
+            Ok(Ok(ref event)) => {
+                let stale = root_existed
+                    && matches!(event.kind, EventKind::Create(_))
+                    && !event.paths.is_empty()
+                    && event.paths.iter().all(|p| p == root);
+                if stale { continue; }
+                return Ok(Ok(event.clone()));
+            }
+            Ok(Err(error)) => return Ok(Err(error)),
+            Err(e)         => return Err(e),
+        }
+    }
+}
+
 /// Watch `path` and return the first event (or "timeout" on expiry).
 pub fn watch_once(path: &str, timeout_ms: u64, recursive: bool) -> Result<String, FsWatchError> {
     let (tx, rx) = mpsc::channel();
     let mut watcher = recommended_watcher(move |result| { let _ = tx.send(result); }).map_err(nerr)?;
     let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-    watcher.watch(&PathBuf::from(path), mode).map_err(nerr)?;
-    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+    let root = PathBuf::from(path);
+    let root_existed = root.exists();
+    watcher.watch(&root, mode).map_err(nerr)?;
+    match recv_fresh(&rx, Duration::from_millis(timeout_ms), &root, root_existed) {
         Ok(Ok(event))  => Ok(describe(&event)),
         Ok(Err(error)) => Err(nerr(error)),
         Err(_)         => Ok("timeout".into()),
@@ -82,11 +117,13 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
     let (tx, rx) = mpsc::channel();
     let mut watcher = recommended_watcher(move |result| { let _ = tx.send(result); }).map_err(nerr)?;
     let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-    watcher.watch(&PathBuf::from(path), mode).map_err(nerr)?;
+    let root = PathBuf::from(path);
+    let root_existed = root.exists();
+    watcher.watch(&root, mode).map_err(nerr)?;
     let mut reg = registry().lock().expect("fswatch registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.entries.insert(id, WatcherEntry { _watcher: watcher, events: rx });
+    reg.entries.insert(id, WatcherEntry { _watcher: watcher, events: rx, root, root_existed });
     Ok(id)
 }
 
@@ -95,7 +132,7 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
 pub fn next_event(handle: i64, timeout_ms: u64) -> Result<String, FsWatchError> {
     let reg = registry().lock().expect("fswatch registry poisoned");
     let entry = reg.entries.get(&handle).ok_or(FsWatchError::UnknownHandle(handle))?;
-    match entry.events.recv_timeout(Duration::from_millis(timeout_ms)) {
+    match recv_fresh(&entry.events, Duration::from_millis(timeout_ms), &entry.root, entry.root_existed) {
         Ok(Ok(event))  => Ok(describe(&event)),
         Ok(Err(error)) => Err(nerr(error)),
         Err(_)         => Ok("timeout".into()),
