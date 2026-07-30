@@ -27,8 +27,9 @@ fn refresh() {
         sys.refresh_all();
         // sysinfo >= 0.29: refresh_all() ya no repuebla la LISTA de CPUs —
         // queda vacia (cpu_count() == 0, cpus() == []) aunque memoria y
-        // procesos sigan bien. La lista se reconstruye explicitamente aqui.
-        sys.refresh_cpu_list();
+        // procesos sigan bien. La lista se reconstruye explicitamente aqui
+        // (en 0.32 refresh_cpu_list toma un CpuRefreshKind).
+        sys.refresh_cpu_list(sysinfo::CpuRefreshKind::everything());
     }
 }
 
