@@ -102,6 +102,9 @@ pub fn local_addr(handle: i64) -> Result<String, ServerError> {
     let s = r.servers.get(&handle).ok_or(ServerError::UnknownServer(handle))?;
     Ok(match s.server_addr() {
         ListenAddr::IP(addr)   => addr.to_string(),
+        // Los sockets Unix no existen en Windows: tiny_http solo define
+        // esta variante del enum en plataformas Unix.
+        #[cfg(unix)]
         ListenAddr::Unix(addr) => format!("unix:{addr:?}"),
     })
 }
