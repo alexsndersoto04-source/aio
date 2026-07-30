@@ -149,19 +149,30 @@ pub fn white_noise(duration_ms: u32, sample_rate: u32, amplitude: f32) -> Vec<f3
 }
 
 /// Simple linear fade-in from 0 to full amplitude over `fade_ms`.
+///
+/// Endpoint-inclusive ramp: the first faded sample is exactly 0.0 and the
+/// last one exactly 1.0, so a 1-sample fade still lands on zero instead of
+/// stopping one step short (off-by-one that left residue amplitude > 0).
 pub fn fade_in(samples: &mut [f32], sample_rate: u32, fade_ms: u32) {
     let fade = (sample_rate as u64 * fade_ms as u64 / 1000).min(samples.len() as u64) as usize;
+    if fade == 0 { return; }
+    let denom = fade.saturating_sub(1).max(1) as f32;
     for (i, sample) in samples.iter_mut().take(fade).enumerate() {
-        *sample *= i as f32 / fade.max(1) as f32;
+        *sample *= i as f32 / denom;
     }
 }
 
 /// Fade-out over the last `fade_ms`.
+///
+/// Endpoint-inclusive ramp: the last faded sample is exactly 0.0 even when
+/// the ramp is a single sample long.
 pub fn fade_out(samples: &mut [f32], sample_rate: u32, fade_ms: u32) {
     let fade = (sample_rate as u64 * fade_ms as u64 / 1000).min(samples.len() as u64) as usize;
+    if fade == 0 { return; }
+    let denom = fade.saturating_sub(1).max(1) as f32;
     let start = samples.len().saturating_sub(fade);
     for (i, sample) in samples.iter_mut().skip(start).enumerate() {
-        *sample *= 1.0 - (i as f32 / fade.max(1) as f32);
+        *sample *= (fade - 1 - i) as f32 / denom;
     }
 }
 

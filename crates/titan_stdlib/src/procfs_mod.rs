@@ -23,7 +23,13 @@ fn system() -> &'static Mutex<System> {
 }
 
 fn refresh() {
-    if let Ok(mut sys) = system().lock() { sys.refresh_all(); }
+    if let Ok(mut sys) = system().lock() {
+        sys.refresh_all();
+        // sysinfo >= 0.29: refresh_all() ya no repuebla la LISTA de CPUs —
+        // queda vacia (cpu_count() == 0, cpus() == []) aunque memoria y
+        // procesos sigan bien. La lista se reconstruye explicitamente aqui.
+        sys.refresh_cpu_list();
+    }
 }
 
 // ---------------- Basic OS info ---------------------------------------
