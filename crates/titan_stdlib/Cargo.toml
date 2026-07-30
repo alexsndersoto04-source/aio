@@ -162,7 +162,6 @@ url          = { version = "2", optional = true }
 dirs         = { version = "5", optional = true }
 
 # Phase 34 — process control, collections, datetime extended.
-nix          = { version = "0.29", optional = true, default-features = false, features = ["signal"] }
 indexmap     = { version = "2", optional = true }
 chrono-tz    = { version = "0.10", optional = true, default-features = false }
 
@@ -261,3 +260,10 @@ tokenizers        = { version = "0.22", optional = true, default-features = fals
 # its own ndarray fork (`tract-ndarray`), and its own optimizer. Perfect
 # fit for embedded / Termux use.
 tract-onnx        = { version = "0.21", optional = true, default-features = false }
+
+# Phase 35 — fundacion multi-OS: nix es Unix-only (senales POSIX para
+# std::process::send_signal). Al declararlo solo para targets cfg(unix),
+# todo el workspace compila en Windows/macOS; en no-Unix send_signal
+# usa el stub #[cfg(not(unix))] que responde Err honestamente.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", optional = true, default-features = false, features = ["signal"] }

@@ -1,0 +1,95 @@
+# Phase 35 — Verificacion y builds multi-OS en MAQUINAS REALES.
+#
+# Regla del proyecto: nada se declara "funciona en X" hasta que un test
+# corre verde en una maquina X de verdad. Este workflow es esa regla
+# ejecutandose sola:
+#
+#   1. job `test`  -> cargo test del workspace entero corriendo en runners
+#      reales de Ubuntu, Windows y macOS. Si algo falla en algun OS,
+#      la matriz lo dice en rojo y NO se construye ningun binario.
+#   2. job `build` -> solo si los tests pasan, compila el binario `zett`
+#      (crate titan_cli) en cada OS, lo empaqueta y:
+#        - sube "artifacts" en TODA corrida (descargables de prueba)
+#        - adjunta los binarios al GitHub Release cuando el trigger es un tag v*
+#
+# Android/Termux ARM sigue su flujo probado: compilacion on-device +
+# make-zett-package.sh + la tienda APT en la rama zett-repo.
+
+name: cross-platform
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets
+
+  build:
+    name: build (${{ matrix.asset }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, asset: linux-x86_64 }
+          - { os: macos-latest,   target: aarch64-apple-darwin,     asset: macos-arm64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   asset: windows-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build --release (titan_cli)
+        run: cargo build --release -p titan_cli --target ${{ matrix.target }}
+
+      - name: Empaquetar (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist/stage
+          cp "target/${{ matrix.target }}/release/titan" dist/stage/zett
+          cp README.md LICENSE dist/stage/
+          tar -czf "dist/zett-${{ matrix.asset }}.tar.gz" -C dist/stage .
+
+      - name: Empaquetar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/titan.exe" "dist/stage/zett.exe"
+          Copy-Item README.md, LICENSE dist/stage/
+          Compress-Archive -Path "dist/stage/*" -DestinationPath "dist/zett-${{ matrix.asset }}.zip" -Force
+
+      - name: Artifact descargable (toda corrida)
+        uses: actions/upload-artifact@v4
+        with:
+          name: zett-${{ matrix.asset }}
+          path: dist/zett-*
+
+      - name: Adjuntar al Release (solo tags v*)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/zett-*
