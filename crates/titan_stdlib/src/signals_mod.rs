@@ -6,11 +6,13 @@
 //!   Subsequent `pending(signal_name)` calls return how many hits landed
 //!   since the last poll. Ideal for a graceful-shutdown loop:
 //!
-//!         std::signals::install("SIGINT")
-//!         loop {
-//!             if std::signals::pending("SIGINT") > 0 { break }
-//!             // ... work ...
-//!         }
+//!   ```titan
+//!   std::signals::install("SIGINT")
+//!   loop {
+//!       if std::signals::pending("SIGINT") > 0 { break }
+//!       // ... work ...
+//!   }
+//!   ```
 //!
 //! * `wait_any(timeout_ms)` — blocks up to `timeout_ms` for ANY installed
 //!   signal, returning its name (or "timeout").
