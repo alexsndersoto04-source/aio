@@ -52,19 +52,47 @@ pub fn cpu_usage() -> f32 {
 
 pub fn cpu_count() -> usize {
     refresh();
-    system().lock().map(|s| s.cpus().len()).unwrap_or(0)
+    let n = system().lock().map(|s| s.cpus().len()).unwrap_or(0);
+    if n > 0 { n } else { available_cpus() }
+}
+
+/// Conteo REAL de CPUs logicas directo del kernel (sched_getaffinity via
+/// std::thread::available_parallelism). Se usa cuando sysinfo no puede
+/// enumerar /proc/stat — p.ej. sandboxes de Android que restringen /proc
+/// (SELinux). Devuelve 0 solo si ni el kernel quiere decirlo; nunca un
+/// numero inventado.
+fn available_cpus() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0)
 }
 
 pub fn cpus() -> Value {
     refresh();
-    let sys = match system().lock() { Ok(s) => s, Err(_) => return Value::Array(Vec::new()) };
-    Value::Array(sys.cpus().iter().map(|cpu| {
+    if let Ok(sys) = system().lock() {
+        if !sys.cpus().is_empty() {
+            return Value::Array(sys.cpus().iter().map(|cpu| {
+                json!({
+                    "name": cpu.name(),
+                    "brand": cpu.brand(),
+                    "vendor_id": cpu.vendor_id(),
+                    "frequency_mhz": cpu.frequency(),
+                    "usage_pct": cpu.cpu_usage(),
+                })
+            }).collect());
+        }
+    }
+    // Fallback de sandbox restringida (cero simulacion): el kernel igual
+    // responde cuantos CPUs logicos existen. Los nombres siguen la misma
+    // convencion cpuN de sysinfo; los atributos que el OS no expone en la
+    // sandbox quedan como "desconocido" (string vacia / 0) — NUNCA valores
+    // fabricados.
+    let count = available_cpus();
+    Value::Array((0..count).map(|i| {
         json!({
-            "name": cpu.name(),
-            "brand": cpu.brand(),
-            "vendor_id": cpu.vendor_id(),
-            "frequency_mhz": cpu.frequency(),
-            "usage_pct": cpu.cpu_usage(),
+            "name": format!("cpu{i}"),
+            "brand": "",
+            "vendor_id": "",
+            "frequency_mhz": 0,
+            "usage_pct": 0.0,
         })
     }).collect())
 }
