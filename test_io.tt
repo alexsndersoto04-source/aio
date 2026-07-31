@@ -1,4 +1,0 @@
-fn main() {
-    write_file("prueba.txt", "Hola desde Titan");
-    print("Archivo escrito");
-}
