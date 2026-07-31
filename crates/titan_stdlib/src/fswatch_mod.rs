@@ -34,6 +34,7 @@ struct WatcherEntry {
     _watcher: RecommendedWatcher,
     events: mpsc::Receiver<notify::Result<Event>>,
     root: PathBuf,
+    root_canon: PathBuf,
     root_existed: bool,
 }
 
@@ -64,6 +65,17 @@ fn describe(event: &notify::Event) -> String {
 
 // ---------------- One-shot -------------------------------------------
 
+/// True when `p` refers to the watched root. Compared twice — verbatim and
+/// canonicalized — because on macOS `/var` is a symlink to `/private/var`:
+/// callers typically pass `$TMPDIR` verbatim (`/var/folders/…`) while
+/// FSEvents reports canonical kernel paths (`/private/var/folders/…`), so a
+/// plain string compare never matches and the phantom `create:` of the
+/// watched root leaks through (observed on GitHub's macos runners).
+fn path_is_root(p: &std::path::Path, root: &std::path::Path, root_canon: &std::path::Path) -> bool {
+    if p == root || p == root_canon { return true; }
+    std::fs::canonicalize(p).ok().as_deref() == Some(root_canon)
+}
+
 /// Receive the first REAL event within `timeout`, preserving the remaining
 /// budget across discards. Phantom events that predate the watch are dropped:
 /// FSEvents (macOS) coalesces its journal and may deliver a `create` for the
@@ -74,6 +86,7 @@ fn recv_fresh(
     rx: &mpsc::Receiver<notify::Result<Event>>,
     timeout: Duration,
     root: &PathBuf,
+    root_canon: &PathBuf,
     root_existed: bool,
 ) -> Result<notify::Result<Event>, mpsc::RecvTimeoutError> {
     let deadline = Instant::now() + timeout;
@@ -85,7 +98,7 @@ fn recv_fresh(
                 let stale = root_existed
                     && matches!(event.kind, EventKind::Create(_))
                     && !event.paths.is_empty()
-                    && event.paths.iter().all(|p| p == root);
+                    && event.paths.iter().all(|p| path_is_root(p, root, root_canon));
                 if stale { continue; }
                 return Ok(Ok(event.clone()));
             }
@@ -102,8 +115,9 @@ pub fn watch_once(path: &str, timeout_ms: u64, recursive: bool) -> Result<String
     let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
     let root = PathBuf::from(path);
     let root_existed = root.exists();
+    let root_canon = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     watcher.watch(&root, mode).map_err(nerr)?;
-    match recv_fresh(&rx, Duration::from_millis(timeout_ms), &root, root_existed) {
+    match recv_fresh(&rx, Duration::from_millis(timeout_ms), &root, &root_canon, root_existed) {
         Ok(Ok(event))  => Ok(describe(&event)),
         Ok(Err(error)) => Err(nerr(error)),
         Err(_)         => Ok("timeout".into()),
@@ -119,11 +133,12 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
     let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
     let root = PathBuf::from(path);
     let root_existed = root.exists();
+    let root_canon = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     watcher.watch(&root, mode).map_err(nerr)?;
     let mut reg = registry().lock().expect("fswatch registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.entries.insert(id, WatcherEntry { _watcher: watcher, events: rx, root, root_existed });
+    reg.entries.insert(id, WatcherEntry { _watcher: watcher, events: rx, root, root_canon, root_existed });
     Ok(id)
 }
 
@@ -132,7 +147,7 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
 pub fn next_event(handle: i64, timeout_ms: u64) -> Result<String, FsWatchError> {
     let reg = registry().lock().expect("fswatch registry poisoned");
     let entry = reg.entries.get(&handle).ok_or(FsWatchError::UnknownHandle(handle))?;
-    match recv_fresh(&entry.events, Duration::from_millis(timeout_ms), &entry.root, entry.root_existed) {
+    match recv_fresh(&entry.events, Duration::from_millis(timeout_ms), &entry.root, &entry.root_canon, entry.root_existed) {
         Ok(Ok(event))  => Ok(describe(&event)),
         Ok(Err(error)) => Err(nerr(error)),
         Err(_)         => Ok("timeout".into()),
