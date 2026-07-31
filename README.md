@@ -1,11 +1,40 @@
 # TITAN / Zett
 
+[![cross-platform CI](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml)
+
 TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM. On Termux, the compiler ships as the **`zett`** binary.
 
-> **Project status.** Version **0.33.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end. There is a real WebAssembly backend (`zett wasm`), and the standard library has grown to **34 optional modules** covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, **terminal/TUI** (colors, cursor, keys, animated bars, readline with history), **image processing** (PNG/JPEG/WebP/BMP/GIF), **QR codes** (ASCII/Unicode/SVG/PNG), **system info** (CPU %, memory, load average, processes, disks, networks), **file-system watcher** (inotify), **Unix signals**, **audio** (real WAV I/O and synthesis + playback/recording via Termux:API), **NoSQL storage** (embedded ACID key-value store via sled + blocking Redis client), a pure-Rust **HTTP/1.1 web server** with a radix-tree **URL router** (tiny_http + matchit, the same router axum uses) supporting named / catch-all path parameters, JSON responses and RFC 6455 WebSocket upgrades, **SVG charts** (line / multi-line / bar / scatter / histogram via plotters, no C-deps), **HuggingFace tokenizers** (BPE / WordPiece / Unigram via the official `tokenizers` crate in pure-Rust mode), **on-device ONNX inference** (via `tract-onnx`, Sonos' production Rust inference engine — load `.onnx` models and run them entirely on the phone's CPU, no CUDA / cuDNN / BLAS / ONNX Runtime C++), and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
+> **Project status.** Version **0.34.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end, and the full **201-test** suite passes on real **Ubuntu, Windows and macOS** runners plus **Android (Termux)** before every release (see [Releases](https://github.com/alexsndersoto04-source/aio/releases)). There is a real WebAssembly backend (`zett wasm`), and the standard library spans **72 `std::*` namespaces with 681 registered native functions**, covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, **terminal/TUI** (colors, cursor, keys, animated bars, readline with history), **image processing** (PNG/JPEG/WebP/BMP/GIF), **QR codes** (ASCII/Unicode/SVG/PNG), **system info** (CPU %, memory, load average, processes, disks, networks), **file-system watcher** (inotify), **Unix signals**, **audio** (real WAV I/O and synthesis + playback/recording via Termux:API), **NoSQL storage** (embedded ACID key-value store via sled + blocking Redis client), a pure-Rust **HTTP/1.1 web server** with a radix-tree **URL router** (tiny_http + matchit, the same router axum uses) supporting named / catch-all path parameters, JSON responses and RFC 6455 WebSocket upgrades, **SVG charts** (line / multi-line / bar / scatter / histogram via plotters, no C-deps), **HuggingFace tokenizers** (BPE / WordPiece / Unigram via the official `tokenizers` crate in pure-Rust mode), **on-device ONNX inference** (via `tract-onnx`, Sonos' production Rust inference engine — load `.onnx` models and run them entirely on the phone's CPU, no CUDA / cuDNN / BLAS / ONNX Runtime C++), and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
 
 
-## Install on Termux (one-liner)
+## Install
+
+Prebuilt binaries ship on the [**Releases** page](https://github.com/alexsndersoto04-source/aio/releases/latest) for Linux, macOS and Windows; Android/Termux installs from our own APT repo.
+
+### 🐧 Linux (x86-64)
+
+```bash
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.34.0/zett-linux-x86_64.tar.gz | tar xz
+./zett version
+```
+
+### 🍎 macOS (Apple Silicon)
+
+```bash
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.34.0/zett-macos-arm64.tar.gz | tar xz
+xattr -d com.apple.quarantine zett 2>/dev/null; true   # unsigned binary: clear the quarantine flag once
+./zett version
+```
+
+### 🪟 Windows (x86-64)
+
+Download `zett-windows-x86_64.zip` from [Releases](https://github.com/alexsndersoto04-source/aio/releases/latest), unzip it, then in PowerShell:
+
+```powershell
+.\zett.exe version
+```
+
+### 🤖 Android / Termux (one-liner via our APT repo)
 
 ```bash
 echo 'deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo ./ ' \
@@ -19,6 +48,13 @@ the Termux:API app from F-Droid and:
 
 ```bash
 pkg install termux-api
+```
+
+### Quick smoke test (any OS)
+
+```bash
+echo 'fn main() { let n = std::procfs::cpu_count() print("TITAN sees {n} CPUs here") }' > hi.titan
+zett run hi.titan        # on Linux/macOS use ./zett
 ```
 
 ## Build from source
@@ -145,7 +181,7 @@ The build artifact uses a portable, versioned JSON bytecode container with a mag
 
 Additional crates provide HIR/MIR data structures, tracing GC metadata, scheduling, package manifests, standard-library host functions, macros, and editor services. They are kept separate so the executable core does not depend on unfinished optimization passes.
 
-The standard library includes checked binary I/O, LRU caching, collections algorithms, CSV, strict hex/Base64/percent encoding, bounded and atomic filesystem operations, JSON querying/merge, paths, process execution with timeouts, streaming statistics, Unicode-scalar text operations, clocks/deadlines and checksums. A shared native registry exposes 128 functions directly to `.titan`; effectful calls are controlled by VM capabilities. See [`docs/STDLIB.md`](docs/STDLIB.md).
+The standard library includes checked binary I/O, LRU caching, collections algorithms, CSV, strict hex/Base64/percent encoding, bounded and atomic filesystem operations, JSON querying/merge, paths, process execution with timeouts, streaming statistics, Unicode-scalar text operations, clocks/deadlines and checksums. A shared native registry exposes 681 functions directly to `.titan`; effectful calls are controlled by VM capabilities. See [`docs/STDLIB.md`](docs/STDLIB.md).
 
 Advanced subsystems are documented separately instead of overcrowding this overview: [projects/packages](docs/PROJECTS.md), [validated bytecode/debug source maps](docs/DEBUGGER.md), [LSP](docs/LSP.md), [DAP](docs/DAP.md), [threaded tasks and channels](docs/CONCURRENCY.md), and [TCP/HTTP networking](docs/NETWORKING.md), and [TLS](docs/TLS.md), and [WebSockets](docs/WEBSOCKET.md), and the [HTTP/HTTPS client](docs/HTTP_CLIENT.md), and [multipart uploads](docs/MULTIPART.md), and [metrics](docs/METRICS.md), and [server lifecycle/backpressure](docs/SERVER_LIFECYCLE.md), and [SQLite](docs/SQLITE.md), and [PostgreSQL](docs/POSTGRESQL.md), and [MySQL](docs/MYSQL.md), and the [common database API](docs/DATABASE_API.md), and [remote registry](docs/PACKAGE_REGISTRY.md), and [WebAssembly](docs/WASM.md).
 
