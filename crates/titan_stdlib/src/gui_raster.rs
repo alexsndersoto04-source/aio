@@ -8,7 +8,6 @@
 //! later slice of Fase 2: what the tests verify here is what users see.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 
 use crate::gui::{self, Widget, WidgetType};
 
@@ -48,6 +47,7 @@ impl Canvas {
         self.pixels[i..i + 4].copy_from_slice(&c);
     }
 
+    #[cfg(test)] // solo los tests inspeccionan pixeles individuales
     fn at(&self, x: i64, y: i64) -> [u8; 4] {
         let i = (y as usize * self.width + x as usize) * 4;
         [self.pixels[i], self.pixels[i + 1], self.pixels[i + 2], self.pixels[i + 3]]
@@ -218,7 +218,7 @@ fn glyph(ch: u8) -> [u8; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::MutexGuard;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     /// The GUI tree is one global registry and `cargo test` runs these on
     /// parallel threads — serialize behind one lock, like the other
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_A_has_apex_and_feet_like_a_real_letterform() {
+    fn glyph_a_has_apex_and_feet_like_a_real_letterform() {
         let mut canvas = Canvas::new(8, 8, BG);
         canvas.draw_glyph(b'A', 0, 0, BUTTON_TEXT);
         assert_eq!(canvas.at(3, 0), BUTTON_TEXT, "row0 0x18 apex");
