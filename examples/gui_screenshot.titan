@@ -1,0 +1,40 @@
+// La primera GUI dibujada por TITAN (Fase 2, sesion 1).
+//
+// El rasterizador por software convierte el arbol de widgets en PIXELES
+// RGBA reales (fuente bitmap 8x8 embebida, puro Rust, sin GPU ni ventana)
+// y std::image los guarda como PNG. Corre en Termux, Linux, Windows y
+// macOS.
+//
+// Ejecutar con:
+//     zett run examples/gui_screenshot.titan
+// Genera `mi_primera_gui.png` en el directorio actual.
+
+fn main() {
+    print("==== La primera interfaz grafica de TITAN ====")
+    print("encendiendo el motor de widgets:")
+    print(std::gui::init())
+
+    let root = std::gui::create_container("TITAN OS V0.34", 320, 200)
+    print("contenedor 320x200 listo (id {root})")
+
+    let saludo = std::gui::add_label(root, "HOLA MARACAIBO!", 48, 44)
+    let boton = std::gui::add_button(root, "ENCENDER", 96, 76, 128, 32)
+    let estado = std::gui::add_label(root, "ESTADO: LISTO", 96, 128)
+    print("widgets en el arbol: {std::gui::child_count(root)}")
+
+    print("dejando el boton presionado (se pinta oscuro):")
+    print(std::gui::trigger_click(boton))
+
+    print("rasterizando a pixeles RGBA reales...")
+    let rgba = std::gui::render(root)
+    print("bytes producidos: {std::bytes::length(rgba)} (esperado 256000 = 320x200x4)")
+
+    let img = std::image::from_rgba(320, 200, rgba)
+    print("guardando mi_primera_gui.png...")
+    std::image::save(img, "mi_primera_gui.png")
+    std::image::close(img)
+
+    print("")
+    print("LISTO: abre mi_primera_gui.png — acabas de ver la primera")
+    print("interfaz grafica jamas dibujada por el lenguaje TITAN.")
+}

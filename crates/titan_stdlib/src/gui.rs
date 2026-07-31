@@ -8,6 +8,7 @@ pub enum WidgetType {
     Label,
 }
 
+#[derive(Clone)]
 pub struct Widget {
     pub id: i64,
     pub widget_type: WidgetType,
@@ -192,6 +193,13 @@ pub fn shutdown() -> bool {
     } else {
         false
     }
+}
+
+/// Fase 2: full snapshot of the widget tree for the software rasterizer
+/// (`gui_raster`). Widget trees are tiny (per-app controls), so cloning
+/// the whole map is cheaper and simpler than a bespoke query API.
+pub(crate) fn snapshot_widgets() -> HashMap<i64, Widget> {
+    get_gui_state().lock().map(|state| state.widgets.clone()).unwrap_or_default()
 }
 
 #[cfg(test)]

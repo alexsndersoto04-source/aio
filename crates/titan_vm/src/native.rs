@@ -250,6 +250,8 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::gui::is_clicked" => { let id = int!(); Value::Bool(titan_gui_is_clicked(id)) }
         "std::gui::child_count" => { let id = int!(); Value::Int(titan_gui_child_count(id) as i64) }
         "std::gui::shutdown" => Value::Bool(titan_gui_shutdown()),
+        // Fase 2: rasterizador por software — pixeles RGBA reales del arbol.
+        "std::gui::render" => { let id = int!(); match stdlib::gui_raster::render_rgba(id) { Some((_w, _h, pixels)) => Value::Bytes(pixels), None => Value::Nil } }
         // Phase 9: Freestanding & Bare-Metal Bindings
         "std::freestanding::init" => { let arch = string!(); Value::Bool(titan_freestanding_init(&arch)) }
         "std::freestanding::validate_target_spec" => { let target = string!(); Value::Bool(titan_freestanding_validate_target_spec(&target)) }
@@ -699,6 +701,10 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         // ---------------- Phase 7: images (image crate) ----------------
         #[cfg(feature = "image_mod")] "std::image::load"       => Value::Int(stdlib::image_mod::load(&string!()).map_err(error)?),
         #[cfg(feature = "image_mod")] "std::image::load_bytes" => Value::Int(stdlib::image_mod::load_bytes(&bytes!()).map_err(error)?),
+        #[cfg(feature = "image_mod")] "std::image::from_rgba" => {
+            let width = int!() as u32; let height = int!() as u32; let data = bytes!();
+            Value::Int(stdlib::image_mod::from_rgba(width, height, &data).map_err(error)?)
+        }
         #[cfg(feature = "image_mod")] "std::image::save" => {
             let handle = int!(); let path = string!();
             stdlib::image_mod::save(handle, &path).map_err(error)?; Value::Nil

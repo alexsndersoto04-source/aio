@@ -3,6 +3,7 @@
 pub mod game;
 pub mod audio;
 pub mod gui;
+pub mod gui_raster;
 pub mod freestanding;
 pub mod freestanding_memory;
 pub mod freestanding_cpu;

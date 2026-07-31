@@ -27,6 +27,8 @@ pub enum ImageError {
     UnknownFormat(String),
     #[error("unknown filter '{0}' (try nearest, triangle, catmullrom, gaussian, lanczos3)")]
     UnknownFilter(String),
+    #[error("invalid RGBA buffer: {0}")]
+    BadBuffer(String),
     #[error("no image registered under handle {0}")]
     UnknownHandle(i64),
 }
@@ -85,6 +87,17 @@ pub fn load(path: &str) -> Result<i64, ImageError> {
 /// Load an image from raw bytes. Returns an opaque handle.
 pub fn load_bytes(bytes: &[u8]) -> Result<i64, ImageError> {
     Ok(insert(image::load_from_memory(bytes)?))
+}
+
+/// Register a raw RGBA8 buffer as an image (Fase 2: the software GUI
+/// rasterizer `std::gui::render` produces exactly this format) and
+/// return its handle. `rgba.len()` must equal `width * height * 4`.
+pub fn from_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<i64, ImageError> {
+    let expected = width as usize * height as usize * 4;
+    let image = image::RgbaImage::from_raw(width, height, rgba.to_vec()).ok_or_else(|| {
+        ImageError::BadBuffer(format!("{width}x{height} needs {expected} bytes, got {}", rgba.len()))
+    })?;
+    Ok(insert(DynamicImage::ImageRgba8(image)))
 }
 
 /// Save an image to a file. The format is inferred from the extension.
