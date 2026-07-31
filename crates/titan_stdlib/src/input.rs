@@ -103,9 +103,19 @@ pub fn touch_pos(index: u32) -> (i32, i32, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::MutexGuard;
+
+    /// One global InputState + parallel test threads = serialize every test
+    /// behind this lock. Keys/buttons/touch indexes also stay unique per
+    /// test so even a poisoned lock cannot create cross-test interference.
+    fn test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_input_state_tracking() {
+        let _guard = test_lock();
         assert!(set_key_state("Space", true));
         assert!(is_key_pressed("Space"));
         assert!(!is_key_pressed("Enter"));
@@ -122,5 +132,128 @@ mod tests {
         assert!(set_touch_point(1, 120, 240, true));
         assert_eq!(touch_pos(1), (120, 240, true));
         assert_eq!(touch_pos(99), (0, 0, false));
+    }
+
+    // ---- Keyboard ------------------------------------------------------
+
+    #[test]
+    fn key_press_release_cycle_is_exact() {
+        let _guard = test_lock();
+        assert!(!is_key_pressed("F1_A"));
+        assert!(set_key_state("F1_A", true));
+        assert!(is_key_pressed("F1_A"));
+        // pressing twice is idempotent — still pressed, still true.
+        assert!(set_key_state("F1_A", true));
+        assert!(is_key_pressed("F1_A"));
+        assert!(set_key_state("F1_A", false));
+        assert!(!is_key_pressed("F1_A"));
+        // releasing an already-released key is a valid no-op.
+        assert!(set_key_state("F1_A", false));
+        assert!(!is_key_pressed("F1_A"));
+    }
+
+    #[test]
+    fn multiple_keys_stay_down_independently() {
+        let _guard = test_lock();
+        assert!(set_key_state("F2_A", true));
+        assert!(set_key_state("F2_B", true));
+        assert!(set_key_state("F2_C", true));
+        assert!(set_key_state("F2_B", false));
+        assert!(is_key_pressed("F2_A"));
+        assert!(!is_key_pressed("F2_B"));
+        assert!(is_key_pressed("F2_C"));
+        assert!(set_key_state("F2_A", false));
+        assert!(set_key_state("F2_C", false));
+    }
+
+    #[test]
+    fn never_touched_key_reports_not_pressed() {
+        let _guard = test_lock();
+        assert!(!is_key_pressed("NO_SUCH_KEY_XYZ_42"));
+    }
+
+    #[test]
+    fn key_names_are_case_sensitive_and_unicode_safe() {
+        let _guard = test_lock();
+        assert!(set_key_state("F3_Lower", true));
+        assert!(is_key_pressed("F3_Lower"));
+        assert!(!is_key_pressed("f3_lower"), "case must matter, like real keyboard layouts");
+        assert!(set_key_state("Ñandú", true));
+        assert!(is_key_pressed("Ñandú"));
+        assert!(set_key_state("F3_Lower", false));
+        assert!(set_key_state("Ñandú", false));
+    }
+
+    // ---- Mouse ----------------------------------------------------------
+
+    #[test]
+    fn mouse_tracks_negative_and_overwritten_positions() {
+        let _guard = test_lock();
+        assert!(set_mouse_pos(-15, -42));
+        assert_eq!(mouse_pos(), (-15, -42));
+        assert!(set_mouse_pos(640, 480));
+        assert_eq!(mouse_pos(), (640, 480), "latest write wins");
+        assert!(set_mouse_pos(0, 0));
+    }
+
+    #[test]
+    fn mouse_buttons_track_independently() {
+        let _guard = test_lock();
+        assert!(set_mouse_button(7, true));
+        assert!(set_mouse_button(8, true));
+        assert!(set_mouse_button(7, false));
+        assert!(!is_mouse_button_pressed(7));
+        assert!(is_mouse_button_pressed(8));
+        assert!(!is_mouse_button_pressed(9), "never touched");
+        assert!(set_mouse_button(8, false));
+    }
+
+    // ---- Multi-touch ----------------------------------------------------
+
+    #[test]
+    fn touch_tracks_multiple_points_at_once() {
+        let _guard = test_lock();
+        assert!(set_touch_point(81, 100, 200, true));
+        assert!(set_touch_point(82, 300, 400, true));
+        assert_eq!(touch_pos(81), (100, 200, true));
+        assert_eq!(touch_pos(82), (300, 400, true));
+        assert!(set_touch_point(81, 0, 0, false));
+        assert!(set_touch_point(82, 0, 0, false));
+    }
+
+    #[test]
+    fn touch_updates_coordinates_while_staying_active() {
+        let _guard = test_lock();
+        assert!(set_touch_point(83, 10, 10, true));
+        assert!(set_touch_point(83, 55, 77, true));
+        assert_eq!(touch_pos(83), (55, 77, true), "dragging updates in place");
+        assert!(set_touch_point(83, 0, 0, false));
+        assert_eq!(touch_pos(83), (0, 0, false));
+    }
+
+    #[test]
+    fn touch_index_zero_and_extreme_indexes_work() {
+        let _guard = test_lock();
+        assert!(set_touch_point(0, 1, 2, true));
+        assert_eq!(touch_pos(0), (1, 2, true));
+        assert!(set_touch_point(0, 0, 0, false));
+        assert_eq!(touch_pos(u32::MAX), (0, 0, false), "untouched extreme index");
+    }
+
+    // ---- Cross-domain isolation -----------------------------------------
+
+    #[test]
+    fn keys_buttons_and_touch_do_not_leak_into_each_other() {
+        let _guard = test_lock();
+        assert!(set_key_state("F4_KEY", true));
+        assert!(set_mouse_button(251, true));
+        assert!(set_touch_point(84, 9, 9, true));
+        assert!(!is_mouse_button_pressed(252));
+        assert!(!is_key_pressed("F4_BUTTON"));
+        assert_eq!(touch_pos(85), (0, 0, false));
+        // cleanup own footprint
+        assert!(set_key_state("F4_KEY", false));
+        assert!(set_mouse_button(251, false));
+        assert!(set_touch_point(84, 0, 0, false));
     }
 }

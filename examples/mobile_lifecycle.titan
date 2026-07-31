@@ -1,0 +1,47 @@
+// Ciclo de vida de una app movil con `std::mobile` — la maquina de
+// estados estilo Android de TITAN (Running / Paused / Stopped / Destroyed).
+// Es el nucleo que un dia gobernara apps TITAN reales en Android.
+// Corre identico en Termux, Linux, Windows y macOS.
+//
+// Ejecutar con:
+//     zett run examples/mobile_lifecycle.titan
+
+fn resumen(accion: string) {
+    print("{accion} -> estado: {std::mobile::state()}")
+}
+
+fn main() {
+    print("==== Un dia en la vida de una app TITAN ====")
+    print("estado al arrancar: {std::mobile::state()}")
+    print("")
+
+    print("el usuario ABRE la app")
+    print(std::mobile::trigger("onStart"))
+    resumen("onStart")
+
+    print("llega una llamada y BLOQUEA la pantalla")
+    print(std::mobile::trigger("onPause"))
+    resumen("onPause")
+
+    print("se va al home del telefono")
+    print(std::mobile::trigger("onStop"))
+    resumen("onStop")
+
+    print("vuelve a tocar el icono de la app")
+    print(std::mobile::trigger("onResume"))
+    resumen("onResume")
+
+    print("la cierra desde recientes, para siempre")
+    print(std::mobile::trigger("onDestroy"))
+    resumen("onDestroy")
+
+    print("")
+    print("historial de eventos que proceso el servicio:")
+    let eventos = std::mobile::poll_events()
+    for e in eventos {
+        print(" - {e}")
+    }
+    print("poll despues de drenar (lista vacia = cola limpia):")
+    print(std::mobile::poll_events())
+    print("==== fin ====")
+}

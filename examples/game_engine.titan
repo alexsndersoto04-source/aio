@@ -1,0 +1,93 @@
+// Motor de juego 2D headless de TITAN (`std::game`).
+//
+// Un bucle de juego DE VERDAD pero sin ventana: delta time medido con
+// reloj real, fisica integrada con dt, rebotes y deteccion de colisiones
+// AABB contra un obstaculo. Corre identico en Termux (Android), Linux,
+// Windows y macOS.
+//
+// Ejecutar con:
+//     zett run examples/game_engine.titan
+
+fn main() {
+    print("==== Motor de juego TITAN (headless) ====")
+    print("")
+    print("encendiendo motor 800x600...")
+    print(std::game::init("Pelota Titan", 800, 600))
+
+    // mundo
+    let ancho = 800.0
+    let alto = 600.0
+
+    // pelota 20x20 en el centro
+    let x = 390.0
+    let y = 290.0
+    let tam = 20.0
+    let vx = 240.0
+    let vy = 180.0
+
+    // obstaculo (una "paleta" enemiga abajo en el centro)
+    let ox = 380.0
+    let oy = 560.0
+    let o_w = 40.0
+    let o_h = 40.0
+
+    let bordes = 0
+    let goles = 0
+    let sub = 0
+
+    for i in 0..90 {
+        // ritmo humano: ~60 fps de verdad
+        std::time::sleep_ms(16)
+
+        // 1) DELTA TIME real medido por el motor
+        let dt = std::game::step()
+
+        // 2) FISICA real: posicion = posicion + velocidad * dt
+        x = x + vx * dt
+        y = y + vy * dt
+
+        // 3) rebotes contra los bordes del mundo
+        if x < 0.0 {
+            x = 0.0
+            vx = 0.0 - vx
+            bordes = bordes + 1
+        }
+        if x + tam > ancho {
+            x = ancho - tam
+            vx = 0.0 - vx
+            bordes = bordes + 1
+        }
+        if y < 0.0 {
+            y = 0.0
+            vy = 0.0 - vy
+            bordes = bordes + 1
+        }
+        if y + tam > alto {
+            y = alto - tam
+            vy = 0.0 - vy
+            bordes = bordes + 1
+        }
+
+        // 4) COLISION AABB real contra la paleta enemiga
+        if std::game::check_collision(x, y, tam, tam, ox, oy, o_w, o_h) {
+            vy = 0.0 - vy
+            y = oy - tam
+            goles = goles + 1
+        }
+
+        // telemetria cada ~medio segundo
+        sub = sub + 1
+        if sub > 29 {
+            sub = 0
+            print("frame {i} | dt real: {dt} s | fps del motor: {std::game::fps()} | pelota ({x}, {y})")
+        }
+    }
+
+    print("")
+    print("rebotes en bordes: {bordes}")
+    print("colisiones con la paleta: {goles}")
+    print("fps finales medidos: {std::game::fps()}")
+    print("apagando motor:")
+    print(std::game::shutdown())
+    print("==== fin — el mismo archivo corre en los 4 sistemas ====")
+}
