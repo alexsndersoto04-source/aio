@@ -210,6 +210,10 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::input::mouse_pos" => { let (x, y) = stdlib::input::mouse_pos(); Value::Array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y))]) }
         "std::input::is_mouse_button_pressed" => { let btn = int!() as u8; Value::Bool(stdlib::input::is_mouse_button_pressed(btn)) }
         "std::input::touch_pos" => { let idx = int!() as u32; let (x, y, active) = stdlib::input::touch_pos(idx); Value::Array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y)), Value::Bool(active)]) }
+        "std::input::set_key_state" => { let key = string!(); let pressed = boolean!(); Value::Bool(stdlib::input::set_key_state(&key, pressed)) }
+        "std::input::set_mouse_pos" => { let x = int!() as i32; let y = int!() as i32; Value::Bool(stdlib::input::set_mouse_pos(x, y)) }
+        "std::input::set_mouse_button" => { let btn = int!() as u8; let pressed = boolean!(); Value::Bool(stdlib::input::set_mouse_button(btn, pressed)) }
+        "std::input::set_touch_point" => { let idx = int!() as u32; let x = int!() as i32; let y = int!() as i32; let active = boolean!(); Value::Bool(stdlib::input::set_touch_point(idx, x, y, active)) }
         "std::clipboard::get_text" => Value::Str(stdlib::clipboard::get_text()),
         "std::clipboard::set_text" => { let text = string!(); Value::Bool(stdlib::clipboard::set_text(&text)) }
         "std::notify::send" => { let title = string!(); let body = string!(); Value::Bool(stdlib::clipboard::send_notification(&title, &body)) }
@@ -225,6 +229,7 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
             let x2 = float!(); let y2 = float!(); let w2 = float!(); let h2 = float!();
             Value::Bool(titan_game_check_collision((x1, y1), (w1, h1), (x2, y2), (w2, h2)))
         }
+        "std::game::shutdown" => Value::Bool(titan_game_shutdown()),
         // Legacy in-memory audio module renamed to `sim_*` in 0.7.0 so
         // the real `std::audio::*` (Phase 9: hound + termux-media) can
         // own those names. See titan_stdlib/src/native.rs.
@@ -2081,6 +2086,9 @@ pub fn titan_game_fps() -> i64 {
 }
 pub fn titan_game_check_collision(pos1: (f64, f64), size1: (f64, f64), pos2: (f64, f64), size2: (f64, f64)) -> bool {
     titan_stdlib::game::check_collision(pos1, size1, pos2, size2)
+}
+pub fn titan_game_shutdown() -> bool {
+    titan_stdlib::game::shutdown()
 }
 pub fn titan_audio_init() -> bool {
     titan_stdlib::audio::init()

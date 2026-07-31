@@ -87,7 +87,6 @@ fn main() {
     print("rebotes en bordes: {bordes}")
     print("colisiones con la paleta: {goles}")
     print("fps finales medidos: {std::game::fps()}")
-    print("apagando motor:")
-    print(std::game::shutdown())
+    print("motor en reposo (std::game::shutdown llega con el build 0.35)")
     print("==== fin — el mismo archivo corre en los 4 sistemas ====")
 }

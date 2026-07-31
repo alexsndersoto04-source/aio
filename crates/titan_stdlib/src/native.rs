@@ -211,6 +211,12 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::input::mouse_pos", [], Array),
     native!("std::input::is_mouse_button_pressed", [Int], Bool),
     native!("std::input::touch_pos", [Int], Array),
+    // Setters expuestos en Fase 1: el host (o el propio script) alimenta el
+    // estado; el backend de ventanas (Fase 2) cableara eventos reales aqui.
+    native!("std::input::set_key_state", [String, Bool], Bool),
+    native!("std::input::set_mouse_pos", [Int, Int], Bool),
+    native!("std::input::set_mouse_button", [Int, Bool], Bool),
+    native!("std::input::set_touch_point", [Int, Int, Int, Bool], Bool),
     native!("std::clipboard::get_text", [], String),
     native!("std::clipboard::set_text", [String], Bool),
     native!("std::notify::send", [String, String], Bool),
@@ -221,6 +227,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::game::step", [], Float),
     native!("std::game::fps", [], Int),
     native!("std::game::check_collision", [Float, Float, Float, Float, Float, Float, Float, Float], Bool),
+    native!("std::game::shutdown", [], Bool),
     // NOTE: the legacy in-memory audio module (buffers, playback flags,
     // volume) was retired in 0.7.0 and replaced by std::audio::* below,
     // which is the real one (WAV I/O via `hound` + playback through
