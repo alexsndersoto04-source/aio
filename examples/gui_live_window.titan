@@ -73,7 +73,9 @@ fn main() {
         // El titulo muestra frame y mouse reales (cada 30 frames).
         if frame % 30 == 0 {
             let pos = std::input::mouse_pos()
-            std::window::live_set_title(win, "TITAN VIVO — frame {frame} mouse {pos[0]},{pos[1]}")
+            let mx = pos[0]
+            let my = pos[1]
+            std::window::live_set_title(win, "TITAN VIVO - frame {frame} mouse {mx},{my}")
         }
 
         // Escape tambien cierra, por decision del usuario.
