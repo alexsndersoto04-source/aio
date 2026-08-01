@@ -134,22 +134,28 @@ pub fn poll_events(id: u64) -> Vec<String> {
     if let Ok(mut reg) = registry().lock() {
         if let Some(win) = reg.get_mut(&id) {
             for ev in win.events.drain(..) {
-                let formatted = match ev {
-                    WindowEvent::CloseRequested => "CloseRequested".to_string(),
-                    WindowEvent::Resized { width, height } => format!("Resized({width}, {height})"),
-                    WindowEvent::FocusGained => "FocusGained".to_string(),
-                    WindowEvent::FocusLost => "FocusLost".to_string(),
-                    WindowEvent::KeyDown { key } => format!("KeyDown({key})"),
-                    WindowEvent::KeyUp { key } => format!("KeyUp({key})"),
-                    WindowEvent::MouseMove { x, y } => format!("MouseMove({x}, {y})"),
-                    WindowEvent::MouseButtonDown { button } => format!("MouseButtonDown({button})"),
-                    WindowEvent::MouseButtonUp { button } => format!("MouseButtonUp({button})"),
-                };
-                out.push(formatted);
+                out.push(format_event(&ev));
             }
         }
     }
     out
+}
+
+/// Format one window event exactly as `poll_events` reports it. Shared
+/// with the live-window backend (Fase 2) so a TITAN program cannot tell
+/// which backend produced an event — one event language, two engines.
+pub fn format_event(ev: &WindowEvent) -> String {
+    match ev {
+        WindowEvent::CloseRequested => "CloseRequested".to_string(),
+        WindowEvent::Resized { width, height } => format!("Resized({width}, {height})"),
+        WindowEvent::FocusGained => "FocusGained".to_string(),
+        WindowEvent::FocusLost => "FocusLost".to_string(),
+        WindowEvent::KeyDown { key } => format!("KeyDown({key})"),
+        WindowEvent::KeyUp { key } => format!("KeyUp({key})"),
+        WindowEvent::MouseMove { x, y } => format!("MouseMove({x}, {y})"),
+        WindowEvent::MouseButtonDown { button } => format!("MouseButtonDown({button})"),
+        WindowEvent::MouseButtonUp { button } => format!("MouseButtonUp({button})"),
+    }
 }
 
 #[cfg(test)]

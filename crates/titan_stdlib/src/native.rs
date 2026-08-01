@@ -210,6 +210,9 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::window::live_open", [String, Int, Int], Int),
     native!("std::window::live_is_open", [Int], Bool),
     native!("std::window::live_close", [Int], Bool),
+    native!("std::window::live_set_title", [Int, String], Bool),
+    native!("std::window::live_pump", [Int, Int], Int),
+    native!("std::window::live_poll_events", [Int], Array),
 
     native!("std::input::is_key_pressed", [String], Bool),
     native!("std::input::mouse_pos", [], Array),

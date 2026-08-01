@@ -208,6 +208,9 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_open" => { let title = string!(); let w = int!(); let h = int!(); Value::Int(stdlib::window_live::live_open(&title, w as u32, h as u32)) }
         #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_is_open" => { let id = int!(); Value::Bool(stdlib::window_live::live_is_open(id)) }
         #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_close" => { let id = int!(); Value::Bool(stdlib::window_live::live_close(id)) }
+        #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_set_title" => { let id = int!(); let title = string!(); Value::Bool(stdlib::window_live::live_set_title(id, &title)) }
+        #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_pump" => { let id = int!(); let gui = int!(); Value::Int(stdlib::window_live::live_pump(id, gui)) }
+        #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_poll_events" => { let id = int!(); Value::Array(stdlib::window_live::live_poll_events(id).into_iter().map(Value::Str).collect()) }
 
         "std::input::is_key_pressed" => { let key = string!(); Value::Bool(stdlib::input::is_key_pressed(&key)) }
         "std::input::mouse_pos" => { let (x, y) = stdlib::input::mouse_pos(); Value::Array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y))]) }
