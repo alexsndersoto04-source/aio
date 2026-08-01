@@ -22,7 +22,7 @@ fn main() {
     print("==== La primera ventana VIVA de TITAN ====")
     print("construyendo la misma GUI del PNG historico...")
     std::gui::init()
-    let root = std::gui::create_container("TITAN OS V0.34", 320, 200)
+    let root = std::gui::create_container("TITAN OS V0.35", 320, 200)
     let saludo = std::gui::add_label(root, "HOLA MARACAIBO!", 48, 44)
     let boton = std::gui::add_button(root, "ENCENDER", 96, 76, 128, 32)
     let estado = std::gui::add_label(root, "ESTADO: LISTO", 96, 128)
