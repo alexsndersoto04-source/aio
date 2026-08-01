@@ -9,8 +9,8 @@
 //   * Escape o cerrar ventana  -> termina el programa.
 //
 // Corre en Linux/macOS/Windows nativo y en Android via proot-distro
-// + Termux:X11 (binario glibc aarch64). En headless se niega con
-// honestidad (live_open = -1) en vez de fingir.
+// + Termux:X11 (binarios glibc aarch64 y armv7hf). En headless se
+// niega con honestidad (live_open = -1) en vez de fingir.
 //
 // Ejecutar con:
 //     zett run examples/gui_live_window.titan
@@ -31,7 +31,7 @@ fn main() {
         print("SIN PANTALLA (headless): live_open dijo -1 con honestidad.")
         print("En un escritorio con monitor, esto abre la ventana de verdad.")
         std::gui::shutdown()
-        return 0
+        return
     }
     print("ventana abierta con id {win} — empieza el latido a 60 fps")
     print("controles: mouse mueve | click presiona | escape cierra")
