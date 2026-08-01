@@ -4,6 +4,8 @@ pub mod game;
 pub mod audio;
 pub mod gui;
 pub mod gui_raster;
+#[cfg(all(feature = "window_live", not(target_os = "android")))]
+pub mod window_live;
 pub mod freestanding;
 pub mod freestanding_memory;
 pub mod freestanding_cpu;

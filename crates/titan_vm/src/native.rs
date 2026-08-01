@@ -205,6 +205,9 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::window::set_title" => { let id = int!() as u64; let title = string!(); Value::Bool(stdlib::window::set_title(id, &title)) }
         "std::window::resize" => { let id = int!() as u64; let w = int!() as u32; let h = int!() as u32; Value::Bool(stdlib::window::resize(id, w, h)) }
         "std::window::poll_events" => { let id = int!() as u64; Value::Array(stdlib::window::poll_events(id).into_iter().map(Value::Str).collect()) }
+        #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_open" => { let title = string!(); let w = int!(); let h = int!(); Value::Int(stdlib::window_live::live_open(&title, w as u32, h as u32)) }
+        #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_is_open" => { let id = int!(); Value::Bool(stdlib::window_live::live_is_open(id)) }
+        #[cfg(all(feature = "window_live", not(target_os = "android")))] "std::window::live_close" => { let id = int!(); Value::Bool(stdlib::window_live::live_close(id)) }
 
         "std::input::is_key_pressed" => { let key = string!(); Value::Bool(stdlib::input::is_key_pressed(&key)) }
         "std::input::mouse_pos" => { let (x, y) = stdlib::input::mouse_pos(); Value::Array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y))]) }

@@ -206,6 +206,10 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::window::set_title", [Int, String], Bool),
     native!("std::window::resize", [Int, Int, Int], Bool),
     native!("std::window::poll_events", [Int], Array),
+    // Fase 2 — ventana viva (minifb). -1 si no hay display (headless).
+    native!("std::window::live_open", [String, Int, Int], Int),
+    native!("std::window::live_is_open", [Int], Bool),
+    native!("std::window::live_close", [Int], Bool),
 
     native!("std::input::is_key_pressed", [String], Bool),
     native!("std::input::mouse_pos", [], Array),

@@ -50,6 +50,9 @@ extras = [
     # "pdf_mod",
     # Phase 34 — process control, collections avanzadas, datetime extendido.
     "process_mod", "collections_mod", "datetime_ext_mod",
+    # Fase 2 — ventana viva (minifb): ventanas reales del SO; la dep
+    # minifb queda excluida en Android (ver [target] al final).
+    "window_live",
 ]
 
 # Phase 1
@@ -92,6 +95,7 @@ qrcode_mod   = ["dep:qrcode", "dep:image"]
 # Phase 8 — System & OS
 procfs_mod   = ["dep:sysinfo"]
 fswatch_mod  = ["dep:notify"]
+window_live  = ["dep:minifb"]
 signals_mod  = ["dep:signal-hook"]
 
 # Phase 9 — Audio (WAV read/write + synthesis; playback via termux-media-player)
@@ -267,3 +271,9 @@ tract-onnx        = { version = "0.21", optional = true, default-features = fals
 # usa el stub #[cfg(not(unix))] que responde Err honestamente.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", optional = true, default-features = false, features = ["signal"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# Fase 2 — ventana viva. minifb no tiene backend Android (bionic), por
+# eso solo entra en targets no-Android. Pure-Rust: x11rb/wayland en
+# Linux, Win32 en Windows, Cocoa en macOS.
+minifb = { version = "0.27", optional = true }

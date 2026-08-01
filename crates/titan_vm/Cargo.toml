@@ -28,6 +28,8 @@ extras = [
     "vector_mod",
     # Phase 34 — process control, advanced collections, extended datetime.
     "process_mod", "collections_mod", "datetime_ext_mod",
+    # Fase 2 — ventana viva (minifb).
+    "window_live",
     # "pdf_mod",  # disabled in v0.16.0 (printpdf 0.7 API incompatibilities); opt-in only
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
@@ -56,6 +58,7 @@ qrcode_mod    = ["titan_stdlib/qrcode_mod"]
 procfs_mod    = ["titan_stdlib/procfs_mod"]
 fswatch_mod   = ["titan_stdlib/fswatch_mod"]
 signals_mod   = ["titan_stdlib/signals_mod"]
+window_live   = ["titan_stdlib/window_live"]
 audio_mod     = ["titan_stdlib/audio_mod"]
 kv_mod        = ["titan_stdlib/kv_mod"]
 redis_mod     = ["titan_stdlib/redis_mod"]
