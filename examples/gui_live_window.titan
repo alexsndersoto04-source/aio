@@ -8,6 +8,8 @@
 //   * Click izquierdo          -> "presiona" el boton de verdad.
 //   * Mantener presionado      -> termina (click derecho = modo tactil).
 //   * Escape o cerrar ventana  -> termina (en equipos con teclado).
+//   * En telefono puro: la demo se DESPIDE SOLA a los ~60 segundos
+//     e imprime su resumen. Nadie necesita teclado para la ceremonia.
 //
 // Corre en Linux/macOS/Windows nativo y en Android via proot-distro
 // + Termux:X11 (binarios glibc aarch64 y armv7hf). En headless se
@@ -35,13 +37,15 @@ fn main() {
         return
     }
     print("ventana abierta con id {win} — empieza el latido a 60 fps")
-    print("controles: dedo mueve | tocar presiona | mantener presionado cierra")
+    print("controles: dedo mueve | tocar presiona | se despide sola en ~60 seg")
 
     let frame = 0
     let clics = 0
     let eventos_vistos = 0
     let click_estaba_abajo = false
     let viva = 1
+    // ~60 seg x 60 fps: la ceremonia se despide sola, con resumen incluido.
+    let despedida = 3600
 
     while viva == 1 {
         // Un latido: dibuja la GUI y bombea el teclado/mouse reales.
@@ -87,6 +91,12 @@ fn main() {
         // En pantalla tactil (Termux:X11): mantener presionado es el
         // click derecho, y tambien cierra. Sin teclado hace falta esto.
         if std::input::is_mouse_button_pressed(2) {
+            viva = 0
+        }
+
+        // Y si no hay teclado ni gestos que lleguen (telefono puro),
+        // la ceremonia se despide SOLA: nada se queda colgado jamas.
+        if frame >= despedida {
             viva = 0
         }
 
