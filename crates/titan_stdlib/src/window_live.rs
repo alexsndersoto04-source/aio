@@ -19,8 +19,19 @@ use std::sync::{Mutex, OnceLock};
 
 use minifb::{Window, WindowOptions};
 
-fn registry() -> &'static Mutex<HashMap<u64, Window>> {
-    static REG: OnceLock<Mutex<HashMap<u64, Window>>> = OnceLock::new();
+/// `minifb::Window` is not `Send` on most backends (platform handles
+/// are thread-affine), so it cannot live directly in a shared static.
+/// This wrapper is sound because every window access goes through the
+/// registry `Mutex`: only one thread ever touches a window at a time,
+/// and the VM executes TITAN code on a single thread. The macOS
+/// "main thread only" caveat stays documented in the module header.
+struct LiveWindow(Window);
+
+// SAFETY: all access is serialized through the registry `Mutex`.
+unsafe impl Send for LiveWindow {}
+
+fn registry() -> &'static Mutex<HashMap<u64, LiveWindow>> {
+    static REG: OnceLock<Mutex<HashMap<u64, LiveWindow>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -36,7 +47,7 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
     window.set_target_fps(60);
     let id = NEXT_LIVE_ID.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut reg) = registry().lock() {
-        reg.insert(id, window);
+        reg.insert(id, LiveWindow(window));
         id as i64
     } else {
         -1
@@ -46,7 +57,7 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
 /// Whether the live window is still open (false for unknown handles).
 pub fn live_is_open(handle: i64) -> bool {
     registry().lock().ok()
-        .and_then(|mut reg| reg.get_mut(&(handle as u64)).map(|window| window.is_open()))
+        .and_then(|reg| reg.get(&(handle as u64)).map(|window| window.0.is_open()))
         .unwrap_or(false)
 }
 
