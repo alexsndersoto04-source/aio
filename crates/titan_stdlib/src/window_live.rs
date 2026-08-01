@@ -1,6 +1,12 @@
 //! Live on-screen windows for TITAN (Fase 2) — REAL OS windows via
 //! `minifb` (pure-Rust: x11rb/Wayland on Linux, Win32, Cocoa).
 //!
+//! GRADUATED (Fase 2, 2026-07-31): the first live TITAN window ever ran
+//! for real on the author's 32-bit phone (armv7l; proot Debian armhf +
+//! Termux:X11): `live_open` -> id 1, 3,601 frames at 60 fps, real X11
+//! events bridged into `std::input`, clean `live_close`. Declared
+//! working only after running on a real machine, per project rule.
+//!
 //! Availability contract, stated honestly:
 //! * Linux / Windows / macOS with a display: opens a real OS window.
 //! * Headless boxes (CI, SSH, Docker): `live_open` reports `-1` instead

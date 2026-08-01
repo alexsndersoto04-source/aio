@@ -2,7 +2,7 @@
 
 The `titan_stdlib` crate provides memory-safe host capabilities for the compiler, VM embedders, and future native builtin bridge. APIs return `Result`/`Option` where operations can fail; malformed input is not silently accepted.
 
-> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry currently contains 128 functions; the type checker validates their arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors.
+> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry currently contains 694 functions; the type checker validates their arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors.
 
 ## Modules
 
@@ -14,12 +14,17 @@ The `titan_stdlib` crate provides memory-safe host capabilities for the compiler
 | `collections` | Vec/map/set/deque/heap aliases; deduplication, frequency, grouping, partitioning, chunks, windows, zip, search |
 | `csv` | Quoted CSV parser, serializer and header-based table access |
 | `encoding` | Strict hex, Base64 and UTF-8 percent encoding/decoding |
+| `game` | Headless 2D frame loop with measured delta-time/FPS and AABB collision detection (Fase 1 graduated) |
+| `gui` | Retained-mode widget tree: containers, labels, buttons, text, click state and child traversal (Fase 2 graduated) |
+| `gui_raster` | Pure-Rust software rasterizer rendering the `gui` tree to RGBA buffers and PNG (Fase 2 graduated) |
+| `input` | Real keyboard/mouse/multi-touch hardware state for games and GUI (Fase 1 graduated) |
 | `io` | Text/bytes, bounded reads, lines, append, atomic writes, sorted directory listing and depth-limited walking |
 | `http` | Incremental HTTP/1.1 request parsing, anti-smuggling validation, keep-alive metadata and safe response construction |
 | `http_client` | Bounded HTTP/HTTPS requests, redirects, chunked transfer, timeouts and WebPKI validation |
 | `json` | Parsing, compact/pretty output, JSON Pointer, path queries, merge patch behavior and flattening |
 | `math` | Common floating-point functions and generic min/max |
 | `metrics` | Thread-safe counters, gauges, aggregate histograms and snapshots |
+| `mobile` | Android-style app lifecycle state machine: foreground/background, pause/resume (Fase 1 graduated) |
 | `multipart` | Bounded multipart/form-data parsing with safe upload metadata |
 | `net` | TCP client/server and parsed plaintext HTTP/1.1 responses |
 | `path` | Join, components, normalization, absolute/canonical paths and containment checks |
@@ -29,6 +34,8 @@ The `titan_stdlib` crate provides memory-safe host capabilities for the compiler
 | `testing` | Assertions for host-side library tests |
 | `text` | Unicode-scalar length/reverse, codepoints, truncation, padding, HTML escaping, slugification and Levenshtein distance |
 | `time` | Unix timestamps, checked duration construction, stopwatch and monotonic deadlines |
+| `window` | Logical window abstraction with a typed event queue and shared event formatting (Fase 2 graduated) |
+| `window_live` | Real OS windows at 60 fps via pure-Rust minifb (X11/Wayland/Win32/Cocoa), bridging real input into `std::input`; on headless boxes it honestly reports `-1`. **Fase 2 graduated 2026-07-31**: first live window ran 3,601 frames on a real 32-bit Android phone (armv7l, proot + Termux:X11) and closed cleanly |
 | `websocket` | RFC 6455 handshake, secure masking, incremental frame codec and protocol validation |
 
 ## Security boundaries
