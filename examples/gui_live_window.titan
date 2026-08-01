@@ -6,7 +6,8 @@
 //
 //   * Mueve el mouse por encima -> el titulo muestra la posicion.
 //   * Click izquierdo          -> "presiona" el boton de verdad.
-//   * Escape o cerrar ventana  -> termina el programa.
+//   * Mantener presionado      -> termina (click derecho = modo tactil).
+//   * Escape o cerrar ventana  -> termina (en equipos con teclado).
 //
 // Corre en Linux/macOS/Windows nativo y en Android via proot-distro
 // + Termux:X11 (binarios glibc aarch64 y armv7hf). En headless se
@@ -34,7 +35,7 @@ fn main() {
         return
     }
     print("ventana abierta con id {win} — empieza el latido a 60 fps")
-    print("controles: mouse mueve | click presiona | escape cierra")
+    print("controles: dedo mueve | tocar presiona | mantener presionado cierra")
 
     let frame = 0
     let clics = 0
@@ -80,6 +81,12 @@ fn main() {
 
         // Escape tambien cierra, por decision del usuario.
         if std::input::is_key_pressed("escape") {
+            viva = 0
+        }
+
+        // En pantalla tactil (Termux:X11): mantener presionado es el
+        // click derecho, y tambien cierra. Sin teclado hace falta esto.
+        if std::input::is_mouse_button_pressed(2) {
             viva = 0
         }
 
