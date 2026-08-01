@@ -54,6 +54,7 @@ jobs:
         include:
           - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  asset: linux-x86_64 }
           - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu, asset: linux-aarch64 }
+          - { os: ubuntu-latest,  target: armv7-unknown-linux-gnueabihf, asset: linux-armv7hf }
           - { os: macos-latest,   target: aarch64-apple-darwin,      asset: macos-arm64 }
           - { os: windows-latest, target: x86_64-pc-windows-msvc,    asset: windows-x86_64 }
     steps:
@@ -68,6 +69,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Linker cruzado armv7 (solo el target linux-armv7hf)
+        if: matrix.asset == 'linux-armv7hf'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+          echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
       - name: cargo build --release (titan_cli)
         run: cargo build --release -p titan_cli --target ${{ matrix.target }}
 
