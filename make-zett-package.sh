@@ -3,7 +3,7 @@ set -e
 
 PREFIX="/data/data/com.termux/files/usr"
 ROOT="packaging/zett-root"
-OUT="zett_0.34.0-1_arm.deb"
+OUT="zett_0.35.0-1_arm.deb"
 
 # SIEMPRE compilar antes de empaquetar: un .deb debe contener el binario
 # construido DESDE ESTE arbol de fuentes, nunca un target/release viejo.
@@ -17,7 +17,7 @@ mkdir -p "$ROOT$PREFIX/share/zett/source"
 
 cat > "$ROOT/DEBIAN/control" <<'EOF'
 Package: zett
-Version: 0.34.0-1
+Version: 0.35.0-1
 Architecture: arm
 Maintainer: Alex Sanders Soto
 Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, audio, NoSQL, web server, charts, HF tokenizers, ONNX inference (BERT-family multi-input, sentence-transformer pooling), Wi-Fi scanning, vector math (semantic search), PDF generation
