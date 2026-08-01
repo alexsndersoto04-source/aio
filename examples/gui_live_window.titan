@@ -1,0 +1,95 @@
+// La primera ventana VIVA de TITAN (Fase 2, ceremonia final).
+//
+// Esto no es un PNG: es una ventana REAL del sistema operativo,
+// dibujada a 60 fps por el rasterizador por software de TITAN y
+// alimentada por tu teclado y tu mouse REALES.
+//
+//   * Mueve el mouse por encima -> el titulo muestra la posicion.
+//   * Click izquierdo          -> "presiona" el boton de verdad.
+//   * Escape o cerrar ventana  -> termina el programa.
+//
+// Corre en Linux/macOS/Windows nativo y en Android via proot-distro
+// + Termux:X11 (binario glibc aarch64). En headless se niega con
+// honestidad (live_open = -1) en vez de fingir.
+//
+// Ejecutar con:
+//     zett run examples/gui_live_window.titan
+
+fn main() {
+    print("==== La primera ventana VIVA de TITAN ====")
+    print("construyendo la misma GUI del PNG historico...")
+    std::gui::init()
+    let root = std::gui::create_container("TITAN OS V0.34", 320, 200)
+    let saludo = std::gui::add_label(root, "HOLA MARACAIBO!", 48, 44)
+    let boton = std::gui::add_button(root, "ENCENDER", 96, 76, 128, 32)
+    let estado = std::gui::add_label(root, "ESTADO: LISTO", 96, 128)
+    print("widgets listos: {std::gui::child_count(root)}")
+
+    print("abriendo la ventana real del sistema operativo...")
+    let win = std::window::live_open("TITAN VIVO — frame 0", 320, 200)
+    if win < 0 {
+        print("SIN PANTALLA (headless): live_open dijo -1 con honestidad.")
+        print("En un escritorio con monitor, esto abre la ventana de verdad.")
+        std::gui::shutdown()
+        return 0
+    }
+    print("ventana abierta con id {win} — empieza el latido a 60 fps")
+    print("controles: mouse mueve | click presiona | escape cierra")
+
+    let frame = 0
+    let clics = 0
+    let eventos_vistos = 0
+    let click_estaba_abajo = false
+    let viva = 1
+
+    while viva == 1 {
+        // Un latido: dibuja la GUI y bombea el teclado/mouse reales.
+        let estado_pump = std::window::live_pump(win, root)
+        if estado_pump <= 0 {
+            viva = 0
+        }
+
+        // Contamos los eventos reales que llegaron en este frame.
+        let eventos = std::window::live_poll_events(win)
+        eventos_vistos += len(eventos)
+
+        // Click izquierdo = presionar el boton (un solo disparo por click).
+        let click_abajo = std::input::is_mouse_button_pressed(1)
+        if click_abajo == true {
+            if click_estaba_abajo == false {
+                std::gui::trigger_click(boton)
+                let n_clic = clics + 1
+                std::gui::set_text(estado, "ESTADO: CLICK {n_clic}")
+                clics += 1
+            }
+        }
+        if click_abajo == false {
+            if click_estaba_abajo == true {
+                std::gui::set_text(estado, "ESTADO: LISTO")
+            }
+        }
+        click_estaba_abajo = click_abajo
+
+        // El titulo muestra frame y mouse reales (cada 30 frames).
+        if frame % 30 == 0 {
+            let pos = std::input::mouse_pos()
+            std::window::live_set_title(win, "TITAN VIVO — frame {frame} mouse {pos[0]},{pos[1]}")
+        }
+
+        // Escape tambien cierra, por decision del usuario.
+        if std::input::is_key_pressed("escape") {
+            viva = 0
+        }
+
+        frame += 1
+    }
+
+    print("")
+    print("cerrando la ventana real...")
+    print(std::window::live_close(win))
+    std::gui::shutdown()
+    print("frames vividos: {frame}")
+    print("clics detectados en el boton: {clics}")
+    print("eventos reales procesados: {eventos_vistos}")
+    print("ACABAS DE EJECUTAR LA PRIMERA VENTANA VIVA DE TITAN.")
+}
