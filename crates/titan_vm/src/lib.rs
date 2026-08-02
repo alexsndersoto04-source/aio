@@ -221,64 +221,31 @@ impl Vm {
                 Op::Add => {
                     self.track_allocation(32)?;
                     let len = stack.len();
-                    if len >= 2 {
-                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
-                            if let Some(res) = a.checked_add(*b) {
-                                stack.truncate(len - 2); stack.push(Value::Int(res));
-                                continue;
-                            }
-                        }
-                    }
-                    binary(&mut stack, &function.name, add)?;
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => a.checked_add(*b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { binary(&mut stack, &function.name, add)?; }
                 }
                 Op::Sub => {
                     let len = stack.len();
-                    if len >= 2 {
-                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
-                            if let Some(res) = a.checked_sub(*b) {
-                                stack.truncate(len - 2); stack.push(Value::Int(res));
-                                continue;
-                            }
-                        }
-                    }
-                    binary(&mut stack, &function.name, sub)?;
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => a.checked_sub(*b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { binary(&mut stack, &function.name, sub)?; }
                 }
                 Op::Mul => {
                     let len = stack.len();
-                    if len >= 2 {
-                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
-                            if let Some(res) = a.checked_mul(*b) {
-                                stack.truncate(len - 2); stack.push(Value::Int(res));
-                                continue;
-                            }
-                        }
-                    }
-                    binary(&mut stack, &function.name, mul)?;
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => a.checked_mul(*b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { binary(&mut stack, &function.name, mul)?; }
                 }
                 Op::Div => binary(&mut stack, &function.name, div)?,
                 Op::Mod => binary(&mut stack, &function.name, modulo)?,
                 Op::Eq => {
                     let len = stack.len();
-                    if len >= 2 {
-                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
-                            let res = a == b;
-                            stack.truncate(len - 2); stack.push(Value::Bool(res));
-                            continue;
-                        }
-                    }
-                    compare(&mut stack, &function.name, |a, b| a == b)?;
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a == b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { compare(&mut stack, &function.name, |a, b| a == b)?; }
                 }
                 Op::Neq => compare(&mut stack, &function.name, |a, b| a != b)?,
                 Op::Lt => {
                     let len = stack.len();
-                    if len >= 2 {
-                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
-                            let res = a < b;
-                            stack.truncate(len - 2); stack.push(Value::Bool(res));
-                            continue;
-                        }
-                    }
-                    ordered(&mut stack, &function.name, |a, b| a < b)?;
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a < b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { ordered(&mut stack, &function.name, |a, b| a < b)?; }
                 }
                 Op::Gt => ordered(&mut stack, &function.name, |a, b| a > b)?,
                 Op::Lte => ordered(&mut stack, &function.name, |a, b| a <= b)?, Op::Gte => ordered(&mut stack, &function.name, |a, b| a >= b)?,
