@@ -464,7 +464,7 @@ impl Vm {
                     let Value::Str(path) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("heap_dump path must be string".into())); };
                     let active_tasks = self.runtime.tasks.lock().map(|m| m.len()).unwrap_or(0);
                     let dump = serde_json::json!({
-                        "timestamp_unix_ms": titan_stdlib::datetime_mod::unix_millis(),
+                        "timestamp_unix_ms": titan_stdlib::time::unix_millis().unwrap_or(0) as u64,
                         "allocated_bytes": self.allocated_bytes,
                         "memory_limit": if self.memory_limit == usize::MAX { -1i64 } else { self.memory_limit as i64 },
                         "gc_threshold": self.gc_threshold,
