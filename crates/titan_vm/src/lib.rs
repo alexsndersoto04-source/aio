@@ -1068,6 +1068,7 @@ mod tests {
     #[test] fn metrics_are_callable_from_titan(){assert_eq!(run("fn main(){std::metrics::reset() std::metrics::counter_add(\"requests.total\",2) std::metrics::histogram_record(\"request.ms\",12.5) let metrics=std::metrics::snapshot() std::map::get(metrics.counters,\"requests.total\")}").unwrap(),Value::Int(2));}
     #[test] fn game_engine_surface_is_callable_from_titan(){assert_eq!(run("fn main(){std::game::init(\"Titan QA\",64,64) std::game::shutdown()}").unwrap(),Value::Bool(true));}
     #[test] fn gui_render_produces_real_rgba_bytes_from_titan(){assert_eq!(run("fn main(){std::gui::init() let root=std::gui::create_container(\"QA\",20,20) std::bytes::length(std::gui::render(root))}").unwrap(),Value::Int(1600));}
+    #[cfg(feature = "image_mod")]
     #[test] fn gui_raster_feeds_image_pipeline_from_titan(){assert_eq!(run("fn main(){std::gui::init() let root=std::gui::create_container(\"QA\",8,8) let img=std::image::from_rgba(8,8,std::gui::render(root)) std::image::width(img)}").unwrap(),Value::Int(8));}
     #[test] fn input_setters_feed_readers_from_titan(){assert_eq!(run("fn main(){std::input::set_key_state(\"W\",true) std::input::is_key_pressed(\"W\")}").unwrap(),Value::Bool(true));}
     #[cfg(all(feature = "window_live", not(target_os = "android")))]
