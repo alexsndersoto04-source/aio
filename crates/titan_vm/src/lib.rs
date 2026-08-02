@@ -1024,18 +1024,18 @@ mod tests {
     #[test] fn persistent_array_slice_validates_and_copies_range() { assert_eq!(run("fn main() { let original = [10, 20, 30, 40] let part = std::array::slice(original, 1, 3) len(original) * 100 + part[0] + part[1] }").unwrap(), Value::Int(450)); }
     #[test] fn persistent_array_concat_preserves_both_inputs() { assert_eq!(run("fn main() { let left = [1, 2] let right = [3, 4] let joined = std::array::concat(left, right) len(left) * 1000 + len(right) * 100 + len(joined) * 10 + joined[3] }").unwrap(), Value::Int(2244)); }
     #[test] fn runtime_memory_quota_and_stats_work_from_titan() {
-        assert_eq!(run("fn main() { let t = std::runtime::spawn_quota(500, || { let s = \"long allocation string creation for memory tracking in child task 1234567890\" + \" more bytes\" return 42 }) let r = join(t) let mem = std::runtime::memory_limit() let alloc = std::runtime::allocated_bytes() let live = std::runtime::gc_live_count() let coll = std::runtime::gc_collect() [r, mem, alloc >= 0, live >= 0, coll >= 0] }").unwrap(), Value::Array(vec![Value::Int(42), Value::Int(-1), Value::Bool(true), Value::Bool(true), Value::Bool(true)]));
+        assert_eq!(run("fn main() { let t = std::runtime::spawn_quota(500, || { let s = \"long allocation string creation for memory tracking in child task 1234567890\" + \" more bytes\" return 42 }) let r = join(t) let mem = std::runtime::memory_limit() let alloc = std::runtime::allocated_bytes() let live = std::runtime::gc_live_count() let coll = std::runtime::gc_collect(); [r, mem, alloc >= 0, live >= 0, coll >= 0] }").unwrap(), Value::Array(vec![Value::Int(42), Value::Int(-1), Value::Bool(true), Value::Bool(true), Value::Bool(true)]));
     }
     #[test] fn runtime_heap_dump_and_gc_threshold_work_from_titan() {
         let path = std::env::temp_dir().join(format!("titan-vm-dump-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let escaped_path = path.display().to_string().replace('\\', "\\\\");
-        let source = format!("fn main() {{ std::runtime::gc_set_threshold(2048 * 1024) let th = std::runtime::gc_threshold() let tasks = std::runtime::active_tasks() let ok = std::runtime::heap_dump(\"{}\") [th, tasks, ok] }}", escaped_path);
+        let source = format!("fn main() {{ std::runtime::gc_set_threshold(2048 * 1024) let th = std::runtime::gc_threshold() let tasks = std::runtime::active_tasks() let ok = std::runtime::heap_dump(\"{}\"); [th, tasks, ok] }}", escaped_path);
         assert_eq!(run(&source).unwrap(), Value::Array(vec![Value::Int(2048 * 1024), Value::Int(0), Value::Bool(true)]));
         let _ = std::fs::remove_file(path);
     }
     #[test] fn runtime_benchmark_and_fast_paths_work_from_titan() {
-        assert_eq!(run("fn main() { let opt = std::runtime::optimize_level() let fp = std::runtime::fast_path_enabled() let stats = std::runtime::benchmark(10, || { let x = 100 + 200 return x }) [opt, fp, stats.iterations] }").unwrap(), Value::Array(vec![Value::Int(2), Value::Bool(true), Value::Int(10)]));
+        assert_eq!(run("fn main() { let opt = std::runtime::optimize_level() let fp = std::runtime::fast_path_enabled() let stats = std::runtime::benchmark(10, || { let x = 100 + 200 return x }); [opt, fp, stats.iterations] }").unwrap(), Value::Array(vec![Value::Int(2), Value::Bool(true), Value::Int(10)]));
     }
     #[test] fn try_unwraps_success_and_propagates_failure() {
         assert_eq!(run("fn answer() -> Result { let value = Result::Ok(41)? Result::Ok(value + 1) } fn main() { match answer() { Result::Ok(value) => value, Result::Err(error) => 0 } }").unwrap(), Value::Int(42));
