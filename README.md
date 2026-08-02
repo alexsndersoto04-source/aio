@@ -1,122 +1,140 @@
 # TITAN / Zett
 
+[![CI](https://github.com/alexsndersoto04-source/aio/actions/workflows/ci.yml/badge.svg)](https://github.com/alexsndersoto04-source/aio/actions/workflows/ci.yml)
 [![cross-platform CI](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-TITAN is a small, statically checked programming language implemented in Rust. Source files use the **`.titan`** extension and run on Titan's safe stack-based bytecode VM. On Termux, the compiler ships as the **`zett`** binary.
+**TITAN** es un lenguaje de programación compilado y verificado estáticamente, implementado en Rust. Los programas usan la extensión **`.titan`**, se compilan a bytecode portable y se ejecutan en una máquina virtual de pila segura. **Zett** es el nombre de distribución del compilador, especialmente en Android/Termux; ambos nombres se refieren al mismo ecosistema.
 
-> **Project status.** Version **0.35.0**. The core (lexer → parser → typechecker → HIR → bytecode codegen → VM) compiles and runs end-to-end, and the full **438-test** suite passes on real **Ubuntu, Windows and macOS** runners plus **Android (Termux)** before every release (see [Releases](https://github.com/alexsndersoto04-source/aio/releases)). There is a real WebAssembly backend (`zett wasm`), and the standard library spans **72 `std::*` namespaces with 694 registered native functions**, covering regex, hashing, cryptography, HTTPS, DNS, SMTP email, JWT, YAML/XML, gzip/zstd, tar/zip, **terminal/TUI** (colors, cursor, keys, animated bars, readline with history), **image processing** (PNG/JPEG/WebP/BMP/GIF), **QR codes** (ASCII/Unicode/SVG/PNG), **system info** (CPU %, memory, load average, processes, disks, networks), **file-system watcher** (inotify), **Unix signals**, **audio** (real WAV I/O and synthesis + playback/recording via Termux:API), a headless **2D game engine** (real delta-time frame loop with measured FPS + AABB collision), **hardware input state** (keyboard / mouse / multi-touch) and an Android-style **app lifecycle** state machine, a retained-mode **GUI toolkit** (`std::gui`: containers, labels, buttons) drawn by a pure-Rust **software rasterizer**, plus **real OS windows** (`std::window::live_*`, pure-Rust minifb: X11/Wayland/Win32/Cocoa) pumping at 60 fps with the machine's real keyboard/mouse bridged into `std::input` — **Fase 2 graduated 2026-07-31**, when the first live TITAN window ever existed ran 3,601 frames on a real 32-bit Android phone (armv7l) through proot-distro + Termux:X11 and closed cleanly; on headless boxes it honestly reports `-1` instead of pretending a window exists, **NoSQL storage** (embedded ACID key-value store via sled + blocking Redis client), a pure-Rust **HTTP/1.1 web server** with a radix-tree **URL router** (tiny_http + matchit, the same router axum uses) supporting named / catch-all path parameters, JSON responses and RFC 6455 WebSocket upgrades, **SVG charts** (line / multi-line / bar / scatter / histogram via plotters, no C-deps), **HuggingFace tokenizers** (BPE / WordPiece / Unigram via the official `tokenizers` crate in pure-Rust mode), **on-device ONNX inference** (via `tract-onnx`, Sonos' production Rust inference engine — load `.onnx` models and run them entirely on the phone's CPU, no CUDA / cuDNN / BLAS / ONNX Runtime C++), and — uniquely — **direct access to Android hardware** via Termux:API (battery, GPS, sensors, camera, SMS, clipboard, vibrate, notifications, TTS).
+> **Estado del código fuente:** Fase 40. El núcleo conecta lexer, parser, AST, comprobación de tipos, generación de bytecode, VM, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro contiene **758 funciones nativas únicas en 72 namespaces `std::*`**, además de primitivas especializadas del runtime. Los binarios publicados actualmente están disponibles en la serie **v0.35.0**; la metadata de la próxima distribución se alineará con las fases posteriores.
 
+```text
+TITAN source (.titan)
+        │
+        ▼
+ lexer → parser → AST → typechecker → codegen → bytecode / WebAssembly
+                                                │
+                                                ▼
+                                           safe Titan VM
+```
 
-## Install
+## ¿Qué incluye?
 
-Prebuilt binaries ship on the [**Releases** page](https://github.com/alexsndersoto04-source/aio/releases/latest) for Linux, macOS and Windows; Android/Termux installs from our own APT repo.
+TITAN es más que un intérprete de ejemplos. El repositorio reúne un lenguaje, runtime, tooling, backend web y una plataforma estándar para programas de sistema, datos, web y dispositivos móviles.
 
-### 🐧 Linux (x86-64)
+- **Lenguaje tipado:** funciones, closures, structs, enums, `match`, módulos, imports, constantes, aliases, arrays, mapas, pipelines, rangos, interpolación y manejo de `Option` / `Result`.
+- **Bytecode validado:** artefactos `.tbc` versionados con cabecera, CRC-32, límites de tamaño y validación de saltos, aridad, locales, capturas y llamadas nativas antes de ejecutar.
+- **VM segura:** errores tipados para overflow, división por cero, índices, pila, aridad, recursión, límites de instrucciones y permisos.
+- **Sandbox por capacidades:** `--sandbox` bloquea filesystem, procesos, red y environment sin desactivar las funciones puras.
+- **Runtime concurrente:** tareas sobre threads del host, `spawn`, `join`, cancelación cooperativa, canales acotados, timeouts y `select`.
+- **Runtime operativo:** cuotas de memoria por tarea, recolección manual, umbral de GC configurable, heap dump JSON, tareas activas, fast-paths enteros y benchmark integrado.
+- **WebAssembly real:** `titan wasm` emite módulos WASM con source maps, memoria lineal, strings UTF-8, arrays, mapas, structs, enums y control de flujo nativo.
+- **Navegador:** integración opcional con DOM, eventos, `fetch`, WebSocket, Canvas 2D, animación y WebGL2 mediante un host JavaScript real.
+- **Herramientas:** CLI, REPL, proyectos multiarchivo, paquetes firmados, LSP, DAP y depurador interactivo por línea fuente.
+- **Biblioteca estándar amplia:** texto, JSON, bytes, archivos, procesos, HTTP/HTTPS, TLS, WebSockets, bases de datos, métricas, IA local, GUI, audio y Android/Termux.
+
+## Instalación
+
+Los binarios precompilados se publican en [**Releases**](https://github.com/alexsndersoto04-source/aio/releases/latest). En paquetes de distribución el ejecutable se llama `zett`; al compilar directamente desde esta fuente, Cargo genera el binario `titan`.
+
+### Linux x86-64
 
 ```bash
 curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-x86_64.tar.gz | tar xz
 ./zett version
 ```
 
-### 🐧 Linux ARM (64-bit y 32-bit)
+### Linux ARM64 y ARMv7
 
 ```bash
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-aarch64.tar.gz | tar xz   # ARM de 64 bits
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-armv7hf.tar.gz | tar xz  # ARM de 32 bits hard-float (p.ej. proot Debian armhf + Termux:X11)
+# ARM de 64 bits
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-aarch64.tar.gz | tar xz
+
+# ARM de 32 bits hard-float; útil, por ejemplo, en proot Debian armhf + Termux:X11
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-armv7hf.tar.gz | tar xz
+
 ./zett version
 ```
 
-### 🍎 macOS (Apple Silicon)
+### macOS Apple Silicon
 
 ```bash
 curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-macos-arm64.tar.gz | tar xz
-xattr -d com.apple.quarantine zett 2>/dev/null; true   # unsigned binary: clear the quarantine flag once
+xattr -d com.apple.quarantine zett 2>/dev/null || true
 ./zett version
 ```
 
-### 🪟 Windows (x86-64)
+### Windows x86-64
 
-Download `zett-windows-x86_64.zip` from [Releases](https://github.com/alexsndersoto04-source/aio/releases/latest), unzip it, then in PowerShell:
+Descarga `zett-windows-x86_64.zip` desde [Releases](https://github.com/alexsndersoto04-source/aio/releases/latest), descomprímelo y ejecuta:
 
 ```powershell
 .\zett.exe version
 ```
 
-### 🤖 Android / Termux (one-liner via our APT repo)
+### Android / Termux
+
+Zett también se distribuye mediante el repositorio APT del proyecto:
 
 ```bash
 echo 'deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo ./ ' \
-  > $PREFIX/etc/apt/sources.list.d/zett.list
-pkg update && pkg install zett
+  > "$PREFIX/etc/apt/sources.list.d/zett.list"
+pkg update
+pkg install zett
 zett --help
 ```
 
-Optional: for the Android integrations (`std::termux::*`), also install
-the Termux:API app from F-Droid and:
+Para las integraciones Android de `std::termux::*`, instala también la app **Termux:API** y su paquete de comandos:
 
 ```bash
 pkg install termux-api
 ```
 
-### Quick smoke test (any OS)
+### Primera ejecución
+
+Crea un programa pequeño:
 
 ```bash
-echo 'fn main() { let n = std::procfs::cpu_count() print("TITAN sees {n} CPUs here") }' > hi.titan
-zett run hi.titan        # on Linux/macOS use ./zett
+cat > hi.titan <<'EOF'
+fn main() {
+    let cpus = std::procfs::cpu_count()
+    print("TITAN detecta {cpus} CPU(s)")
+}
+EOF
+
+zett run hi.titan       # Usa ./titan si compilaste desde el código fuente.
 ```
 
-## Build from source
+## Compilar desde el código fuente
 
-Prerequisite: current stable Rust from <https://rustup.rs>.
+Requisitos: Rust estable reciente, `rustfmt` y `clippy`.
 
 ```bash
-git clone https://github.com/alexsndersoto04-source/aio
+git clone https://github.com/alexsndersoto04-source/aio.git
 cd aio
 cargo build --release -p titan_cli
+
+# Cargo genera target/release/titan.
+target/release/titan version
 target/release/titan run examples/hello.titan
-target/release/titan run examples/fibonacci.titan
-target/release/titan run examples/extras.titan     # Phase 1
-target/release/titan run examples/formats.titan    # Phase 2
-target/release/titan run examples/network.titan    # Phase 3 (needs internet)
-target/release/titan run examples/security.titan   # Phase 4
-target/release/titan run examples/android.titan    # Phase 5 (needs Termux:API)
-target/release/titan run examples/tui.titan        # Phase 6
-target/release/titan run examples/images.titan     # Phase 7 (images + QR)
-target/release/titan run examples/system.titan     # Phase 8 (procfs / system info)
-target/release/titan run examples/audio.titan      # Phase 9 (WAV synth + playback)
-target/release/titan run examples/database.titan   # Phase 10 (embedded key-value)
-target/release/titan run examples/webserver.titan  # Phase 11 (HTTP server + router)
-target/release/titan run examples/charts.titan     # Phase 14 (SVG line/bar/scatter/histogram)
-target/release/titan run examples/tokenizer.titan  # Phase 12 pt.1 (HuggingFace tokenizers)
-target/release/titan run examples/onnx.titan       # Phase 12 pt.2 (ONNX inference, MNIST)
-target/release/titan run examples/sentiment.titan  # Phase 12 pt.3 (DistilBERT sentiment)
-target/release/titan run examples/wifi.titan       # Phase 13' (Wi-Fi scanning via Termux:API)
-target/release/titan run examples/vector_search.titan  # Phase 12 pt.4 (vector math demo, runs on any device)
-target/release/titan run examples/search.titan         # Phase 12 pt.4 full pipeline (needs 4+ GB RAM)
-target/release/titan run examples/invoice.titan        # Phase 16 (PDF invoice generation)
-target/release/titan run examples/game_engine.titan      # Fase 1 (headless game loop, collisions, input)
-target/release/titan run examples/mobile_lifecycle.titan # Fase 1 (Android-style lifecycle machine)
-target/release/titan run examples/gui_screenshot.titan   # Fase 2 pt.1 (GUI tree + software raster -> PNG)
-target/release/titan run examples/gui_live_window.titan  # Fase 2 pt.2 (REAL live OS window @60fps; needs a display, or proot+Termux:X11 on a phone)
 ```
 
-Install the CLI locally:
+Instalación local opcional:
 
 ```bash
 cargo install --path crates/titan_cli
 
-titan new hello
-cd hello
+titan new hola_titan
+cd hola_titan
 titan check
 titan run
+titan build
 titan test
-titan build                             # writes target/hello.tbc
-titan repl
 ```
 
-Single-file programs remain supported with `titan run examples/hello.titan`. Projects use `Titan.toml`, recursive source imports, deterministic local path dependencies and `Titan.lock`; see [`docs/PROJECTS.md`](docs/PROJECTS.md).
+> El build completo con las features predeterminadas incorpora ONNX, tokenizers, imágenes, bases de datos, TLS y otras dependencias grandes. En Termux o dispositivos ARM con poco espacio, libera almacenamiento antes de ejecutar todas las pruebas; `target/` puede ocupar varios GB durante compilación y enlace.
 
-## The language
+## Un programa TITAN
 
 ```titan
 fn factorial(n: int) -> int {
@@ -133,71 +151,177 @@ fn main() {
 }
 ```
 
-### Supported end-to-end
+El núcleo ejecutable soporta, entre otras capacidades:
 
-- `int`, `float`, `bool`, `char`, `string`, `nil`, arrays and tuples.
-- Typed functions, default parameter syntax, recursion and checked arity.
-- First-class named functions and closures with deterministic lexical capture.
-- Functional array pipelines through `map`, `filter`, and `fold` (function or method syntax).
-- Built-in `Option::Some`/`None`, `Result::Ok`/`Err`, and propagating `?` execution.
-- Lexical variables, assignment and compound arithmetic assignment.
-- Arithmetic, comparison, logical and integer bitwise operators.
-- `if`/`else`, `while`, `loop`, `for` over arrays/ranges, `break`, `continue`, `return`.
-- Struct construction and field reads.
-- Enums with zero or one payload and matching enum variants.
-- Literal, binding and wildcard `match` arms; boolean exhaustiveness checking.
-- Constants and nested module declarations.
-- String interpolation for variables and simple named calls, such as `{fib(i)}`.
-- Runtime errors for bad types, divide-by-zero, overflow, bounds, runaway execution and excessive recursion.
-- A CLI with `run`, `build`, `repl`, and `version`.
-- Editor diagnostics through the `titan_lsp` language-service crate.
+- `int`, `float`, `bool`, `char`, `string`, `nil`, bytes, arrays, tuplas y mapas;
+- variables, asignación y operadores aritméticos, lógicos, bitwise y de comparación;
+- `if`, `match`, `while`, `loop`, `for`, rangos, `break`, `continue` y `return`;
+- funciones tipadas, parámetros por defecto, recursión y aridad comprobada;
+- closures y capturas léxicas deterministas;
+- `Option::Some` / `None`, `Result::Ok` / `Err`, `?` y `std::try::catch`;
+- structs, enums con payload, métodos `impl`, traits con métodos por defecto y type aliases;
+- imports recursivos, dependencias locales y proyectos con `Titan.toml`;
+- arrays funcionales: `map`, `filter`, `fold`, `sort_by`, `find`, `any` y `all`.
 
-### Parsed/checked language surface
+Algunas construcciones con sintaxis reservada —por ejemplo, determinadas formas de destructuring, or-patterns, referencias y genéricos— se rechazan explícitamente cuando todavía no tienen semántica completa en el codegen o la VM. TITAN prefiere un error claro antes que generar código incorrecto. Consulta la [especificación](docs/SPEC.md) y la [referencia de sintaxis](docs/TITAN_SYNTAX.md).
 
-Traits, impl blocks, references, slices, generic type syntax, `spawn` and advanced destructuring exist in the AST or parser. Some require runtime/linker work and produce an explicit “unsupported construct” error instead of silently generating incorrect code. See [the specification](docs/SPEC.md) for exact status.
+## Runtime para aplicaciones concurrentes y operativas
 
-## Commands
+La Fase 36–40 incorporó herramientas que hacen visible el estado de una aplicación TITAN en ejecución.
 
-```text
-titan new <directory>        Create Titan.toml and src/main.titan
-titan add <name> <range>     Add remote dependency
-titan fetch [--offline]      Resolve/install dependencies
-titan update                 Re-resolve remote dependencies
-titan keygen <path>          Generate package signing key
-titan pack --key K --output P  Build signed .tpkg
-titan publish --key K        Upload signed package over HTTPS
-titan check [file|project]   Resolve imports and type-check
-titan run [file|project]     Compile, type-check and execute
-titan run --sandbox [path]   Deny filesystem/process/network/environment
-titan build [file|project]   Write validated .tbc bytecode
-titan wasm [file|project]    Compile supported code to .wasm
-titan debug [path] -b file:line  Interactive source debugger
-titan exec <file.tbc>        Validate and execute bytecode without source
-titan test [project]         Run all tests/*.titan programs
-titan repl                   Interactive expressions/statements
-titan version                Print compiler version
+```titan
+fn main() {
+    let task = std::runtime::spawn_quota(50000, || {
+        // Esta tarea posee una cuota de memoria independiente.
+        42
+    })
+
+    let result = join(task)
+    let metrics = std::runtime::benchmark(1000, || { 20 * 21 })
+
+    print("resultado = {result}")
+    print("ops/s = {metrics.ops_per_sec}")
+}
 ```
 
-The build artifact uses a portable, versioned JSON bytecode container with a magic header and CRC-32 integrity check. `titan exec` loads it without source compilation and rejects incompatible versions, corruption, invalid jumps/locals/functions, unknown natives, wrong arity, excessive metadata and unsafe references before VM execution.
+### Capacidades de las fases enterprise
 
-## Architecture
+| Fase | Capacidades reales |
+|---|---|
+| **36** | Métricas thread-safe: contadores, gauges, histogramas, snapshots y exportación Prometheus/OpenMetrics. |
+| **37** | Pools y health checks para SQLite, PostgreSQL y MySQL; API común `std::db`. |
+| **38** | Cuotas de memoria por tarea, memoria asignada, objetos vivos y recolección explícita. |
+| **39** | Umbral de GC configurable, tareas activas y `heap_dump(path)` en JSON. |
+| **40** | Fast-paths de enteros en la VM y `std::runtime::benchmark`. |
+
+El runtime también incluye `spawn`, `join`, `join_timeout`, `cancel`, `channel`, `send`, `recv`, `recv_timeout` y `select`. Las tareas usan threads reales del host y aislación de VM; no se presentan como async cooperativo cuando no lo son. Más detalles: [concurrencia y runtime](docs/CONCURRENCY.md) y [métricas](docs/METRICS.md).
+
+## Biblioteca estándar
+
+La biblioteca estándar ofrece **758 funciones nativas registradas en 72 namespaces**. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
+
+| Área | Incluye |
+|---|---|
+| Texto, datos y formatos | Unicode, regex, encoding, bytes, checksum, JSON, CSV, YAML, XML, URL, UUID, gzip/zstd y TAR/ZIP. |
+| Seguridad | SHA, SHA-3, BLAKE3, HMAC, ChaCha20-Poly1305, AES-GCM, Argon2id, bcrypt y JWT. |
+| Red | HTTP/HTTPS, TLS con rustls/WebPKI, DNS, SMTP, multipart, WebSocket, servidor HTTP y router. |
+| Datos | SQLite, PostgreSQL, MySQL, migraciones, pools, KV ACID mediante sled y Redis. |
+| Sistema | Archivos, paths, procesos, señales POSIX, filesystem watcher, procfs, cache, métricas y variables de entorno. |
+| Terminal y multimedia | TUI, colores, teclado, readline, progreso, imágenes PNG/JPEG/WebP/BMP/GIF, QR, SVG charts y WAV. |
+| IA local | Tokenizers HuggingFace, ONNX por `tract-onnx`, BERT multi-input, embeddings y matemáticas vectoriales. |
+| UI y dispositivos | Motor 2D, GUI retenida con rasterizador software, ventanas live, entrada, lifecycle móvil y Termux:API. |
+| WebAssembly | Heap WASM, source maps, DOM, eventos, fetch, WebSocket, Canvas 2D, animación y WebGL2 mediante host web. |
+
+Funciones con efectos se protegen mediante capacidades del runtime:
 
 ```text
-.titan source
-  → titan_lexer
-  → titan_parser / titan_ast
-  → titan_typechecker
-  → titan_codegen
-  → titan_vm
+Filesystem · Process · Network · Environment
 ```
 
-Additional crates provide HIR/MIR data structures, tracing GC metadata, scheduling, package manifests, standard-library host functions, macros, and editor services. They are kept separate so the executable core does not depend on unfinished optimization passes.
+Por ejemplo, `titan run --sandbox programa.titan` conserva funciones puras de texto, JSON, math o colecciones, pero deniega operaciones de archivos, proceso, red y environment. Consulta la [referencia de stdlib](docs/STDLIB.md).
 
-The standard library includes checked binary I/O, LRU caching, collections algorithms, CSV, strict hex/Base64/percent encoding, bounded and atomic filesystem operations, JSON querying/merge, paths, process execution with timeouts, streaming statistics, Unicode-scalar text operations, clocks/deadlines and checksums. A shared native registry exposes 694 functions directly to `.titan`; effectful calls are controlled by VM capabilities. See [`docs/STDLIB.md`](docs/STDLIB.md).
+## Proyectos, paquetes y CLI
 
-Advanced subsystems are documented separately instead of overcrowding this overview: [projects/packages](docs/PROJECTS.md), [validated bytecode/debug source maps](docs/DEBUGGER.md), [LSP](docs/LSP.md), [DAP](docs/DAP.md), [threaded tasks and channels](docs/CONCURRENCY.md), and [TCP/HTTP networking](docs/NETWORKING.md), and [TLS](docs/TLS.md), and [WebSockets](docs/WEBSOCKET.md), and the [HTTP/HTTPS client](docs/HTTP_CLIENT.md), and [multipart uploads](docs/MULTIPART.md), and [metrics](docs/METRICS.md), and [server lifecycle/backpressure](docs/SERVER_LIFECYCLE.md), and [SQLite](docs/SQLITE.md), and [PostgreSQL](docs/POSTGRESQL.md), and [MySQL](docs/MYSQL.md), and the [common database API](docs/DATABASE_API.md), and [remote registry](docs/PACKAGE_REGISTRY.md), and [WebAssembly](docs/WASM.md).
+Un proyecto TITAN tiene una estructura simple:
 
-## Development quality gates
+```text
+mi_app/
+├── Titan.toml
+├── Titan.lock
+├── src/
+│   ├── main.titan
+│   └── util.titan
+└── tests/
+    └── suma.titan
+```
+
+Comandos principales:
+
+```text
+titan new <directorio>                 Crear un proyecto
+titan check [archivo|proyecto]         Parsear y comprobar tipos
+titan run [archivo|proyecto]           Compilar y ejecutar
+titan run --sandbox [ruta]             Ejecutar sin capacidades de efectos
+titan build [archivo|proyecto]         Crear bytecode .tbc validado
+titan exec <archivo.tbc>               Validar y ejecutar bytecode existente
+titan wasm [archivo|proyecto]          Generar WebAssembly
+titan test [proyecto]                  Ejecutar tests/*.titan
+titan debug [ruta] -b archivo:línea    Depurador interactivo
+titan repl                             REPL
+titan add/fetch/update                 Dependencias remotas
+titan keygen/pack/publish              Paquetes .tpkg firmados con Ed25519
+titan version                          Versión del compilador
+```
+
+`build`, `check` y `run` aceptan un archivo `.titan` o una carpeta de proyecto. Los imports se canonicalizan, se detectan ciclos y no pueden escapar del árbol de fuentes autorizado. Los paquetes remotos se resuelven por HTTPS, verifican SHA-256 y firmas Ed25519. Lee [proyectos y módulos](docs/PROJECTS.md) y el [registro de paquetes](docs/PACKAGE_REGISTRY.md).
+
+## Bytecode, depuración y herramientas
+
+`build` produce un contenedor `TITAN-BYTECODE 1`. Antes de ejecutar con `titan exec`, el runtime valida formato, checksum, tamaño, funciones, instrucciones, strings, locales, saltos, llamadas, capturas y nativas.
+
+El depurador de terminal permite:
+
+- breakpoints por instrucción o `archivo:línea`;
+- continuar, pausar, step in, step over y step out;
+- inspección de frames, locales, captures y pila;
+- source maps preservados en bytecode.
+
+El workspace también incluye:
+
+- **LSP:** diagnósticos, símbolos, definición, referencias, rename, semantic tokens y signature help;
+- **DAP:** base de Debug Adapter Protocol para clientes compatibles;
+- **WebAssembly source maps:** mapa TITAN propio y formato estándar para host/browser.
+
+Documentación: [debugger](docs/DEBUGGER.md), [LSP](docs/LSP.md), [DAP](docs/DAP.md) y [WASM](docs/WASM.md).
+
+## Arquitectura del workspace
+
+| Crate | Responsabilidad |
+|---|---|
+| `titan_lexer` | Tokenización Unicode, spans y diagnósticos léxicos. |
+| `titan_ast` / `titan_parser` | Árbol sintáctico, precedencia y parser. |
+| `titan_typechecker` | Scopes, firmas, tipos, structs, enums, traits y control de flujo. |
+| `titan_codegen` | Bytecode, source locations y artefactos `.tbc`. |
+| `titan_vm` | Ejecución segura, nativas, sandbox, concurrencia, DBs y runtime operativo. |
+| `titan_wasm` | Emisión WebAssembly, memoria administrada, host imports y source maps. |
+| `titan_stdlib` | Implementaciones Rust y metadata de la API estándar. |
+| `titan_pkg` | Manifiestos, imports, lockfiles, registry, archivos y firma de paquetes. |
+| `titan_lsp` / `titan_dap` | Servicios para editores y depuradores. |
+| `titan_tls` | TLS basado en rustls y WebPKI. |
+| `titan_sqlite` / `titan_postgres` / `titan_mysql` | Adaptadores y pools de bases de datos. |
+| `titan_gc` / `titan_runtime` | Primitivas de GC y scheduling usadas como capas de runtime. |
+
+Consulta [la arquitectura completa](docs/ARCHITECTURE.md).
+
+## Ejemplos incluidos
+
+```bash
+# Núcleo y lenguaje
+titan run examples/hello.titan
+titan run examples/fibonacci.titan
+titan run examples/impl_structs.titan
+titan run examples/pipeline_spaceship.titan
+
+# Runtime y operación
+titan run examples/enterprise_metrics.titan
+titan run examples/enterprise_pool.titan
+titan run examples/enterprise_runtime.titan
+titan run examples/enterprise_profiler.titan
+titan run examples/enterprise_benchmark.titan
+
+# Capacidades de la stdlib
+titan run examples/security.titan
+titan run examples/database.titan
+titan run examples/webserver.titan
+titan run examples/charts.titan
+titan run examples/tokenizer.titan
+titan run examples/onnx.titan
+titan run examples/vector_search.titan
+```
+
+Algunos ejemplos requieren recursos externos o del sistema: internet, un servidor de base de datos, Termux:API, una pantalla para ventana live, modelos ONNX o memoria adicional. Revísalos antes de ejecutarlos en producción.
+
+## Desarrollo y validación
 
 ```bash
 cargo fmt --all -- --check
@@ -205,12 +329,29 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 ```
 
-The repository includes tests for malformed lexer input, parsing, semantic errors, recursion, loops/ranges, VM runtime failures, GC tracing and editor diagnostics.
+El repositorio contiene más de **400 pruebas Rust declaradas** distribuidas entre lexer, parser, typechecker, VM, WebAssembly, stdlib, paquetes, TLS, LSP, DAP y conectores de base de datos. GitHub Actions incluye comprobaciones del workspace, build sin features predeterminadas, comprobación Android AArch64 y una matriz de test/build para Linux, macOS y Windows.
 
-## Safety and limits
+En dispositivos con almacenamiento limitado, especialmente ARM/Termux, el comando completo puede agotar espacio durante el enlace aunque la compilación del código haya avanzado correctamente. Para reducir el pico de disco:
 
-The VM does not execute native pointers or Rust `unsafe`. It enforces instruction, recursion and range-allocation limits. Titan's dependency-free HTTP helper supports plain `http://` and rejects `https://` rather than sending insecure plaintext; use a TLS-enabled host integration where HTTPS is required.
+```bash
+cargo clean
+CARGO_INCREMENTAL=0 cargo test --workspace --all-targets -j 1
+```
 
-## License
+## Documentación
 
-MIT. See [LICENSE](LICENSE).
+- [Arquitectura](docs/ARCHITECTURE.md)
+- [Especificación del lenguaje](docs/SPEC.md)
+- [Referencia de sintaxis](docs/TITAN_SYNTAX.md)
+- [Biblioteca estándar](docs/STDLIB.md)
+- [Proyectos, módulos y tests](docs/PROJECTS.md)
+- [Concurrencia y runtime](docs/CONCURRENCY.md)
+- [WebAssembly](docs/WASM.md)
+- [Networking, HTTP, TLS y WebSockets](docs/NETWORKING.md)
+- [Bases de datos](docs/DATABASE_API.md)
+- [Paquetes y registry](docs/PACKAGE_REGISTRY.md)
+- [LSP, DAP y debugger](docs/LSP.md)
+
+## Licencia
+
+TITAN/Zett se distribuye bajo la licencia [MIT](LICENSE).
