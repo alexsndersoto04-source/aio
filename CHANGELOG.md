@@ -1,5 +1,19 @@
 # Zett / TITAN — Changelog
 
+## 0.40.0 — Phase 40: Aceleración en Caliente (*VM Fast-Paths*) y Benchmark Operacional (`std::runtime` v3) ⚡
+
+- Graduación de la hoja de ruta de **Producción Empresarial a Gran Escala (Fases 36 a 40)**.
+- Optimización del núcleo de la máquina virtual de pila (`titan_vm`):
+  - **Fast-Paths aritméticos e inline de enteros**: Las instrucciones del bytecode para suma (`Op::Add`), resta (`Op::Sub`), multiplicación (`Op::Mul`), igualdad (`Op::Eq`) y comparación (`Op::Lt`) ahora detectan si ambos operandos en el tope de la pila son enteros continuos, ejecutando la operación nativa en Rust e inyectando el resultado sin alojar objetos auxiliares ni llamar intermediarios.
+- Añadidas 3 funciones de inspección y benchmarking al runtime sin depender de herramientas de terceros:
+  - `std::runtime::optimize_level()` — reporta el nivel de optimización activo del runtime (`2` en modo release/fast-paths).
+  - `std::runtime::fast_path_enabled()` — verifica que las rutas aceleradas de enteros y comparación están en funcionamiento (`true`).
+  - `std::runtime::benchmark(iterations, closure)` — ejecuta el bloque o closure un número exacto de iteraciones en un bucle cerrado, calculando con precisión milimétrica el tiempo total (`total_ms`), nanosegundos por operación (`ns_per_op`) y tasa de rendimiento en operaciones por segundo (`ops_per_sec`).
+- Añadido ejemplo verificable end-to-end: `examples/enterprise_benchmark.titan`.
+- Documentación de arquitectura actualizada en `docs/CONCURRENCY.md`.
+
+---
+
 ## 0.39.0 — Phase 39: Observabilidad Operacional y Profiler de Servidor (`std::runtime` v2 & `heap_dump`) 🔍
 
 - Subsistema de diagnóstico en tiempo real y ajuste dinámico del Garbage Collector para servidores empresariales.

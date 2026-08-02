@@ -73,6 +73,7 @@ pub enum Op {
     DbExecute, DbQuery, DbBegin, DbCommit, DbRollback, DbMigrate, DbClose, DbPing,
     RuntimeMemoryLimit, RuntimeAllocatedBytes, RuntimeGcLiveCount, RuntimeGcCollect,
     RuntimeGcThreshold, RuntimeGcSetThreshold, RuntimeActiveTasks, RuntimeHeapDump,
+    RuntimeOptimizeLevel, RuntimeFastPath, RuntimeBenchmark,
     SpawnQuota, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
@@ -471,6 +472,9 @@ impl AstCompiler {
                 "std::runtime::gc_set_threshold" if args.len() == 1 => self.emit(Op::RuntimeGcSetThreshold),
                 "std::runtime::active_tasks" if args.len() == 0 => self.emit(Op::RuntimeActiveTasks),
                 "std::runtime::heap_dump" if args.len() == 1 => self.emit(Op::RuntimeHeapDump),
+                "std::runtime::optimize_level" if args.len() == 0 => self.emit(Op::RuntimeOptimizeLevel),
+                "std::runtime::fast_path_enabled" if args.len() == 0 => self.emit(Op::RuntimeFastPath),
+                "std::runtime::benchmark" if args.len() == 2 => self.emit(Op::RuntimeBenchmark),
                 "std::runtime::spawn_quota" if args.len() == 2 => self.emit(Op::SpawnQuota),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {

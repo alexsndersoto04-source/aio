@@ -1,0 +1,42 @@
+// Demo Fase 40: Aceleración del Intérprete (VM Fast-Paths) y Benchmark Operacional (`std::runtime` v3).
+// Ejecutar con:
+//     zett run examples/enterprise_benchmark.titan
+//
+// Demuestra:
+// 1. Verificación del nivel de optimización de la VM y fast-paths activos
+// 2. Ejecución de pruebas de rendimiento (benchmarks) en caliente sobre el procesador
+// 3. Medición de latencia en nanosegundos y tasa de operaciones por segundo (ops/sec)
+
+fn main() {
+    print("---- 1. Estado de Optimización y Fast-Paths de la VM ----")
+    let opt = std::runtime::optimize_level()
+    let fp = std::runtime::fast_path_enabled()
+    print("Nivel de optimización del runtime (2 = Fast-Path Release):")
+    print(opt)
+    print("¿Fast-Paths aritméticos y de comparación activos?")
+    print(fp)
+
+    print("---- 2. Benchmark en caliente: Aritmética entera con Fast-Paths ----")
+    print("Midiendo 100,000 iteraciones de suma/resta/multiplicación...")
+    let bm_int = std::runtime::benchmark(100000, || {
+        let x = 12345 + 67890
+        let y = x * 2
+        let z = y - 100
+        z
+    })
+    print("Resultados Aritmética Entera:")
+    print(bm_int)
+
+    print("---- 3. Benchmark en caliente: Creación de objetos y acceso a mapas ----")
+    print("Midiendo 10,000 iteraciones de creación e inspección de diccionarios...")
+    let bm_map = std::runtime::benchmark(10000, || {
+        let m = #{"id": 42, "status": "active"}
+        let val = std::map::get(m, "id")
+        val
+    })
+    print("Resultados Manejo de Objetos:")
+    print(bm_map)
+
+    print("---- 4. Verificación final ----")
+    print("¡Fases 36 a 40 (Producción Empresarial a Gran Escala) graduadas exitosamente!")
+}

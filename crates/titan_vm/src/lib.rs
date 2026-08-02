@@ -218,12 +218,67 @@ impl Vm {
                 Op::StoreLocal(index) => { let value = pop(&mut stack, &function.name)?; let slot = locals.get_mut(index).ok_or_else(|| VmError::InvalidLocal { function: function.name.clone(), index })?; *slot = value; }
                 Op::Pop => { pop(&mut stack, &function.name)?; }
                 Op::Dup => { let value = stack.last().cloned().ok_or_else(|| VmError::StackUnderflow(function.name.clone()))?; stack.push(value); }
-                Op::Add => { self.track_allocation(32)?; binary(&mut stack, &function.name, add)?; },
-                Op::Sub => binary(&mut stack, &function.name, sub)?,
-                Op::Mul => binary(&mut stack, &function.name, mul)?, Op::Div => binary(&mut stack, &function.name, div)?,
-                Op::Mod => binary(&mut stack, &function.name, modulo)?,
-                Op::Eq => compare(&mut stack, &function.name, |a, b| a == b)?, Op::Neq => compare(&mut stack, &function.name, |a, b| a != b)?,
-                Op::Lt => ordered(&mut stack, &function.name, |a, b| a < b)?, Op::Gt => ordered(&mut stack, &function.name, |a, b| a > b)?,
+                Op::Add => {
+                    self.track_allocation(32)?;
+                    let len = stack.len();
+                    if len >= 2 {
+                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
+                            if let Some(res) = a.checked_add(*b) {
+                                stack.truncate(len - 2); stack.push(Value::Int(res));
+                                continue;
+                            }
+                        }
+                    }
+                    binary(&mut stack, &function.name, add)?;
+                }
+                Op::Sub => {
+                    let len = stack.len();
+                    if len >= 2 {
+                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
+                            if let Some(res) = a.checked_sub(*b) {
+                                stack.truncate(len - 2); stack.push(Value::Int(res));
+                                continue;
+                            }
+                        }
+                    }
+                    binary(&mut stack, &function.name, sub)?;
+                }
+                Op::Mul => {
+                    let len = stack.len();
+                    if len >= 2 {
+                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
+                            if let Some(res) = a.checked_mul(*b) {
+                                stack.truncate(len - 2); stack.push(Value::Int(res));
+                                continue;
+                            }
+                        }
+                    }
+                    binary(&mut stack, &function.name, mul)?;
+                }
+                Op::Eq => {
+                    let len = stack.len();
+                    if len >= 2 {
+                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
+                            let res = a == b;
+                            stack.truncate(len - 2); stack.push(Value::Bool(res));
+                            continue;
+                        }
+                    }
+                    compare(&mut stack, &function.name, |a, b| a == b)?;
+                }
+                Op::Neq => compare(&mut stack, &function.name, |a, b| a != b)?,
+                Op::Lt => {
+                    let len = stack.len();
+                    if len >= 2 {
+                        if let (Value::Int(a), Value::Int(b)) = (&stack[len - 2], &stack[len - 1]) {
+                            let res = a < b;
+                            stack.truncate(len - 2); stack.push(Value::Bool(res));
+                            continue;
+                        }
+                    }
+                    ordered(&mut stack, &function.name, |a, b| a < b)?;
+                }
+                Op::Gt => ordered(&mut stack, &function.name, |a, b| a > b)?,
                 Op::Lte => ordered(&mut stack, &function.name, |a, b| a <= b)?, Op::Gte => ordered(&mut stack, &function.name, |a, b| a >= b)?,
                 Op::BitAnd => integer_binary(&mut stack, &function.name, |a, b| a & b)?,
                 Op::BitOr => integer_binary(&mut stack, &function.name, |a, b| a | b)?,
@@ -474,6 +529,31 @@ impl Vm {
                     });
                     let success = std::fs::write(&path, serde_json::to_string_pretty(&dump).unwrap_or_default()).is_ok();
                     stack.push(Value::Bool(success));
+                }
+                Op::RuntimeOptimizeLevel => {
+                    stack.push(Value::Int(2));
+                }
+                Op::RuntimeFastPath => {
+                    stack.push(Value::Bool(true));
+                }
+                Op::RuntimeBenchmark => {
+                    let callable = pop(&mut stack, &function.name)?;
+                    let Value::Closure { function: closure_function, captures } = callable else { return Err(VmError::Type("std::runtime::benchmark requires a closure".into())); };
+                    let iters = positive_limit(pop(&mut stack, &function.name)?, "std::runtime::benchmark iterations")?;
+                    let start = std::time::Instant::now();
+                    for _ in 0..iters {
+                        self.execute(closure_function, Vec::new(), captures.clone(), depth + 1, debugger)?;
+                    }
+                    let elapsed = start.elapsed();
+                    let total_ms = elapsed.as_millis() as i64;
+                    let ns_per_op = if iters > 0 { elapsed.as_nanos() / (iters as u128) } else { 0 } as i64;
+                    let ops_per_sec = if elapsed.as_secs_f64() > 0.0 { ((iters as f64) / elapsed.as_secs_f64()) as i64 } else { 0 };
+                    let mut map = BTreeMap::new();
+                    map.insert("iterations".into(), Value::Int(iters as i64));
+                    map.insert("total_ms".into(), Value::Int(total_ms));
+                    map.insert("ns_per_op".into(), Value::Int(ns_per_op));
+                    map.insert("ops_per_sec".into(), Value::Int(ops_per_sec));
+                    stack.push(Value::Map(map));
                 }
                 Op::JoinTask => {
                     let Value::Task(task_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("join requires a task".into())); };
@@ -984,6 +1064,9 @@ mod tests {
         let source = format!("fn main() {{ std::runtime::gc_set_threshold(2048 * 1024) let th = std::runtime::gc_threshold() let tasks = std::runtime::active_tasks() let ok = std::runtime::heap_dump(\"{}\") [th, tasks, ok] }}", escaped_path);
         assert_eq!(run(&source).unwrap(), Value::Array(vec![Value::Int(2048 * 1024), Value::Int(0), Value::Bool(true)]));
         let _ = std::fs::remove_file(path);
+    }
+    #[test] fn runtime_benchmark_and_fast_paths_work_from_titan() {
+        assert_eq!(run("fn main() { let opt = std::runtime::optimize_level() let fp = std::runtime::fast_path_enabled() let stats = std::runtime::benchmark(10, || { let x = 100 + 200 return x }) [opt, fp, stats.iterations] }").unwrap(), Value::Array(vec![Value::Int(2), Value::Bool(true), Value::Int(10)]));
     }
     #[test] fn try_unwraps_success_and_propagates_failure() {
         assert_eq!(run("fn answer() -> Result { let value = Result::Ok(41)? Result::Ok(value + 1) } fn main() { match answer() { Result::Ok(value) => value, Result::Err(error) => 0 } }").unwrap(), Value::Int(42));

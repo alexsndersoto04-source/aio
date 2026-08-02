@@ -181,6 +181,9 @@ impl TypeEnv {
         functions.insert("std::runtime::gc_set_threshold".into(), FunctionSig { params: vec![Type::Int], result: Type::Nil });
         functions.insert("std::runtime::active_tasks".into(), FunctionSig { params: vec![], result: Type::Int });
         functions.insert("std::runtime::heap_dump".into(), FunctionSig { params: vec![Type::String], result: Type::Bool });
+        functions.insert("std::runtime::optimize_level".into(), FunctionSig { params: vec![], result: Type::Int });
+        functions.insert("std::runtime::fast_path_enabled".into(), FunctionSig { params: vec![], result: Type::Bool });
+        functions.insert("std::runtime::benchmark".into(), FunctionSig { params: vec![Type::Int, Type::Unknown], result: Type::Named("map".into()) });
         functions.insert("std::runtime::spawn_quota".into(), FunctionSig { params: vec![Type::Int, Type::Unknown], result: Type::Named("Task".into()) });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),

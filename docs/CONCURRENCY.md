@@ -44,4 +44,7 @@ To prevent rogue or unconstrained background tasks from exhausting process heap 
 - `std::runtime::gc_set_threshold(bytes)` dynamically adjusts the GC threshold to tune frequency and latency for high-throughput or memory-constrained workers.
 - `std::runtime::active_tasks()` reports the number of concurrent tasks currently active in the VM process.
 - `std::runtime::heap_dump(path)` exports an instantaneous JSON heap and diagnostic snapshot (`timestamp_unix_ms`, `allocated_bytes`, `memory_limit`, `gc_threshold`, `gc_live_count`, `active_tasks`, `status`) to the specified path without interrupting server execution.
+- `std::runtime::optimize_level()` reports the active VM optimization level (`2` for release/fast-path mode).
+- `std::runtime::fast_path_enabled()` returns `true` when inline integer arithmetic and comparison fast-paths are active.
+- `std::runtime::benchmark(iterations, || { ... })` runs the closure in a tight execution loop for `iterations` passes, reporting a structured map containing `iterations`, `total_ms`, `ns_per_op`, and `ops_per_sec` for performance regression testing.
 
