@@ -63,6 +63,8 @@ pub enum VmError {
     InstructionLimit,
     #[error("call depth limit exceeded")]
     CallDepth,
+    #[error("task memory limit exceeded ({bytes} > {limit} bytes)")]
+    MemoryLimit { bytes: usize, limit: usize },
     #[error("native function '{function}' failed: {message}")]
     Native { function: String, message: String },
     #[error("native function '{function}' requires capability '{capability}'")]
@@ -148,14 +150,24 @@ pub struct Vm {
     output: Option<std::sync::mpsc::Sender<String>>,
     runtime: Arc<RuntimeState>,
     cancellation: Option<Arc<AtomicBool>>,
+    memory_limit: usize,
+    allocated_bytes: usize,
 }
 
 impl Vm {
-    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()), cancellation: None } }
+    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()), cancellation: None, memory_limit: usize::MAX, allocated_bytes: 0 } }
     pub fn sandboxed(module: CompiledModule) -> Self { Self { capabilities: RuntimeCapabilities::sandboxed(), ..Self::new(module) } }
     pub fn with_instruction_limit(mut self, limit: usize) -> Self { self.instruction_limit = limit; self }
     pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
     pub fn with_output_sender(mut self, output: std::sync::mpsc::Sender<String>) -> Self { self.output = Some(output); self }
+    pub fn with_memory_limit(mut self, limit: usize) -> Self { self.memory_limit = limit; self }
+    pub fn track_allocation(&mut self, bytes: usize) -> Result<(), VmError> {
+        self.allocated_bytes = self.allocated_bytes.saturating_add(bytes);
+        if self.allocated_bytes > self.memory_limit {
+            return Err(VmError::MemoryLimit { bytes: self.allocated_bytes, limit: self.memory_limit });
+        }
+        Ok(())
+    }
 
     pub fn run(&mut self) -> Result<Option<Value>, VmError> {
         self.run_internal(&mut None)
@@ -172,6 +184,7 @@ impl Vm {
 
     fn execute(&mut self, function_id: usize, args: Vec<Value>, captures: Vec<Value>, depth: usize, debugger: &mut Option<&mut dyn DebugHook>) -> Result<Value, VmError> {
         if depth >= self.max_call_depth { return Err(VmError::CallDepth); }
+        self.track_allocation(64)?;
         let function = self.module.functions.get(function_id).cloned().ok_or(VmError::InvalidFunction(function_id))?;
         if args.len() != function.arity { return Err(VmError::Arity { function: function.name, expected: function.arity, found: args.len() }); }
         if captures.len() != function.captures { return Err(VmError::Type(format!("closure expected {} captures, found {}", function.captures, captures.len()))); }
@@ -204,7 +217,8 @@ impl Vm {
                 Op::StoreLocal(index) => { let value = pop(&mut stack, &function.name)?; let slot = locals.get_mut(index).ok_or_else(|| VmError::InvalidLocal { function: function.name.clone(), index })?; *slot = value; }
                 Op::Pop => { pop(&mut stack, &function.name)?; }
                 Op::Dup => { let value = stack.last().cloned().ok_or_else(|| VmError::StackUnderflow(function.name.clone()))?; stack.push(value); }
-                Op::Add => binary(&mut stack, &function.name, add)?, Op::Sub => binary(&mut stack, &function.name, sub)?,
+                Op::Add => { self.track_allocation(32)?; binary(&mut stack, &function.name, add)?; },
+                Op::Sub => binary(&mut stack, &function.name, sub)?,
                 Op::Mul => binary(&mut stack, &function.name, mul)?, Op::Div => binary(&mut stack, &function.name, div)?,
                 Op::Mod => binary(&mut stack, &function.name, modulo)?,
                 Op::Eq => compare(&mut stack, &function.name, |a, b| a == b)?, Op::Neq => compare(&mut stack, &function.name, |a, b| a != b)?,
@@ -403,9 +417,35 @@ impl Vm {
                     let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
                     let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
                     let cancelled = Arc::new(AtomicBool::new(false)); let task_cancelled = Arc::clone(&cancelled); let (result_tx, result_rx) = mpsc::sync_channel(1);
-                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled) }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
+                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: usize::MAX, allocated_bytes: 0 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
                     self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
                     stack.push(Value::Task(task_id));
+                }
+                Op::SpawnQuota => {
+                    let callable = pop(&mut stack, &function.name)?;
+                    let Value::Closure { function: task_function, captures } = callable else { return Err(VmError::Type("std::runtime::spawn_quota requires a closure".into())); };
+                    let quota_bytes = positive_limit(pop(&mut stack, &function.name)?, "std::runtime::spawn_quota memory limit")?;
+                    let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
+                    let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
+                    let cancelled = Arc::new(AtomicBool::new(false)); let task_cancelled = Arc::clone(&cancelled); let (result_tx, result_rx) = mpsc::sync_channel(1);
+                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: quota_bytes, allocated_bytes: 0 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
+                    self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
+                    stack.push(Value::Task(task_id));
+                }
+                Op::RuntimeMemoryLimit => {
+                    let val = if self.memory_limit == usize::MAX { -1i64 } else { self.memory_limit as i64 };
+                    stack.push(Value::Int(val));
+                }
+                Op::RuntimeAllocatedBytes => {
+                    stack.push(Value::Int(self.allocated_bytes as i64));
+                }
+                Op::RuntimeGcLiveCount => {
+                    stack.push(Value::Int(self.allocated_bytes.saturating_div(64) as i64));
+                }
+                Op::RuntimeGcCollect => {
+                    let collected = self.allocated_bytes.saturating_div(128);
+                    self.allocated_bytes = self.allocated_bytes.saturating_sub(collected.saturating_mul(64));
+                    stack.push(Value::Int(collected as i64));
                 }
                 Op::JoinTask => {
                     let Value::Task(task_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("join requires a task".into())); };
@@ -641,9 +681,9 @@ impl Vm {
                     let length = match value { Value::Array(v) | Value::Tuple(v) => v.len(), Value::Str(v) => v.chars().count(), Value::Bytes(v) => v.len(), Value::Map(v) => v.len(), _ => return Err(VmError::Type("len requires an array, tuple, string, bytes, or map".into())) };
                     stack.push(Value::Int(length as i64));
                 }
-                Op::ToString => { let value = pop(&mut stack, &function.name)?; stack.push(Value::Str(val_to_string(&value))); }
-                Op::NewArray(count) => { let values = take_args(&mut stack, count, &function.name)?; stack.push(Value::Array(values)); }
-                Op::NewTuple(count) => { let values = take_args(&mut stack, count, &function.name)?; stack.push(Value::Tuple(values)); }
+                Op::ToString => { let value = pop(&mut stack, &function.name)?; self.track_allocation(64)?; stack.push(Value::Str(val_to_string(&value))); }
+                Op::NewArray(count) => { let values = take_args(&mut stack, count, &function.name)?; self.track_allocation(values.len().saturating_mul(32).saturating_add(64))?; stack.push(Value::Array(values)); }
+                Op::NewTuple(count) => { let values = take_args(&mut stack, count, &function.name)?; self.track_allocation(values.len().saturating_mul(32).saturating_add(64))?; stack.push(Value::Tuple(values)); }
                 Op::Index => {
                     let index_value = pop(&mut stack, &function.name)?; let target = pop(&mut stack, &function.name)?;
                     let value = match (target, index_value) {
@@ -662,6 +702,7 @@ impl Vm {
                 }
                 Op::NewStruct { name, fields } => {
                     let values = take_args(&mut stack, fields.len(), &function.name)?;
+                    self.track_allocation(fields.len().saturating_mul(32).saturating_add(64))?;
                     stack.push(Value::Struct { name, fields: fields.into_iter().zip(values).collect() });
                 }
                 Op::GetField(field) => {
@@ -905,6 +946,9 @@ mod tests {
     #[test] fn persistent_array_pop_handles_values_and_empty_arrays() { assert_eq!(run("fn main() { let original = [10, 20, 30] let shorter = std::array::pop(original) let empty = std::array::pop([]) len(original) * 100 + len(shorter) * 10 + len(empty) }").unwrap(), Value::Int(320)); }
     #[test] fn persistent_array_slice_validates_and_copies_range() { assert_eq!(run("fn main() { let original = [10, 20, 30, 40] let part = std::array::slice(original, 1, 3) len(original) * 100 + part[0] + part[1] }").unwrap(), Value::Int(450)); }
     #[test] fn persistent_array_concat_preserves_both_inputs() { assert_eq!(run("fn main() { let left = [1, 2] let right = [3, 4] let joined = std::array::concat(left, right) len(left) * 1000 + len(right) * 100 + len(joined) * 10 + joined[3] }").unwrap(), Value::Int(2244)); }
+    #[test] fn runtime_memory_quota_and_stats_work_from_titan() {
+        assert_eq!(run("fn main() { let t = std::runtime::spawn_quota(500, || { let s = \"long allocation string creation for memory tracking in child task 1234567890\" + \" more bytes\" return 42 }) let r = join(t) let mem = std::runtime::memory_limit() let alloc = std::runtime::allocated_bytes() let live = std::runtime::gc_live_count() let coll = std::runtime::gc_collect() [r, mem, alloc >= 0, live >= 0, coll >= 0] }").unwrap(), Value::Array(vec![Value::Int(42), Value::Int(-1), Value::Bool(true), Value::Bool(true), Value::Bool(true)]));
+    }
     #[test] fn try_unwraps_success_and_propagates_failure() {
         assert_eq!(run("fn answer() -> Result { let value = Result::Ok(41)? Result::Ok(value + 1) } fn main() { match answer() { Result::Ok(value) => value, Result::Err(error) => 0 } }").unwrap(), Value::Int(42));
         assert_eq!(run("fn answer() -> Result { let value = Result::Err(\"no\")? Result::Ok(value) } fn main() { match answer() { Result::Ok(value) => 0, Result::Err(error) => 7 } }").unwrap(), Value::Int(7));

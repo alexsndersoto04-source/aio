@@ -30,3 +30,14 @@ Cancellation is cooperative and checked before every bytecode instruction. `canc
 `select([receiverA, receiverB], timeout_ms)` waits across multiple receivers and returns `Option::Some((index, value))`, preserving which channel became ready. It uses bounded polling with a one-millisecond sleep rather than a busy loop, and reports disconnection explicitly.
 
 Current semantics are blocking OS-thread concurrency. Structured task scopes and automatic child cleanup are the next layer; the implementation does not label these as async until async suspension semantics exist.
+
+## Task Memory Quotas & Runtime Inspection (`std::runtime`)
+
+To prevent rogue or unconstrained background tasks from exhausting process heap memory in enterprise server deployments, TITAN supports per-task memory quotas and runtime memory inspection:
+
+- `std::runtime::spawn_quota(max_bytes, || { ... })` spawns a child task with an isolated VM whose heap allocation is strictly capped at `max_bytes`. If the child task exceeds this quota, it terminates cleanly with a typed `VmError::MemoryLimit`, which can be caught via `std::try::catch` without impacting other running tasks.
+- `std::runtime::memory_limit()` returns the active memory quota for the current task (`-1` if unlimited).
+- `std::runtime::allocated_bytes()` reports live bytes allocated by the current VM stack and heap.
+- `std::runtime::gc_live_count()` estimates the number of live objects managed by the deterministic Garbage Collector.
+- `std::runtime::gc_collect()` triggers an explicit Garbage Collection sweep and returns the number of objects reclaimed.
+

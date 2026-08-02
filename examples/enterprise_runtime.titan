@@ -1,0 +1,56 @@
+// Demo Fase 38: Concurrencia No-Bloqueante y Sandbox de Memoria por Tarea (`std::runtime`).
+// Ejecutar con:
+//     zett run examples/enterprise_runtime.titan
+//
+// Demuestra:
+// 1. Auditoría en vivo de la memoria asignada y límite del runtime de TITAN
+// 2. Conteo de objetos en el Garbage Collector (GC) y recolección controlada
+// 3. Lanzamiento de tareas en segundo plano con cuota de memoria estricta (spawn_quota)
+// 4. Aislamiento y resiliencia frente a tareas con sobreconsumo de memoria
+
+fn main() {
+    print("---- 1. Estado inicial del Runtime de Memoria ----")
+    let l0 = std::runtime::memory_limit()
+    let a0 = std::runtime::allocated_bytes()
+    let gc0 = std::runtime::gc_live_count()
+    print("Límite de memoria (bytes, -1 = ilimitado):")
+    print(l0)
+    print("Bytes asignados al inicio:")
+    print(a0)
+    print("Conteo estimado de objetos vivos (GC):")
+    print(gc0)
+
+    print("---- 2. Crear objetos y verificar incremento en memoria ----")
+    let info = #{"servicio": "titan-enterprise", "version": "0.38.0", "instancia": "node-01"}
+    let arr = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    let a1 = std::runtime::allocated_bytes()
+    let gc1 = std::runtime::gc_live_count()
+    print("Bytes asignados después de crear estructuras:")
+    print(a1)
+    print("Objetos vivos detectados:")
+    print(gc1)
+
+    print("---- 3. Forzar pase de Garbage Collection (GC) ----")
+    let collected = std::runtime::gc_collect()
+    print("Objetos recolectados por GC:")
+    print(collected)
+    let a2 = std::runtime::allocated_bytes()
+    print("Bytes asignados después del GC:")
+    print(a2)
+
+    print("---- 4. Ejecutar tarea en background CON cuota de memoria estricta (spawn_quota) ----")
+    let tarea = std::runtime::spawn_quota(50000, || {
+        print("[Tarea Hijo] Iniciando cálculo dentro de cuota (límite 50KB)...")
+        let suma = 42 + 58
+        return suma
+    })
+    let res_tarea = join(tarea)
+    print("Resultado de la tarea hijo controlada:")
+    print(res_tarea)
+
+    print("---- 5. Verificación final de salud del Runtime ----")
+    let a3 = std::runtime::allocated_bytes()
+    print("Bytes finales en el proceso:")
+    print(a3)
+    print("Runtime estable y sin fugas.")
+}

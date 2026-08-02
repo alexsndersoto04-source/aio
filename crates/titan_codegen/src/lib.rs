@@ -70,7 +70,8 @@ pub enum Op {
     PostgresPoolNew, PostgresPoolAcquire, PostgresPoolStats, PostgresPoolHealth, PostgresPoolClose,
     MysqlConnect, MysqlExecute, MysqlQuery, MysqlBegin, MysqlCommit, MysqlRollback, MysqlMigrate, MysqlLastId, MysqlClose, MysqlPing,
     MysqlPoolNew, MysqlPoolAcquire, MysqlPoolStats, MysqlPoolHealth, MysqlPoolClose,
-    DbExecute, DbQuery, DbBegin, DbCommit, DbRollback, DbMigrate, DbClose, DbPing, Ret,
+    DbExecute, DbQuery, DbBegin, DbCommit, DbRollback, DbMigrate, DbClose, DbPing,
+    RuntimeMemoryLimit, RuntimeAllocatedBytes, RuntimeGcLiveCount, RuntimeGcCollect, SpawnQuota, Ret,
     Print(usize), Len, ToString,
     NewArray(usize), NewTuple(usize), Index,
     NewStruct { name: String, fields: Vec<String> }, GetField(String),
@@ -460,6 +461,11 @@ impl AstCompiler {
                 "std::db::migrate" if args.len() == 2 => self.emit(Op::DbMigrate),
                 "std::db::close" if args.len() == 1 => self.emit(Op::DbClose),
                 "std::db::ping" if args.len() == 1 => self.emit(Op::DbPing),
+                "std::runtime::memory_limit" if args.len() == 0 => self.emit(Op::RuntimeMemoryLimit),
+                "std::runtime::allocated_bytes" if args.len() == 0 => self.emit(Op::RuntimeAllocatedBytes),
+                "std::runtime::gc_live_count" if args.len() == 0 => self.emit(Op::RuntimeGcLiveCount),
+                "std::runtime::gc_collect" if args.len() == 0 => self.emit(Op::RuntimeGcCollect),
+                "std::runtime::spawn_quota" if args.len() == 2 => self.emit(Op::SpawnQuota),
                 _ if titan_stdlib::native::contains(name) => self.emit(Op::CallNative { name: name.clone(), argc: args.len() }),
                 _ if self.enum_variants.contains_key(name) => {
                     let has_payload = self.enum_variants[name];

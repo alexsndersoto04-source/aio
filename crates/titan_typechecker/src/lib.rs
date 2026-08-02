@@ -173,6 +173,11 @@ impl TypeEnv {
         functions.insert("std::db::migrate".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Int });
         functions.insert("std::db::close".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Bool });
         functions.insert("std::db::ping".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Bool });
+        functions.insert("std::runtime::memory_limit".into(), FunctionSig { params: vec![], result: Type::Int });
+        functions.insert("std::runtime::allocated_bytes".into(), FunctionSig { params: vec![], result: Type::Int });
+        functions.insert("std::runtime::gc_live_count".into(), FunctionSig { params: vec![], result: Type::Int });
+        functions.insert("std::runtime::gc_collect".into(), FunctionSig { params: vec![], result: Type::Int });
+        functions.insert("std::runtime::spawn_quota".into(), FunctionSig { params: vec![Type::Int, Type::Unknown], result: Type::Named("Task".into()) });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),

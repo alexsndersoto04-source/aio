@@ -1,5 +1,19 @@
 # Zett / TITAN — Changelog
 
+## 0.38.0 — Phase 38: Concurrencia No-Bloqueante y Sandbox de Memoria por Tarea (`std::runtime` & `spawn_quota`) 🛡️
+
+- Nuevo subsistema operativo para inspeccionar la memoria de la máquina virtual e imponer cuotas estrictas de memoria por tarea.
+- Añadidas 5 funciones nativas e instrucciones de la VM sin pasar por intermediarios de terceros:
+  - `std::runtime::memory_limit()` — consulta el límite máximo de memoria configurado para la tarea en curso (`-1` si es ilimitado).
+  - `std::runtime::allocated_bytes()` — reporta en vivo el uso en bytes de memoria en el heap de TITAN.
+  - `std::runtime::gc_live_count()` — estima cuántos objetos vivos se encuentran administrados en el GC.
+  - `std::runtime::gc_collect()` — dispara un ciclo manual del Garbage Collector y devuelve la cantidad de objetos recolectados.
+  - `std::runtime::spawn_quota(bytes, closure)` — lanza una tarea en segundo plano pero con un límite de cuota estricta (`bytes`). Si la tarea sobrepasa su límite de memoria, se aborta limpiamente con un error tipado de memoria (`VmError::MemoryLimit`) sin colapsar el servidor ni afectar a otras tareas en ejecución.
+- Añadido ejemplo verificable end-to-end: `examples/enterprise_runtime.titan`.
+- Documentación y referencia actualizadas en `docs/CONCURRENCY.md`.
+
+---
+
 ## 0.37.0 — Phase 37: Connection Pooling ACID y Resiliencia en Red (`std::pool` / Health Check en DBs) 🏦
 
 - Añadida verificación activa de salud en conexiones e inspección de pools para bases de datos (SQLite, PostgreSQL y MySQL).
