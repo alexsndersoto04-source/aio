@@ -255,6 +255,8 @@ impl Vm {
                     }
                     binary(&mut stack, &function.name, mul)?;
                 }
+                Op::Div => binary(&mut stack, &function.name, div)?,
+                Op::Mod => binary(&mut stack, &function.name, modulo)?,
                 Op::Eq => {
                     let len = stack.len();
                     if len >= 2 {
