@@ -22,6 +22,7 @@ pub fn migrate(&mut self,migrations:&[Migration])->Result<usize,DbError>{if self
 pub fn applied_migrations(&self)->Result<Vec<AppliedMigration>,DbError>{let mut statement=self.connection.prepare("SELECT version,name,checksum FROM _titan_migrations ORDER BY version")?;let rows=statement.query_map([],|row|Ok(AppliedMigration{version:row.get(0)?,name:row.get(1)?,checksum:row.get(2)?}))?;Ok(rows.collect::<Result<_,_>>()?)}
 pub fn last_insert_id(&self)->i64{self.connection.last_insert_rowid()}
 pub fn changes(&self)->u64{self.connection.changes()}
+pub fn ping(&mut self)->Result<bool,DbError>{let mut stmt=self.connection.prepare("SELECT 1")?;let mut rows=stmt.query([])?;Ok(rows.next()?.is_some())}
 }
 impl Drop for Database{fn drop(&mut self){if self.in_transaction{let _=self.connection.execute_batch("ROLLBACK");}}}
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]pub struct PoolStats{pub maximum:usize,pub total:usize,pub idle:usize,pub checked_out:usize,pub closed:bool}
@@ -54,6 +55,7 @@ if wait_result.timed_out() { return Err(DbError::PoolTimeout); }
 }
 }
 pub fn stats(&self)->Result<PoolStats,DbError>{let state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)?;Ok(PoolStats{maximum:self.0.maximum,total:state.total,idle:state.idle.len(),checked_out:state.total-state.idle.len(),closed:state.closed})}
+pub fn health_check(&self,timeout:Duration)->bool{match self.acquire(timeout){Ok(mut conn)=>conn.ping().unwrap_or(false),Err(_)=>false}}
 pub fn close(&self)->Result<(),DbError>{let mut state=self.0.state.lock().map_err(|_|DbError::PoolPoisoned)?;state.closed=true;let idle=state.idle.len();state.idle.clear();state.total-=idle;self.0.available.notify_all();Ok(())}}
 impl std::ops::Deref for PooledConnection{type Target=Database;fn deref(&self)->&Self::Target{self.database.as_ref().expect("pooled connection invariant")}}
 impl std::ops::DerefMut for PooledConnection{fn deref_mut(&mut self)->&mut Self::Target{self.database.as_mut().expect("pooled connection invariant")}}

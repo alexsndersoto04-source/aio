@@ -1,0 +1,65 @@
+// Demo Fase 37: Connection Pooling ACID y Resiliencia en Red (`std::sqlite` + `std::db`).
+// Ejecutar con:
+//     zett run examples/enterprise_pool.titan
+//
+// Demuestra:
+// 1. Creación de pool de conexiones ACID persistente en archivo con capacidad máxima estricta
+// 2. Verificación de salud activa del pool (health check / ping)
+// 3. Adquisición de conexiones, transacciones ACID y consultas preparadas
+// 4. Auditoría en vivo del estado del pool (stats: total, idle, checked_out)
+// 5. Cierre controlado del pool
+
+fn main() {
+    let path = std::dirs::temp() + "/titan_enterprise_pool.db"
+    print("---- 1. Crear Pool de Conexiones ACID en SQLite ----")
+    print(path)
+    let pool = std::sqlite::pool(path, 5)
+
+    print("---- 2. Verificación de salud del pool (Health Check / Ping) ----")
+    let is_healthy = std::sqlite::pool_health(pool, 2000)
+    print("¿Pool saludable?")
+    print(is_healthy)
+
+    print("---- 3. Adquirir conexión del pool y ejecutar DDL ACID ----")
+    let conn_opt = std::sqlite::acquire(pool, 2000)
+    match conn_opt {
+        Option::Some(conn) => {
+            print("Conexión adquirida exitosamente.")
+            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, event TEXT NOT NULL);", [])
+
+            print("---- 4. Ejecutar transacción ACID sobre conexión del pool ----")
+            std::sqlite::begin(conn)
+            std::sqlite::execute(conn, "INSERT INTO audit_log(event) VALUES (?);", ["login_success"])
+            std::sqlite::execute(conn, "INSERT INTO audit_log(event) VALUES (?);", ["transaction_started"])
+            std::sqlite::commit(conn)
+            print("Transacción committed.")
+
+            print("---- 5. Consultar registros ----")
+            let rows = std::sqlite::query(conn, "SELECT id, event FROM audit_log ORDER BY id;", [])
+            print(rows)
+
+            print("---- 6. Probar Ping de conexión individual ----")
+            print("¿Conexión individual activa?")
+            print(std::sqlite::ping(conn))
+
+            print("---- 7. Estadísticas del pool antes y después de liberar ----")
+            let s_busy = std::sqlite::pool_stats(pool)
+            print("Conexiones en uso:")
+            print(s_busy)
+
+            std::sqlite::close(conn)
+            print("Conexión devuelta al pool.")
+
+            let s_idle = std::sqlite::pool_stats(pool)
+            print("Conexiones inactivas (en idle):")
+            print(s_idle)
+        },
+        Option::None => {
+            print("ERROR: Timeout adquiriendo conexión del pool.")
+        }
+    }
+
+    print("---- 8. Cierre controlado del pool ----")
+    std::sqlite::pool_close(pool)
+    print("Pool cerrado correctamente.")
+}

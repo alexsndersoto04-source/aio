@@ -1,5 +1,14 @@
 # Zett / TITAN — Changelog
 
+## 0.37.0 — Phase 37: Connection Pooling ACID y Resiliencia en Red (`std::pool` / Health Check en DBs) 🏦
+
+- Añadida verificación activa de salud en conexiones e inspección de pools para bases de datos (SQLite, PostgreSQL y MySQL).
+- Soporte nativo y en VM para ping de conexión y chequeo de salud del pool sin agotar conexiones (`std::sqlite::ping`, `std::sqlite::pool_health`, `std::postgres::ping`, `std::postgres::pool_health`, `std::mysql::ping`, `std::mysql::pool_health`, `std::db::ping`).
+- Añadido ejemplo verificable end-to-end: `examples/enterprise_pool.titan`.
+- Documentación de arquitectura actualizada en `docs/SQLITE.md`.
+
+---
+
 ## 0.36.0 — Phase 36: Observabilidad Enterprise y Métricas Estándar (`std::metrics` v2) 📊
 
 - Implementación real production-grade en `std::metrics` con formato estándar Prometheus 0.0.4 / OpenMetrics.

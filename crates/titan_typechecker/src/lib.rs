@@ -122,41 +122,57 @@ impl TypeEnv {
         functions.insert("std::sqlite::memory".into(), FunctionSig { params: vec![], result: Type::Named("Sqlite".into()) });
         functions.insert("std::sqlite::execute".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::String, Type::Unknown], result: Type::Int });
         functions.insert("std::sqlite::query".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
-        for name in ["begin","commit","rollback"] { functions.insert(format!("std::sqlite::{name}"), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Nil }); }
+        functions.insert("std::sqlite::begin".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Nil });
+        functions.insert("std::sqlite::commit".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Nil });
+        functions.insert("std::sqlite::rollback".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Nil });
         functions.insert("std::sqlite::migrate".into(), FunctionSig { params: vec![Type::Named("Sqlite".into()), Type::Unknown], result: Type::Int });
         functions.insert("std::sqlite::last_insert_id".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Int });
         functions.insert("std::sqlite::close".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Bool });
+        functions.insert("std::sqlite::ping".into(), FunctionSig { params: vec![Type::Named("Sqlite".into())], result: Type::Bool });
         functions.insert("std::sqlite::pool".into(), FunctionSig { params: vec![Type::String, Type::Int], result: Type::Named("SqlitePool".into()) });
         functions.insert("std::sqlite::acquire".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into()), Type::Int], result: Type::Named("Option".into()) });
         functions.insert("std::sqlite::pool_stats".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into())], result: Type::Named("map".into()) });
+        functions.insert("std::sqlite::pool_health".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into()), Type::Int], result: Type::Bool });
         functions.insert("std::sqlite::pool_close".into(), FunctionSig { params: vec![Type::Named("SqlitePool".into())], result: Type::Nil });
         functions.insert("std::postgres::connect".into(), FunctionSig { params: vec![Type::String], result: Type::Named("Postgres".into()) });
         functions.insert("std::postgres::connect_tls".into(), FunctionSig { params: vec![Type::String], result: Type::Named("Postgres".into()) });
         functions.insert("std::postgres::execute".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::String, Type::Unknown], result: Type::Int });
         functions.insert("std::postgres::query".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
-        for name in ["begin","commit","rollback","cancel"] { functions.insert(format!("std::postgres::{name}"), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil }); }
+        functions.insert("std::postgres::begin".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil });
+        functions.insert("std::postgres::commit".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil });
+        functions.insert("std::postgres::rollback".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil });
+        functions.insert("std::postgres::cancel".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Nil });
         functions.insert("std::postgres::migrate".into(), FunctionSig { params: vec![Type::Named("Postgres".into()), Type::Unknown], result: Type::Int });
         functions.insert("std::postgres::close".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Bool });
         functions.insert("std::postgres::pool".into(), FunctionSig { params: vec![Type::String, Type::Int, Type::Bool], result: Type::Named("PostgresPool".into()) });
         functions.insert("std::postgres::acquire".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into()), Type::Int], result: Type::Named("Option".into()) });
         functions.insert("std::postgres::pool_stats".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into())], result: Type::Named("map".into()) });
+        functions.insert("std::postgres::ping".into(), FunctionSig { params: vec![Type::Named("Postgres".into())], result: Type::Bool });
+        functions.insert("std::postgres::pool_health".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into()), Type::Int], result: Type::Bool });
         functions.insert("std::postgres::pool_close".into(), FunctionSig { params: vec![Type::Named("PostgresPool".into())], result: Type::Nil });
         functions.insert("std::mysql::connect".into(), FunctionSig { params: vec![Type::String], result: Type::Named("Mysql".into()) });
         functions.insert("std::mysql::execute".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::String, Type::Unknown], result: Type::Int });
         functions.insert("std::mysql::query".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
-        for name in ["begin","commit","rollback"] { functions.insert(format!("std::mysql::{name}"), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Nil }); }
+        functions.insert("std::mysql::begin".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Nil });
+        functions.insert("std::mysql::commit".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Nil });
+        functions.insert("std::mysql::rollback".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Nil });
         functions.insert("std::mysql::migrate".into(), FunctionSig { params: vec![Type::Named("Mysql".into()), Type::Unknown], result: Type::Int });
         functions.insert("std::mysql::last_insert_id".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Int });
         functions.insert("std::mysql::close".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Bool });
+        functions.insert("std::mysql::ping".into(), FunctionSig { params: vec![Type::Named("Mysql".into())], result: Type::Bool });
         functions.insert("std::mysql::pool".into(), FunctionSig { params: vec![Type::String, Type::Int], result: Type::Named("MysqlPool".into()) });
         functions.insert("std::mysql::acquire".into(), FunctionSig { params: vec![Type::Named("MysqlPool".into()), Type::Int], result: Type::Named("Option".into()) });
         functions.insert("std::mysql::pool_stats".into(), FunctionSig { params: vec![Type::Named("MysqlPool".into())], result: Type::Named("map".into()) });
+        functions.insert("std::mysql::pool_health".into(), FunctionSig { params: vec![Type::Named("MysqlPool".into()), Type::Int], result: Type::Bool });
         functions.insert("std::mysql::pool_close".into(), FunctionSig { params: vec![Type::Named("MysqlPool".into())], result: Type::Nil });
         functions.insert("std::db::execute".into(), FunctionSig { params: vec![Type::Unknown, Type::String, Type::Unknown], result: Type::Int });
         functions.insert("std::db::query".into(), FunctionSig { params: vec![Type::Unknown, Type::String, Type::Unknown], result: Type::Array(Box::new(Type::Named("map".into()))) });
-        for name in ["begin","commit","rollback"] { functions.insert(format!("std::db::{name}"), FunctionSig { params: vec![Type::Unknown], result: Type::Nil }); }
+        functions.insert("std::db::begin".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Nil });
+        functions.insert("std::db::commit".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Nil });
+        functions.insert("std::db::rollback".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Nil });
         functions.insert("std::db::migrate".into(), FunctionSig { params: vec![Type::Unknown, Type::Unknown], result: Type::Int });
         functions.insert("std::db::close".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Bool });
+        functions.insert("std::db::ping".into(), FunctionSig { params: vec![Type::Unknown], result: Type::Bool });
         let enum_variants = HashMap::from([
             ("Option::None".into(), None), ("Option::Some".into(), Some(Type::Unknown)),
             ("Result::Ok".into(), Some(Type::Unknown)), ("Result::Err".into(), Some(Type::Unknown)),
