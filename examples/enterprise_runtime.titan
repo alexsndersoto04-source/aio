@@ -42,7 +42,7 @@ fn main() {
     let tarea = std::runtime::spawn_quota(50000, || {
         print("[Tarea Hijo] Iniciando cálculo dentro de cuota (límite 50KB)...")
         let suma = 42 + 58
-        return suma
+        suma
     })
     let res_tarea = join(tarea)
     print("Resultado de la tarea hijo controlada:")

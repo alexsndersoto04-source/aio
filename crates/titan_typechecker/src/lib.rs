@@ -568,7 +568,10 @@ impl TypeEnv {
             Expr::Closure { params, return_type, body, .. } => {
                 self.push_scope(); let p: Vec<Type> = params.iter().map(|x| x.type_ann.as_ref().map(type_from_ast).unwrap_or(Type::Unknown)).collect();
                 for (param, ty) in params.iter().zip(&p) { self.define(param.name.clone(), ty.clone()); }
-                let actual = self.check_expr(body); let result = return_type.as_ref().map(type_from_ast).unwrap_or_else(|| actual.clone()); self.require_compatible(&result, &actual); self.pop_scope(); Type::Function(p, Box::new(result))
+                let old_ret = std::mem::replace(&mut self.return_type, return_type.as_ref().map(type_from_ast).unwrap_or(Type::Unknown));
+                let actual = self.check_expr(body);
+                self.return_type = old_ret;
+                let result = return_type.as_ref().map(type_from_ast).unwrap_or_else(|| actual.clone()); self.require_compatible(&result, &actual); self.pop_scope(); Type::Function(p, Box::new(result))
             }
         }
     }
