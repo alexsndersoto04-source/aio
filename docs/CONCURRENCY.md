@@ -40,4 +40,8 @@ To prevent rogue or unconstrained background tasks from exhausting process heap 
 - `std::runtime::allocated_bytes()` reports live bytes allocated by the current VM stack and heap.
 - `std::runtime::gc_live_count()` estimates the number of live objects managed by the deterministic Garbage Collector.
 - `std::runtime::gc_collect()` triggers an explicit Garbage Collection sweep and returns the number of objects reclaimed.
+- `std::runtime::gc_threshold()` reports the configured GC collection threshold in bytes.
+- `std::runtime::gc_set_threshold(bytes)` dynamically adjusts the GC threshold to tune frequency and latency for high-throughput or memory-constrained workers.
+- `std::runtime::active_tasks()` reports the number of concurrent tasks currently active in the VM process.
+- `std::runtime::heap_dump(path)` exports an instantaneous JSON heap and diagnostic snapshot (`timestamp_unix_ms`, `allocated_bytes`, `memory_limit`, `gc_threshold`, `gc_live_count`, `active_tasks`, `status`) to the specified path without interrupting server execution.
 

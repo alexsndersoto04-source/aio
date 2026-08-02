@@ -1,0 +1,38 @@
+// Demo Fase 39: Observabilidad Operacional y Profiler de Servidor (`std::runtime` v2).
+// Ejecutar con:
+//     zett run examples/enterprise_profiler.titan
+//
+// Demuestra:
+// 1. Configuración dinámica del umbral de recolección de basura (GC threshold)
+// 2. Consulta de tareas concurrentes activas en el despachador de la VM
+// 3. Generación en vivo de reportes de diagnóstico y volcados de memoria (Heap Dump JSON)
+// 4. Auditoría sin interrumpir el servidor en ejecución
+
+fn main() {
+    print("---- 1. Configuración dinámica de Garbage Collector ----")
+    let th0 = std::runtime::gc_threshold()
+    print("Umbral inicial del GC (bytes):")
+    print(th0)
+
+    std::runtime::gc_set_threshold(5242880) // 5 MB
+    let th1 = std::runtime::gc_threshold()
+    print("Nuevo umbral del GC configurado (bytes):")
+    print(th1)
+
+    print("---- 2. Conteo en vivo de tareas concurrentes activas ----")
+    let tasks0 = std::runtime::active_tasks()
+    print("Tareas en segundo plano activas:")
+    print(tasks0)
+
+    print("---- 3. Generar volcado de diagnóstico de memoria (Heap Dump JSON) ----")
+    let dump_path = std::dirs::temp() + "/titan_heap_dump.json"
+    print("Exportando diagnóstico completo en:")
+    print(dump_path)
+    let ok = std::runtime::heap_dump(dump_path)
+    print("¿Reporte generado con éxito?")
+    print(ok)
+
+    print("---- 4. Contenido del volcado (JSON listo para inspección) ----")
+    let json_text = std::fs::read_text(dump_path)
+    print(json_text)
+}

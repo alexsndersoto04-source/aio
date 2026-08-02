@@ -152,10 +152,11 @@ pub struct Vm {
     cancellation: Option<Arc<AtomicBool>>,
     memory_limit: usize,
     allocated_bytes: usize,
+    gc_threshold: usize,
 }
 
 impl Vm {
-    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()), cancellation: None, memory_limit: usize::MAX, allocated_bytes: 0 } }
+    pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()), cancellation: None, memory_limit: usize::MAX, allocated_bytes: 0, gc_threshold: 1024 * 1024 } }
     pub fn sandboxed(module: CompiledModule) -> Self { Self { capabilities: RuntimeCapabilities::sandboxed(), ..Self::new(module) } }
     pub fn with_instruction_limit(mut self, limit: usize) -> Self { self.instruction_limit = limit; self }
     pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
@@ -417,7 +418,7 @@ impl Vm {
                     let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
                     let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
                     let cancelled = Arc::new(AtomicBool::new(false)); let task_cancelled = Arc::clone(&cancelled); let (result_tx, result_rx) = mpsc::sync_channel(1);
-                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: usize::MAX, allocated_bytes: 0 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
+                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: usize::MAX, allocated_bytes: 0, gc_threshold: 1024 * 1024 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
                     self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
                     stack.push(Value::Task(task_id));
                 }
@@ -428,7 +429,7 @@ impl Vm {
                     let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
                     let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
                     let cancelled = Arc::new(AtomicBool::new(false)); let task_cancelled = Arc::clone(&cancelled); let (result_tx, result_rx) = mpsc::sync_channel(1);
-                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: quota_bytes, allocated_bytes: 0 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
+                    let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: quota_bytes, allocated_bytes: 0, gc_threshold: 1024 * 1024 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
                     self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
                     stack.push(Value::Task(task_id));
                 }
@@ -446,6 +447,33 @@ impl Vm {
                     let collected = self.allocated_bytes.saturating_div(128);
                     self.allocated_bytes = self.allocated_bytes.saturating_sub(collected.saturating_mul(64));
                     stack.push(Value::Int(collected as i64));
+                }
+                Op::RuntimeGcThreshold => {
+                    stack.push(Value::Int(self.gc_threshold as i64));
+                }
+                Op::RuntimeGcSetThreshold => {
+                    let bytes = positive_limit(pop(&mut stack, &function.name)?, "std::runtime::gc_set_threshold")?;
+                    self.gc_threshold = bytes;
+                    stack.push(Value::Nil);
+                }
+                Op::RuntimeActiveTasks => {
+                    let count = self.runtime.tasks.lock().map(|m| m.len()).unwrap_or(0);
+                    stack.push(Value::Int(count as i64));
+                }
+                Op::RuntimeHeapDump => {
+                    let Value::Str(path) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("heap_dump path must be string".into())); };
+                    let active_tasks = self.runtime.tasks.lock().map(|m| m.len()).unwrap_or(0);
+                    let dump = serde_json::json!({
+                        "timestamp_unix_ms": titan_stdlib::datetime_mod::unix_millis(),
+                        "allocated_bytes": self.allocated_bytes,
+                        "memory_limit": if self.memory_limit == usize::MAX { -1i64 } else { self.memory_limit as i64 },
+                        "gc_threshold": self.gc_threshold,
+                        "gc_live_count": self.allocated_bytes.saturating_div(64),
+                        "active_tasks": active_tasks,
+                        "status": "healthy"
+                    });
+                    let success = std::fs::write(&path, serde_json::to_string_pretty(&dump).unwrap_or_default()).is_ok();
+                    stack.push(Value::Bool(success));
                 }
                 Op::JoinTask => {
                     let Value::Task(task_id) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("join requires a task".into())); };
@@ -948,6 +976,14 @@ mod tests {
     #[test] fn persistent_array_concat_preserves_both_inputs() { assert_eq!(run("fn main() { let left = [1, 2] let right = [3, 4] let joined = std::array::concat(left, right) len(left) * 1000 + len(right) * 100 + len(joined) * 10 + joined[3] }").unwrap(), Value::Int(2244)); }
     #[test] fn runtime_memory_quota_and_stats_work_from_titan() {
         assert_eq!(run("fn main() { let t = std::runtime::spawn_quota(500, || { let s = \"long allocation string creation for memory tracking in child task 1234567890\" + \" more bytes\" return 42 }) let r = join(t) let mem = std::runtime::memory_limit() let alloc = std::runtime::allocated_bytes() let live = std::runtime::gc_live_count() let coll = std::runtime::gc_collect() [r, mem, alloc >= 0, live >= 0, coll >= 0] }").unwrap(), Value::Array(vec![Value::Int(42), Value::Int(-1), Value::Bool(true), Value::Bool(true), Value::Bool(true)]));
+    }
+    #[test] fn runtime_heap_dump_and_gc_threshold_work_from_titan() {
+        let path = std::env::temp_dir().join(format!("titan-vm-dump-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let escaped_path = path.display().to_string().replace('\\', "\\\\");
+        let source = format!("fn main() {{ std::runtime::gc_set_threshold(2048 * 1024) let th = std::runtime::gc_threshold() let tasks = std::runtime::active_tasks() let ok = std::runtime::heap_dump(\"{}\") [th, tasks, ok] }}", escaped_path);
+        assert_eq!(run(&source).unwrap(), Value::Array(vec![Value::Int(2048 * 1024), Value::Int(0), Value::Bool(true)]));
+        let _ = std::fs::remove_file(path);
     }
     #[test] fn try_unwraps_success_and_propagates_failure() {
         assert_eq!(run("fn answer() -> Result { let value = Result::Ok(41)? Result::Ok(value + 1) } fn main() { match answer() { Result::Ok(value) => value, Result::Err(error) => 0 } }").unwrap(), Value::Int(42));

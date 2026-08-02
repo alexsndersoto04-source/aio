@@ -1,5 +1,18 @@
 # Zett / TITAN — Changelog
 
+## 0.39.0 — Phase 39: Observabilidad Operacional y Profiler de Servidor (`std::runtime` v2 & `heap_dump`) 🔍
+
+- Subsistema de diagnóstico en tiempo real y ajuste dinámico del Garbage Collector para servidores empresariales.
+- Añadidas 4 funciones nativas e instrucciones de la VM:
+  - `std::runtime::gc_threshold()` — consulta el umbral de recolección en bytes configurado en la máquina virtual.
+  - `std::runtime::gc_set_threshold(bytes)` — reconfigura dinámicamente la frecuencia del recolector de basura según la carga de trabajo o latencia requerida.
+  - `std::runtime::active_tasks()` — reporta el número de tareas concurrentes que corren en segundo plano dentro del despachador del proceso.
+  - `std::runtime::heap_dump(path)` — exporta un reporte diagnóstico instantáneo en formato JSON con la radiografía del heap (`timestamp_unix_ms`, `allocated_bytes`, `memory_limit`, `gc_threshold`, `gc_live_count`, `active_tasks`, `status`) en la ruta indicada, ideal paraendpoints HTTP de auditoría y depuración en caliente.
+- Añadido ejemplo verificable end-to-end: `examples/enterprise_profiler.titan`.
+- Documentación de arquitectura actualizada en `docs/CONCURRENCY.md`.
+
+---
+
 ## 0.38.0 — Phase 38: Concurrencia No-Bloqueante y Sandbox de Memoria por Tarea (`std::runtime` & `spawn_quota`) 🛡️
 
 - Nuevo subsistema operativo para inspeccionar la memoria de la máquina virtual e imponer cuotas estrictas de memoria por tarea.
