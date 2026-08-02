@@ -1,0 +1,37 @@
+// Demo Fase 36: Observabilidad Enterprise y Métricas Estándar (`std::metrics` v2).
+// Ejecutar con:
+//     zett run examples/enterprise_metrics.titan
+//
+// Demuestra las funciones mejoradas de observabilidad para servidores de producción:
+// - Consulta puntual no destructiva de contadores y gauges
+// - Exportación en formato de texto estándar Prometheus 0.0.4 / OpenMetrics
+
+fn main() {
+    print("---- 1. Reiniciar registro de métricas ----")
+    std::metrics::reset()
+    print("Métricas reiniciadas correctamente.")
+
+    print("---- 2. Registrar tráfico de un servidor HTTP simulado ----")
+    let c1 = std::metrics::counter_add("http.requests", 1500)
+    let c2 = std::metrics::counter_add("http.errors", 12)
+    std::metrics::gauge_set("http.active_connections", 48.0)
+    std::metrics::histogram_record("http.latency_ms", 15.4)
+    std::metrics::histogram_record("http.latency_ms", 42.1)
+    std::metrics::histogram_record("http.latency_ms", 8.9)
+    print("Métricas registradas exitosamente.")
+
+    print("---- 3. Consultas puntuales no destructivas ----")
+    let reqs = std::metrics::counter_get("http.requests")
+    let errs = std::metrics::counter_get("http.errors")
+    let conn = std::metrics::gauge_get("http.active_connections")
+    print("Total de peticiones:")
+    print(reqs)
+    print("Total de errores:")
+    print(errs)
+    print("Conexiones activas:")
+    print(conn)
+
+    print("---- 4. Exportación en formato estándar Prometheus ----")
+    let prometheus_out = std::metrics::prometheus_export()
+    print(prometheus_out)
+}

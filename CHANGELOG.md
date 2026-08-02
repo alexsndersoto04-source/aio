@@ -1,5 +1,17 @@
 # Zett / TITAN — Changelog
 
+## 0.36.0 — Phase 36: Observabilidad Enterprise y Métricas Estándar (`std::metrics` v2) 📊
+
+- Implementación real production-grade en `std::metrics` con formato estándar Prometheus 0.0.4 / OpenMetrics.
+- 3 nuevas funciones nativas registradas y verificadas end-to-end (total: 758 nativas registradas en `std::*`):
+  - `std::metrics::counter_get(name)` — consulta puntual no destructiva de contadores enteros.
+  - `std::metrics::gauge_get(name)` — consulta puntual no destructiva de medidores flotantes.
+  - `std::metrics::prometheus_export()` — serializa el estado completo del registro (`Snapshot`: contadores, gauges e histogramas con `_count`, `_sum`, `_min`, `_max`) en formato de texto Prometheus (`# TYPE <name> <type>\n<name> <value>`), listo para exportarse en endpoints de monitoreo o Grafana/Datadog sin complementos externos.
+- Añadido ejemplo verificable end-to-end: `examples/enterprise_metrics.titan`.
+- Documentación y referencia actualizadas en `docs/METRICS.md`.
+
+---
+
 ## 0.33.0 — Phase 34: 3 módulos nuevos serios (process + collections + datetime) 🏗️
 
 Tres módulos completos, sin humo, sin stubs. Cada uno con
