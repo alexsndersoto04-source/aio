@@ -1,0 +1,203 @@
+// ============================================================================
+// TitanForge — Plataforma serverless sandboxed para TITAN (MVP)
+// ============================================================================
+//
+// Ejecuta código .titan que los clientes envían por HTTP dentro de un sandbox
+// con capacidades, y devuelve la salida en JSON. Es un "online judge / cloud
+// functions" para TITAN, escrito íntegramente en TITAN.
+//
+// Combina varias capas del lenguaje en un solo programa:
+//   * std::server + std::router (HTTP + matchit)
+//   * std::json (parse / stringify)
+//   * std::process + sandbox (--sandbox)  -> ejecución aislada del código
+//   * std::metrics (Prometheus)           -> contadores + histogramas
+//   * std::try::catch (errores limpios)
+//   * imports multiarchivo (runner.titan, store.titan)
+//
+// Endpoints:
+//   GET  /          → página de bienvenida (HTML)
+//   GET  /health    → JSON de estado
+//   POST /run       → ejecuta código en sandbox (requiere X-Api-Key)
+//   GET  /metrics   → métricas en formato Prometheus
+//
+// Ejecutar (con `titan` en el PATH):
+//     titan run src/main.titan        (desde la carpeta titanforge)
+//     # o como proyecto:
+//     titan run .
+//
+// Probar desde otra terminal:
+//     curl http://127.0.0.1:8080/health
+//     curl -X POST -H "X-Api-Key: demo-token" -H "Content-Type: application/json" \
+//          -d '{"code":"fn main() { print(\"hola titanforge\") }"}' \
+//          http://127.0.0.1:8080/run
+//     curl http://127.0.0.1:8080/metrics
+
+import runner
+import store
+
+// ---------- Helpers de respuesta ----------
+
+fn json_response(req: int, status: int, obj: map) {
+    let body = std::json::stringify(obj)
+    std::server::respond_json(req, status, body)
+}
+
+fn error_response(req: int, status: int, msg: string) {
+    let err = std::map::new()
+    let err = std::map::insert(err, "error", msg)
+    let err = std::map::insert(err, "status", status)
+    json_response(req, status, err)
+}
+
+// Parsea el body del request como JSON; devuelve nil si no es JSON válido.
+// (anotado `any` igual que rest/main.titan: el valor ya parseado puede ser
+// un map u otro JSON; std::map::get acepta `any` sin problema.)
+fn parse_body(req: int) -> any {
+    let raw = std::server::body_text(req)
+    if raw == "" { return nil }
+    let intento = std::try::catch(|| std::json::parse(raw))
+    match intento {
+        Result::Ok(v) => v,
+        Result::Err(_) => nil,
+    }
+}
+
+// Verifica el header X-Api-Key. Si no es válido responde 401 y devuelve
+// false (el caller debe cortar ahí).
+fn authenticate(keys: map, req: int) -> bool {
+    let provided = std::server::header(req, "X-Api-Key")
+    if provided == nil {
+        error_response(req, 401, "missing_api_key")
+        return false
+    }
+    if !key_valid(keys, provided) {
+        error_response(req, 401, "invalid_api_key")
+        return false
+    }
+    return true
+}
+
+// ---------- Ruta POST /run ----------
+
+fn handle_run(keys: map, req: int) {
+    std::metrics::counter_add("titanforge.run.calls", 1)
+
+    // Solo aceptamos POST.
+    let met = std::server::method(req)
+    if met != "POST" {
+        error_response(req, 405, "method_not_allowed")
+        return
+    }
+
+    if !authenticate(keys, req) { return }
+
+    let body = parse_body(req)
+    if body == nil {
+        error_response(req, 400, "invalid_json_body")
+        return
+    }
+
+    let code = std::map::get(body, "code")
+    if code == nil {
+        error_response(req, 400, "missing_code_field")
+        return
+    }
+
+    // Timeout opcional (por defecto 5000 ms).
+    let timeout_ms = std::map::get(body, "timeout_ms")
+    let timeout = 5000
+    if timeout_ms != nil {
+        timeout = timeout_ms
+    }
+
+    // Ejecutar en sandbox y medir. "" + code fuerza el valor (any) a string.
+    let t0 = std::datetime::now()
+    let result = run_user_code("" + code, timeout)
+    let t1 = std::datetime::now()
+
+    std::metrics::counter_add("titanforge.run.completed", 1)
+    std::metrics::histogram_record("titanforge.run.duration_ms", (t1 - t0) * 1000.0)
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "ok", true)
+    let resp = std::map::insert(resp, "stdout",      std::map::get(result, "stdout"))
+    let resp = std::map::insert(resp, "stderr",      std::map::get(result, "stderr"))
+    let resp = std::map::insert(resp, "exit_code",   std::map::get(result, "exit_code"))
+    let resp = std::map::insert(resp, "duration_ms", std::map::get(result, "duration_ms"))
+    json_response(req, 200, resp)
+}
+
+// ---------- Dispatcher ----------
+
+fn handle(keys: map, r: int, req: int) {
+    std::metrics::counter_add("titanforge.requests", 1)
+
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
+
+    if hit == nil {
+        error_response(req, 404, "not_found")
+        return
+    }
+
+    let tag = hit.pattern
+
+    if tag == "home" {
+        let html = "<h1>TitanForge</h1><p>Serverless sandbox para TITAN.</p>" +
+                   "<p>POST <b>/run</b> con JSON <code>{ \"code\": \"...\" }</code> y header <code>X-Api-Key</code>.</p>" +
+                   "<p>GET <b>/metrics</b> para métricas Prometheus.</p>"
+        std::server::respond_html(req, 200, html)
+    }
+    if tag == "health" {
+        let h = std::map::new()
+        let h = std::map::insert(h, "status", "ok")
+        let h = std::map::insert(h, "service", "titanforge")
+        let h = std::map::insert(h, "version", "0.1.0")
+        json_response(req, 200, h)
+    }
+    if tag == "run" {
+        handle_run(keys, req)
+    }
+    if tag == "metrics" {
+        let prom = std::metrics::prometheus_export()
+        std::server::respond(req, 200, prom)
+    }
+}
+
+// ---------- Entry point ----------
+
+fn main() {
+    let keys = default_keys()
+
+    // 1) Router
+    let r = std::router::new()
+    std::router::insert(r, "/",       "home")
+    std::router::insert(r, "/health", "health")
+    std::router::insert(r, "/run",    "run")
+    std::router::insert(r, "/metrics", "metrics")
+
+    // 2) Servidor
+    let s = std::server::start("127.0.0.1:8080")
+    let addr = std::server::local_addr(s)
+    print("---- TitanForge escuchando en http://" + addr + "/")
+    print("Health : curl http://127.0.0.1:8080/health")
+    print("Run    : curl -X POST -H 'X-Api-Key: demo-token' -H 'Content-Type: application/json'")
+    print("         -d '{\"code\":\"fn main() { print(\\\"hola titanforge\\\") }\"}' http://127.0.0.1:8080/run")
+    print("Metrics: curl http://127.0.0.1:8080/metrics")
+    print("(Ctrl+C para salir)")
+
+    // 3) Loop de aceptación — el servidor vive mientras corra el proceso.
+    for i in 0..1000000 {
+        let req = std::server::accept(s, 60000)
+        if req < 0 {
+            print("timeout, sigo escuchando...")
+        } else {
+            handle(keys, r, req)
+        }
+    }
+
+    // 4) Cierre
+    std::server::stop(s)
+    std::router::drop(r)
+    print("---- TitanForge detenido ----")
+}

@@ -1,0 +1,24 @@
+// ============================================================================
+// store.titan — Claves API y configuración de TitanForge.
+// ============================================================================
+//
+// En un despliegue real las claves viven en un archivo o base de datos y se
+// almacenan como hash (nunca en claro). Para este MVP usamos un map en
+// memoria con una clave de demostración. El siguiente paso natural es
+// mover esto a std::sqlite / std::redis y reemplazar `demo-token` por
+// tokens emitidos con std::jwt::hs256.
+
+// Devuelve el map clave -> rol de API keys autorizadas.
+fn default_keys() -> map {
+    let k = std::map::new()
+    let k = std::map::insert(k, "demo-token", "admin")
+    return k
+}
+
+// Verifica que la clave exista en el registro. Devuelve true si es válida.
+// std::map::get retorna nil cuando la clave no existe.
+fn key_valid(keys: map, provided: string) -> bool {
+    let rol = std::map::get(keys, provided)
+    if rol == nil { return false }
+    return true
+}

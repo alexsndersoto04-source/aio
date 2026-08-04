@@ -1,0 +1,105 @@
+// ============================================================================
+// client.titan — Cliente de demostración para TitanForge.
+// ============================================================================
+//
+// Corre este cliente en OTRA terminal DESPUÉS de arrancar el servidor con:
+//     titan run src/main.titan
+//
+// El cliente hace un tour:
+//   1) GET /health                  -> estado del servicio
+//   2) POST /run  (código válido)   -> imprime "hola titanforge"
+//   3) POST /run  (código con bucle infinito)  -> el sandbox lo limita
+//   4) POST /run  SIN API key       -> espera 401
+//   5) GET /metrics                 -> métricas Prometheus
+//
+// Todo usando std::http_full con auto-parse de JSON.
+
+const BASE = "http://127.0.0.1:8080"
+const API_KEY = "demo-token"
+
+fn empty_headers() -> map { return std::map::new() }
+
+fn auth_headers() -> map {
+    let h = std::map::new()
+    let h = std::map::insert(h, "X-Api-Key", API_KEY)
+    return h
+}
+
+fn opts() -> map {
+    let o = std::map::new()
+    let o = std::map::insert(o, "timeout_ms", 8000)
+    let o = std::map::insert(o, "verify_tls", false)
+    return o
+}
+
+fn banner(titulo: string) {
+    print("")
+    print("======== " + titulo + " ========")
+}
+
+// Arma el payload {"code": "..."} a partir del código fuente.
+fn payload(code: string) -> map {
+    let p = std::map::new()
+    let p = std::map::insert(p, "code", code)
+    return p
+}
+
+fn main() {
+    print("---- TitanForge client ----")
+    print("Conectando a " + BASE)
+
+    // 1) health
+    banner("1) GET /health")
+    let health = std::http_full::get_json(BASE + "/health", empty_headers(), opts())
+    print("status  : " + health.status)
+    print("service : " + health.service)
+    print("version : " + health.version)
+
+    // 2) run: código válido
+    banner("2) POST /run (código válido)")
+    let buen_codigo = "fn main() { print(\"hola titanforge\") }"
+    let intento1 = std::try::catch(|| std::http_full::post_json(BASE + "/run", payload(buen_codigo), auth_headers(), opts()))
+    match intento1 {
+        Result::Ok(resp1) => {
+            print("ok         : " + resp1.ok)
+            print("stdout     : " + resp1.stdout)
+            print("exit_code  : " + resp1.exit_code)
+            print("duration_ms: " + resp1.duration_ms)
+        }
+        Result::Err(msg1) => {
+            print("(error de red: " + msg1 + ")")
+        }
+    }
+
+    // 3) run: bucle infinito (el sandbox debe detenerlo)
+    banner("3) POST /run (bucle infinito -> el sandbox lo corta)")
+    let bucle = "fn main() { loop { } }"
+    let intento2 = std::try::catch(|| std::http_full::post_json(BASE + "/run", payload(bucle), auth_headers(), opts()))
+    match intento2 {
+        Result::Ok(resp2) => {
+            print("exit_code: " + resp2.exit_code)
+            print("stderr   : " + resp2.stderr)
+        }
+        Result::Err(msg2) => {
+            print("(error de red: " + msg2 + ")")
+        }
+    }
+
+    // 4) run sin API key -> 401
+    banner("4) POST /run SIN API key -> espera 401")
+    let intento3 = std::try::catch(|| std::http_full::post_json(BASE + "/run", payload(buen_codigo), empty_headers(), opts()))
+    match intento3 {
+        Result::Ok(resp3) => print("(el servidor devolvió algo; revisar si fue 401)"),
+        Result::Err(msg3) => print("(rechazado: " + msg3 + ")"),
+    }
+
+    // 5) metrics (devuelve texto Prometheus, no JSON -> lo leemos crudo)
+    banner("5) GET /metrics (Prometheus)")
+    let body_vacio = std::bytes::from_array([])
+    let met = std::http_full::request("GET", BASE + "/metrics", empty_headers(), body_vacio, opts())
+    let met_texto = std::encoding::utf8_decode(met.body)
+    print(met_texto)
+
+    print("")
+    print("---- Fin del tour ----")
+}

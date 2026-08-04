@@ -1,0 +1,10 @@
+[package]
+name = "titanforge"
+version = "0.1.0"
+edition = "2021"
+description = "Plataforma serverless sandboxed para TITAN, escrita en TITAN"
+
+# TitanForge no depende de librerias de terceros: usa el binario `titan`
+# del PATH para ejecutar el codigo que recibe por HTTP dentro de un sandbox
+# por capacidades (--sandbox).
+[dependencies]

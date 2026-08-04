@@ -1,0 +1,40 @@
+// ============================================================================
+// runner.titan — Motor de ejecución en sandbox de TitanForge.
+// ============================================================================
+//
+// Recibe el código fuente TITAN que llega por HTTP y lo ejecuta como un
+// proceso hijo AISLADO con `titan run --sandbox`. El sandbox por capacidades
+// bloquea filesystem arbitrario, red, procesos y variables de entorno, sin
+// desactivar las funciones puras. Así, el código de terceros corre con
+// derechos mínimos: no puede tocar el sistema del host.
+//
+// Como el lenguaje ya tiene su propia protección (--sandbox), "reventar" el
+// runner no implica romper la máquina: a lo sumo el subproceso devuelve un
+// error que capturamos y enviamos como JSON al cliente.
+
+// Construye un nombre de archivo temporal único (uuid v4) en el home.
+fn code_filename() -> string {
+    let dir = std::dirs::home()
+    return dir + "/.titanforge_" + std::uuid::v4() + ".titan"
+}
+
+// Escribe el código en un archivo temporal y lo ejecuta con:
+//     titan run --sandbox <archivo>
+// Devuelve un map con { stdout, stderr, exit_code, duration_ms }.
+fn run_user_code(code: string, timeout_ms: int) -> map {
+    let file = code_filename()
+    std::fs::write_text(file, code)
+
+    // Proceso hijo con el sandbox de capacidades activado.
+    let out = std::process::run("titan run --sandbox " + file)
+
+    // Limpieza del archivo temporal; si falla no bloqueamos la respuesta.
+    std::try::catch(|| std::fs::remove_file(file))
+
+    let res = std::map::new()
+    let res = std::map::insert(res, "stdout",      std::text::trim(out.stdout))
+    let res = std::map::insert(res, "stderr",      std::text::trim(out.stderr))
+    let res = std::map::insert(res, "exit_code",   out.exit_code)
+    let res = std::map::insert(res, "duration_ms", out.duration_ms)
+    return res
+}
