@@ -1,0 +1,297 @@
+// ============================================================================
+// 🗺️  TIERRAS DE TITAN — Un juego de aventura y exploración de mundo
+// ============================================================================
+// Cada partida genera un MUNDO NUEVO (procedural): bosques, montañas, agua,
+// desiertos y un pueblo. Tú eres un explorador que camina, descubre el mapa
+// y busca los 3 Tesoros Legendarios escondidos en el mundo.
+//
+// CÓMO JUGAR (en Termux):
+//     titan run game/aventura.titan
+//
+//   w/a/s/d  -> moverte        q -> salir
+//   Te mueves con las flechas de letras y el mundo se descubre a tu paso.
+//   Busca los tesoros ( * ) para ganar. Una brújula te guía.
+//
+// LO QUE USA DE TITAN:
+//   - std::term::read_key   -> teclado en tiempo real (sin esperar Enter)
+//   - std::term::print_colored / print_styled / clear_screen -> mapa a color
+//   - std::random::seeded_int -> semilla distinta en cada partida
+//   - std::map -> exploración (qué ya viste) y tesoros recogidos
+//   - std::math::abs -> distancia para la brújula
+//   - std::try::catch -> errores de teclado sin crashear
+// ============================================================================
+
+// ---------- Generación procedural determinista (hash entero) ----------
+
+fn h2(a: int, b: int) -> int {
+    let mut v = a * 1103515245 + b * 12345
+    if v < 0 { v = 0 - v }
+    v % 100
+}
+
+// Valor absoluto para enteros (std::math::abs es de float).
+fn absi(n: int) -> int {
+    if n < 0 { return 0 - n }
+    n
+}
+
+// ---------- Tipos de terreno y su color/símbolo ----------
+// 0=llanura  1=bosque  2=montaña  3=agua  4=desierto
+
+fn tile_tipo(x: int, y: int, seed: int) -> int {
+    let rx = x / 8
+    let ry = y / 8
+    let region = h2(seed, rx * 1000 + ry) % 5
+    let detalle = h2(seed, x * 31 + y) % 100
+
+    if region == 0 {
+        // llanura con algo de bosque
+        if detalle < 70 { return 0 }
+        return 1
+    }
+    if region == 1 {
+        // bosque denso
+        if detalle < 60 { return 1 }
+        return 0
+    }
+    if region == 2 {
+        // montañas
+        if detalle < 40 { return 2 }
+        return 0
+    }
+    if region == 3 {
+        // lago
+        return 3
+    }
+    // desierto
+    if detalle < 60 { return 4 }
+    return 0
+}
+
+fn tile_simbolo(t: int) -> string {
+    if t == 0 { return "." }
+    if t == 1 { return "&" }
+    if t == 2 { return "^" }
+    if t == 3 { return "~" }
+    return ":"
+}
+
+fn tile_color(t: int) -> string {
+    if t == 0 { return "green" }
+    if t == 1 { return "green" }
+    if t == 2 { return "white" }
+    if t == 3 { return "blue" }
+    return "yellow"
+}
+
+fn bloquea(t: int) -> bool {
+    if t == 2 { return true }   // montaña
+    if t == 3 { return true }   // agua
+    return false
+}
+
+// ---------- Tesoros Legendarios ----------
+
+fn tesoro_x(seed: int, i: int) -> int { (h2(seed, 100 + i) % 36) - 18 }
+fn tesoro_y(seed: int, i: int) -> int { (h2(seed, 200 + i) % 36) - 18 }
+
+// ---------- Exploración: marca lo que ves alrededor ----------
+
+fn explorar_alrededor(v: map, px: int, py: int) -> map {
+    let mut res = v
+    for dx in -2..3 {
+        for dy in -2..3 {
+            let key = "{" + (px + dx) + "},{" + (py + dy) + "}"
+            res = std::map::insert(res, key, 1)
+        }
+    }
+    return res
+}
+
+// ---------- Brújula: guía hacia el tesoro más cercano ----------
+
+fn brujula(px: int, py: int, seed: int, recogidos: map) -> string {
+    let mut mejor = 999
+    let mut dir = "??? no hay tesoros por aqui"
+    for i in 0..3 {
+        let key_t = "{i}"
+        let ya = std::map::get(recogidos, key_t)
+        if ya == nil {
+            let tx = tesoro_x(seed, i)
+            let ty = tesoro_y(seed, i)
+            let d = absi(tx - px) + absi(ty - py)
+            if d < mejor {
+                mejor = d
+                let mut norte = ""
+                let mut sur = ""
+                let mut este = ""
+                let mut oeste = ""
+                if ty < py { norte = "N" }
+                if ty > py { sur = "S" }
+                if tx > px { este = "E" }
+                if tx < px { oeste = "O" }
+                dir = "Tesoro {i} hacia " + norte + sur + este + oeste + " (dist {d})"
+            }
+        }
+    }
+    return dir
+}
+
+// ---------- Pintar la vista (cámara) ----------
+
+const RADIO = 5
+
+fn pintar_vista(px: int, py: int, seed: int, visto: map, recogidos: map) {
+    std::term::clear_screen()
+
+    // Fila superior de borde
+    print("  ")
+
+    // Cuadro del mundo alrededor del jugador
+    for dy in (0 - RADIO)..(RADIO + 1) {
+        for dx in (0 - RADIO)..(RADIO + 1) {
+            let x = px + dx
+            let y = py + dy
+
+            if dx == 0 && dy == 0 {
+                std::term::print_styled("black", "yellow", "@")
+            } else {
+                // ¿Es un tesoro legendario sin recoger?
+                let mut es_tesoro = false
+                for i in 0..3 {
+                    let key_t = "{i}"
+                    let ya = std::map::get(recogidos, key_t)
+                    if ya == nil {
+                        if tesoro_x(seed, i) == x && tesoro_y(seed, i) == y {
+                            es_tesoro = true
+                        }
+                    }
+                }
+                if es_tesoro {
+                    std::term::print_colored("yellow", "*")
+                } else {
+                    let key = "{x},{y}"
+                    let visto_celda = std::map::get(visto, key)
+                    let t = tile_tipo(x, y, seed)
+                    if visto_celda == nil {
+                        std::term::print_colored("#4a4a4a", ".")
+                    } else {
+                        std::term::print_colored(tile_color(t), tile_simbolo(t))
+                    }
+                }
+            }
+        }
+        print("")
+    }
+    print("")
+}
+
+// ---------- Menú de ayuda ----------
+
+fn ayuda() {
+    print("=== AYUDA ===")
+    print("w/a/s/d  moverte")
+    print("q         salir")
+    print("r         ayuda")
+    print("Busca los 3 Tesoros Legendarios (*) para ganar.")
+    print("")
+}
+
+// ---------- Entrada: leer una tecla sin esperar Enter ----------
+
+fn leer_tecla() -> string {
+    let t = std::try::catch(|| std::term::read_key(120000))
+    match t {
+        Result::Ok(k) => k,
+        Result::Err(_) => "",
+    }
+}
+
+// ---------- Juego principal ----------
+
+fn main() {
+    std::term::clear_screen()
+    std::term::print_styled("black", "cyan", "  TIERRAS DE TITAN  ")
+    print("")
+    print("Una aventura de exploracion. Cada partida genera un mundo nuevo.")
+    print("")
+
+    // Semilla aleatoria -> mundo distinto cada vez.
+    let mut seed = std::random::int()
+    if seed < 0 { seed = 0 - seed }
+
+    // Empiezas en el pueblo, en el centro.
+    let mut px = 0
+    let mut py = 0
+    let mut visto = explorar_alrededor(std::map::new(), px, py)
+    let mut recogidos = std::map::new()
+    let mut tesoros = 0
+    let mut pasos = 0
+    let mut jugando = true
+
+    ayuda()
+
+    while jugando {
+        pintar_vista(px, py, seed, visto, recogidos)
+
+        print("Pasos: {pasos}    Tesoros: {tesoros}/3")
+        print(brujula(px, py, seed, recogidos))
+        print("")
+
+        let tecla = leer_tecla()
+
+        let mut mov_x = px
+        let mut mov_y = py
+
+        if tecla == "w" { mov_y = py - 1 }
+        if tecla == "s" { mov_y = py + 1 }
+        if tecla == "a" { mov_x = px - 1 }
+        if tecla == "d" { mov_x = px + 1 }
+        if tecla == "q" {
+            jugando = false
+        }
+        if tecla == "r" {
+            ayuda()
+        }
+
+        // Intentar moverse si hay cambio y la celda no bloquea.
+        if mov_x != px || mov_y != py {
+            let t = tile_tipo(mov_x, mov_y, seed)
+            if !bloquea(t) {
+                px = mov_x
+                py = mov_y
+                pasos = pasos + 1
+                visto = explorar_alrededor(visto, px, py)
+
+                // ¿Estamos sobre un tesoro?
+                for i in 0..3 {
+                    let key_t = "{i}"
+                    let ya = std::map::get(recogidos, key_t)
+                    if ya == nil {
+                        if tesoro_x(seed, i) == px && tesoro_y(seed, i) == py {
+                            recogidos = std::map::insert(recogidos, key_t, 1)
+                            tesoros = tesoros + 1
+                            std::term::print_styled("black", "green",
+                                "  ¡ENCONTRASTE UN TESORO LEGENDARIO!  ")
+                            print("")
+                            std::time::sleep_ms(800)
+                        }
+                    }
+                }
+            } else {
+                std::term::print_colored("red", "No puedes pasar por aqui.\n")
+                std::time::sleep_ms(400)
+            }
+        }
+
+        if tesoros >= 3 {
+            jugando = false
+        }
+    }
+
+    std::term::clear_screen()
+    std::term::print_styled("black", "green", "  ¡VICTORIA! Encontraste los 3 Tesoros Legendarios.  ")
+    print("")
+    print("Completaste la exploracion en {pasos} pasos.")
+    print("Gracias por jugar a TIERRAS DE TITAN.")
+}
