@@ -1,0 +1,128 @@
+// ============================================================================
+// ORIGEN — Un planeta vivo generado proceduralmente (demo jugable)
+// ============================================================================
+// Juego escrito en TITAN, compilado a WebAssembly y empaquetado como APK por
+// GitHub Actions. Corre en el navegador (Canvas 2D) y dentro de la app
+// Android. La "semilla" del mundo nace de la hora real, así cada sesión es
+// distinta — el primer paso del concepto "tu mundo hecho de tus datos".
+//
+// Interacción (móvil): toca cualquier parte del lienzo para plantar una
+// "semilla de vida": el planeta late y brota un pulso verde en ese punto.
+// En desktop puedes usar las flechas (se muestra la tecla en el HUD).
+//
+// NOTA DE ARQUITECTURA:
+//   En el backend WASM los handlers de eventos no conservan estado entre
+//   llamadas y TITAN no tiene (todavía) variables globales mutables, así que
+//   esta demo es procedural + reactiva. Para el juego MUNDO ORIGEN completo
+//   (guardar semillas, progresión, inventario) hay que sumarle al compilador
+//   variables globales mutables — ese es el siguiente paso grande.
+//   Mientras tanto, la versión nativa `game/native_origen.titan` SÍ conserva
+//   estado y corre en Termux con un bucle completo.
+//
+// API de std::web usada:
+//   canvas_resize / canvas_clear / canvas_fill_rect / canvas_stroke_rect /
+//   canvas_line / canvas_text   (render)
+//   animation_start             (bucle de frames)
+//   listen + event_x / event_y  (toque/clic)
+//   event_key                   (flechas)
+//   set_text / set_title        (marcador)
+// ============================================================================
+
+// ---- Constantes del mundo ----------------------------------------------
+
+const W = 900
+const H = 600
+
+const C_SKY_TOP    = "#0b1026"
+const C_STAR       = "#cdd6ff"
+const C_SUN        = "#ffcf6e"
+const C_SEED       = "#7dffb0"
+const C_LINE       = "#b8ffe0"
+
+// Un pseudo-aleatorio determinista a partir de la hora y un índice.
+// Devuelve un valor entre 0 y 99 (suficiente para variar posiciones/colores).
+fn hash(seed: int, i: int) -> int {
+    let v = seed * 17 + i * 31
+    if v < 0 { v = 0 - v }
+    v % 100
+}
+
+// Dibuja un cielo con gradiente de bandas y estrellas procedurales.
+fn draw_sky(seed: int) {
+    let bands = 24
+    for b in 0..bands {
+        let y = b * H / bands
+        let hgt = H / bands + 1
+        let r = 11 + b
+        let g = 10 + (b / 3)
+        let bl = 38 + b * 4
+        let color = "rgb(" + r + "," + g + "," + bl + ")"
+        std::web::canvas_fill_rect("#world", 0, y, W, hgt, color)
+    }
+    for i in 0..90 {
+        let sx = hash(seed, i * 7 + 1) * 9
+        let sy = hash(seed, i * 7 + 2) * 3
+        std::web::canvas_fill_rect("#world", sx, sy, 2, 2, C_STAR)
+    }
+}
+
+// Dibuja el suelo del planeta: franjas de terreno con color por semilla.
+fn draw_ground(seed: int, phase: int) {
+    let tiles = 40
+    let tile = W / tiles
+    for t in 0..tiles {
+        let h = hash(seed, t) + (phase / 40)
+        let top = 400 - h
+        let color = "rgb(" + (50 + hash(seed, t * 3)) + "," +
+                          (45 + h) + "," + (95 + hash(seed, t * 5) / 2) + ")"
+        std::web::canvas_fill_rect("#world", t * tile, top, tile, H - top, color)
+    }
+}
+
+// Un "sol" que orbita el planeta según la hora (día/noche).
+fn draw_sun(phase: int) {
+    let x = (phase % 1200) - 150
+    let y = 120
+    std::web::canvas_fill_rect("#world", x, y, 46, 46, C_SUN)
+    std::web::canvas_line("#world", x + 23, y + 23, x + 23 + 30, y + 23 - 18, C_SUN, 3)
+}
+
+// ---- Entrada: plantar una semilla en el punto tocado ---------------------
+
+fn on_tap() {
+    let px = std::web::event_x()
+    let py = std::web::event_y()
+    std::web::canvas_fill_rect("#world", px - 8, py - 8, 16, 16, C_SEED)
+    std::web::canvas_stroke_rect("#world", px - 14, py - 14, 28, 28, C_LINE, 2)
+    std::web::set_text("#score", "semilla plantada en (" + px + ", " + py + ")")
+    0
+}
+
+fn on_key() {
+    let k = std::web::event_key()
+    std::web::set_text("#hint", "tecla: " + k)
+    0
+}
+
+// ---- Bucle de animación (día/noche + mundo vivo) -------------------------
+
+fn tick() {
+    let t = std::web::frame_time_ms()
+    let seed = t / 1000
+    draw_sky(seed)
+    draw_sun(t)
+    draw_ground(seed, t / 30)
+    std::web::canvas_text("#world", "ORIGEN — un planeta vivo hecho de tus datos",
+                          24, 40, "#ffffff", "20px sans-serif")
+    0
+}
+
+fn main() {
+    std::web::set_title("ORIGEN")
+    std::web::canvas_resize("#world", W, H)
+    std::web::set_text("#score", "toca el planeta para plantar una semilla")
+    std::web::listen("#world", "pointerdown", "on_tap")
+    std::web::listen("body", "keydown", "on_key")
+    std::web::animation_start("tick")
+    0
+}

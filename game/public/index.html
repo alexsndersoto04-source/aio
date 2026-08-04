@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>ORIGEN — un planeta vivo</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b1026; overflow: hidden; }
+    body { font-family: system-ui, sans-serif; color: #fff; }
+    #world { display: block; width: 100vw; height: 100vh; touch-action: none; }
+    #hud {
+      position: fixed; top: 10px; left: 0; right: 0; z-index: 5;
+      display: flex; justify-content: space-between; padding: 8px 14px;
+      pointer-events: none; font-size: 15px;
+    }
+    #hud span { background: rgba(0,0,0,.45); padding: 6px 12px; border-radius: 8px; }
+    #score { }
+    #hint { opacity: .85; }
+  </style>
+</head>
+<body>
+  <canvas id="world"></canvas>
+  <div id="hud"><span id="score">cargando…</span><span id="hint">toca el planeta</span></div>
+  <script type="module" src="./host.js"></script>
+</body>
+</html>

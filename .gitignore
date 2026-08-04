@@ -23,3 +23,10 @@ zett_*.deb
 .DS_Store
 .idea/
 .vscode/
+
+# Android build (lo genera GitHub Actions)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk

@@ -1,0 +1,76 @@
+// ============================================================================
+// ORIGEN (nativa) — prototipo jugable con ESTADO real, para correr en Termux.
+// ============================================================================
+// Esta versión usa el motor 2D headless (std::game) con un bucle completo y
+// variables mutables, así que SÍ conserva estado: un "explorador" recorre un
+// mundo por turnos recolectando semillas de vida mientras el día/noche pasa.
+//
+// A diferencia de la demo del navegador (WASM), aquí no hay variable global
+// pero el bucle vive dentro de main() con `let mut`, igual que
+// examples/game_engine.titan. Es la base para portar el juego completo a
+// WASM en cuanto el compilador soporte variables globales mutables.
+//
+// Ejecutar en Termux:
+//     titan run game/native_origen.titan
+// ============================================================================
+
+fn main() {
+    print("==== ORIGEN (nativa) — mundo por turnos ====")
+    print("Usa las teclas a/w/s/d para mover al explorador.")
+    print("(simulación: 80 turnos de un mundo 40x20)")
+
+    std::game::init("ORIGEN", 640, 400)
+
+    // Semilla del mundo: derivada de la hora real (cada run es distinto).
+    let seed = std::datetime::now()
+
+    // Explorador y mundo.
+    let px = 20
+    let py = 10
+    let semillas = 0
+    let turno = 0
+
+    for t in 0..80 {
+        std::time::sleep_ms(30)
+        let dt = std::game::step()
+
+        // Día/noche: fase que viaja con el turno.
+        let fase = t % 12
+
+        // Simulación de entrada (en un build con ventana real, esto
+        // leería std::input::is_key_pressed("w"), etc.).
+        let vx = 0
+        let vy = 0
+        if std::input::is_key_pressed("d") { vx = 1 }
+        if std::input::is_key_pressed("a") { vx = -1 }
+        if std::input::is_key_pressed("s") { vy = 1 }
+        if std::input::is_key_pressed("w") { vy = -1 }
+        px = px + vx
+        py = py + vy
+
+        // Límites del mundo.
+        if px < 0 { px = 0 }
+        if px > 39 { px = 39 }
+        if py < 0 { py = 0 }
+        if py > 19 { py = 19 }
+
+        // Cada 5 turnos aparece una semilla de vida cerca del explorador.
+        let sx = (seed + t) % 40
+        let sy = (seed / 7 + t) % 20
+        if px == sx && py == sy {
+            semillas = semillas + 1
+            print("+ semilla en ({sx},{sy}) — total: {semillas}")
+        }
+
+        turno = turno + 1
+        if t % 10 == 0 {
+            print("turno {t} | explorador ({px},{py}) | fase {fase} | semillas {semillas}")
+        }
+    }
+
+    print("")
+    print("==== fin ====")
+    print("semillas recolectadas: {semillas}")
+    print("fps del motor: {std::game::fps()}")
+    print("(la versión WASM/APK crecerá hasta el mundo completo)")
+}
