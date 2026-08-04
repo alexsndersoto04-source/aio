@@ -92,6 +92,19 @@ impl Parser {
         } else {
             None
         };
+        // Phase 41: optional library path right after the ABI string, e.g.
+        //   extern "C" "libm.so.6" fn pow(base: float, exp: float) -> float;
+        // Without it, the runtime dlopens the platform C library.
+        let library = if is_extern {
+            if let Some(TokenKind::StringLit(s)) = self.peek_kind().cloned() {
+                self.advance();
+                Some(s)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let start = self.expect(TokenKind::Fn)?;
         let name = self.expect_ident()?;
         self.expect(TokenKind::LParen)?;
@@ -111,7 +124,7 @@ impl Parser {
             self.expect(TokenKind::LBrace)?;
             Some(self.parse_block_after_open(start)?)
         };
-        Ok(FunctionDecl { name, source_file: None, params, return_type, body, is_extern, abi, span: start })
+        Ok(FunctionDecl { name, source_file: None, params, return_type, body, is_extern, abi, library, span: start })
     }
 
     fn parse_struct(&mut self) -> Result<StructDecl> {

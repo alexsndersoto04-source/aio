@@ -45,6 +45,11 @@ pub struct FunctionDecl {
     pub body: Option<Block>,
     pub is_extern: bool,
     pub abi: Option<String>,
+    /// Phase 41: optional shared-library path for `extern` declarations,
+    /// e.g. `extern "C" "libm.so.6" fn pow(...)`. When absent, the
+    /// runtime resolves the symbol against the platform C library
+    /// (libc.so.6 / libSystem.dylib / msvcrt.dll).
+    pub library: Option<String>,
     pub span: Span,
 }
 

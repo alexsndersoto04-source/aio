@@ -1672,6 +1672,15 @@ fn apply_type_effect(
                 module.functions.get(*function).and_then(|target| target.return_type.as_ref()),
             ));
         }
+        // Phase 41: extern C-ABI calls require dlopen/dlsym at runtime,
+        // which the sandboxed WebAssembly backend cannot provide. The
+        // operation validator below rejects them with a clear error
+        // before any code is emitted; here we only keep the type
+        // analysis consistent (consume argc, push Unknown).
+        Op::CallExtern { argc, .. } => {
+            state.stack.truncate(state.stack.len().saturating_sub(*argc));
+            state.stack.push(ValueKind::Unknown);
+        }
         Op::CallNative { name, argc } => {
             let return_kind = match name.as_str() {
                 "std::map::new" => ValueKind::Map(None),
@@ -1902,6 +1911,13 @@ fn validate_operation(
         | Op::EnumPayload
         | Op::Nop
         | Op::Halt => Ok(()),
+        // Phase 41: extern C-ABI calls need dlopen/dlsym, which the
+        // sandboxed WebAssembly backend cannot provide. Reject with a
+        // clear message instead of falling into the generic catch-all.
+        Op::CallExtern { name, .. } => Err(WasmError::Unsupported {
+            function: function.name.clone(),
+            operation: format!("extern C-ABI call '{name}' requires dlopen/dlsym, which the WebAssembly backend cannot provide"),
+        }),
         other => Err(WasmError::Unsupported {
             function: function.name.clone(),
             operation: format!("{other:?}"),
@@ -1940,7 +1956,7 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         Op::GetField(_) => (1, 1),
         Op::NewEnum { has_payload, .. } => (if *has_payload { 1 } else { 0 }, 1),
         Op::EnumIs { .. } | Op::EnumPayload => (1, 1),
-        Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::Print(argc) => (*argc, 1),
+        Op::Call { argc, .. } | Op::CallNative { argc, .. } | Op::CallExtern { argc, .. } | Op::Print(argc) => (*argc, 1),
         Op::Jump(_) | Op::Nop => (0, 0),
         Op::Ret | Op::Halt => (0, 0),
         _ => (0, 0),
@@ -3336,6 +3352,7 @@ mod tests {
             struct_schemas: HashMap::new(),
             enum_schemas: HashMap::new(),
             method_table: HashMap::new(),
+            externs: Vec::new(),
         }
     }
 

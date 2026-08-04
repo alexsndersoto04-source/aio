@@ -1,26 +1,19 @@
+//! Bare-metal build helpers (`std::freestanding`) — **real text generation**.
+//!
+//! These functions generate the two build artifacts a Titan bare-metal
+//! target needs: a GNU ld **linker script** and an **assembly `_start`**
+//! stub. The output is real, valid text that a cross-toolchain (aarch64-/
+//! x86_64-/riscv64-unknown-none) would consume to link a kernel.
+//!
+//! What this module is **not**: it is not a kernel, an emulator or a
+//! hardware interface. There is deliberately **no simulation** of CPU
+//! exception tables, MMIO or a frame allocator — those were removed in
+//! Phase 41 because pretending to touch hardware with in-memory
+//! HashMaps is not honest.
+
 use std::fmt::Write as _;
-use std::sync::{Mutex, OnceLock};
 
-struct FreestandingState {
-    initialized: bool,
-    active_target: String,
-}
-
-impl FreestandingState {
-    fn new() -> Self {
-        Self {
-            initialized: false,
-            active_target: String::new(),
-        }
-    }
-}
-
-static FREESTANDING_STATE: OnceLock<Mutex<FreestandingState>> = OnceLock::new();
-
-fn get_freestanding_state() -> &'static Mutex<FreestandingState> {
-    FREESTANDING_STATE.get_or_init(|| Mutex::new(FreestandingState::new()))
-}
-
+/// Validates a bare-metal target triple against the supported set.
 pub fn validate_target_spec(target: &str) -> bool {
     matches!(
         target.trim(),
@@ -28,19 +21,9 @@ pub fn validate_target_spec(target: &str) -> bool {
     )
 }
 
-pub fn init(target_arch: &str) -> bool {
-    if !validate_target_spec(target_arch) {
-        return false;
-    }
-    if let Ok(mut state) = get_freestanding_state().lock() {
-        state.active_target = target_arch.to_string();
-        state.initialized = true;
-        true
-    } else {
-        false
-    }
-}
-
+/// Generates a real GNU ld linker script for the target: output format,
+/// `_start` entry, and `.text` / `.rodata` / `.data` / `.bss` sections
+/// with 4 KiB alignment, a BSS zeroing range and a stack region.
 pub fn generate_linker_script(target_arch: &str, base_addr: u64, stack_size: u64) -> String {
     let output_arch = match target_arch {
         "aarch64-unknown-none" => "aarch64",
@@ -71,6 +54,8 @@ pub fn generate_linker_script(target_arch: &str, base_addr: u64, stack_size: u64
     ld
 }
 
+/// Generates a real assembly `_start` stub: sets up the stack pointer,
+/// zeroes `.bss`, calls `entry_fn`, then parks the CPU.
 pub fn generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
     let mut asm = String::with_capacity(512);
     let _ = writeln!(asm, "/* Titan Bare-Metal Startup (_start) for {} */", target_arch);
@@ -100,6 +85,15 @@ pub fn generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
             let _ = writeln!(asm, "1:  cmp %rsi, %rdi\n    jge 2f\n    movq $0, (%rdi)\n    addq $8, %rdi\n    jmp 1b");
             let _ = writeln!(asm, "2:  call {}\n3:  cli\n    hlt\n    jmp 3b", entry_fn);
         }
+        "riscv64gc-unknown-none" => {
+            let _ = writeln!(asm, "    /* Setup Stack Pointer */");
+            let _ = writeln!(asm, "    la sp, _stack_top");
+            let _ = writeln!(asm, "    /* Zero-out BSS section */");
+            let _ = writeln!(asm, "    la t0, __bss_start\n    la t1, __bss_end");
+            let _ = writeln!(asm, "1:  bgeu t0, t1, 2f\n    sd zero, 0(t0)\n    addi t0, t0, 8\n    j 1b");
+            let _ = writeln!(asm, "2:  call {}", entry_fn);
+            let _ = writeln!(asm, "3:  wfi\n    j 3b");
+        }
         _ => {
             let _ = writeln!(asm, "    /* Unsupported architecture startup fallback */");
             let _ = writeln!(asm, "    b .");
@@ -108,44 +102,36 @@ pub fn generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
     asm
 }
 
-pub fn get_active_target() -> String {
-    if let Ok(state) = get_freestanding_state().lock() {
-        if state.initialized {
-            return state.active_target.clone();
-        }
-    }
-    String::new()
-}
-
-pub fn shutdown() -> bool {
-    if let Ok(mut state) = get_freestanding_state().lock() {
-        state.active_target.clear();
-        state.initialized = false;
-        true
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_freestanding_target_and_linker_generation() {
+    fn target_validation_is_real() {
         assert!(validate_target_spec("aarch64-unknown-none"));
         assert!(!validate_target_spec("invalid-target"));
-        assert!(init("aarch64-unknown-none"));
-        assert_eq!(get_active_target(), "aarch64-unknown-none");
+    }
 
+    #[test]
+    fn linker_script_generation_is_real_text() {
         let ld = generate_linker_script("aarch64-unknown-none", 0x80000, 0x10000);
         assert!(ld.contains("ENTRY(_start)"));
         assert!(ld.contains(". = 0x80000;"));
         assert!(ld.contains("_stack_top = .;"));
+    }
 
+    #[test]
+    fn startup_asm_generation_is_real_text() {
         let asm = generate_startup_asm("aarch64-unknown-none", "kernel_main");
         assert!(asm.contains("mov sp, x0"));
         assert!(asm.contains("bl kernel_main"));
-        assert!(shutdown());
+
+        let asm64 = generate_startup_asm("x86_64-unknown-none", "kmain");
+        assert!(asm64.contains("lea _stack_top(%rip), %rsp"));
+        assert!(asm64.contains("call kmain"));
+
+        let riscv = generate_startup_asm("riscv64gc-unknown-none", "kernel_main");
+        assert!(riscv.contains("la sp, _stack_top"));
+        assert!(riscv.contains("call kernel_main"));
     }
 }

@@ -102,6 +102,12 @@ fn validate(module: &CompiledModule) -> Result<(), ArtifactError> {
                     if captures.len() != target_function.captures { return invalid(&format!("{} supplies wrong capture count for '{}'", location(), target_function.name)); }
                     if captures.iter().any(|capture| *capture >= function.locals) { return invalid(&format!("{} captures a missing local", location())); }
                 }
+                // Phase 41: extern calls must reference a declared extern
+                // and match its arity — checked before any artifact runs.
+                Op::CallExtern { name, argc } => {
+                    let decl = module.externs.iter().find(|e| e.name == *name).ok_or_else(|| ArtifactError::Invalid(format!("{} calls undeclared extern '{}'", location(), name)))?;
+                    if *argc != decl.param_types.len() { return invalid(&format!("{} calls extern '{}' with wrong arity", location(), name)); }
+                }
                 Op::NewArray(count) | Op::NewTuple(count) | Op::Print(count) | Op::CallValue(count) if *count > 1_000_000 => return invalid(&format!("{} has an excessive operand count", location())),
                 Op::NewStruct { name, fields } if name.len() > 4096 || fields.len() > 100_000 => return invalid(&format!("{} has invalid struct metadata", location())),
                 Op::PushFloat(value) if !value.is_finite() => return invalid(&format!("{} contains a non-finite float", location())),
@@ -127,6 +133,7 @@ mod tests {
             struct_schemas: std::collections::HashMap::new(),
             enum_schemas: std::collections::HashMap::new(),
             method_table: std::collections::HashMap::new(),
+            externs: Vec::new(),
         }
     }
 

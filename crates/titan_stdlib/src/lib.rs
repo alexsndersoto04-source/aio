@@ -7,9 +7,6 @@ pub mod gui_raster;
 #[cfg(all(feature = "window_live", not(target_os = "android")))]
 pub mod window_live;
 pub mod freestanding;
-pub mod freestanding_memory;
-pub mod freestanding_cpu;
-pub mod freestanding_mmio;
 pub mod bytes;
 pub mod cache;
 pub mod checksum;

@@ -1,0 +1,45 @@
+// Demo Fase 41: FFI real — `extern "C" fn ...;` resuelto con dlopen/dlsym.
+//
+// Ejecutar con:
+//     zett run examples/ffi.titan
+//
+// Esto NO es una simulación: cada llamada carga la librería C de la
+// plataforma (libc.so.6 / libSystem.dylib / msvcrt.dll) y ejecuta el
+// símbolo real:
+//   - getpid()  -> el PID real del proceso (varía en cada ejecución)
+//   - strlen(s) -> longitud real de una cadena C (bytes hasta el NUL)
+//   - puts(s)   -> escribe REALMENTE en stdout del proceso
+//
+// Sintaxis:
+//   extern "C" fn nombre(params) -> retorno;
+//   extern "C" "libm.so.6" fn nombre(params) -> retorno;   // librería explícita
+//
+// Tipos soportados:
+//   params:  int, bool, char, string (o &str)   -> se pasan como registros
+//            de 8 bytes / char* NUL-terminated.
+//   retorno: int, bool, char, string (se copia, no se libera), float (XMM0).
+//
+// Límite honesto: los parámetros float NO están soportados todavía
+// (necesitarían marshalling XMM por firma); el typechecker los rechaza
+// con un error claro. Máximo 8 parámetros.
+
+extern "C" fn getpid() -> int;
+extern "C" fn strlen(s: string) -> int;
+extern "C" fn puts(s: string) -> int;
+
+fn main() {
+    print("---- FFI real contra libc ----")
+
+    let pid = getpid()
+    print("PID del proceso (getpid real): {pid}")
+    let pid_ok = pid > 0
+    print("¿PID > 0? {pid_ok}")
+
+    let len = strlen("TITAN")
+    print("strlen(\"TITAN\") = {len}")
+
+    let len2 = strlen("hola mundo")
+    print("strlen(\"hola mundo\") = {len2}")
+
+    puts("puts(): escrito directamente por libc en stdout")
+}

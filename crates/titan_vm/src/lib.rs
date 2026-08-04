@@ -1,6 +1,7 @@
 //! Safe stack-based virtual machine for Titan bytecode.
 
 mod debug;
+mod ffi;
 mod native;
 pub use debug::{Breakpoint, DebugCommand, DebugController, DebugEvent, DebugFrame, DebugHook, DebugMode, Debugger};
 
@@ -138,8 +139,13 @@ struct RuntimeState {
     postgres_pools: Mutex<HashMap<u64, titan_postgres::Pool>>,
     mysql: Mutex<HashMap<u64, Arc<Mutex<MysqlHandle>>>>,
     mysql_pools: Mutex<HashMap<u64, titan_mysql::Pool>>,
+    /// Phase 41: C-ABI bridge caches. Library handles are process-lifetime
+    /// (never dlclose'd); symbol addresses are cached per
+    /// "library\u{1}symbol" so repeated extern calls cost one lock lookup.
+    extern_libraries: Mutex<HashMap<String, usize>>,
+    extern_symbols: Mutex<HashMap<String, usize>>,
 }
-impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()), server_controls: Mutex::new(HashMap::new()), sqlite: Mutex::new(HashMap::new()), sqlite_pools: Mutex::new(HashMap::new()), postgres: Mutex::new(HashMap::new()), postgres_pools: Mutex::new(HashMap::new()), mysql: Mutex::new(HashMap::new()), mysql_pools: Mutex::new(HashMap::new()) } } }
+impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()), server_controls: Mutex::new(HashMap::new()), sqlite: Mutex::new(HashMap::new()), sqlite_pools: Mutex::new(HashMap::new()), postgres: Mutex::new(HashMap::new()), postgres_pools: Mutex::new(HashMap::new()), mysql: Mutex::new(HashMap::new()), mysql_pools: Mutex::new(HashMap::new()), extern_libraries: Mutex::new(HashMap::new()), extern_symbols: Mutex::new(HashMap::new()) } } }
 
 pub struct Vm {
     module: CompiledModule,
@@ -746,6 +752,19 @@ impl Vm {
                     let args = take_args(&mut stack, argc, &function.name)?;
                     stack.push(native::invoke(&name, args, self.capabilities)?);
                 }
+                // Phase 41: real C-ABI call. The extern declaration was
+                // validated at artifact-build time (name + arity); the
+                // symbol is resolved now via dlopen/dlsym and invoked
+                // with a fixed-arity prototype.
+                Op::CallExtern { name, argc } => {
+                    let args = take_args(&mut stack, argc, &function.name)?;
+                    let decl = self.module.externs.iter().find(|e| e.name == name).cloned()
+                        .ok_or_else(|| VmError::Type(format!("unknown extern function '{name}'")))?;
+                    if argc != decl.param_types.len() {
+                        return Err(VmError::Arity { function: name, expected: decl.param_types.len(), found: argc });
+                    }
+                    stack.push(ffi::call(&decl, args, &self.runtime.extern_libraries, &self.runtime.extern_symbols)?);
+                }
                 Op::Ret => return Ok(stack.pop().unwrap_or(Value::Nil)),
                 Op::Print(argc) => {
                     let args = take_args(&mut stack, argc, &function.name)?;
@@ -1057,6 +1076,23 @@ mod tests {
         assert_eq!(thread.join().unwrap().unwrap(), Some(Value::Int(42)));
     }
     #[test] fn tasks_execute_on_threads_and_join() { assert_eq!(run("fn main() { let task = spawn || 40 + 2 join(task) }").unwrap(), Value::Int(42)); }
+    #[test] fn extern_ffi_strlen_is_a_real_libc_call() {
+        assert_eq!(run("extern \"C\" fn strlen(s: string) -> int; fn main() { strlen(\"titan\") }").unwrap(), Value::Int(5));
+        assert_eq!(run("extern \"C\" fn strlen(s: &str) -> int; fn main() { strlen(\"hola\") }").unwrap(), Value::Int(4));
+    }
+    #[test] fn extern_ffi_getpid_is_a_real_libc_call() {
+        assert!(matches!(run("extern \"C\" fn getpid() -> int; fn main() { getpid() }").unwrap(), Value::Int(pid) if pid > 0));
+    }
+    #[test] fn extern_ffi_missing_symbol_is_a_typed_error() {
+        let error = run("extern \"C\" fn titan_symbol_that_does_not_exist_xyz() -> int; fn main() { titan_symbol_that_does_not_exist_xyz() }").unwrap_err();
+        assert!(error.contains("not found") || error.contains("cannot load"), "unexpected error: {error}");
+    }
+    #[test] fn extern_ffi_float_parameter_is_rejected_at_check_time() {
+        assert!(compile("extern \"C\" fn sqrt(x: float) -> float; fn main() { sqrt(2.0) }").is_err());
+    }
+    #[test] fn extern_ffi_unsupported_return_is_rejected_at_check_time() {
+        assert!(compile("extern \"C\" fn mystery() -> [int]; fn main() { mystery() }").is_err());
+    }
     #[test] fn channels_communicate_between_tasks() { assert_eq!(run("fn main() { let pair = channel(1) let tx = pair[0] let rx = pair[1] let task = spawn || { send(tx, 42) } let value = recv(rx) join(task) value }").unwrap(), Value::Int(42)); }
     #[test] fn task_and_channel_timeouts_are_explicit_options() { assert_eq!(run("fn main() { let pair = channel(1) let result = recv_timeout(pair[1], 1) match result { Option::None => 1, Option::Some(value) => 0 } }").unwrap(), Value::Int(1)); }
     #[test] fn select_returns_channel_index_and_value() { assert_eq!(run("fn main() { let a = channel(1) let b = channel(1) let task = spawn || { send(b[0], 77) } let selected = select([a[1], b[1]], 1000)? join(task) selected[1] }").unwrap(), Value::Int(77)); }

@@ -37,6 +37,12 @@ pub enum TypeError {
     OutsideLoop,
     #[error("operator ? requires an Option or Result value")]
     InvalidTry,
+    /// Phase 41: the C-ABI bridge can only marshal 8-byte integer-class
+    /// arguments (int, bool, char, string→char*, bytes→ptr) and returns
+    /// int/bool/char/string/float. Float *parameters* would need XMM
+    /// register marshalling that the fixed-arity bridge does not do yet.
+    #[error("extern '{name}': C ABI type '{found}' is not supported ({hint})")]
+    FfiUnsupported { name: String, found: String, hint: String },
 }
 
 #[derive(Clone)]
@@ -227,6 +233,41 @@ impl TypeEnv {
         }
     }
 
+    /// Phase 41: validate `extern "C" fn ...;` declarations against what
+    /// the dlopen/dlsym bridge in the VM can actually marshal.
+    fn validate_extern_ffi(&mut self, function: &FunctionDecl) {
+        for param in &function.params {
+            let ok = match &param.type_ann {
+                None => false,
+                Some(TypeExpr::Named { name, .. }) => matches!(name.as_str(), "int" | "bool" | "char" | "string" | "str"),
+                // `&str` is a pointer type at the ABI level (char*).
+                Some(TypeExpr::Reference { inner, .. }) => matches!(&**inner, TypeExpr::Named { name, .. } if name == "str"),
+                _ => false,
+            };
+            if !ok {
+                let found = param.type_ann.as_ref().map(|t| format!("{t:?}")).unwrap_or_else(|| "untyped".into());
+                self.errors.push(TypeError::FfiUnsupported {
+                    name: function.name.clone(),
+                    found,
+                    hint: "use int, bool, char, string or &str".into(),
+                });
+            }
+        }
+        if let Some(ret) = &function.return_type {
+            let ok = match ret {
+                TypeExpr::Named { name, .. } => matches!(name.as_str(), "int" | "bool" | "char" | "string" | "str" | "float"),
+                _ => false,
+            };
+            if !ok {
+                self.errors.push(TypeError::FfiUnsupported {
+                    name: function.name.clone(),
+                    found: format!("{ret:?}"),
+                    hint: "use int, bool, char, string or float".into(),
+                });
+            }
+        }
+    }
+
     fn collect_declarations(&mut self, items: &[Item]) {
         // Phase 28: first pass — type aliases so signatures can reference them.
         self.collect_type_aliases(items);
@@ -240,6 +281,14 @@ impl TypeEnv {
                         params: function.params.iter().map(|p| p.type_ann.as_ref().map(type_from_ast).unwrap_or(Type::Unknown)).collect(),
                         result: function.return_type.as_ref().map(type_from_ast).unwrap_or(Type::Unit),
                     });
+                    // Phase 41: real C-ABI bridge. Extern declarations with no
+                    // body must use only types the bridge can marshal; anything
+                    // else is rejected here so `titan check` catches it instead
+                    // of producing a runtime "registered function has no VM
+                    // implementation" surprise.
+                    if function.is_extern && function.body.is_none() {
+                        self.validate_extern_ffi(function);
+                    }
                 }
                 Item::Struct(structure) => {
                     self.structs.insert(structure.name.clone(), structure.fields.iter().map(|f| (f.name.clone(), type_from_ast(&f.type_ann))).collect());
@@ -366,6 +415,7 @@ impl TypeEnv {
                                 body: Some(body),
                                 is_extern: false,
                                 abi: None,
+                                library: None,
                                 span: tm.span,
                             };
                             self.check_function(&synth);

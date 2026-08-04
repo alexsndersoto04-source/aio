@@ -1,0 +1,38 @@
+// Demo Fase 41: clipboard y notificaciones REALES (`std::clipboard`, `std::notify`).
+//
+// Ejecutar con:
+//     zett run examples/clipboard_notify.titan
+//
+// NO es simulado: cada llamada ejecuta el CLI nativo de la plataforma.
+//   Termux      : termux-clipboard-set/get, termux-notification (pkg install termux-api)
+//   Linux/Wayland: wl-copy / wl-paste / notify-send
+//   Linux/X11   : xclip / xsel / notify-send
+//   macOS       : pbcopy / pbpaste / osascript
+//   Windows     : clip / PowerShell Get-Clipboard (notificaciones: no hay backend)
+//
+// Si no hay backend disponible, la llamada devuelve un error tipado
+// (nunca un "éxito" falso). Usamos std::try::catch para mostrarlo
+// sin matar el programa.
+
+fn main() {
+    print("---- std::clipboard real ----")
+
+    let set = std::try::catch(|| std::clipboard::set_text("hola desde TITAN"))
+    match set {
+        Result::Ok(_) => print("clipboard: texto copiado de verdad"),
+        Result::Err(e) => print("clipboard: sin backend -> {e}"),
+    }
+
+    let get = std::try::catch(|| std::clipboard::get_text())
+    match get {
+        Result::Ok(t) => print("clipboard: contiene '{t}'"),
+        Result::Err(e) => print("clipboard: sin backend -> {e}"),
+    }
+
+    print("---- std::notify real ----")
+    let notify = std::try::catch(|| std::notify::send("TITAN", "Notificación real desde TITAN"))
+    match notify {
+        Result::Ok(_) => print("notify: notificación enviada de verdad"),
+        Result::Err(e) => print("notify: sin backend -> {e}"),
+    }
+}

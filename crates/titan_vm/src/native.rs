@@ -223,9 +223,9 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::input::set_mouse_pos" => { let x = int!() as i32; let y = int!() as i32; Value::Bool(stdlib::input::set_mouse_pos(x, y)) }
         "std::input::set_mouse_button" => { let btn = int!() as u8; let pressed = boolean!(); Value::Bool(stdlib::input::set_mouse_button(btn, pressed)) }
         "std::input::set_touch_point" => { let idx = int!() as u32; let x = int!() as i32; let y = int!() as i32; let active = boolean!(); Value::Bool(stdlib::input::set_touch_point(idx, x, y, active)) }
-        "std::clipboard::get_text" => Value::Str(stdlib::clipboard::get_text()),
-        "std::clipboard::set_text" => { let text = string!(); Value::Bool(stdlib::clipboard::set_text(&text)) }
-        "std::notify::send" => { let title = string!(); let body = string!(); Value::Bool(stdlib::clipboard::send_notification(&title, &body)) }
+        "std::clipboard::get_text" => Value::Str(stdlib::clipboard::get_text().map_err(error)?),
+        "std::clipboard::set_text" => { let text = string!(); Value::Bool(stdlib::clipboard::set_text(&text).is_ok()) }
+        "std::notify::send" => { let title = string!(); let body = string!(); Value::Bool(stdlib::clipboard::send_notification(&title, &body).is_ok()) }
         "std::mobile::state" => Value::Str(stdlib::mobile::get_state()),
         "std::mobile::trigger" => { let event = string!(); Value::Bool(stdlib::mobile::trigger_event(&event)) }
         "std::mobile::poll_events" => Value::Array(stdlib::mobile::poll_events().into_iter().map(Value::Str).collect()),
@@ -261,37 +261,10 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
         "std::gui::shutdown" => Value::Bool(titan_gui_shutdown()),
         // Fase 2: rasterizador por software — pixeles RGBA reales del arbol.
         "std::gui::render" => { let id = int!(); match stdlib::gui_raster::render_rgba(id) { Some((_w, _h, pixels)) => Value::Bytes(pixels), None => Value::Nil } }
-        // Phase 9: Freestanding & Bare-Metal Bindings
-        "std::freestanding::init" => { let arch = string!(); Value::Bool(titan_freestanding_init(&arch)) }
+        // Phase 9: Freestanding build helpers (real text generators only).
         "std::freestanding::validate_target_spec" => { let target = string!(); Value::Bool(titan_freestanding_validate_target_spec(&target)) }
         "std::freestanding::generate_linker_script" => { let arch = string!(); let base = int!(); let stack = int!(); Value::Str(titan_freestanding_generate_linker_script(&arch, base as u64, stack as u64)) }
         "std::freestanding::generate_startup_asm" => { let arch = string!(); let entry = string!(); Value::Str(titan_freestanding_generate_startup_asm(&arch, &entry)) }
-        "std::freestanding::get_active_target" => Value::Str(titan_freestanding_get_active_target()),
-        "std::freestanding::shutdown" => Value::Bool(titan_freestanding_shutdown()),
-        // Phase 9: Freestanding Memory & Paging Bindings
-        "std::freestanding_memory::init_frame_allocator" => { let base = int!(); let size = int!(); Value::Bool(titan_freestanding_memory_init_frame_allocator(base as u64, size as u64)) }
-        "std::freestanding_memory::allocate_frame" => Value::Int(titan_freestanding_memory_allocate_frame() as i64),
-        "std::freestanding_memory::deallocate_frame" => { let paddr = int!(); Value::Bool(titan_freestanding_memory_deallocate_frame(paddr as u64)) }
-        "std::freestanding_memory::map_page" => { let vaddr = int!(); let paddr = int!(); let flags = int!(); Value::Bool(titan_freestanding_memory_map_page(vaddr as u64, paddr as u64, flags as u32)) }
-        "std::freestanding_memory::translate_page" => { let vaddr = int!(); Value::Int(titan_freestanding_memory_translate_page(vaddr as u64) as i64) }
-        "std::freestanding_memory::free_frames_count" => Value::Int(titan_freestanding_memory_free_frames_count() as i64),
-        "std::freestanding_memory::shutdown" => Value::Bool(titan_freestanding_memory_shutdown()),
-        // Phase 9: Freestanding CPU & Exception Traps Bindings
-        "std::freestanding_cpu::init_exception_table" => { let base = int!(); Value::Bool(titan_freestanding_cpu_init_exception_table(base as u64)) }
-        "std::freestanding_cpu::register_exception_handler" => { let vec_id = int!(); let addr = int!(); Value::Bool(titan_freestanding_cpu_register_exception_handler(vec_id as u32, addr as u64)) }
-        "std::freestanding_cpu::dispatch_exception" => { let vec_id = int!(); let fault = int!(); let code = int!(); Value::Int(titan_freestanding_cpu_dispatch_exception(vec_id as u32, fault as u64, code as u64) as i64) }
-        "std::freestanding_cpu::register_syscall_handler" => { let num = int!(); let addr = int!(); Value::Bool(titan_freestanding_cpu_register_syscall_handler(num as u32, addr as u64)) }
-        "std::freestanding_cpu::invoke_syscall" => { let num = int!(); let a0 = int!(); let a1 = int!(); let a2 = int!(); Value::Int(titan_freestanding_cpu_invoke_syscall(num as u32, a0 as u64, a1 as u64, a2 as u64) as i64) }
-        "std::freestanding_cpu::get_last_fault_addr" => Value::Int(titan_freestanding_cpu_get_last_fault_addr() as i64),
-        "std::freestanding_cpu::shutdown" => Value::Bool(titan_freestanding_cpu_shutdown()),
-        // Phase 9: Freestanding MMIO & UART Serial Bindings
-        "std::freestanding_mmio::init_mmio_region" => { let base = int!(); let size = int!(); Value::Bool(titan_freestanding_mmio_init_mmio_region(base as u64, size as u64)) }
-        "std::freestanding_mmio::read_mmio_u32" => { let paddr = int!(); Value::Int(titan_freestanding_mmio_read_mmio_u32(paddr as u64) as i64) }
-        "std::freestanding_mmio::write_mmio_u32" => { let paddr = int!(); let val = int!(); Value::Bool(titan_freestanding_mmio_write_mmio_u32(paddr as u64, val as u32)) }
-        "std::freestanding_mmio::serial_init" => { let base = int!(); let baud = int!(); Value::Bool(titan_freestanding_mmio_serial_init(base as u64, baud as u32)) }
-        "std::freestanding_mmio::serial_write_str" => { let text = string!(); Value::Int(titan_freestanding_mmio_serial_write_str(&text) as i64) }
-        "std::freestanding_mmio::serial_get_buffer" => Value::Str(titan_freestanding_mmio_serial_get_buffer()),
-        "std::freestanding_mmio::shutdown" => Value::Bool(titan_freestanding_mmio_shutdown()),
 
         "std::testing::assert" => { let condition = take!(); let Value::Bool(condition) = condition else { return Err("assert condition must be bool".into()); }; let message = string!(); if !condition { return Err(format!("assertion failed: {message}")); } Value::Nil }
         "std::testing::assert_eq" => { let left = take!(); let right = take!(); let message = string!(); if left != right { return Err(format!("assertion failed: {message}; left={}, right={}", val_to_string(&left), val_to_string(&right))); } Value::Nil }
@@ -2156,10 +2129,7 @@ pub fn titan_gui_shutdown() -> bool {
     titan_stdlib::gui::shutdown()
 }
 
-// --- Phase 9: Freestanding & Bare-Metal Bindings ---
-pub fn titan_freestanding_init(target_arch: &str) -> bool {
-    titan_stdlib::freestanding::init(target_arch)
-}
+// --- Phase 9: Freestanding build helpers (real text generators only) ---
 pub fn titan_freestanding_validate_target_spec(target: &str) -> bool {
     titan_stdlib::freestanding::validate_target_spec(target)
 }
@@ -2168,81 +2138,6 @@ pub fn titan_freestanding_generate_linker_script(target_arch: &str, base_addr: u
 }
 pub fn titan_freestanding_generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
     titan_stdlib::freestanding::generate_startup_asm(target_arch, entry_fn)
-}
-pub fn titan_freestanding_get_active_target() -> String {
-    titan_stdlib::freestanding::get_active_target()
-}
-pub fn titan_freestanding_shutdown() -> bool {
-    titan_stdlib::freestanding::shutdown()
-}
-
-// --- Phase 9: Freestanding Memory & Paging Bindings ---
-pub fn titan_freestanding_memory_init_frame_allocator(base_paddr: u64, total_size_bytes: u64) -> bool {
-    titan_stdlib::freestanding_memory::init_frame_allocator(base_paddr, total_size_bytes)
-}
-pub fn titan_freestanding_memory_allocate_frame() -> u64 {
-    titan_stdlib::freestanding_memory::allocate_frame()
-}
-pub fn titan_freestanding_memory_deallocate_frame(paddr: u64) -> bool {
-    titan_stdlib::freestanding_memory::deallocate_frame(paddr)
-}
-pub fn titan_freestanding_memory_map_page(vaddr: u64, paddr: u64, flags: u32) -> bool {
-    titan_stdlib::freestanding_memory::map_page(vaddr, paddr, flags)
-}
-pub fn titan_freestanding_memory_translate_page(vaddr: u64) -> u64 {
-    titan_stdlib::freestanding_memory::translate_page(vaddr)
-}
-pub fn titan_freestanding_memory_free_frames_count() -> u64 {
-    titan_stdlib::freestanding_memory::free_frames_count()
-}
-pub fn titan_freestanding_memory_shutdown() -> bool {
-    titan_stdlib::freestanding_memory::shutdown()
-}
-
-// --- Phase 9: Freestanding CPU & Exception Traps Bindings ---
-pub fn titan_freestanding_cpu_init_exception_table(base_vbar: u64) -> bool {
-    titan_stdlib::freestanding_cpu::init_exception_table(base_vbar)
-}
-pub fn titan_freestanding_cpu_register_exception_handler(vector_id: u32, handler_vaddr: u64) -> bool {
-    titan_stdlib::freestanding_cpu::register_exception_handler(vector_id, handler_vaddr)
-}
-pub fn titan_freestanding_cpu_dispatch_exception(vector_id: u32, fault_addr: u64, error_code: u64) -> u64 {
-    titan_stdlib::freestanding_cpu::dispatch_exception(vector_id, fault_addr, error_code)
-}
-pub fn titan_freestanding_cpu_register_syscall_handler(syscall_num: u32, handler_vaddr: u64) -> bool {
-    titan_stdlib::freestanding_cpu::register_syscall_handler(syscall_num, handler_vaddr)
-}
-pub fn titan_freestanding_cpu_invoke_syscall(syscall_num: u32, arg0: u64, arg1: u64, arg2: u64) -> u64 {
-    titan_stdlib::freestanding_cpu::invoke_syscall(syscall_num, arg0, arg1, arg2)
-}
-pub fn titan_freestanding_cpu_get_last_fault_addr() -> u64 {
-    titan_stdlib::freestanding_cpu::get_last_fault_addr()
-}
-pub fn titan_freestanding_cpu_shutdown() -> bool {
-    titan_stdlib::freestanding_cpu::shutdown()
-}
-
-// --- Phase 9: Freestanding MMIO & UART Serial Bindings ---
-pub fn titan_freestanding_mmio_init_mmio_region(base_paddr: u64, size_bytes: u64) -> bool {
-    titan_stdlib::freestanding_mmio::init_mmio_region(base_paddr, size_bytes)
-}
-pub fn titan_freestanding_mmio_read_mmio_u32(paddr: u64) -> u32 {
-    titan_stdlib::freestanding_mmio::read_mmio_u32(paddr)
-}
-pub fn titan_freestanding_mmio_write_mmio_u32(paddr: u64, value: u32) -> bool {
-    titan_stdlib::freestanding_mmio::write_mmio_u32(paddr, value)
-}
-pub fn titan_freestanding_mmio_serial_init(uart_base_paddr: u64, baudrate: u32) -> bool {
-    titan_stdlib::freestanding_mmio::serial_init(uart_base_paddr, baudrate)
-}
-pub fn titan_freestanding_mmio_serial_write_str(text: &str) -> usize {
-    titan_stdlib::freestanding_mmio::serial_write_str(text)
-}
-pub fn titan_freestanding_mmio_serial_get_buffer() -> String {
-    titan_stdlib::freestanding_mmio::serial_get_buffer()
-}
-pub fn titan_freestanding_mmio_shutdown() -> bool {
-    titan_stdlib::freestanding_mmio::shutdown()
 }
 
 #[cfg(test)]
@@ -2262,17 +2157,29 @@ mod tests {
     }
 
     #[test]
-    fn test_input_clipboard_native_bindings() {
+    fn test_input_native_bindings() {
         stdlib::input::set_key_state("Enter", true);
         let pressed = invoke("std::input::is_key_pressed", vec![Value::Str("Enter".into())], RuntimeCapabilities::all()).unwrap();
         assert_eq!(pressed, Value::Bool(true));
+    }
 
-        invoke("std::clipboard::set_text", vec![Value::Str("Copied Data".into())], RuntimeCapabilities::all()).unwrap();
-        let clip = invoke("std::clipboard::get_text", vec![], RuntimeCapabilities::all()).unwrap();
-        assert_eq!(clip, Value::Str("Copied Data".into()));
-
-        let notified = invoke("std::notify::send", vec![Value::Str("Alert".into()), Value::Str("Done".into())], RuntimeCapabilities::all()).unwrap();
-        assert_eq!(notified, Value::Bool(true));
+    #[test]
+    fn test_clipboard_and_notify_dispatch_to_real_backends() {
+        // Phase 41: real backends. Either the platform tool exists (the call
+        // succeeds and round-trips) or it does not (typed error). What is
+        // NEVER allowed anymore is a fake in-memory success.
+        let set = invoke("std::clipboard::set_text", vec![Value::Str("Copied Data".into())], RuntimeCapabilities::all());
+        match set {
+            Ok(Value::Bool(true)) => {
+                let clip = invoke("std::clipboard::get_text", vec![], RuntimeCapabilities::all()).unwrap();
+                assert_eq!(clip, Value::Str("Copied Data".into()));
+                let notified = invoke("std::notify::send", vec![Value::Str("Alert".into()), Value::Str("Done".into())], RuntimeCapabilities::all());
+                assert!(matches!(notified, Ok(Value::Bool(true))) || matches!(notified, Err(_)));
+            }
+            // No backend on this machine → typed error, honest.
+            Err(_) => {}
+            other => panic!("unexpected clipboard result: {other:?}"),
+        }
     }
 
     #[test]
@@ -2343,8 +2250,6 @@ mod tests {
     #[test]
     fn test_freestanding_native_bindings() {
         assert_eq!(invoke("std::freestanding::validate_target_spec", vec![Value::Str("aarch64-unknown-none".into())], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        assert_eq!(invoke("std::freestanding::init", vec![Value::Str("aarch64-unknown-none".into())], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        assert_eq!(invoke("std::freestanding::get_active_target", vec![], RuntimeCapabilities::all()).unwrap(), Value::Str("aarch64-unknown-none".into()));
 
         let ld = invoke("std::freestanding::generate_linker_script", vec![
             Value::Str("aarch64-unknown-none".into()), Value::Int(0x80000), Value::Int(0x10000)
@@ -2366,93 +2271,6 @@ mod tests {
             panic!("generate_startup_asm should return String");
         }
 
-        assert_eq!(invoke("std::freestanding::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-    }
-    #[test]
-    fn test_freestanding_memory_native_bindings() {
-        assert_eq!(invoke("std::freestanding_memory::init_frame_allocator", vec![
-            Value::Int(0x200000), Value::Int(0x8000) // 32KB = 8 frames de 4KB
-        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        
-        assert_eq!(invoke("std::freestanding_memory::free_frames_count", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(8));
-        
-        let frame = invoke("std::freestanding_memory::allocate_frame", vec![], RuntimeCapabilities::all()).unwrap();
-        if let Value::Int(paddr) = frame {
-            assert_eq!(paddr, 0x200000);
-            assert_eq!(invoke("std::freestanding_memory::free_frames_count", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(7));
-            
-            assert_eq!(invoke("std::freestanding_memory::map_page", vec![
-                Value::Int(0x80000000), Value::Int(paddr), Value::Int(3)
-            ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-            
-            assert_eq!(invoke("std::freestanding_memory::translate_page", vec![Value::Int(0x80000010)], RuntimeCapabilities::all()).unwrap(), Value::Int(0x200010));
-            
-            assert_eq!(invoke("std::freestanding_memory::deallocate_frame", vec![Value::Int(paddr)], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-            assert_eq!(invoke("std::freestanding_memory::free_frames_count", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(8));
-        } else {
-            panic!("allocate_frame should return Int");
-        }
-        
-        assert_eq!(invoke("std::freestanding_memory::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-    }
-    #[test]
-    fn test_freestanding_cpu_native_bindings() {
-        assert_eq!(invoke("std::freestanding_cpu::init_exception_table", vec![Value::Int(0x8000_0000)], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        
-        assert_eq!(invoke("std::freestanding_cpu::register_exception_handler", vec![
-            Value::Int(0), Value::Int(0xFFFF_0000_8000_1000u64 as i64)
-        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        
-        assert_eq!(invoke("std::freestanding_cpu::dispatch_exception", vec![
-            Value::Int(0), Value::Int(0x4000_1234), Value::Int(0x05)
-        ], RuntimeCapabilities::all()).unwrap(), Value::Int((0xFFFF_0000_8000_1000u64 ^ 0x4000_1234u64 ^ 0x05u64) as i64));
-        
-        assert_eq!(invoke("std::freestanding_cpu::get_last_fault_addr", vec![], RuntimeCapabilities::all()).unwrap(), Value::Int(0x4000_1234));
-
-        assert_eq!(invoke("std::freestanding_cpu::register_syscall_handler", vec![
-            Value::Int(1), Value::Int(0x9000_0000)
-        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        
-        assert_eq!(invoke("std::freestanding_cpu::invoke_syscall", vec![
-            Value::Int(1), Value::Int(10), Value::Int(20), Value::Int(30)
-        ], RuntimeCapabilities::all()).unwrap(), Value::Int(0x9000_0000 + 60));
-        
-        assert_eq!(invoke("std::freestanding_cpu::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-    }
-    #[test]
-    fn test_freestanding_mmio_and_kernel_demo() {
-        // 1. Inicializar región MMIO genérica y verificar lectura/escritura volátil
-        assert_eq!(invoke("std::freestanding_mmio::init_mmio_region", vec![
-            Value::Int(0x3F00_0000), Value::Int(0x1000)
-        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        
-        assert_eq!(invoke("std::freestanding_mmio::write_mmio_u32", vec![
-            Value::Int(0x3F00_0004), Value::Int(0x1234_5678)
-        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-        assert_eq!(invoke("std::freestanding_mmio::read_mmio_u32", vec![Value::Int(0x3F00_0004)], RuntimeCapabilities::all()).unwrap(), Value::Int(0x1234_5678));
-
-        // 2. Inicializar puerto serial UART bare-metal (0x1000_0000 en ARM64 PL011) a 115200 baudios
-        assert_eq!(invoke("std::freestanding_mmio::serial_init", vec![
-            Value::Int(0x1000_0000), Value::Int(115200)
-        ], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
-
-        // 3. Simular secuencia real de arranque de un Demo Kernel bare-metal escrito en TITAN
-        assert_eq!(invoke("std::freestanding_mmio::serial_write_str", vec![
-            Value::Str("[BOOT] TITAN Bare-Metal Kernel Starting...
-".into())
-        ], RuntimeCapabilities::all()).unwrap(), Value::Int(43));
-        
-        assert_eq!(invoke("std::freestanding_mmio::serial_write_str", vec![
-            Value::Str("[MMIO] UART PL011 Serial Driver Online.
-".into())
-        ], RuntimeCapabilities::all()).unwrap(), Value::Int(40));
-
-        let buffer = invoke("std::freestanding_mmio::serial_get_buffer", vec![], RuntimeCapabilities::all()).unwrap();
-        assert_eq!(buffer, Value::Str("[BOOT] TITAN Bare-Metal Kernel Starting...
-[MMIO] UART PL011 Serial Driver Online.
-".into()));
-
-        assert_eq!(invoke("std::freestanding_mmio::shutdown", vec![], RuntimeCapabilities::all()).unwrap(), Value::Bool(true));
     }
 
     // ------------------------------------------------------------------

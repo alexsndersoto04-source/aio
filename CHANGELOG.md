@@ -1,5 +1,49 @@
 # Zett / TITAN — Changelog
 
+## 0.41.0 — Fase 41: FFI Real con C (`extern "C"` vía dlopen/dlsym) 🔌
+
+- **`extern "C" fn ...;` ya es real.** Antes se compilaba a un stub silencioso
+  que devolvía `nil` sin hacer nada. Ahora cada declaración extern se resuelve
+  en runtime con `dlopen`/`dlsym` (Linux/Android/macOS) o
+  `LoadLibraryA`/`GetProcAddress` (Windows) y se ejecuta el símbolo real de la
+  librería C de la plataforma — sin dependencias nuevas, sin crates de FFI.
+- **Sintaxis ampliada:** `extern "C" "libm.so.6" fn pow(...)` permite nombrar
+  la librería explícitamente; sin ella se usa libc de la plataforma (con
+  fallbacks `libc.so.6` → `libc.so` → `libdl.so`, que cubren Android API < 26).
+- **Tipos soportados (honestos):** parámetros `int`/`bool`/`char`/`string`
+  (`&str` incluido) como registros de tamaño de palabra (8 bytes en 64-bit,
+  4 bytes en ARM de 32 bits — el puente usa prototipos `usize` para que el
+  ABI sea correcto en ambas arquitecturas, verificado en armv7 Termux);
+  retornos `int`/`bool`/`char`/`string`/`float` (XMM0/d0). Límite claro: los
+  parámetros `float` y `bytes` se rechazan en el typechecker con un error
+  tipado (no runtime sorpresa), y hay un máximo de 8 parámetros.
+- **Errores tipados reales:** librería que no carga o símbolo inexistente →
+  `VmError::Native` con el mensaje del linker (`dlerror`), nunca un no-op.
+- **`std::clipboard` y `std::notify` ahora son REALES** (antes guardaban texto
+  y notificaciones en un `String`/`Vec` en memoria sin tocar el sistema).
+  Cada llamada despacha al CLI nativo de la plataforma:
+  `termux-clipboard-set/get` + `termux-notification` (Termux), `wl-copy`/
+  `wl-paste` (Wayland), `xclip`/`xsel` (X11), `pbcopy`/`pbpaste` (macOS),
+  `clip`/PowerShell (Windows) y `notify-send`/`osascript` para notificaciones.
+  Sin backend disponible → **error tipado** (`std::try::catch` puede capturarlo),
+  nunca un "éxito" falso. Nuevo ejemplo `examples/clipboard_notify.titan`.
+- **`std::freestanding*` honesto.** Se eliminaron 25 natives que **simulaban**
+  bare-metal con estructuras en memoria: el frame allocator (`freestanding_memory`),
+  las excepciones/syscalls con XOR (`freestanding_cpu`) y el MMIO/UART con
+  `HashMap`/`String` (`freestanding_mmio`) — no tocaban hardware real y
+  fingían un kernel. Se conservan los 3 helpers **reales**: `validate_target_spec`,
+  `generate_linker_script` y `generate_startup_asm`, que producen texto válido
+  de linker/ensamblador para toolchains bare-metal (aarch64/x86_64/riscv64,
+  añadido soporte RISC-V de arranque real). Documentado en `docs/STDLIB.md`.
+- **Nuevo opcode `Op::CallExtern`** con validación en el artefacto `.tbc`
+  (nombre + aridad antes de ejecutar). El backend WebAssembly lo rechaza con
+  un error explícito (no hay dlopen en WASM).
+- **Primer ejemplo verificable:** `examples/ffi.titan` (getpid/strlen/puts
+  reales de libc) + 5 tests end-to-end nuevos (incluye `&str`, símbolo
+  inexistente como error, y rechazo de tipos no soportados en compile time).
+
+---
+
 ## 0.40.0 — Phase 40: Aceleración en Caliente (*VM Fast-Paths*) y Benchmark Operacional (`std::runtime` v3) ⚡
 
 - Graduación de la hoja de ruta de **Producción Empresarial a Gran Escala (Fases 36 a 40)**.

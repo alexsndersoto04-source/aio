@@ -11,9 +11,11 @@ The `titan_stdlib` crate provides memory-safe host capabilities for the compiler
 | `bytes` | Bounds-checked endian binary reader/writer, numeric and length-prefixed string formats |
 | `cache` | Capacity-bounded LRU cache with deterministic eviction |
 | `checksum` | FNV-1a, CRC-32, constant-time byte comparison |
+| `clipboard` | **Real** system clipboard via `termux-clipboard-set/get` (Termux), `wl-copy`/`wl-paste` (Wayland), `xclip`/`xsel` (X11), `pbcopy`/`pbpaste` (macOS), `clip`/PowerShell (Windows). Typed error when no backend exists — never a fake in-memory copy. Also hosts `std::notify` (real notifications via `termux-notification`, `notify-send`, `osascript`) |
 | `collections` | Vec/map/set/deque/heap aliases; deduplication, frequency, grouping, partitioning, chunks, windows, zip, search |
 | `csv` | Quoted CSV parser, serializer and header-based table access |
 | `encoding` | Strict hex, Base64 and UTF-8 percent encoding/decoding |
+| `freestanding` | **Real** bare-metal *build helpers*: validates target triples and generates GNU ld linker scripts + assembly `_start` stubs (aarch64/x86_64/riscv64-unknown-none). Deliberately **not** a kernel/hardware simulation — the fake exception/MMIO/frame-allocator "bare-metal" was removed in Phase 41 |
 | `game` | Headless 2D frame loop with measured delta-time/FPS and AABB collision detection (Fase 1 graduated) |
 | `gui` | Retained-mode widget tree: containers, labels, buttons, text, click state and child traversal (Fase 2 graduated) |
 | `gui_raster` | Pure-Rust software rasterizer rendering the `gui` tree to RGBA buffers and PNG (Fase 2 graduated) |

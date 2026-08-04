@@ -30,6 +30,11 @@ pub enum Op {
     Eq, Neq, Lt, Gt, Lte, Gte, BitAnd, BitOr, BitXor,
     Jump(usize), JumpIfFalse(usize),
     Call { function: usize, argc: usize }, CallNative { name: String, argc: usize },
+    // Phase 41: real C-ABI call. The callee is an `extern "C" fn ...;`
+    // declaration in module.externs; the VM resolves it with
+    // dlopen/dlsym at runtime and invokes it with a fixed-arity
+    // prototype. Not supported by the WebAssembly backend (no dlopen).
+    CallExtern { name: String, argc: usize },
     MakeClosure { function: usize, captures: Vec<usize> }, CallValue(usize), Try,
     // Phase 18: exception-safe closure call. Pops (fn, args...), calls it
     // like CallValue, but ANY runtime error (native failure, type mismatch,
@@ -97,6 +102,8 @@ impl From<titan_lexer::Span> for SourceLocation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BytecodeType {
     Unknown, Int, Bool, String, Struct(String), Enum(String), Array, Tuple, Map,
+    // Phase 41: scalar types carried by the C-ABI bridge (`extern`).
+    Char, Float, Bytes,
     ArrayOf(Box<BytecodeType>), TupleOf(Vec<BytecodeType>),
     EnumOf(String, Vec<BytecodeType>), MapOf(Box<BytecodeType>, Box<BytecodeType>),
 }
@@ -135,6 +142,24 @@ pub struct CompiledModule {
     /// don't need this — they resolve at compile time.
     #[serde(default)]
     pub method_table: HashMap<String, usize>,
+    /// Phase 41: C-ABI extern declarations (`extern "C" fn ...;`). They are
+    /// NOT compiled into `functions` (no fake PushNil bodies). Calls to
+    /// them compile to `Op::CallExtern`, and the VM resolves each symbol at
+    /// runtime with dlopen/dlsym against the declared library (default: the
+    /// platform C library).
+    #[serde(default)]
+    pub externs: Vec<ExternDecl>,
+}
+
+/// Phase 41: a single `extern "C" fn ...;` declaration. `param_types` /
+/// `return_type` are restricted to what the C-ABI bridge can marshal
+/// (see `titan_typechecker::validate_extern_ffi` and `titan_vm::ffi`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternDecl {
+    pub name: String,
+    pub library: Option<String>,
+    pub param_types: Vec<BytecodeType>,
+    pub return_type: Option<BytecodeType>,
 }
 
 pub struct AstCompiler {
@@ -146,6 +171,8 @@ pub struct AstCompiler {
     function_ids: HashMap<String, usize>,
     enum_variants: HashMap<String, bool>,
     constants: HashMap<String, Expr>,
+    /// Phase 41: extern declaration name → index into module.externs.
+    extern_ids: HashMap<String, usize>,
     loops: Vec<LoopContext>,
     current_location: Option<SourceLocation>,
 }
@@ -156,15 +183,15 @@ struct LoopContext { breaks: Vec<usize>, continues: Vec<usize>, continue_target:
 impl AstCompiler {
     pub fn new() -> Self {
         Self {
-            module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new(), method_table: HashMap::new() },
+            module: CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new(), method_table: HashMap::new(), externs: Vec::new() },
             current: empty_function(), locals: Vec::new(), next_local: 0,
-            strings: HashMap::new(), function_ids: HashMap::new(), enum_variants: HashMap::new(), constants: HashMap::new(), loops: Vec::new(), current_location: None,
+            strings: HashMap::new(), function_ids: HashMap::new(), enum_variants: HashMap::new(), constants: HashMap::new(), extern_ids: HashMap::new(), loops: Vec::new(), current_location: None,
         }
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Result<CompiledModule, CodegenError> {
-        self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new(), method_table: HashMap::new() };
-        self.strings.clear(); self.function_ids.clear(); self.enum_variants.clear(); self.constants.clear();
+        self.module = CompiledModule { functions: Vec::new(), entry: 0, string_table: Vec::new(), struct_schemas: HashMap::new(), enum_schemas: HashMap::new(), method_table: HashMap::new(), externs: Vec::new() };
+        self.strings.clear(); self.function_ids.clear(); self.enum_variants.clear(); self.constants.clear(); self.extern_ids.clear();
         self.enum_variants.extend([("Option::None".into(), false), ("Option::Some".into(), true), ("Result::Ok".into(), true), ("Result::Err".into(), true)]);
         self.module.enum_schemas.insert("Option".into(), vec!["None".into(), "Some".into()]);
         self.module.enum_schemas.insert("Result".into(), vec!["Ok".into(), "Err".into()]);
@@ -178,6 +205,19 @@ impl AstCompiler {
                 return Err(CodegenError::Unsupported(format!("duplicate function '{}'", function.name)));
             }
         }
+        // Phase 41: collect extern declarations (skipped by collect_items)
+        // and index them by name so calls compile to Op::CallExtern.
+        let mut externs: Vec<ExternDecl> = Vec::new();
+        collect_externs(&program.items, &mut externs)?;
+        for (index, extern_decl) in externs.iter().enumerate() {
+            if self.extern_ids.insert(extern_decl.name.clone(), index).is_some() {
+                return Err(CodegenError::Unsupported(format!("duplicate extern declaration '{}'", extern_decl.name)));
+            }
+            if self.function_ids.contains_key(&extern_decl.name) {
+                return Err(CodegenError::Unsupported(format!("'{}' is declared both as a function and as an extern", extern_decl.name)));
+            }
+        }
+        self.module.externs = externs;
         self.module.method_table = method_table;
         let Some(entry) = self.function_ids.get("main").copied() else { return Err(CodegenError::UnknownFunction("main".into())); };
         self.module.entry = entry;
@@ -195,7 +235,16 @@ impl AstCompiler {
         self.current = BytecodeFunc { name: function.name.clone(), source_file: function.source_file.clone(), arity: function.params.len(), param_types, return_type, captures: 0, locals: 0, max_stack: 256, code: Vec::new(), debug_locations: Vec::new() };
         self.locals = vec![HashMap::new()]; self.next_local = 0; self.loops.clear();
         for param in &function.params { self.add_local(&param.name); }
-        if let Some(body) = &function.body { self.compile_block(body, true)?; } else { self.emit(Op::PushNil); }
+        if let Some(body) = &function.body {
+            self.compile_block(body, true)?;
+        } else if function.is_extern {
+            // Phase 41: externs are collected separately (module.externs)
+            // and called through Op::CallExtern — never compiled to a
+            // silent PushNil stub.
+            return Err(CodegenError::Unsupported(format!("extern '{}' must be called, not compiled as a body", function.name)));
+        } else {
+            self.emit(Op::PushNil);
+        }
         if !matches!(self.current.code.last(), Some(Op::Ret)) { self.emit(Op::Ret); }
         self.current.locals = self.next_local;
         Ok(self.current.clone())
@@ -246,6 +295,9 @@ impl AstCompiler {
                     self.emit(Op::NewEnum { name: enum_name.into(), variant: variant.into(), has_payload: false });
                 }
                 else if let Some(function) = self.function_ids.get(name).copied() { self.emit(Op::MakeClosure { function, captures: Vec::new() }); }
+                // Phase 41: extern functions are callable by name, but
+                // cannot be passed around as first-class values yet.
+                else if self.extern_ids.contains_key(name) { return Err(CodegenError::Unsupported(format!("extern function '{name}' cannot be used as a value yet — call it directly"))); }
                 else { return Err(CodegenError::UnknownVariable(name.clone())); }
             }
             Expr::Array { elements, .. } => { for element in elements { self.compile_expr(element)?; } self.emit(Op::NewArray(elements.len())); }
@@ -483,6 +535,9 @@ impl AstCompiler {
                     let (enum_name, variant) = split_variant(name)?;
                     self.emit(Op::NewEnum { name: enum_name.into(), variant: variant.into(), has_payload });
                 }
+                // Phase 41: extern declarations resolve to a runtime
+                // dlopen/dlsym call instead of a bytecode function index.
+                _ if self.extern_ids.contains_key(name) => self.emit(Op::CallExtern { name: name.clone(), argc: args.len() }),
                 _ => {
                     let function = self.function_ids.get(name).copied().ok_or_else(|| CodegenError::UnknownFunction(name.clone()))?;
                     self.emit(Op::Call { function, argc: args.len() });
@@ -747,7 +802,10 @@ fn collect_traits(items: &[Item], traits: &mut HashMap<String, TraitDecl>) {
 fn collect_items_with_traits(items: &[Item], functions: &mut Vec<FunctionDecl>, constants: &mut HashMap<String, Expr>, variants: &mut HashMap<String, bool>, methods: &mut HashMap<String, usize>, traits: &HashMap<String, TraitDecl>) {
     for item in items {
         match item {
-            Item::Function(f) => functions.push(f.clone()),
+            // Phase 41: extern declarations (no body) are collected into
+            // module.externs, not into `functions` — they are not regular
+            // callable bytecode functions.
+            Item::Function(f) => { if !(f.is_extern && f.body.is_none()) { functions.push(f.clone()); } },
             Item::Const(c) => { constants.insert(c.name.clone(), (*c.value).clone()); }
             Item::Enum(e) => for variant in &e.variants { variants.insert(format!("{}::{}", e.name, variant.name), variant.payload.is_some()); },
             Item::Module(m) => collect_items_with_traits(&m.items, functions, constants, variants, methods, traits),
@@ -799,6 +857,7 @@ fn collect_items_with_traits(items: &[Item], functions: &mut Vec<FunctionDecl>, 
                                 body: Some(default_body.clone()),
                                 is_extern: false,
                                 abi: None,
+                                library: None,
                                 span: tm.span,
                             };
                             if let Some(first) = synth.params.first_mut() {
@@ -821,3 +880,67 @@ fn split_variant(name: &str) -> Result<(&str, &str), CodegenError> {
 }
 
 impl Default for AstCompiler { fn default() -> Self { Self::new() } }
+
+// --- Phase 41: C-ABI extern collection -----------------------------------
+
+/// Phase 41: walk items (recursively through modules) collecting
+/// `extern "C" fn ...;` declarations into `module.externs`.
+fn collect_externs(items: &[Item], externs: &mut Vec<ExternDecl>) -> Result<(), CodegenError> {
+    for item in items {
+        match item {
+            Item::Function(f) if f.is_extern && f.body.is_none() => {
+                let param_types = f.params.iter()
+                    .map(|p| {
+                        let ty = ffi_type(p.type_ann.as_ref(), &format!("extern '{}' parameter '{}'", f.name, p.name))?;
+                        if ty == BytecodeType::Float {
+                            return Err(CodegenError::Unsupported(format!(
+                                "extern '{}' parameter '{}': float parameters are not supported by the C ABI bridge yet (use int, bool, char or string)",
+                                f.name, p.name
+                            )));
+                        }
+                        Ok(ty)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let return_type = f.return_type.as_ref()
+                    .map(|t| ffi_type(Some(t), &format!("extern '{}' return", f.name)))
+                    .transpose()?;
+                externs.push(ExternDecl { name: f.name.clone(), library: f.library.clone(), param_types, return_type });
+            }
+            Item::Module(m) => collect_externs(&m.items, externs)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Phase 41: map a declared `.titan` type to the C-ABI bridge type.
+/// Supported (all 8-byte integer-class arguments at the ABI level):
+/// int, bool, char, string/&str (char*), and float (only legal as a
+/// return type; the VM enforces it too). `bytes` is deliberately not
+/// supported: a bare pointer loses its length at the ABI boundary, and
+/// the typechecker rejects it before codegen sees it.
+fn ffi_type(ty: Option<&TypeExpr>, context: &str) -> Result<BytecodeType, CodegenError> {
+    let Some(ty) = ty else {
+        return Err(CodegenError::Unsupported(format!("{context} must declare an explicit type")));
+    };
+    let named = match ty {
+        TypeExpr::Named { name, .. } => Some(name.as_str()),
+        // `&str` is a C pointer type.
+        TypeExpr::Reference { inner, .. } => match &**inner {
+            TypeExpr::Named { name, .. } => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    match named {
+        Some("int") => Ok(BytecodeType::Int),
+        Some("bool") => Ok(BytecodeType::Bool),
+        Some("char") => Ok(BytecodeType::Char),
+        Some("string") | Some("str") => Ok(BytecodeType::String),
+        Some("float") => Ok(BytecodeType::Float),
+        Some("bytes") => Err(CodegenError::Unsupported(format!(
+            "{context}: bytes are not supported by the C ABI bridge (a bare pointer loses its length); use string/&str or int"
+        ))),
+        _ => Err(CodegenError::Unsupported(format!("{context}: C ABI type '{ty:?}' is not supported (use int, bool, char, string, &str or float)"))),
+    }
+}
