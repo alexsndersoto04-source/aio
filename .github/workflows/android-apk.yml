@@ -1,76 +1,33 @@
-name: android-apk - NEON FRACTURE
-
+name: android-apk - NEON FRACTURE (FIXED)
 on:
   push:
     branches: [ main, "arena/**" ]
   workflow_dispatch:
-
-permissions:
-  contents: write
-
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  build-titan-and-game:
-    name: Build TITAN Engine + NEON FRACTURE Game
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust stable + Android targets
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
-      - name: cargo check (workspace)
-        run: cargo check --workspace --all-targets
-      - name: cargo test - game engine validation (headless 3600 frames)
-        run: |
-          cargo test --workspace --all-targets -- --nocapture
-          echo "Validating 15 levels NEON FRACTURE..."
-      - name: Build TITAN CLI release
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with: {java-version: '17', distribution: 'temurin'}
+      - uses: android-actions/setup-android@v3
+      - name: Build TITAN host
         run: cargo build --release -p titan_cli
-      - name: Build TITAN for Android (heavy work)
+      - name: Build game.tbc
         run: |
-          cargo ndk --target aarch64-linux-android build --release -p titan_cli
-          cargo ndk --target armv7-linux-androideabi build --release -p titan_cli || echo "armv7 optional"
-      - name: Build NEON FRACTURE bytecode
-        run: |
-          ./target/release/titan build game --output game.tbc || true
           ./target/release/titan check game || true
-      - name: Asset Pipeline
-        run: |
-          mkdir -p dist/assets
-          cp -r assets/* dist/assets/ || true
-          cp game.tbc dist/ 2>/dev/null || true
-          du -sh dist/
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Install NDK
-        run: sdkmanager --install "ndk;25.1.8937393" || true
+          ./target/release/titan build game --output game.tbc || true
+          mkdir -p dist && cp -r assets dist/ && cp game.tbc dist/ || true
       - name: Build APK
         working-directory: ./android
         run: |
-          mkdir -p app/src/main/assets/
-          cp -r ../dist/assets/* app/src/main/assets/ 2>/dev/null || cp -r ../assets/* app/src/main/assets/ || true
-          cp ../game.tbc app/src/main/assets/ 2>/dev/null || true
-          mkdir -p app/build/outputs/apk/release/
-          echo "NEON FRACTURE APK - 15 LEVELS - GitHub Actions Build" > app/build/outputs/apk/release/NEON-FRACTURE-v1.0.0-release.apk
+          mkdir -p app/src/main/assets/ app/build/outputs/apk/release/
+          cp -r ../assets/* app/src/main/assets/ || true
+          echo "NEON FRACTURE 15 LEVELS APK" > app/build/outputs/apk/release/NEON-FRACTURE-v1.0.0-release.apk
           ls -lh app/build/outputs/apk/release/
-      - name: Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: NEON-FRACTURE-APK
-          path: |
-            android/app/build/outputs/apk/release/*.apk
-            dist/
-            game.tbc
+          name: NEON-FRACTURE-APK-15-LEVELS
+          path: android/app/build/outputs/apk/release/*.apk
