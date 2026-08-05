@@ -9,13 +9,21 @@ Esta es la opción para usar TITAN desde un teléfono **sin instalar VS Code ni 
 3. Abre la pestaña **Codespaces**.
 4. Pulsa **Create codespace on** y selecciona la rama que contiene estos cambios (`arena/019fcf81-aio`, o `main` cuando se integren).
 5. Espera a que termine el mensaje **Setting up your dev container**. La primera vez puede tardar varios minutos: Codespaces compila TITAN completo en la máquina remota.
-6. Cuando aparezca el editor, abre la paleta de comandos y usa:
-   **Extensions: Install from VSIX**.
-7. Selecciona este archivo del repositorio:
-   `editors/vscode-titan/titan-language-tools-0.1.0.vsix`
-8. Si VS Code pide recargar la ventana, acepta.
+<<<<<<< HEAD
+6. Cuando aparezca el editor, espera unos segundos. Codespaces instala automáticamente la extensión TITAN; **no abras el archivo `.vsix`**. Es un paquete binario, no un archivo de código.
+7. Si aparece un aviso para recargar la ventana, acepta.
 
-No tendrás que repetir los pasos 6–8 mientras uses el mismo Codespace.
+No tendrás que instalar nada manualmente en el mismo Codespace.
+
+### Si abriste un Codespace antes de esta actualización
+
+En la terminal integrada copia exactamente este comando (no pulses el archivo `.vsix`):
+
+```sh
+code --install-extension editors/vscode-titan/titan-language-tools-0.1.0.vsix --force
+```
+
+Después ejecuta **Developer: Reload Window** desde la paleta de comandos.
 
 ## Qué queda funcionando
 

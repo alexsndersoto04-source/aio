@@ -3,15 +3,11 @@
   "build": { "dockerfile": "Dockerfile" },
   "remoteUser": "vscode",
   "postCreateCommand": "bash .devcontainer/post-create.sh",
-  "remoteEnv": {
-    "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}"
-  },
+  "postAttachCommand": "bash .devcontainer/install-titan-extension.sh",
+  "remoteEnv": { "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}" },
   "customizations": {
     "vscode": {
-      "extensions": [
-        "rust-lang.rust-analyzer",
-        "tamasfe.even-better-toml"
-      ],
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"],
       "settings": {
         "files.associations": { "*.titan": "titan" },
         "titan.compiler.path": "titan",
