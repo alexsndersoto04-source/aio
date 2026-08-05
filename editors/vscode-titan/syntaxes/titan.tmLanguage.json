@@ -1,0 +1,12 @@
+{
+  "$schema":"https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json", "name":"TITAN", "scopeName":"source.titan", "patterns":[
+    {"include":"#comments"},{"include":"#strings"},{"include":"#keywords"},{"include":"#types"},{"include":"#numbers"},{"include":"#functions"}
+  ], "repository": {
+    "comments":{"patterns":[{"name":"comment.line.double-slash.titan","match":"//.*$"},{"name":"comment.block.titan","begin":"/\\*","end":"\\*/"}]},
+    "strings":{"patterns":[{"name":"string.quoted.double.titan","begin":"\"","end":"\"","patterns":[{"name":"constant.character.escape.titan","match":"\\\\[nrt\\\"\\\\{}]"}]},{"name":"string.quoted.single.titan","begin":"'","end":"'"}]},
+    "keywords":{"patterns":[{"name":"keyword.control.titan","match":"\\b(fn|let|const|mut|if|else|match|for|while|loop|break|continue|return|import|from|as|struct|enum|impl|trait|pub|use|in|where|async|await|spawn|try|catch|throw)\\b"},{"name":"constant.language.titan","match":"\\b(true|false|nil|None|Some|Ok|Err)\\b"}]},
+    "types":{"patterns":[{"name":"storage.type.titan","match":"\\b(int|float|bool|char|string|bytes|void|Option|Result)\\b"}]},
+    "numbers":{"patterns":[{"name":"constant.numeric.titan","match":"\\b(0x[0-9A-Fa-f_]+|0b[01_]+|[0-9][0-9_]*(\\.[0-9_]+)?)\\b"}]},
+    "functions":{"patterns":[{"name":"entity.name.function.titan","match":"(?<=\\bfn\\s)[A-Za-z_][A-Za-z0-9_]*"}]}
+  }
+}

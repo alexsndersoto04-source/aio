@@ -1,0 +1,166 @@
+{
+  "name": "titan-language-tools",
+  "displayName": "TITAN Language Tools",
+  "description": "Editing, running, building, testing and debugging support for the TITAN language.",
+  "version": "0.1.0",
+  "publisher": "titan-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexsndersoto04-source/aio"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Linters"
+  ],
+  "keywords": [
+    "titan",
+    "zett",
+    "language",
+    "bytecode"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:titan",
+    "onCommand:titan.run",
+    "onDebugInitialConfigurations"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "titan",
+        "aliases": [
+          "TITAN",
+          "titan"
+        ],
+        "extensions": [
+          ".titan"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "titan",
+        "scopeName": "source.titan",
+        "path": "./syntaxes/titan.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "TITAN",
+      "properties": {
+        "titan.compiler.path": {
+          "type": "string",
+          "default": "titan",
+          "description": "Command or absolute path for the Titan compiler. Use zett if that is the installed CLI."
+        },
+        "titan.lsp.path": {
+          "type": "string",
+          "default": "titan-lsp",
+          "description": "Command or absolute path for the TITAN language server."
+        },
+        "titan.dap.path": {
+          "type": "string",
+          "default": "titan-dap",
+          "description": "Command or absolute path for the TITAN Debug Adapter."
+        },
+        "titan.run.sandbox": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run and debug programs in TITAN's capability sandbox."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "titan.run",
+        "title": "TITAN: Run active file/project"
+      },
+      {
+        "command": "titan.check",
+        "title": "TITAN: Check active file/project"
+      },
+      {
+        "command": "titan.build",
+        "title": "TITAN: Build bytecode"
+      },
+      {
+        "command": "titan.wasm",
+        "title": "TITAN: Build WebAssembly"
+      },
+      {
+        "command": "titan.test",
+        "title": "TITAN: Run tests"
+      },
+      {
+        "command": "titan.newProject",
+        "title": "TITAN: Create project"
+      },
+      {
+        "command": "titan.debug",
+        "title": "TITAN: Debug active file/project"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "titan.run",
+          "when": "editorLangId == titan",
+          "group": "navigation"
+        }
+      ]
+    },
+    "debuggers": [
+      {
+        "type": "titan",
+        "label": "TITAN Debugger",
+        "program": "./out/extension.js",
+        "languages": [
+          "titan"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "TITAN source file, .tbc artifact, or project folder."
+              },
+              "sandbox": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "titan",
+            "request": "launch",
+            "name": "Debug TITAN program",
+            "program": "${file}"
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "esbuild src/extension.ts --bundle --platform=node --target=node18 --external:vscode --outfile=out/extension.js",
+    "watch": "tsc -watch -p ./",
+    "package": "npm run compile && npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.3.0",
+    "vscode-languageclient": "^10.1.0"
+  }
+}
