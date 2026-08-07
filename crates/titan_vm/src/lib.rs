@@ -234,24 +234,64 @@ impl Vm {
                     let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => a.checked_mul(*b), _ => None } } else { None };
                     if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { binary(&mut stack, &function.name, mul)?; }
                 }
-                Op::Div => binary(&mut stack, &function.name, div)?,
-                Op::Mod => binary(&mut stack, &function.name, modulo)?,
+                Op::Div => {
+                    // Phase 41: integer fast-path. Guard b != 0 so division-by-zero
+                    // still routes through div() -> VmError::DivisionByZero, and
+                    // i64::MIN / -1 (the only overflow) falls back to Overflow.
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) if *b != 0 => a.checked_div(*b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { binary(&mut stack, &function.name, div)?; }
+                }
+                Op::Mod => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) if *b != 0 => a.checked_rem(*b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { binary(&mut stack, &function.name, modulo)?; }
+                }
                 Op::Eq => {
                     let len = stack.len();
                     let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a == b), _ => None } } else { None };
                     if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { compare(&mut stack, &function.name, |a, b| a == b)?; }
                 }
-                Op::Neq => compare(&mut stack, &function.name, |a, b| a != b)?,
+                Op::Neq => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a != b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { compare(&mut stack, &function.name, |a, b| a != b)?; }
+                }
                 Op::Lt => {
                     let len = stack.len();
                     let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a < b), _ => None } } else { None };
                     if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { ordered(&mut stack, &function.name, |a, b| a < b)?; }
                 }
-                Op::Gt => ordered(&mut stack, &function.name, |a, b| a > b)?,
-                Op::Lte => ordered(&mut stack, &function.name, |a, b| a <= b)?, Op::Gte => ordered(&mut stack, &function.name, |a, b| a >= b)?,
-                Op::BitAnd => integer_binary(&mut stack, &function.name, |a, b| a & b)?,
-                Op::BitOr => integer_binary(&mut stack, &function.name, |a, b| a | b)?,
-                Op::BitXor => integer_binary(&mut stack, &function.name, |a, b| a ^ b)?,
+                Op::Gt => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a > b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { ordered(&mut stack, &function.name, |a, b| a > b)?; }
+                }
+                Op::Lte => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a <= b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { ordered(&mut stack, &function.name, |a, b| a <= b)?; }
+                }
+                Op::Gte => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a >= b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Bool(res)); } else { ordered(&mut stack, &function.name, |a, b| a >= b)?; }
+                }
+                Op::BitAnd => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a & b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { integer_binary(&mut stack, &function.name, |a, b| a & b)?; }
+                }
+                Op::BitOr => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a | b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { integer_binary(&mut stack, &function.name, |a, b| a | b)?; }
+                }
+                Op::BitXor => {
+                    let len = stack.len();
+                    let fast = if len >= 2 { match (&stack[len - 2], &stack[len - 1]) { (Value::Int(a), Value::Int(b)) => Some(a ^ b), _ => None } } else { None };
+                    if let Some(res) = fast { stack.truncate(len - 2); stack.push(Value::Int(res)); } else { integer_binary(&mut stack, &function.name, |a, b| a ^ b)?; }
+                }
                 Op::Neg => { let value = pop(&mut stack, &function.name)?; stack.push(match value { Value::Int(v) => Value::Int(v.checked_neg().ok_or(VmError::Overflow)?), Value::Float(v) => Value::Float(-v), other => return Err(VmError::Type(format!("cannot negate {}", val_to_string(&other)))) }); }
                 Op::Not => { let value = pop(&mut stack, &function.name)?; stack.push(Value::Bool(!truthy(&value))); }
                 Op::BitNot => { let value = pop(&mut stack, &function.name)?; if let Value::Int(v) = value { stack.push(Value::Int(!v)); } else { return Err(VmError::Type("bitwise not requires int".into())); } }
