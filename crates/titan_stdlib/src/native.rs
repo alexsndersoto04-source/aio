@@ -42,7 +42,7 @@ pub(crate) fn runtime_handle_key<T>(handle: T) -> (u64, T) {
 pub enum NativeType { Any, Int, Float, Bool, String, Bytes, Array, Map, Nil }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Capability { None, Filesystem, Process, Network, Environment }
+pub enum Capability { None, Filesystem, Process, Network, Environment, UserInterface }
 
 #[derive(Debug, Clone, Copy)]
 pub struct NativeSignature {
@@ -236,41 +236,41 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::web::webgl_draw", [Int, String], Bool),
     native!("std::web::webgl_delete", [Int], Bool),
 
-    native!("std::window::create", [String, Int, Int], Int),
-    native!("std::window::is_open", [Int], Bool),
-    native!("std::window::close", [Int], Bool),
-    native!("std::window::set_title", [Int, String], Bool),
-    native!("std::window::resize", [Int, Int, Int], Bool),
-    native!("std::window::poll_events", [Int], Array),
+    native!("std::window::create", [String, Int, Int], Int, UserInterface),
+    native!("std::window::is_open", [Int], Bool, UserInterface),
+    native!("std::window::close", [Int], Bool, UserInterface),
+    native!("std::window::set_title", [Int, String], Bool, UserInterface),
+    native!("std::window::resize", [Int, Int, Int], Bool, UserInterface),
+    native!("std::window::poll_events", [Int], Array, UserInterface),
     // Fase 2 — ventana viva (minifb). -1 si no hay display (headless).
-    native!("std::window::live_open", [String, Int, Int], Int),
-    native!("std::window::live_is_open", [Int], Bool),
-    native!("std::window::live_close", [Int], Bool),
-    native!("std::window::live_set_title", [Int, String], Bool),
-    native!("std::window::live_pump", [Int, Int], Int),
-    native!("std::window::live_poll_events", [Int], Array),
+    native!("std::window::live_open", [String, Int, Int], Int, UserInterface),
+    native!("std::window::live_is_open", [Int], Bool, UserInterface),
+    native!("std::window::live_close", [Int], Bool, UserInterface),
+    native!("std::window::live_set_title", [Int, String], Bool, UserInterface),
+    native!("std::window::live_pump", [Int, Int], Int, UserInterface),
+    native!("std::window::live_poll_events", [Int], Array, UserInterface),
 
-    native!("std::input::is_key_pressed", [String], Bool),
-    native!("std::input::mouse_pos", [], Array),
-    native!("std::input::is_mouse_button_pressed", [Int], Bool),
-    native!("std::input::touch_pos", [Int], Array),
+    native!("std::input::is_key_pressed", [String], Bool, UserInterface),
+    native!("std::input::mouse_pos", [], Array, UserInterface),
+    native!("std::input::is_mouse_button_pressed", [Int], Bool, UserInterface),
+    native!("std::input::touch_pos", [Int], Array, UserInterface),
     // Setters expuestos en Fase 1: el host (o el propio script) alimenta el
     // estado; el backend de ventanas (Fase 2) cableara eventos reales aqui.
-    native!("std::input::set_key_state", [String, Bool], Bool),
-    native!("std::input::set_mouse_pos", [Int, Int], Bool),
-    native!("std::input::set_mouse_button", [Int, Bool], Bool),
-    native!("std::input::set_touch_point", [Int, Int, Int, Bool], Bool),
-    native!("std::clipboard::get_text", [], String),
-    native!("std::clipboard::set_text", [String], Bool),
-    native!("std::notify::send", [String, String], Bool),
-    native!("std::mobile::state", [], String),
-    native!("std::mobile::trigger", [String], Bool),
-    native!("std::mobile::poll_events", [], Array),
-    native!("std::game::init", [String, Int, Int], Bool),
-    native!("std::game::step", [], Float),
-    native!("std::game::fps", [], Int),
+    native!("std::input::set_key_state", [String, Bool], Bool, UserInterface),
+    native!("std::input::set_mouse_pos", [Int, Int], Bool, UserInterface),
+    native!("std::input::set_mouse_button", [Int, Bool], Bool, UserInterface),
+    native!("std::input::set_touch_point", [Int, Int, Int, Bool], Bool, UserInterface),
+    native!("std::clipboard::get_text", [], String, UserInterface),
+    native!("std::clipboard::set_text", [String], Bool, UserInterface),
+    native!("std::notify::send", [String, String], Bool, UserInterface),
+    native!("std::mobile::state", [], String, UserInterface),
+    native!("std::mobile::trigger", [String], Bool, UserInterface),
+    native!("std::mobile::poll_events", [], Array, UserInterface),
+    native!("std::game::init", [String, Int, Int], Bool, UserInterface),
+    native!("std::game::step", [], Float, UserInterface),
+    native!("std::game::fps", [], Int, UserInterface),
     native!("std::game::check_collision", [Float, Float, Float, Float, Float, Float, Float, Float], Bool),
-    native!("std::game::shutdown", [], Bool),
+    native!("std::game::shutdown", [], Bool, UserInterface),
     // NOTE: the legacy in-memory audio module (buffers, playback flags,
     // volume) was retired in 0.7.0 and replaced by std::audio::* below,
     // which is the real one (WAV I/O via `hound` + playback through
@@ -282,18 +282,18 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::audio::sim_play",         [Int, Bool], Bool),
     native!("std::audio::sim_set_volume",   [Int, Float], Bool),
     native!("std::audio::sim_stop",         [Int], Bool),
-    native!("std::gui::init", [], Bool),
-    native!("std::gui::create_container", [String, Int, Int], Int),
-    native!("std::gui::add_button", [Int, String, Int, Int, Int, Int], Int),
-    native!("std::gui::add_label", [Int, String, Int, Int], Int),
-    native!("std::gui::set_text", [Int, String], Bool),
-    native!("std::gui::get_text", [Int], String),
-    native!("std::gui::trigger_click", [Int], Bool),
-    native!("std::gui::is_clicked", [Int], Bool),
-    native!("std::gui::child_count", [Int], Int),
-    native!("std::gui::shutdown", [], Bool),
+    native!("std::gui::init", [], Bool, UserInterface),
+    native!("std::gui::create_container", [String, Int, Int], Int, UserInterface),
+    native!("std::gui::add_button", [Int, String, Int, Int, Int, Int], Int, UserInterface),
+    native!("std::gui::add_label", [Int, String, Int, Int], Int, UserInterface),
+    native!("std::gui::set_text", [Int, String], Bool, UserInterface),
+    native!("std::gui::get_text", [Int], String, UserInterface),
+    native!("std::gui::trigger_click", [Int], Bool, UserInterface),
+    native!("std::gui::is_clicked", [Int], Bool, UserInterface),
+    native!("std::gui::child_count", [Int], Int, UserInterface),
+    native!("std::gui::shutdown", [], Bool, UserInterface),
     // Fase 2: rasterizador por software — pixeles RGBA reales del arbol.
-    native!("std::gui::render", [Int], Any),
+    native!("std::gui::render", [Int], Any, UserInterface),
     native!("std::image::from_rgba", [Int, Int, Bytes], Int),
     native!("std::freestanding::init", [String], Bool),
     native!("std::freestanding::validate_target_spec", [String], Bool),
@@ -968,6 +968,8 @@ mod tests {
             lookup("std::readline::prompt_persistent").unwrap().capability,
             Capability::Filesystem,
         );
+        assert_eq!(lookup("std::clipboard::get_text").unwrap().capability, Capability::UserInterface);
+        assert_eq!(lookup("std::game::check_collision").unwrap().capability, Capability::None);
     }
 
     #[test]

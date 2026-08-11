@@ -93,10 +93,11 @@ pub struct RuntimeCapabilities {
     pub process: bool,
     pub network: bool,
     pub environment: bool,
+    pub user_interface: bool,
 }
 impl RuntimeCapabilities {
-    pub const fn all() -> Self { Self { filesystem: true, process: true, network: true, environment: true } }
-    pub const fn sandboxed() -> Self { Self { filesystem: false, process: false, network: false, environment: false } }
+    pub const fn all() -> Self { Self { filesystem: true, process: true, network: true, environment: true, user_interface: true } }
+    pub const fn sandboxed() -> Self { Self { filesystem: false, process: false, network: false, environment: false, user_interface: false } }
 }
 impl Default for RuntimeCapabilities { fn default() -> Self { Self::all() } }
 
@@ -1061,6 +1062,11 @@ mod tests {
     #[test] fn sandbox_denies_persistent_readline_history_before_prompting() {
         let module = compile("fn main() { std::readline::prompt_persistent(\"prompt\", \"history.txt\") }").unwrap();
         assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::readline::prompt_persistent" && capability == "Filesystem"));
+    }
+    #[test] fn sandbox_denies_user_interface_access_but_keeps_pure_geometry() {
+        let module = compile("fn main() { std::clipboard::get_text() }").unwrap();
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::clipboard::get_text" && capability == "UserInterface"));
+        assert_eq!(run_sandboxed("fn main() { std::game::check_collision(0.0, 0.0, 5.0, 5.0, 1.0, 1.0, 2.0, 2.0) }").unwrap(), Value::Bool(true));
     }
     #[test] fn sandbox_denies_heap_dump_without_creating_a_file() {
         let path = std::env::temp_dir().join(format!("titan-sandbox-dump-{}.json", std::process::id()));
