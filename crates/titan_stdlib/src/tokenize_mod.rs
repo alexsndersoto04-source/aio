@@ -62,7 +62,7 @@ pub struct Encoding {
 // ---- Registry --------------------------------------------------------
 
 struct Registry {
-    tokenizers: HashMap<i64, Tokenizer>,
+    tokenizers: HashMap<(u64, i64), Tokenizer>,
     next_id:    i64,
 }
 
@@ -71,18 +71,20 @@ fn registry() -> &'static Mutex<Registry> {
     REG.get_or_init(|| Mutex::new(Registry { tokenizers: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn insert(t: Tokenizer) -> i64 {
     let mut reg = registry().lock().expect("tokenize registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.tokenizers.insert(id, t);
+    reg.tokenizers.insert(handle_key(id), t);
     id
 }
 
 fn with<F, R>(handle: i64, action: F) -> Result<R, TokenizeError>
 where F: FnOnce(&Tokenizer) -> Result<R, TokenizeError> {
     let reg = registry().lock().expect("tokenize registry poisoned");
-    let t = reg.tokenizers.get(&handle).ok_or(TokenizeError::UnknownHandle(handle))?;
+    let t = reg.tokenizers.get(&handle_key(handle)).ok_or(TokenizeError::UnknownHandle(handle))?;
     action(t)
 }
 
@@ -104,7 +106,7 @@ pub fn from_json(json: &str) -> Result<i64, TokenizeError> {
 
 /// Drop a tokenizer. Idempotent.
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.tokenizers.remove(&handle); }
+    if let Ok(mut reg) = registry().lock() { reg.tokenizers.remove(&handle_key(handle)); }
 }
 
 /// Encode a single `text`. `add_special_tokens` controls whether

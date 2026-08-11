@@ -60,7 +60,7 @@ struct DocState {
 }
 
 struct Registry {
-    docs:    HashMap<i64, DocState>,
+    docs:    HashMap<(u64, i64), DocState>,
     next_id: i64,
 }
 
@@ -69,18 +69,20 @@ fn registry() -> &'static Mutex<Registry> {
     REG.get_or_init(|| Mutex::new(Registry { docs: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn insert(state: DocState) -> i64 {
     let mut reg = registry().lock().expect("pdf registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.docs.insert(id, state);
+    reg.docs.insert(handle_key(id), state);
     id
 }
 
 fn with<F, R>(handle: i64, action: F) -> Result<R, PdfError>
 where F: FnOnce(&mut DocState) -> Result<R, PdfError> {
     let mut reg = registry().lock().expect("pdf registry poisoned");
-    let state = reg.docs.get_mut(&handle).ok_or(PdfError::UnknownHandle(handle))?;
+    let state = reg.docs.get_mut(&handle_key(handle)).ok_or(PdfError::UnknownHandle(handle))?;
     action(state)
 }
 
@@ -207,7 +209,7 @@ pub fn save(handle: i64, path: &str) -> Result<(), PdfError> {
 
 /// Drop a document from the registry. Idempotent.
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.docs.remove(&handle); }
+    if let Ok(mut reg) = registry().lock() { reg.docs.remove(&handle_key(handle)); }
 }
 
 #[cfg(test)]

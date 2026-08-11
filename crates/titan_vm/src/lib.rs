@@ -1126,6 +1126,23 @@ mod tests {
         assert_eq!(run(&source).unwrap(), Value::Bool(true));
         let _ = std::fs::remove_dir_all(path);
     }
+    #[cfg(feature = "image_mod")]
+    #[test] fn in_memory_native_handles_are_also_vm_owned() {
+        let module = compile("fn image_width(image: int) { std::image::width(image) } fn close_image(image: int) { std::image::close(image) } fn main() { std::image::from_rgba(1, 1, std::bytes::from_array([255, 0, 0, 255])) }").unwrap();
+        let width_id = module.functions.iter().position(|function| function.name == "image_width").unwrap();
+        let close_id = module.functions.iter().position(|function| function.name == "close_image").unwrap();
+        let mut owner = Vm::new(module.clone());
+        let handle = owner.run().unwrap().unwrap();
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        assert_eq!(owner.execute(width_id, vec![handle.clone()], Vec::new(), 0, &mut debugger).unwrap(), Value::Int(1));
+
+        let mut foreign = Vm::new(module);
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        assert!(matches!(foreign.execute(width_id, vec![handle.clone()], Vec::new(), 0, &mut debugger), Err(VmError::Native { function, message }) if function == "std::image::width" && message.contains("no image registered")));
+
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        owner.execute(close_id, vec![handle], Vec::new(), 0, &mut debugger).unwrap();
+    }
     #[test] fn debugger_breaks_steps_and_reports_state() {
         let mut lexer = Lexer::new("fn main() { let value = 40 value + 2 }"); let tokens = lexer.tokenize().0.to_vec();
         let program = Parser::new(tokens).parse_program().unwrap(); let module = AstCompiler::new().compile_program(&program).unwrap();

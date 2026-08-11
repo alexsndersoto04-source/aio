@@ -33,25 +33,27 @@ pub enum ImageError {
     UnknownHandle(i64),
 }
 
-struct Registry { images: HashMap<i64, DynamicImage>, next_id: i64 }
+struct Registry { images: HashMap<(u64, i64), DynamicImage>, next_id: i64 }
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(Registry { images: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn insert(image: DynamicImage) -> i64 {
     let mut reg = registry().lock().expect("image registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.images.insert(id, image);
+    reg.images.insert(handle_key(id), image);
     id
 }
 
 fn with_image<F, R>(handle: i64, action: F) -> Result<R, ImageError>
 where F: FnOnce(&DynamicImage) -> R {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?;
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?;
     Ok(action(image))
 }
 
@@ -104,7 +106,7 @@ pub fn from_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<i64, ImageError
 pub fn save(handle: i64, path: &str) -> Result<(), ImageError> {
     let path = path.to_string();
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?;
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?;
     image.save(Path::new(&path))?;
     Ok(())
 }
@@ -113,7 +115,7 @@ pub fn save(handle: i64, path: &str) -> Result<(), ImageError> {
 pub fn encode(handle: i64, format: &str) -> Result<Vec<u8>, ImageError> {
     let format = parse_format(format)?;
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?;
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?;
     let mut buffer = Cursor::new(Vec::new());
     image.write_to(&mut buffer, format)?;
     Ok(buffer.into_inner())
@@ -138,7 +140,7 @@ pub fn color_type(handle: i64) -> Result<String, ImageError> {
 pub fn resize(handle: i64, width: u32, height: u32, filter: &str) -> Result<i64, ImageError> {
     let filter = parse_filter(filter)?;
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.resize(width, height, filter)))
 }
@@ -146,84 +148,84 @@ pub fn resize(handle: i64, width: u32, height: u32, filter: &str) -> Result<i64,
 pub fn resize_exact(handle: i64, width: u32, height: u32, filter: &str) -> Result<i64, ImageError> {
     let filter = parse_filter(filter)?;
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.resize_exact(width, height, filter)))
 }
 
 pub fn thumbnail(handle: i64, width: u32, height: u32) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.thumbnail(width, height)))
 }
 
 pub fn crop(handle: i64, x: u32, y: u32, width: u32, height: u32) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let mut image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let mut image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.crop(x, y, width, height)))
 }
 
 pub fn grayscale(handle: i64) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.grayscale()))
 }
 
 pub fn blur(handle: i64, sigma: f32) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.blur(sigma)))
 }
 
 pub fn brighten(handle: i64, value: i32) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.brighten(value)))
 }
 
 pub fn rotate90(handle: i64) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.rotate90()))
 }
 
 pub fn rotate180(handle: i64) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.rotate180()))
 }
 
 pub fn rotate270(handle: i64) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.rotate270()))
 }
 
 pub fn flip_horizontal(handle: i64) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.fliph()))
 }
 
 pub fn flip_vertical(handle: i64) -> Result<i64, ImageError> {
     let reg = registry().lock().expect("image registry poisoned");
-    let image = reg.images.get(&handle).ok_or(ImageError::UnknownHandle(handle))?.clone();
+    let image = reg.images.get(&handle_key(handle)).ok_or(ImageError::UnknownHandle(handle))?.clone();
     drop(reg);
     Ok(insert(image.flipv()))
 }
 
 /// Free the registry slot associated with `handle`. Idempotent.
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.images.remove(&handle); }
+    if let Ok(mut reg) = registry().lock() { reg.images.remove(&handle_key(handle)); }
 }
 
 #[cfg(test)]

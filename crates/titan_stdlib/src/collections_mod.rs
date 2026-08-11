@@ -21,152 +21,154 @@ fn next_handle() -> u64 {
     NEXT_HANDLE.get_or_init(|| AtomicU64::new(1)).fetch_add(1, Ordering::Relaxed)
 }
 
+fn handle_key(handle: u64) -> (u64, u64) { crate::native::runtime_handle_key(handle) }
+
 // ---------------- Set (BTreeSet<String>) ----------------
 
-static SETS: OnceLock<Mutex<HashMap<u64, BTreeSet<String>>>> = OnceLock::new();
-fn sets() -> &'static Mutex<HashMap<u64, BTreeSet<String>>> {
+static SETS: OnceLock<Mutex<HashMap<(u64, u64), BTreeSet<String>>>> = OnceLock::new();
+fn sets() -> &'static Mutex<HashMap<(u64, u64), BTreeSet<String>>> {
     SETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn set_new() -> u64 {
     let h = next_handle();
-    sets().lock().unwrap().insert(h, BTreeSet::new());
+    sets().lock().unwrap().insert(handle_key(h), BTreeSet::new());
     h
 }
 
 pub fn set_from(items: Vec<String>) -> u64 {
     let h = next_handle();
-    sets().lock().unwrap().insert(h, items.into_iter().collect());
+    sets().lock().unwrap().insert(handle_key(h), items.into_iter().collect());
     h
 }
 
 pub fn set_add(h: u64, item: String) -> Result<bool, String> {
     let mut sets = sets().lock().unwrap();
-    let s = sets.get_mut(&h).ok_or_else(|| format!("unknown set {h}"))?;
+    let s = sets.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown set {h}"))?;
     Ok(s.insert(item))
 }
 
 pub fn set_remove(h: u64, item: &str) -> Result<bool, String> {
     let mut sets = sets().lock().unwrap();
-    let s = sets.get_mut(&h).ok_or_else(|| format!("unknown set {h}"))?;
+    let s = sets.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown set {h}"))?;
     Ok(s.remove(item))
 }
 
 pub fn set_contains(h: u64, item: &str) -> Result<bool, String> {
     let sets = sets().lock().unwrap();
-    let s = sets.get(&h).ok_or_else(|| format!("unknown set {h}"))?;
+    let s = sets.get(&handle_key(h)).ok_or_else(|| format!("unknown set {h}"))?;
     Ok(s.contains(item))
 }
 
 pub fn set_len(h: u64) -> Result<usize, String> {
     let sets = sets().lock().unwrap();
-    let s = sets.get(&h).ok_or_else(|| format!("unknown set {h}"))?;
+    let s = sets.get(&handle_key(h)).ok_or_else(|| format!("unknown set {h}"))?;
     Ok(s.len())
 }
 
 pub fn set_to_array(h: u64) -> Result<Vec<String>, String> {
     let sets = sets().lock().unwrap();
-    let s = sets.get(&h).ok_or_else(|| format!("unknown set {h}"))?;
+    let s = sets.get(&handle_key(h)).ok_or_else(|| format!("unknown set {h}"))?;
     Ok(s.iter().cloned().collect())
 }
 
 pub fn set_union(a: u64, b: u64) -> Result<u64, String> {
     let sets_g = sets().lock().unwrap();
-    let sa = sets_g.get(&a).ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g.get(&b).ok_or_else(|| format!("unknown set {b}"))?;
+    let sa = sets_g.get(&handle_key(a)).ok_or_else(|| format!("unknown set {a}"))?;
+    let sb = sets_g.get(&handle_key(b)).ok_or_else(|| format!("unknown set {b}"))?;
     let merged: BTreeSet<String> = sa.union(sb).cloned().collect();
     drop(sets_g);
     let h = next_handle();
-    sets().lock().unwrap().insert(h, merged);
+    sets().lock().unwrap().insert(handle_key(h), merged);
     Ok(h)
 }
 
 pub fn set_intersect(a: u64, b: u64) -> Result<u64, String> {
     let sets_g = sets().lock().unwrap();
-    let sa = sets_g.get(&a).ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g.get(&b).ok_or_else(|| format!("unknown set {b}"))?;
+    let sa = sets_g.get(&handle_key(a)).ok_or_else(|| format!("unknown set {a}"))?;
+    let sb = sets_g.get(&handle_key(b)).ok_or_else(|| format!("unknown set {b}"))?;
     let merged: BTreeSet<String> = sa.intersection(sb).cloned().collect();
     drop(sets_g);
     let h = next_handle();
-    sets().lock().unwrap().insert(h, merged);
+    sets().lock().unwrap().insert(handle_key(h), merged);
     Ok(h)
 }
 
 pub fn set_difference(a: u64, b: u64) -> Result<u64, String> {
     let sets_g = sets().lock().unwrap();
-    let sa = sets_g.get(&a).ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g.get(&b).ok_or_else(|| format!("unknown set {b}"))?;
+    let sa = sets_g.get(&handle_key(a)).ok_or_else(|| format!("unknown set {a}"))?;
+    let sb = sets_g.get(&handle_key(b)).ok_or_else(|| format!("unknown set {b}"))?;
     let merged: BTreeSet<String> = sa.difference(sb).cloned().collect();
     drop(sets_g);
     let h = next_handle();
-    sets().lock().unwrap().insert(h, merged);
+    sets().lock().unwrap().insert(handle_key(h), merged);
     Ok(h)
 }
 
 pub fn set_is_subset(a: u64, b: u64) -> Result<bool, String> {
     let sets_g = sets().lock().unwrap();
-    let sa = sets_g.get(&a).ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g.get(&b).ok_or_else(|| format!("unknown set {b}"))?;
+    let sa = sets_g.get(&handle_key(a)).ok_or_else(|| format!("unknown set {a}"))?;
+    let sb = sets_g.get(&handle_key(b)).ok_or_else(|| format!("unknown set {b}"))?;
     Ok(sa.is_subset(sb))
 }
 
 pub fn set_drop(h: u64) -> bool {
-    sets().lock().unwrap().remove(&h).is_some()
+    sets().lock().unwrap().remove(&handle_key(h)).is_some()
 }
 
 // ---------------- Deque (VecDeque<String>) ----------------
 
-static DEQUES: OnceLock<Mutex<HashMap<u64, VecDeque<String>>>> = OnceLock::new();
-fn deques() -> &'static Mutex<HashMap<u64, VecDeque<String>>> {
+static DEQUES: OnceLock<Mutex<HashMap<(u64, u64), VecDeque<String>>>> = OnceLock::new();
+fn deques() -> &'static Mutex<HashMap<(u64, u64), VecDeque<String>>> {
     DEQUES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn deque_new() -> u64 {
     let h = next_handle();
-    deques().lock().unwrap().insert(h, VecDeque::new());
+    deques().lock().unwrap().insert(handle_key(h), VecDeque::new());
     h
 }
 
 pub fn deque_push_front(h: u64, item: String) -> Result<(), String> {
     let mut d = deques().lock().unwrap();
-    let q = d.get_mut(&h).ok_or_else(|| format!("unknown deque {h}"))?;
+    let q = d.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown deque {h}"))?;
     q.push_front(item);
     Ok(())
 }
 
 pub fn deque_push_back(h: u64, item: String) -> Result<(), String> {
     let mut d = deques().lock().unwrap();
-    let q = d.get_mut(&h).ok_or_else(|| format!("unknown deque {h}"))?;
+    let q = d.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown deque {h}"))?;
     q.push_back(item);
     Ok(())
 }
 
 pub fn deque_pop_front(h: u64) -> Result<Option<String>, String> {
     let mut d = deques().lock().unwrap();
-    let q = d.get_mut(&h).ok_or_else(|| format!("unknown deque {h}"))?;
+    let q = d.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown deque {h}"))?;
     Ok(q.pop_front())
 }
 
 pub fn deque_pop_back(h: u64) -> Result<Option<String>, String> {
     let mut d = deques().lock().unwrap();
-    let q = d.get_mut(&h).ok_or_else(|| format!("unknown deque {h}"))?;
+    let q = d.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown deque {h}"))?;
     Ok(q.pop_back())
 }
 
 pub fn deque_len(h: u64) -> Result<usize, String> {
     let d = deques().lock().unwrap();
-    let q = d.get(&h).ok_or_else(|| format!("unknown deque {h}"))?;
+    let q = d.get(&handle_key(h)).ok_or_else(|| format!("unknown deque {h}"))?;
     Ok(q.len())
 }
 
 pub fn deque_to_array(h: u64) -> Result<Vec<String>, String> {
     let d = deques().lock().unwrap();
-    let q = d.get(&h).ok_or_else(|| format!("unknown deque {h}"))?;
+    let q = d.get(&handle_key(h)).ok_or_else(|| format!("unknown deque {h}"))?;
     Ok(q.iter().cloned().collect())
 }
 
 pub fn deque_drop(h: u64) -> bool {
-    deques().lock().unwrap().remove(&h).is_some()
+    deques().lock().unwrap().remove(&handle_key(h)).is_some()
 }
 
 // ---------------- PriorityQueue (BinaryHeap) ----------------
@@ -180,24 +182,24 @@ struct PQ {
     next_seq: i64,
 }
 
-static PQS: OnceLock<Mutex<HashMap<u64, PQ>>> = OnceLock::new();
-fn pqs() -> &'static Mutex<HashMap<u64, PQ>> { PQS.get_or_init(|| Mutex::new(HashMap::new())) }
+static PQS: OnceLock<Mutex<HashMap<(u64, u64), PQ>>> = OnceLock::new();
+fn pqs() -> &'static Mutex<HashMap<(u64, u64), PQ>> { PQS.get_or_init(|| Mutex::new(HashMap::new())) }
 
 pub fn pq_new_max() -> u64 {
     let h = next_handle();
-    pqs().lock().unwrap().insert(h, PQ { is_min: false, heap: BinaryHeap::new(), next_seq: 0 });
+    pqs().lock().unwrap().insert(handle_key(h), PQ { is_min: false, heap: BinaryHeap::new(), next_seq: 0 });
     h
 }
 
 pub fn pq_new_min() -> u64 {
     let h = next_handle();
-    pqs().lock().unwrap().insert(h, PQ { is_min: true, heap: BinaryHeap::new(), next_seq: 0 });
+    pqs().lock().unwrap().insert(handle_key(h), PQ { is_min: true, heap: BinaryHeap::new(), next_seq: 0 });
     h
 }
 
 pub fn pq_push(h: u64, item: String, priority: i64) -> Result<(), String> {
     let mut pqs = pqs().lock().unwrap();
-    let pq = pqs.get_mut(&h).ok_or_else(|| format!("unknown pq {h}"))?;
+    let pq = pqs.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown pq {h}"))?;
     let adj = if pq.is_min { -priority } else { priority };
     let seq = pq.next_seq;
     pq.next_seq += 1;
@@ -207,23 +209,23 @@ pub fn pq_push(h: u64, item: String, priority: i64) -> Result<(), String> {
 
 pub fn pq_pop(h: u64) -> Result<Option<String>, String> {
     let mut pqs = pqs().lock().unwrap();
-    let pq = pqs.get_mut(&h).ok_or_else(|| format!("unknown pq {h}"))?;
+    let pq = pqs.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown pq {h}"))?;
     Ok(pq.heap.pop().map(|(_, _, item)| item))
 }
 
 pub fn pq_peek(h: u64) -> Result<Option<String>, String> {
     let pqs = pqs().lock().unwrap();
-    let pq = pqs.get(&h).ok_or_else(|| format!("unknown pq {h}"))?;
+    let pq = pqs.get(&handle_key(h)).ok_or_else(|| format!("unknown pq {h}"))?;
     Ok(pq.heap.peek().map(|(_, _, item)| item.clone()))
 }
 
 pub fn pq_len(h: u64) -> Result<usize, String> {
     let pqs = pqs().lock().unwrap();
-    let pq = pqs.get(&h).ok_or_else(|| format!("unknown pq {h}"))?;
+    let pq = pqs.get(&handle_key(h)).ok_or_else(|| format!("unknown pq {h}"))?;
     Ok(pq.heap.len())
 }
 
-pub fn pq_drop(h: u64) -> bool { pqs().lock().unwrap().remove(&h).is_some() }
+pub fn pq_drop(h: u64) -> bool { pqs().lock().unwrap().remove(&handle_key(h)).is_some() }
 
 // ---------------- OrderedMap (IndexMap<String, serde_json::Value>) ----------------
 //
@@ -231,57 +233,57 @@ pub fn pq_drop(h: u64) -> bool { pqs().lock().unwrap().remove(&h).is_some() }
 // para poder guardar cualquier cosa; el Value se convierte a Titan Value
 // en el layer del VM.
 
-static OMAPS: OnceLock<Mutex<HashMap<u64, IndexMap<String, serde_json::Value>>>> = OnceLock::new();
-fn omaps() -> &'static Mutex<HashMap<u64, IndexMap<String, serde_json::Value>>> {
+static OMAPS: OnceLock<Mutex<HashMap<(u64, u64), IndexMap<String, serde_json::Value>>>> = OnceLock::new();
+fn omaps() -> &'static Mutex<HashMap<(u64, u64), IndexMap<String, serde_json::Value>>> {
     OMAPS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn omap_new() -> u64 {
     let h = next_handle();
-    omaps().lock().unwrap().insert(h, IndexMap::new());
+    omaps().lock().unwrap().insert(handle_key(h), IndexMap::new());
     h
 }
 
 pub fn omap_insert(h: u64, key: String, value: serde_json::Value) -> Result<(), String> {
     let mut o = omaps().lock().unwrap();
-    let m = o.get_mut(&h).ok_or_else(|| format!("unknown omap {h}"))?;
+    let m = o.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown omap {h}"))?;
     m.insert(key, value);
     Ok(())
 }
 
 pub fn omap_get(h: u64, key: &str) -> Result<Option<serde_json::Value>, String> {
     let o = omaps().lock().unwrap();
-    let m = o.get(&h).ok_or_else(|| format!("unknown omap {h}"))?;
+    let m = o.get(&handle_key(h)).ok_or_else(|| format!("unknown omap {h}"))?;
     Ok(m.get(key).cloned())
 }
 
 pub fn omap_remove(h: u64, key: &str) -> Result<bool, String> {
     let mut o = omaps().lock().unwrap();
-    let m = o.get_mut(&h).ok_or_else(|| format!("unknown omap {h}"))?;
+    let m = o.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown omap {h}"))?;
     Ok(m.shift_remove(key).is_some())
 }
 
 pub fn omap_keys(h: u64) -> Result<Vec<String>, String> {
     let o = omaps().lock().unwrap();
-    let m = o.get(&h).ok_or_else(|| format!("unknown omap {h}"))?;
+    let m = o.get(&handle_key(h)).ok_or_else(|| format!("unknown omap {h}"))?;
     Ok(m.keys().cloned().collect())
 }
 
 pub fn omap_len(h: u64) -> Result<usize, String> {
     let o = omaps().lock().unwrap();
-    let m = o.get(&h).ok_or_else(|| format!("unknown omap {h}"))?;
+    let m = o.get(&handle_key(h)).ok_or_else(|| format!("unknown omap {h}"))?;
     Ok(m.len())
 }
 
-pub fn omap_drop(h: u64) -> bool { omaps().lock().unwrap().remove(&h).is_some() }
+pub fn omap_drop(h: u64) -> bool { omaps().lock().unwrap().remove(&handle_key(h)).is_some() }
 
 // ---------------- Counter (frecuencia de items) ----------------
 //
 // Encima de HashMap<String, i64>. Ops típicas: from_array, count,
 // most_common(n), total.
 
-static COUNTERS: OnceLock<Mutex<HashMap<u64, HashMap<String, i64>>>> = OnceLock::new();
-fn counters() -> &'static Mutex<HashMap<u64, HashMap<String, i64>>> {
+static COUNTERS: OnceLock<Mutex<HashMap<(u64, u64), HashMap<String, i64>>>> = OnceLock::new();
+fn counters() -> &'static Mutex<HashMap<(u64, u64), HashMap<String, i64>>> {
     COUNTERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -289,26 +291,26 @@ pub fn counter_from(items: Vec<String>) -> u64 {
     let h = next_handle();
     let mut m: HashMap<String, i64> = HashMap::new();
     for i in items { *m.entry(i).or_insert(0) += 1; }
-    counters().lock().unwrap().insert(h, m);
+    counters().lock().unwrap().insert(handle_key(h), m);
     h
 }
 
 pub fn counter_add(h: u64, item: String, delta: i64) -> Result<(), String> {
     let mut c = counters().lock().unwrap();
-    let m = c.get_mut(&h).ok_or_else(|| format!("unknown counter {h}"))?;
+    let m = c.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown counter {h}"))?;
     *m.entry(item).or_insert(0) += delta;
     Ok(())
 }
 
 pub fn counter_count(h: u64, item: &str) -> Result<i64, String> {
     let c = counters().lock().unwrap();
-    let m = c.get(&h).ok_or_else(|| format!("unknown counter {h}"))?;
+    let m = c.get(&handle_key(h)).ok_or_else(|| format!("unknown counter {h}"))?;
     Ok(*m.get(item).unwrap_or(&0))
 }
 
 pub fn counter_most_common(h: u64, n: usize) -> Result<Vec<(String, i64)>, String> {
     let c = counters().lock().unwrap();
-    let m = c.get(&h).ok_or_else(|| format!("unknown counter {h}"))?;
+    let m = c.get(&handle_key(h)).ok_or_else(|| format!("unknown counter {h}"))?;
     let mut v: Vec<(String, i64)> = m.iter().map(|(k, v)| (k.clone(), *v)).collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     v.truncate(n);
@@ -317,11 +319,11 @@ pub fn counter_most_common(h: u64, n: usize) -> Result<Vec<(String, i64)>, Strin
 
 pub fn counter_total(h: u64) -> Result<i64, String> {
     let c = counters().lock().unwrap();
-    let m = c.get(&h).ok_or_else(|| format!("unknown counter {h}"))?;
+    let m = c.get(&handle_key(h)).ok_or_else(|| format!("unknown counter {h}"))?;
     Ok(m.values().sum())
 }
 
-pub fn counter_drop(h: u64) -> bool { counters().lock().unwrap().remove(&h).is_some() }
+pub fn counter_drop(h: u64) -> bool { counters().lock().unwrap().remove(&handle_key(h)).is_some() }
 
 // ---------------- Graph (directed/undirected + algoritmos) ----------------
 
@@ -331,20 +333,20 @@ struct Graph {
     nodes: BTreeSet<String>,
 }
 
-static GRAPHS: OnceLock<Mutex<HashMap<u64, Graph>>> = OnceLock::new();
-fn graphs() -> &'static Mutex<HashMap<u64, Graph>> {
+static GRAPHS: OnceLock<Mutex<HashMap<(u64, u64), Graph>>> = OnceLock::new();
+fn graphs() -> &'static Mutex<HashMap<(u64, u64), Graph>> {
     GRAPHS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn graph_new(directed: bool) -> u64 {
     let h = next_handle();
-    graphs().lock().unwrap().insert(h, Graph { directed, edges: HashMap::new(), nodes: BTreeSet::new() });
+    graphs().lock().unwrap().insert(handle_key(h), Graph { directed, edges: HashMap::new(), nodes: BTreeSet::new() });
     h
 }
 
 pub fn graph_add_node(h: u64, node: String) -> Result<(), String> {
     let mut g = graphs().lock().unwrap();
-    let graph = g.get_mut(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     graph.nodes.insert(node.clone());
     graph.edges.entry(node).or_default();
     Ok(())
@@ -352,7 +354,7 @@ pub fn graph_add_node(h: u64, node: String) -> Result<(), String> {
 
 pub fn graph_add_edge(h: u64, from: String, to: String, weight: i64) -> Result<(), String> {
     let mut g = graphs().lock().unwrap();
-    let graph = g.get_mut(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get_mut(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     graph.nodes.insert(from.clone());
     graph.nodes.insert(to.clone());
     graph.edges.entry(from.clone()).or_default().push((to.clone(), weight));
@@ -366,14 +368,14 @@ pub fn graph_add_edge(h: u64, from: String, to: String, weight: i64) -> Result<(
 
 pub fn graph_neighbors(h: u64, node: &str) -> Result<Vec<String>, String> {
     let g = graphs().lock().unwrap();
-    let graph = g.get(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     Ok(graph.edges.get(node).map(|v| v.iter().map(|(n, _)| n.clone()).collect()).unwrap_or_default())
 }
 
 /// BFS: retorna nodos en orden de visita.
 pub fn graph_bfs(h: u64, start: &str) -> Result<Vec<String>, String> {
     let g = graphs().lock().unwrap();
-    let graph = g.get(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     if !graph.nodes.contains(start) { return Ok(Vec::new()); }
     let mut visited: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
@@ -399,7 +401,7 @@ pub fn graph_bfs(h: u64, start: &str) -> Result<Vec<String>, String> {
 /// DFS iterativo con stack.
 pub fn graph_dfs(h: u64, start: &str) -> Result<Vec<String>, String> {
     let g = graphs().lock().unwrap();
-    let graph = g.get(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     if !graph.nodes.contains(start) { return Ok(Vec::new()); }
     let mut visited: BTreeSet<String> = BTreeSet::new();
     let mut stack: Vec<String> = vec![start.to_string()];
@@ -425,7 +427,7 @@ pub fn graph_dfs(h: u64, start: &str) -> Result<Vec<String>, String> {
 /// nodos en el camino (incluye start y end). Vacío si no hay camino.
 pub fn graph_shortest_path(h: u64, start: &str, end: &str) -> Result<Vec<String>, String> {
     let g = graphs().lock().unwrap();
-    let graph = g.get(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     if !graph.nodes.contains(start) || !graph.nodes.contains(end) { return Ok(Vec::new()); }
 
     let mut dist: HashMap<String, i64> = HashMap::new();
@@ -467,7 +469,7 @@ pub fn graph_shortest_path(h: u64, start: &str, end: &str) -> Result<Vec<String>
 /// Topological sort. Retorna orden válido o Err si hay ciclo.
 pub fn graph_topological_sort(h: u64) -> Result<Vec<String>, String> {
     let g = graphs().lock().unwrap();
-    let graph = g.get(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     if !graph.directed { return Err("topological_sort requires directed graph".into()); }
     let mut in_degree: HashMap<String, i64> = HashMap::new();
     for n in &graph.nodes { in_degree.insert(n.clone(), 0); }
@@ -505,7 +507,7 @@ pub fn graph_topological_sort(h: u64) -> Result<Vec<String>, String> {
 /// Detecta si el grafo tiene ciclo (funciona en directed y undirected).
 pub fn graph_has_cycle(h: u64) -> Result<bool, String> {
     let g = graphs().lock().unwrap();
-    let graph = g.get(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     if graph.directed {
         // Uso DFS con 3 estados: unvisited, visiting, done.
         let mut state: HashMap<String, u8> = HashMap::new();
@@ -552,11 +554,11 @@ pub fn graph_has_cycle(h: u64) -> Result<bool, String> {
 
 pub fn graph_nodes(h: u64) -> Result<Vec<String>, String> {
     let g = graphs().lock().unwrap();
-    let graph = g.get(&h).ok_or_else(|| format!("unknown graph {h}"))?;
+    let graph = g.get(&handle_key(h)).ok_or_else(|| format!("unknown graph {h}"))?;
     Ok(graph.nodes.iter().cloned().collect())
 }
 
-pub fn graph_drop(h: u64) -> bool { graphs().lock().unwrap().remove(&h).is_some() }
+pub fn graph_drop(h: u64) -> bool { graphs().lock().unwrap().remove(&handle_key(h)).is_some() }
 
 #[cfg(test)]
 mod tests {

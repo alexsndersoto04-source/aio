@@ -63,8 +63,8 @@ pub enum ServerError {
 // ---- Server / request registry --------------------------------------
 
 struct Registry {
-    servers:  HashMap<i64, Server>,
-    requests: HashMap<i64, Request>,
+    servers:  HashMap<(u64, i64), Server>,
+    requests: HashMap<(u64, i64), Request>,
     next_id:  i64,
 }
 
@@ -75,15 +75,17 @@ fn registry() -> &'static Mutex<Registry> {
     }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn insert_server(server: Server) -> i64 {
     let mut r = registry().lock().expect("server registry poisoned");
     let id = r.next_id; r.next_id += 1;
-    r.servers.insert(id, server); id
+    r.servers.insert(handle_key(id), server); id
 }
 fn insert_request(req: Request) -> i64 {
     let mut r = registry().lock().expect("server registry poisoned");
     let id = r.next_id; r.next_id += 1;
-    r.requests.insert(id, req); id
+    r.requests.insert(handle_key(id), req); id
 }
 
 // ---- Server lifecycle -----------------------------------------------
@@ -99,7 +101,7 @@ pub fn start(addr: &str) -> Result<i64, ServerError> {
 /// `"127.0.0.1:8080"`. Useful with `start("127.0.0.1:0")`.
 pub fn local_addr(handle: i64) -> Result<String, ServerError> {
     let r = registry().lock().expect("server registry poisoned");
-    let s = r.servers.get(&handle).ok_or(ServerError::UnknownServer(handle))?;
+    let s = r.servers.get(&handle_key(handle)).ok_or(ServerError::UnknownServer(handle))?;
     Ok(match s.server_addr() {
         ListenAddr::IP(addr)   => addr.to_string(),
         // Los sockets Unix no existen en Windows: tiny_http solo define
@@ -114,7 +116,7 @@ pub fn local_addr(handle: i64) -> Result<String, ServerError> {
 pub fn accept(handle: i64, timeout_ms: u64) -> Result<i64, ServerError> {
     let received = {
         let r = registry().lock().expect("server registry poisoned");
-        let s = r.servers.get(&handle).ok_or(ServerError::UnknownServer(handle))?;
+        let s = r.servers.get(&handle_key(handle)).ok_or(ServerError::UnknownServer(handle))?;
         s.recv_timeout(Duration::from_millis(timeout_ms))
             .map_err(|e| ServerError::Http(e.to_string()))?
     };
@@ -126,7 +128,7 @@ pub fn accept(handle: i64, timeout_ms: u64) -> Result<i64, ServerError> {
 
 /// Stop a server: drops the listener and any queued connections.
 pub fn stop(handle: i64) {
-    if let Ok(mut r) = registry().lock() { r.servers.remove(&handle); }
+    if let Ok(mut r) = registry().lock() { r.servers.remove(&handle_key(handle)); }
 }
 
 // ---- Request accessors ----------------------------------------------
@@ -134,7 +136,7 @@ pub fn stop(handle: i64) {
 fn with_request<F, R>(handle: i64, action: F) -> Result<R, ServerError>
 where F: FnOnce(&Request) -> R {
     let r = registry().lock().expect("server registry poisoned");
-    let req = r.requests.get(&handle).ok_or(ServerError::UnknownRequest(handle))?;
+    let req = r.requests.get(&handle_key(handle)).ok_or(ServerError::UnknownRequest(handle))?;
     Ok(action(req))
 }
 
@@ -174,7 +176,7 @@ pub fn headers(handle: i64) -> Result<BTreeMap<String, String>, ServerError> {
 /// call this at most once per request.
 pub fn body(handle: i64) -> Result<Vec<u8>, ServerError> {
     let mut r = registry().lock().expect("server registry poisoned");
-    let req = r.requests.get_mut(&handle).ok_or(ServerError::UnknownRequest(handle))?;
+    let req = r.requests.get_mut(&handle_key(handle)).ok_or(ServerError::UnknownRequest(handle))?;
     let mut buf = Vec::new();
     req.as_reader().read_to_end(&mut buf)?;
     Ok(buf)
@@ -188,7 +190,7 @@ pub fn body_text(handle: i64) -> Result<String, ServerError> {
 
 fn take_request(handle: i64) -> Result<Request, ServerError> {
     let mut r = registry().lock().expect("server registry poisoned");
-    r.requests.remove(&handle).ok_or(ServerError::UnknownRequest(handle))
+    r.requests.remove(&handle_key(handle)).ok_or(ServerError::UnknownRequest(handle))
 }
 
 fn make_header(name: &str, value: &str) -> Option<Header> {
@@ -255,7 +257,7 @@ struct WsConn {
     decoder: MessageDecoder,
 }
 
-struct WsRegistry { entries: HashMap<i64, WsConn>, next_id: i64 }
+struct WsRegistry { entries: HashMap<(u64, i64), WsConn>, next_id: i64 }
 fn ws_registry() -> &'static Mutex<WsRegistry> {
     static REG: OnceLock<Mutex<WsRegistry>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(WsRegistry { entries: HashMap::new(), next_id: 1_000_000_000 }))
@@ -263,7 +265,7 @@ fn ws_registry() -> &'static Mutex<WsRegistry> {
 fn insert_ws(ws: WsConn) -> i64 {
     let mut r = ws_registry().lock().expect("ws registry poisoned");
     let id = r.next_id; r.next_id += 1;
-    r.entries.insert(id, ws); id
+    r.entries.insert(handle_key(id), ws); id
 }
 
 /// Upgrade an HTTP request to a WebSocket connection (RFC 6455). Returns
@@ -306,7 +308,7 @@ pub fn upgrade_websocket(handle: i64, max_message: usize) -> Result<i64, ServerE
 /// to release the handle.
 pub fn ws_recv(handle: i64) -> Result<(String, String, Vec<u8>), ServerError> {
     let mut r = ws_registry().lock().expect("ws registry poisoned");
-    let ws = r.entries.get_mut(&handle).ok_or(ServerError::UnknownWebSocket(handle))?;
+    let ws = r.entries.get_mut(&handle_key(handle)).ok_or(ServerError::UnknownWebSocket(handle))?;
 
     // Drive the decoder: pull bytes until a full message pops out. We
     // require peer frames to be masked (`Some(true)`) as RFC 6455 §5.1
@@ -355,7 +357,7 @@ pub fn ws_recv(handle: i64) -> Result<(String, String, Vec<u8>), ServerError> {
 /// Send a UTF-8 text message. Server frames are unmasked per RFC 6455.
 pub fn ws_send_text(handle: i64, text: &str) -> Result<(), ServerError> {
     let mut r = ws_registry().lock().expect("ws registry poisoned");
-    let ws = r.entries.get_mut(&handle).ok_or(ServerError::UnknownWebSocket(handle))?;
+    let ws = r.entries.get_mut(&handle_key(handle)).ok_or(ServerError::UnknownWebSocket(handle))?;
     let frame = ws_codec::encode_frame(true, WS_OP_TEXT, text.as_bytes(), None)?;
     ws.stream.write_all(&frame)?;
     Ok(())
@@ -364,7 +366,7 @@ pub fn ws_send_text(handle: i64, text: &str) -> Result<(), ServerError> {
 /// Send a binary message.
 pub fn ws_send_binary(handle: i64, data: &[u8]) -> Result<(), ServerError> {
     let mut r = ws_registry().lock().expect("ws registry poisoned");
-    let ws = r.entries.get_mut(&handle).ok_or(ServerError::UnknownWebSocket(handle))?;
+    let ws = r.entries.get_mut(&handle_key(handle)).ok_or(ServerError::UnknownWebSocket(handle))?;
     let frame = ws_codec::encode_frame(true, WS_OP_BINARY, data, None)?;
     ws.stream.write_all(&frame)?;
     Ok(())
@@ -373,7 +375,7 @@ pub fn ws_send_binary(handle: i64, data: &[u8]) -> Result<(), ServerError> {
 /// Send a Close frame (optionally with code+reason) and drop the handle.
 pub fn ws_close(handle: i64, code: Option<u16>, reason: &str) -> Result<(), ServerError> {
     let mut r = ws_registry().lock().expect("ws registry poisoned");
-    if let Some(mut ws) = r.entries.remove(&handle) {
+    if let Some(mut ws) = r.entries.remove(&handle_key(handle)) {
         let mut payload = Vec::new();
         if let Some(code) = code { payload.extend_from_slice(&code.to_be_bytes()); }
         payload.extend_from_slice(reason.as_bytes());

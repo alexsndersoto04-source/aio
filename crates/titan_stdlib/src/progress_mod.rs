@@ -10,24 +10,26 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
 
-struct Registry { bars: HashMap<i64, ProgressBar>, next_id: i64 }
+struct Registry { bars: HashMap<(u64, i64), ProgressBar>, next_id: i64 }
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(Registry { bars: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn insert(bar: ProgressBar) -> i64 {
     let mut reg = registry().lock().expect("progress registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.bars.insert(id, bar);
+    reg.bars.insert(handle_key(id), bar);
     id
 }
 
 fn with_bar<F, R>(id: i64, action: F) -> Option<R> where F: FnOnce(&ProgressBar) -> R {
     let reg = registry().lock().ok()?;
-    reg.bars.get(&id).map(action)
+    reg.bars.get(&handle_key(id)).map(action)
 }
 
 // ---------------- Public API ------------------------------------------
@@ -69,7 +71,7 @@ pub fn increment(id: i64, delta: u64) {
 
 /// Mark the bar as finished (keeps the final line visible) and drop the handle.
 pub fn finish(id: i64, message: &str) {
-    if let Some(bar) = registry().lock().ok().and_then(|mut r| r.bars.remove(&id)) {
+    if let Some(bar) = registry().lock().ok().and_then(|mut r| r.bars.remove(&handle_key(id))) {
         if message.is_empty() {
             bar.finish();
         } else {
@@ -80,7 +82,7 @@ pub fn finish(id: i64, message: &str) {
 
 /// Erase the bar's line and drop the handle (no residue on the terminal).
 pub fn abandon(id: i64) {
-    if let Some(bar) = registry().lock().ok().and_then(|mut r| r.bars.remove(&id)) {
+    if let Some(bar) = registry().lock().ok().and_then(|mut r| r.bars.remove(&handle_key(id))) {
         bar.finish_and_clear();
     }
 }

@@ -34,7 +34,7 @@ pub enum RouterError {
 }
 
 struct Registry {
-    routers: HashMap<i64, Router<String>>,
+    routers: HashMap<(u64, i64), Router<String>>,
     next_id: i64,
 }
 
@@ -43,17 +43,19 @@ fn registry() -> &'static Mutex<Registry> {
     REG.get_or_init(|| Mutex::new(Registry { routers: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 /// Create a fresh empty router. Returns an opaque handle.
 pub fn new() -> i64 {
     let mut r = registry().lock().expect("router registry poisoned");
     let id = r.next_id; r.next_id += 1;
-    r.routers.insert(id, Router::new());
+    r.routers.insert(handle_key(id), Router::new());
     id
 }
 
 /// Drop a router. Idempotent.
 pub fn drop_router(handle: i64) {
-    if let Ok(mut r) = registry().lock() { r.routers.remove(&handle); }
+    if let Ok(mut r) = registry().lock() { r.routers.remove(&handle_key(handle)); }
 }
 
 /// Register a route. `pattern` follows matchit syntax:
@@ -66,7 +68,7 @@ pub fn drop_router(handle: i64) {
 /// pattern matches — typically a handler name.
 pub fn insert(handle: i64, pattern: &str, value: &str) -> Result<(), RouterError> {
     let mut r = registry().lock().expect("router registry poisoned");
-    let router = r.routers.get_mut(&handle).ok_or(RouterError::UnknownHandle(handle))?;
+    let router = r.routers.get_mut(&handle_key(handle)).ok_or(RouterError::UnknownHandle(handle))?;
     router.insert(pattern.to_string(), value.to_string())
         .map_err(|e| RouterError::Insert(e.to_string()))?;
     Ok(())
@@ -77,7 +79,7 @@ pub fn insert(handle: i64, pattern: &str, value: &str) -> Result<(), RouterError
 /// extracted names to values (percent-decoded by matchit).
 pub fn at(handle: i64, path: &str) -> Result<Option<(String, BTreeMap<String, String>)>, RouterError> {
     let r = registry().lock().expect("router registry poisoned");
-    let router = r.routers.get(&handle).ok_or(RouterError::UnknownHandle(handle))?;
+    let router = r.routers.get(&handle_key(handle)).ok_or(RouterError::UnknownHandle(handle))?;
     match router.at(path) {
         Ok(m) => {
             let mut params = BTreeMap::new();
@@ -94,7 +96,7 @@ pub fn at(handle: i64, path: &str) -> Result<Option<(String, BTreeMap<String, St
 /// (no parameters returned). Handy for feature flags.
 pub fn matches(handle: i64, path: &str) -> Result<bool, RouterError> {
     let r = registry().lock().expect("router registry poisoned");
-    let router = r.routers.get(&handle).ok_or(RouterError::UnknownHandle(handle))?;
+    let router = r.routers.get(&handle_key(handle)).ok_or(RouterError::UnknownHandle(handle))?;
     Ok(router.at(path).is_ok())
 }
 

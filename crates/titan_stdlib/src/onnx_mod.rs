@@ -59,7 +59,7 @@ fn map_err<E: std::fmt::Display>(e: E) -> OnnxError { OnnxError::Tract(e.to_stri
 // ---- Registry --------------------------------------------------------
 
 struct Registry {
-    models:  HashMap<i64, RunnableModel>,
+    models:  HashMap<(u64, i64), RunnableModel>,
     next_id: i64,
 }
 
@@ -68,18 +68,20 @@ fn registry() -> &'static Mutex<Registry> {
     REG.get_or_init(|| Mutex::new(Registry { models: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn insert(m: RunnableModel) -> i64 {
     let mut reg = registry().lock().expect("onnx registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.models.insert(id, m);
+    reg.models.insert(handle_key(id), m);
     id
 }
 
 fn with<F, R>(handle: i64, action: F) -> Result<R, OnnxError>
 where F: FnOnce(&RunnableModel) -> Result<R, OnnxError> {
     let reg = registry().lock().expect("onnx registry poisoned");
-    let m = reg.models.get(&handle).ok_or(OnnxError::UnknownHandle(handle))?;
+    let m = reg.models.get(&handle_key(handle)).ok_or(OnnxError::UnknownHandle(handle))?;
     action(m)
 }
 
@@ -146,7 +148,7 @@ pub fn load_bert3_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, Onn
 
 /// Drop a model. Idempotent.
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.models.remove(&handle); }
+    if let Ok(mut reg) = registry().lock() { reg.models.remove(&handle_key(handle)); }
 }
 
 /// How many inputs does the model take?

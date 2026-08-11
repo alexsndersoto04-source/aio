@@ -6,10 +6,12 @@ use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}};
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
-fn registry() -> &'static Arc<Mutex<HashMap<u64, WindowHandle>>> {
-    static REGISTRY: OnceLock<Arc<Mutex<HashMap<u64, WindowHandle>>>> = OnceLock::new();
+fn registry() -> &'static Arc<Mutex<HashMap<(u64, u64), WindowHandle>>> {
+    static REGISTRY: OnceLock<Arc<Mutex<HashMap<(u64, u64), WindowHandle>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
+
+fn handle_key(handle: u64) -> (u64, u64) { crate::native::runtime_handle_key(handle) }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowConfig {
@@ -68,14 +70,14 @@ pub fn create(title: &str, width: u32, height: u32) -> u64 {
         events: Vec::new(),
     };
     if let Ok(mut reg) = registry().lock() {
-        reg.insert(id, handle);
+        reg.insert(handle_key(id), handle);
     }
     id
 }
 
 pub fn is_open(id: u64) -> bool {
     if let Ok(reg) = registry().lock() {
-        if let Some(win) = reg.get(&id) {
+        if let Some(win) = reg.get(&handle_key(id)) {
             return win.is_open;
         }
     }
@@ -84,7 +86,7 @@ pub fn is_open(id: u64) -> bool {
 
 pub fn close(id: u64) -> bool {
     if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&id) {
+        if let Some(win) = reg.get_mut(&handle_key(id)) {
             if win.is_open {
                 win.is_open = false;
                 win.events.push(WindowEvent::CloseRequested);
@@ -97,7 +99,7 @@ pub fn close(id: u64) -> bool {
 
 pub fn set_title(id: u64, title: &str) -> bool {
     if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&id) {
+        if let Some(win) = reg.get_mut(&handle_key(id)) {
             win.config.title = title.to_string();
             return true;
         }
@@ -107,7 +109,7 @@ pub fn set_title(id: u64, title: &str) -> bool {
 
 pub fn resize(id: u64, width: u32, height: u32) -> bool {
     if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&id) {
+        if let Some(win) = reg.get_mut(&handle_key(id)) {
             win.config.width = width;
             win.config.height = height;
             win.events.push(WindowEvent::Resized { width, height });
@@ -119,7 +121,7 @@ pub fn resize(id: u64, width: u32, height: u32) -> bool {
 
 pub fn push_event(id: u64, event: WindowEvent) -> bool {
     if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&id) {
+        if let Some(win) = reg.get_mut(&handle_key(id)) {
             if win.is_open {
                 win.events.push(event);
                 return true;
@@ -132,7 +134,7 @@ pub fn push_event(id: u64, event: WindowEvent) -> bool {
 pub fn poll_events(id: u64) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&id) {
+        if let Some(win) = reg.get_mut(&handle_key(id)) {
             for ev in win.events.drain(..) {
                 out.push(format_event(&ev));
             }

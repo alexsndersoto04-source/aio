@@ -69,22 +69,24 @@ struct LiveWindow {
 // ownership instead of overriding the library's safety contract. Handles used
 // from another TITAN task are therefore unknown on that task's thread.
 thread_local! {
-    static REGISTRY: RefCell<HashMap<u64, LiveWindow>> = RefCell::new(HashMap::new());
+    static REGISTRY: RefCell<HashMap<(u64, u64), LiveWindow>> = RefCell::new(HashMap::new());
 }
 
-fn with_registry<R>(operation: impl FnOnce(&HashMap<u64, LiveWindow>) -> R) -> Option<R> {
+fn with_registry<R>(operation: impl FnOnce(&HashMap<(u64, u64), LiveWindow>) -> R) -> Option<R> {
     REGISTRY
         .try_with(|registry| registry.try_borrow().ok().map(|registry| operation(&registry)))
         .ok()
         .flatten()
 }
 
-fn with_registry_mut<R>(operation: impl FnOnce(&mut HashMap<u64, LiveWindow>) -> R) -> Option<R> {
+fn with_registry_mut<R>(operation: impl FnOnce(&mut HashMap<(u64, u64), LiveWindow>) -> R) -> Option<R> {
     REGISTRY
         .try_with(|registry| registry.try_borrow_mut().ok().map(|mut registry| operation(&mut registry)))
         .ok()
         .flatten()
 }
+
+fn handle_key(handle: u64) -> (u64, u64) { crate::native::runtime_handle_key(handle) }
 
 static NEXT_LIVE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -106,7 +108,7 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
     window.set_target_fps(60);
     let id = NEXT_LIVE_ID.fetch_add(1, Ordering::SeqCst);
     with_registry_mut(|registry| {
-        registry.insert(id, LiveWindow {
+        registry.insert(handle_key(id), LiveWindow {
             window,
             width,
             height,
@@ -124,19 +126,19 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
 /// Whether the live window is still open (false for unknown handles).
 pub fn live_is_open(handle: i64) -> bool {
     with_registry(|registry| {
-        registry.get(&(handle as u64)).is_some_and(|entry| entry.window.is_open())
+        registry.get(&handle_key(handle as u64)).is_some_and(|entry| entry.window.is_open())
     }).unwrap_or(false)
 }
 
 /// Close and drop the live window. False for unknown handles.
 pub fn live_close(handle: i64) -> bool {
-    with_registry_mut(|registry| registry.remove(&(handle as u64)).is_some()).unwrap_or(false)
+    with_registry_mut(|registry| registry.remove(&handle_key(handle as u64)).is_some()).unwrap_or(false)
 }
 
 /// Rename the visible OS window title. False for unknown handles.
 pub fn live_set_title(handle: i64, title: &str) -> bool {
     with_registry_mut(|registry| {
-        registry.get_mut(&(handle as u64)).is_some_and(|entry| {
+        registry.get_mut(&handle_key(handle as u64)).is_some_and(|entry| {
             entry.window.set_title(title);
             true
         })
@@ -149,7 +151,7 @@ pub fn live_set_title(handle: i64, title: &str) -> bool {
 /// status codes (-2..-6, 0 closed, 1 alive).
 pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
     with_registry_mut(|registry| {
-    let Some(entry) = registry.get_mut(&(handle as u64)) else { return -2 };
+    let Some(entry) = registry.get_mut(&handle_key(handle as u64)) else { return -2 };
     let Some((width, height, rgba)) = render_rgba(gui_root) else { return -3 };
     if width != entry.width || height != entry.height {
         return -4;
@@ -220,7 +222,7 @@ pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
 /// `std::window::poll_events` (empty for unknown handles).
 pub fn live_poll_events(handle: i64) -> Vec<String> {
     with_registry_mut(|registry| {
-        registry.get_mut(&(handle as u64))
+        registry.get_mut(&handle_key(handle as u64))
             .map(|entry| entry.events.drain(..).map(|event| format_event(&event)).collect::<Vec<_>>())
             .unwrap_or_default()
     }).unwrap_or_default()
