@@ -88,7 +88,8 @@ fi
 
 run_number="${GITHUB_RUN_NUMBER:-0}"
 run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
-package_version="${workspace_version}~ci${run_number}.${run_attempt}"
+package_revision="${TERMUX_PACKAGE_REVISION:-2}"
+package_version="${workspace_version}-${package_revision}~ci${run_number}.${run_attempt}"
 
 cp "$binary" "$DIST_DIR/zett"
 chmod 0755 "$DIST_DIR/zett"
@@ -116,8 +117,12 @@ packaged_binary="$extracted/data/data/com.termux/files/usr/bin/zett"
 test -x "$packaged_binary"
 cmp "$binary" "$packaged_binary"
 
-sha256sum "$package" "$DIST_DIR/zett" > "$DIST_DIR/SHA256SUMS"
+(
+    cd "$DIST_DIR"
+    sha256sum "$(basename -- "$package")" zett > SHA256SUMS
+)
 printf '%s\n' "$package_version" > "$DIST_DIR/VERSION"
+git rev-parse HEAD > "$DIST_DIR/COMMIT"
 
 echo "Termux ARM release candidate created and structurally verified:"
 echo "  package: $package"
