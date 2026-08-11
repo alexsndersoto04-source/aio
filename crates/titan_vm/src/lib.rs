@@ -485,6 +485,12 @@ impl Vm {
                     stack.push(Value::Int(count as i64));
                 }
                 Op::RuntimeHeapDump => {
+                    if !self.capabilities.filesystem {
+                        return Err(VmError::PermissionDenied {
+                            function: "std::runtime::heap_dump".into(),
+                            capability: "Filesystem".into(),
+                        });
+                    }
                     let Value::Str(path) = pop(&mut stack, &function.name)? else { return Err(VmError::Type("heap_dump path must be string".into())); };
                     let active_tasks = self.runtime.tasks.lock().map(|m| m.len()).unwrap_or(0);
                     let dump = serde_json::json!({
@@ -693,7 +699,7 @@ impl Vm {
                 Op::ServerStats => { let control=server_control(&self.runtime,pop(&mut stack,&function.name)?)?;stack.push(server_stats(&control)); }
                 Op::ServerHealthResponse => { let control=server_control(&self.runtime,pop(&mut stack,&function.name)?)?;stack.push(server_health_response(&control)); }
                 Op::SqliteOpen => { if !self.capabilities.filesystem{return Err(VmError::PermissionDenied{function:"std::sqlite::open".into(),capability:"Filesystem".into()})}let Value::Str(path)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("SQLite path must be string".into()))};let database=titan_sqlite::Database::open(path).map_err(sqlite_error)?;let id=self.runtime.next_socket.fetch_add(1,Ordering::Relaxed);self.runtime.sqlite.lock().map_err(|_|VmError::Type("SQLite registry poisoned".into()))?.insert(id,Arc::new(Mutex::new(DatabaseHandle::Direct(database))));stack.push(Value::Sqlite(id)); }
-                Op::SqliteMemory => { let database=titan_sqlite::Database::memory().map_err(sqlite_error)?;let id=self.runtime.next_socket.fetch_add(1,Ordering::Relaxed);self.runtime.sqlite.lock().map_err(|_|VmError::Type("SQLite registry poisoned".into()))?.insert(id,Arc::new(Mutex::new(DatabaseHandle::Direct(database))));stack.push(Value::Sqlite(id)); }
+                Op::SqliteMemory => { let database=if self.capabilities.filesystem{titan_sqlite::Database::memory()}else{titan_sqlite::Database::memory_restricted()}.map_err(sqlite_error)?;let id=self.runtime.next_socket.fetch_add(1,Ordering::Relaxed);self.runtime.sqlite.lock().map_err(|_|VmError::Type("SQLite registry poisoned".into()))?.insert(id,Arc::new(Mutex::new(DatabaseHandle::Direct(database))));stack.push(Value::Sqlite(id)); }
                 operation @ (Op::SqliteExecute|Op::SqliteQuery) => { let params=sqlite_params(pop(&mut stack,&function.name)?)?;let Value::Str(sql)=pop(&mut stack,&function.name)? else{return Err(VmError::Type("SQL must be string".into()))};let database=sqlite_database(&self.runtime,pop(&mut stack,&function.name)?)?;let mut database=database.lock().map_err(|_|VmError::Type("SQLite connection poisoned".into()))?;if matches!(operation,Op::SqliteExecute){stack.push(Value::Int(database.execute(&sql,&params).map_err(sqlite_error)? as i64));}else{let rows=database.query(&sql,&params).map_err(sqlite_error)?;stack.push(Value::Array(rows.into_iter().map(sqlite_row).collect()));} }
                 operation @ (Op::SqliteBegin|Op::SqliteCommit|Op::SqliteRollback) => { let database=sqlite_database(&self.runtime,pop(&mut stack,&function.name)?)?;let mut database=database.lock().map_err(|_|VmError::Type("SQLite connection poisoned".into()))?;match operation{Op::SqliteBegin=>database.begin(),Op::SqliteCommit=>database.commit(),_=>database.rollback()}.map_err(sqlite_error)?;stack.push(Value::Nil); }
                 Op::SqliteMigrate => { let migrations=sqlite_migrations(pop(&mut stack,&function.name)?)?;let database=sqlite_database(&self.runtime,pop(&mut stack,&function.name)?)?;let count=database.lock().map_err(|_|VmError::Type("SQLite connection poisoned".into()))?.migrate(&migrations).map_err(sqlite_error)?;stack.push(Value::Int(count as i64)); }
@@ -1045,6 +1051,31 @@ mod tests {
         let source = "fn main() { std::fs::read_text(\"secret\") }"; let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec();
         let program = Parser::new(tokens).parse_program().unwrap(); let module = AstCompiler::new().compile_program(&program).unwrap();
         assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { .. })));
+    }
+    #[test] fn sandbox_denies_http_client_before_network_access() {
+        let module = compile("fn main() { std::http::request(\"GET\", \"http://127.0.0.1:1/\", std::map::new(), std::encoding::utf8_encode(\"\"), 1, 0, 1) }").unwrap();
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::http::request" && capability == "Network"));
+    }
+    #[test] fn sandbox_denies_persistent_readline_history_before_prompting() {
+        let module = compile("fn main() { std::readline::prompt_persistent(\"prompt\", \"history.txt\") }").unwrap();
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::readline::prompt_persistent" && capability == "Filesystem"));
+    }
+    #[test] fn sandbox_denies_heap_dump_without_creating_a_file() {
+        let path = std::env::temp_dir().join(format!("titan-sandbox-dump-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let escaped_path = path.display().to_string().replace('\\', "\\\\");
+        let module = compile(&format!("fn main() {{ std::runtime::heap_dump(\"{}\") }}", escaped_path)).unwrap();
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::runtime::heap_dump" && capability == "Filesystem"));
+        assert!(!path.exists());
+    }
+    #[test] fn sandboxed_sqlite_memory_cannot_attach_a_file() {
+        let path = std::env::temp_dir().join(format!("titan-sandbox-attach-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let escaped_path = path.display().to_string().replace('\'', "''").replace('\\', "\\\\");
+        let source = format!("fn main() {{ let db = std::sqlite::memory() std::sqlite::execute(db, \"ATTACH DATABASE '{}' AS escaped\", []) }}", escaped_path);
+        let module = compile(&source).unwrap();
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::Native { function, .. }) if function == "std::sqlite"));
+        assert!(!path.exists());
     }
     #[test] fn debugger_breaks_steps_and_reports_state() {
         let mut lexer = Lexer::new("fn main() { let value = 40 value + 2 }"); let tokens = lexer.tokenize().0.to_vec();

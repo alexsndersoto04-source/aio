@@ -59,7 +59,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::http::security_headers", [Map], Map), native!("std::http::cors", [Map, String, String], Map),
     native!("std::http::request_id", [Map], Map), native!("std::http::rate_limit", [String, Int, Int], Bool),
     native!("std::http::json_response", [Int, Any], Map), native!("std::http::error_response", [Int, String], Map),
-    native!("std::http::request", [String, String, Map, Bytes, Int, Int, Int], Map),
+    native!("std::http::request", [String, String, Map, Bytes, Int, Int, Int], Map, Network),
     native!("std::http::parse_multipart", [String, Bytes, Int, Int], Array),
     native!("std::metrics::counter_add", [String, Int], Int), native!("std::metrics::counter_get", [String], Int),
     native!("std::metrics::gauge_set", [String, Float], Nil), native!("std::metrics::gauge_get", [String], Float),
@@ -493,7 +493,7 @@ pub static NATIVES: &[NativeSignature] = &[
     // --- Phase 6: Readline (rustyline) ---
     native!("std::readline::prompt",              [String], String),
     native!("std::readline::prompt_with_history", [String], String),
-    native!("std::readline::prompt_persistent",   [String, String], String),
+    native!("std::readline::prompt_persistent",   [String, String], String, Filesystem),
     native!("std::readline::prompt_secret",       [String], String),
 
     // --- Phase 6: Progress (indicatif) ---
@@ -925,5 +925,14 @@ mod tests {
             assert!(names.insert(signature.name), "duplicate native {}", signature.name);
         }
         assert!(NATIVES.len() >= 80);
+    }
+
+    #[test]
+    fn effectful_native_capabilities_are_declared() {
+        assert_eq!(lookup("std::http::request").unwrap().capability, Capability::Network);
+        assert_eq!(
+            lookup("std::readline::prompt_persistent").unwrap().capability,
+            Capability::Filesystem,
+        );
     }
 }
