@@ -1077,6 +1077,22 @@ mod tests {
         assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::Native { function, .. }) if function == "std::sqlite"));
         assert!(!path.exists());
     }
+    #[test] fn opaque_runtime_handles_are_owned_by_their_vm() {
+        let module = compile("fn use_database(db: Sqlite) { std::sqlite::ping(db) } fn main() { std::sqlite::memory() }").unwrap();
+        let function_id = module.functions.iter().position(|function| function.name == "use_database").unwrap();
+        let mut owner = Vm::new(module.clone());
+        let handle = owner.run().unwrap().unwrap();
+        assert!(matches!(handle, Value::Sqlite(_)));
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        assert_eq!(owner.execute(function_id, vec![handle.clone()], Vec::new(), 0, &mut debugger).unwrap(), Value::Bool(true));
+
+        let mut foreign = Vm::new(module);
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        assert!(matches!(foreign.execute(function_id, vec![handle], Vec::new(), 0, &mut debugger), Err(VmError::Type(message)) if message.contains("unknown SQLite connection")));
+    }
+    #[test] fn owned_tasks_share_their_parent_runtime_handles() {
+        assert_eq!(run("fn main() { let db = std::sqlite::memory() let task = spawn || std::sqlite::ping(db) join(task) }").unwrap(), Value::Bool(true));
+    }
     #[test] fn debugger_breaks_steps_and_reports_state() {
         let mut lexer = Lexer::new("fn main() { let value = 40 value + 2 }"); let tokens = lexer.tokenize().0.to_vec();
         let program = Parser::new(tokens).parse_program().unwrap(); let module = AstCompiler::new().compile_program(&program).unwrap();
