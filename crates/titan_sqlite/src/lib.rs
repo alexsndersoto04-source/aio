@@ -1,5 +1,5 @@
 //! SQLite adapter with prepared parameters and typed rows.
-use rusqlite::{hooks::{AuthAction,Authorization},Connection,params_from_iter,types::{Value as SqlValue,ValueRef}};
+use rusqlite::{hooks::{AuthAction,AuthContext,Authorization},Connection,params_from_iter,types::{Value as SqlValue,ValueRef}};
 use std::collections::BTreeMap;
 use std::path::{Path,PathBuf};
 use std::sync::{Arc,Condvar,Mutex};
@@ -16,7 +16,7 @@ pub fn memory()->Result<Self,DbError>{let connection=Connection::open_in_memory(
 /// Opens an in-memory database that cannot attach or create filesystem databases.
 /// Temporary SQLite storage is also forced into memory so sandboxed callers cannot
 /// cause implicit spill files without the Filesystem capability.
-pub fn memory_restricted()->Result<Self,DbError>{let database=Self::memory()?;database.connection.execute_batch("PRAGMA temp_store = MEMORY;")?;database.connection.authorizer(Some(|context|match context.action{AuthAction::Attach{..}|AuthAction::Detach{..}|AuthAction::Unknown{..}=>Authorization::Deny,AuthAction::Pragma{pragma_name,..}if pragma_name.eq_ignore_ascii_case("temp_store")||pragma_name.eq_ignore_ascii_case("temp_store_directory")||pragma_name.eq_ignore_ascii_case("data_store_directory")=>Authorization::Deny,_=>Authorization::Allow}));Ok(database)}
+pub fn memory_restricted()->Result<Self,DbError>{let database=Self::memory()?;database.connection.execute_batch("PRAGMA temp_store = MEMORY;")?;database.connection.authorizer(Some(|context:AuthContext<'_>|match context.action{AuthAction::Attach{..}|AuthAction::Detach{..}|AuthAction::Unknown{..}=>Authorization::Deny,AuthAction::Pragma{pragma_name,..}if pragma_name.eq_ignore_ascii_case("temp_store")||pragma_name.eq_ignore_ascii_case("temp_store_directory")||pragma_name.eq_ignore_ascii_case("data_store_directory")=>Authorization::Deny,_=>Authorization::Allow}));Ok(database)}
 pub fn execute(&mut self,sql:&str,params:&[DbValue])->Result<usize,DbError>{Ok(self.connection.execute(sql,params_from_iter(params.iter().map(to_sql)))?)}
 pub fn query(&mut self,sql:&str,params:&[DbValue])->Result<Vec<BTreeMap<String,DbValue>>,DbError>{let mut statement=self.connection.prepare(sql)?;let names:Vec<String>=statement.column_names().iter().map(|name|(*name).into()).collect();let rows=statement.query_map(params_from_iter(params.iter().map(to_sql)),|row|{let mut output=BTreeMap::new();for(index,name)in names.iter().enumerate(){output.insert(name.clone(),from_sql(row.get_ref(index)?));}Ok(output)})?;Ok(rows.collect::<Result<Vec<_>,_>>()?)}
 pub fn begin(&mut self)->Result<(),DbError>{if self.in_transaction{return Err(DbError::TransactionActive)}self.connection.execute_batch("BEGIN IMMEDIATE")?;self.in_transaction=true;Ok(())}
