@@ -36,9 +36,9 @@
 //! Return `1` while the window lives, `0` once the user closed it
 //! (exactly one `CloseRequested` event is queued on that final pump).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 
@@ -64,15 +64,26 @@ struct LiveWindow {
     close_reported: bool,
 }
 
-// SAFETY: every access is serialized through the registry `Mutex`; only
-// one thread ever touches a window at a time, and the TITAN VM runs user
-// code on a single thread. The macOS main-run-loop caveat stays
-// documented in the module header.
-unsafe impl Send for LiveWindow {}
+// `minifb::Window` is deliberately not `Send`: native window APIs must remain
+// on the OS thread that created them. A thread-local registry enforces that
+// ownership instead of overriding the library's safety contract. Handles used
+// from another TITAN task are therefore unknown on that task's thread.
+thread_local! {
+    static REGISTRY: RefCell<HashMap<u64, LiveWindow>> = RefCell::new(HashMap::new());
+}
 
-fn registry() -> &'static Mutex<HashMap<u64, LiveWindow>> {
-    static REG: OnceLock<Mutex<HashMap<u64, LiveWindow>>> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(HashMap::new()))
+fn with_registry<R>(operation: impl FnOnce(&HashMap<u64, LiveWindow>) -> R) -> Option<R> {
+    REGISTRY
+        .try_with(|registry| registry.try_borrow().ok().map(|registry| operation(&registry)))
+        .ok()
+        .flatten()
+}
+
+fn with_registry_mut<R>(operation: impl FnOnce(&mut HashMap<u64, LiveWindow>) -> R) -> Option<R> {
+    REGISTRY
+        .try_with(|registry| registry.try_borrow_mut().ok().map(|mut registry| operation(&mut registry)))
+        .ok()
+        .flatten()
 }
 
 static NEXT_LIVE_ID: AtomicU64 = AtomicU64::new(1);
@@ -94,8 +105,8 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
     };
     window.set_target_fps(60);
     let id = NEXT_LIVE_ID.fetch_add(1, Ordering::SeqCst);
-    if let Ok(mut reg) = registry().lock() {
-        reg.insert(id, LiveWindow {
+    with_registry_mut(|registry| {
+        registry.insert(id, LiveWindow {
             window,
             width,
             height,
@@ -107,30 +118,29 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
             close_reported: false,
         });
         id as i64
-    } else {
-        -1
-    }
+    }).unwrap_or(-1)
 }
 
 /// Whether the live window is still open (false for unknown handles).
 pub fn live_is_open(handle: i64) -> bool {
-    registry().lock().ok()
-        .and_then(|reg| reg.get(&(handle as u64)).map(|entry| entry.window.is_open()))
-        .unwrap_or(false)
+    with_registry(|registry| {
+        registry.get(&(handle as u64)).is_some_and(|entry| entry.window.is_open())
+    }).unwrap_or(false)
 }
 
 /// Close and drop the live window. False for unknown handles.
 pub fn live_close(handle: i64) -> bool {
-    registry().lock()
-        .map(|mut reg| reg.remove(&(handle as u64)).is_some())
-        .unwrap_or(false)
+    with_registry_mut(|registry| registry.remove(&(handle as u64)).is_some()).unwrap_or(false)
 }
 
 /// Rename the visible OS window title. False for unknown handles.
 pub fn live_set_title(handle: i64, title: &str) -> bool {
-    registry().lock().ok()
-        .and_then(|mut reg| reg.get_mut(&(handle as u64)).map(|entry| entry.window.set_title(title)))
-        .is_some()
+    with_registry_mut(|registry| {
+        registry.get_mut(&(handle as u64)).is_some_and(|entry| {
+            entry.window.set_title(title);
+            true
+        })
+    }).unwrap_or(false)
 }
 
 /// One frame of a live window: render the gui tree, present it to the
@@ -138,11 +148,8 @@ pub fn live_set_title(handle: i64, title: &str) -> bool {
 /// and queue the new events. See the module header for the honest
 /// status codes (-2..-6, 0 closed, 1 alive).
 pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
-    let mut reg = match registry().lock() {
-        Ok(guard) => guard,
-        Err(_) => return -6,
-    };
-    let Some(entry) = reg.get_mut(&(handle as u64)) else { return -2 };
+    with_registry_mut(|registry| {
+    let Some(entry) = registry.get_mut(&(handle as u64)) else { return -2 };
     let Some((width, height, rgba)) = render_rgba(gui_root) else { return -3 };
     if width != entry.width || height != entry.height {
         return -4;
@@ -206,18 +213,17 @@ pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
         }
         0
     }
+    }).unwrap_or(-6)
 }
 
 /// Drain this window's queued events, formatted exactly like
 /// `std::window::poll_events` (empty for unknown handles).
 pub fn live_poll_events(handle: i64) -> Vec<String> {
-    registry().lock().ok()
-        .map(|mut reg| {
-            reg.get_mut(&(handle as u64))
-                .map(|entry| entry.events.drain(..).map(|event| format_event(&event)).collect::<Vec<_>>())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+    with_registry_mut(|registry| {
+        registry.get_mut(&(handle as u64))
+            .map(|entry| entry.events.drain(..).map(|event| format_event(&event)).collect::<Vec<_>>())
+            .unwrap_or_default()
+    }).unwrap_or_default()
 }
 
 /// Translate a physical minifb key into the lowercase TITAN key name
