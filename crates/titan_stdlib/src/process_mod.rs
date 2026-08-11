@@ -45,11 +45,11 @@ pub struct ProcessOutput {
     pub duration_ms: u64,
 }
 
-// Registro global de procesos spawnados en background.
-static REGISTRY: OnceLock<Mutex<HashMap<u64, Child>>> = OnceLock::new();
+// Background-process registry partitioned by VM runtime ownership.
+static REGISTRY: OnceLock<Mutex<HashMap<(u64, u64), Child>>> = OnceLock::new();
 static NEXT_HANDLE: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
 
-fn registry() -> &'static Mutex<HashMap<u64, Child>> {
+fn registry() -> &'static Mutex<HashMap<(u64, u64), Child>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -58,6 +58,8 @@ fn next_handle() -> u64 {
         .get_or_init(|| std::sync::atomic::AtomicU64::new(1))
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
+
+fn handle_key(handle: u64) -> (u64, u64) { crate::native::runtime_handle_key(handle) }
 
 /// Parsea "cmd arg1 arg2" respetando comillas simples/dobles.
 /// Sin soporte de escapes complejos (para eso, usar `shell()`).
@@ -190,13 +192,13 @@ pub fn spawn_bg(cmd: &str) -> Result<u64, ProcessError> {
         .spawn()
         .map_err(|e| ProcessError::Spawn(e.to_string()))?;
     let handle = next_handle();
-    registry().lock().unwrap().insert(handle, child);
+    registry().lock().unwrap().insert(handle_key(handle), child);
     Ok(handle)
 }
 
 /// Espera a que un proceso spawned termine.
 pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
-    let child = registry().lock().unwrap().remove(&handle)
+    let child = registry().lock().unwrap().remove(&handle_key(handle))
         .ok_or(ProcessError::UnknownHandle(handle))?;
     let start = Instant::now();
     let output = child.wait_with_output().map_err(|e| ProcessError::Io(e.to_string()))?;
@@ -211,7 +213,7 @@ pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
 /// Chequea si un proceso spawned ya terminó (sin bloquear).
 pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
     let mut reg = registry().lock().unwrap();
-    let child = reg.get_mut(&handle).ok_or(ProcessError::UnknownHandle(handle))?;
+    let child = reg.get_mut(&handle_key(handle)).ok_or(ProcessError::UnknownHandle(handle))?;
     match child.try_wait().map_err(|e| ProcessError::Io(e.to_string()))? {
         Some(status) => Ok(Some(status.code().unwrap_or(-1))),
         None => Ok(None),
@@ -221,7 +223,7 @@ pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
 /// Mata un proceso spawned (SIGKILL). En Termux/Linux funciona idéntico.
 pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
     let mut reg = registry().lock().unwrap();
-    let child = reg.get_mut(&handle).ok_or(ProcessError::UnknownHandle(handle))?;
+    let child = reg.get_mut(&handle_key(handle)).ok_or(ProcessError::UnknownHandle(handle))?;
     child.kill().map_err(|e| ProcessError::Io(e.to_string()))?;
     Ok(())
 }
@@ -229,7 +231,7 @@ pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
 /// PID de un handle spawned.
 pub fn spawn_pid(handle: u64) -> Result<u32, ProcessError> {
     let reg = registry().lock().unwrap();
-    let child = reg.get(&handle).ok_or(ProcessError::UnknownHandle(handle))?;
+    let child = reg.get(&handle_key(handle)).ok_or(ProcessError::UnknownHandle(handle))?;
     Ok(child.id())
 }
 

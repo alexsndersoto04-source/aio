@@ -7,7 +7,8 @@
 //! native deps.
 //!
 //! `.titan` uses this module through opaque `i64` handles kept in a
-//! process-wide registry so several databases and trees can coexist.
+//! process-wide registry partitioned by VM runtime, so one VM cannot use
+//! another VM's databases or trees.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -28,8 +29,8 @@ pub enum KvError {
 }
 
 struct Registry {
-    dbs:    HashMap<i64, Db>,
-    trees:  HashMap<i64, Tree>,
+    dbs:    HashMap<(u64, i64), Db>,
+    trees:  HashMap<(u64, i64), Tree>,
     next_id: i64,
 }
 
@@ -38,11 +39,13 @@ fn registry() -> &'static Mutex<Registry> {
     REG.get_or_init(|| Mutex::new(Registry { dbs: HashMap::new(), trees: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn insert_db(db: Db) -> i64 {
     let mut reg = registry().lock().expect("kv registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.dbs.insert(id, db);
+    reg.dbs.insert(handle_key(id), db);
     id
 }
 
@@ -50,21 +53,21 @@ fn insert_tree(tree: Tree) -> i64 {
     let mut reg = registry().lock().expect("kv registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.trees.insert(id, tree);
+    reg.trees.insert(handle_key(id), tree);
     id
 }
 
 fn with_db<F, R>(handle: i64, action: F) -> Result<R, KvError>
 where F: FnOnce(&Db) -> Result<R, KvError> {
     let reg = registry().lock().expect("kv registry poisoned");
-    let db = reg.dbs.get(&handle).ok_or(KvError::UnknownDb(handle))?;
+    let db = reg.dbs.get(&handle_key(handle)).ok_or(KvError::UnknownDb(handle))?;
     action(db)
 }
 
 fn with_tree<F, R>(handle: i64, action: F) -> Result<R, KvError>
 where F: FnOnce(&Tree) -> Result<R, KvError> {
     let reg = registry().lock().expect("kv registry poisoned");
-    let tree = reg.trees.get(&handle).ok_or(KvError::UnknownTree(handle))?;
+    let tree = reg.trees.get(&handle_key(handle)).ok_or(KvError::UnknownTree(handle))?;
     action(tree)
 }
 
@@ -81,7 +84,7 @@ pub fn open(path: &str) -> Result<i64, KvError> {
 /// Close a database. Flushes to disk. Idempotent.
 pub fn close(handle: i64) -> Result<(), KvError> {
     let mut reg = registry().lock().expect("kv registry poisoned");
-    if let Some(db) = reg.dbs.remove(&handle) {
+    if let Some(db) = reg.dbs.remove(&handle_key(handle)) {
         // Best-effort flush before drop.
         let _ = db.flush();
     }

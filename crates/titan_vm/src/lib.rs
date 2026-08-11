@@ -118,6 +118,7 @@ impl std::ops::DerefMut for PostgresHandle { fn deref_mut(&mut self)->&mut Self:
 impl std::ops::Deref for DatabaseHandle { type Target=titan_sqlite::Database; fn deref(&self)->&Self::Target { match self { Self::Direct(database)=>database, Self::Pooled(database)=>database } } }
 impl std::ops::DerefMut for DatabaseHandle { fn deref_mut(&mut self)->&mut Self::Target { match self { Self::Direct(database)=>database, Self::Pooled(database)=>database } } }
 struct RuntimeState {
+    id: u64,
     next_task: AtomicU64,
     next_channel: AtomicU64,
     next_socket: AtomicU64,
@@ -139,7 +140,8 @@ struct RuntimeState {
     mysql: Mutex<HashMap<u64, Arc<Mutex<MysqlHandle>>>>,
     mysql_pools: Mutex<HashMap<u64, titan_mysql::Pool>>,
 }
-impl RuntimeState { fn new() -> Self { Self { next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()), server_controls: Mutex::new(HashMap::new()), sqlite: Mutex::new(HashMap::new()), sqlite_pools: Mutex::new(HashMap::new()), postgres: Mutex::new(HashMap::new()), postgres_pools: Mutex::new(HashMap::new()), mysql: Mutex::new(HashMap::new()), mysql_pools: Mutex::new(HashMap::new()) } } }
+static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
+impl RuntimeState { fn new() -> Self { Self { id: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed), next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()), server_controls: Mutex::new(HashMap::new()), sqlite: Mutex::new(HashMap::new()), sqlite_pools: Mutex::new(HashMap::new()), postgres: Mutex::new(HashMap::new()), postgres_pools: Mutex::new(HashMap::new()), mysql: Mutex::new(HashMap::new()), mysql_pools: Mutex::new(HashMap::new()) } } }
 
 pub struct Vm {
     module: CompiledModule,
@@ -750,7 +752,7 @@ impl Vm {
                 }
                 Op::CallNative { name, argc } => {
                     let args = take_args(&mut stack, argc, &function.name)?;
-                    stack.push(native::invoke(&name, args, self.capabilities)?);
+                    stack.push(native::invoke_for_runtime(&name, args, self.capabilities, self.runtime.id)?);
                 }
                 Op::Ret => return Ok(stack.pop().unwrap_or(Value::Nil)),
                 Op::Print(argc) => {
@@ -1092,6 +1094,37 @@ mod tests {
     }
     #[test] fn owned_tasks_share_their_parent_runtime_handles() {
         assert_eq!(run("fn main() { let db = std::sqlite::memory() let task = spawn || std::sqlite::ping(db) join(task) }").unwrap(), Value::Bool(true));
+    }
+    #[cfg(feature = "kv_mod")]
+    #[test] fn native_integer_handles_cannot_cross_vm_boundaries() {
+        let path = std::env::temp_dir().join(format!("titan-vm-owned-kv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let escaped_path = path.display().to_string().replace('\\', "\\\\");
+        let source = format!("fn read_database(db: int) {{ std::kv::get(db, std::encoding::utf8_encode(\"secret\")) }} fn close_database(db: int) {{ std::kv::close(db) }} fn main() {{ let db = std::kv::open(\"{}\") std::kv::insert(db, std::encoding::utf8_encode(\"secret\"), std::encoding::utf8_encode(\"owner-only\")); db }}", escaped_path);
+        let module = compile(&source).unwrap();
+        let read_id = module.functions.iter().position(|function| function.name == "read_database").unwrap();
+        let close_id = module.functions.iter().position(|function| function.name == "close_database").unwrap();
+        let mut owner = Vm::new(module.clone());
+        let handle = owner.run().unwrap().unwrap();
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        assert!(owner.execute(read_id, vec![handle.clone()], Vec::new(), 0, &mut debugger).is_ok());
+
+        let mut foreign = Vm::new(module);
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        assert!(matches!(foreign.execute(read_id, vec![handle.clone()], Vec::new(), 0, &mut debugger), Err(VmError::Native { function, message }) if function == "std::kv::get" && message.contains("unknown database handle")));
+
+        let mut debugger: Option<&mut dyn DebugHook> = None;
+        owner.execute(close_id, vec![handle], Vec::new(), 0, &mut debugger).unwrap();
+        let _ = std::fs::remove_dir_all(path);
+    }
+    #[cfg(feature = "kv_mod")]
+    #[test] fn owned_tasks_share_native_integer_handles() {
+        let path = std::env::temp_dir().join(format!("titan-vm-task-kv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let escaped_path = path.display().to_string().replace('\\', "\\\\");
+        let source = format!("fn main() {{ let key = std::encoding::utf8_encode(\"key\") let db = std::kv::open(\"{}\") std::kv::insert(db, key, std::encoding::utf8_encode(\"value\")); let task = spawn || std::kv::contains(db, key) let visible = join(task) std::kv::close(db); visible }}", escaped_path);
+        assert_eq!(run(&source).unwrap(), Value::Bool(true));
+        let _ = std::fs::remove_dir_all(path);
     }
     #[test] fn debugger_breaks_steps_and_reports_state() {
         let mut lexer = Lexer::new("fn main() { let value = 40 value + 2 }"); let tokens = lexer.tokenize().0.to_vec();

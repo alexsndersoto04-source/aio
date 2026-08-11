@@ -1,7 +1,8 @@
 //! Blocking Redis client (`std::redis::*`) via the `redis` crate.
 //!
 //! Real Redis wire protocol over plain TCP. Connections cross the .titan
-//! boundary as opaque `i64` handles kept in a process-wide registry.
+//! boundary as opaque `i64` handles kept in a process-wide registry that is
+//! partitioned by VM runtime ownership.
 //!
 //! We use the synchronous side of the `redis` crate to avoid pulling in
 //! Tokio for network-bound work (Phase 3's `std::http_full`/`std::dns`
@@ -21,17 +22,19 @@ pub enum RedisError {
     UnknownHandle(i64),
 }
 
-struct Registry { conns: HashMap<i64, Connection>, next_id: i64 }
+struct Registry { conns: HashMap<(u64, i64), Connection>, next_id: i64 }
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(Registry { conns: HashMap::new(), next_id: 1 }))
 }
 
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+
 fn with_conn<F, R>(handle: i64, action: F) -> Result<R, RedisError>
 where F: FnOnce(&mut Connection) -> Result<R, RedisError> {
     let mut reg = registry().lock().expect("redis registry poisoned");
-    let conn = reg.conns.get_mut(&handle).ok_or(RedisError::UnknownHandle(handle))?;
+    let conn = reg.conns.get_mut(&handle_key(handle)).ok_or(RedisError::UnknownHandle(handle))?;
     action(conn)
 }
 
@@ -43,13 +46,13 @@ pub fn connect(url: &str) -> Result<i64, RedisError> {
     let mut reg = registry().lock().expect("redis registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.conns.insert(id, conn);
+    reg.conns.insert(handle_key(id), conn);
     Ok(id)
 }
 
 /// Close a connection. Idempotent.
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.conns.remove(&handle); }
+    if let Ok(mut reg) = registry().lock() { reg.conns.remove(&handle_key(handle)); }
 }
 
 /// PING → OK ("PONG" or the string returned by the server).

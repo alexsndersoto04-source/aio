@@ -4,6 +4,40 @@
 //! VM values. Keeping names/signatures here gives type checking and codegen one
 //! authoritative registry without introducing a crate dependency cycle.
 
+use std::cell::Cell;
+
+thread_local! {
+    static CURRENT_RUNTIME_ID: Cell<u64> = const { Cell::new(0) };
+}
+
+struct RuntimeContextReset<'a> {
+    current: &'a Cell<u64>,
+    previous: u64,
+}
+
+impl Drop for RuntimeContextReset<'_> {
+    fn drop(&mut self) { self.current.set(self.previous); }
+}
+
+/// Runs one native invocation in the ownership domain of a VM runtime.
+///
+/// This is public only because `titan_vm` and `titan_stdlib` are separate
+/// crates in the same binary. Native resource registries use the current ID
+/// to prevent opaque integer handles from crossing between independent VMs.
+#[doc(hidden)]
+pub fn with_runtime_context<R>(runtime_id: u64, operation: impl FnOnce() -> R) -> R {
+    CURRENT_RUNTIME_ID.with(|current| {
+        let reset = RuntimeContextReset { current, previous: current.replace(runtime_id) };
+        let result = operation();
+        drop(reset);
+        result
+    })
+}
+
+pub(crate) fn runtime_handle_key<T>(handle: T) -> (u64, T) {
+    CURRENT_RUNTIME_ID.with(|current| (current.get(), handle))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeType { Any, Int, Float, Bool, String, Bytes, Array, Map, Nil }
 
@@ -934,5 +968,16 @@ mod tests {
             lookup("std::readline::prompt_persistent").unwrap().capability,
             Capability::Filesystem,
         );
+    }
+
+    #[test]
+    fn runtime_context_is_scoped_and_restored() {
+        assert_eq!(runtime_handle_key(9), (0, 9));
+        with_runtime_context(41, || {
+            assert_eq!(runtime_handle_key(9), (41, 9));
+            with_runtime_context(42, || assert_eq!(runtime_handle_key(9), (42, 9)));
+            assert_eq!(runtime_handle_key(9), (41, 9));
+        });
+        assert_eq!(runtime_handle_key(9), (0, 9));
     }
 }

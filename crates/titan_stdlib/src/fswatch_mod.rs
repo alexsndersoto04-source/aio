@@ -6,8 +6,9 @@
 //! * `watch_once(path, timeout_ms)` — blocks until the first event or the
 //!   timeout, then returns a description string. Perfect for demos and
 //!   scripts that don't want to manage a long-lived watcher.
-//! * Registry-based `open` / `next_event` / `close` for daemons that need
-//!   a persistent watcher and pull events in a loop.
+//! * Runtime-owned `open` / `next_event` / `close` handles for daemons that
+//!   need a persistent watcher and pull events in a loop. Handles from one
+//!   VM are rejected by every other VM in the process.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,12 +39,14 @@ struct WatcherEntry {
     root_existed: bool,
 }
 
-struct Registry { entries: HashMap<i64, WatcherEntry>, next_id: i64 }
+struct Registry { entries: HashMap<(u64, i64), WatcherEntry>, next_id: i64 }
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(Registry { entries: HashMap::new(), next_id: 1 }))
 }
+
+fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
 
 /// Format an `EventKind` into a compact string like "create", "modify",
 /// "remove", "rename" or "other".
@@ -138,7 +141,7 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
     let mut reg = registry().lock().expect("fswatch registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.entries.insert(id, WatcherEntry { _watcher: watcher, events: rx, root, root_canon, root_existed });
+    reg.entries.insert(handle_key(id), WatcherEntry { _watcher: watcher, events: rx, root, root_canon, root_existed });
     Ok(id)
 }
 
@@ -146,7 +149,7 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
 /// within `timeout_ms`.
 pub fn next_event(handle: i64, timeout_ms: u64) -> Result<String, FsWatchError> {
     let reg = registry().lock().expect("fswatch registry poisoned");
-    let entry = reg.entries.get(&handle).ok_or(FsWatchError::UnknownHandle(handle))?;
+    let entry = reg.entries.get(&handle_key(handle)).ok_or(FsWatchError::UnknownHandle(handle))?;
     match recv_fresh(&entry.events, Duration::from_millis(timeout_ms), &entry.root, &entry.root_canon, entry.root_existed) {
         Ok(Ok(event))  => Ok(describe(&event)),
         Ok(Err(error)) => Err(nerr(error)),
@@ -155,7 +158,7 @@ pub fn next_event(handle: i64, timeout_ms: u64) -> Result<String, FsWatchError> 
 }
 
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.entries.remove(&handle); }
+    if let Ok(mut reg) = registry().lock() { reg.entries.remove(&handle_key(handle)); }
 }
 
 #[cfg(test)]

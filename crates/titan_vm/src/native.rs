@@ -4,11 +4,17 @@ use std::time::{Duration, Instant};
 use titan_stdlib::{self as stdlib, native::Capability};
 use crate::{RuntimeCapabilities, Value, VmError, val_to_string};
 
-pub fn invoke(name: &str, args: Vec<Value>, capabilities: RuntimeCapabilities) -> Result<Value, VmError> {
+#[cfg(test)]
+fn invoke(name: &str, args: Vec<Value>, capabilities: RuntimeCapabilities) -> Result<Value, VmError> {
+    invoke_for_runtime(name, args, capabilities, 0)
+}
+
+pub fn invoke_for_runtime(name: &str, args: Vec<Value>, capabilities: RuntimeCapabilities, runtime_id: u64) -> Result<Value, VmError> {
     let signature = stdlib::native::lookup(name).ok_or_else(|| failure(name, "function is not registered"))?;
     if args.len() != signature.params.len() { return Err(failure(name, &format!("expected {} arguments, found {}", signature.params.len(), args.len()))); }
     require_capability(name, signature.capability, capabilities)?;
-    dispatch(name, args).map_err(|message| failure(name, &message))
+    stdlib::native::with_runtime_context(runtime_id, || dispatch(name, args))
+        .map_err(|message| failure(name, &message))
 }
 
 fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
