@@ -1953,7 +1953,7 @@ fn rate_limit(key: &str, maximum: u64, window: Duration) -> Result<bool, String>
     Ok(true)
 }
 fn require_capability(name: &str, capability: Capability, caps: RuntimeCapabilities) -> Result<(), VmError> {
-    let allowed = match capability { Capability::None => true, Capability::Filesystem => caps.filesystem, Capability::Process => caps.process, Capability::Network => caps.network, Capability::Environment => caps.environment, Capability::UserInterface => caps.user_interface };
+    let allowed = match capability { Capability::None => true, Capability::Filesystem => caps.filesystem, Capability::Process => caps.process, Capability::Network => caps.network, Capability::Environment => caps.environment, Capability::UserInterface => caps.user_interface, Capability::FilesystemUserInterface => caps.filesystem && caps.user_interface };
     if allowed { Ok(()) } else { Err(VmError::PermissionDenied { function: name.into(), capability: format!("{capability:?}") }) }
 }
 fn failure(function: &str, message: &str) -> VmError { VmError::Native { function: function.into(), message: message.into() } }

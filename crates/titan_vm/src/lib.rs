@@ -1061,12 +1061,14 @@ mod tests {
     }
     #[test] fn sandbox_denies_persistent_readline_history_before_prompting() {
         let module = compile("fn main() { std::readline::prompt_persistent(\"prompt\", \"history.txt\") }").unwrap();
-        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::readline::prompt_persistent" && capability == "Filesystem"));
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::readline::prompt_persistent" && capability == "FilesystemUserInterface"));
     }
     #[test] fn sandbox_denies_user_interface_access_but_keeps_pure_geometry() {
         let module = compile("fn main() { std::clipboard::get_text() }").unwrap();
         assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::clipboard::get_text" && capability == "UserInterface"));
         assert_eq!(run_sandboxed("fn main() { std::game::check_collision(0.0, 0.0, 5.0, 5.0, 1.0, 1.0, 2.0, 2.0) }").unwrap(), Value::Bool(true));
+        let module = compile("fn main() { std::dirs::current() }").unwrap();
+        assert!(matches!(Vm::sandboxed(module).run(), Err(VmError::PermissionDenied { function, capability }) if function == "std::dirs::current" && capability == "Environment"));
     }
     #[test] fn sandbox_denies_heap_dump_without_creating_a_file() {
         let path = std::env::temp_dir().join(format!("titan-sandbox-dump-{}.json", std::process::id()));

@@ -42,7 +42,7 @@ pub(crate) fn runtime_handle_key<T>(handle: T) -> (u64, T) {
 pub enum NativeType { Any, Int, Float, Bool, String, Bytes, Array, Map, Nil }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Capability { None, Filesystem, Process, Network, Environment, UserInterface }
+pub enum Capability { None, Filesystem, Process, Network, Environment, UserInterface, FilesystemUserInterface }
 
 #[derive(Debug, Clone, Copy)]
 pub struct NativeSignature {
@@ -483,7 +483,7 @@ pub static NATIVES: &[NativeSignature] = &[
     // --- Phase 5: Termux / Android integration ---
     // Every helper spawns the matching `termux-*` CLI. Needs Termux:API + `pkg install termux-api`.
     // Marked `Process` so `titan run --sandbox` blocks them consistently with `std::process::*`.
-    native!("std::termux::is_available",     [], Bool),
+    native!("std::termux::is_available", [], Bool, Environment),
     native!("std::termux::battery_status",   [], Any, Process),
     native!("std::termux::wifi_info",        [], Any, Process),
     native!("std::termux::telephony_info",   [], Any, Process),
@@ -508,27 +508,27 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::termux::share",            [String], Nil, Process),
 
     // --- Phase 6: Terminal (crossterm) ---
-    native!("std::term::print_colored",   [String, String], Nil),
-    native!("std::term::print_styled",    [String, String, String], Nil),
-    native!("std::term::print_attr",      [String, String], Nil),
-    native!("std::term::clear_screen",    [], Nil),
-    native!("std::term::clear_line",      [], Nil),
-    native!("std::term::move_to",         [Int, Int], Nil),
-    native!("std::term::hide_cursor",     [], Nil),
-    native!("std::term::show_cursor",     [], Nil),
-    native!("std::term::size",            [], Array),
-    native!("std::term::flush",           [], Nil),
-    native!("std::term::enter_alt_screen",[], Nil),
-    native!("std::term::leave_alt_screen",[], Nil),
-    native!("std::term::enable_raw",      [], Nil),
-    native!("std::term::disable_raw",     [], Nil),
-    native!("std::term::read_key",        [Int], String),
+    native!("std::term::print_colored", [String, String], Nil, UserInterface),
+    native!("std::term::print_styled", [String, String, String], Nil, UserInterface),
+    native!("std::term::print_attr", [String, String], Nil, UserInterface),
+    native!("std::term::clear_screen", [], Nil, UserInterface),
+    native!("std::term::clear_line", [], Nil, UserInterface),
+    native!("std::term::move_to", [Int, Int], Nil, UserInterface),
+    native!("std::term::hide_cursor", [], Nil, UserInterface),
+    native!("std::term::show_cursor", [], Nil, UserInterface),
+    native!("std::term::size", [], Array, UserInterface),
+    native!("std::term::flush", [], Nil, UserInterface),
+    native!("std::term::enter_alt_screen", [], Nil, UserInterface),
+    native!("std::term::leave_alt_screen", [], Nil, UserInterface),
+    native!("std::term::enable_raw", [], Nil, UserInterface),
+    native!("std::term::disable_raw", [], Nil, UserInterface),
+    native!("std::term::read_key", [Int], String, UserInterface),
 
     // --- Phase 6: Readline (rustyline) ---
-    native!("std::readline::prompt",              [String], String),
-    native!("std::readline::prompt_with_history", [String], String),
-    native!("std::readline::prompt_persistent",   [String, String], String, Filesystem),
-    native!("std::readline::prompt_secret",       [String], String),
+    native!("std::readline::prompt", [String], String, UserInterface),
+    native!("std::readline::prompt_with_history", [String], String, UserInterface),
+    native!("std::readline::prompt_persistent",   [String, String], String, FilesystemUserInterface),
+    native!("std::readline::prompt_secret", [String], String, UserInterface),
 
     // --- Phase 6: Progress (indicatif) ---
     native!("std::progress::bar_new",      [Int], Int),
@@ -570,24 +570,24 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::qrcode::save_png",   [String, String, Int, String], Nil, Filesystem),
 
     // --- Phase 8: System info (sysinfo) ---
-    native!("std::procfs::hostname",        [], String),
-    native!("std::procfs::kernel",          [], String),
-    native!("std::procfs::os_name",         [], String),
-    native!("std::procfs::os_version",      [], String),
-    native!("std::procfs::uptime",          [], Int),
-    native!("std::procfs::cpu_usage",       [], Float),
-    native!("std::procfs::cpu_count",       [], Int),
-    native!("std::procfs::cpus",            [], Array),
-    native!("std::procfs::total_memory",    [], Int),
-    native!("std::procfs::used_memory",     [], Int),
-    native!("std::procfs::available_memory",[], Int),
-    native!("std::procfs::total_swap",      [], Int),
-    native!("std::procfs::used_swap",       [], Int),
-    native!("std::procfs::load_average",    [], Map),
-    native!("std::procfs::process_count",   [], Int),
-    native!("std::procfs::top_processes",   [Int], Array),
-    native!("std::procfs::disks",           [], Array),
-    native!("std::procfs::networks",        [], Map),
+    native!("std::procfs::hostname", [], String, Environment),
+    native!("std::procfs::kernel", [], String, Environment),
+    native!("std::procfs::os_name", [], String, Environment),
+    native!("std::procfs::os_version", [], String, Environment),
+    native!("std::procfs::uptime", [], Int, Environment),
+    native!("std::procfs::cpu_usage", [], Float, Environment),
+    native!("std::procfs::cpu_count", [], Int, Environment),
+    native!("std::procfs::cpus", [], Array, Environment),
+    native!("std::procfs::total_memory", [], Int, Environment),
+    native!("std::procfs::used_memory", [], Int, Environment),
+    native!("std::procfs::available_memory", [], Int, Environment),
+    native!("std::procfs::total_swap", [], Int, Environment),
+    native!("std::procfs::used_swap", [], Int, Environment),
+    native!("std::procfs::load_average", [], Map, Environment),
+    native!("std::procfs::process_count", [], Int, Environment),
+    native!("std::procfs::top_processes", [Int], Array, Environment),
+    native!("std::procfs::disks", [], Array, Environment),
+    native!("std::procfs::networks", [], Map, Environment),
 
     // --- Phase 8: File-system watcher (notify) ---
     native!("std::fswatch::watch_once", [String, Int, Bool], String, Filesystem),
@@ -597,8 +597,8 @@ pub static NATIVES: &[NativeSignature] = &[
 
     // --- Phase 8: Unix signals (signal-hook) ---
     native!("std::signals::install",  [String], Nil, Process),
-    native!("std::signals::pending",  [String], Int),
-    native!("std::signals::wait_any", [Int], String),
+    native!("std::signals::pending", [String], Int, Process),
+    native!("std::signals::wait_any", [Int], String, Process),
 
     // --- Phase 9: Audio (hound + termux-media-player) ---
     // Pure-Rust WAV I/O and synthesis.
@@ -611,7 +611,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::audio::saw_wave",         [Float, Int, Int, Float], Array),
     native!("std::audio::white_noise",      [Int, Int, Float], Array),
     // Playback / recording via termux-api. Marked Process so `--sandbox` blocks them.
-    native!("std::audio::is_termux_media_available", [], Bool),
+    native!("std::audio::is_termux_media_available", [], Bool, Environment),
     native!("std::audio::play",         [String], String, Process),
     native!("std::audio::pause",        [], String, Process),
     native!("std::audio::resume",       [], String, Process),
@@ -800,24 +800,24 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::wifi::signal_bars",      [Int], Int),
 
     // --- Phase 1: dirs ---
-    native!("std::dirs::home",       [], String),
-    native!("std::dirs::config",     [], String),
-    native!("std::dirs::cache",      [], String),
-    native!("std::dirs::data",       [], String),
-    native!("std::dirs::data_local", [], String),
-    native!("std::dirs::state",      [], String),
-    native!("std::dirs::executable", [], String),
-    native!("std::dirs::runtime",    [], String),
-    native!("std::dirs::preference", [], String),
-    native!("std::dirs::desktop",    [], String),
-    native!("std::dirs::documents",  [], String),
-    native!("std::dirs::downloads",  [], String),
-    native!("std::dirs::pictures",   [], String),
-    native!("std::dirs::music",      [], String),
-    native!("std::dirs::videos",     [], String),
-    native!("std::dirs::public",     [], String),
-    native!("std::dirs::temp",       [], String),
-    native!("std::dirs::current",    [], String),
+    native!("std::dirs::home", [], String, Environment),
+    native!("std::dirs::config", [], String, Environment),
+    native!("std::dirs::cache", [], String, Environment),
+    native!("std::dirs::data", [], String, Environment),
+    native!("std::dirs::data_local", [], String, Environment),
+    native!("std::dirs::state", [], String, Environment),
+    native!("std::dirs::executable", [], String, Environment),
+    native!("std::dirs::runtime", [], String, Environment),
+    native!("std::dirs::preference", [], String, Environment),
+    native!("std::dirs::desktop", [], String, Environment),
+    native!("std::dirs::documents", [], String, Environment),
+    native!("std::dirs::downloads", [], String, Environment),
+    native!("std::dirs::pictures", [], String, Environment),
+    native!("std::dirs::music", [], String, Environment),
+    native!("std::dirs::videos", [], String, Environment),
+    native!("std::dirs::public", [], String, Environment),
+    native!("std::dirs::temp", [], String, Environment),
+    native!("std::dirs::current", [], String, Environment),
 
     // ------------------- Phase 34: std::process -------------------
     native!("std::process::run",              [String], Map, Process),
@@ -966,7 +966,7 @@ mod tests {
         assert_eq!(lookup("std::http::request").unwrap().capability, Capability::Network);
         assert_eq!(
             lookup("std::readline::prompt_persistent").unwrap().capability,
-            Capability::Filesystem,
+            Capability::FilesystemUserInterface,
         );
         assert_eq!(lookup("std::clipboard::get_text").unwrap().capability, Capability::UserInterface);
         assert_eq!(lookup("std::game::check_collision").unwrap().capability, Capability::None);
