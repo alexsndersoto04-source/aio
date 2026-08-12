@@ -1653,8 +1653,8 @@ impl TypeEnv {
             Expr::Int { .. } => Type::Int,
             Expr::Float { .. } => Type::Float,
             Expr::String { .. } => Type::String,
-            Expr::StringTemplate { value, span } => {
-                self.check_string_template(value, *span);
+            Expr::StringTemplate { value, .. } => {
+                self.check_string_template(value);
                 Type::String
             }
             Expr::Char { .. } => Type::Char,
@@ -2139,7 +2139,8 @@ impl TypeEnv {
         }
     }
 
-    fn check_string_template(&mut self, template: &str, span: titan_lexer::Span) {
+    fn check_string_template(&mut self, template: &str) {
+        let span = Default::default();
         let mut rest = template;
         while let Some(open) = rest.find('{') {
             let after = &rest[open + 1..];
