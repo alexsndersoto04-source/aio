@@ -3440,7 +3440,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "onnx_mod")]
         "std::onnx::load_shape" => {
             let path = string!();
-            let shape = array!()
+            let shape_values = array!();
+            stdlib::onnx_mod::preflight_shape_rank(shape_values.len()).map_err(error)?;
+            let shape = shape_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
@@ -3476,13 +3478,31 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "onnx_mod")]
         "std::onnx::run_f32" => {
             let h = int!();
-            let shape = array!()
+            let shape_values = array!();
+            stdlib::onnx_mod::preflight_shape_rank(shape_values.len()).map_err(error)?;
+            let shape = shape_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let data: Vec<f32> = array!()
+            let data_values = array!();
+            stdlib::onnx_mod::preflight_input_lengths(
+                &shape,
+                &[data_values.len()],
+                std::mem::size_of::<f32>(),
+            )
+            .map_err(error)?;
+            let data: Vec<f32> = data_values
                 .into_iter()
-                .map(|v| Ok(expect_float(v)? as f32))
+                .map(|value| {
+                    let value = expect_float(value)?;
+                    if !value.is_finite()
+                        || value < f32::MIN as f64
+                        || value > f32::MAX as f64
+                    {
+                        return Err("ONNX input float out of f32 range".to_string());
+                    }
+                    Ok(value as f32)
+                })
                 .collect::<Result<Vec<_>, String>>()?;
             let (values, out_shape) = stdlib::onnx_mod::run_f32(h, &shape, &data).map_err(error)?;
             Value::Map(onnx_output_to_map(values, out_shape))
@@ -3490,11 +3510,20 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "onnx_mod")]
         "std::onnx::run_ids" => {
             let h = int!();
-            let shape = array!()
+            let shape_values = array!();
+            stdlib::onnx_mod::preflight_shape_rank(shape_values.len()).map_err(error)?;
+            let shape = shape_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let data = array!()
+            let data_values = array!();
+            stdlib::onnx_mod::preflight_input_lengths(
+                &shape,
+                &[data_values.len()],
+                std::mem::size_of::<i64>(),
+            )
+            .map_err(error)?;
+            let data = data_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
@@ -3519,15 +3548,25 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "onnx_mod")]
         "std::onnx::run_bert" => {
             let h = int!();
-            let shape = array!()
+            let shape_values = array!();
+            stdlib::onnx_mod::preflight_shape_rank(shape_values.len()).map_err(error)?;
+            let shape = shape_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let ids = array!()
+            let id_values = array!();
+            let mask_values = array!();
+            stdlib::onnx_mod::preflight_input_lengths(
+                &shape,
+                &[id_values.len(), mask_values.len()],
+                std::mem::size_of::<i64>(),
+            )
+            .map_err(error)?;
+            let ids = id_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let mask = array!()
+            let mask = mask_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
@@ -3538,19 +3577,30 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "onnx_mod")]
         "std::onnx::run_bert3" => {
             let h = int!();
-            let shape = array!()
+            let shape_values = array!();
+            stdlib::onnx_mod::preflight_shape_rank(shape_values.len()).map_err(error)?;
+            let shape = shape_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let ids = array!()
+            let id_values = array!();
+            let mask_values = array!();
+            let type_values = array!();
+            stdlib::onnx_mod::preflight_input_lengths(
+                &shape,
+                &[id_values.len(), mask_values.len(), type_values.len()],
+                std::mem::size_of::<i64>(),
+            )
+            .map_err(error)?;
+            let ids = id_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let mask = array!()
+            let mask = mask_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let types = array!()
+            let types = type_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
@@ -3563,11 +3613,19 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             let h = int!();
             let batch = int!();
             let seq = int!();
-            let ids = array!()
+            let id_values = array!();
+            let mask_values = array!();
+            stdlib::onnx_mod::preflight_input_lengths(
+                &[batch, seq],
+                &[id_values.len(), mask_values.len()],
+                std::mem::size_of::<i64>(),
+            )
+            .map_err(error)?;
+            let ids = id_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
-            let mask = array!()
+            let mask = mask_values
                 .into_iter()
                 .map(expect_int)
                 .collect::<Result<Vec<i64>, _>>()?;
