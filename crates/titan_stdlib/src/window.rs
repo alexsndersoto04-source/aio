@@ -192,7 +192,13 @@ pub fn poll_events(id: u64) -> Vec<String> {
     let mut registry = crate::native::lock_recover(registry());
     registry
         .get_mut(&handle_key(id))
-        .map(|window| window.events.drain(..).map(|event| format_event(&event)).collect())
+        .map(|window| {
+            window
+                .events
+                .drain(..)
+                .map(|event| format_event(&event))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -260,7 +266,9 @@ mod tests {
             let mut handles = (0..MAX_WINDOW_HANDLES)
                 .map(|_| create("bounded", 1, 1).unwrap())
                 .collect::<Vec<_>>();
-            assert!(create("overflow", 1, 1).unwrap_err().contains("handle quota"));
+            assert!(create("overflow", 1, 1)
+                .unwrap_err()
+                .contains("handle quota"));
             assert!(!set_title(
                 handles[0],
                 &"x".repeat(MAX_WINDOW_TITLE_BYTES + 1)

@@ -157,7 +157,9 @@ fn decode_limits() -> Limits {
     limits
 }
 
-fn decode_reader<R: BufRead + Seek>(mut reader: ImageReader<R>) -> Result<DynamicImage, ImageError> {
+fn decode_reader<R: BufRead + Seek>(
+    mut reader: ImageReader<R>,
+) -> Result<DynamicImage, ImageError> {
     reader.limits(decode_limits());
     Ok(reader.decode()?)
 }
@@ -206,9 +208,7 @@ fn insert(image: DynamicImage) -> Result<i64, ImageError> {
         .unwrap_or(usize::MAX);
     validate_registry_capacity(active, runtime_bytes, bytes)?;
     let id = registry.next_id;
-    registry.next_id = id
-        .checked_add(1)
-        .ok_or(ImageError::HandleSpaceExhausted)?;
+    registry.next_id = id.checked_add(1).ok_or(ImageError::HandleSpaceExhausted)?;
     registry.images.insert(
         (runtime_id, id),
         ImageEntry {
@@ -433,7 +433,9 @@ pub fn crop(handle: i64, x: u32, y: u32, width: u32, height: u32) -> Result<i64,
         .checked_add(height)
         .ok_or(ImageError::InvalidParameter("crop coordinates overflow"))?;
     if right > image.width() || bottom > image.height() {
-        return Err(ImageError::InvalidParameter("crop is outside the source image"));
+        return Err(ImageError::InvalidParameter(
+            "crop is outside the source image",
+        ));
     }
     insert(image.crop_imm(x, y, width, height))
 }
@@ -446,7 +448,9 @@ pub fn grayscale(handle: i64) -> Result<i64, ImageError> {
 
 pub fn blur(handle: i64, sigma: f32) -> Result<i64, ImageError> {
     if !sigma.is_finite() || !(0.0..=MAX_BLUR_SIGMA).contains(&sigma) {
-        return Err(ImageError::InvalidParameter("blur sigma is outside the supported range"));
+        return Err(ImageError::InvalidParameter(
+            "blur sigma is outside the supported range",
+        ));
     }
     let _permit = reserve_operation(MAX_IMAGE_BYTES)?;
     let image = get_image(handle)?;

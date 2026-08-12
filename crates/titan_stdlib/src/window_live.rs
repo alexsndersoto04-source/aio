@@ -172,7 +172,10 @@ fn signed_handle_key(handle: i64) -> Option<(u64, u64)> {
     u64::try_from(handle).ok().map(handle_key)
 }
 
-fn append_events_bounded(queue: &mut Vec<WindowEvent>, events: impl IntoIterator<Item = WindowEvent>) {
+fn append_events_bounded(
+    queue: &mut Vec<WindowEvent>,
+    events: impl IntoIterator<Item = WindowEvent>,
+) {
     let remaining = MAX_LIVE_EVENTS.saturating_sub(queue.len());
     queue.extend(events.into_iter().take(remaining));
 }

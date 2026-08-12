@@ -89,9 +89,7 @@ pub fn new() -> Result<i64, RouterError> {
         });
     }
     let id = registry.next_id;
-    registry.next_id = id
-        .checked_add(1)
-        .ok_or(RouterError::HandleSpaceExhausted)?;
+    registry.next_id = id.checked_add(1).ok_or(RouterError::HandleSpaceExhausted)?;
     registry.routers.insert(
         (runtime_id, id),
         RouterEntry {
@@ -335,11 +333,7 @@ mod tests {
 
             let mut runtime_limit_seen = false;
             for route_index in 0..16 {
-                match insert(
-                    routers[8],
-                    &format!("/runtime-bytes/{route_index}"),
-                    &value,
-                ) {
+                match insert(routers[8], &format!("/runtime-bytes/{route_index}"), &value) {
                     Ok(()) => {}
                     Err(RouterError::ResourceLimit {
                         resource: "runtime router bytes",

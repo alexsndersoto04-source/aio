@@ -190,9 +190,11 @@ mod tests {
                 .map(|_| bar_new(1).unwrap())
                 .collect::<Vec<_>>();
             assert!(bar_new(1).unwrap_err().contains("handle quota"));
-            assert!(set_message(handles[0], &"x".repeat(MAX_PROGRESS_MESSAGE_BYTES + 1))
-                .unwrap_err()
-                .contains("message exceeds"));
+            assert!(
+                set_message(handles[0], &"x".repeat(MAX_PROGRESS_MESSAGE_BYTES + 1))
+                    .unwrap_err()
+                    .contains("message exceeds")
+            );
             abandon(handles.pop().unwrap());
             handles.push(spinner_new().unwrap());
         });

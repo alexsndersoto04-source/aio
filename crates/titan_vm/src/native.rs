@@ -5445,12 +5445,7 @@ mod tests {
             capabilities,
         )
         .is_err());
-        assert!(invoke(
-            "std::window::close",
-            vec![Value::Int(-1)],
-            capabilities,
-        )
-        .is_err());
+        assert!(invoke("std::window::close", vec![Value::Int(-1)], capabilities,).is_err());
     }
 
     #[test]

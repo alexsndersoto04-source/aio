@@ -34,10 +34,7 @@ pub enum FsWatchError {
     #[error("watcher I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("{resource} exceeds limit {limit}")]
-    ResourceLimit {
-        resource: &'static str,
-        limit: u64,
-    },
+    ResourceLimit { resource: &'static str, limit: u64 },
     #[error("watcher handle space exhausted")]
     HandleSpaceExhausted,
 }
@@ -273,7 +270,9 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
     watcher.watch(&root, mode).map_err(nerr)?;
     let mut reg = crate::native::lock_recover(registry());
     let id = reg.next_id;
-    reg.next_id = id.checked_add(1).ok_or(FsWatchError::HandleSpaceExhausted)?;
+    reg.next_id = id
+        .checked_add(1)
+        .ok_or(FsWatchError::HandleSpaceExhausted)?;
     reg.entries.insert(
         handle_key(id),
         WatcherEntry {
