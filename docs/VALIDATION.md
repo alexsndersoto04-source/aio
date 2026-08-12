@@ -8,26 +8,26 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit funcional validado: `1af829becaf931a90d3756967a1601f3f6f6b9b6`
+- Commit funcional validado: `0d10e162f936d7f71bba2be0134f35d3b276161e`
 - Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
   canales, red, bases de datos, procesos, colecciones, juego, señales, watchers,
-  progreso, routers, ventanas, imágenes, tokenizadores, ONNX, KV/sled y Redis;
-  checks Android ARM de 32 y 64 bits
+  progreso, routers, ventanas, imágenes, tokenizadores, ONNX, KV/sled, Redis y
+  generación PDF real; checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-12
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado, sin fallo oculto | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
-| `cargo check` con características normales | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
-| `cargo check --no-default-features` | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
-| Cross-check Android AArch64 | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
-| Artefacto `zett-termux-arm-72`, 25.286.749 bytes | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
+| Formato completo, `cargo fmt --check` | Aprobado, sin fallo oculto | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
+| `cargo check` con características normales | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
+| `cargo check --no-default-features` | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
+| Cross-check Android AArch64 | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
+| Artefacto `zett-termux-arm-76`, 26.849.784 bytes | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
 
 Los fallos advisory registrados ya fueron corregidos:
 
@@ -777,6 +777,111 @@ No hace falta validación física individual para este bloque. El cliente quedó
 compilado y enlazado dentro del ELF Android/Bionic ARMv7; una instalación en el
 Redmi se agrupará con el siguiente milestone físico.
 
+### PDF real con memoria, ownership y publicación acotados
+
+Los commits `6c54c9b`, `64a508c` y `0d10e16` reemplazan el registro PDF sin
+cuotas por un modelo de dibujo propio y acotado. La característica `pdf_mod`
+ya forma parte de `extras`, por lo que las nueve nativas `std::pdf::*` quedan
+compiladas y conectadas por defecto dentro del único binario final.
+
+`printpdf 0.7.0` representa un documento vivo con `Rc` y `Weak<RefCell<_>>`;
+esos tipos no son `Send` y no pueden compartirse de forma segura entre tareas.
+Por eso el registro global de TITAN **no almacena ningún objeto de printpdf**.
+Conserva solamente páginas y comandos de texto, color, línea y rectángulo bajo
+un lock individual por documento. Al guardar, copia una instantánea consistente,
+suelta todos los locks y construye localmente el documento real. Otros handles
+y runtimes pueden seguir avanzando durante la serialización y el I/O.
+
+Los límites persistentes son:
+
+- ocho documentos por runtime;
+- 256 páginas por documento y 512 por runtime;
+- 16.000 comandos por documento y 32.000 por runtime;
+- 8 MiB lógicos por documento y 16 MiB por runtime;
+- coste fijo de 1.024 bytes por documento, 512 por página y 512 por comando,
+  además de los strings, para que miles de elementos vacíos también consuman
+  cuota;
+- título y nombre de capa de 4 KiB, texto de 256 KiB por comando y path de
+  salida de 16 KiB.
+
+Cada runtime admite cuatro operaciones PDF simultáneas y una sola serialización;
+además hay un máximo global de dos serializaciones para acotar los buffers del
+backend entre VMs. Un PDF serializado no puede superar 64 MiB. `printpdf`
+construye internamente todo el archivo en un `Vec<u8>` antes de devolverlo, así
+que el límite final se comprueba antes de publicar el archivo, mientras las
+cuotas de páginas, comandos, strings y bytes lógicos acotan la entrada que puede
+provocar esa asignación. No se afirma que el backend haga streaming: esa sería
+una propiedad falsa de esta versión de printpdf.
+
+Toda entrada numérica se valida antes de convertir `f64` de TITAN a los `f32`
+que usa `Mm`: no se admiten `NaN` ni infinitos. Las páginas quedan entre 1 y
+5.000 mm, las coordenadas dentro de +/-10.000 mm, las fuentes entre 0,1 y 1.000
+puntos, los trazos entre 0,01 y 1.000 puntos y RGB entre 0 y 1. Rectángulos
+requieren dimensiones positivas y extremos dentro del rango. Páginas, capas e
+índices inválidos devuelven errores tipados sin consumir cuota.
+
+La fuente integrada es Helvetica con `WinAnsiEncoding`. Los caracteres
+representables —incluidos acentos españoles— se conservan; controles, saltos de
+línea y caracteres no representables como emoji se rechazan explícitamente en
+vez de permitir que printpdf los descarte en silencio. Los rectángulos se
+materializan como polígonos reales con relleno y contorno; texto, colores y
+líneas usan las operaciones reales de la capa PDF.
+
+`save` serializa una instantánea y solo después crea un temporal exclusivo en el
+mismo directorio, escribe todos los bytes, ejecuta `flush` y `sync_all`, y lo
+publica mediante `rename`. Cualquier error elimina el temporal y no trunca el
+destino antes de tener un PDF completo. El registro global nunca permanece
+tomado durante serialización ni filesystem. `close` y cleanup retiran el handle,
+marcan el estado cerrado y devuelven páginas, comandos y bytes; una reserva de
+creación que estaba en vuelo no puede revivir el runtime después del cleanup.
+
+Las diez regresiones del módulo y la regresión adicional del dispatcher VM
+verifican:
+
+1. un archivo con dos páginas, texto, color, línea y rectángulo, reabierto
+   estructuralmente con `printpdf::lopdf`;
+2. validación de números no finitos, rangos, texto WinAnsi, páginas y capas;
+3. saturación y recuperación de handles, páginas, comandos, bytes, operaciones
+   y slots de serialización por runtime y globales;
+4. aislamiento de ownership, cleanup y la carrera cleanup/reserva;
+5. reemplazo atómico, preservación ante un path fallido y eliminación del
+   temporal;
+6. paso real por las nueve nativas de la VM, incluido rechazo de `save` sin la
+   capacidad de filesystem y generación correcta al concederla.
+
+Evidencia externa final para `0d10e162f936d7f71bba2be0134f35d3b276161e`:
+
+- [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679): `cargo fmt --check`, check normal, todos los tests —incluidas
+  las once regresiones PDF—, no-default-features y AArch64 aprobaron. Las únicas
+  annotations son avisos externos sobre Node.js 20.
+- [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670): check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y upload aprobaron; produjo
+  `zett-termux-arm-76` de 26.849.784 bytes, digest de artifact
+  `sha256:a7fa3fcdd58ce65dafd455128008401d2117c3bb65683b8eaf6abb597590073d`.
+- `verify_phase34.py`: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.
+
+El primer run [CI 31566175798](https://github.com/alexsndersoto04-source/aio/actions/runs/31566175798) compiló correctamente el backend, aprobó formato y AArch64, y
+nueve de las diez regresiones PDF, pero falló porque el test exigía un salto de
+línea concreto después de `%%EOF`. El archivo ya se reabría correctamente; el
+commit `64a508c` retiró esa suposición textual y mantuvo la validación
+estructural. [CI 31566327093](https://github.com/alexsndersoto04-source/aio/actions/runs/31566327093) quedó verde antes de añadir la prueba adicional del dispatcher. El fallo
+intermedio se conserva y no se cuenta como validación aprobada.
+
+Límites declarados: esta superficie usa una fuente integrada WinAnsi y no
+soporta aún tipografías Unicode externas, imágenes, cifrado ni firmas PDF. El
+límite de 64 MiB se comprueba al recibir el `Vec` de printpdf; las cuotas lógicas
+y los dos slots globales son la defensa que acota el trabajo previo porque esta
+versión del backend no ofrece serialización streaming. `rename` sustituye
+atómicamente un destino existente en Linux y Android; en plataformas donde el
+SO no permite reemplazar con `rename`, la operación falla conservando el archivo
+anterior.
+
+No hace falta una validación física individual para este bloque: el PDF se creó
+y reabrió realmente en CI, toda la ruta quedó compilada y enlazada dentro del
+ELF Android/Bionic ARMv7, y el paquete se reserva para el próximo milestone
+físico agrupado.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -800,13 +905,14 @@ reales se liberan en el mismo hilo que las creó.
 ### Límites de esta validación
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos,
-  colecciones y los recursos ligeros descritos arriba ya están conectadas. Esto
-  no cierra toda la auditoría de crecimiento: PDF y servidores conservan
+  colecciones, PDF y los recursos ligeros descritos arriba ya están conectadas.
+  Esto no cierra toda la auditoría de crecimiento: los servidores HTTP conservan
   registros duraderos que deben revisarse individualmente.
 - CI prueba directamente la destrucción con handles de colecciones, tareas,
-  tokenizadores, planes ONNX de tract, bases/árboles sled y sockets Redis
-  loopback. Las demás rutas de limpieza compilan y son revisadas por Rust. Este
-  run no conecta un Redis externo ni carga un `.onnx` válido de terceros.
+  tokenizadores, planes ONNX de tract, bases/árboles sled, sockets Redis loopback
+  y documentos PDF. Las demás rutas de limpieza compilan y son revisadas por
+  Rust. Este run no conecta un Redis externo ni carga un `.onnx` válido de
+  terceros.
 - Los comandos de formato y del antiguo job AArch64 ya pasan, pero sus dos
   líneas `continue-on-error` permanecen en el workflow hasta aplicar desde
   GitHub web la plantilla corregida `docs/CI_WORKFLOW_TEMPLATE.yml`. La GitHub

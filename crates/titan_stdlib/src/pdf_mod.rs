@@ -1141,6 +1141,16 @@ mod tests {
                     ..
                 })
             ));
+            for _ in 0..(MAX_PAGES_PER_RUNTIME - MAX_PAGES_PER_DOCUMENT - 7) {
+                add_page(documents[1], 100.0, 100.0, "Layer").unwrap();
+            }
+            assert!(matches!(
+                add_page(documents[1], 100.0, 100.0, "Layer"),
+                Err(PdfError::ResourceLimit {
+                    resource: "PDF runtime pages",
+                    ..
+                })
+            ));
 
             let permits = (0..MAX_CONCURRENT_OPERATIONS)
                 .map(|_| reserve_operation().unwrap())
@@ -1166,18 +1176,32 @@ mod tests {
     #[test]
     fn command_and_logical_byte_limits_are_enforced() {
         in_test_runtime(|runtime_id| {
-            let document = new("commands", 100.0, 100.0).unwrap();
+            let first = new("commands one", 100.0, 100.0).unwrap();
             for _ in 0..MAX_COMMANDS_PER_DOCUMENT {
-                set_color(document, 0, 0, 0.0, 0.0, 0.0).unwrap();
+                set_color(first, 0, 0, 0.0, 0.0, 0.0).unwrap();
             }
             assert!(matches!(
-                set_color(document, 0, 0, 0.0, 0.0, 0.0),
+                set_color(first, 0, 0, 0.0, 0.0, 0.0),
                 Err(PdfError::ResourceLimit {
                     resource: "PDF document drawing commands",
                     ..
                 })
             ));
-            close(document);
+            let second = new("commands two", 100.0, 100.0).unwrap();
+            for _ in 0..MAX_COMMANDS_PER_DOCUMENT {
+                set_color(second, 0, 0, 0.0, 0.0, 0.0).unwrap();
+            }
+            let third = new("commands three", 100.0, 100.0).unwrap();
+            assert!(matches!(
+                set_color(third, 0, 0, 0.0, 0.0, 0.0),
+                Err(PdfError::ResourceLimit {
+                    resource: "PDF runtime drawing commands",
+                    ..
+                })
+            ));
+            close(first);
+            close(second);
+            close(third);
 
             let document = new("bytes", 100.0, 100.0).unwrap();
             let oversized = "x".repeat(MAX_TEXT_BYTES + 1);
@@ -1189,6 +1213,41 @@ mod tests {
                 })
             ));
             close(document);
+
+            let chunk = "x".repeat(MAX_TEXT_BYTES);
+            let first = new("bytes one", 100.0, 100.0).unwrap();
+            let per_command = COMMAND_OVERHEAD + chunk.len();
+            let initial_bytes = crate::native::lock_recover(&get_document(first).unwrap())
+                .logical_bytes;
+            let chunks_per_document =
+                (MAX_DOCUMENT_LOGICAL_BYTES - initial_bytes) / per_command;
+            for _ in 0..chunks_per_document {
+                add_text(first, 0, 0, &chunk, 10.0, 0.0, 0.0).unwrap();
+            }
+            assert!(matches!(
+                add_text(first, 0, 0, &chunk, 10.0, 0.0, 0.0),
+                Err(PdfError::ResourceLimit {
+                    resource: "PDF document logical bytes",
+                    ..
+                })
+            ));
+
+            let second = new("bytes two", 100.0, 100.0).unwrap();
+            for _ in 0..chunks_per_document {
+                add_text(second, 0, 0, &chunk, 10.0, 0.0, 0.0).unwrap();
+            }
+            let third = new("bytes three", 100.0, 100.0).unwrap();
+            while add_text(third, 0, 0, &chunk, 10.0, 0.0, 0.0).is_ok() {}
+            assert!(matches!(
+                add_text(third, 0, 0, &chunk, 10.0, 0.0, 0.0),
+                Err(PdfError::ResourceLimit {
+                    resource: "PDF runtime logical bytes",
+                    ..
+                })
+            ));
+            close(first);
+            close(second);
+            close(third);
             assert_eq!(cleanup_runtime(runtime_id), 0);
         });
     }
