@@ -39,6 +39,7 @@ for tool in "$clang" "$clangxx" "$llvm_ar" "$llvm_ranlib"; do
 done
 
 export CARGO_INCREMENTAL=0
+export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$clang"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$llvm_ar"
 export CC_aarch64_linux_android="$clang"
@@ -49,4 +50,18 @@ export RANLIB_aarch64_linux_android="$llvm_ranlib"
 # This is a real Android cross-check: build scripts for bundled C components
 # such as SQLite receive the NDK compiler instead of accidentally searching for
 # a nonexistent host aarch64-linux-android-gcc.
-cargo check --locked --workspace --all-targets --target "$TARGET"
+check_log="$(mktemp "${TMPDIR:-/tmp}/titan-aarch64-check.XXXXXXXX.log")"
+trap 'rm -f "$check_log"' EXIT
+if ! cargo check --locked --workspace --all-targets --target "$TARGET" 2>&1 | tee "$check_log"; then
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        python3 - "$check_log" <<'PYDIAG'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text(errors="replace")[-12_000:]
+for index in range(0, len(text), 3_800):
+    message = text[index:index + 3_800]
+    message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error file=scripts/check-android-aarch64-ci.sh,line=1,title=AARCH64_CHECK_{index // 3800:02d}::{message}")
+PYDIAG
+    fi
+    exit 1
+fi
