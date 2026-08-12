@@ -812,7 +812,12 @@ impl AstCompiler {
             // Phase 18: std::try::catch(fn, args...) is compiled specially
             // because its argument is a closure that must be executed inside
             // a try boundary. Emit the closure and its args then TryCall.
-            if name == "std::try::catch" && !args.is_empty() {
+            if name == "std::try::catch" {
+                if args.is_empty() {
+                    return Err(CodegenError::Unsupported(
+                        "std::try::catch requires a callable argument".into(),
+                    ));
+                }
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
@@ -1730,6 +1735,16 @@ mod tests {
         assert!(matches!(
             AstCompiler::new().compile_program(&break_value),
             Err(CodegenError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_try_catch_without_typechecker() {
+        let program = parse("fn main() { std::try::catch() }");
+        assert!(matches!(
+            AstCompiler::new().compile_program(&program),
+            Err(CodegenError::Unsupported(message))
+                if message.contains("requires a callable argument")
         ));
     }
 

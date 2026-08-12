@@ -2045,7 +2045,7 @@ impl TypeEnv {
                 scrutinee, arms, ..
             } => {
                 let subject = self.check_expr(scrutinee);
-                let mut result = Type::Unknown;
+                let mut result: Option<Type> = None;
                 let mut wildcard = false;
                 let mut bools = HashSet::new();
                 for arm in arms {
@@ -2061,11 +2061,26 @@ impl TypeEnv {
                         self.require_compatible(&Type::Bool, &g);
                     }
                     let found = self.check_block(&arm.body);
-                    if result == Type::Unknown {
-                        result = found;
-                    } else {
-                        self.require_compatible(&result, &found);
-                    }
+                    result = Some(match result {
+                        None => found,
+                        Some(current) if current == Type::Never => found,
+                        Some(current) if found == Type::Never => current,
+                        Some(current)
+                            if compatible(
+                                &self.resolve_alias(&current),
+                                &self.resolve_alias(&found),
+                            ) =>
+                        {
+                            current
+                        }
+                        Some(current) => {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: current,
+                                found,
+                            });
+                            Type::Unknown
+                        }
+                    });
                     self.pop_scope();
                 }
                 let has_catchall = arms
@@ -2101,7 +2116,7 @@ impl TypeEnv {
                         _ => self.errors.push(TypeError::NonExhaustiveMatch),
                     }
                 }
-                result
+                result.unwrap_or(Type::Unknown)
             }
             Expr::For {
                 pattern,
@@ -2833,6 +2848,59 @@ impl TypeEnv {
         Some(result)
     }
 
+    fn check_try_catch_call(&mut self, args: &[Expr]) -> Type {
+        let result_type = Type::Named("Result".into());
+        let Some((callable_expression, call_args)) = args.split_first() else {
+            self.errors.push(TypeError::Arity {
+                expected: 1,
+                found: 0,
+            });
+            return result_type;
+        };
+
+        // Check invocation arguments first so an inline closure can inherit
+        // their concrete types before its body is analyzed.
+        let argument_types: Vec<Type> = call_args
+            .iter()
+            .map(|argument| self.check_expr(argument))
+            .collect();
+        let callable = if let Expr::Closure {
+            params,
+            return_type,
+            body,
+            ..
+        } = callable_expression
+        {
+            self.check_closure(
+                params,
+                return_type.as_ref(),
+                body,
+                Some(&argument_types),
+                None,
+            )
+        } else {
+            self.check_expr(callable_expression)
+        };
+
+        match self.resolve_alias(&callable) {
+            Type::Function(params, _) => {
+                if params.len() != argument_types.len() {
+                    self.errors.push(TypeError::Arity {
+                        expected: params.len(),
+                        found: argument_types.len(),
+                    });
+                }
+                for (expected, found) in params.iter().zip(&argument_types) {
+                    self.require_compatible(expected, found);
+                }
+            }
+            _ => self.errors.push(TypeError::NotCallable {
+                name: "first argument to std::try::catch".into(),
+            }),
+        }
+        result_type
+    }
+
     fn check_call(&mut self, callee: &Expr, args: &[Expr]) -> Type {
         let name = if let Expr::Ident { name, .. } = callee {
             Some(name.clone())
@@ -2843,10 +2911,11 @@ impl TypeEnv {
             if let Some(result) = self.check_collection_call(name, args) {
                 return result;
             }
+            if name == "std::try::catch" {
+                return self.check_try_catch_call(args);
+            }
             if let Some(signature) = titan_stdlib::native::lookup(name) {
-                // std::try::catch is variadic: (fn, args...). Skip arity check.
-                let variadic = name == "std::try::catch";
-                if !variadic && args.len() != signature.params.len() {
+                if args.len() != signature.params.len() {
                     self.errors.push(TypeError::Arity {
                         expected: signature.params.len(),
                         found: args.len(),
@@ -2862,15 +2931,7 @@ impl TypeEnv {
                 for argument in args.iter().skip(signature.params.len()) {
                     self.check_expr(argument);
                 }
-                // The VM always wraps this intrinsic in Result::Ok/Err. Its
-                // generic native ABI uses `Any`, but exposing Unknown here
-                // made the statically checked `?` operator indistinguishable
-                // from applying `?` to an arbitrary dynamic value.
-                return if name == "std::try::catch" {
-                    Type::Named("Result".into())
-                } else {
-                    native_type(signature.result)
-                };
+                return native_type(signature.result);
             }
             if let Some(payload) = self.enum_variants.get(name).cloned() {
                 let expected = usize::from(payload.is_some());
@@ -4290,6 +4351,21 @@ mod tests {
     }
 
     #[test]
+    fn validates_try_catch_callable_and_invocation_shape() {
+        assert!(check(
+            "fn main() { let result = std::try::catch(|value| value + 1, 2) print(result) }"
+        )
+        .is_ok());
+        assert!(check("fn main() { std::try::catch() }").is_err());
+        assert!(check("fn main() { std::try::catch(42) }").is_err());
+        assert!(check("fn main() { std::try::catch(|| 1, 2) }").is_err());
+        assert!(check(
+            "fn main() { std::try::catch(|value: string| value, 2) }"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn rejects_syntax_that_bytecode_cannot_lower() {
         assert!(check("fn main() { let value = 1; &value }").is_err());
         assert!(check("fn main() { loop { break 1 } }").is_err());
@@ -4417,6 +4493,18 @@ mod tests {
 
         let missing_payload = "enum Choice { Number(int), Empty } fn read(choice: Choice) -> int { match choice { Choice::Number => 1, Choice::Empty => 0 } } fn main() {}";
         assert!(check(missing_payload).is_err());
+    }
+
+    #[test]
+    fn match_result_ignores_branches_that_never_continue() {
+        assert!(check(
+            "fn read(flag: bool) -> int { let value = match flag { true => return 1, false => 2 } value + 1 } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn read(flag: bool) -> int { match flag { true => 1, false => \"bad\" } } fn main() {}"
+        )
+        .is_err());
     }
 
     #[test]
