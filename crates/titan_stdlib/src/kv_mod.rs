@@ -122,7 +122,8 @@ impl Drop for OperationPermit {
         let mut usage = crate::native::lock_recover(runtime_usage());
         if let Some(runtime) = usage.get_mut(&self.runtime_id) {
             runtime.active_operations = runtime.active_operations.saturating_sub(1);
-            if runtime.active_operations == 0 && runtime.logical_bytes == 0 && runtime.entries == 0 {
+            if runtime.active_operations == 0 && runtime.logical_bytes == 0 && runtime.entries == 0
+            {
                 usage.remove(&self.runtime_id);
             }
         }
@@ -157,7 +158,11 @@ struct HandleReservation {
 
 fn active_handles(registry: &Registry, runtime_id: u64, kind: HandleKind) -> usize {
     match kind {
-        HandleKind::Database => registry.dbs.keys().filter(|(owner, _)| *owner == runtime_id).count(),
+        HandleKind::Database => registry
+            .dbs
+            .keys()
+            .filter(|(owner, _)| *owner == runtime_id)
+            .count(),
         HandleKind::Tree => registry
             .trees
             .keys()
@@ -334,10 +339,12 @@ fn validate_value(value: &[u8]) -> Result<(), KvError> {
 }
 
 fn item_bytes(key: &[u8], value: &[u8]) -> Result<usize, KvError> {
-    key.len().checked_add(value.len()).ok_or(KvError::ResourceLimit {
-        resource: "key-value logical bytes",
-        limit: MAX_DB_LOGICAL_BYTES,
-    })
+    key.len()
+        .checked_add(value.len())
+        .ok_or(KvError::ResourceLimit {
+            resource: "key-value logical bytes",
+            limit: MAX_DB_LOGICAL_BYTES,
+        })
 }
 
 fn reserve_runtime_storage(runtime_id: u64, bytes: usize, entries: usize) -> Result<(), KvError> {
@@ -391,13 +398,14 @@ fn measure_iterator(iterator: sled::Iter) -> Result<TreeUsage, KvError> {
         let (key, value) = result?;
         validate_key(&key)?;
         validate_value(&value)?;
-        usage.bytes = usage
-            .bytes
-            .checked_add(item_bytes(&key, &value)?)
-            .ok_or(KvError::ResourceLimit {
-                resource: "database logical bytes",
-                limit: MAX_DB_LOGICAL_BYTES,
-            })?;
+        usage.bytes =
+            usage
+                .bytes
+                .checked_add(item_bytes(&key, &value)?)
+                .ok_or(KvError::ResourceLimit {
+                    resource: "database logical bytes",
+                    limit: MAX_DB_LOGICAL_BYTES,
+                })?;
         usage.entries = usage.entries.checked_add(1).ok_or(KvError::ResourceLimit {
             resource: "database entries",
             limit: MAX_DB_ENTRIES,
@@ -441,24 +449,25 @@ fn measure_database(db: &Db) -> Result<DatabaseUsage, KvError> {
         let tree = db.open_tree(&name)?;
         trees.insert(TreeId::Named(name.to_vec()), measure_iterator(tree.iter())?);
     }
-    let (bytes, entries) = trees.values().try_fold(
-        (0usize, 0usize),
-        |(total_bytes, total_entries), tree| {
-            let bytes = total_bytes
-                .checked_add(tree.bytes)
-                .ok_or(KvError::ResourceLimit {
-                    resource: "database logical bytes",
-                    limit: MAX_DB_LOGICAL_BYTES,
-                })?;
-            let entries = total_entries
-                .checked_add(tree.entries)
-                .ok_or(KvError::ResourceLimit {
-                    resource: "database entries",
-                    limit: MAX_DB_ENTRIES,
-                })?;
-            Ok::<_, KvError>((bytes, entries))
-        },
-    )?;
+    let (bytes, entries) =
+        trees
+            .values()
+            .try_fold((0usize, 0usize), |(total_bytes, total_entries), tree| {
+                let bytes = total_bytes
+                    .checked_add(tree.bytes)
+                    .ok_or(KvError::ResourceLimit {
+                        resource: "database logical bytes",
+                        limit: MAX_DB_LOGICAL_BYTES,
+                    })?;
+                let entries =
+                    total_entries
+                        .checked_add(tree.entries)
+                        .ok_or(KvError::ResourceLimit {
+                            resource: "database entries",
+                            limit: MAX_DB_ENTRIES,
+                        })?;
+                Ok::<_, KvError>((bytes, entries))
+            })?;
     if bytes > MAX_DB_LOGICAL_BYTES {
         return Err(KvError::ResourceLimit {
             resource: "database logical bytes",
@@ -523,13 +532,19 @@ fn finish_replacement(
     new_entries: usize,
 ) {
     if let Some(tree) = usage.trees.get_mut(tree_id) {
-        tree.bytes = tree.bytes.saturating_sub(old_bytes).saturating_add(new_bytes);
+        tree.bytes = tree
+            .bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
         tree.entries = tree
             .entries
             .saturating_sub(old_entries)
             .saturating_add(new_entries);
     }
-    usage.bytes = usage.bytes.saturating_sub(old_bytes).saturating_add(new_bytes);
+    usage.bytes = usage
+        .bytes
+        .saturating_sub(old_bytes)
+        .saturating_add(new_bytes);
     usage.entries = usage
         .entries
         .saturating_sub(old_entries)
@@ -737,7 +752,9 @@ pub fn remove(handle: i64, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
     validate_key(key)?;
     let _permit = reserve_operation()?;
     let state = get_db(handle)?;
-    remove_value(handle, &state, &TreeId::Default, key, || state.db.remove(key))
+    remove_value(handle, &state, &TreeId::Default, key, || {
+        state.db.remove(key)
+    })
 }
 
 pub fn contains(handle: i64, key: &[u8]) -> Result<bool, KvError> {
@@ -754,7 +771,10 @@ pub fn len(handle: i64) -> Result<usize, KvError> {
     let state = get_db(handle)?;
     let usage = crate::native::lock_recover(&state.usage);
     ensure_open(&usage, handle)?;
-    Ok(usage.trees.get(&TreeId::Default).map_or(0, |tree| tree.entries))
+    Ok(usage
+        .trees
+        .get(&TreeId::Default)
+        .map_or(0, |tree| tree.entries))
 }
 
 /// Delete every entry from the default tree.
@@ -764,7 +784,10 @@ pub fn clear(handle: i64) -> Result<(), KvError> {
     let mut usage = crate::native::lock_recover(&state.usage);
     ensure_open(&usage, handle)?;
     state.db.clear()?;
-    let old = usage.trees.insert(TreeId::Default, TreeUsage::default()).unwrap_or_default();
+    let old = usage
+        .trees
+        .insert(TreeId::Default, TreeUsage::default())
+        .unwrap_or_default();
     usage.bytes = usage.bytes.saturating_sub(old.bytes);
     usage.entries = usage.entries.saturating_sub(old.entries);
     release_runtime_storage(state.owner, old.bytes, old.entries);
@@ -813,7 +836,10 @@ pub fn compare_and_swap(
         .transpose()?
         .unwrap_or(0);
     let old_entries = if current.is_some() { 1 } else { 0 };
-    let new_bytes = new_value.map(|value| item_bytes(key, value)).transpose()?.unwrap_or(0);
+    let new_bytes = new_value
+        .map(|value| item_bytes(key, value))
+        .transpose()?
+        .unwrap_or(0);
     let new_entries = if new_value.is_some() { 1 } else { 0 };
     let (reserved_bytes, reserved_entries) = reserve_replacement_growth(
         &state,
@@ -885,11 +911,7 @@ pub fn open_tree(db_handle: i64, name: &str) -> Result<i64, KvError> {
     }
 }
 
-pub fn tree_insert(
-    tree_handle: i64,
-    key: &[u8],
-    value: &[u8],
-) -> Result<Option<Vec<u8>>, KvError> {
+pub fn tree_insert(tree_handle: i64, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
     validate_key(key)?;
     validate_value(value)?;
     let _permit = reserve_operation()?;
@@ -1059,7 +1081,10 @@ mod tests {
             let paths = (0..MAX_DB_HANDLES)
                 .map(|index| temp_db_path(&format!("quota-{index}")))
                 .collect::<Vec<_>>();
-            let mut handles = paths.iter().map(|path| open(path).unwrap()).collect::<Vec<_>>();
+            let mut handles = paths
+                .iter()
+                .map(|path| open(path).unwrap())
+                .collect::<Vec<_>>();
             assert!(matches!(
                 open(&temp_db_path("quota-overflow")),
                 Err(KvError::ResourceLimit {
@@ -1111,31 +1136,37 @@ mod tests {
                 })
             ));
             close(db).unwrap();
-            assert!(matches!(
-                tree_len(handles[0]),
-                Err(KvError::UnknownTree(_))
-            ));
+            assert!(matches!(tree_len(handles[0]), Err(KvError::UnknownTree(_))));
         });
         assert_eq!(cleanup_runtime(runtime_id), 0);
         std::fs::remove_dir_all(path).ok();
 
         crate::native::with_runtime_context(runtime_id, || {
-            reserve_runtime_storage(MAX_RUNTIME_LOGICAL_BYTES, MAX_RUNTIME_ENTRIES).unwrap();
+            reserve_runtime_storage(
+                runtime_id,
+                MAX_RUNTIME_LOGICAL_BYTES,
+                MAX_RUNTIME_ENTRIES,
+            )
+            .unwrap();
             assert!(matches!(
-                reserve_runtime_storage(1, 0),
+                reserve_runtime_storage(runtime_id, 1, 0),
                 Err(KvError::ResourceLimit {
                     resource: "runtime key-value logical bytes",
                     ..
                 })
             ));
             assert!(matches!(
-                reserve_runtime_storage(0, 1),
+                reserve_runtime_storage(runtime_id, 0, 1),
                 Err(KvError::ResourceLimit {
                     resource: "runtime key-value entries",
                     ..
                 })
             ));
-            release_runtime_storage(MAX_RUNTIME_LOGICAL_BYTES, MAX_RUNTIME_ENTRIES);
+            release_runtime_storage(
+                runtime_id,
+                MAX_RUNTIME_LOGICAL_BYTES,
+                MAX_RUNTIME_ENTRIES,
+            );
         });
         assert!(!crate::native::lock_recover(runtime_usage()).contains_key(&runtime_id));
     }
@@ -1148,7 +1179,8 @@ mod tests {
             .cache_capacity(MAX_DB_CACHE_BYTES)
             .open()
             .unwrap();
-        raw.insert(b"oversized", vec![0; MAX_VALUE_BYTES + 1]).unwrap();
+        raw.insert(b"oversized", vec![0; MAX_VALUE_BYTES + 1])
+            .unwrap();
         raw.flush().unwrap();
         drop(raw);
         assert!(matches!(
