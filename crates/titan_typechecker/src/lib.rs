@@ -2674,7 +2674,7 @@ impl TypeEnv {
             Add if left == Type::String => Type::String,
             Add if right == Type::String => Type::String,
             Add | Sub | Mul | Div if is_numeric(&left) && compatible(&left, &right) => left,
-            Mod if left == Type::Int && right == Type::Int => Type::Int,
+            Mod if compatible(&Type::Int, &left) && compatible(&Type::Int, &right) => Type::Int,
             And | Or | Xor if left == Type::Int && right == Type::Int => Type::Int,
             _ => {
                 self.invalid(op, left, right);
@@ -3742,6 +3742,7 @@ mod tests {
         assert!(check("fn main() { let a = -true let b = ~\"text\" }").is_err());
         assert!(check("fn main() { let a = -1.5 let b = ~7 }").is_ok());
         assert!(check("fn main() { 5.0 % 2.0 }").is_err());
+        assert!(check("fn main() { [1, 2].filter(|value| value % 2 == 0) }").is_ok());
         assert!(check("fn unit() {} fn main() { nil == unit() unit() == nil }").is_ok());
     }
 
