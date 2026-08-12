@@ -69,6 +69,8 @@ pub enum TypeError {
     DuplicateDeclaration { kind: String, name: String },
     #[error("unknown type '{name}'")]
     UnknownType { name: String },
+    #[error("recursive constant dependency: {cycle}")]
+    RecursiveConstant { cycle: String },
     #[error("type alias '{name}' is recursive")]
     RecursiveTypeAlias { name: String },
     #[error("impl target '{name}' is not a declared struct")]
@@ -134,6 +136,9 @@ pub struct TypeEnv {
     base_enum_variants: HashMap<String, Option<Type>>,
     constants: HashSet<String>,
     constant_types: HashMap<String, Type>,
+    constant_declarations: HashMap<String, ConstDecl>,
+    constant_stack: Vec<String>,
+    checked_constants: HashSet<String>,
     /// Phase 22: trait declarations indexed by name, so `impl Trait for
     /// Type` blocks can pull default method bodies + signatures.
     traits: HashMap<String, TraitDecl>,
@@ -1035,6 +1040,9 @@ impl TypeEnv {
             enum_variants,
             constants: HashSet::new(),
             constant_types: HashMap::new(),
+            constant_declarations: HashMap::new(),
+            constant_stack: Vec::new(),
+            checked_constants: HashSet::new(),
             traits: HashMap::new(),
             type_aliases: HashMap::new(),
             errors: Vec::new(),
@@ -1055,6 +1063,9 @@ impl TypeEnv {
         self.enum_variants = self.base_enum_variants.clone();
         self.constants.clear();
         self.constant_types.clear();
+        self.constant_declarations.clear();
+        self.constant_stack.clear();
+        self.checked_constants.clear();
         self.traits.clear();
         self.type_aliases.clear();
         self.errors.clear();
@@ -1114,6 +1125,8 @@ impl TypeEnv {
     fn reset_analysis_state(&mut self) {
         self.scopes = vec![self.constant_types.clone()];
         self.constants = self.constant_types.keys().cloned().collect();
+        self.constant_stack.clear();
+        self.checked_constants.clear();
         self.errors.clear();
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
@@ -1351,6 +1364,8 @@ impl TypeEnv {
                         .map(type_from_ast)
                         .unwrap_or(Type::Unknown);
                     self.constant_types.insert(constant.name.clone(), declared);
+                    self.constant_declarations
+                        .insert(constant.name.clone(), constant.clone());
                 }
                 Item::Module(module) => self.collect_declarations(&module.items),
                 // Phase 20: register `impl Type { fn m() {} }` methods
@@ -1549,18 +1564,84 @@ impl TypeEnv {
                 }
             }
             Item::Const(constant) => {
-                let found = self.check_expr(&constant.value);
-                let declared = constant.type_ann.as_ref().map(type_from_ast);
-                if let Some(expected) = &declared {
-                    self.require_compatible(expected, &found);
-                }
-                let inferred = declared.unwrap_or(found);
-                self.constant_types
-                    .insert(constant.name.clone(), inferred.clone());
-                self.scopes[0].insert(constant.name.clone(), inferred);
+                self.check_constant(&constant.name);
             }
             _ => {}
         }
+    }
+
+    fn check_constant(&mut self, name: &str) -> Type {
+        if self.checked_constants.contains(name) {
+            return self
+                .constant_types
+                .get(name)
+                .cloned()
+                .unwrap_or(Type::Unknown);
+        }
+        if let Some(start) = self
+            .constant_stack
+            .iter()
+            .position(|constant| constant == name)
+        {
+            let mut cycle = self.constant_stack[start..].to_vec();
+            cycle.push(name.into());
+            self.errors.push(TypeError::RecursiveConstant {
+                cycle: cycle.join(" -> "),
+            });
+            return Type::Unknown;
+        }
+        let Some(constant) = self.constant_declarations.get(name).cloned() else {
+            return Type::Unknown;
+        };
+        self.constant_stack.push(name.into());
+        let found = self.check_expr(&constant.value);
+        self.constant_stack.pop();
+        let declared = constant.type_ann.as_ref().map(type_from_ast);
+        if let Some(expected) = &declared {
+            self.require_compatible(expected, &found);
+        }
+        let inferred = declared.unwrap_or(found);
+        self.constant_types.insert(name.into(), inferred.clone());
+        self.scopes[0].insert(name.into(), inferred.clone());
+        self.checked_constants.insert(name.into());
+        inferred
+    }
+
+    fn check_identifier(&mut self, name: &str) -> Type {
+        let locally_bound = self
+            .scopes
+            .iter()
+            .skip(1)
+            .rev()
+            .any(|scope| scope.contains_key(name));
+        if !locally_bound && self.constant_declarations.contains_key(name) {
+            return self.check_constant(name);
+        }
+        self.lookup(name)
+            .or_else(|| {
+                self.functions
+                    .get(name)
+                    .map(|signature| {
+                        Type::Function(
+                            signature.params.clone(),
+                            Box::new(signature.result.clone()),
+                        )
+                    })
+            })
+            .or_else(|| {
+                self.enum_variants.get(name).and_then(|payload| {
+                    if payload.is_none() {
+                        name.split_once("::")
+                            .map(|(enumeration, _)| Type::Named(enumeration.into()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_else(|| {
+                self.errors.push(TypeError::UnknownVariable { name: name.into() });
+                Type::Unknown
+            })
     }
 
     fn check_function(&mut self, function: &FunctionDecl) {
@@ -1684,27 +1765,7 @@ impl TypeEnv {
             Expr::Char { .. } => Type::Char,
             Expr::Bool { .. } => Type::Bool,
             Expr::Nil { .. } => Type::Nil,
-            Expr::Ident { name, .. } => self
-                .lookup(name)
-                .or_else(|| {
-                    self.functions
-                        .get(name)
-                        .map(|s| Type::Function(s.params.clone(), Box::new(s.result.clone())))
-                })
-                .or_else(|| {
-                    self.enum_variants.get(name).and_then(|payload| {
-                        if payload.is_none() {
-                            name.split_once("::").map(|(e, _)| Type::Named(e.into()))
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .unwrap_or_else(|| {
-                    self.errors
-                        .push(TypeError::UnknownVariable { name: name.clone() });
-                    Type::Unknown
-                }),
+            Expr::Ident { name, .. } => self.check_identifier(name),
             Expr::Array { elements, .. } => {
                 // v0.16.0 QoL: allow heterogeneous array literals.
                 // Rule:
@@ -3054,6 +3115,23 @@ fn declaration_errors(
                     name: format!("{}::{}", owner, param.name),
                 });
             }
+            if param.default.is_some() {
+                state.errors.push(TypeError::UnsupportedFeature {
+                    feature: format!("default parameter '{}::{}'", owner, param.name),
+                });
+            }
+        }
+    }
+
+    fn reject_unimplemented_function(state: &mut State, owner: &str, function: &FunctionDecl) {
+        if function.is_extern {
+            state.errors.push(TypeError::UnsupportedFeature {
+                feature: format!("extern function '{}' without runtime linkage", owner),
+            });
+        } else if function.body.is_none() {
+            state.errors.push(TypeError::UnsupportedFeature {
+                feature: format!("bodyless function '{}' outside a trait declaration", owner),
+            });
         }
     }
 
@@ -3063,6 +3141,7 @@ fn declaration_errors(
                 Item::Function(function) => {
                     insert(state, "value", "function", &function.name);
                     parameters(state, &function.name, &function.params);
+                    reject_unimplemented_function(state, &function.name, function);
                 }
                 Item::Const(constant) => insert(state, "value", "constant", &constant.name),
                 Item::Struct(structure) => {
@@ -3126,11 +3205,9 @@ fn declaration_errors(
                                 name: format!("{}::{}", target, method.name),
                             });
                         }
-                        parameters(
-                            state,
-                            &format!("{}::{}", target, method.name),
-                            &method.params,
-                        );
+                        let qualified = format!("{}::{}", target, method.name);
+                        parameters(state, &qualified, &method.params);
+                        reject_unimplemented_function(state, &qualified, method);
                     }
                 }
                 Item::Module(module) => visit(state, &module.items),
@@ -3764,10 +3841,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_parameter_defaults() {
+    fn rejects_parameter_defaults_until_the_runtime_can_apply_them() {
         assert!(check("fn bad(value: int = true) -> int { value }").is_err());
         assert!(check("fn bad(value: int = value) -> int { value }").is_err());
-        assert!(check("fn good(first: int, second: int = first) -> int { second }").is_ok());
+        assert!(check("fn pending(first: int, second: int = first) -> int { second }").is_err());
+    }
+
+    #[test]
+    fn rejects_bodyless_and_unlinked_extern_functions() {
+        assert!(check("fn declared() -> int; fn main() { declared() }").is_err());
+        assert!(check("extern \"C\" fn native() -> int; fn main() { native() }").is_err());
     }
 
     #[test]
@@ -3782,6 +3865,21 @@ mod tests {
             "fn main() { let value: int = FIRST } const FIRST = SECOND + 1 const SECOND = 41";
         assert!(check(forward).is_ok());
         assert!(check("const FIRST: string = SECOND const SECOND = 42 fn main() {}").is_err());
+    }
+
+    #[test]
+    fn rejects_direct_and_indirect_constant_cycles_but_not_local_shadowing() {
+        for source in [
+            "const VALUE = VALUE fn main() {}",
+            "const FIRST = SECOND const SECOND = FIRST fn main() {}",
+            "const FIRST: int = SECOND const SECOND: int = FIRST fn main() {}",
+        ] {
+            let errors = check(source).unwrap_err();
+            assert!(errors
+                .iter()
+                .any(|error| matches!(error, TypeError::RecursiveConstant { .. })));
+        }
+        assert!(check("const VALUE = (|VALUE| VALUE)(42) fn main() { VALUE }").is_ok());
     }
 
     #[test]

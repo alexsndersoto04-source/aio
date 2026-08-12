@@ -320,6 +320,7 @@ pub struct AstCompiler {
     function_ids: HashMap<String, usize>,
     enum_variants: HashMap<String, bool>,
     constants: HashMap<String, Expr>,
+    constant_expansion: Vec<String>,
     loops: Vec<LoopContext>,
     current_location: Option<SourceLocation>,
 }
@@ -349,6 +350,7 @@ impl AstCompiler {
             function_ids: HashMap::new(),
             enum_variants: HashMap::new(),
             constants: HashMap::new(),
+            constant_expansion: Vec::new(),
             loops: Vec::new(),
             current_location: None,
         }
@@ -367,6 +369,7 @@ impl AstCompiler {
         self.function_ids.clear();
         self.enum_variants.clear();
         self.constants.clear();
+        self.constant_expansion.clear();
         self.enum_variants.extend([
             ("Option::None".into(), false),
             ("Option::Some".into(), true),
@@ -416,6 +419,24 @@ impl AstCompiler {
     }
 
     fn compile_function(&mut self, function: &FunctionDecl) -> Result<BytecodeFunc, CodegenError> {
+        if function.is_extern {
+            return Err(CodegenError::Unsupported(format!(
+                "extern function '{}' has no runtime linkage implementation",
+                function.name
+            )));
+        }
+        let Some(body) = &function.body else {
+            return Err(CodegenError::Unsupported(format!(
+                "bodyless function '{}' outside a trait declaration",
+                function.name
+            )));
+        };
+        if function.params.iter().any(|param| param.default.is_some()) {
+            return Err(CodegenError::Unsupported(format!(
+                "default parameters in function '{}' have no bytecode implementation",
+                function.name
+            )));
+        }
         let param_types = function
             .params
             .iter()
@@ -443,11 +464,7 @@ impl AstCompiler {
         for param in &function.params {
             self.add_local(&param.name);
         }
-        if let Some(body) = &function.body {
-            self.compile_block(body, true)?;
-        } else {
-            self.emit(Op::PushNil);
-        }
+        self.compile_block(body, true)?;
         if !matches!(self.current.code.last(), Some(Op::Ret)) {
             self.emit(Op::Ret);
         }
@@ -522,7 +539,22 @@ impl AstCompiler {
                 if let Some(local) = self.find_local(name) {
                     self.emit(Op::PushLocal(local));
                 } else if let Some(value) = self.constants.get(name).cloned() {
-                    self.compile_expr(&value)?;
+                    if let Some(start) = self
+                        .constant_expansion
+                        .iter()
+                        .position(|constant| constant == name)
+                    {
+                        let mut cycle = self.constant_expansion[start..].to_vec();
+                        cycle.push(name.clone());
+                        return Err(CodegenError::Unsupported(format!(
+                            "recursive constant expansion: {}",
+                            cycle.join(" -> ")
+                        )));
+                    }
+                    self.constant_expansion.push(name.clone());
+                    let result = self.compile_expr(&value);
+                    self.constant_expansion.pop();
+                    result?;
                 } else if self.enum_variants.get(name) == Some(&false) {
                     let (enum_name, variant) = split_variant(name)?;
                     self.emit(Op::NewEnum {
@@ -1662,5 +1694,34 @@ mod tests {
             AstCompiler::new().compile_program(&break_value),
             Err(CodegenError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn rejects_function_features_without_runtime_semantics() {
+        for source in [
+            "fn declared() -> int; fn main() { declared() }",
+            "extern \"C\" fn native() -> int; fn main() { native() }",
+            "fn pending(value: int = 1) -> int { value } fn main() { pending() }",
+        ] {
+            assert!(matches!(
+                AstCompiler::new().compile_program(&parse(source)),
+                Err(CodegenError::Unsupported(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_recursive_constant_expansion_without_overflowing() {
+        for source in [
+            "const VALUE = VALUE fn main() { VALUE }",
+            "const FIRST = SECOND const SECOND = FIRST fn main() { FIRST }",
+        ] {
+            let error = AstCompiler::new().compile_program(&parse(source));
+            assert!(matches!(
+                error,
+                Err(CodegenError::Unsupported(message))
+                    if message.contains("recursive constant expansion")
+            ));
+        }
     }
 }
