@@ -37,7 +37,9 @@ pub enum AudioError {
     Invalid(String),
 }
 
-fn map_wav(error: hound::Error) -> AudioError { AudioError::Wav(error.to_string()) }
+fn map_wav(error: hound::Error) -> AudioError {
+    AudioError::Wav(error.to_string())
+}
 
 // ---------------- WAV I/O -----------------------------------------------
 
@@ -49,7 +51,12 @@ pub fn read_wav(path: &str) -> Result<(Vec<f32>, u32, u16, u16), AudioError> {
     let mut reader = WavReader::open(path).map_err(map_wav)?;
     let spec = reader.spec();
     let samples = collect_samples(&mut reader, &spec)?;
-    Ok((samples, spec.sample_rate, spec.channels, spec.bits_per_sample))
+    Ok((
+        samples,
+        spec.sample_rate,
+        spec.channels,
+        spec.bits_per_sample,
+    ))
 }
 
 /// Same as `read_wav`, but accepts the file as raw bytes (useful for
@@ -58,43 +65,81 @@ pub fn read_wav_bytes(bytes: &[u8]) -> Result<(Vec<f32>, u32, u16, u16), AudioEr
     let mut reader = WavReader::new(Cursor::new(bytes)).map_err(map_wav)?;
     let spec = reader.spec();
     let samples = collect_samples(&mut reader, &spec)?;
-    Ok((samples, spec.sample_rate, spec.channels, spec.bits_per_sample))
+    Ok((
+        samples,
+        spec.sample_rate,
+        spec.channels,
+        spec.bits_per_sample,
+    ))
 }
 
-fn collect_samples<R: std::io::Read>(reader: &mut WavReader<R>, spec: &WavSpec) -> Result<Vec<f32>, AudioError> {
+fn collect_samples<R: std::io::Read>(
+    reader: &mut WavReader<R>,
+    spec: &WavSpec,
+) -> Result<Vec<f32>, AudioError> {
     match spec.sample_format {
-        SampleFormat::Float => Ok(reader.samples::<f32>().collect::<Result<Vec<_>, _>>().map_err(map_wav)?),
+        SampleFormat::Float => Ok(reader
+            .samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_wav)?),
         SampleFormat::Int => {
             // Scale integer samples to [-1.0, 1.0].
             let max = (1i64 << (spec.bits_per_sample as i64 - 1)) as f32;
-            Ok(reader.samples::<i32>().map(|value| value.map(|value| value as f32 / max)).collect::<Result<Vec<_>, _>>().map_err(map_wav)?)
+            Ok(reader
+                .samples::<i32>()
+                .map(|value| value.map(|value| value as f32 / max))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_wav)?)
         }
     }
 }
 
 /// Write `samples` (interleaved if `channels > 1`, values in [-1.0, 1.0])
 /// as a 16-bit PCM WAV file.
-pub fn write_wav(path: &str, samples: &[f32], sample_rate: u32, channels: u16) -> Result<(), AudioError> {
-    if channels == 0 { return Err(AudioError::Invalid("channels must be >= 1".into())); }
-    let spec = WavSpec { channels, sample_rate, bits_per_sample: 16, sample_format: SampleFormat::Int };
+pub fn write_wav(
+    path: &str,
+    samples: &[f32],
+    sample_rate: u32,
+    channels: u16,
+) -> Result<(), AudioError> {
+    if channels == 0 {
+        return Err(AudioError::Invalid("channels must be >= 1".into()));
+    }
+    let spec = WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
     let mut writer = WavWriter::create(Path::new(path), spec).map_err(map_wav)?;
     for sample in samples {
         let clipped = sample.clamp(-1.0, 1.0);
-        writer.write_sample((clipped * i16::MAX as f32) as i16).map_err(map_wav)?;
+        writer
+            .write_sample((clipped * i16::MAX as f32) as i16)
+            .map_err(map_wav)?;
     }
     writer.finalize().map_err(map_wav)
 }
 
 /// Encode `samples` as a WAV blob without touching the filesystem.
 pub fn encode_wav(samples: &[f32], sample_rate: u32, channels: u16) -> Result<Vec<u8>, AudioError> {
-    if channels == 0 { return Err(AudioError::Invalid("channels must be >= 1".into())); }
-    let spec = WavSpec { channels, sample_rate, bits_per_sample: 16, sample_format: SampleFormat::Int };
+    if channels == 0 {
+        return Err(AudioError::Invalid("channels must be >= 1".into()));
+    }
+    let spec = WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
     let mut buffer = Cursor::new(Vec::new());
     {
         let mut writer = WavWriter::new(&mut buffer, spec).map_err(map_wav)?;
         for sample in samples {
             let clipped = sample.clamp(-1.0, 1.0);
-            writer.write_sample((clipped * i16::MAX as f32) as i16).map_err(map_wav)?;
+            writer
+                .write_sample((clipped * i16::MAX as f32) as i16)
+                .map_err(map_wav)?;
         }
         writer.finalize().map_err(map_wav)?;
     }
@@ -104,23 +149,41 @@ pub fn encode_wav(samples: &[f32], sample_rate: u32, channels: u16) -> Result<Ve
 // ---------------- Synthesis ---------------------------------------------
 
 /// Generate a mono sine-wave sample buffer of `duration_ms` at `frequency_hz`.
-pub fn sine_wave(frequency_hz: f32, duration_ms: u32, sample_rate: u32, amplitude: f32) -> Vec<f32> {
+pub fn sine_wave(
+    frequency_hz: f32,
+    duration_ms: u32,
+    sample_rate: u32,
+    amplitude: f32,
+) -> Vec<f32> {
     let total = (sample_rate as u64 * duration_ms as u64 / 1000) as usize;
     let amplitude = amplitude.clamp(0.0, 1.0);
-    (0..total).map(|i| {
-        let t = i as f32 / sample_rate as f32;
-        amplitude * (2.0 * PI * frequency_hz * t).sin()
-    }).collect()
+    (0..total)
+        .map(|i| {
+            let t = i as f32 / sample_rate as f32;
+            amplitude * (2.0 * PI * frequency_hz * t).sin()
+        })
+        .collect()
 }
 
 /// Square wave (harsh, retro-console vibe).
-pub fn square_wave(frequency_hz: f32, duration_ms: u32, sample_rate: u32, amplitude: f32) -> Vec<f32> {
+pub fn square_wave(
+    frequency_hz: f32,
+    duration_ms: u32,
+    sample_rate: u32,
+    amplitude: f32,
+) -> Vec<f32> {
     let total = (sample_rate as u64 * duration_ms as u64 / 1000) as usize;
     let amplitude = amplitude.clamp(0.0, 1.0);
-    (0..total).map(|i| {
-        let t = i as f32 / sample_rate as f32;
-        if (2.0 * PI * frequency_hz * t).sin() >= 0.0 { amplitude } else { -amplitude }
-    }).collect()
+    (0..total)
+        .map(|i| {
+            let t = i as f32 / sample_rate as f32;
+            if (2.0 * PI * frequency_hz * t).sin() >= 0.0 {
+                amplitude
+            } else {
+                -amplitude
+            }
+        })
+        .collect()
 }
 
 /// Sawtooth wave.
@@ -128,10 +191,12 @@ pub fn saw_wave(frequency_hz: f32, duration_ms: u32, sample_rate: u32, amplitude
     let total = (sample_rate as u64 * duration_ms as u64 / 1000) as usize;
     let amplitude = amplitude.clamp(0.0, 1.0);
     let period = sample_rate as f32 / frequency_hz;
-    (0..total).map(|i| {
-        let phase = (i as f32 % period) / period;
-        amplitude * (2.0 * phase - 1.0)
-    }).collect()
+    (0..total)
+        .map(|i| {
+            let phase = (i as f32 % period) / period;
+            amplitude * (2.0 * phase - 1.0)
+        })
+        .collect()
 }
 
 /// White noise (random values in [-amp, amp]).
@@ -141,11 +206,13 @@ pub fn white_noise(duration_ms: u32, sample_rate: u32, amplitude: f32) -> Vec<f3
     // Use a simple LCG so we don't depend on `rand` (which is already an
     // optional feature of Phase 1).
     let mut state: u32 = 0x9E37_79B9;
-    (0..total).map(|_| {
-        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let unit = (state >> 8) as f32 / (1u32 << 24) as f32; // [0, 1)
-        amplitude * (unit * 2.0 - 1.0)
-    }).collect()
+    (0..total)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let unit = (state >> 8) as f32 / (1u32 << 24) as f32; // [0, 1)
+            amplitude * (unit * 2.0 - 1.0)
+        })
+        .collect()
 }
 
 /// Simple linear fade-in from 0 to full amplitude over `fade_ms`.
@@ -155,7 +222,9 @@ pub fn white_noise(duration_ms: u32, sample_rate: u32, amplitude: f32) -> Vec<f3
 /// stopping one step short (off-by-one that left residue amplitude > 0).
 pub fn fade_in(samples: &mut [f32], sample_rate: u32, fade_ms: u32) {
     let fade = (sample_rate as u64 * fade_ms as u64 / 1000).min(samples.len() as u64) as usize;
-    if fade == 0 { return; }
+    if fade == 0 {
+        return;
+    }
     let denom = fade.saturating_sub(1).max(1) as f32;
     for (i, sample) in samples.iter_mut().take(fade).enumerate() {
         *sample *= i as f32 / denom;
@@ -168,7 +237,9 @@ pub fn fade_in(samples: &mut [f32], sample_rate: u32, fade_ms: u32) {
 /// the ramp is a single sample long.
 pub fn fade_out(samples: &mut [f32], sample_rate: u32, fade_ms: u32) {
     let fade = (sample_rate as u64 * fade_ms as u64 / 1000).min(samples.len() as u64) as usize;
-    if fade == 0 { return; }
+    if fade == 0 {
+        return;
+    }
     let denom = fade.saturating_sub(1).max(1) as f32;
     let start = samples.len().saturating_sub(fade);
     for (i, sample) in samples.iter_mut().skip(start).enumerate() {
@@ -181,7 +252,9 @@ pub fn fade_out(samples: &mut [f32], sample_rate: u32, fade_ms: u32) {
 fn spawn(tool: &str, args: &[&str]) -> Result<Vec<u8>, AudioError> {
     let output = Command::new(tool)
         .args(args)
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => AudioError::MissingCli { tool: tool.into() },
@@ -201,8 +274,11 @@ fn spawn(tool: &str, args: &[&str]) -> Result<Vec<u8>, AudioError> {
 pub fn is_termux_media_available() -> bool {
     Command::new("termux-media-player")
         .arg("info")
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().is_ok()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 /// Start playing `path` in the background. Returns the tool's stdout for
@@ -258,7 +334,9 @@ mod tests {
     fn sine_has_correct_length_and_range() {
         let samples = sine_wave(440.0, 100, 44_100, 0.5);
         assert_eq!(samples.len(), 4410);
-        for value in &samples { assert!((-0.6..=0.6).contains(value)); }
+        for value in &samples {
+            assert!((-0.6..=0.6).contains(value));
+        }
     }
 
     #[test]
@@ -289,14 +367,14 @@ mod tests {
     #[test]
     fn synthesizers_produce_expected_lengths() {
         assert_eq!(square_wave(440.0, 100, 44_100, 0.5).len(), 4410);
-        assert_eq!(saw_wave(440.0, 100, 44_100, 0.5).len(),    4410);
-        assert_eq!(white_noise(100, 44_100, 0.5).len(),        4410);
+        assert_eq!(saw_wave(440.0, 100, 44_100, 0.5).len(), 4410);
+        assert_eq!(white_noise(100, 44_100, 0.5).len(), 4410);
     }
 
     #[test]
     fn fades_scale_edges() {
         let mut samples = vec![1.0f32; 100];
-        fade_in(&mut samples, 100, 10);   // 10 ms at 100 Hz -> 1 sample
+        fade_in(&mut samples, 100, 10); // 10 ms at 100 Hz -> 1 sample
         assert!(samples[0].abs() < 1e-6);
         fade_out(&mut samples, 100, 10);
         assert!(samples.last().unwrap().abs() < 1e-6);

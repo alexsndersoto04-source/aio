@@ -29,7 +29,9 @@ pub enum FsWatchError {
     Io(#[from] std::io::Error),
 }
 
-fn nerr(error: impl std::fmt::Display) -> FsWatchError { FsWatchError::Notify(error.to_string()) }
+fn nerr(error: impl std::fmt::Display) -> FsWatchError {
+    FsWatchError::Notify(error.to_string())
+}
 
 struct WatcherEntry {
     _watcher: RecommendedWatcher,
@@ -39,14 +41,24 @@ struct WatcherEntry {
     root_existed: bool,
 }
 
-struct Registry { entries: HashMap<(u64, i64), WatcherEntry>, next_id: i64 }
+struct Registry {
+    entries: HashMap<(u64, i64), WatcherEntry>,
+    next_id: i64,
+}
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(Registry { entries: HashMap::new(), next_id: 1 }))
+    REG.get_or_init(|| {
+        Mutex::new(Registry {
+            entries: HashMap::new(),
+            next_id: 1,
+        })
+    })
 }
 
-fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+fn handle_key(handle: i64) -> (u64, i64) {
+    crate::native::runtime_handle_key(handle)
+}
 
 /// Format an `EventKind` into a compact string like "create", "modify",
 /// "remove", "rename" or "other".
@@ -56,13 +68,17 @@ fn kind_name(kind: &EventKind) -> &'static str {
         EventKind::Create(_) => "create",
         EventKind::Modify(_) => "modify",
         EventKind::Remove(_) => "remove",
-        EventKind::Other    => "other",
-        EventKind::Any      => "any",
+        EventKind::Other => "other",
+        EventKind::Any => "any",
     }
 }
 
 fn describe(event: &notify::Event) -> String {
-    let paths: Vec<String> = event.paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let paths: Vec<String> = event
+        .paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     format!("{}:{}", kind_name(&event.kind), paths.join(","))
 }
 
@@ -75,7 +91,9 @@ fn describe(event: &notify::Event) -> String {
 /// plain string compare never matches and the phantom `create:` of the
 /// watched root leaks through (observed on GitHub's macos runners).
 fn path_is_root(p: &std::path::Path, root: &std::path::Path, root_canon: &std::path::Path) -> bool {
-    if p == root || p == root_canon { return true; }
+    if p == root || p == root_canon {
+        return true;
+    }
     std::fs::canonicalize(p).ok().as_deref() == Some(root_canon)
 }
 
@@ -95,18 +113,25 @@ fn recv_fresh(
     let deadline = Instant::now() + timeout;
     loop {
         let now = Instant::now();
-        if now >= deadline { return Err(mpsc::RecvTimeoutError::Timeout); }
+        if now >= deadline {
+            return Err(mpsc::RecvTimeoutError::Timeout);
+        }
         match rx.recv_timeout(deadline - now) {
             Ok(Ok(ref event)) => {
                 let stale = root_existed
                     && matches!(event.kind, EventKind::Create(_))
                     && !event.paths.is_empty()
-                    && event.paths.iter().all(|p| path_is_root(p, root, root_canon));
-                if stale { continue; }
+                    && event
+                        .paths
+                        .iter()
+                        .all(|p| path_is_root(p, root, root_canon));
+                if stale {
+                    continue;
+                }
                 return Ok(Ok(event.clone()));
             }
             Ok(Err(error)) => return Ok(Err(error)),
-            Err(e)         => return Err(e),
+            Err(e) => return Err(e),
         }
     }
 }
@@ -114,16 +139,29 @@ fn recv_fresh(
 /// Watch `path` and return the first event (or "timeout" on expiry).
 pub fn watch_once(path: &str, timeout_ms: u64, recursive: bool) -> Result<String, FsWatchError> {
     let (tx, rx) = mpsc::channel();
-    let mut watcher = recommended_watcher(move |result| { let _ = tx.send(result); }).map_err(nerr)?;
-    let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+    let mut watcher = recommended_watcher(move |result| {
+        let _ = tx.send(result);
+    })
+    .map_err(nerr)?;
+    let mode = if recursive {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    };
     let root = PathBuf::from(path);
     let root_existed = root.exists();
     let root_canon = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     watcher.watch(&root, mode).map_err(nerr)?;
-    match recv_fresh(&rx, Duration::from_millis(timeout_ms), &root, &root_canon, root_existed) {
-        Ok(Ok(event))  => Ok(describe(&event)),
+    match recv_fresh(
+        &rx,
+        Duration::from_millis(timeout_ms),
+        &root,
+        &root_canon,
+        root_existed,
+    ) {
+        Ok(Ok(event)) => Ok(describe(&event)),
         Ok(Err(error)) => Err(nerr(error)),
-        Err(_)         => Ok("timeout".into()),
+        Err(_) => Ok("timeout".into()),
     }
 }
 
@@ -132,8 +170,15 @@ pub fn watch_once(path: &str, timeout_ms: u64, recursive: bool) -> Result<String
 /// Open a watcher on `path` and return an opaque handle.
 pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
     let (tx, rx) = mpsc::channel();
-    let mut watcher = recommended_watcher(move |result| { let _ = tx.send(result); }).map_err(nerr)?;
-    let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+    let mut watcher = recommended_watcher(move |result| {
+        let _ = tx.send(result);
+    })
+    .map_err(nerr)?;
+    let mode = if recursive {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    };
     let root = PathBuf::from(path);
     let root_existed = root.exists();
     let root_canon = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
@@ -141,7 +186,16 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
     let mut reg = registry().lock().expect("fswatch registry poisoned");
     let id = reg.next_id;
     reg.next_id += 1;
-    reg.entries.insert(handle_key(id), WatcherEntry { _watcher: watcher, events: rx, root, root_canon, root_existed });
+    reg.entries.insert(
+        handle_key(id),
+        WatcherEntry {
+            _watcher: watcher,
+            events: rx,
+            root,
+            root_canon,
+            root_existed,
+        },
+    );
     Ok(id)
 }
 
@@ -149,16 +203,27 @@ pub fn open(path: &str, recursive: bool) -> Result<i64, FsWatchError> {
 /// within `timeout_ms`.
 pub fn next_event(handle: i64, timeout_ms: u64) -> Result<String, FsWatchError> {
     let reg = registry().lock().expect("fswatch registry poisoned");
-    let entry = reg.entries.get(&handle_key(handle)).ok_or(FsWatchError::UnknownHandle(handle))?;
-    match recv_fresh(&entry.events, Duration::from_millis(timeout_ms), &entry.root, &entry.root_canon, entry.root_existed) {
-        Ok(Ok(event))  => Ok(describe(&event)),
+    let entry = reg
+        .entries
+        .get(&handle_key(handle))
+        .ok_or(FsWatchError::UnknownHandle(handle))?;
+    match recv_fresh(
+        &entry.events,
+        Duration::from_millis(timeout_ms),
+        &entry.root,
+        &entry.root_canon,
+        entry.root_existed,
+    ) {
+        Ok(Ok(event)) => Ok(describe(&event)),
         Ok(Err(error)) => Err(nerr(error)),
-        Err(_)         => Ok("timeout".into()),
+        Err(_) => Ok("timeout".into()),
     }
 }
 
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.entries.remove(&handle_key(handle)); }
+    if let Ok(mut reg) = registry().lock() {
+        reg.entries.remove(&handle_key(handle));
+    }
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {

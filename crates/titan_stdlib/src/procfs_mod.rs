@@ -35,11 +35,21 @@ fn refresh() {
 
 // ---------------- Basic OS info ---------------------------------------
 
-pub fn hostname() -> String { System::host_name().unwrap_or_default() }
-pub fn kernel()   -> String { System::kernel_version().unwrap_or_default() }
-pub fn os_name()  -> String { System::name().unwrap_or_default() }
-pub fn os_version() -> String { System::os_version().unwrap_or_default() }
-pub fn uptime()   -> u64    { System::uptime() }
+pub fn hostname() -> String {
+    System::host_name().unwrap_or_default()
+}
+pub fn kernel() -> String {
+    System::kernel_version().unwrap_or_default()
+}
+pub fn os_name() -> String {
+    System::name().unwrap_or_default()
+}
+pub fn os_version() -> String {
+    System::os_version().unwrap_or_default()
+}
+pub fn uptime() -> u64 {
+    System::uptime()
+}
 
 // ---------------- CPU -------------------------------------------------
 
@@ -47,13 +57,21 @@ pub fn uptime()   -> u64    { System::uptime() }
 /// in between for a meaningful reading; the first call primes the samples.
 pub fn cpu_usage() -> f32 {
     refresh();
-    if let Ok(sys) = system().lock() { sys.global_cpu_usage() } else { 0.0 }
+    if let Ok(sys) = system().lock() {
+        sys.global_cpu_usage()
+    } else {
+        0.0
+    }
 }
 
 pub fn cpu_count() -> usize {
     refresh();
     let n = system().lock().map(|s| s.cpus().len()).unwrap_or(0);
-    if n > 0 { n } else { available_cpus() }
+    if n > 0 {
+        n
+    } else {
+        available_cpus()
+    }
 }
 
 /// Conteo REAL de CPUs logicas directo del kernel (sched_getaffinity via
@@ -62,22 +80,29 @@ pub fn cpu_count() -> usize {
 /// (SELinux). Devuelve 0 solo si ni el kernel quiere decirlo; nunca un
 /// numero inventado.
 fn available_cpus() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0)
 }
 
 pub fn cpus() -> Value {
     refresh();
     if let Ok(sys) = system().lock() {
         if !sys.cpus().is_empty() {
-            return Value::Array(sys.cpus().iter().map(|cpu| {
-                json!({
-                    "name": cpu.name(),
-                    "brand": cpu.brand(),
-                    "vendor_id": cpu.vendor_id(),
-                    "frequency_mhz": cpu.frequency(),
-                    "usage_pct": cpu.cpu_usage(),
-                })
-            }).collect());
+            return Value::Array(
+                sys.cpus()
+                    .iter()
+                    .map(|cpu| {
+                        json!({
+                            "name": cpu.name(),
+                            "brand": cpu.brand(),
+                            "vendor_id": cpu.vendor_id(),
+                            "frequency_mhz": cpu.frequency(),
+                            "usage_pct": cpu.cpu_usage(),
+                        })
+                    })
+                    .collect(),
+            );
         }
     }
     // Fallback de sandbox restringida (cero simulacion): el kernel igual
@@ -86,24 +111,43 @@ pub fn cpus() -> Value {
     // sandbox quedan como "desconocido" (string vacia / 0) — NUNCA valores
     // fabricados.
     let count = available_cpus();
-    Value::Array((0..count).map(|i| {
-        json!({
-            "name": format!("cpu{i}"),
-            "brand": "",
-            "vendor_id": "",
-            "frequency_mhz": 0,
-            "usage_pct": 0.0,
-        })
-    }).collect())
+    Value::Array(
+        (0..count)
+            .map(|i| {
+                json!({
+                    "name": format!("cpu{i}"),
+                    "brand": "",
+                    "vendor_id": "",
+                    "frequency_mhz": 0,
+                    "usage_pct": 0.0,
+                })
+            })
+            .collect(),
+    )
 }
 
 // ---------------- Memory ----------------------------------------------
 
-pub fn total_memory()     -> u64 { refresh(); system().lock().map(|s| s.total_memory()).unwrap_or(0) }
-pub fn used_memory()      -> u64 { refresh(); system().lock().map(|s| s.used_memory()).unwrap_or(0) }
-pub fn available_memory() -> u64 { refresh(); system().lock().map(|s| s.available_memory()).unwrap_or(0) }
-pub fn total_swap()       -> u64 { refresh(); system().lock().map(|s| s.total_swap()).unwrap_or(0) }
-pub fn used_swap()        -> u64 { refresh(); system().lock().map(|s| s.used_swap()).unwrap_or(0) }
+pub fn total_memory() -> u64 {
+    refresh();
+    system().lock().map(|s| s.total_memory()).unwrap_or(0)
+}
+pub fn used_memory() -> u64 {
+    refresh();
+    system().lock().map(|s| s.used_memory()).unwrap_or(0)
+}
+pub fn available_memory() -> u64 {
+    refresh();
+    system().lock().map(|s| s.available_memory()).unwrap_or(0)
+}
+pub fn total_swap() -> u64 {
+    refresh();
+    system().lock().map(|s| s.total_swap()).unwrap_or(0)
+}
+pub fn used_swap() -> u64 {
+    refresh();
+    system().lock().map(|s| s.used_swap()).unwrap_or(0)
+}
 
 // ---------------- Load average (Unix only, zeros on Windows) ----------
 
@@ -123,52 +167,81 @@ pub fn process_count() -> usize {
 /// Returns up to `limit` processes sorted by CPU usage (descending).
 pub fn top_processes(limit: usize) -> Value {
     refresh();
-    let sys = match system().lock() { Ok(s) => s, Err(_) => return Value::Array(Vec::new()) };
-    let mut items: Vec<_> = sys.processes().iter().map(|(pid, process)| {
-        (
-            u64::from(pid.as_u32()),
-            process.name().to_string_lossy().into_owned(),
-            process.cpu_usage(),
-            process.memory(),
-        )
-    }).collect();
+    let sys = match system().lock() {
+        Ok(s) => s,
+        Err(_) => return Value::Array(Vec::new()),
+    };
+    let mut items: Vec<_> = sys
+        .processes()
+        .iter()
+        .map(|(pid, process)| {
+            (
+                u64::from(pid.as_u32()),
+                process.name().to_string_lossy().into_owned(),
+                process.cpu_usage(),
+                process.memory(),
+            )
+        })
+        .collect();
     items.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-    Value::Array(items.into_iter().take(limit.max(1)).map(|(pid, name, cpu, mem)| json!({
-        "pid": pid,
-        "name": name,
-        "cpu_pct": cpu,
-        "memory": mem,
-    })).collect())
+    Value::Array(
+        items
+            .into_iter()
+            .take(limit.max(1))
+            .map(|(pid, name, cpu, mem)| {
+                json!({
+                    "pid": pid,
+                    "name": name,
+                    "cpu_pct": cpu,
+                    "memory": mem,
+                })
+            })
+            .collect(),
+    )
 }
 
 // ---------------- Disks & networks -----------------------------------
 
 pub fn disks() -> Value {
     let disks = Disks::new_with_refreshed_list();
-    Value::Array(disks.iter().map(|disk| {
-        let mut entry = BTreeMap::new();
-        entry.insert("name".into(),        json!(disk.name().to_string_lossy()));
-        entry.insert("mount_point".into(), json!(disk.mount_point().to_string_lossy()));
-        entry.insert("file_system".into(), json!(disk.file_system().to_string_lossy()));
-        entry.insert("total".into(),       json!(disk.total_space()));
-        entry.insert("available".into(),   json!(disk.available_space()));
-        entry.insert("removable".into(),   json!(disk.is_removable()));
-        Value::Object(entry.into_iter().collect())
-    }).collect())
+    Value::Array(
+        disks
+            .iter()
+            .map(|disk| {
+                let mut entry = BTreeMap::new();
+                entry.insert("name".into(), json!(disk.name().to_string_lossy()));
+                entry.insert(
+                    "mount_point".into(),
+                    json!(disk.mount_point().to_string_lossy()),
+                );
+                entry.insert(
+                    "file_system".into(),
+                    json!(disk.file_system().to_string_lossy()),
+                );
+                entry.insert("total".into(), json!(disk.total_space()));
+                entry.insert("available".into(), json!(disk.available_space()));
+                entry.insert("removable".into(), json!(disk.is_removable()));
+                Value::Object(entry.into_iter().collect())
+            })
+            .collect(),
+    )
 }
 
 pub fn networks() -> Value {
     let networks = Networks::new_with_refreshed_list();
     let mut out = serde_json::Map::new();
     for (name, data) in &networks {
-        out.insert(name.clone(), json!({
-            "received":         data.total_received(),
-            "transmitted":      data.total_transmitted(),
-            "packets_received": data.total_packets_received(),
-            "packets_transmitted": data.total_packets_transmitted(),
-            "errors_in":        data.total_errors_on_received(),
-            "errors_out":       data.total_errors_on_transmitted(),
-        }));
+        out.insert(
+            name.clone(),
+            json!({
+                "received":         data.total_received(),
+                "transmitted":      data.total_transmitted(),
+                "packets_received": data.total_packets_received(),
+                "packets_transmitted": data.total_packets_transmitted(),
+                "errors_in":        data.total_errors_on_received(),
+                "errors_out":       data.total_errors_on_transmitted(),
+            }),
+        );
     }
     Value::Object(out)
 }

@@ -2,7 +2,10 @@
 //! Manages native window configurations, event queues, keyboard/mouse input, and lifecycle.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex, OnceLock,
+};
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -11,7 +14,9 @@ fn registry() -> &'static Arc<Mutex<HashMap<(u64, u64), WindowHandle>>> {
     REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-fn handle_key(handle: u64) -> (u64, u64) { crate::native::runtime_handle_key(handle) }
+fn handle_key(handle: u64) -> (u64, u64) {
+    crate::native::runtime_handle_key(handle)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowConfig {
@@ -177,8 +182,16 @@ mod tests {
         assert!(set_title(win_id, "Updated Title"));
         assert!(resize(win_id, 1280, 720));
 
-        assert!(push_event(win_id, WindowEvent::KeyDown { key: "Escape".to_string() }));
-        assert!(push_event(win_id, WindowEvent::MouseMove { x: 100, y: 200 }));
+        assert!(push_event(
+            win_id,
+            WindowEvent::KeyDown {
+                key: "Escape".to_string()
+            }
+        ));
+        assert!(push_event(
+            win_id,
+            WindowEvent::MouseMove { x: 100, y: 200 }
+        ));
 
         let events = poll_events(win_id);
         assert_eq!(events.len(), 3);

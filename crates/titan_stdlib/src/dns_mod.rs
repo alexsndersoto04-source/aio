@@ -5,8 +5,8 @@
 
 use std::net::IpAddr;
 
-use hickory_resolver::TokioAsyncResolver;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioAsyncResolver;
 use once_cell::sync::OnceCell;
 use thiserror::Error;
 use tokio::runtime::Runtime;
@@ -41,19 +41,28 @@ pub fn resolve(host: &str) -> Result<Vec<String>, DnsError> {
     let r = resolver()?;
     let host = host.to_string();
     rt.block_on(async move {
-        let response = r.lookup_ip(host).await.map_err(|e| DnsError::Lookup(e.to_string()))?;
+        let response = r
+            .lookup_ip(host)
+            .await
+            .map_err(|e| DnsError::Lookup(e.to_string()))?;
         Ok(response.iter().map(|ip: IpAddr| ip.to_string()).collect())
     })
 }
 
 /// Resolves a hostname to IPv4 addresses only.
 pub fn resolve_ipv4(host: &str) -> Result<Vec<String>, DnsError> {
-    Ok(resolve(host)?.into_iter().filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok()).collect())
+    Ok(resolve(host)?
+        .into_iter()
+        .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+        .collect())
 }
 
 /// Resolves a hostname to IPv6 addresses only.
 pub fn resolve_ipv6(host: &str) -> Result<Vec<String>, DnsError> {
-    Ok(resolve(host)?.into_iter().filter(|ip| ip.parse::<std::net::Ipv6Addr>().is_ok()).collect())
+    Ok(resolve(host)?
+        .into_iter()
+        .filter(|ip| ip.parse::<std::net::Ipv6Addr>().is_ok())
+        .collect())
 }
 
 /// Looks up MX records (returns `["priority host", ...]`, sorted).
@@ -62,8 +71,14 @@ pub fn resolve_mx(host: &str) -> Result<Vec<String>, DnsError> {
     let r = resolver()?;
     let host = host.to_string();
     rt.block_on(async move {
-        let response = r.mx_lookup(host).await.map_err(|e| DnsError::Lookup(e.to_string()))?;
-        let mut records: Vec<_> = response.iter().map(|mx| format!("{} {}", mx.preference(), mx.exchange().to_utf8())).collect();
+        let response = r
+            .mx_lookup(host)
+            .await
+            .map_err(|e| DnsError::Lookup(e.to_string()))?;
+        let mut records: Vec<_> = response
+            .iter()
+            .map(|mx| format!("{} {}", mx.preference(), mx.exchange().to_utf8()))
+            .collect();
         records.sort();
         Ok(records)
     })
@@ -75,12 +90,20 @@ pub fn resolve_txt(host: &str) -> Result<Vec<String>, DnsError> {
     let r = resolver()?;
     let host = host.to_string();
     rt.block_on(async move {
-        let response = r.txt_lookup(host).await.map_err(|e| DnsError::Lookup(e.to_string()))?;
-        Ok(response.iter().map(|record| {
-            record.txt_data().iter()
-                .map(|piece| String::from_utf8_lossy(piece).into_owned())
-                .collect::<String>()
-        }).collect())
+        let response = r
+            .txt_lookup(host)
+            .await
+            .map_err(|e| DnsError::Lookup(e.to_string()))?;
+        Ok(response
+            .iter()
+            .map(|record| {
+                record
+                    .txt_data()
+                    .iter()
+                    .map(|piece| String::from_utf8_lossy(piece).into_owned())
+                    .collect::<String>()
+            })
+            .collect())
     })
 }
 
@@ -95,7 +118,10 @@ pub fn resolve_cname(host: &str) -> Result<Vec<String>, DnsError> {
             .lookup(host, hickory_resolver::proto::rr::RecordType::CNAME)
             .await
             .map_err(|e| DnsError::Lookup(e.to_string()))?;
-        Ok(response.iter().filter_map(|record| record.as_cname().map(|n| n.to_utf8())).collect())
+        Ok(response
+            .iter()
+            .filter_map(|record| record.as_cname().map(|n| n.to_utf8()))
+            .collect())
     })
 }
 
@@ -103,9 +129,14 @@ pub fn resolve_cname(host: &str) -> Result<Vec<String>, DnsError> {
 pub fn reverse(ip: &str) -> Result<Vec<String>, DnsError> {
     let rt = runtime()?;
     let r = resolver()?;
-    let addr: IpAddr = ip.parse().map_err(|_| DnsError::Lookup(format!("invalid IP: {ip}")))?;
+    let addr: IpAddr = ip
+        .parse()
+        .map_err(|_| DnsError::Lookup(format!("invalid IP: {ip}")))?;
     rt.block_on(async move {
-        let response = r.reverse_lookup(addr).await.map_err(|e| DnsError::Lookup(e.to_string()))?;
+        let response = r
+            .reverse_lookup(addr)
+            .await
+            .map_err(|e| DnsError::Lookup(e.to_string()))?;
         Ok(response.iter().map(|name| name.to_utf8()).collect())
     })
 }
@@ -117,9 +148,14 @@ mod tests {
     /// Live DNS tests are opt-in with TITAN_DNS_LIVE=1 (network required).
     #[test]
     fn live_resolve_when_enabled() {
-        if std::env::var("TITAN_DNS_LIVE").is_err() { return; }
+        if std::env::var("TITAN_DNS_LIVE").is_err() {
+            return;
+        }
         let ips = resolve("one.one.one.one").unwrap();
-        assert!(ips.iter().any(|ip| ip == "1.1.1.1"), "one.one.one.one must resolve to 1.1.1.1, got {ips:?}");
+        assert!(
+            ips.iter().any(|ip| ip == "1.1.1.1"),
+            "one.one.one.one must resolve to 1.1.1.1, got {ips:?}"
+        );
     }
 
     #[test]

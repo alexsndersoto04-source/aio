@@ -6,29 +6,388 @@ use std::net::TcpStream;
 use std::time::Duration;
 use thiserror::Error;
 
-#[derive(Debug, Clone)] pub struct Request { pub method:String,pub url:String,pub headers:BTreeMap<String,String>,pub body:Vec<u8>,pub maximum_body:usize,pub redirects:usize,pub timeout:Duration }
-#[derive(Debug, Clone, PartialEq, Eq)] pub struct Response { pub status:u16,pub headers:BTreeMap<String,String>,pub body:Vec<u8>,pub final_url:String }
-#[derive(Error,Debug)] pub enum ClientError { #[error("invalid HTTP URL")] Url,#[error("HTTP timeout must be positive")] Timeout,#[error("invalid HTTP method or header")] Header,#[error("HTTP I/O error: {0}")] Io(#[from]std::io::Error),#[error("TLS error: {0}")] Tls(#[from]titan_tls::TlsError),#[error("malformed HTTP response")] Response,#[error("HTTP response body exceeds configured limit")] TooLarge,#[error("too many redirects")] Redirects,#[error("unsupported HTTP transfer encoding")] TransferEncoding }
-#[derive(Debug)] struct Url {secure:bool,host:String,port:u16,path:String,authority:String}
-enum Connection { Plain(TcpStream), Tls(Box<titan_tls::TlsStream>) }
-impl Read for Connection{fn read(&mut self,b:&mut[u8])->std::io::Result<usize>{match self{Self::Plain(s)=>s.read(b),Self::Tls(s)=>s.read(b)}}}
-impl Write for Connection{fn write(&mut self,b:&[u8])->std::io::Result<usize>{match self{Self::Plain(s)=>s.write(b),Self::Tls(s)=>s.write(b)}}fn flush(&mut self)->std::io::Result<()>{match self{Self::Plain(s)=>s.flush(),Self::Tls(s)=>s.flush()}}}
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub method: String,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+    pub maximum_body: usize,
+    pub redirects: usize,
+    pub timeout: Duration,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Response {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+    pub final_url: String,
+}
+#[derive(Error, Debug)]
+pub enum ClientError {
+    #[error("invalid HTTP URL")]
+    Url,
+    #[error("HTTP timeout must be positive")]
+    Timeout,
+    #[error("invalid HTTP method or header")]
+    Header,
+    #[error("HTTP I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("TLS error: {0}")]
+    Tls(#[from] titan_tls::TlsError),
+    #[error("malformed HTTP response")]
+    Response,
+    #[error("HTTP response body exceeds configured limit")]
+    TooLarge,
+    #[error("too many redirects")]
+    Redirects,
+    #[error("unsupported HTTP transfer encoding")]
+    TransferEncoding,
+}
+#[derive(Debug)]
+struct Url {
+    secure: bool,
+    host: String,
+    port: u16,
+    path: String,
+    authority: String,
+}
+enum Connection {
+    Plain(TcpStream),
+    Tls(Box<titan_tls::TlsStream>),
+}
+impl Read for Connection {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(s) => s.read(b),
+            Self::Tls(s) => s.read(b),
+        }
+    }
+}
+impl Write for Connection {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(s) => s.write(b),
+            Self::Tls(s) => s.write(b),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(s) => s.flush(),
+            Self::Tls(s) => s.flush(),
+        }
+    }
+}
 
-pub fn request(mut request:Request)->Result<Response,ClientError>{if request.timeout.is_zero(){return Err(ClientError::Timeout)}for redirect in 0..=request.redirects{let response=single(&request)?;if matches!(response.status,301|302|303|307|308){if redirect==request.redirects{return Err(ClientError::Redirects)}let location=response.headers.get("location").ok_or(ClientError::Response)?;request.url=resolve(&response.final_url,location)?;if response.status==303{request.method="GET".into();request.body.clear();}continue}return Ok(response)}Err(ClientError::Redirects)}
-fn single(request:&Request)->Result<Response,ClientError>{if !token(&request.method){return Err(ClientError::Header)}let url=parse_url(&request.url)?;let address=if url.host.contains(':'){format!("[{}]:{}",url.host,url.port)}else{format!("{}:{}",url.host,url.port)};let mut connection=if url.secure{Connection::Tls(Box::new(titan_tls::connect_with_timeout(&address, &url.host, titan_tls::client_config(), request.timeout)?))}else{let socket=TcpStream::connect(address)?;socket.set_read_timeout(Some(request.timeout))?;socket.set_write_timeout(Some(request.timeout))?;Connection::Plain(socket)};let mut message=format!("{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",request.method,url.path,url.authority,request.body.len());for(name,value)in &request.headers{if !token(name)||value.contains(['\r','\n'])||matches!(name.to_ascii_lowercase().as_str(),"host"|"connection"|"content-length"|"transfer-encoding"){return Err(ClientError::Header)}message.push_str(&format!("{name}: {value}\r\n"));}message.push_str("\r\n");connection.write_all(message.as_bytes())?;connection.write_all(&request.body)?;connection.flush()?;read_response(connection,request.maximum_body,request.url.clone())}
-fn read_response(mut connection:Connection,maximum:usize,url:String)->Result<Response,ClientError>{let mut data=Vec::new();let header_end=loop{if let Some(end)=data.windows(4).position(|window|window==b"\r\n\r\n"){break end}
-if data.len()>64*1024{return Err(ClientError::Response)}let mut chunk=[0u8;8192];let count=connection.read(&mut chunk)?;if count==0{return Err(ClientError::Response)}data.extend_from_slice(&chunk[..count]);};let text=std::str::from_utf8(&data[..header_end]).map_err(|_|ClientError::Response)?;let mut lines=text.split("\r\n");let status=lines.next().and_then(|line|line.split_whitespace().nth(1)).and_then(|value|value.parse().ok()).ok_or(ClientError::Response)?;let mut headers=BTreeMap::new();let mut lengths=Vec::new();let mut transfers=Vec::new();for line in lines{let(name,value)=line.split_once(':').ok_or(ClientError::Response)?;let name=name.to_ascii_lowercase();let value=value.trim();if name=="content-length"{lengths.push(value.parse::<usize>().map_err(|_|ClientError::Response)?);}
-if name=="transfer-encoding"{transfers.push(value.to_ascii_lowercase());}headers.entry(name).and_modify(|old:&mut String|{old.push_str(", ");old.push_str(value);}).or_insert_with(||value.into());}
-if lengths.windows(2).any(|values|values[0]!=values[1])||(!transfers.is_empty()&& !lengths.is_empty()){return Err(ClientError::Response)}
-if transfers.len()>1||transfers.first().is_some_and(|value|value!="chunked"){return Err(ClientError::TransferEncoding)}let mut body=data[header_end+4..].to_vec();if !transfers.is_empty(){while !chunked_complete(&body){read_more(&mut connection,&mut body,maximum+1024*1024)?;}body=decode_chunked(&body,maximum)?;}else if let Some(length)=lengths.first(){let length=*length;if length>maximum{return Err(ClientError::TooLarge)}while body.len()<length{read_more(&mut connection,&mut body,maximum)?;}body.truncate(length);}else{loop{let mut chunk=[0u8;8192];let count=connection.read(&mut chunk)?;if count==0{break}
-if body.len()+count>maximum{return Err(ClientError::TooLarge)}body.extend_from_slice(&chunk[..count]);}}Ok(Response{status,headers,body,final_url:url})}
-fn read_more(connection:&mut Connection,data:&mut Vec<u8>,limit:usize)->Result<(),ClientError>{let mut chunk=[0u8;8192];let count=connection.read(&mut chunk)?;if count==0{return Err(ClientError::Response)}
-if data.len()+count>limit{return Err(ClientError::TooLarge)}data.extend_from_slice(&chunk[..count]);Ok(())}
-fn chunked_complete(data:&[u8])->bool{data.windows(5).any(|window|window==b"0\r\n\r\n")}
-fn decode_chunked(data:&[u8],maximum:usize)->Result<Vec<u8>,ClientError>{let mut input=data;let mut output=Vec::new();loop{let end=input.windows(2).position(|window|window==b"\r\n").ok_or(ClientError::Response)?;let size_text=std::str::from_utf8(&input[..end]).map_err(|_|ClientError::Response)?.split(';').next().unwrap();let size=usize::from_str_radix(size_text,16).map_err(|_|ClientError::Response)?;input=&input[end+2..];if size==0{return Ok(output)}
-if size>input.len()||input.get(size..size+2)!=Some(b"\r\n")||output.len()+size>maximum{return Err(if output.len()+size>maximum{ClientError::TooLarge}else{ClientError::Response})}output.extend_from_slice(&input[..size]);input=&input[size+2..];}}
-fn parse_url(url:&str)->Result<Url,ClientError>{let(secure,rest)=url.strip_prefix("https://").map(|rest|(true,rest)).or_else(||url.strip_prefix("http://").map(|rest|(false,rest))).ok_or(ClientError::Url)?;if rest.contains(['@','#']){return Err(ClientError::Url)}let(authority,path)=rest.split_once('/').map(|(authority,path)|(authority,format!("/{path}"))).unwrap_or((rest,"/".into()));let(host,port):(String,u16)=if let Some((host,port))=authority.rsplit_once(':'){(host.into(),port.parse().map_err(|_|ClientError::Url)?)}else{(authority.into(),if secure{443}else{80})};if host.is_empty()||port==0{return Err(ClientError::Url)}Ok(Url{secure,host,port,path,authority:authority.into()})}
-fn resolve(base:&str,location:&str)->Result<String,ClientError>{if location.starts_with("http://")||location.starts_with("https://"){return Ok(location.into())}let base=parse_url(base)?;if location.starts_with('/'){Ok(format!("{}://{}{}",if base.secure{"https"}else{"http"},base.authority,location))}else{let directory=base.path.rsplit_once('/').map(|(directory,_)|directory).unwrap_or("");Ok(format!("{}://{}{}/{}",if base.secure{"https"}else{"http"},base.authority,directory,location))}}
-fn token(value:&str)->bool{!value.is_empty()&&value.bytes().all(|byte|byte.is_ascii_alphanumeric()||b"!#$%&'*+-.^_`|~".contains(&byte))}
+pub fn request(mut request: Request) -> Result<Response, ClientError> {
+    if request.timeout.is_zero() {
+        return Err(ClientError::Timeout);
+    }
+    for redirect in 0..=request.redirects {
+        let response = single(&request)?;
+        if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+            if redirect == request.redirects {
+                return Err(ClientError::Redirects);
+            }
+            let location = response
+                .headers
+                .get("location")
+                .ok_or(ClientError::Response)?;
+            request.url = resolve(&response.final_url, location)?;
+            if response.status == 303 {
+                request.method = "GET".into();
+                request.body.clear();
+            }
+            continue;
+        }
+        return Ok(response);
+    }
+    Err(ClientError::Redirects)
+}
+fn single(request: &Request) -> Result<Response, ClientError> {
+    if !token(&request.method) {
+        return Err(ClientError::Header);
+    }
+    let url = parse_url(&request.url)?;
+    let address = if url.host.contains(':') {
+        format!("[{}]:{}", url.host, url.port)
+    } else {
+        format!("{}:{}", url.host, url.port)
+    };
+    let mut connection = if url.secure {
+        Connection::Tls(Box::new(titan_tls::connect_with_timeout(
+            &address,
+            &url.host,
+            titan_tls::client_config(),
+            request.timeout,
+        )?))
+    } else {
+        let socket = TcpStream::connect(address)?;
+        socket.set_read_timeout(Some(request.timeout))?;
+        socket.set_write_timeout(Some(request.timeout))?;
+        Connection::Plain(socket)
+    };
+    let mut message = format!(
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        request.method,
+        url.path,
+        url.authority,
+        request.body.len()
+    );
+    for (name, value) in &request.headers {
+        if !token(name)
+            || value.contains(['\r', '\n'])
+            || matches!(
+                name.to_ascii_lowercase().as_str(),
+                "host" | "connection" | "content-length" | "transfer-encoding"
+            )
+        {
+            return Err(ClientError::Header);
+        }
+        message.push_str(&format!("{name}: {value}\r\n"));
+    }
+    message.push_str("\r\n");
+    connection.write_all(message.as_bytes())?;
+    connection.write_all(&request.body)?;
+    connection.flush()?;
+    read_response(connection, request.maximum_body, request.url.clone())
+}
+fn read_response(
+    mut connection: Connection,
+    maximum: usize,
+    url: String,
+) -> Result<Response, ClientError> {
+    let mut data = Vec::new();
+    let header_end = loop {
+        if let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n") {
+            break end;
+        }
+        if data.len() > 64 * 1024 {
+            return Err(ClientError::Response);
+        }
+        let mut chunk = [0u8; 8192];
+        let count = connection.read(&mut chunk)?;
+        if count == 0 {
+            return Err(ClientError::Response);
+        }
+        data.extend_from_slice(&chunk[..count]);
+    };
+    let text = std::str::from_utf8(&data[..header_end]).map_err(|_| ClientError::Response)?;
+    let mut lines = text.split("\r\n");
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse().ok())
+        .ok_or(ClientError::Response)?;
+    let mut headers = BTreeMap::new();
+    let mut lengths = Vec::new();
+    let mut transfers = Vec::new();
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or(ClientError::Response)?;
+        let name = name.to_ascii_lowercase();
+        let value = value.trim();
+        if name == "content-length" {
+            lengths.push(value.parse::<usize>().map_err(|_| ClientError::Response)?);
+        }
+        if name == "transfer-encoding" {
+            transfers.push(value.to_ascii_lowercase());
+        }
+        headers
+            .entry(name)
+            .and_modify(|old: &mut String| {
+                old.push_str(", ");
+                old.push_str(value);
+            })
+            .or_insert_with(|| value.into());
+    }
+    if lengths.windows(2).any(|values| values[0] != values[1])
+        || (!transfers.is_empty() && !lengths.is_empty())
+    {
+        return Err(ClientError::Response);
+    }
+    if transfers.len() > 1 || transfers.first().is_some_and(|value| value != "chunked") {
+        return Err(ClientError::TransferEncoding);
+    }
+    let mut body = data[header_end + 4..].to_vec();
+    if !transfers.is_empty() {
+        while !chunked_complete(&body) {
+            read_more(&mut connection, &mut body, maximum + 1024 * 1024)?;
+        }
+        body = decode_chunked(&body, maximum)?;
+    } else if let Some(length) = lengths.first() {
+        let length = *length;
+        if length > maximum {
+            return Err(ClientError::TooLarge);
+        }
+        while body.len() < length {
+            read_more(&mut connection, &mut body, maximum)?;
+        }
+        body.truncate(length);
+    } else {
+        loop {
+            let mut chunk = [0u8; 8192];
+            let count = connection.read(&mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            if body.len() + count > maximum {
+                return Err(ClientError::TooLarge);
+            }
+            body.extend_from_slice(&chunk[..count]);
+        }
+    }
+    Ok(Response {
+        status,
+        headers,
+        body,
+        final_url: url,
+    })
+}
+fn read_more(
+    connection: &mut Connection,
+    data: &mut Vec<u8>,
+    limit: usize,
+) -> Result<(), ClientError> {
+    let mut chunk = [0u8; 8192];
+    let count = connection.read(&mut chunk)?;
+    if count == 0 {
+        return Err(ClientError::Response);
+    }
+    if data.len() + count > limit {
+        return Err(ClientError::TooLarge);
+    }
+    data.extend_from_slice(&chunk[..count]);
+    Ok(())
+}
+fn chunked_complete(data: &[u8]) -> bool {
+    data.windows(5).any(|window| window == b"0\r\n\r\n")
+}
+fn decode_chunked(data: &[u8], maximum: usize) -> Result<Vec<u8>, ClientError> {
+    let mut input = data;
+    let mut output = Vec::new();
+    loop {
+        let end = input
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or(ClientError::Response)?;
+        let size_text = std::str::from_utf8(&input[..end])
+            .map_err(|_| ClientError::Response)?
+            .split(';')
+            .next()
+            .unwrap();
+        let size = usize::from_str_radix(size_text, 16).map_err(|_| ClientError::Response)?;
+        input = &input[end + 2..];
+        if size == 0 {
+            return Ok(output);
+        }
+        if size > input.len()
+            || input.get(size..size + 2) != Some(b"\r\n")
+            || output.len() + size > maximum
+        {
+            return Err(if output.len() + size > maximum {
+                ClientError::TooLarge
+            } else {
+                ClientError::Response
+            });
+        }
+        output.extend_from_slice(&input[..size]);
+        input = &input[size + 2..];
+    }
+}
+fn parse_url(url: &str) -> Result<Url, ClientError> {
+    let (secure, rest) = url
+        .strip_prefix("https://")
+        .map(|rest| (true, rest))
+        .or_else(|| url.strip_prefix("http://").map(|rest| (false, rest)))
+        .ok_or(ClientError::Url)?;
+    if rest.contains(['@', '#']) {
+        return Err(ClientError::Url);
+    }
+    let (authority, path) = rest
+        .split_once('/')
+        .map(|(authority, path)| (authority, format!("/{path}")))
+        .unwrap_or((rest, "/".into()));
+    let (host, port): (String, u16) = if let Some((host, port)) = authority.rsplit_once(':') {
+        (host.into(), port.parse().map_err(|_| ClientError::Url)?)
+    } else {
+        (authority.into(), if secure { 443 } else { 80 })
+    };
+    if host.is_empty() || port == 0 {
+        return Err(ClientError::Url);
+    }
+    Ok(Url {
+        secure,
+        host,
+        port,
+        path,
+        authority: authority.into(),
+    })
+}
+fn resolve(base: &str, location: &str) -> Result<String, ClientError> {
+    if location.starts_with("http://") || location.starts_with("https://") {
+        return Ok(location.into());
+    }
+    let base = parse_url(base)?;
+    if location.starts_with('/') {
+        Ok(format!(
+            "{}://{}{}",
+            if base.secure { "https" } else { "http" },
+            base.authority,
+            location
+        ))
+    } else {
+        let directory = base
+            .path
+            .rsplit_once('/')
+            .map(|(directory, _)| directory)
+            .unwrap_or("");
+        Ok(format!(
+            "{}://{}{}/{}",
+            if base.secure { "https" } else { "http" },
+            base.authority,
+            directory,
+            location
+        ))
+    }
+}
+fn token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
 
-#[cfg(test)]mod tests{use super::*;#[test]fn follows_redirect_and_decodes_chunked_body(){let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();let server=std::thread::spawn(move||{for index in 0..2{let(mut stream,_)=listener.accept().unwrap();let mut request=[0;1024];let _=stream.read(&mut request).unwrap();if index==0{stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap()}else{stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n titan\r\n0\r\n\r\n").unwrap()}}});let response=request(Request{method:"GET".into(),url:format!("http://{address}/start"),headers:BTreeMap::new(),body:Vec::new(),maximum_body:1024,redirects:3,timeout:Duration::from_secs(2)}).unwrap();assert_eq!(response.body,b"hello titan");assert!(response.final_url.ends_with("/final"));server.join().unwrap();}}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn follows_redirect_and_decodes_chunked_body() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request).unwrap();
+                if index == 0 {
+                    stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap()
+                } else {
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n titan\r\n0\r\n\r\n").unwrap()
+                }
+            }
+        });
+        let response = request(Request {
+            method: "GET".into(),
+            url: format!("http://{address}/start"),
+            headers: BTreeMap::new(),
+            body: Vec::new(),
+            maximum_body: 1024,
+            redirects: 3,
+            timeout: Duration::from_secs(2),
+        })
+        .unwrap();
+        assert_eq!(response.body, b"hello titan");
+        assert!(response.final_url.ends_with("/final"));
+        server.join().unwrap();
+    }
+}

@@ -37,12 +37,20 @@ struct Canvas {
 impl Canvas {
     fn new(width: usize, height: usize, bg: [u8; 4]) -> Self {
         let mut pixels = vec![0u8; width * height * 4];
-        for chunk in pixels.chunks_exact_mut(4) { chunk.copy_from_slice(&bg); }
-        Canvas { width, height, pixels }
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&bg);
+        }
+        Canvas {
+            width,
+            height,
+            pixels,
+        }
     }
 
     fn set(&mut self, x: i64, y: i64, c: [u8; 4]) {
-        if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 { return; }
+        if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 {
+            return;
+        }
         let i = (y as usize * self.width + x as usize) * 4;
         self.pixels[i..i + 4].copy_from_slice(&c);
     }
@@ -50,18 +58,29 @@ impl Canvas {
     #[cfg(test)] // solo los tests inspeccionan pixeles individuales
     fn at(&self, x: i64, y: i64) -> [u8; 4] {
         let i = (y as usize * self.width + x as usize) * 4;
-        [self.pixels[i], self.pixels[i + 1], self.pixels[i + 2], self.pixels[i + 3]]
+        [
+            self.pixels[i],
+            self.pixels[i + 1],
+            self.pixels[i + 2],
+            self.pixels[i + 3],
+        ]
     }
 
     fn fill_rect(&mut self, x: i64, y: i64, w: i64, h: i64, c: [u8; 4]) {
-        if w <= 0 || h <= 0 { return; }
+        if w <= 0 || h <= 0 {
+            return;
+        }
         for py in y..y + h {
-            for px in x..x + w { self.set(px, py, c); }
+            for px in x..x + w {
+                self.set(px, py, c);
+            }
         }
     }
 
     fn stroke_rect(&mut self, x: i64, y: i64, w: i64, h: i64, c: [u8; 4]) {
-        if w <= 0 || h <= 0 { return; }
+        if w <= 0 || h <= 0 {
+            return;
+        }
         for px in x..x + w {
             self.set(px, y, c);
             self.set(px, y + h - 1, c);
@@ -98,16 +117,29 @@ impl Canvas {
 pub fn render_rgba(container_id: i64) -> Option<(u32, u32, Vec<u8>)> {
     let widgets = gui::snapshot_widgets();
     let root = widgets.get(&container_id)?;
-    if root.widget_type != WidgetType::Container { return None; }
+    if root.widget_type != WidgetType::Container {
+        return None;
+    }
     let (w, h) = (root.width, root.height);
-    if w <= 0 || h <= 0 || w > 4096 || h > 4096 { return None; }
+    if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+        return None;
+    }
     let mut canvas = Canvas::new(w as usize, h as usize, BG);
     draw_widget(&widgets, &mut canvas, root, 0, 0, 0);
     Some((w as u32, h as u32, canvas.pixels))
 }
 
-fn draw_widget(widgets: &HashMap<i64, Widget>, canvas: &mut Canvas, widget: &Widget, ox: i64, oy: i64, depth: usize) {
-    if depth > 8 { return; }
+fn draw_widget(
+    widgets: &HashMap<i64, Widget>,
+    canvas: &mut Canvas,
+    widget: &Widget,
+    ox: i64,
+    oy: i64,
+    depth: usize,
+) {
+    if depth > 8 {
+        return;
+    }
     let x = ox + widget.x;
     let y = oy + widget.y;
     match widget.widget_type {
@@ -122,7 +154,11 @@ fn draw_widget(widgets: &HashMap<i64, Widget>, canvas: &mut Canvas, widget: &Wid
             }
         }
         WidgetType::Button => {
-            let fill = if widget.clicked { BUTTON_DOWN } else { BUTTON_BG };
+            let fill = if widget.clicked {
+                BUTTON_DOWN
+            } else {
+                BUTTON_BG
+            };
             canvas.fill_rect(x, y, widget.width, widget.height, fill);
             canvas.stroke_rect(x, y, widget.width, widget.height, BUTTON_EDGE);
             let tw = GLYPH * widget.text.bytes().count() as i64;
@@ -225,7 +261,9 @@ mod tests {
     /// stateful modules from Fase 1.
     fn test_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn fresh_container(title: &str, w: i64, h: i64) -> i64 {
@@ -392,7 +430,11 @@ mod tests {
             let i = (y as usize * 100 + x as usize) * 4;
             [px[i], px[i + 1], px[i + 2], px[i + 3]]
         };
-        assert_eq!(at(52, 58), BUTTON_BG, "button painted at its (40,50) offset");
+        assert_eq!(
+            at(52, 58),
+            BUTTON_BG,
+            "button painted at its (40,50) offset"
+        );
         assert_eq!(at(20, 40), BG, "outside the button stays background");
     }
 }

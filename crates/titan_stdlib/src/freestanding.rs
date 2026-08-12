@@ -50,17 +50,33 @@ pub fn generate_linker_script(target_arch: &str, base_addr: u64, stack_size: u64
     };
 
     let mut ld = String::with_capacity(1024);
-    let _ = writeln!(ld, "/* Titan Freestanding Linker Script for {} */", target_arch);
+    let _ = writeln!(
+        ld,
+        "/* Titan Freestanding Linker Script for {} */",
+        target_arch
+    );
     let _ = writeln!(ld, "OUTPUT_FORMAT(\"elf64-{}\")", output_arch);
     let _ = writeln!(ld, "ENTRY(_start)");
     let _ = writeln!(ld, "SECTIONS\n{{");
     let _ = writeln!(ld, "    . = 0x{:x};", base_addr);
     let _ = writeln!(ld, "    __kernel_start = .;");
-    let _ = writeln!(ld, "    .text : ALIGN(0x1000) {{\n        *(.text._start)\n        *(.text*)\n    }}");
-    let _ = writeln!(ld, "    .rodata : ALIGN(0x1000) {{\n        *(.rodata*)\n    }}");
-    let _ = writeln!(ld, "    .data : ALIGN(0x1000) {{\n        *(.data*)\n    }}");
+    let _ = writeln!(
+        ld,
+        "    .text : ALIGN(0x1000) {{\n        *(.text._start)\n        *(.text*)\n    }}"
+    );
+    let _ = writeln!(
+        ld,
+        "    .rodata : ALIGN(0x1000) {{\n        *(.rodata*)\n    }}"
+    );
+    let _ = writeln!(
+        ld,
+        "    .data : ALIGN(0x1000) {{\n        *(.data*)\n    }}"
+    );
     let _ = writeln!(ld, "    .bss : ALIGN(0x1000) {{\n        __bss_start = .;");
-    let _ = writeln!(ld, "        *(.bss*)\n        *(COMMON)\n        __bss_end = .;");
+    let _ = writeln!(
+        ld,
+        "        *(.bss*)\n        *(COMMON)\n        __bss_end = .;"
+    );
     let _ = writeln!(ld, "    }}");
     let _ = writeln!(ld, "    . = ALIGN(0x1000);");
     let _ = writeln!(ld, "    _stack_bottom = .;");
@@ -73,7 +89,11 @@ pub fn generate_linker_script(target_arch: &str, base_addr: u64, stack_size: u64
 
 pub fn generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
     let mut asm = String::with_capacity(512);
-    let _ = writeln!(asm, "/* Titan Bare-Metal Startup (_start) for {} */", target_arch);
+    let _ = writeln!(
+        asm,
+        "/* Titan Bare-Metal Startup (_start) for {} */",
+        target_arch
+    );
     let _ = writeln!(asm, ".global _start");
     let _ = writeln!(asm, ".section .text._start");
     let _ = writeln!(asm, "_start:");
@@ -85,9 +105,18 @@ pub fn generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
             let _ = writeln!(asm, "    add x0, x0, :lo12:_stack_top");
             let _ = writeln!(asm, "    mov sp, x0");
             let _ = writeln!(asm, "    /* Zero-out BSS section */");
-            let _ = writeln!(asm, "    adrp x1, __bss_start\n    add x1, x1, :lo12:__bss_start");
-            let _ = writeln!(asm, "    adrp x2, __bss_end\n    add x2, x2, :lo12:__bss_end");
-            let _ = writeln!(asm, "1:  cmp x1, x2\n    b.ge 2f\n    str xzr, [x1], #8\n    b 1b");
+            let _ = writeln!(
+                asm,
+                "    adrp x1, __bss_start\n    add x1, x1, :lo12:__bss_start"
+            );
+            let _ = writeln!(
+                asm,
+                "    adrp x2, __bss_end\n    add x2, x2, :lo12:__bss_end"
+            );
+            let _ = writeln!(
+                asm,
+                "1:  cmp x1, x2\n    b.ge 2f\n    str xzr, [x1], #8\n    b 1b"
+            );
             let _ = writeln!(asm, "2:  bl {}", entry_fn);
             let _ = writeln!(asm, "3:  wfe\n    b 3b");
         }

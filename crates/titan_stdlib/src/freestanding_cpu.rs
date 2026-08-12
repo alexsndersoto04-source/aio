@@ -99,7 +99,10 @@ pub fn invoke_syscall(syscall_num: u32, arg0: u64, arg1: u64, arg2: u64) -> u64 
         }
         if let Some(&handler) = state.syscall_handlers.get(&syscall_num) {
             // Simular respuesta determinista del manejador kernel procesando los argumentos del trap
-            return handler.saturating_add(arg0).saturating_add(arg1).saturating_add(arg2);
+            return handler
+                .saturating_add(arg0)
+                .saturating_add(arg1)
+                .saturating_add(arg2);
         }
     }
     0
@@ -134,9 +137,15 @@ mod tests {
     fn test_bare_metal_exception_table_and_syscalls() {
         assert!(!init_exception_table(0x1005)); // Debe fallar si no está alineado a 1KB
         assert!(init_exception_table(0x8000_0000)); // 2GB base alineado exactamente a 1KB
-        
-        assert!(register_exception_handler(VECTOR_SYNC_EXCEPTION, 0xFFFF_0000_8000_1000));
-        assert_eq!(dispatch_exception(VECTOR_SYNC_EXCEPTION, 0x4000_1234, 0x05), 0xFFFF_0000_8000_1000 ^ 0x4000_1234 ^ 0x05);
+
+        assert!(register_exception_handler(
+            VECTOR_SYNC_EXCEPTION,
+            0xFFFF_0000_8000_1000
+        ));
+        assert_eq!(
+            dispatch_exception(VECTOR_SYNC_EXCEPTION, 0x4000_1234, 0x05),
+            0xFFFF_0000_8000_1000 ^ 0x4000_1234 ^ 0x05
+        );
         assert_eq!(get_last_fault_addr(), 0x4000_1234);
 
         assert!(register_syscall_handler(1, 0x9000_0000));

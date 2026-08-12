@@ -34,7 +34,9 @@ pub enum XmlError {
     Emit(String),
 }
 
-fn map_err(error: impl std::fmt::Display) -> XmlError { XmlError::Parse(error.to_string()) }
+fn map_err(error: impl std::fmt::Display) -> XmlError {
+    XmlError::Parse(error.to_string())
+}
 
 /// Parses `text` into a tree of `{tag, attrs, children, text}` maps.
 pub fn parse(text: &str) -> Result<Value, XmlError> {
@@ -60,8 +62,11 @@ pub fn parse(text: &str) -> Result<Value, XmlError> {
                 let text = event.unescape().map_err(map_err)?.into_owned();
                 if !text.is_empty() {
                     let parent = stack.last_mut().expect("stack invariant");
-                    if parent.text.is_empty() { parent.text = text; }
-                    else { parent.text.push_str(&text); }
+                    if parent.text.is_empty() {
+                        parent.text = text;
+                    } else {
+                        parent.text.push_str(&text);
+                    }
                 }
             }
             Event::CData(event) => {
@@ -77,7 +82,11 @@ pub fn parse(text: &str) -> Result<Value, XmlError> {
 
     let root = stack.pop().expect("root node");
     // Unwrap our synthetic __root__: if there is exactly one child, that's the document element.
-    if root.tag == "__root__" && root.children.len() == 1 && root.text.is_empty() && root.attrs.is_empty() {
+    if root.tag == "__root__"
+        && root.children.len() == 1
+        && root.text.is_empty()
+        && root.attrs.is_empty()
+    {
         return Ok(root.children.into_iter().next().unwrap());
     }
     Ok(root.into_value())
@@ -113,10 +122,19 @@ struct Node {
     text: String,
 }
 impl Node {
-    fn new(tag: String) -> Self { Self { tag, attrs: Vec::new(), children: Vec::new(), text: String::new() } }
+    fn new(tag: String) -> Self {
+        Self {
+            tag,
+            attrs: Vec::new(),
+            children: Vec::new(),
+            text: String::new(),
+        }
+    }
     fn into_value(self) -> Value {
         let mut attrs = serde_json::Map::new();
-        for (key, value) in self.attrs { attrs.insert(key, Value::String(value)); }
+        for (key, value) in self.attrs {
+            attrs.insert(key, Value::String(value));
+        }
         json!({
             "tag": self.tag,
             "attrs": Value::Object(attrs),
@@ -133,7 +151,9 @@ fn build_start(event: &BytesStart<'_>) -> Result<Node, XmlError> {
     let mut node = Node::new(tag);
     for attribute in event.attributes() {
         let attribute = attribute.map_err(map_err)?;
-        let key = std::str::from_utf8(attribute.key.as_ref()).map_err(map_err)?.to_string();
+        let key = std::str::from_utf8(attribute.key.as_ref())
+            .map_err(map_err)?
+            .to_string();
         let value = attribute.unescape_value().map_err(map_err)?.into_owned();
         node.attrs.push((key, value));
     }
@@ -143,18 +163,30 @@ fn build_start(event: &BytesStart<'_>) -> Result<Node, XmlError> {
 fn close(stack: &mut Vec<Node>, event: &BytesEnd<'_>) -> Result<(), XmlError> {
     let name_binding = event.name();
     let name = std::str::from_utf8(name_binding.as_ref()).map_err(map_err)?;
-    let finished = stack.pop().ok_or_else(|| XmlError::Parse("unbalanced close tag".into()))?;
+    let finished = stack
+        .pop()
+        .ok_or_else(|| XmlError::Parse("unbalanced close tag".into()))?;
     if finished.tag != name {
-        return Err(XmlError::Parse(format!("mismatched close tag: expected </{}> but found </{}>", finished.tag, name)));
+        return Err(XmlError::Parse(format!(
+            "mismatched close tag: expected </{}> but found </{}>",
+            finished.tag, name
+        )));
     }
-    let parent = stack.last_mut().ok_or_else(|| XmlError::Parse("close without root".into()))?;
+    let parent = stack
+        .last_mut()
+        .ok_or_else(|| XmlError::Parse("close without root".into()))?;
     parent.children.push(finished.into_value());
     Ok(())
 }
 
 fn write_node(writer: &mut Writer<Cursor<Vec<u8>>>, value: &Value) -> Result<(), XmlError> {
-    let object = value.as_object().ok_or_else(|| XmlError::Emit("expected an XML node object".into()))?;
-    let tag = object.get("tag").and_then(Value::as_str).ok_or_else(|| XmlError::Emit("node is missing 'tag'".into()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| XmlError::Emit("expected an XML node object".into()))?;
+    let tag = object
+        .get("tag")
+        .and_then(Value::as_str)
+        .ok_or_else(|| XmlError::Emit("node is missing 'tag'".into()))?;
     let mut start = BytesStart::new(tag);
     if let Some(attrs) = object.get("attrs").and_then(Value::as_object) {
         for (key, val) in attrs {
@@ -165,16 +197,24 @@ fn write_node(writer: &mut Writer<Cursor<Vec<u8>>>, value: &Value) -> Result<(),
             }
         }
     }
-    writer.write_event(Event::Start(start)).map_err(|error| XmlError::Emit(error.to_string()))?;
+    writer
+        .write_event(Event::Start(start))
+        .map_err(|error| XmlError::Emit(error.to_string()))?;
     if let Some(text) = object.get("text").and_then(Value::as_str) {
         if !text.is_empty() {
-            writer.write_event(Event::Text(BytesText::new(text))).map_err(|error| XmlError::Emit(error.to_string()))?;
+            writer
+                .write_event(Event::Text(BytesText::new(text)))
+                .map_err(|error| XmlError::Emit(error.to_string()))?;
         }
     }
     if let Some(children) = object.get("children").and_then(Value::as_array) {
-        for child in children { write_node(writer, child)?; }
+        for child in children {
+            write_node(writer, child)?;
+        }
     }
-    writer.write_event(Event::End(BytesEnd::new(tag))).map_err(|error| XmlError::Emit(error.to_string()))?;
+    writer
+        .write_event(Event::End(BytesEnd::new(tag)))
+        .map_err(|error| XmlError::Emit(error.to_string()))?;
     Ok(())
 }
 
@@ -211,7 +251,10 @@ mod tests {
     #[test]
     fn escape_helpers() {
         assert_eq!(escape_text("a<b>c&d"), "a&lt;b&gt;c&amp;d");
-        assert_eq!(escape_attr(r#"o'brien "hi""#), "o&apos;brien &quot;hi&quot;");
+        assert_eq!(
+            escape_attr(r#"o'brien "hi""#),
+            "o&apos;brien &quot;hi&quot;"
+        );
     }
 
     #[test]

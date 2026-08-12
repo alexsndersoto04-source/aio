@@ -91,17 +91,31 @@ fn collect(response: ureq::Response) -> Result<Response, HttpError> {
     let headers = response
         .headers_names()
         .into_iter()
-        .filter_map(|name| response.header(&name).map(|value| (name, value.to_string())))
+        .filter_map(|name| {
+            response
+                .header(&name)
+                .map(|value| (name, value.to_string()))
+        })
         .collect();
     let final_url = response.get_url().to_string();
     let mut body = Vec::new();
-    response.into_reader().take(64 * 1024 * 1024).read_to_end(&mut body)?;
-    Ok(Response { status, headers, body, final_url })
+    response
+        .into_reader()
+        .take(64 * 1024 * 1024)
+        .read_to_end(&mut body)?;
+    Ok(Response {
+        status,
+        headers,
+        body,
+        final_url,
+    })
 }
 
 fn transport_err(error: ureq::Error) -> HttpError {
     match error {
-        ureq::Error::Status(_, resp) => HttpError::Request(format!("HTTP {}: {}", resp.status(), resp.status_text())),
+        ureq::Error::Status(_, resp) => {
+            HttpError::Request(format!("HTTP {}: {}", resp.status(), resp.status_text()))
+        }
         ureq::Error::Transport(err) => HttpError::Transport(err.to_string()),
     }
 }
@@ -125,26 +139,41 @@ pub fn delete(url: &str, options: &Options) -> Result<Response, HttpError> {
 
 pub fn post(url: &str, body: &[u8], options: &Options) -> Result<Response, HttpError> {
     let request = build_request(agent(options).post(url), options)?;
-    request.send_bytes(body).map_err(transport_err).and_then(collect)
+    request
+        .send_bytes(body)
+        .map_err(transport_err)
+        .and_then(collect)
 }
 
 pub fn put(url: &str, body: &[u8], options: &Options) -> Result<Response, HttpError> {
     let request = build_request(agent(options).put(url), options)?;
-    request.send_bytes(body).map_err(transport_err).and_then(collect)
+    request
+        .send_bytes(body)
+        .map_err(transport_err)
+        .and_then(collect)
 }
 
 pub fn patch(url: &str, body: &[u8], options: &Options) -> Result<Response, HttpError> {
     let request = build_request(agent(options).request("PATCH", url), options)?;
-    request.send_bytes(body).map_err(transport_err).and_then(collect)
+    request
+        .send_bytes(body)
+        .map_err(transport_err)
+        .and_then(collect)
 }
 
 /// Convenience: GET returning parsed JSON.
 pub fn get_json(url: &str, options: &Options) -> Result<Value, HttpError> {
     let mut headers = options.headers.clone();
-    if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("Accept")) {
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Accept"))
+    {
         headers.push(("Accept".into(), "application/json".into()));
     }
-    let opts = Options { headers, ..options.clone() };
+    let opts = Options {
+        headers,
+        ..options.clone()
+    };
     let response = get(url, &opts)?;
     Ok(serde_json::from_slice(&response.body)?)
 }
@@ -152,25 +181,47 @@ pub fn get_json(url: &str, options: &Options) -> Result<Value, HttpError> {
 /// Convenience: POST with a JSON body and JSON response.
 pub fn post_json(url: &str, body: &Value, options: &Options) -> Result<Value, HttpError> {
     let mut headers = options.headers.clone();
-    if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("Content-Type")) {
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Content-Type"))
+    {
         headers.push(("Content-Type".into(), "application/json".into()));
     }
-    if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("Accept")) {
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Accept"))
+    {
         headers.push(("Accept".into(), "application/json".into()));
     }
-    let opts = Options { headers, ..options.clone() };
+    let opts = Options {
+        headers,
+        ..options.clone()
+    };
     let payload = serde_json::to_vec(body)?;
     let response = post(url, &payload, &opts)?;
     Ok(serde_json::from_slice(&response.body)?)
 }
 
 /// Convenience: POST url-encoded form.
-pub fn post_form(url: &str, form: &[(String, String)], options: &Options) -> Result<Response, HttpError> {
+pub fn post_form(
+    url: &str,
+    form: &[(String, String)],
+    options: &Options,
+) -> Result<Response, HttpError> {
     let mut headers = options.headers.clone();
-    if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("Content-Type")) {
-        headers.push(("Content-Type".into(), "application/x-www-form-urlencoded".into()));
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Content-Type"))
+    {
+        headers.push((
+            "Content-Type".into(),
+            "application/x-www-form-urlencoded".into(),
+        ));
     }
-    let opts = Options { headers, ..options.clone() };
+    let opts = Options {
+        headers,
+        ..options.clone()
+    };
     let body = form_urlencoded_serialize(form);
     post(url, body.as_bytes(), &opts)
 }
@@ -181,13 +232,19 @@ fn form_urlencoded_serialize(pairs: &[(String, String)]) -> String {
         for byte in s.bytes() {
             match byte {
                 b' ' => out.push('+'),
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(byte as char)
+                }
                 _ => out.push_str(&format!("%{byte:02X}")),
             }
         }
         out
     };
-    pairs.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect::<Vec<_>>().join("&")
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 #[cfg(test)]
@@ -215,7 +272,9 @@ mod tests {
     /// The endpoint used (`https://httpbin.org`) has no strict SLA; skip if it flakes.
     #[test]
     fn live_https_get_when_enabled() {
-        if std::env::var("TITAN_HTTP_LIVE").is_err() { return; }
+        if std::env::var("TITAN_HTTP_LIVE").is_err() {
+            return;
+        }
         let response = get("https://httpbin.org/get", &Options::default()).unwrap();
         assert_eq!(response.status, 200);
         assert!(response.body.len() > 0);
@@ -223,7 +282,9 @@ mod tests {
 
     #[test]
     fn live_https_post_json_when_enabled() {
-        if std::env::var("TITAN_HTTP_LIVE").is_err() { return; }
+        if std::env::var("TITAN_HTTP_LIVE").is_err() {
+            return;
+        }
         let json = serde_json::json!({ "hello": "titan" });
         let response = post_json("https://httpbin.org/post", &json, &Options::default()).unwrap();
         assert_eq!(response["json"]["hello"], "titan");

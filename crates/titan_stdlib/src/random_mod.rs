@@ -6,25 +6,33 @@
 //! * Deterministic ChaCha20: `seeded_int(seed, min, max)` etc. — reproducible
 //!   for testing, seeding, or Monte-Carlo runs that must be replayable.
 
-use rand::{Rng, SeedableRng};
 use rand::seq::{IndexedRandom, SliceRandom};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 /// Uniformly random `i64` in `[min, max]` (inclusive on both ends). Returns
 /// `min` when the range is empty (`max < min`).
 pub fn range(min: i64, max: i64) -> i64 {
-    if max < min { return min; }
+    if max < min {
+        return min;
+    }
     rand::rng().random_range(min..=max)
 }
 
 /// A random `i64` uniformly distributed across the full range.
-pub fn int() -> i64 { rand::rng().random::<i64>() }
+pub fn int() -> i64 {
+    rand::rng().random::<i64>()
+}
 
 /// Uniform `f64` in `[0.0, 1.0)`.
-pub fn float() -> f64 { rand::rng().random::<f64>() }
+pub fn float() -> f64 {
+    rand::rng().random::<f64>()
+}
 
 /// A random boolean with 50/50 probability.
-pub fn boolean() -> bool { rand::rng().random::<bool>() }
+pub fn boolean() -> bool {
+    rand::rng().random::<bool>()
+}
 
 /// `n` random bytes drawn from the OS RNG.
 pub fn bytes(n: usize) -> Vec<u8> {
@@ -48,11 +56,15 @@ pub fn shuffle<T: Clone>(items: &[T]) -> Vec<T> {
 // --- Deterministic (seeded) helpers ------------------------------------
 
 pub fn seeded_int(seed: u64, min: i64, max: i64) -> i64 {
-    if max < min { return min; }
+    if max < min {
+        return min;
+    }
     ChaCha20Rng::seed_from_u64(seed).random_range(min..=max)
 }
 
-pub fn seeded_float(seed: u64) -> f64 { ChaCha20Rng::seed_from_u64(seed).random::<f64>() }
+pub fn seeded_float(seed: u64) -> f64 {
+    ChaCha20Rng::seed_from_u64(seed).random::<f64>()
+}
 
 pub fn seeded_bytes(seed: u64, n: usize) -> Vec<u8> {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
@@ -92,7 +104,9 @@ mod tests {
     #[test]
     fn pick_and_shuffle() {
         let items = vec![1, 2, 3, 4, 5];
-        assert!(pick(&items).map(|value| items.contains(&value)).unwrap_or(false));
+        assert!(pick(&items)
+            .map(|value| items.contains(&value))
+            .unwrap_or(false));
         assert!(pick::<i32>(&[]).is_none());
         let shuffled = shuffle(&items);
         assert_eq!(shuffled.len(), items.len());

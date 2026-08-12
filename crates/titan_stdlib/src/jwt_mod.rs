@@ -20,14 +20,23 @@ pub enum JwtError {
     Pem(String),
 }
 
-fn tok(error: impl std::fmt::Display) -> JwtError { JwtError::Token(error.to_string()) }
-fn pem(error: impl std::fmt::Display) -> JwtError { JwtError::Pem(error.to_string()) }
+fn tok(error: impl std::fmt::Display) -> JwtError {
+    JwtError::Token(error.to_string())
+}
+fn pem(error: impl std::fmt::Display) -> JwtError {
+    JwtError::Pem(error.to_string())
+}
 
 // ---------------- HS256 ----------------
 
 /// Encodes `claims` as a JWT signed with HMAC-SHA256 using `secret`.
 pub fn sign_hs256(claims: &Value, secret: &[u8]) -> Result<String, JwtError> {
-    encode(&Header::new(Algorithm::HS256), claims, &EncodingKey::from_secret(secret)).map_err(tok)
+    encode(
+        &Header::new(Algorithm::HS256),
+        claims,
+        &EncodingKey::from_secret(secret),
+    )
+    .map_err(tok)
 }
 
 /// Verifies an HS256 token and returns its decoded claims.
@@ -42,9 +51,14 @@ pub fn verify_hs256(
     expected_issuer: Option<&str>,
 ) -> Result<Value, JwtError> {
     let mut validation = Validation::new(Algorithm::HS256);
-    if let Some(aud) = expected_audience { validation.set_audience(&[aud]); }
-    if let Some(iss) = expected_issuer   { validation.set_issuer(&[iss]);   }
-    let data = decode::<Value>(token, &DecodingKey::from_secret(secret), &validation).map_err(tok)?;
+    if let Some(aud) = expected_audience {
+        validation.set_audience(&[aud]);
+    }
+    if let Some(iss) = expected_issuer {
+        validation.set_issuer(&[iss]);
+    }
+    let data =
+        decode::<Value>(token, &DecodingKey::from_secret(secret), &validation).map_err(tok)?;
     Ok(data.claims)
 }
 
@@ -63,8 +77,12 @@ pub fn verify_rs256(
 ) -> Result<Value, JwtError> {
     let key = DecodingKey::from_rsa_pem(public_pem).map_err(pem)?;
     let mut validation = Validation::new(Algorithm::RS256);
-    if let Some(aud) = expected_audience { validation.set_audience(&[aud]); }
-    if let Some(iss) = expected_issuer   { validation.set_issuer(&[iss]);   }
+    if let Some(aud) = expected_audience {
+        validation.set_audience(&[aud]);
+    }
+    if let Some(iss) = expected_issuer {
+        validation.set_issuer(&[iss]);
+    }
     let data = decode::<Value>(token, &key, &validation).map_err(tok)?;
     Ok(data.claims)
 }
@@ -101,7 +119,8 @@ mod tests {
         let token = sign_hs256(
             &json!({ "sub": "x", "exp": chrono_far_future() }),
             b"correcto",
-        ).unwrap();
+        )
+        .unwrap();
         assert!(verify_hs256(&token, b"otro secreto", None, None).is_err());
     }
 

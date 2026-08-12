@@ -31,11 +31,7 @@ pub struct ArchiveEntry {
 
 fn safe_name(name: &str) -> Result<(), ArchiveError> {
     // Guard against zip-slip / tar-slip: reject absolute paths and `..`.
-    if name.starts_with('/')
-        || name.contains("..")
-        || name.contains('\\')
-        || name.contains('\0')
-    {
+    if name.starts_with('/') || name.contains("..") || name.contains('\\') || name.contains('\0') {
         return Err(ArchiveError::UnsafeName(name.into()));
     }
     Ok(())
@@ -44,7 +40,9 @@ fn safe_name(name: &str) -> Result<(), ArchiveError> {
 // ---------------- TAR ----------------
 
 pub fn tar_pack(entries: &[ArchiveEntry]) -> Result<Vec<u8>, ArchiveError> {
-    for entry in entries { safe_name(&entry.name)?; }
+    for entry in entries {
+        safe_name(&entry.name)?;
+    }
     let mut builder = tar::Builder::new(Vec::new());
     for entry in entries {
         let mut header = tar::Header::new_gnu();
@@ -73,7 +71,9 @@ pub fn tar_unpack(data: &[u8]) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 // ---------------- ZIP ----------------
 
 pub fn zip_pack(entries: &[ArchiveEntry]) -> Result<Vec<u8>, ArchiveError> {
-    for entry in entries { safe_name(&entry.name)?; }
+    for entry in entries {
+        safe_name(&entry.name)?;
+    }
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -93,7 +93,9 @@ pub fn zip_unpack(data: &[u8]) -> Result<Vec<ArchiveEntry>, ArchiveError> {
         let name = file.name().to_string();
         safe_name(&name)?;
         // Skip directory entries (common in zips).
-        if name.ends_with('/') { continue; }
+        if name.ends_with('/') {
+            continue;
+        }
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         out.push(ArchiveEntry { name, bytes });
@@ -104,21 +106,29 @@ pub fn zip_unpack(data: &[u8]) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 /// Metadata-only listing (no payload) for cheap indexing.
 pub fn zip_list(data: &[u8]) -> Result<Vec<String>, ArchiveError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
-    Ok((0..archive.len()).filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string())).collect())
+    Ok((0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+        .collect())
 }
 
 /// Convenience: build the map form used at the VM boundary.
 pub fn entries_to_maps(entries: Vec<ArchiveEntry>) -> Vec<BTreeMap<String, EntryValue>> {
-    entries.into_iter().map(|entry| {
-        let mut map: BTreeMap<String, EntryValue> = BTreeMap::new();
-        map.insert("name".into(), EntryValue::Text(entry.name));
-        map.insert("bytes".into(), EntryValue::Bytes(entry.bytes));
-        map
-    }).collect()
+    entries
+        .into_iter()
+        .map(|entry| {
+            let mut map: BTreeMap<String, EntryValue> = BTreeMap::new();
+            map.insert("name".into(), EntryValue::Text(entry.name));
+            map.insert("bytes".into(), EntryValue::Bytes(entry.bytes));
+            map
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
-pub enum EntryValue { Text(String), Bytes(Vec<u8>) }
+pub enum EntryValue {
+    Text(String),
+    Bytes(Vec<u8>),
+}
 
 #[cfg(test)]
 mod tests {
@@ -126,8 +136,14 @@ mod tests {
 
     fn sample() -> Vec<ArchiveEntry> {
         vec![
-            ArchiveEntry { name: "hello.txt".into(), bytes: b"hola mundo".to_vec() },
-            ArchiveEntry { name: "docs/readme.md".into(), bytes: b"# titan".to_vec() },
+            ArchiveEntry {
+                name: "hello.txt".into(),
+                bytes: b"hola mundo".to_vec(),
+            },
+            ArchiveEntry {
+                name: "docs/readme.md".into(),
+                bytes: b"# titan".to_vec(),
+            },
         ]
     }
 
@@ -154,12 +170,18 @@ mod tests {
     fn zip_list_reports_names_without_reading_bodies() {
         let bytes = zip_pack(&sample()).unwrap();
         let names = zip_list(&bytes).unwrap();
-        assert_eq!(names, vec!["hello.txt".to_string(), "docs/readme.md".to_string()]);
+        assert_eq!(
+            names,
+            vec!["hello.txt".to_string(), "docs/readme.md".to_string()]
+        );
     }
 
     #[test]
     fn rejects_zip_slip_style_names() {
-        let bad = vec![ArchiveEntry { name: "../etc/passwd".into(), bytes: b"x".to_vec() }];
+        let bad = vec![ArchiveEntry {
+            name: "../etc/passwd".into(),
+            bytes: b"x".to_vec(),
+        }];
         assert!(tar_pack(&bad).is_err());
         assert!(zip_pack(&bad).is_err());
     }

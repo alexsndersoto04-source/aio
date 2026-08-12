@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 use std::f64::consts::PI;
+use std::sync::{Mutex, OnceLock};
 
 struct AudioBuffer {
     samples: Vec<f32>,
@@ -55,12 +55,15 @@ pub fn load_wave(freq_hz: f64, duration_ms: i64) -> i64 {
         }
         let handle = state.next_handle;
         state.next_handle = state.next_handle.saturating_add(1);
-        state.buffers.insert(handle, AudioBuffer {
-            samples,
-            volume: 1.0,
-            playing: false,
-            looping: false,
-        });
+        state.buffers.insert(
+            handle,
+            AudioBuffer {
+                samples,
+                volume: 1.0,
+                playing: false,
+                looping: false,
+            },
+        );
         handle
     } else {
         -1

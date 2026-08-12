@@ -13,7 +13,7 @@ errors = []
 
 # ---------- 1) Tabla de firmas ----------
 src = (root / "crates/titan_stdlib/src/native.rs").read_text()
-entries = re.findall(r'native!\("([^"]+)",\s*\[([^\]]*)\]', src)
+entries = re.findall(r'native!\(\s*"([^"]+)",\s*\[([^\]]*)\]', src)
 seen, sig = {}, {}
 for name, params in entries:
     n = 0 if not params.strip() else len([p for p in params.split(",") if p.strip()])
@@ -74,7 +74,7 @@ def count_args(text, start):
 # Funciones registradas fuera de la tabla NATIVES (hardcoded en el typechecker
 # + ops dedicadas de la VM): sqlite, mysql, postgres, tls.
 tc = (root / "crates/titan_typechecker/src/lib.rs").read_text()
-for extra_name in re.findall(r'functions\.insert\("(std::[^"]+)"', tc):
+for extra_name in re.findall(r'functions\.insert\(\s*"(std::[^"]+)"', tc):
     sig.setdefault(extra_name, -1)  # -1 = solo comprobar existencia, no aridad
 
 checked = 0

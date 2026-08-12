@@ -65,39 +65,6 @@ done
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR/elf"
 
-# Temporary diagnostic for the legacy workspace-wide rustfmt advisory. Format
-# a detached worktree (never the caller's checkout) and preserve the exact
-# patch in the CI artifact so the failure can be repaired rather than hidden.
-format_worktree="$(mktemp -d "${TMPDIR:-/tmp}/titan-rustfmt.XXXXXXXX")"
-if git worktree add --quiet --detach "$format_worktree" HEAD; then
-    if (cd "$format_worktree" && cargo fmt --all); then
-        git -C "$format_worktree" diff --binary > "$DIST_DIR/rustfmt.patch"
-        # GitHub-hosted artifacts are Azure-backed and unavailable to this
-        # sandbox. Temporarily expose the highly-compressed patch through the
-        # check annotation API in chunks small enough to avoid truncation.
-        xz -9e -c "$DIST_DIR/rustfmt.patch" | base64 -w 0 > "$DIST_DIR/rustfmt.patch.xz.b64"
-        split -b 3800 -d -a 3 "$DIST_DIR/rustfmt.patch.xz.b64" "$DIST_DIR/rustfmt-xz-"
-        mapfile -t chunks < <(printf '%s\n' "$DIST_DIR"/rustfmt-xz-* | sort)
-        total="${#chunks[@]}"
-        start=90
-        for ((index = start; index < total && index < start + 30; index++)); do
-            slot=$((index - start))
-            if (( slot < 10 )); then level=notice
-            elif (( slot < 20 )); then level=warning
-            else level=error
-            fi
-            printf '::%s file=rustfmt.patch,line=1,title=RUSTFMT_XZ_%03d_OF_%03d::%s\n' \
-                "$level" "$index" "$total" "$(cat "${chunks[$index]}")"
-        done
-    else
-        printf '%s\n' 'cargo fmt could not run in the diagnostic worktree' > "$DIST_DIR/rustfmt-error.txt"
-    fi
-    git worktree remove --force "$format_worktree"
-else
-    printf '%s\n' 'git could not create the diagnostic worktree' > "$DIST_DIR/rustfmt-error.txt"
-    rm -rf "$format_worktree"
-fi
-
 file "$binary" | tee "$DIST_DIR/elf/file.txt"
 readelf -h "$binary" | tee "$DIST_DIR/elf/header.txt"
 readelf -l "$binary" | tee "$DIST_DIR/elf/program-headers.txt"

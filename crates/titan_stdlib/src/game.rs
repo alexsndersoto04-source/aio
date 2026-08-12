@@ -86,8 +86,16 @@ pub fn fps() -> i64 {
 
 /// Detects 2D Axis-Aligned Bounding Box (AABB) collision between two objects.
 /// `pos1` and `pos2` are (x, y), while `size1` and `size2` are (width, height).
-pub fn check_collision(pos1: (f64, f64), size1: (f64, f64), pos2: (f64, f64), size2: (f64, f64)) -> bool {
-    pos1.0 < pos2.0 + size2.0 && pos1.0 + size1.0 > pos2.0 && pos1.1 < pos2.1 + size2.1 && pos1.1 + size1.1 > pos2.1
+pub fn check_collision(
+    pos1: (f64, f64),
+    size1: (f64, f64),
+    pos2: (f64, f64),
+    size2: (f64, f64),
+) -> bool {
+    pos1.0 < pos2.0 + size2.0
+        && pos1.0 + size1.0 > pos2.0
+        && pos1.1 < pos2.1 + size2.1
+        && pos1.1 + size1.1 > pos2.1
 }
 
 pub fn shutdown() -> bool {
@@ -110,7 +118,9 @@ mod tests {
     /// every test sees a deterministic state machine.
     fn test_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
@@ -120,8 +130,18 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(15));
         let dt = step();
         assert!(dt > 0.0);
-        assert!(check_collision((0.0, 0.0), (10.0, 10.0), (5.0, 5.0), (10.0, 10.0)));
-        assert!(!check_collision((0.0, 0.0), (10.0, 10.0), (20.0, 20.0), (10.0, 10.0)));
+        assert!(check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (5.0, 5.0),
+            (10.0, 10.0)
+        ));
+        assert!(!check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (20.0, 20.0),
+            (10.0, 10.0)
+        ));
         assert!(shutdown());
     }
 
@@ -135,10 +155,16 @@ mod tests {
         let dt = step();
         // sleep() guarantees strictly positive elapsed time on every OS.
         assert!(dt > 0.0);
-        assert!(dt < 1.0, "dt of a 5ms nap must stay well under a second, got {dt}");
+        assert!(
+            dt < 1.0,
+            "dt of a 5ms nap must stay well under a second, got {dt}"
+        );
         // FPS is derived from the measured dt: sane bounds for any CI runner.
         let measured = fps();
-        assert!(measured >= 1 && measured <= 1000, "fps out of sane range: {measured}");
+        assert!(
+            measured >= 1 && measured <= 1000,
+            "fps out of sane range: {measured}"
+        );
         assert!(shutdown());
     }
 
@@ -152,7 +178,11 @@ mod tests {
         let second = step();
         assert!(first > 0.0 && second > 0.0);
         // two identical naps cannot differ by an order of magnitude.
-        let ratio = if first > second { first / second } else { second / first };
+        let ratio = if first > second {
+            first / second
+        } else {
+            second / first
+        };
         assert!(ratio < 10.0, "dt jitter too wild: {first} vs {second}");
         assert!(shutdown());
     }
@@ -185,45 +215,100 @@ mod tests {
 
     #[test]
     fn collision_corner_overlap_detected() {
-        assert!(check_collision((0.0, 0.0), (10.0, 10.0), (9.0, 9.0), (10.0, 10.0)));
+        assert!(check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (9.0, 9.0),
+            (10.0, 10.0)
+        ));
     }
 
     #[test]
     fn collision_touching_edges_do_not_count() {
         // right edge of A exactly on left edge of B: strict inequality means
         // a kiss is not a crash — documented AABB behavior.
-        assert!(!check_collision((0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (10.0, 10.0)));
-        assert!(!check_collision((0.0, 0.0), (10.0, 10.0), (0.0, 10.0), (10.0, 10.0)));
+        assert!(!check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (10.0, 0.0),
+            (10.0, 10.0)
+        ));
+        assert!(!check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (10.0, 10.0)
+        ));
     }
 
     #[test]
     fn collision_horizontal_separation_misses() {
-        assert!(!check_collision((0.0, 0.0), (10.0, 10.0), (50.0, 0.0), (10.0, 10.0)));
+        assert!(!check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (50.0, 0.0),
+            (10.0, 10.0)
+        ));
     }
 
     #[test]
     fn collision_vertical_separation_misses() {
-        assert!(!check_collision((0.0, 0.0), (10.0, 10.0), (0.0, 50.0), (10.0, 10.0)));
+        assert!(!check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 50.0),
+            (10.0, 10.0)
+        ));
     }
 
     #[test]
     fn collision_full_containment_detected() {
-        assert!(check_collision((0.0, 0.0), (100.0, 100.0), (25.0, 25.0), (5.0, 5.0)));
-        assert!(check_collision((25.0, 25.0), (5.0, 5.0), (0.0, 0.0), (100.0, 100.0)));
+        assert!(check_collision(
+            (0.0, 0.0),
+            (100.0, 100.0),
+            (25.0, 25.0),
+            (5.0, 5.0)
+        ));
+        assert!(check_collision(
+            (25.0, 25.0),
+            (5.0, 5.0),
+            (0.0, 0.0),
+            (100.0, 100.0)
+        ));
     }
 
     #[test]
     fn collision_zero_size_point_inside_box_counts() {
         // a 0x0 object at a point strictly inside the box registers a hit —
         // useful for bullets/pixels.
-        assert!(check_collision((5.0, 5.0), (0.0, 0.0), (0.0, 0.0), (10.0, 10.0)));
-        assert!(!check_collision((50.0, 50.0), (0.0, 0.0), (0.0, 0.0), (10.0, 10.0)));
+        assert!(check_collision(
+            (5.0, 5.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (10.0, 10.0)
+        ));
+        assert!(!check_collision(
+            (50.0, 50.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (10.0, 10.0)
+        ));
     }
 
     #[test]
     fn collision_with_negative_coordinates() {
-        assert!(check_collision((-20.0, -20.0), (10.0, 10.0), (-15.0, -15.0), (10.0, 10.0)));
-        assert!(!check_collision((-100.0, -100.0), (10.0, 10.0), (0.0, 0.0), (10.0, 10.0)));
+        assert!(check_collision(
+            (-20.0, -20.0),
+            (10.0, 10.0),
+            (-15.0, -15.0),
+            (10.0, 10.0)
+        ));
+        assert!(!check_collision(
+            (-100.0, -100.0),
+            (10.0, 10.0),
+            (0.0, 0.0),
+            (10.0, 10.0)
+        ));
     }
 
     #[test]
@@ -238,7 +323,17 @@ mod tests {
 
     #[test]
     fn collision_fractional_subpixel_overlap() {
-        assert!(check_collision((0.0, 0.0), (10.0, 10.0), (9.999, 9.999), (10.0, 10.0)));
-        assert!(!check_collision((0.0, 0.0), (10.0, 10.0), (10.001, 10.001), (10.0, 10.0)));
+        assert!(check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (9.999, 9.999),
+            (10.0, 10.0)
+        ));
+        assert!(!check_collision(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (10.001, 10.001),
+            (10.0, 10.0)
+        ));
     }
 }

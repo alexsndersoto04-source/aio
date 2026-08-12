@@ -12,7 +12,13 @@
 
 /// Dot product of two vectors. Panics if lengths differ (caller error).
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "dot: length mismatch {} vs {}", a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "dot: length mismatch {} vs {}",
+        a.len(),
+        b.len()
+    );
     // Manual unrolled loop; on release + NEON rustc turns this into VMLA.
     let mut sum = 0.0f32;
     for (x, y) in a.iter().zip(b.iter()) {
@@ -29,29 +35,51 @@ pub fn norm(v: &[f32]) -> f32 {
 /// Cosine similarity in `[-1, 1]`. Returns `0.0` when either vector is
 /// all-zeros, so the caller can rank without a special case.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "cosine: length mismatch {} vs {}", a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "cosine: length mismatch {} vs {}",
+        a.len(),
+        b.len()
+    );
     let na = norm(a);
     let nb = norm(b);
-    if na == 0.0 || nb == 0.0 { return 0.0; }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
     dot(a, b) / (na * nb)
 }
 
 /// Return a new vector with unit L2 norm. Returns zeros unchanged.
 pub fn normalize(v: &[f32]) -> Vec<f32> {
     let n = norm(v);
-    if n == 0.0 { return v.to_vec(); }
+    if n == 0.0 {
+        return v.to_vec();
+    }
     v.iter().map(|x| x / n).collect()
 }
 
 /// Element-wise sum. Panics on length mismatch.
 pub fn add(a: &[f32], b: &[f32]) -> Vec<f32> {
-    assert_eq!(a.len(), b.len(), "add: length mismatch {} vs {}", a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "add: length mismatch {} vs {}",
+        a.len(),
+        b.len()
+    );
     a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
 }
 
 /// Element-wise difference. Panics on length mismatch.
 pub fn sub(a: &[f32], b: &[f32]) -> Vec<f32> {
-    assert_eq!(a.len(), b.len(), "sub: length mismatch {} vs {}", a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "sub: length mismatch {} vs {}",
+        a.len(),
+        b.len()
+    );
     a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
 }
 
@@ -62,11 +90,16 @@ pub fn scale(v: &[f32], k: f32) -> Vec<f32> {
 
 /// Return the index of the maximum element. `None` for empty input.
 pub fn argmax(v: &[f32]) -> Option<usize> {
-    if v.is_empty() { return None; }
+    if v.is_empty() {
+        return None;
+    }
     let mut best_i = 0;
     let mut best_v = v[0];
     for (i, &x) in v.iter().enumerate().skip(1) {
-        if x > best_v { best_v = x; best_i = i; }
+        if x > best_v {
+            best_v = x;
+            best_i = i;
+        }
     }
     Some(best_i)
 }
@@ -75,7 +108,9 @@ pub fn argmax(v: &[f32]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    fn eq(a: f32, b: f32) { assert!((a - b).abs() < 1e-6, "{a} vs {b}"); }
+    fn eq(a: f32, b: f32) {
+        assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+    }
 
     #[test]
     fn dot_and_norm_match_reference() {
@@ -91,9 +126,9 @@ mod tests {
         let b = [1.0, 0.0, 0.0];
         let c = [-1.0, 0.0, 0.0];
         let d = [0.0, 1.0, 0.0];
-        eq(cosine_similarity(&a, &b),  1.0);
+        eq(cosine_similarity(&a, &b), 1.0);
         eq(cosine_similarity(&a, &c), -1.0);
-        eq(cosine_similarity(&a, &d),  0.0);
+        eq(cosine_similarity(&a, &d), 0.0);
     }
 
     #[test]
@@ -114,8 +149,8 @@ mod tests {
 
     #[test]
     fn argmax_works() {
-        assert_eq!(argmax(&[]),               None);
-        assert_eq!(argmax(&[1.0, 3.0, 2.0]),  Some(1));
+        assert_eq!(argmax(&[]), None);
+        assert_eq!(argmax(&[1.0, 3.0, 2.0]), Some(1));
         assert_eq!(argmax(&[-1.0, -2.0, -3.0]), Some(0));
     }
 }

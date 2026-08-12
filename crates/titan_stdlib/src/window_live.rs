@@ -74,19 +74,33 @@ thread_local! {
 
 fn with_registry<R>(operation: impl FnOnce(&HashMap<(u64, u64), LiveWindow>) -> R) -> Option<R> {
     REGISTRY
-        .try_with(|registry| registry.try_borrow().ok().map(|registry| operation(&registry)))
+        .try_with(|registry| {
+            registry
+                .try_borrow()
+                .ok()
+                .map(|registry| operation(&registry))
+        })
         .ok()
         .flatten()
 }
 
-fn with_registry_mut<R>(operation: impl FnOnce(&mut HashMap<(u64, u64), LiveWindow>) -> R) -> Option<R> {
+fn with_registry_mut<R>(
+    operation: impl FnOnce(&mut HashMap<(u64, u64), LiveWindow>) -> R,
+) -> Option<R> {
     REGISTRY
-        .try_with(|registry| registry.try_borrow_mut().ok().map(|mut registry| operation(&mut registry)))
+        .try_with(|registry| {
+            registry
+                .try_borrow_mut()
+                .ok()
+                .map(|mut registry| operation(&mut registry))
+        })
         .ok()
         .flatten()
 }
 
-fn handle_key(handle: u64) -> (u64, u64) { crate::native::runtime_handle_key(handle) }
+fn handle_key(handle: u64) -> (u64, u64) {
+    crate::native::runtime_handle_key(handle)
+}
 
 static NEXT_LIVE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -101,48 +115,64 @@ const BRIDGED_BUTTONS: [(MouseButton, u8); 3] = [
 /// Open a real OS window. Returns a positive handle, or `-1` when no
 /// display is available (headless CI, SSH, Termux sin X11).
 pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
-    let mut window = match Window::new(title, width as usize, height as usize, WindowOptions::default()) {
+    let mut window = match Window::new(
+        title,
+        width as usize,
+        height as usize,
+        WindowOptions::default(),
+    ) {
         Ok(window) => window,
         Err(_) => return -1,
     };
     window.set_target_fps(60);
     let id = NEXT_LIVE_ID.fetch_add(1, Ordering::SeqCst);
     with_registry_mut(|registry| {
-        registry.insert(handle_key(id), LiveWindow {
-            window,
-            width,
-            height,
-            scratch: Vec::new(),
-            events: Vec::new(),
-            keys_down: HashSet::new(),
-            buttons_down: HashSet::new(),
-            last_mouse: (0, 0),
-            close_reported: false,
-        });
+        registry.insert(
+            handle_key(id),
+            LiveWindow {
+                window,
+                width,
+                height,
+                scratch: Vec::new(),
+                events: Vec::new(),
+                keys_down: HashSet::new(),
+                buttons_down: HashSet::new(),
+                last_mouse: (0, 0),
+                close_reported: false,
+            },
+        );
         id as i64
-    }).unwrap_or(-1)
+    })
+    .unwrap_or(-1)
 }
 
 /// Whether the live window is still open (false for unknown handles).
 pub fn live_is_open(handle: i64) -> bool {
     with_registry(|registry| {
-        registry.get(&handle_key(handle as u64)).is_some_and(|entry| entry.window.is_open())
-    }).unwrap_or(false)
+        registry
+            .get(&handle_key(handle as u64))
+            .is_some_and(|entry| entry.window.is_open())
+    })
+    .unwrap_or(false)
 }
 
 /// Close and drop the live window. False for unknown handles.
 pub fn live_close(handle: i64) -> bool {
-    with_registry_mut(|registry| registry.remove(&handle_key(handle as u64)).is_some()).unwrap_or(false)
+    with_registry_mut(|registry| registry.remove(&handle_key(handle as u64)).is_some())
+        .unwrap_or(false)
 }
 
 /// Rename the visible OS window title. False for unknown handles.
 pub fn live_set_title(handle: i64, title: &str) -> bool {
     with_registry_mut(|registry| {
-        registry.get_mut(&handle_key(handle as u64)).is_some_and(|entry| {
-            entry.window.set_title(title);
-            true
-        })
-    }).unwrap_or(false)
+        registry
+            .get_mut(&handle_key(handle as u64))
+            .is_some_and(|entry| {
+                entry.window.set_title(title);
+                true
+            })
+    })
+    .unwrap_or(false)
 }
 
 /// One frame of a live window: render the gui tree, present it to the
@@ -151,81 +181,108 @@ pub fn live_set_title(handle: i64, title: &str) -> bool {
 /// status codes (-2..-6, 0 closed, 1 alive).
 pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
     with_registry_mut(|registry| {
-    let Some(entry) = registry.get_mut(&handle_key(handle as u64)) else { return -2 };
-    let Some((width, height, rgba)) = render_rgba(gui_root) else { return -3 };
-    if width != entry.width || height != entry.height {
-        return -4;
-    }
-    let needed = (width as usize) * (height as usize);
-    if entry.scratch.len() != needed {
-        entry.scratch.resize(needed, 0);
-    }
-    pack_rgba(&rgba, &mut entry.scratch);
-    if entry.window.update_with_buffer(&entry.scratch, width as usize, height as usize).is_err() {
-        return -5;
-    }
-
-    // Real input snapshot, taken right after the OS event poll.
-    let cur_keys: HashSet<String> = entry.window.get_keys()
-        .iter().filter_map(map_key).map(str::to_string).collect();
-    let cur_pos = entry.window.get_mouse_pos(MouseMode::Discard)
-        .map(|(x, y)| (x as i32, y as i32))
-        .unwrap_or(entry.last_mouse);
-    let mut cur_buttons = HashSet::new();
-    for (mouse_button, titan_button) in BRIDGED_BUTTONS {
-        if entry.window.get_mouse_down(mouse_button) {
-            cur_buttons.insert(titan_button);
+        let Some(entry) = registry.get_mut(&handle_key(handle as u64)) else {
+            return -2;
+        };
+        let Some((width, height, rgba)) = render_rgba(gui_root) else {
+            return -3;
+        };
+        if width != entry.width || height != entry.height {
+            return -4;
         }
-    }
-
-    let events = diff_events(
-        &entry.keys_down, &cur_keys,
-        &entry.buttons_down, &cur_buttons,
-        entry.last_mouse, cur_pos,
-    );
-
-    // Feed the shared std::input state (what TITAN games actually read).
-    for name in cur_keys.difference(&entry.keys_down) {
-        input::set_key_state(name, true);
-    }
-    for name in entry.keys_down.difference(&cur_keys) {
-        input::set_key_state(name, false);
-    }
-    if cur_pos != entry.last_mouse {
-        input::set_mouse_pos(cur_pos.0, cur_pos.1);
-    }
-    for button in cur_buttons.difference(&entry.buttons_down) {
-        input::set_mouse_button(*button, true);
-    }
-    for button in entry.buttons_down.difference(&cur_buttons) {
-        input::set_mouse_button(*button, false);
-    }
-
-    entry.events.extend(events);
-    entry.keys_down = cur_keys;
-    entry.buttons_down = cur_buttons;
-    entry.last_mouse = cur_pos;
-
-    if entry.window.is_open() {
-        1
-    } else {
-        if !entry.close_reported {
-            entry.events.push(WindowEvent::CloseRequested);
-            entry.close_reported = true;
+        let needed = (width as usize) * (height as usize);
+        if entry.scratch.len() != needed {
+            entry.scratch.resize(needed, 0);
         }
-        0
-    }
-    }).unwrap_or(-6)
+        pack_rgba(&rgba, &mut entry.scratch);
+        if entry
+            .window
+            .update_with_buffer(&entry.scratch, width as usize, height as usize)
+            .is_err()
+        {
+            return -5;
+        }
+
+        // Real input snapshot, taken right after the OS event poll.
+        let cur_keys: HashSet<String> = entry
+            .window
+            .get_keys()
+            .iter()
+            .filter_map(map_key)
+            .map(str::to_string)
+            .collect();
+        let cur_pos = entry
+            .window
+            .get_mouse_pos(MouseMode::Discard)
+            .map(|(x, y)| (x as i32, y as i32))
+            .unwrap_or(entry.last_mouse);
+        let mut cur_buttons = HashSet::new();
+        for (mouse_button, titan_button) in BRIDGED_BUTTONS {
+            if entry.window.get_mouse_down(mouse_button) {
+                cur_buttons.insert(titan_button);
+            }
+        }
+
+        let events = diff_events(
+            &entry.keys_down,
+            &cur_keys,
+            &entry.buttons_down,
+            &cur_buttons,
+            entry.last_mouse,
+            cur_pos,
+        );
+
+        // Feed the shared std::input state (what TITAN games actually read).
+        for name in cur_keys.difference(&entry.keys_down) {
+            input::set_key_state(name, true);
+        }
+        for name in entry.keys_down.difference(&cur_keys) {
+            input::set_key_state(name, false);
+        }
+        if cur_pos != entry.last_mouse {
+            input::set_mouse_pos(cur_pos.0, cur_pos.1);
+        }
+        for button in cur_buttons.difference(&entry.buttons_down) {
+            input::set_mouse_button(*button, true);
+        }
+        for button in entry.buttons_down.difference(&cur_buttons) {
+            input::set_mouse_button(*button, false);
+        }
+
+        entry.events.extend(events);
+        entry.keys_down = cur_keys;
+        entry.buttons_down = cur_buttons;
+        entry.last_mouse = cur_pos;
+
+        if entry.window.is_open() {
+            1
+        } else {
+            if !entry.close_reported {
+                entry.events.push(WindowEvent::CloseRequested);
+                entry.close_reported = true;
+            }
+            0
+        }
+    })
+    .unwrap_or(-6)
 }
 
 /// Drain this window's queued events, formatted exactly like
 /// `std::window::poll_events` (empty for unknown handles).
 pub fn live_poll_events(handle: i64) -> Vec<String> {
     with_registry_mut(|registry| {
-        registry.get_mut(&handle_key(handle as u64))
-            .map(|entry| entry.events.drain(..).map(|event| format_event(&event)).collect::<Vec<_>>())
+        registry
+            .get_mut(&handle_key(handle as u64))
+            .map(|entry| {
+                entry
+                    .events
+                    .drain(..)
+                    .map(|event| format_event(&event))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default()
-    }).unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
 
 /// Translate a physical minifb key into the lowercase TITAN key name
@@ -236,36 +293,107 @@ pub fn live_poll_events(handle: i64) -> Vec<String> {
 fn map_key(key: &Key) -> Option<&'static str> {
     use Key::*;
     Some(match key {
-        A => "a", B => "b", C => "c", D => "d", E => "e", F => "f",
-        G => "g", H => "h", I => "i", J => "j", K => "k", L => "l",
-        M => "m", N => "n", O => "o", P => "p", Q => "q", R => "r",
-        S => "s", T => "t", U => "u", V => "v", W => "w", X => "x",
-        Y => "y", Z => "z",
-        Key0 => "0", Key1 => "1", Key2 => "2", Key3 => "3", Key4 => "4",
-        Key5 => "5", Key6 => "6", Key7 => "7", Key8 => "8", Key9 => "9",
-        F1 => "f1", F2 => "f2", F3 => "f3", F4 => "f4", F5 => "f5",
-        F6 => "f6", F7 => "f7", F8 => "f8", F9 => "f9", F10 => "f10",
-        F11 => "f11", F12 => "f12", F13 => "f13", F14 => "f14", F15 => "f15",
-        Down => "down", Left => "left", Right => "right", Up => "up",
-        Space => "space", Enter => "enter", Escape => "escape",
-        Tab => "tab", Backspace => "backspace", Delete => "delete",
-        Insert => "insert", Home => "home", End => "end",
-        PageUp => "pageup", PageDown => "pagedown", Pause => "pause",
+        A => "a",
+        B => "b",
+        C => "c",
+        D => "d",
+        E => "e",
+        F => "f",
+        G => "g",
+        H => "h",
+        I => "i",
+        J => "j",
+        K => "k",
+        L => "l",
+        M => "m",
+        N => "n",
+        O => "o",
+        P => "p",
+        Q => "q",
+        R => "r",
+        S => "s",
+        T => "t",
+        U => "u",
+        V => "v",
+        W => "w",
+        X => "x",
+        Y => "y",
+        Z => "z",
+        Key0 => "0",
+        Key1 => "1",
+        Key2 => "2",
+        Key3 => "3",
+        Key4 => "4",
+        Key5 => "5",
+        Key6 => "6",
+        Key7 => "7",
+        Key8 => "8",
+        Key9 => "9",
+        F1 => "f1",
+        F2 => "f2",
+        F3 => "f3",
+        F4 => "f4",
+        F5 => "f5",
+        F6 => "f6",
+        F7 => "f7",
+        F8 => "f8",
+        F9 => "f9",
+        F10 => "f10",
+        F11 => "f11",
+        F12 => "f12",
+        F13 => "f13",
+        F14 => "f14",
+        F15 => "f15",
+        Down => "down",
+        Left => "left",
+        Right => "right",
+        Up => "up",
+        Space => "space",
+        Enter => "enter",
+        Escape => "escape",
+        Tab => "tab",
+        Backspace => "backspace",
+        Delete => "delete",
+        Insert => "insert",
+        Home => "home",
+        End => "end",
+        PageUp => "pageup",
+        PageDown => "pagedown",
+        Pause => "pause",
         Menu => "menu",
-        CapsLock => "capslock", NumLock => "numlock", ScrollLock => "scrolllock",
+        CapsLock => "capslock",
+        NumLock => "numlock",
+        ScrollLock => "scrolllock",
         LeftShift | RightShift => "shift",
         LeftCtrl | RightCtrl => "ctrl",
         LeftAlt | RightAlt => "alt",
         LeftSuper | RightSuper => "super",
-        Apostrophe => "'", Backquote => "`", Backslash => "\\",
-        Comma => ",", Equal => "=", LeftBracket => "[", Minus => "-",
-        Period => ".", RightBracket => "]", Semicolon => ";", Slash => "/",
-        NumPad0 => "numpad0", NumPad1 => "numpad1", NumPad2 => "numpad2",
-        NumPad3 => "numpad3", NumPad4 => "numpad4", NumPad5 => "numpad5",
-        NumPad6 => "numpad6", NumPad7 => "numpad7", NumPad8 => "numpad8",
-        NumPad9 => "numpad9", NumPadDot => "numpad_dot",
-        NumPadSlash => "numpad_slash", NumPadAsterisk => "numpad_asterisk",
-        NumPadMinus => "numpad_minus", NumPadPlus => "numpad_plus",
+        Apostrophe => "'",
+        Backquote => "`",
+        Backslash => "\\",
+        Comma => ",",
+        Equal => "=",
+        LeftBracket => "[",
+        Minus => "-",
+        Period => ".",
+        RightBracket => "]",
+        Semicolon => ";",
+        Slash => "/",
+        NumPad0 => "numpad0",
+        NumPad1 => "numpad1",
+        NumPad2 => "numpad2",
+        NumPad3 => "numpad3",
+        NumPad4 => "numpad4",
+        NumPad5 => "numpad5",
+        NumPad6 => "numpad6",
+        NumPad7 => "numpad7",
+        NumPad8 => "numpad8",
+        NumPad9 => "numpad9",
+        NumPadDot => "numpad_dot",
+        NumPadSlash => "numpad_slash",
+        NumPadAsterisk => "numpad_asterisk",
+        NumPadMinus => "numpad_minus",
+        NumPadPlus => "numpad_plus",
         NumPadEnter => "numpad_enter",
         Unknown | Count => return None,
     })
@@ -284,13 +412,19 @@ fn pack_rgba(rgba: &[u8], out: &mut [u32]) {
 /// (mouse move first, then keys alphabetically, then buttons ascending)
 /// so TITAN programs always see one stable event stream.
 fn diff_events(
-    prev_keys: &HashSet<String>, cur_keys: &HashSet<String>,
-    prev_buttons: &HashSet<u8>, cur_buttons: &HashSet<u8>,
-    prev_pos: (i32, i32), cur_pos: (i32, i32),
+    prev_keys: &HashSet<String>,
+    cur_keys: &HashSet<String>,
+    prev_buttons: &HashSet<u8>,
+    cur_buttons: &HashSet<u8>,
+    prev_pos: (i32, i32),
+    cur_pos: (i32, i32),
 ) -> Vec<WindowEvent> {
     let mut events = Vec::new();
     if cur_pos != prev_pos {
-        events.push(WindowEvent::MouseMove { x: cur_pos.0, y: cur_pos.1 });
+        events.push(WindowEvent::MouseMove {
+            x: cur_pos.0,
+            y: cur_pos.1,
+        });
     }
     let mut pressed: Vec<&String> = cur_keys.difference(prev_keys).collect();
     pressed.sort();
@@ -336,9 +470,9 @@ mod tests {
     #[test]
     fn pack_rgba_follows_the_minifb_0rgb_contract() {
         let rgba = [
-            255, 0, 0, 7,    // red with junk alpha: alpha must be ignored
-            0, 255, 0, 255,  // opaque green
-            10, 20, 30, 0,   // fully transparent pixel still keeps its RGB
+            255, 0, 0, 7, // red with junk alpha: alpha must be ignored
+            0, 255, 0, 255, // opaque green
+            10, 20, 30, 0, // fully transparent pixel still keeps its RGB
         ];
         let mut out = [0u32; 3];
         pack_rgba(&rgba, &mut out);
@@ -377,26 +511,64 @@ mod tests {
         assert_eq!(events, vec![WindowEvent::MouseMove { x: 9, y: 4 }]);
 
         // A brand-new press + click, in the documented order:
-        let events = diff_events(&empty_keys, &w_down, &no_buttons, &left_down, (9, 4), (9, 4));
-        assert_eq!(events, vec![
-            WindowEvent::KeyDown { key: "w".to_string() },
-            WindowEvent::MouseButtonDown { button: 1 },
-        ]);
+        let events = diff_events(
+            &empty_keys,
+            &w_down,
+            &no_buttons,
+            &left_down,
+            (9, 4),
+            (9, 4),
+        );
+        assert_eq!(
+            events,
+            vec![
+                WindowEvent::KeyDown {
+                    key: "w".to_string()
+                },
+                WindowEvent::MouseButtonDown { button: 1 },
+            ]
+        );
 
         // Releasing everything:
-        let events = diff_events(&w_down, &empty_keys, &left_down, &no_buttons, (9, 4), (9, 4));
-        assert_eq!(events, vec![
-            WindowEvent::KeyUp { key: "w".to_string() },
-            WindowEvent::MouseButtonUp { button: 1 },
-        ]);
+        let events = diff_events(
+            &w_down,
+            &empty_keys,
+            &left_down,
+            &no_buttons,
+            (9, 4),
+            (9, 4),
+        );
+        assert_eq!(
+            events,
+            vec![
+                WindowEvent::KeyUp {
+                    key: "w".to_string()
+                },
+                WindowEvent::MouseButtonUp { button: 1 },
+            ]
+        );
 
         // Two simultaneous presses come out alphabetically (stable stream):
         let multi: HashSet<String> = ["b".to_string(), "a".to_string()].into_iter().collect();
-        let events = diff_events(&empty_keys, &multi, &no_buttons, &no_buttons, (0, 0), (0, 0));
-        assert_eq!(events, vec![
-            WindowEvent::KeyDown { key: "a".to_string() },
-            WindowEvent::KeyDown { key: "b".to_string() },
-        ]);
+        let events = diff_events(
+            &empty_keys,
+            &multi,
+            &no_buttons,
+            &no_buttons,
+            (0, 0),
+            (0, 0),
+        );
+        assert_eq!(
+            events,
+            vec![
+                WindowEvent::KeyDown {
+                    key: "a".to_string()
+                },
+                WindowEvent::KeyDown {
+                    key: "b".to_string()
+                },
+            ]
+        );
     }
 
     /// macOS forbids window creation off the main thread (cargo test runs

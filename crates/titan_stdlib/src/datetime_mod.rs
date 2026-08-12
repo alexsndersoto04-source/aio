@@ -14,9 +14,18 @@ pub enum DateTimeError {
     #[error("invalid timestamp {0}")]
     Timestamp(i64),
     #[error("invalid format string '{format}': {source}")]
-    Format { format: String, #[source] source: chrono::ParseError },
+    Format {
+        format: String,
+        #[source]
+        source: chrono::ParseError,
+    },
     #[error("could not parse '{text}' with format '{format}': {source}")]
-    Parse { text: String, format: String, #[source] source: chrono::ParseError },
+    Parse {
+        text: String,
+        format: String,
+        #[source]
+        source: chrono::ParseError,
+    },
     #[error("unsupported timezone '{0}' (only 'UTC' and fixed offsets like '-04:00' work today)")]
     Timezone(String),
 }
@@ -26,10 +35,14 @@ fn from_ts(ts: i64) -> Result<DateTime<Utc>, DateTimeError> {
 }
 
 /// Current UTC time as seconds since Unix epoch.
-pub fn now() -> i64 { Utc::now().timestamp() }
+pub fn now() -> i64 {
+    Utc::now().timestamp()
+}
 
 /// Current UTC time as an ISO 8601 / RFC 3339 string.
-pub fn now_iso() -> String { Utc::now().to_rfc3339() }
+pub fn now_iso() -> String {
+    Utc::now().to_rfc3339()
+}
 
 /// Format a Unix timestamp using [`chrono`] format directives (e.g. `%Y-%m-%d %H:%M:%S`).
 pub fn format(ts: i64, fmt: &str) -> Result<String, DateTimeError> {
@@ -50,39 +63,70 @@ pub fn to_rfc2822(ts: i64) -> Result<String, DateTimeError> {
 pub fn parse_rfc3339(text: &str) -> Result<i64, DateTimeError> {
     DateTime::parse_from_rfc3339(text)
         .map(|dt| dt.timestamp())
-        .map_err(|source| DateTimeError::Parse { text: text.into(), format: "RFC 3339".into(), source })
+        .map_err(|source| DateTimeError::Parse {
+            text: text.into(),
+            format: "RFC 3339".into(),
+            source,
+        })
 }
 
 /// Parse a datetime given a chrono format string (no timezone → assumed UTC).
 pub fn parse(text: &str, fmt: &str) -> Result<i64, DateTimeError> {
     NaiveDateTime::parse_from_str(text, fmt)
         .map(|ndt| ndt.and_utc().timestamp())
-        .map_err(|source| DateTimeError::Parse { text: text.into(), format: fmt.into(), source })
+        .map_err(|source| DateTimeError::Parse {
+            text: text.into(),
+            format: fmt.into(),
+            source,
+        })
 }
 
 /// Timestamp for a given UTC date/time (returns 0 on invalid components).
 pub fn utc_ymd_hms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
-    Utc.with_ymd_and_hms(year, month, day, hour, minute, second).single().map(|dt| dt.timestamp()).unwrap_or(0)
+    Utc.with_ymd_and_hms(year, month, day, hour, minute, second)
+        .single()
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0)
 }
 
 /// Add seconds to a timestamp (negative subtracts).
-pub fn add_seconds(ts: i64, seconds: i64) -> i64 { ts.saturating_add(seconds) }
+pub fn add_seconds(ts: i64, seconds: i64) -> i64 {
+    ts.saturating_add(seconds)
+}
 
 /// Add days to a timestamp.
-pub fn add_days(ts: i64, days: i64) -> i64 { ts.saturating_add(days.saturating_mul(86_400)) }
+pub fn add_days(ts: i64, days: i64) -> i64 {
+    ts.saturating_add(days.saturating_mul(86_400))
+}
 
 /// Difference in seconds `later - earlier`.
-pub fn diff_seconds(later: i64, earlier: i64) -> i64 { later.saturating_sub(earlier) }
+pub fn diff_seconds(later: i64, earlier: i64) -> i64 {
+    later.saturating_sub(earlier)
+}
 
 // -- Field accessors (UTC) --------------------------------------------
-pub fn year(ts: i64) -> Result<i32, DateTimeError> { Ok(from_ts(ts)?.year()) }
-pub fn month(ts: i64) -> Result<u32, DateTimeError> { Ok(from_ts(ts)?.month()) }
-pub fn day(ts: i64) -> Result<u32, DateTimeError> { Ok(from_ts(ts)?.day()) }
-pub fn hour(ts: i64) -> Result<u32, DateTimeError> { Ok(from_ts(ts)?.hour()) }
-pub fn minute(ts: i64) -> Result<u32, DateTimeError> { Ok(from_ts(ts)?.minute()) }
-pub fn second(ts: i64) -> Result<u32, DateTimeError> { Ok(from_ts(ts)?.second()) }
+pub fn year(ts: i64) -> Result<i32, DateTimeError> {
+    Ok(from_ts(ts)?.year())
+}
+pub fn month(ts: i64) -> Result<u32, DateTimeError> {
+    Ok(from_ts(ts)?.month())
+}
+pub fn day(ts: i64) -> Result<u32, DateTimeError> {
+    Ok(from_ts(ts)?.day())
+}
+pub fn hour(ts: i64) -> Result<u32, DateTimeError> {
+    Ok(from_ts(ts)?.hour())
+}
+pub fn minute(ts: i64) -> Result<u32, DateTimeError> {
+    Ok(from_ts(ts)?.minute())
+}
+pub fn second(ts: i64) -> Result<u32, DateTimeError> {
+    Ok(from_ts(ts)?.second())
+}
 /// 0=Monday .. 6=Sunday
-pub fn weekday(ts: i64) -> Result<u32, DateTimeError> { Ok(from_ts(ts)?.weekday().num_days_from_monday()) }
+pub fn weekday(ts: i64) -> Result<u32, DateTimeError> {
+    Ok(from_ts(ts)?.weekday().num_days_from_monday())
+}
 
 /// Format a timestamp in a fixed offset (e.g. offset_minutes = -240 for -04:00 Caracas).
 pub fn format_offset(ts: i64, fmt: &str, offset_minutes: i32) -> Result<String, DateTimeError> {

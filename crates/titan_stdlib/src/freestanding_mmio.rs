@@ -3,10 +3,10 @@ use std::sync::{Mutex, OnceLock};
 
 struct MmioState {
     initialized: bool,
-    regions: Vec<(u64, u64)>,             // (base_paddr, size_bytes)
-    regs: HashMap<u64, u32>,              // paddr -> valor simulado de registro de hardware
+    regions: Vec<(u64, u64)>, // (base_paddr, size_bytes)
+    regs: HashMap<u64, u32>,  // paddr -> valor simulado de registro de hardware
     uart_base: Option<u64>,
-    uart_output_buffer: String,           // buffer que captura los bytes enviados a la UART serial
+    uart_output_buffer: String, // buffer que captura los bytes enviados a la UART serial
 }
 
 impl MmioState {

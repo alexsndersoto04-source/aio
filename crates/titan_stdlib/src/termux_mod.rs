@@ -24,7 +24,11 @@ pub enum TermuxError {
     #[error("termux-api CLI '{tool}' is not installed. Run: pkg install termux-api")]
     MissingCli { tool: String },
     #[error("termux-api '{tool}' failed with status {status}: {stderr}")]
-    Failed { tool: String, status: i32, stderr: String },
+    Failed {
+        tool: String,
+        status: i32,
+        stderr: String,
+    },
     #[error("could not parse termux-api output as JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("I/O error running termux-api: {0}")]
@@ -94,9 +98,14 @@ pub fn location(provider: &str, request: &str) -> Result<Value, TermuxError> {
 /// Lists the sensor names available on this device.
 pub fn sensor_list() -> Result<Vec<String>, TermuxError> {
     let value = spawn_json("termux-sensor", &["-l"])?;
-    Ok(value.get("sensors")
+    Ok(value
+        .get("sensors")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default())
 }
 
@@ -108,18 +117,27 @@ pub fn sensor_read(sensor: &str) -> Result<Value, TermuxError> {
 // ---------------- Clipboard (REAL — writes to the system clipboard) --
 
 pub fn clipboard_get() -> Result<String, TermuxError> {
-    Ok(spawn_text("termux-clipboard-get", &[])?.trim_end_matches('\n').to_string())
+    Ok(spawn_text("termux-clipboard-get", &[])?
+        .trim_end_matches('\n')
+        .to_string())
 }
 
 pub fn clipboard_set(text: &str) -> Result<(), TermuxError> {
     let mut child = Command::new("termux-clipboard-set")
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => TermuxError::MissingCli { tool: "termux-clipboard-set".into() },
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => TermuxError::MissingCli {
+                tool: "termux-clipboard-set".into(),
+            },
             _ => TermuxError::Io(e),
         })?;
     use std::io::Write as _;
-    if let Some(mut stdin) = child.stdin.take() { stdin.write_all(text.as_bytes())?; }
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
     let output = child.wait_with_output()?;
     if !output.status.success() {
         return Err(TermuxError::Failed {
@@ -137,7 +155,9 @@ pub fn clipboard_set(text: &str) -> Result<(), TermuxError> {
 pub fn vibrate(duration: Duration, force: bool) -> Result<(), TermuxError> {
     let ms = duration.as_millis().to_string();
     let mut args = vec!["-d", ms.as_str()];
-    if force { args.push("-f"); }
+    if force {
+        args.push("-f");
+    }
     spawn("termux-vibrate", &args).map(|_| ())
 }
 
@@ -153,7 +173,9 @@ pub fn toast(message: &str) -> Result<(), TermuxError> {
 pub fn notify(title: &str, content: &str, id: i64) -> Result<(), TermuxError> {
     let id_string = id.to_string();
     let mut args = vec!["-t", title, "-c", content];
-    if id > 0 { args.extend(["--id", id_string.as_str()]); }
+    if id > 0 {
+        args.extend(["--id", id_string.as_str()]);
+    }
     spawn("termux-notification", &args).map(|_| ())
 }
 
@@ -167,13 +189,20 @@ pub fn notify_remove(id: i64) -> Result<(), TermuxError> {
 /// Speak `text` through the Android TTS engine.
 pub fn tts_speak(text: &str) -> Result<(), TermuxError> {
     let mut child = Command::new("termux-tts-speak")
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => TermuxError::MissingCli { tool: "termux-tts-speak".into() },
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => TermuxError::MissingCli {
+                tool: "termux-tts-speak".into(),
+            },
             _ => TermuxError::Io(e),
         })?;
     use std::io::Write as _;
-    if let Some(mut stdin) = child.stdin.take() { stdin.write_all(text.as_bytes())?; }
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
     let output = child.wait_with_output()?;
     if !output.status.success() {
         return Err(TermuxError::Failed {
@@ -197,13 +226,20 @@ pub fn sms_list(limit: i64) -> Result<Value, TermuxError> {
 pub fn sms_send(recipient: &str, message: &str) -> Result<(), TermuxError> {
     let mut child = Command::new("termux-sms-send")
         .args(["-n", recipient])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => TermuxError::MissingCli { tool: "termux-sms-send".into() },
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => TermuxError::MissingCli {
+                tool: "termux-sms-send".into(),
+            },
             _ => TermuxError::Io(e),
         })?;
     use std::io::Write as _;
-    if let Some(mut stdin) = child.stdin.take() { stdin.write_all(message.as_bytes())?; }
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(message.as_bytes())?;
+    }
     let output = child.wait_with_output()?;
     if !output.status.success() {
         return Err(TermuxError::Failed {
@@ -258,8 +294,11 @@ pub fn share(path: &str) -> Result<(), TermuxError> {
 pub fn is_available() -> bool {
     which::which("termux-battery-status").is_ok()
         || Command::new("termux-battery-status")
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-            .spawn().is_ok()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
 }
 
 // A tiny fallback resolver so we don't add another dep just for `which`.
@@ -269,7 +308,9 @@ mod which {
         let path = std::env::var_os("PATH").ok_or(())?;
         for dir in std::env::split_paths(&path) {
             let candidate = dir.join(name);
-            if candidate.is_file() { return Ok(candidate); }
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
         }
         Err(())
     }
@@ -290,7 +331,9 @@ mod tests {
     /// TITAN_TERMUX_LIVE=1 so CI/dev machines skip them cleanly.
     #[test]
     fn live_battery_when_enabled() {
-        if std::env::var("TITAN_TERMUX_LIVE").is_err() { return; }
+        if std::env::var("TITAN_TERMUX_LIVE").is_err() {
+            return;
+        }
         let status = battery_status().expect("battery");
         // percentage is always present on Android.
         assert!(status.get("percentage").is_some());
@@ -298,7 +341,9 @@ mod tests {
 
     #[test]
     fn live_toast_when_enabled() {
-        if std::env::var("TITAN_TERMUX_LIVE").is_err() { return; }
+        if std::env::var("TITAN_TERMUX_LIVE").is_err() {
+            return;
+        }
         toast("titan smoke test").unwrap();
     }
 }

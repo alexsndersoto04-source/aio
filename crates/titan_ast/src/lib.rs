@@ -134,12 +134,28 @@ pub struct ConstDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr {
-    Named { name: String, generics: Vec<TypeExpr> },
-    Reference { inner: Box<TypeExpr>, is_mut: bool },
-    Slice { inner: Box<TypeExpr> },
-    Array { inner: Box<TypeExpr>, size: Box<Expr> },
-    Tuple { elements: Vec<TypeExpr> },
-    Function { params: Vec<TypeExpr>, return_type: Box<TypeExpr> },
+    Named {
+        name: String,
+        generics: Vec<TypeExpr>,
+    },
+    Reference {
+        inner: Box<TypeExpr>,
+        is_mut: bool,
+    },
+    Slice {
+        inner: Box<TypeExpr>,
+    },
+    Array {
+        inner: Box<TypeExpr>,
+        size: Box<Expr>,
+    },
+    Tuple {
+        elements: Vec<TypeExpr>,
+    },
+    Function {
+        params: Vec<TypeExpr>,
+        return_type: Box<TypeExpr>,
+    },
     Unit,
     Never,
     Infer(usize),

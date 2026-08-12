@@ -7,7 +7,9 @@ pub struct MacroRegistry {
 
 impl MacroRegistry {
     pub fn new() -> Self {
-        MacroRegistry { macros: std::collections::HashMap::new() }
+        MacroRegistry {
+            macros: std::collections::HashMap::new(),
+        }
     }
     pub fn register(&mut self, name: &str, body: &str) {
         self.macros.insert(name.to_string(), body.to_string());
@@ -18,5 +20,7 @@ impl MacroRegistry {
 }
 
 impl Default for MacroRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

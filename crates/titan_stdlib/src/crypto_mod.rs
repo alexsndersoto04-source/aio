@@ -31,14 +31,21 @@ pub enum CryptoError {
 }
 
 fn take_key<const N: usize>(key: &[u8]) -> Result<[u8; N], CryptoError> {
-    if key.len() != N { return Err(CryptoError::KeyLength { expected: N, got: key.len() }); }
+    if key.len() != N {
+        return Err(CryptoError::KeyLength {
+            expected: N,
+            got: key.len(),
+        });
+    }
     let mut out = [0u8; N];
     out.copy_from_slice(key);
     Ok(out)
 }
 
 fn take_nonce(nonce: &[u8]) -> Result<[u8; 12], CryptoError> {
-    if nonce.len() != 12 { return Err(CryptoError::NonceLength(nonce.len())); }
+    if nonce.len() != 12 {
+        return Err(CryptoError::NonceLength(nonce.len()));
+    }
     let mut out = [0u8; 12];
     out.copy_from_slice(nonce);
     Ok(out)
@@ -60,18 +67,44 @@ pub fn generate_nonce() -> Vec<u8> {
 
 // ---------------- ChaCha20-Poly1305 ----------------
 
-pub fn chacha20_encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn chacha20_encrypt(
+    key: &[u8],
+    nonce: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let key_bytes = take_key::<32>(key)?;
     let nonce_bytes = take_nonce(nonce)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes).expect("32 bytes");
-    cipher.encrypt(&nonce_bytes.into(), Payload { msg: plaintext, aad }).map_err(|_| CryptoError::Cipher)
+    cipher
+        .encrypt(
+            &nonce_bytes.into(),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Cipher)
 }
 
-pub fn chacha20_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn chacha20_decrypt(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let key_bytes = take_key::<32>(key)?;
     let nonce_bytes = take_nonce(nonce)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes).expect("32 bytes");
-    cipher.decrypt(&nonce_bytes.into(), Payload { msg: ciphertext, aad }).map_err(|_| CryptoError::Cipher)
+    cipher
+        .decrypt(
+            &nonce_bytes.into(),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Cipher)
 }
 
 /// Encrypts `plaintext` and returns `nonce || ciphertext` (a single blob).
@@ -82,7 +115,15 @@ pub fn chacha20_seal(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>
     let key_bytes = take_key::<32>(key)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes).expect("32 bytes");
     let nonce = ChaCha20Poly1305::generate_nonce(&mut AeadOsRng);
-    let ciphertext = cipher.encrypt(&nonce, Payload { msg: plaintext, aad }).map_err(|_| CryptoError::Cipher)?;
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Cipher)?;
     let mut out = Vec::with_capacity(nonce.len() + ciphertext.len());
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&ciphertext);
@@ -91,32 +132,68 @@ pub fn chacha20_seal(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>
 
 /// Reverses `chacha20_seal`.
 pub fn chacha20_open(key: &[u8], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    if sealed.len() < 12 { return Err(CryptoError::Truncated); }
+    if sealed.len() < 12 {
+        return Err(CryptoError::Truncated);
+    }
     let (nonce, ciphertext) = sealed.split_at(12);
     chacha20_decrypt(key, nonce, ciphertext, aad)
 }
 
 // ---------------- AES-256-GCM ----------------
 
-pub fn aes_gcm_encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn aes_gcm_encrypt(
+    key: &[u8],
+    nonce: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let key_bytes = take_key::<32>(key)?;
     let nonce_bytes = take_nonce(nonce)?;
     let cipher = Aes256Gcm::new_from_slice(&key_bytes).expect("32 bytes");
-    cipher.encrypt(&nonce_bytes.into(), Payload { msg: plaintext, aad }).map_err(|_| CryptoError::Cipher)
+    cipher
+        .encrypt(
+            &nonce_bytes.into(),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Cipher)
 }
 
-pub fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn aes_gcm_decrypt(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let key_bytes = take_key::<32>(key)?;
     let nonce_bytes = take_nonce(nonce)?;
     let cipher = Aes256Gcm::new_from_slice(&key_bytes).expect("32 bytes");
-    cipher.decrypt(&nonce_bytes.into(), Payload { msg: ciphertext, aad }).map_err(|_| CryptoError::Cipher)
+    cipher
+        .decrypt(
+            &nonce_bytes.into(),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Cipher)
 }
 
 pub fn aes_gcm_seal(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let key_bytes = take_key::<32>(key)?;
     let cipher = Aes256Gcm::new_from_slice(&key_bytes).expect("32 bytes");
     let nonce = Aes256Gcm::generate_nonce(&mut AeadOsRng);
-    let ciphertext = cipher.encrypt(&nonce, Payload { msg: plaintext, aad }).map_err(|_| CryptoError::Cipher)?;
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Cipher)?;
     let mut out = Vec::with_capacity(nonce.len() + ciphertext.len());
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&ciphertext);
@@ -124,7 +201,9 @@ pub fn aes_gcm_seal(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>,
 }
 
 pub fn aes_gcm_open(key: &[u8], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    if sealed.len() < 12 { return Err(CryptoError::Truncated); }
+    if sealed.len() < 12 {
+        return Err(CryptoError::Truncated);
+    }
     let (nonce, ciphertext) = sealed.split_at(12);
     aes_gcm_decrypt(key, nonce, ciphertext, aad)
 }
@@ -164,7 +243,10 @@ mod tests {
         let mut sealed = chacha20_seal(&key, b"pago 100 USD", b"").unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 0x01; // flip one bit
-        assert!(chacha20_open(&key, &sealed, b"").is_err(), "tampered ciphertext must be rejected");
+        assert!(
+            chacha20_open(&key, &sealed, b"").is_err(),
+            "tampered ciphertext must be rejected"
+        );
     }
 
     #[test]
@@ -176,7 +258,13 @@ mod tests {
 
     #[test]
     fn rejects_short_key_and_nonce() {
-        assert!(matches!(chacha20_encrypt(&[0u8; 16], &[0u8; 12], b"x", b""), Err(CryptoError::KeyLength { .. })));
-        assert!(matches!(chacha20_encrypt(&[0u8; 32], &[0u8; 8], b"x", b""),  Err(CryptoError::NonceLength(_))));
+        assert!(matches!(
+            chacha20_encrypt(&[0u8; 16], &[0u8; 12], b"x", b""),
+            Err(CryptoError::KeyLength { .. })
+        ));
+        assert!(matches!(
+            chacha20_encrypt(&[0u8; 32], &[0u8; 8], b"x", b""),
+            Err(CryptoError::NonceLength(_))
+        ));
     }
 }

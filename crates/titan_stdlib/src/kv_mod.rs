@@ -29,17 +29,25 @@ pub enum KvError {
 }
 
 struct Registry {
-    dbs:    HashMap<(u64, i64), Db>,
-    trees:  HashMap<(u64, i64), Tree>,
+    dbs: HashMap<(u64, i64), Db>,
+    trees: HashMap<(u64, i64), Tree>,
     next_id: i64,
 }
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(Registry { dbs: HashMap::new(), trees: HashMap::new(), next_id: 1 }))
+    REG.get_or_init(|| {
+        Mutex::new(Registry {
+            dbs: HashMap::new(),
+            trees: HashMap::new(),
+            next_id: 1,
+        })
+    })
 }
 
-fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+fn handle_key(handle: i64) -> (u64, i64) {
+    crate::native::runtime_handle_key(handle)
+}
 
 fn insert_db(db: Db) -> i64 {
     let mut reg = registry().lock().expect("kv registry poisoned");
@@ -58,20 +66,32 @@ fn insert_tree(tree: Tree) -> i64 {
 }
 
 fn with_db<F, R>(handle: i64, action: F) -> Result<R, KvError>
-where F: FnOnce(&Db) -> Result<R, KvError> {
+where
+    F: FnOnce(&Db) -> Result<R, KvError>,
+{
     let reg = registry().lock().expect("kv registry poisoned");
-    let db = reg.dbs.get(&handle_key(handle)).ok_or(KvError::UnknownDb(handle))?;
+    let db = reg
+        .dbs
+        .get(&handle_key(handle))
+        .ok_or(KvError::UnknownDb(handle))?;
     action(db)
 }
 
 fn with_tree<F, R>(handle: i64, action: F) -> Result<R, KvError>
-where F: FnOnce(&Tree) -> Result<R, KvError> {
+where
+    F: FnOnce(&Tree) -> Result<R, KvError>,
+{
     let reg = registry().lock().expect("kv registry poisoned");
-    let tree = reg.trees.get(&handle_key(handle)).ok_or(KvError::UnknownTree(handle))?;
+    let tree = reg
+        .trees
+        .get(&handle_key(handle))
+        .ok_or(KvError::UnknownTree(handle))?;
     action(tree)
 }
 
-fn ivec_to_bytes(v: IVec) -> Vec<u8> { v.to_vec() }
+fn ivec_to_bytes(v: IVec) -> Vec<u8> {
+    v.to_vec()
+}
 
 // ---------------- Open / close ----------------------------------------
 
@@ -124,15 +144,21 @@ pub fn len(handle: i64) -> Result<usize, KvError> {
 
 /// Delete every entry from the default tree.
 pub fn clear(handle: i64) -> Result<(), KvError> {
-    with_db(handle, |db| { db.clear()?; Ok(()) })
+    with_db(handle, |db| {
+        db.clear()?;
+        Ok(())
+    })
 }
 
 /// List all keys as strings (skips entries whose keys are not valid UTF-8).
 pub fn keys(handle: i64) -> Result<Vec<String>, KvError> {
-    with_db(handle, |db| Ok(db.iter()
-        .filter_map(|res| res.ok())
-        .filter_map(|(k, _)| std::str::from_utf8(&k).ok().map(str::to_string))
-        .collect()))
+    with_db(handle, |db| {
+        Ok(db
+            .iter()
+            .filter_map(|res| res.ok())
+            .filter_map(|(k, _)| std::str::from_utf8(&k).ok().map(str::to_string))
+            .collect())
+    })
 }
 
 /// Atomic compare-and-swap. Returns `true` when the swap succeeded.
@@ -142,7 +168,9 @@ pub fn compare_and_swap(
     expected: Option<&[u8]>,
     new_value: Option<&[u8]>,
 ) -> Result<bool, KvError> {
-    with_db(handle, |db| Ok(db.compare_and_swap(key, expected, new_value)?.is_ok()))
+    with_db(handle, |db| {
+        Ok(db.compare_and_swap(key, expected, new_value)?.is_ok())
+    })
 }
 
 // ---------------- Named "sub-buckets" (Trees) -------------------------
@@ -156,7 +184,9 @@ pub fn open_tree(db_handle: i64, name: &str) -> Result<i64, KvError> {
 }
 
 pub fn tree_insert(tree_handle: i64, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
-    with_tree(tree_handle, |tree| Ok(tree.insert(key, value)?.map(ivec_to_bytes)))
+    with_tree(tree_handle, |tree| {
+        Ok(tree.insert(key, value)?.map(ivec_to_bytes))
+    })
 }
 pub fn tree_get(tree_handle: i64, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
     with_tree(tree_handle, |tree| Ok(tree.get(key)?.map(ivec_to_bytes)))
@@ -168,17 +198,22 @@ pub fn tree_len(tree_handle: i64) -> Result<usize, KvError> {
     with_tree(tree_handle, |tree| Ok(tree.len()))
 }
 pub fn tree_keys(tree_handle: i64) -> Result<Vec<String>, KvError> {
-    with_tree(tree_handle, |tree| Ok(tree.iter()
-        .filter_map(|res| res.ok())
-        .filter_map(|(k, _)| std::str::from_utf8(&k).ok().map(str::to_string))
-        .collect()))
+    with_tree(tree_handle, |tree| {
+        Ok(tree
+            .iter()
+            .filter_map(|res| res.ok())
+            .filter_map(|(k, _)| std::str::from_utf8(&k).ok().map(str::to_string))
+            .collect())
+    })
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
     let mut reg = crate::native::lock_recover(registry());
     let mut released = crate::native::remove_runtime_entries(&mut reg.trees, runtime_id);
     for ((owner, _), database) in &reg.dbs {
-        if *owner == runtime_id { let _ = database.flush(); }
+        if *owner == runtime_id {
+            let _ = database.flush();
+        }
     }
     released += crate::native::remove_runtime_entries(&mut reg.dbs, runtime_id);
     released
@@ -200,7 +235,10 @@ mod tests {
         let db = open(&path).unwrap();
 
         assert_eq!(insert(db, b"user:1", b"juan").unwrap(), None);
-        assert_eq!(insert(db, b"user:1", b"juan2").unwrap(), Some(b"juan".to_vec()));
+        assert_eq!(
+            insert(db, b"user:1", b"juan2").unwrap(),
+            Some(b"juan".to_vec())
+        );
         assert_eq!(get(db, b"user:1").unwrap(), Some(b"juan2".to_vec()));
         assert!(contains(db, b"user:1").unwrap());
         assert_eq!(len(db).unwrap(), 1);
@@ -247,15 +285,21 @@ mod tests {
         let path = temp_db_path("trees");
         let db = open(&path).unwrap();
         let sessions = open_tree(db, "sessions").unwrap();
-        let cache    = open_tree(db, "cache").unwrap();
+        let cache = open_tree(db, "cache").unwrap();
 
         tree_insert(sessions, b"user:1", b"token-abc").unwrap();
         tree_insert(cache, b"user:1", b"payload").unwrap();
 
-        assert_eq!(tree_get(sessions, b"user:1").unwrap(), Some(b"token-abc".to_vec()));
-        assert_eq!(tree_get(cache,    b"user:1").unwrap(), Some(b"payload".to_vec()));
+        assert_eq!(
+            tree_get(sessions, b"user:1").unwrap(),
+            Some(b"token-abc".to_vec())
+        );
+        assert_eq!(
+            tree_get(cache, b"user:1").unwrap(),
+            Some(b"payload".to_vec())
+        );
         assert_eq!(tree_len(sessions).unwrap(), 1);
-        assert_eq!(tree_len(cache).unwrap(),    1);
+        assert_eq!(tree_len(cache).unwrap(), 1);
 
         close(db).unwrap();
         std::fs::remove_dir_all(&path).ok();
@@ -264,6 +308,9 @@ mod tests {
     #[test]
     fn unknown_handle_reports_typed_error() {
         assert!(matches!(get(999_999, b"x"), Err(KvError::UnknownDb(_))));
-        assert!(matches!(tree_get(999_999, b"x"), Err(KvError::UnknownTree(_))));
+        assert!(matches!(
+            tree_get(999_999, b"x"),
+            Err(KvError::UnknownTree(_))
+        ));
     }
 }

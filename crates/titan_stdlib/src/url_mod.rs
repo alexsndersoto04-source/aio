@@ -11,38 +11,59 @@ use url::Url;
 #[derive(Debug, Error)]
 pub enum UrlError {
     #[error("invalid URL '{url}': {source}")]
-    Parse { url: String, #[source] source: url::ParseError },
+    Parse {
+        url: String,
+        #[source]
+        source: url::ParseError,
+    },
     #[error("URL has no host: '{0}'")]
     NoHost(String),
 }
 
 fn parse(text: &str) -> Result<Url, UrlError> {
-    Url::parse(text).map_err(|source| UrlError::Parse { url: text.into(), source })
+    Url::parse(text).map_err(|source| UrlError::Parse {
+        url: text.into(),
+        source,
+    })
 }
 
 /// Returns `true` when `text` is an absolute URL.
-pub fn is_valid(text: &str) -> bool { Url::parse(text).is_ok() }
+pub fn is_valid(text: &str) -> bool {
+    Url::parse(text).is_ok()
+}
 
 /// Scheme (e.g. `"https"`).
-pub fn scheme(text: &str) -> Result<String, UrlError> { Ok(parse(text)?.scheme().to_string()) }
+pub fn scheme(text: &str) -> Result<String, UrlError> {
+    Ok(parse(text)?.scheme().to_string())
+}
 
 /// Host name; returns [`UrlError::NoHost`] when the URL has no authority.
 pub fn host(text: &str) -> Result<String, UrlError> {
     let url = parse(text)?;
-    url.host_str().map(|s| s.to_string()).ok_or_else(|| UrlError::NoHost(text.into()))
+    url.host_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| UrlError::NoHost(text.into()))
 }
 
 /// Port explicitly present in the URL, or the default for the scheme (443 for https, 80 for http, ...).
-pub fn port(text: &str) -> Result<Option<u16>, UrlError> { Ok(parse(text)?.port_or_known_default()) }
+pub fn port(text: &str) -> Result<Option<u16>, UrlError> {
+    Ok(parse(text)?.port_or_known_default())
+}
 
 /// Path component (`/foo/bar`).
-pub fn path(text: &str) -> Result<String, UrlError> { Ok(parse(text)?.path().to_string()) }
+pub fn path(text: &str) -> Result<String, UrlError> {
+    Ok(parse(text)?.path().to_string())
+}
 
 /// Query string without the leading `?`, or empty string.
-pub fn query(text: &str) -> Result<String, UrlError> { Ok(parse(text)?.query().unwrap_or("").to_string()) }
+pub fn query(text: &str) -> Result<String, UrlError> {
+    Ok(parse(text)?.query().unwrap_or("").to_string())
+}
 
 /// Fragment (`#foo`) without the `#`, or empty string.
-pub fn fragment(text: &str) -> Result<String, UrlError> { Ok(parse(text)?.fragment().unwrap_or("").to_string()) }
+pub fn fragment(text: &str) -> Result<String, UrlError> {
+    Ok(parse(text)?.fragment().unwrap_or("").to_string())
+}
 
 /// Parses `?a=1&b=2` (with or without the `?`) into a map. When the same key
 /// appears more than once, the last value wins — call `query_pairs` if you
@@ -75,7 +96,10 @@ pub fn build_query(pairs: &[(String, String)]) -> String {
 pub fn join(base: &str, relative: &str) -> Result<String, UrlError> {
     Ok(parse(base)?
         .join(relative)
-        .map_err(|source| UrlError::Parse { url: relative.into(), source })?
+        .map_err(|source| UrlError::Parse {
+            url: relative.into(),
+            source,
+        })?
         .to_string())
 }
 
@@ -118,8 +142,14 @@ mod tests {
 
     #[test]
     fn join_relative_urls() {
-        assert_eq!(join("https://a.com/x/y", "../z").unwrap(), "https://a.com/z");
-        assert_eq!(join("https://a.com/", "https://b.com/other").unwrap(), "https://b.com/other");
+        assert_eq!(
+            join("https://a.com/x/y", "../z").unwrap(),
+            "https://a.com/z"
+        );
+        assert_eq!(
+            join("https://a.com/", "https://b.com/other").unwrap(),
+            "https://b.com/other"
+        );
     }
 
     #[test]

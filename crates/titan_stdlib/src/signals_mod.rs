@@ -37,9 +37,9 @@ pub enum SignalError {
 
 fn resolve(name: &str) -> Result<i32, SignalError> {
     match name.to_ascii_uppercase().as_str() {
-        "SIGINT"  | "INT"  => Ok(SIGINT),
+        "SIGINT" | "INT" => Ok(SIGINT),
         "SIGTERM" | "TERM" => Ok(SIGTERM),
-        "SIGHUP"  | "HUP"  => Ok(SIGHUP),
+        "SIGHUP" | "HUP" => Ok(SIGHUP),
         "SIGUSR1" | "USR1" => Ok(SIGUSR1),
         "SIGUSR2" | "USR2" => Ok(SIGUSR2),
         "SIGQUIT" | "QUIT" => Ok(SIGQUIT),
@@ -51,20 +51,22 @@ fn resolve(name: &str) -> Result<i32, SignalError> {
 
 fn name_from(sig: i32) -> &'static str {
     match sig {
-        SIGINT  => "SIGINT",
+        SIGINT => "SIGINT",
         SIGTERM => "SIGTERM",
-        SIGHUP  => "SIGHUP",
+        SIGHUP => "SIGHUP",
         SIGUSR1 => "SIGUSR1",
         SIGUSR2 => "SIGUSR2",
         SIGQUIT => "SIGQUIT",
         SIGPIPE => "SIGPIPE",
         SIGCHLD => "SIGCHLD",
-        _       => "OTHER",
+        _ => "OTHER",
     }
 }
 
 /// A per-signal counter incremented by a background thread.
-struct Counter { count: Arc<AtomicUsize> }
+struct Counter {
+    count: Arc<AtomicUsize>,
+}
 
 fn counters() -> &'static Mutex<HashMap<i32, Counter>> {
     static COUNTERS: OnceLock<Mutex<HashMap<i32, Counter>>> = OnceLock::new();
@@ -75,7 +77,9 @@ fn counters() -> &'static Mutex<HashMap<i32, Counter>> {
 pub fn install(signal_name: &str) -> Result<(), SignalError> {
     let sig = resolve(signal_name)?;
     let mut map = counters().lock().expect("signal counters poisoned");
-    if map.contains_key(&sig) { return Ok(()); }
+    if map.contains_key(&sig) {
+        return Ok(());
+    }
     let count = Arc::new(AtomicUsize::new(0));
     let count_thread = Arc::clone(&count);
     let mut signals = Signals::new([sig]).map_err(|e| SignalError::Hook(e.to_string()))?;
@@ -114,7 +118,9 @@ pub fn wait_any(timeout_ms: u64) -> Result<String, SignalError> {
                 }
             }
         }
-        if Instant::now() >= deadline { return Ok("timeout".into()); }
+        if Instant::now() >= deadline {
+            return Ok("timeout".into());
+        }
         thread::sleep(Duration::from_millis(20));
     }
 }
@@ -125,9 +131,9 @@ mod tests {
 
     #[test]
     fn resolves_common_signals() {
-        assert_eq!(resolve("SIGINT").unwrap(),  SIGINT);
-        assert_eq!(resolve("term").unwrap(),    SIGTERM);
-        assert_eq!(resolve("USR1").unwrap(),    SIGUSR1);
+        assert_eq!(resolve("SIGINT").unwrap(), SIGINT);
+        assert_eq!(resolve("term").unwrap(), SIGTERM);
+        assert_eq!(resolve("USR1").unwrap(), SIGUSR1);
         assert!(resolve("SIGZOMBIE").is_err());
     }
 

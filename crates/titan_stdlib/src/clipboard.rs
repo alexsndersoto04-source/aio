@@ -34,7 +34,8 @@ pub fn set_text(text: &str) -> bool {
 
 pub fn send_notification(title: &str, body: &str) -> bool {
     if let Ok(mut srv) = services().lock() {
-        srv.notifications.push((title.to_string(), body.to_string()));
+        srv.notifications
+            .push((title.to_string(), body.to_string()));
         return true;
     }
     false

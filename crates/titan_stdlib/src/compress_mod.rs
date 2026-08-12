@@ -7,9 +7,9 @@
 
 use std::io::{Read, Write};
 
-use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
+use flate2::Compression;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,7 +23,9 @@ pub enum CompressError {
 }
 
 fn level(value: i32, max: i32) -> Result<Compression, CompressError> {
-    if value < 0 || value > max { return Err(CompressError::Level(value)); }
+    if value < 0 || value > max {
+        return Err(CompressError::Level(value));
+    }
     Ok(Compression::new(value as u32))
 }
 
@@ -75,8 +77,11 @@ pub fn deflate_decode(data: &[u8]) -> Result<Vec<u8>, CompressError> {
 // ---------------- Zstandard ----------------
 
 pub fn zstd_encode(data: &[u8], compression_level: i32) -> Result<Vec<u8>, CompressError> {
-    if !(1..=22).contains(&compression_level) { return Err(CompressError::Level(compression_level)); }
-    zstd::stream::encode_all(data, compression_level).map_err(|error| CompressError::Zstd(error.to_string()))
+    if !(1..=22).contains(&compression_level) {
+        return Err(CompressError::Level(compression_level));
+    }
+    zstd::stream::encode_all(data, compression_level)
+        .map_err(|error| CompressError::Zstd(error.to_string()))
 }
 
 pub fn zstd_decode(data: &[u8]) -> Result<Vec<u8>, CompressError> {
@@ -92,7 +97,10 @@ mod tests {
     #[test]
     fn gzip_round_trip_and_compresses() {
         let compressed = gzip_encode(SAMPLE, 6).unwrap();
-        assert!(compressed.len() < SAMPLE.len(), "gzip should shrink repetitive text");
+        assert!(
+            compressed.len() < SAMPLE.len(),
+            "gzip should shrink repetitive text"
+        );
         assert_eq!(gzip_decode(&compressed).unwrap(), SAMPLE);
     }
 

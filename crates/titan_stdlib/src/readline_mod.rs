@@ -48,7 +48,9 @@ pub fn prompt_with_history(prompt: &str) -> Result<String, ReadlineError2> {
 pub fn prompt_persistent(prompt: &str, history_path: &str) -> Result<String, ReadlineError2> {
     let mut editor = DefaultEditor::new().map_err(|e| ReadlineError2::Backend(e.to_string()))?;
     let path = Path::new(history_path);
-    if path.exists() { let _ = editor.load_history(path); }
+    if path.exists() {
+        let _ = editor.load_history(path);
+    }
     let result = editor.readline(prompt).map_err(to_error);
     if let Ok(ref line) = result {
         let _ = editor.add_history_entry(line);
@@ -65,7 +67,9 @@ pub fn prompt_secret(prompt: &str) -> Result<String, ReadlineError2> {
     // dep, but we stay dependency-free by disabling echo through crossterm.
     use std::io::Write as _;
     print!("{prompt}");
-    std::io::stdout().flush().map_err(|e| ReadlineError2::Backend(e.to_string()))?;
+    std::io::stdout()
+        .flush()
+        .map_err(|e| ReadlineError2::Backend(e.to_string()))?;
     // Best-effort: enable raw + read chars until Enter, hiding output.
     #[cfg(feature = "term_mod")]
     {
@@ -76,10 +80,18 @@ pub fn prompt_secret(prompt: &str) -> Result<String, ReadlineError2> {
     let mut byte = [0u8; 1];
     loop {
         use std::io::Read as _;
-        if std::io::stdin().read(&mut byte).map_err(|e| ReadlineError2::Backend(e.to_string()))? == 0 { break; }
+        if std::io::stdin()
+            .read(&mut byte)
+            .map_err(|e| ReadlineError2::Backend(e.to_string()))?
+            == 0
+        {
+            break;
+        }
         match byte[0] {
             b'\r' | b'\n' => break,
-            0x7f | 0x08 => { buffer.pop(); }
+            0x7f | 0x08 => {
+                buffer.pop();
+            }
             b => buffer.push(b as char),
         }
     }
@@ -99,7 +111,9 @@ mod tests {
     // rustyline needs an interactive TTY, so live prompt tests are opt-in.
     #[test]
     fn live_prompt_when_enabled() {
-        if std::env::var("TITAN_READLINE_LIVE").is_err() { return; }
+        if std::env::var("TITAN_READLINE_LIVE").is_err() {
+            return;
+        }
         let line = prompt("titan> ").unwrap();
         assert!(!line.is_empty());
     }

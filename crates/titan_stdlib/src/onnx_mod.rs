@@ -54,21 +54,30 @@ pub enum OnnxError {
     BadShape,
 }
 
-fn map_err<E: std::fmt::Display>(e: E) -> OnnxError { OnnxError::Tract(e.to_string()) }
+fn map_err<E: std::fmt::Display>(e: E) -> OnnxError {
+    OnnxError::Tract(e.to_string())
+}
 
 // ---- Registry --------------------------------------------------------
 
 struct Registry {
-    models:  HashMap<(u64, i64), RunnableModel>,
+    models: HashMap<(u64, i64), RunnableModel>,
     next_id: i64,
 }
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(Registry { models: HashMap::new(), next_id: 1 }))
+    REG.get_or_init(|| {
+        Mutex::new(Registry {
+            models: HashMap::new(),
+            next_id: 1,
+        })
+    })
 }
 
-fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+fn handle_key(handle: i64) -> (u64, i64) {
+    crate::native::runtime_handle_key(handle)
+}
 
 fn insert(m: RunnableModel) -> i64 {
     let mut reg = registry().lock().expect("onnx registry poisoned");
@@ -79,9 +88,14 @@ fn insert(m: RunnableModel) -> i64 {
 }
 
 fn with<F, R>(handle: i64, action: F) -> Result<R, OnnxError>
-where F: FnOnce(&RunnableModel) -> Result<R, OnnxError> {
+where
+    F: FnOnce(&RunnableModel) -> Result<R, OnnxError>,
+{
     let reg = registry().lock().expect("onnx registry poisoned");
-    let m = reg.models.get(&handle_key(handle)).ok_or(OnnxError::UnknownHandle(handle))?;
+    let m = reg
+        .models
+        .get(&handle_key(handle))
+        .ok_or(OnnxError::UnknownHandle(handle))?;
     action(m)
 }
 
@@ -95,9 +109,12 @@ where F: FnOnce(&RunnableModel) -> Result<R, OnnxError> {
 /// before optimization.
 pub fn load(path: &str) -> Result<i64, OnnxError> {
     let model = tract_onnx::onnx()
-        .model_for_path(path).map_err(map_err)?
-        .into_optimized().map_err(map_err)?
-        .into_runnable().map_err(map_err)?;
+        .model_for_path(path)
+        .map_err(map_err)?
+        .into_optimized()
+        .map_err(map_err)?
+        .into_runnable()
+        .map_err(map_err)?;
     Ok(insert(model))
 }
 
@@ -105,13 +122,19 @@ pub fn load(path: &str) -> Result<i64, OnnxError> {
 /// (of `f32`) before optimization. Necessary for models whose ONNX
 /// graph exposes dynamic dimensions (batch, sequence length, ...).
 pub fn load_with_input_shape(path: &str, input_shape: &[i64]) -> Result<i64, OnnxError> {
-    if input_shape.iter().any(|&d| d <= 0) { return Err(OnnxError::BadShape); }
+    if input_shape.iter().any(|&d| d <= 0) {
+        return Err(OnnxError::BadShape);
+    }
     let shape: Vec<usize> = input_shape.iter().map(|&d| d as usize).collect();
     let model = tract_onnx::onnx()
-        .model_for_path(path).map_err(map_err)?
-        .with_input_fact(0, f32::fact(&shape).into()).map_err(map_err)?
-        .into_optimized().map_err(map_err)?
-        .into_runnable().map_err(map_err)?;
+        .model_for_path(path)
+        .map_err(map_err)?
+        .with_input_fact(0, f32::fact(&shape).into())
+        .map_err(map_err)?
+        .into_optimized()
+        .map_err(map_err)?
+        .into_runnable()
+        .map_err(map_err)?;
     Ok(insert(model))
 }
 
@@ -119,14 +142,21 @@ pub fn load_with_input_shape(path: &str, input_shape: &[i64]) -> Result<i64, Onn
 /// `attention_mask`) both pinned to the same `[batch, seq_len]` shape.
 /// This is the shape most HuggingFace transformer ONNX exports use.
 pub fn load_bert_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, OnnxError> {
-    if batch <= 0 || seq_len <= 0 { return Err(OnnxError::BadShape); }
+    if batch <= 0 || seq_len <= 0 {
+        return Err(OnnxError::BadShape);
+    }
     let shape = [batch as usize, seq_len as usize];
     let model = tract_onnx::onnx()
-        .model_for_path(path).map_err(map_err)?
-        .with_input_fact(0, i64::fact(&shape).into()).map_err(map_err)?
-        .with_input_fact(1, i64::fact(&shape).into()).map_err(map_err)?
-        .into_optimized().map_err(map_err)?
-        .into_runnable().map_err(map_err)?;
+        .model_for_path(path)
+        .map_err(map_err)?
+        .with_input_fact(0, i64::fact(&shape).into())
+        .map_err(map_err)?
+        .with_input_fact(1, i64::fact(&shape).into())
+        .map_err(map_err)?
+        .into_optimized()
+        .map_err(map_err)?
+        .into_runnable()
+        .map_err(map_err)?;
     Ok(insert(model))
 }
 
@@ -134,21 +164,31 @@ pub fn load_bert_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, Onnx
 /// (`input_ids`, `attention_mask`, `token_type_ids`) — some BERT
 /// variants (e.g. classic uncased BERT) need this third tensor.
 pub fn load_bert3_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, OnnxError> {
-    if batch <= 0 || seq_len <= 0 { return Err(OnnxError::BadShape); }
+    if batch <= 0 || seq_len <= 0 {
+        return Err(OnnxError::BadShape);
+    }
     let shape = [batch as usize, seq_len as usize];
     let model = tract_onnx::onnx()
-        .model_for_path(path).map_err(map_err)?
-        .with_input_fact(0, i64::fact(&shape).into()).map_err(map_err)?
-        .with_input_fact(1, i64::fact(&shape).into()).map_err(map_err)?
-        .with_input_fact(2, i64::fact(&shape).into()).map_err(map_err)?
-        .into_optimized().map_err(map_err)?
-        .into_runnable().map_err(map_err)?;
+        .model_for_path(path)
+        .map_err(map_err)?
+        .with_input_fact(0, i64::fact(&shape).into())
+        .map_err(map_err)?
+        .with_input_fact(1, i64::fact(&shape).into())
+        .map_err(map_err)?
+        .with_input_fact(2, i64::fact(&shape).into())
+        .map_err(map_err)?
+        .into_optimized()
+        .map_err(map_err)?
+        .into_runnable()
+        .map_err(map_err)?;
     Ok(insert(model))
 }
 
 /// Drop a model. Idempotent.
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.models.remove(&handle_key(handle)); }
+    if let Ok(mut reg) = registry().lock() {
+        reg.models.remove(&handle_key(handle));
+    }
 }
 
 /// How many inputs does the model take?
@@ -166,7 +206,11 @@ pub fn output_count(handle: i64) -> Result<usize, OnnxError> {
 pub fn input_shape(handle: i64, i: usize) -> Result<Vec<i64>, OnnxError> {
     with(handle, |m| {
         let fact = m.model().input_fact(i).map_err(map_err)?;
-        let shape: Vec<i64> = fact.shape.iter().map(|d| d.to_i64().unwrap_or(-1)).collect();
+        let shape: Vec<i64> = fact
+            .shape
+            .iter()
+            .map(|d| d.to_i64().unwrap_or(-1))
+            .collect();
         Ok(shape)
     })
 }
@@ -175,7 +219,11 @@ pub fn input_shape(handle: i64, i: usize) -> Result<Vec<i64>, OnnxError> {
 pub fn output_shape(handle: i64, i: usize) -> Result<Vec<i64>, OnnxError> {
     with(handle, |m| {
         let fact = m.model().output_fact(i).map_err(map_err)?;
-        let shape: Vec<i64> = fact.shape.iter().map(|d| d.to_i64().unwrap_or(-1)).collect();
+        let shape: Vec<i64> = fact
+            .shape
+            .iter()
+            .map(|d| d.to_i64().unwrap_or(-1))
+            .collect();
         Ok(shape)
     })
 }
@@ -186,12 +234,21 @@ pub fn output_shape(handle: i64, i: usize) -> Result<Vec<i64>, OnnxError> {
 /// * `input_shape` — expected shape, e.g. `[1, 1, 28, 28]` for MNIST.
 /// * `input_data`  — flat row-major buffer whose length must equal the
 ///                   product of `input_shape`.
-pub fn run_f32(handle: i64, input_shape: &[i64], input_data: &[f32]) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
-    if input_shape.iter().any(|&d| d <= 0) { return Err(OnnxError::BadShape); }
+pub fn run_f32(
+    handle: i64,
+    input_shape: &[i64],
+    input_data: &[f32],
+) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
+    if input_shape.iter().any(|&d| d <= 0) {
+        return Err(OnnxError::BadShape);
+    }
     let shape: Vec<usize> = input_shape.iter().map(|&d| d as usize).collect();
     let expected: usize = shape.iter().product();
     if input_data.len() != expected {
-        return Err(OnnxError::ShapeMismatch { expected, found: input_data.len() });
+        return Err(OnnxError::ShapeMismatch {
+            expected,
+            found: input_data.len(),
+        });
     }
 
     with(handle, |m| {
@@ -200,7 +257,10 @@ pub fn run_f32(handle: i64, input_shape: &[i64], input_data: &[f32]) -> Result<(
             .map_err(map_err)?
             .into_tensor();
         let outputs = m.run(tvec!(tensor.into())).map_err(map_err)?;
-        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let first = outputs
+            .into_iter()
+            .next()
+            .ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
         let out_shape: Vec<usize> = first.shape().to_vec();
         let view = first.to_array_view::<f32>().map_err(map_err)?;
         let values: Vec<f32> = view.iter().copied().collect();
@@ -210,12 +270,21 @@ pub fn run_f32(handle: i64, input_shape: &[i64], input_data: &[f32]) -> Result<(
 
 /// Run the model with a **single** `i64` tensor input (common for
 /// token-id inputs to LLMs / BERT). Returns first output as `f32`.
-pub fn run_i64_in_f32_out(handle: i64, input_shape: &[i64], input_data: &[i64]) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
-    if input_shape.iter().any(|&d| d <= 0) { return Err(OnnxError::BadShape); }
+pub fn run_i64_in_f32_out(
+    handle: i64,
+    input_shape: &[i64],
+    input_data: &[i64],
+) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
+    if input_shape.iter().any(|&d| d <= 0) {
+        return Err(OnnxError::BadShape);
+    }
     let shape: Vec<usize> = input_shape.iter().map(|&d| d as usize).collect();
     let expected: usize = shape.iter().product();
     if input_data.len() != expected {
-        return Err(OnnxError::ShapeMismatch { expected, found: input_data.len() });
+        return Err(OnnxError::ShapeMismatch {
+            expected,
+            found: input_data.len(),
+        });
     }
 
     with(handle, |m| {
@@ -223,7 +292,10 @@ pub fn run_i64_in_f32_out(handle: i64, input_shape: &[i64], input_data: &[i64]) 
             .map_err(map_err)?
             .into_tensor();
         let outputs = m.run(tvec!(tensor.into())).map_err(map_err)?;
-        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let first = outputs
+            .into_iter()
+            .next()
+            .ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
         let out_shape: Vec<usize> = first.shape().to_vec();
         let view = first.to_array_view::<f32>().map_err(map_err)?;
         let values: Vec<f32> = view.iter().copied().collect();
@@ -234,17 +306,28 @@ pub fn run_i64_in_f32_out(handle: i64, input_shape: &[i64], input_data: &[i64]) 
 /// Run a transformer with **two** `i64` inputs of the same shape:
 /// `input_ids` and `attention_mask`. Returns the first output as `f32`.
 /// Perfect for DistilBERT / BERT-style classifiers.
-pub fn run_two_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attention_mask: &[i64])
-    -> Result<(Vec<f32>, Vec<usize>), OnnxError>
-{
-    if input_shape.iter().any(|&d| d <= 0) { return Err(OnnxError::BadShape); }
+pub fn run_two_i64(
+    handle: i64,
+    input_shape: &[i64],
+    input_ids: &[i64],
+    attention_mask: &[i64],
+) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
+    if input_shape.iter().any(|&d| d <= 0) {
+        return Err(OnnxError::BadShape);
+    }
     let shape: Vec<usize> = input_shape.iter().map(|&d| d as usize).collect();
     let expected: usize = shape.iter().product();
     if input_ids.len() != expected {
-        return Err(OnnxError::ShapeMismatch { expected, found: input_ids.len() });
+        return Err(OnnxError::ShapeMismatch {
+            expected,
+            found: input_ids.len(),
+        });
     }
     if attention_mask.len() != expected {
-        return Err(OnnxError::ShapeMismatch { expected, found: attention_mask.len() });
+        return Err(OnnxError::ShapeMismatch {
+            expected,
+            found: attention_mask.len(),
+        });
     }
 
     with(handle, |m| {
@@ -254,8 +337,13 @@ pub fn run_two_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attentio
         let mask_tensor = tract_ndarray::ArrayD::from_shape_vec(shape, attention_mask.to_vec())
             .map_err(map_err)?
             .into_tensor();
-        let outputs = m.run(tvec!(ids_tensor.into(), mask_tensor.into())).map_err(map_err)?;
-        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let outputs = m
+            .run(tvec!(ids_tensor.into(), mask_tensor.into()))
+            .map_err(map_err)?;
+        let first = outputs
+            .into_iter()
+            .next()
+            .ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
         let out_shape: Vec<usize> = first.shape().to_vec();
         let view = first.to_array_view::<f32>().map_err(map_err)?;
         let values: Vec<f32> = view.iter().copied().collect();
@@ -267,24 +355,44 @@ pub fn run_two_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attentio
 /// `input_ids`, `attention_mask`, `token_type_ids`. Used by classic
 /// BERT-uncased when the token_type_ids input is not baked into the
 /// graph.
-pub fn run_three_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attention_mask: &[i64], token_type_ids: &[i64])
-    -> Result<(Vec<f32>, Vec<usize>), OnnxError>
-{
-    if input_shape.iter().any(|&d| d <= 0) { return Err(OnnxError::BadShape); }
+pub fn run_three_i64(
+    handle: i64,
+    input_shape: &[i64],
+    input_ids: &[i64],
+    attention_mask: &[i64],
+    token_type_ids: &[i64],
+) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
+    if input_shape.iter().any(|&d| d <= 0) {
+        return Err(OnnxError::BadShape);
+    }
     let shape: Vec<usize> = input_shape.iter().map(|&d| d as usize).collect();
     let expected: usize = shape.iter().product();
     for data in [input_ids, attention_mask, token_type_ids] {
         if data.len() != expected {
-            return Err(OnnxError::ShapeMismatch { expected, found: data.len() });
+            return Err(OnnxError::ShapeMismatch {
+                expected,
+                found: data.len(),
+            });
         }
     }
 
     with(handle, |m| {
-        let ids = tract_ndarray::ArrayD::from_shape_vec(shape.clone(), input_ids.to_vec()).map_err(map_err)?.into_tensor();
-        let mask = tract_ndarray::ArrayD::from_shape_vec(shape.clone(), attention_mask.to_vec()).map_err(map_err)?.into_tensor();
-        let types = tract_ndarray::ArrayD::from_shape_vec(shape, token_type_ids.to_vec()).map_err(map_err)?.into_tensor();
-        let outputs = m.run(tvec!(ids.into(), mask.into(), types.into())).map_err(map_err)?;
-        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let ids = tract_ndarray::ArrayD::from_shape_vec(shape.clone(), input_ids.to_vec())
+            .map_err(map_err)?
+            .into_tensor();
+        let mask = tract_ndarray::ArrayD::from_shape_vec(shape.clone(), attention_mask.to_vec())
+            .map_err(map_err)?
+            .into_tensor();
+        let types = tract_ndarray::ArrayD::from_shape_vec(shape, token_type_ids.to_vec())
+            .map_err(map_err)?
+            .into_tensor();
+        let outputs = m
+            .run(tvec!(ids.into(), mask.into(), types.into()))
+            .map_err(map_err)?;
+        let first = outputs
+            .into_iter()
+            .next()
+            .ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
         let out_shape: Vec<usize> = first.shape().to_vec();
         let view = first.to_array_view::<f32>().map_err(map_err)?;
         let values: Vec<f32> = view.iter().copied().collect();
@@ -305,31 +413,53 @@ pub fn run_three_i64(handle: i64, input_shape: &[i64], input_ids: &[i64], attent
 /// shape `[batch, seq_len, hidden]`. Every HuggingFace ONNX export of
 /// a sentence encoder ships this layout.
 pub fn run_bert_pooled(
-    handle: i64, batch: i64, seq_len: i64,
-    input_ids: &[i64], attention_mask: &[i64],
+    handle: i64,
+    batch: i64,
+    seq_len: i64,
+    input_ids: &[i64],
+    attention_mask: &[i64],
 ) -> Result<(Vec<f32>, Vec<usize>), OnnxError> {
-    if batch <= 0 || seq_len <= 0 { return Err(OnnxError::BadShape); }
+    if batch <= 0 || seq_len <= 0 {
+        return Err(OnnxError::BadShape);
+    }
     let shape = [batch as usize, seq_len as usize];
     let expected: usize = shape.iter().product();
     if input_ids.len() != expected {
-        return Err(OnnxError::ShapeMismatch { expected, found: input_ids.len() });
+        return Err(OnnxError::ShapeMismatch {
+            expected,
+            found: input_ids.len(),
+        });
     }
     if attention_mask.len() != expected {
-        return Err(OnnxError::ShapeMismatch { expected, found: attention_mask.len() });
+        return Err(OnnxError::ShapeMismatch {
+            expected,
+            found: attention_mask.len(),
+        });
     }
 
     with(handle, |m| {
-        let ids  = tract_ndarray::ArrayD::from_shape_vec(shape.to_vec(), input_ids.to_vec()).map_err(map_err)?.into_tensor();
-        let mask = tract_ndarray::ArrayD::from_shape_vec(shape.to_vec(), attention_mask.to_vec()).map_err(map_err)?.into_tensor();
+        let ids = tract_ndarray::ArrayD::from_shape_vec(shape.to_vec(), input_ids.to_vec())
+            .map_err(map_err)?
+            .into_tensor();
+        let mask = tract_ndarray::ArrayD::from_shape_vec(shape.to_vec(), attention_mask.to_vec())
+            .map_err(map_err)?
+            .into_tensor();
         let outputs = m.run(tvec!(ids.into(), mask.into())).map_err(map_err)?;
-        let first = outputs.into_iter().next().ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
+        let first = outputs
+            .into_iter()
+            .next()
+            .ok_or_else(|| OnnxError::Tract("model produced no outputs".into()))?;
         let out_shape: Vec<usize> = first.shape().to_vec();
         if out_shape.len() != 3 {
-            return Err(OnnxError::Tract(format!("expected [batch, seq_len, hidden] output, got {out_shape:?}")));
+            return Err(OnnxError::Tract(format!(
+                "expected [batch, seq_len, hidden] output, got {out_shape:?}"
+            )));
         }
         let (b, s, h) = (out_shape[0], out_shape[1], out_shape[2]);
         if b != shape[0] || s != shape[1] {
-            return Err(OnnxError::Tract(format!("output batch/seq mismatch: expected {shape:?}, got [{b},{s},{h}]")));
+            return Err(OnnxError::Tract(format!(
+                "output batch/seq mismatch: expected {shape:?}, got [{b},{s},{h}]"
+            )));
         }
         let view = first.to_array_view::<f32>().map_err(map_err)?;
 
@@ -342,7 +472,9 @@ pub fn run_bert_pooled(
             let mut count = 0u32;
             for si in 0..s {
                 let m_val = attention_mask[bi * s + si];
-                if m_val == 0 { continue; }
+                if m_val == 0 {
+                    continue;
+                }
                 count += 1;
                 for hi in 0..h {
                     pooled[bi * h + hi] += view[[bi, si, hi]];
@@ -370,8 +502,14 @@ mod tests {
 
     #[test]
     fn unknown_handle_reports_typed_error() {
-        assert!(matches!(input_count(999_999), Err(OnnxError::UnknownHandle(_))));
-        assert!(matches!(run_f32(999_999, &[1, 1, 1, 1], &[0.0]), Err(OnnxError::UnknownHandle(_))));
+        assert!(matches!(
+            input_count(999_999),
+            Err(OnnxError::UnknownHandle(_))
+        ));
+        assert!(matches!(
+            run_f32(999_999, &[1, 1, 1, 1], &[0.0]),
+            Err(OnnxError::UnknownHandle(_))
+        ));
     }
 
     #[test]
@@ -381,16 +519,24 @@ mod tests {
 
     #[test]
     fn bad_shapes_are_rejected() {
-        assert!(matches!(load_with_input_shape("/nope.onnx", &[0, 1]), Err(OnnxError::BadShape)));
+        assert!(matches!(
+            load_with_input_shape("/nope.onnx", &[0, 1]),
+            Err(OnnxError::BadShape)
+        ));
     }
 
     /// Live test opt-in: set TITAN_ONNX_MODEL=/path/to/model.onnx and
     /// TITAN_ONNX_SHAPE=1,1,28,28 (comma-separated).
     #[test]
     fn round_trip_when_configured() {
-        let Ok(path) = std::env::var("TITAN_ONNX_MODEL") else { return; };
+        let Ok(path) = std::env::var("TITAN_ONNX_MODEL") else {
+            return;
+        };
         let shape_str = std::env::var("TITAN_ONNX_SHAPE").unwrap_or_else(|_| "1,1,28,28".into());
-        let shape: Vec<i64> = shape_str.split(',').map(|s| s.trim().parse().unwrap()).collect();
+        let shape: Vec<i64> = shape_str
+            .split(',')
+            .map(|s| s.trim().parse().unwrap())
+            .collect();
         let elems: usize = shape.iter().map(|&d| d as usize).product();
 
         let h = load_with_input_shape(&path, &shape).expect("load");

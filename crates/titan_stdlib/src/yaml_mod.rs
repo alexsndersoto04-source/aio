@@ -38,7 +38,8 @@ pub fn stringify(value: &Value) -> Result<String, YamlError> {
 pub fn parse_multi(text: &str) -> Result<Vec<Value>, YamlError> {
     let mut docs = Vec::new();
     for document in serde_yaml::Deserializer::from_str(text) {
-        let value = Value::deserialize(document).map_err(|error| YamlError::Parse(error.to_string()))?;
+        let value =
+            Value::deserialize(document).map_err(|error| YamlError::Parse(error.to_string()))?;
         docs.push(value);
     }
     Ok(docs)

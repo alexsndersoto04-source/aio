@@ -9,8 +9,8 @@ use thiserror::Error;
 use titan_codegen::{BytecodeFunc, BytecodeType, CompiledModule, Op};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, DataSection, EntityType, ExportKind,
-    ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg,
-    MemorySection, MemoryType, Module, TypeSection, ValType,
+    ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection,
+    Instruction, MemArg, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -18,10 +18,7 @@ pub enum WasmError {
     #[error("invalid module entry point")]
     Entry,
     #[error("function '{function}' uses unsupported WebAssembly operation: {operation}")]
-    Unsupported {
-        function: String,
-        operation: String,
-    },
+    Unsupported { function: String, operation: String },
     #[error("local count underflow in function '{0}'")]
     Locals(String),
     #[error("function '{function}' accesses invalid local {local}")]
@@ -75,7 +72,11 @@ pub enum WasmError {
     #[error("could not encode WebAssembly source metadata: {0}")]
     SourceMap(String),
     #[error("enum discriminant collision between '{first}' and '{second}' at tag {tag:#018x}")]
-    EnumTagCollision { first: String, second: String, tag: u64 },
+    EnumTagCollision {
+        first: String,
+        second: String,
+        tag: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,59 +142,324 @@ const PRINT_IMPORT: HostImport = HostImport {
 };
 
 const WEB_IMPORTS: &[HostImport] = &[
-    HostImport { native: Some("std::web::query_exists"), field: "dom_query_exists", params: 1, returns_value: true },
-    HostImport { native: Some("std::web::set_text"), field: "dom_set_text", params: 2, returns_value: false },
-    HostImport { native: Some("std::web::set_html"), field: "dom_set_html", params: 2, returns_value: false },
-    HostImport { native: Some("std::web::set_attribute"), field: "dom_set_attribute", params: 3, returns_value: false },
-    HostImport { native: Some("std::web::add_class"), field: "dom_add_class", params: 2, returns_value: false },
-    HostImport { native: Some("std::web::remove_class"), field: "dom_remove_class", params: 2, returns_value: false },
-    HostImport { native: Some("std::web::focus"), field: "dom_focus", params: 1, returns_value: false },
-    HostImport { native: Some("std::web::set_title"), field: "dom_set_title", params: 1, returns_value: false },
-    HostImport { native: Some("std::web::listen"), field: "dom_listen", params: 3, returns_value: true },
-    HostImport { native: Some("std::web::unlisten"), field: "dom_unlisten", params: 1, returns_value: true },
-    HostImport { native: Some("std::web::event_type"), field: "dom_event_type", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::event_value"), field: "dom_event_value", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::event_key"), field: "dom_event_key", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::event_target_id"), field: "dom_event_target_id", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::event_checked"), field: "dom_event_checked", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::event_x"), field: "dom_event_x", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::event_y"), field: "dom_event_y", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::fetch"), field: "fetch_start", params: 4, returns_value: true },
-    HostImport { native: Some("std::web::fetch_cancel"), field: "fetch_cancel", params: 1, returns_value: true },
-    HostImport { native: Some("std::web::fetch_ok"), field: "fetch_ok", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::fetch_status"), field: "fetch_status", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::fetch_body"), field: "fetch_body", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::fetch_url"), field: "fetch_url", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::fetch_error"), field: "fetch_error", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::fetch_headers"), field: "fetch_headers", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::request"), field: "fetch_request", params: 7, returns_value: true },
-    HostImport { native: Some("std::web::ws_connect"), field: "ws_connect", params: 7, returns_value: true },
-    HostImport { native: Some("std::web::ws_send"), field: "ws_send", params: 2, returns_value: true },
-    HostImport { native: Some("std::web::ws_close"), field: "ws_close", params: 3, returns_value: true },
-    HostImport { native: Some("std::web::ws_id"), field: "ws_id", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::ws_message"), field: "ws_message", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::ws_protocol"), field: "ws_protocol", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::ws_close_code"), field: "ws_close_code", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::ws_close_reason"), field: "ws_close_reason", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::ws_was_clean"), field: "ws_was_clean", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::ws_error"), field: "ws_error", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::canvas_resize"), field: "canvas_resize", params: 3, returns_value: false },
-    HostImport { native: Some("std::web::canvas_clear"), field: "canvas_clear", params: 2, returns_value: false },
-    HostImport { native: Some("std::web::canvas_fill_rect"), field: "canvas_fill_rect", params: 6, returns_value: false },
-    HostImport { native: Some("std::web::canvas_stroke_rect"), field: "canvas_stroke_rect", params: 7, returns_value: false },
-    HostImport { native: Some("std::web::canvas_line"), field: "canvas_line", params: 7, returns_value: false },
-    HostImport { native: Some("std::web::canvas_text"), field: "canvas_text", params: 6, returns_value: false },
-    HostImport { native: Some("std::web::animation_start"), field: "animation_start", params: 1, returns_value: true },
-    HostImport { native: Some("std::web::animation_cancel"), field: "animation_cancel", params: 1, returns_value: true },
-    HostImport { native: Some("std::web::frame_id"), field: "frame_id", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::frame_time_ms"), field: "frame_time_ms", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::frame_delta_ms"), field: "frame_delta_ms", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::frame_count"), field: "frame_count", params: 0, returns_value: true },
-    HostImport { native: Some("std::web::webgl_supported"), field: "webgl_supported", params: 1, returns_value: true },
-    HostImport { native: Some("std::web::webgl_create"), field: "webgl_create", params: 5, returns_value: true },
-    HostImport { native: Some("std::web::webgl_uniform_f32"), field: "webgl_uniform_f32", params: 4, returns_value: true },
-    HostImport { native: Some("std::web::webgl_draw"), field: "webgl_draw", params: 2, returns_value: true },
-    HostImport { native: Some("std::web::webgl_delete"), field: "webgl_delete", params: 1, returns_value: true },
+    HostImport {
+        native: Some("std::web::query_exists"),
+        field: "dom_query_exists",
+        params: 1,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::set_text"),
+        field: "dom_set_text",
+        params: 2,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::set_html"),
+        field: "dom_set_html",
+        params: 2,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::set_attribute"),
+        field: "dom_set_attribute",
+        params: 3,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::add_class"),
+        field: "dom_add_class",
+        params: 2,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::remove_class"),
+        field: "dom_remove_class",
+        params: 2,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::focus"),
+        field: "dom_focus",
+        params: 1,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::set_title"),
+        field: "dom_set_title",
+        params: 1,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::listen"),
+        field: "dom_listen",
+        params: 3,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::unlisten"),
+        field: "dom_unlisten",
+        params: 1,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::event_type"),
+        field: "dom_event_type",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::event_value"),
+        field: "dom_event_value",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::event_key"),
+        field: "dom_event_key",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::event_target_id"),
+        field: "dom_event_target_id",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::event_checked"),
+        field: "dom_event_checked",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::event_x"),
+        field: "dom_event_x",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::event_y"),
+        field: "dom_event_y",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch"),
+        field: "fetch_start",
+        params: 4,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch_cancel"),
+        field: "fetch_cancel",
+        params: 1,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch_ok"),
+        field: "fetch_ok",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch_status"),
+        field: "fetch_status",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch_body"),
+        field: "fetch_body",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch_url"),
+        field: "fetch_url",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch_error"),
+        field: "fetch_error",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::fetch_headers"),
+        field: "fetch_headers",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::request"),
+        field: "fetch_request",
+        params: 7,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_connect"),
+        field: "ws_connect",
+        params: 7,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_send"),
+        field: "ws_send",
+        params: 2,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_close"),
+        field: "ws_close",
+        params: 3,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_id"),
+        field: "ws_id",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_message"),
+        field: "ws_message",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_protocol"),
+        field: "ws_protocol",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_close_code"),
+        field: "ws_close_code",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_close_reason"),
+        field: "ws_close_reason",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_was_clean"),
+        field: "ws_was_clean",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::ws_error"),
+        field: "ws_error",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::canvas_resize"),
+        field: "canvas_resize",
+        params: 3,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::canvas_clear"),
+        field: "canvas_clear",
+        params: 2,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::canvas_fill_rect"),
+        field: "canvas_fill_rect",
+        params: 6,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::canvas_stroke_rect"),
+        field: "canvas_stroke_rect",
+        params: 7,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::canvas_line"),
+        field: "canvas_line",
+        params: 7,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::canvas_text"),
+        field: "canvas_text",
+        params: 6,
+        returns_value: false,
+    },
+    HostImport {
+        native: Some("std::web::animation_start"),
+        field: "animation_start",
+        params: 1,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::animation_cancel"),
+        field: "animation_cancel",
+        params: 1,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::frame_id"),
+        field: "frame_id",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::frame_time_ms"),
+        field: "frame_time_ms",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::frame_delta_ms"),
+        field: "frame_delta_ms",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::frame_count"),
+        field: "frame_count",
+        params: 0,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::webgl_supported"),
+        field: "webgl_supported",
+        params: 1,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::webgl_create"),
+        field: "webgl_create",
+        params: 5,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::webgl_uniform_f32"),
+        field: "webgl_uniform_f32",
+        params: 4,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::webgl_draw"),
+        field: "webgl_draw",
+        params: 2,
+        returns_value: true,
+    },
+    HostImport {
+        native: Some("std::web::webgl_delete"),
+        field: "webgl_delete",
+        params: 1,
+        returns_value: true,
+    },
 ];
 
 struct HostImports {
@@ -244,7 +510,9 @@ fn wasm_heap_native_arity(name: &str) -> Option<usize> {
         | "std::wasm::heap_peak_used"
         | "std::wasm::heap_reset_counters"
         | "std::wasm::heap_scope_begin" => Some(0),
-        "std::wasm::heap_set_limit" | "std::wasm::heap_restore" | "std::wasm::heap_scope_end" => Some(1),
+        "std::wasm::heap_set_limit" | "std::wasm::heap_restore" | "std::wasm::heap_scope_end" => {
+            Some(1)
+        }
         _ => None,
     }
 }
@@ -257,7 +525,10 @@ fn web_import(name: &str) -> Option<&'static HostImport> {
 
 fn collect_host_imports(module: &CompiledModule) -> HostImports {
     let needs_print = module.functions.iter().any(|function| {
-        function.code.iter().any(|operation| matches!(operation, Op::Print(_)))
+        function
+            .code
+            .iter()
+            .any(|operation| matches!(operation, Op::Print(_)))
     });
     let mut definitions = Vec::new();
     let mut print = None;
@@ -267,11 +538,14 @@ fn collect_host_imports(module: &CompiledModule) -> HostImports {
         definitions.push(PRINT_IMPORT);
     }
     for definition in WEB_IMPORTS {
-        let Some(native) = definition.native else { continue };
+        let Some(native) = definition.native else {
+            continue;
+        };
         let used = module.functions.iter().any(|function| {
-            function.code.iter().any(|operation| {
-                matches!(operation, Op::CallNative { name, .. } if name == native)
-            })
+            function
+                .code
+                .iter()
+                .any(|operation| matches!(operation, Op::CallNative { name, .. } if name == native))
         });
         if used {
             let index = definitions.len() as u32;
@@ -279,7 +553,11 @@ fn collect_host_imports(module: &CompiledModule) -> HostImports {
             natives.insert(native, index);
         }
     }
-    HostImports { definitions, print, natives }
+    HostImports {
+        definitions,
+        print,
+        natives,
+    }
 }
 
 /// Compile Titan numeric bytecode directly to a self-contained WebAssembly module.
@@ -312,9 +590,7 @@ pub fn compile_artifact_with_source_root(
         .iter()
         .map(|function| analyze_function(module, function))
         .collect::<Result<Vec<_>, _>>()?;
-    let needs_concat = layouts
-        .iter()
-        .any(|layout| !layout.string_adds.is_empty());
+    let needs_concat = layouts.iter().any(|layout| !layout.string_adds.is_empty());
     let needs_string_equals = module.functions.iter().any(|function| {
         function.code.iter().any(|operation| {
             matches!(operation, Op::CallNative { name, .. } if matches!(name.as_str(), "std::text::equals" | "std::map::contains" | "std::map::get" | "std::map::insert" | "std::map::remove"))
@@ -378,18 +654,19 @@ pub fn compile_artifact_with_source_root(
     let needs_allocator = needs_host_strings || needs_arrays || needs_maps || needs_scopes;
     let needs_heap = needs_concat || needs_allocator || needs_heap_api;
     let function_bias = host_imports.definitions.len() as u32;
-    let concat_function = needs_concat
-        .then_some(function_bias + module.functions.len() as u32);
+    let concat_function = needs_concat.then_some(function_bias + module.functions.len() as u32);
     let allocator_function = needs_allocator.then_some(
         function_bias + module.functions.len() as u32 + if needs_concat { 1 } else { 0 },
     );
     let string_equals_function = needs_string_equals.then_some(
-        function_bias + module.functions.len() as u32
+        function_bias
+            + module.functions.len() as u32
             + if needs_concat { 1 } else { 0 }
             + if needs_allocator { 1 } else { 0 },
     );
     let string_hash_function = needs_string_hash.then_some(
-        function_bias + module.functions.len() as u32
+        function_bias
+            + module.functions.len() as u32
             + if needs_concat { 1 } else { 0 }
             + if needs_allocator { 1 } else { 0 }
             + if needs_string_equals { 1 } else { 0 },
@@ -433,7 +710,9 @@ pub fn compile_artifact_with_source_root(
     }
     let string_equals_type = types.len();
     if needs_string_equals {
-        types.ty().function([ValType::I64, ValType::I64], [ValType::I64]);
+        types
+            .ty()
+            .function([ValType::I64, ValType::I64], [ValType::I64]);
     }
     let string_hash_type = types.len();
     if needs_string_hash {
@@ -580,8 +859,8 @@ pub fn compile_artifact_with_source_root(
     let offsets = extract_instruction_offsets(&wasm, &layouts, module.functions.len())?;
     let source_map = build_source_map(module, function_bias, source_root, &offsets, enum_tags);
     let standard_source_map = build_standard_source_map(&source_map);
-    let source_map_bytes = serde_json::to_vec(&source_map)
-        .map_err(|error| WasmError::SourceMap(error.to_string()))?;
+    let source_map_bytes =
+        serde_json::to_vec(&source_map).map_err(|error| WasmError::SourceMap(error.to_string()))?;
     append_custom_section(&mut wasm, "titan.source_map", &source_map_bytes);
 
     Ok(WasmArtifact {
@@ -611,10 +890,10 @@ fn build_source_map(
                     location.map(|location| WasmInstructionMap {
                         titan_instruction: instruction as u32,
                         wasm_offset: offsets.get(&(function_index, instruction)).copied(),
-                        operation: function
-                            .code
-                            .get(instruction)
-                            .map_or_else(|| "<missing>".into(), |operation| format!("{operation:?}")),
+                        operation: function.code.get(instruction).map_or_else(
+                            || "<missing>".into(),
+                            |operation| format!("{operation:?}"),
+                        ),
                         start: location.start,
                         end: location.end,
                         line: location.line,
@@ -840,8 +1119,8 @@ impl StringLayout {
             }
             let byte_length =
                 u32::try_from(string.len()).map_err(|_| WasmError::StringDataTooLarge)?;
-            let scalar_length = u32::try_from(string.chars().count())
-                .map_err(|_| WasmError::StringDataTooLarge)?;
+            let scalar_length =
+                u32::try_from(string.chars().count()).map_err(|_| WasmError::StringDataTooLarge)?;
             let data_length =
                 u32::try_from(data.len()).map_err(|_| WasmError::StringDataTooLarge)?;
             let pointer = Self::DATA_START
@@ -857,10 +1136,7 @@ impl StringLayout {
         let end = u64::from(Self::DATA_START)
             .checked_add(u64::try_from(data.len()).map_err(|_| WasmError::StringDataTooLarge)?)
             .ok_or(WasmError::StringDataTooLarge)?;
-        let aligned_end = end
-            .checked_add(3)
-            .ok_or(WasmError::StringDataTooLarge)?
-            & !3;
+        let aligned_end = end.checked_add(3).ok_or(WasmError::StringDataTooLarge)? & !3;
         let heap_start = u32::try_from(aligned_end).map_err(|_| WasmError::StringDataTooLarge)?;
         let minimum_pages = aligned_end.div_ceil(Self::PAGE_SIZE).max(1);
         Ok(Self {
@@ -1060,8 +1336,8 @@ fn emit_direct_region(
             let region = direct_if_region_at(context.function, instruction, end)
                 .expect("reducible regions are validated before emission");
             emit_source_marker(body);
-            let condition_height = context.layout.heights[instruction]
-                .expect("direct condition is reachable");
+            let condition_height =
+                context.layout.heights[instruction].expect("direct condition is reachable");
             body.instruction(&Instruction::LocalGet(
                 context.layout.stack_base + (condition_height - 1) as u32,
             ));
@@ -1123,7 +1399,11 @@ fn collect_enum_tags(module: &CompiledModule) -> Result<BTreeMap<String, u64>, W
         let tag = enum_tag(name, variant);
         if let Some(first) = owners.insert(tag, label.clone()) {
             if first != label {
-                return Err(WasmError::EnumTagCollision { first, second: label, tag });
+                return Err(WasmError::EnumTagCollision {
+                    first,
+                    second: label,
+                    tag,
+                });
             }
         }
         tags.insert(label, tag);
@@ -1237,15 +1517,19 @@ fn reducible_region(
             continue;
         }
         if let Some(region) = direct_loop_region_at(function, instruction, end) {
-            if !reducible_region(function, layout, instruction, region.condition, loop_targets)
-                || !reducible_region(
-                    function,
-                    layout,
-                    region.condition + 1,
-                    region.back_jump,
-                    Some((instruction, region.end)),
-                )
-            {
+            if !reducible_region(
+                function,
+                layout,
+                instruction,
+                region.condition,
+                loop_targets,
+            ) || !reducible_region(
+                function,
+                layout,
+                region.condition + 1,
+                region.back_jump,
+                Some((instruction, region.end)),
+            ) {
                 return false;
             }
             instruction = region.end;
@@ -1274,10 +1558,9 @@ fn reducible_region(
                 instruction = region.end;
             }
             Op::Jump(target)
-                if loop_targets
-                    .is_some_and(|(continue_target, break_target)| {
-                        *target == continue_target || *target == break_target
-                    }) =>
+                if loop_targets.is_some_and(|(continue_target, break_target)| {
+                    *target == continue_target || *target == break_target
+                }) =>
             {
                 instruction += 1;
             }
@@ -1381,7 +1664,10 @@ enum ValueKind {
     Tuple(Option<Vec<ValueKind>>),
     Map(Option<Box<ValueKind>>),
     Struct(Vec<String>),
-    Enum { name: String, payloads: BTreeMap<String, Box<ValueKind>> },
+    Enum {
+        name: String,
+        payloads: BTreeMap<String, Box<ValueKind>>,
+    },
     Unknown,
 }
 
@@ -1405,25 +1691,38 @@ fn metadata_kind(module: &CompiledModule, ty: Option<&BytecodeType>) -> ValueKin
             ValueKind::Map(Some(Box::new(metadata_kind(module, Some(value_ty)))))
         }
         Some(BytecodeType::TupleOf(elements)) => ValueKind::Tuple(Some(
-            elements.iter().map(|element| metadata_kind(module, Some(element))).collect(),
+            elements
+                .iter()
+                .map(|element| metadata_kind(module, Some(element)))
+                .collect(),
         )),
         Some(BytecodeType::Enum(name)) => ValueKind::Enum {
             name: name.clone(),
             payloads: BTreeMap::new(),
         },
         Some(BytecodeType::EnumOf(name, generics)) => {
-            let kinds: Vec<_> = generics.iter().map(|generic| metadata_kind(module, Some(generic))).collect();
+            let kinds: Vec<_> = generics
+                .iter()
+                .map(|generic| metadata_kind(module, Some(generic)))
+                .collect();
             let mut payloads = BTreeMap::new();
             match (name.as_str(), kinds.as_slice()) {
-                ("Option", [some]) => { payloads.insert("Some".into(), Box::new(some.clone())); }
+                ("Option", [some]) => {
+                    payloads.insert("Some".into(), Box::new(some.clone()));
+                }
                 ("Result", [ok, error]) => {
                     payloads.insert("Ok".into(), Box::new(ok.clone()));
                     payloads.insert("Err".into(), Box::new(error.clone()));
                 }
-                (_, [only]) => { payloads.insert("*".into(), Box::new(only.clone())); }
+                (_, [only]) => {
+                    payloads.insert("*".into(), Box::new(only.clone()));
+                }
                 _ => {}
             }
-            ValueKind::Enum { name: name.clone(), payloads }
+            ValueKind::Enum {
+                name: name.clone(),
+                payloads,
+            }
         }
         Some(BytecodeType::Struct(name)) => module
             .struct_schemas
@@ -1457,7 +1756,13 @@ fn infer_value_operations(
         let mut state = states[instruction]
             .clone()
             .expect("queued instructions have a type state");
-        apply_type_effect(&function.code[instruction], &mut state, module, function, instruction);
+        apply_type_effect(
+            &function.code[instruction],
+            &mut state,
+            module,
+            function,
+            instruction,
+        );
         let mut successors = Vec::with_capacity(2);
         match &function.code[instruction] {
             Op::Jump(target) => successors.push(*target),
@@ -1491,34 +1796,44 @@ fn infer_value_operations(
         if let Op::EnumIs { name, .. } = operation {
             match &state.stack[state.stack.len() - 1] {
                 ValueKind::Enum { name: actual, .. } if actual == name => {}
-                ValueKind::Enum { name: actual, .. } => return Err(WasmError::Unsupported {
-                    function: function.name.clone(),
-                    operation: format!("enum test expects '{name}', found '{actual}'"),
-                }),
-                ValueKind::Unknown => {},
-                _ => return Err(WasmError::Unsupported {
-                    function: function.name.clone(),
-                    operation: format!("value is not enum '{name}' at instruction {instruction}"),
-                }),
+                ValueKind::Enum { name: actual, .. } => {
+                    return Err(WasmError::Unsupported {
+                        function: function.name.clone(),
+                        operation: format!("enum test expects '{name}', found '{actual}'"),
+                    })
+                }
+                ValueKind::Unknown => {}
+                _ => {
+                    return Err(WasmError::Unsupported {
+                        function: function.name.clone(),
+                        operation: format!(
+                            "value is not enum '{name}' at instruction {instruction}"
+                        ),
+                    })
+                }
             }
         }
         if let Op::GetField(field) = operation {
             let ValueKind::Struct(fields) = &state.stack[state.stack.len() - 1] else {
                 return Err(WasmError::Unsupported {
                     function: function.name.clone(),
-                    operation: format!("unresolved struct field '{field}' at instruction {instruction}"),
+                    operation: format!(
+                        "unresolved struct field '{field}' at instruction {instruction}"
+                    ),
                 });
             };
-            let index = fields.iter().position(|candidate| candidate == field).ok_or_else(|| {
-                WasmError::Unsupported {
+            let index = fields
+                .iter()
+                .position(|candidate| candidate == field)
+                .ok_or_else(|| WasmError::Unsupported {
                     function: function.name.clone(),
-                    operation: format!("unknown struct field '{field}' at instruction {instruction}"),
-                }
-            })?;
+                    operation: format!(
+                        "unknown struct field '{field}' at instruction {instruction}"
+                    ),
+                })?;
             struct_fields.insert(instruction, index);
         }
-        if matches!(operation, Op::Index)
-            && state.stack[state.stack.len() - 2] == ValueKind::String
+        if matches!(operation, Op::Index) && state.stack[state.stack.len() - 2] == ValueKind::String
         {
             return Err(WasmError::Unsupported {
                 function: function.name.clone(),
@@ -1567,7 +1882,11 @@ fn apply_type_effect(
             let _ = state.stack.pop();
         }
         Op::Dup => {
-            let value = state.stack.last().expect("stack analysis ran first").clone();
+            let value = state
+                .stack
+                .last()
+                .expect("stack analysis ran first")
+                .clone();
             state.stack.push(value);
         }
         Op::Add => {
@@ -1605,7 +1924,10 @@ fn apply_type_effect(
         }
         Op::NewArray(count) => {
             let elements = state.stack.split_off(state.stack.len() - *count);
-            let element = elements.first().cloned().filter(|first| elements.iter().all(|item| item == first));
+            let element = elements
+                .first()
+                .cloned()
+                .filter(|first| elements.iter().all(|item| item == first));
             state.stack.push(ValueKind::Array(element.map(Box::new)));
         }
         Op::NewTuple(count) => {
@@ -1620,14 +1942,21 @@ fn apply_type_effect(
             let _ = state.stack.pop();
             state.stack.push(ValueKind::Unknown);
         }
-        Op::NewEnum { name, variant, has_payload } => {
+        Op::NewEnum {
+            name,
+            variant,
+            has_payload,
+        } => {
             let mut payloads = BTreeMap::new();
             if *has_payload {
                 if let Some(payload) = state.stack.pop() {
                     payloads.insert(variant.clone(), Box::new(payload));
                 }
             }
-            state.stack.push(ValueKind::Enum { name: name.clone(), payloads });
+            state.stack.push(ValueKind::Enum {
+                name: name.clone(),
+                payloads,
+            });
         }
         Op::EnumIs { .. } => {
             let _ = state.stack.pop();
@@ -1635,9 +1964,16 @@ fn apply_type_effect(
         }
         Op::EnumPayload => {
             let value = state.stack.pop().expect("stack analysis ran first");
-            let variant = function.code[..instruction].iter().rev().find_map(|operation| {
-                if let Op::EnumIs { variant, .. } = operation { Some(variant.as_str()) } else { None }
-            });
+            let variant = function.code[..instruction]
+                .iter()
+                .rev()
+                .find_map(|operation| {
+                    if let Op::EnumIs { variant, .. } = operation {
+                        Some(variant.as_str())
+                    } else {
+                        None
+                    }
+                });
             let payload = match value {
                 ValueKind::Enum { payloads, .. } => variant
                     .and_then(|variant| payloads.get(variant).or_else(|| payloads.get("*")))
@@ -1658,7 +1994,9 @@ fn apply_type_effect(
             let target = state.stack.pop().expect("stack analysis ran first");
             let result = match target {
                 ValueKind::Array(Some(element)) => *element,
-                ValueKind::Tuple(Some(elements)) => elements.first().cloned()
+                ValueKind::Tuple(Some(elements)) => elements
+                    .first()
+                    .cloned()
                     .filter(|first| elements.iter().all(|item| item == first))
                     .unwrap_or(ValueKind::Unknown),
                 _ => ValueKind::Unknown,
@@ -1669,18 +2007,25 @@ fn apply_type_effect(
             state.stack.truncate(state.stack.len() - *argc);
             state.stack.push(metadata_kind(
                 module,
-                module.functions.get(*function).and_then(|target| target.return_type.as_ref()),
+                module
+                    .functions
+                    .get(*function)
+                    .and_then(|target| target.return_type.as_ref()),
             ));
         }
         Op::CallNative { name, argc } => {
             let return_kind = match name.as_str() {
                 "std::map::new" => ValueKind::Map(None),
-                "std::map::insert_new" | "std::map::insert" if *argc >= 3 && state.stack.len() >= *argc => {
+                "std::map::insert_new" | "std::map::insert"
+                    if *argc >= 3 && state.stack.len() >= *argc =>
+                {
                     let map_kind = &state.stack[state.stack.len() - *argc];
                     let value_kind = &state.stack[state.stack.len() - 1];
                     match map_kind {
                         ValueKind::Map(Some(inner)) => ValueKind::Map(Some(inner.clone())),
-                        _ if *value_kind != ValueKind::Unknown => ValueKind::Map(Some(Box::new(value_kind.clone()))),
+                        _ if *value_kind != ValueKind::Unknown => {
+                            ValueKind::Map(Some(Box::new(value_kind.clone())))
+                        }
                         _ => ValueKind::Map(None),
                     }
                 }
@@ -1803,9 +2148,7 @@ fn validate_operation(
                 string: *string,
             })
         }
-        Op::NewArray(count) | Op::NewTuple(count)
-            if *count > (u32::MAX as usize) / 8 =>
-        {
+        Op::NewArray(count) | Op::NewTuple(count) if *count > (u32::MAX as usize) / 8 => {
             Err(WasmError::Unsupported {
                 function: function.name.clone(),
                 operation: format!("collection with {count} elements exceeds Wasm memory32"),
@@ -1845,12 +2188,14 @@ fn validate_operation(
             function: callee,
             argc,
         } => {
-            let target = module.functions.get(*callee).ok_or_else(|| {
-                WasmError::InvalidFunction {
-                    function: function.name.clone(),
-                    callee: *callee,
-                }
-            })?;
+            let target =
+                module
+                    .functions
+                    .get(*callee)
+                    .ok_or_else(|| WasmError::InvalidFunction {
+                        function: function.name.clone(),
+                        callee: *callee,
+                    })?;
             if *argc != target.arity {
                 return Err(WasmError::InvalidArgumentCount {
                     function: function.name.clone(),
@@ -2062,9 +2407,7 @@ fn emit_operation(
         } => {
             let first = height - *argc;
             for argument in first..height {
-                body.instruction(&Instruction::LocalGet(
-                    layout.stack_base + argument as u32,
-                ));
+                body.instruction(&Instruction::LocalGet(layout.stack_base + argument as u32));
             }
             body.instruction(&Instruction::Call(*callee as u32 + function_bias));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
@@ -2073,16 +2416,30 @@ fn emit_operation(
             let output = layout.stack_base + height as u32;
             body.instruction(&Instruction::I32Const(0));
             body.instruction(&Instruction::I32Const(0));
-            body.instruction(&Instruction::Call(context.allocator_function.expect("map new requires allocator")));
+            body.instruction(&Instruction::Call(
+                context
+                    .allocator_function
+                    .expect("map new requires allocator"),
+            ));
             body.instruction(&Instruction::LocalSet(output));
         }
         Op::CallNative { name, .. } if name == "std::map::length" => {
             let output = layout.stack_base + (height - 1) as u32;
-            emit_collection_count(body, output, MemArg { offset: 0, align: 2, memory_index: 0 });
+            emit_collection_count(
+                body,
+                output,
+                MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                },
+            );
             body.instruction(&Instruction::I64ExtendI32U);
             body.instruction(&Instruction::LocalSet(output));
         }
-        Op::CallNative { name, .. } if matches!(name.as_str(), "std::map::keys" | "std::map::values") => {
+        Op::CallNative { name, .. }
+            if matches!(name.as_str(), "std::map::keys" | "std::map::values") =>
+        {
             emit_map_keys_or_values(context, height, name == "std::map::keys", body);
         }
         Op::CallNative { name, .. } if name == "std::map::insert_new" => {
@@ -2094,20 +2451,28 @@ fn emit_operation(
         Op::CallNative { name, .. } if name == "std::map::remove" => {
             emit_map_remove(context, height, body);
         }
-        Op::CallNative { name, .. } if matches!(name.as_str(), "std::map::contains" | "std::map::get") => {
+        Op::CallNative { name, .. }
+            if matches!(name.as_str(), "std::map::contains" | "std::map::get") =>
+        {
             emit_map_lookup(context, height, name == "std::map::contains", body);
         }
         Op::CallNative { name, .. } if name == "std::text::equals" => {
             let output = layout.stack_base + (height - 2) as u32;
             body.instruction(&Instruction::LocalGet(output));
             body.instruction(&Instruction::LocalGet(output + 1));
-            body.instruction(&Instruction::Call(context.string_equals_function.expect("string equals helper")));
+            body.instruction(&Instruction::Call(
+                context
+                    .string_equals_function
+                    .expect("string equals helper"),
+            ));
             body.instruction(&Instruction::LocalSet(output));
         }
         Op::CallNative { name, .. } if name == "std::text::hash64" => {
             let output = layout.stack_base + (height - 1) as u32;
             body.instruction(&Instruction::LocalGet(output));
-            body.instruction(&Instruction::Call(context.string_hash_function.expect("string hash helper")));
+            body.instruction(&Instruction::Call(
+                context.string_hash_function.expect("string hash helper"),
+            ));
             body.instruction(&Instruction::LocalSet(output));
         }
         Op::CallNative { name, .. } if wasm_heap_native_arity(name).is_some() => {
@@ -2131,9 +2496,7 @@ fn emit_operation(
         Op::CallNative { name, argc } => {
             let first = height - *argc;
             for argument in first..height {
-                body.instruction(&Instruction::LocalGet(
-                    layout.stack_base + argument as u32,
-                ));
+                body.instruction(&Instruction::LocalGet(layout.stack_base + argument as u32));
             }
             let import_index = context.host_imports.natives[name.as_str()];
             body.instruction(&Instruction::Call(import_index));
@@ -2163,7 +2526,8 @@ fn emit_operation(
             return Ok(());
         }
         Op::JumpIfFalse(target) => {
-            let dispatch_depth = dispatch_depth.expect("conditional jumps require dispatcher lowering");
+            let dispatch_depth =
+                dispatch_depth.expect("conditional jumps require dispatcher lowering");
             body.instruction(&Instruction::LocalGet(
                 layout.stack_base + (height - 1) as u32,
             ));
@@ -2222,37 +2586,70 @@ fn emit_operation(
             body.instruction(&Instruction::LocalGet(context.managed_scratch));
             body.instruction(&Instruction::LocalSet(layout.stack_base + first as u32));
         }
-        Op::NewEnum { name, variant, has_payload } => {
+        Op::NewEnum {
+            name,
+            variant,
+            has_payload,
+        } => {
             let output_slot = height - if *has_payload { 1 } else { 0 };
             let output = layout.stack_base + output_slot as u32;
             body.instruction(&Instruction::I32Const(16));
             body.instruction(&Instruction::I32Const(2));
-            body.instruction(&Instruction::Call(context.allocator_function.expect("enums require allocator")));
+            body.instruction(&Instruction::Call(
+                context.allocator_function.expect("enums require allocator"),
+            ));
             body.instruction(&Instruction::LocalSet(context.managed_scratch));
-            for (slot, value_local) in [(0u32, None), (1u32, if *has_payload { Some(output) } else { None })] {
+            for (slot, value_local) in [
+                (0u32, None),
+                (1u32, if *has_payload { Some(output) } else { None }),
+            ] {
                 body.instruction(&Instruction::LocalGet(context.managed_scratch));
                 body.instruction(&Instruction::I32WrapI64);
-                if slot != 0 { body.instruction(&Instruction::I32Const(8)); body.instruction(&Instruction::I32Add); }
-                if slot == 0 { body.instruction(&Instruction::I64Const(enum_tag(name, variant) as i64)); }
-                else if let Some(local) = value_local { body.instruction(&Instruction::LocalGet(local)); }
-                else { body.instruction(&Instruction::I64Const(0)); }
-                body.instruction(&Instruction::I64Store(MemArg { offset: 0, align: 3, memory_index: 0 }));
+                if slot != 0 {
+                    body.instruction(&Instruction::I32Const(8));
+                    body.instruction(&Instruction::I32Add);
+                }
+                if slot == 0 {
+                    body.instruction(&Instruction::I64Const(enum_tag(name, variant) as i64));
+                } else if let Some(local) = value_local {
+                    body.instruction(&Instruction::LocalGet(local));
+                } else {
+                    body.instruction(&Instruction::I64Const(0));
+                }
+                body.instruction(&Instruction::I64Store(MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
             }
             body.instruction(&Instruction::LocalGet(context.managed_scratch));
             body.instruction(&Instruction::LocalSet(output));
         }
         Op::EnumIs { name, variant } => {
             let output = layout.stack_base + (height - 1) as u32;
-            body.instruction(&Instruction::LocalGet(output)); body.instruction(&Instruction::I32WrapI64);
-            body.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-            body.instruction(&Instruction::I64Const(enum_tag(name, variant) as i64)); body.instruction(&Instruction::I64Eq);
-            body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::LocalSet(output));
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I64Load(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 0,
+            }));
+            body.instruction(&Instruction::I64Const(enum_tag(name, variant) as i64));
+            body.instruction(&Instruction::I64Eq);
+            body.instruction(&Instruction::I64ExtendI32U);
+            body.instruction(&Instruction::LocalSet(output));
         }
         Op::EnumPayload => {
             let output = layout.stack_base + (height - 1) as u32;
-            body.instruction(&Instruction::LocalGet(output)); body.instruction(&Instruction::I32WrapI64);
-            body.instruction(&Instruction::I32Const(8)); body.instruction(&Instruction::I32Add);
-            body.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+            body.instruction(&Instruction::LocalGet(output));
+            body.instruction(&Instruction::I32WrapI64);
+            body.instruction(&Instruction::I32Const(8));
+            body.instruction(&Instruction::I32Add);
+            body.instruction(&Instruction::I64Load(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 0,
+            }));
             body.instruction(&Instruction::LocalSet(output));
         }
         Op::GetField(_) => {
@@ -2394,18 +2791,28 @@ fn emit_wasm_heap_native(
             body.instruction(&Instruction::I32Const(8));
             body.instruction(&Instruction::I32Const(2));
             body.instruction(&Instruction::Call(
-                context.allocator_function.expect("heap scope requires allocator"),
+                context
+                    .allocator_function
+                    .expect("heap scope requires allocator"),
             ));
             body.instruction(&Instruction::LocalSet(context.managed_scratch));
             body.instruction(&Instruction::LocalGet(context.managed_scratch));
             body.instruction(&Instruction::I32WrapI64);
             body.instruction(&Instruction::GlobalGet(8));
-            body.instruction(&Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            body.instruction(&Instruction::I32Store(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
             body.instruction(&Instruction::LocalGet(context.managed_scratch));
             body.instruction(&Instruction::I32WrapI64);
             body.instruction(&Instruction::LocalGet(output));
             body.instruction(&Instruction::I32WrapI64);
-            body.instruction(&Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
+            body.instruction(&Instruction::I32Store(MemArg {
+                offset: 4,
+                align: 2,
+                memory_index: 0,
+            }));
             body.instruction(&Instruction::LocalGet(context.managed_scratch));
             body.instruction(&Instruction::I32WrapI64);
             body.instruction(&Instruction::GlobalSet(8));
@@ -2448,7 +2855,11 @@ fn emit_wasm_heap_native(
             body.instruction(&Instruction::LocalSet(output));
             body.instruction(&Instruction::Else);
             body.instruction(&Instruction::GlobalGet(8));
-            body.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+            body.instruction(&Instruction::I32Load(MemArg {
+                offset: 4,
+                align: 2,
+                memory_index: 0,
+            }));
             body.instruction(&Instruction::I64ExtendI32U);
             body.instruction(&Instruction::LocalGet(output));
             body.instruction(&Instruction::I64Ne);
@@ -2457,7 +2868,11 @@ fn emit_wasm_heap_native(
             body.instruction(&Instruction::LocalSet(output));
             body.instruction(&Instruction::Else);
             body.instruction(&Instruction::GlobalGet(8));
-            body.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            body.instruction(&Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
             body.instruction(&Instruction::I64ExtendI32U);
             body.instruction(&Instruction::LocalSet(context.managed_scratch));
             emit_heap_rewind(body, output);
@@ -2550,62 +2965,217 @@ fn emit_heap_rewind(body: &mut Function, checkpoint_local: u32) {
 }
 
 fn emit_map_entry_address(body: &mut Function, map: u32, index: u32, offset: i32) {
-    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64);
-    body.instruction(&Instruction::LocalGet(index)); body.instruction(&Instruction::I32WrapI64);
-    body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add);
-    if offset != 0 { body.instruction(&Instruction::I32Const(offset)); body.instruction(&Instruction::I32Add); }
+    body.instruction(&Instruction::LocalGet(map));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(index));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::I32Add);
+    if offset != 0 {
+        body.instruction(&Instruction::I32Const(offset));
+        body.instruction(&Instruction::I32Add);
+    }
 }
 
 fn emit_map_lookup(context: &EmitContext<'_>, height: usize, contains: bool, body: &mut Function) {
     let map = context.layout.stack_base + (height - 2) as u32;
     let key = map + 1;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
-    body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(context.managed_scratch));
-    body.instruction(&Instruction::Block(BlockType::Empty)); body.instruction(&Instruction::Loop(BlockType::Empty));
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::I64GeU);
-    body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(map)); body.instruction(&Instruction::Br(2)); body.instruction(&Instruction::End);
-    emit_map_entry_address(body, map, context.managed_scratch, 0); body.instruction(&Instruction::I64Load(slot_memory));
-    body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map hash helper"))); body.instruction(&Instruction::I64Eq);
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let slot_memory = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64GeU);
     body.instruction(&Instruction::If(BlockType::Empty));
-    emit_map_entry_address(body, map, context.managed_scratch, 8); body.instruction(&Instruction::I64Load(slot_memory)); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_equals_function.expect("map equality helper")));
-    body.instruction(&Instruction::I64Eqz); body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::LocalSet(map));
+    body.instruction(&Instruction::Br(2));
+    body.instruction(&Instruction::End);
+    emit_map_entry_address(body, map, context.managed_scratch, 0);
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context.string_hash_function.expect("map hash helper"),
+    ));
+    body.instruction(&Instruction::I64Eq);
     body.instruction(&Instruction::If(BlockType::Empty));
-    if contains { body.instruction(&Instruction::I64Const(1)); } else { emit_map_entry_address(body, map, context.managed_scratch, 16); body.instruction(&Instruction::I64Load(slot_memory)); }
-    body.instruction(&Instruction::LocalSet(map)); body.instruction(&Instruction::Br(3)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Add); body.instruction(&Instruction::LocalSet(context.managed_scratch)); body.instruction(&Instruction::Br(0));
-    body.instruction(&Instruction::End); body.instruction(&Instruction::End);
+    emit_map_entry_address(body, map, context.managed_scratch, 8);
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context.string_equals_function.expect("map equality helper"),
+    ));
+    body.instruction(&Instruction::I64Eqz);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    if contains {
+        body.instruction(&Instruction::I64Const(1));
+    } else {
+        emit_map_entry_address(body, map, context.managed_scratch, 16);
+        body.instruction(&Instruction::I64Load(slot_memory));
+    }
+    body.instruction(&Instruction::LocalSet(map));
+    body.instruction(&Instruction::Br(3));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::I64Add);
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
 }
 
 fn emit_map_remove(context: &EmitContext<'_>, height: usize, body: &mut Function) {
     let map = context.layout.stack_base + (height - 2) as u32;
     let key = map + 1;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
-    body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(context.managed_scratch));
-    body.instruction(&Instruction::Block(BlockType::Empty)); body.instruction(&Instruction::Loop(BlockType::Empty));
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::I64GeU);
-    body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(-1)); body.instruction(&Instruction::LocalSet(context.managed_scratch)); body.instruction(&Instruction::Br(2)); body.instruction(&Instruction::End);
-    emit_map_entry_address(body, map, context.managed_scratch, 0); body.instruction(&Instruction::I64Load(slot_memory)); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map hash"))); body.instruction(&Instruction::I64Eq); body.instruction(&Instruction::If(BlockType::Empty));
-    emit_map_entry_address(body, map, context.managed_scratch, 8); body.instruction(&Instruction::I64Load(slot_memory)); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_equals_function.expect("map equals"))); body.instruction(&Instruction::I64Eqz); body.instruction(&Instruction::I32Eqz); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::Br(3)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Add); body.instruction(&Instruction::LocalSet(context.managed_scratch)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I64Const(-1)); body.instruction(&Instruction::I64Eq); body.instruction(&Instruction::If(BlockType::Empty));
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let slot_memory = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64GeU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::I64Const(-1));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Br(2));
+    body.instruction(&Instruction::End);
+    emit_map_entry_address(body, map, context.managed_scratch, 0);
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context.string_hash_function.expect("map hash"),
+    ));
+    body.instruction(&Instruction::I64Eq);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    emit_map_entry_address(body, map, context.managed_scratch, 8);
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context.string_equals_function.expect("map equals"),
+    ));
+    body.instruction(&Instruction::I64Eqz);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Br(3));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::I64Add);
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I64Const(-1));
+    body.instruction(&Instruction::I64Eq);
+    body.instruction(&Instruction::If(BlockType::Empty));
     body.instruction(&Instruction::Else);
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::LocalSet(key));
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Sub); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Sub); body.instruction(&Instruction::Call(context.allocator_function.expect("map remove allocator"))); body.instruction(&Instruction::LocalSet(context.managed_scratch));
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add);
-    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::I64Sub); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Sub); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::LocalSet(map)); body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(key));
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("map remove allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(map));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalGet(map));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::I32Add);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::I64Sub);
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::I64Sub);
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(map));
+    body.instruction(&Instruction::End);
 }
 
-fn emit_map_keys_or_values(context: &EmitContext<'_>, height: usize, is_keys: bool, body: &mut Function) {
+fn emit_map_keys_or_values(
+    context: &EmitContext<'_>,
+    height: usize,
+    is_keys: bool,
+    body: &mut Function,
+) {
     const MAX_ELEMENTS: i32 = (u32::MAX / 8) as i32;
     let map = context.layout.stack_base + (height - 1) as u32;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let slot_memory = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
 
     emit_collection_count(body, map, count_memory);
     body.instruction(&Instruction::I32Const(MAX_ELEMENTS));
@@ -2619,7 +3189,9 @@ fn emit_map_keys_or_values(context: &EmitContext<'_>, height: usize, is_keys: bo
     body.instruction(&Instruction::I32Shl);
     emit_collection_count(body, map, count_memory);
     body.instruction(&Instruction::Call(
-        context.allocator_function.expect("map keys/values require allocator"),
+        context
+            .allocator_function
+            .expect("map keys/values require allocator"),
     ));
     body.instruction(&Instruction::LocalSet(context.managed_scratch));
 
@@ -2640,7 +3212,12 @@ fn emit_map_keys_or_values(context: &EmitContext<'_>, height: usize, is_keys: bo
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
     body.instruction(&Instruction::I32Add);
-    emit_map_entry_address(body, map, context.managed_scratch_2, if is_keys { 8 } else { 16 });
+    emit_map_entry_address(
+        body,
+        map,
+        context.managed_scratch_2,
+        if is_keys { 8 } else { 16 },
+    );
     body.instruction(&Instruction::I64Load(slot_memory));
     body.instruction(&Instruction::I64Store(slot_memory));
 
@@ -2661,27 +3238,108 @@ fn emit_map_insert(context: &EmitContext<'_>, height: usize, body: &mut Function
     let map = context.layout.stack_base + (height - 3) as u32;
     let key = map + 1;
     let value = map + 2;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(MAX_ENTRIES)); body.instruction(&Instruction::I32GeU);
-    body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::End);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add);
-    body.instruction(&Instruction::Call(context.allocator_function.expect("map insert allocator"))); body.instruction(&Instruction::LocalSet(context.managed_scratch));
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::LocalSet(map));
-    body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(context.managed_scratch));
-    body.instruction(&Instruction::Block(BlockType::Empty)); body.instruction(&Instruction::Block(BlockType::Empty)); body.instruction(&Instruction::Loop(BlockType::Empty));
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Sub); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::I64GeU); body.instruction(&Instruction::BrIf(1));
-    emit_map_entry_address(body, map, context.managed_scratch, 0); body.instruction(&Instruction::I64Load(slot_memory)); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map hash"))); body.instruction(&Instruction::I64Eq); body.instruction(&Instruction::If(BlockType::Empty));
-    emit_map_entry_address(body, map, context.managed_scratch, 8); body.instruction(&Instruction::I64Load(slot_memory)); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_equals_function.expect("map equals"))); body.instruction(&Instruction::I64Eqz); body.instruction(&Instruction::I32Eqz); body.instruction(&Instruction::If(BlockType::Empty));
-    emit_map_entry_address(body, map, context.managed_scratch, 16); body.instruction(&Instruction::LocalGet(value)); body.instruction(&Instruction::I64Store(slot_memory));
-    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(4)); body.instruction(&Instruction::I32Sub); emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Sub); body.instruction(&Instruction::I32Store(count_memory)); body.instruction(&Instruction::Br(4));
-    body.instruction(&Instruction::End); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Add); body.instruction(&Instruction::LocalSet(context.managed_scratch)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
-    emit_map_entry_address(body, map, context.managed_scratch, 0); body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map hash"))); body.instruction(&Instruction::I64Store(slot_memory));
-    for (offset, local) in [(8, key), (16, value)] { emit_map_entry_address(body, map, context.managed_scratch, offset); body.instruction(&Instruction::LocalGet(local)); body.instruction(&Instruction::I64Store(slot_memory)); }
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let slot_memory = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(MAX_ENTRIES));
+    body.instruction(&Instruction::I32GeU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::Call(
+        context.allocator_function.expect("map insert allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(map));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(map));
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64GeU);
+    body.instruction(&Instruction::BrIf(1));
+    emit_map_entry_address(body, map, context.managed_scratch, 0);
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context.string_hash_function.expect("map hash"),
+    ));
+    body.instruction(&Instruction::I64Eq);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    emit_map_entry_address(body, map, context.managed_scratch, 8);
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context.string_equals_function.expect("map equals"),
+    ));
+    body.instruction(&Instruction::I64Eqz);
+    body.instruction(&Instruction::I32Eqz);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    emit_map_entry_address(body, map, context.managed_scratch, 16);
+    body.instruction(&Instruction::LocalGet(value));
+    body.instruction(&Instruction::I64Store(slot_memory));
+    body.instruction(&Instruction::LocalGet(map));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(4));
+    body.instruction(&Instruction::I32Sub);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Sub);
+    body.instruction(&Instruction::I32Store(count_memory));
+    body.instruction(&Instruction::Br(4));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::I64Add);
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+    emit_map_entry_address(body, map, context.managed_scratch, 0);
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context.string_hash_function.expect("map hash"),
+    ));
+    body.instruction(&Instruction::I64Store(slot_memory));
+    for (offset, local) in [(8, key), (16, value)] {
+        emit_map_entry_address(body, map, context.managed_scratch, offset);
+        body.instruction(&Instruction::LocalGet(local));
+        body.instruction(&Instruction::I64Store(slot_memory));
+    }
     body.instruction(&Instruction::End);
 }
 
@@ -2690,41 +3348,120 @@ fn emit_map_insert_new(context: &EmitContext<'_>, height: usize, body: &mut Func
     let map = context.layout.stack_base + (height - 3) as u32;
     let key = map + 1;
     let value = map + 2;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let slot_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let slot_memory = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
     emit_collection_count(body, map, count_memory);
-    body.instruction(&Instruction::I32Const(MAX_ENTRIES)); body.instruction(&Instruction::I32GeU);
-    body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::LocalSet(context.managed_scratch));
-    body.instruction(&Instruction::Block(BlockType::Empty)); body.instruction(&Instruction::Loop(BlockType::Empty));
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I64ExtendI32U); body.instruction(&Instruction::I64GeU); body.instruction(&Instruction::BrIf(1));
-    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I64Load(slot_memory));
-    body.instruction(&Instruction::LocalGet(key)); body.instruction(&Instruction::Call(context.string_hash_function.expect("map key hashing helper"))); body.instruction(&Instruction::I64Eq); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::I64Add); body.instruction(&Instruction::LocalSet(context.managed_scratch)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End); body.instruction(&Instruction::End);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add);
-    body.instruction(&Instruction::Call(context.allocator_function.expect("map insert requires allocator"))); body.instruction(&Instruction::LocalSet(context.managed_scratch));
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64);
-    body.instruction(&Instruction::LocalGet(map)); body.instruction(&Instruction::I32WrapI64);
-    emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul);
-    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::I32Const(MAX_ENTRIES));
+    body.instruction(&Instruction::I32GeU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Block(BlockType::Empty));
+    body.instruction(&Instruction::Loop(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I64ExtendI32U);
+    body.instruction(&Instruction::I64GeU);
+    body.instruction(&Instruction::BrIf(1));
+    body.instruction(&Instruction::LocalGet(map));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I64Load(slot_memory));
+    body.instruction(&Instruction::LocalGet(key));
+    body.instruction(&Instruction::Call(
+        context
+            .string_hash_function
+            .expect("map key hashing helper"),
+    ));
+    body.instruction(&Instruction::I64Eq);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::I64Add);
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::End);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::Call(
+        context
+            .allocator_function
+            .expect("map insert requires allocator"),
+    ));
+    body.instruction(&Instruction::LocalSet(context.managed_scratch));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalGet(map));
+    body.instruction(&Instruction::I32WrapI64);
+    emit_collection_count(body, map, count_memory);
+    body.instruction(&Instruction::I32Const(24));
+    body.instruction(&Instruction::I32Mul);
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
     for (slot, local) in [(0u32, key), (1, key), (2, value)] {
-        body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::I32WrapI64);
-        emit_collection_count(body, map, count_memory); body.instruction(&Instruction::I32Const(24)); body.instruction(&Instruction::I32Mul); body.instruction(&Instruction::I32Add);
-        if slot != 0 { body.instruction(&Instruction::I32Const((slot * 8) as i32)); body.instruction(&Instruction::I32Add); }
+        body.instruction(&Instruction::LocalGet(context.managed_scratch));
+        body.instruction(&Instruction::I32WrapI64);
+        emit_collection_count(body, map, count_memory);
+        body.instruction(&Instruction::I32Const(24));
+        body.instruction(&Instruction::I32Mul);
+        body.instruction(&Instruction::I32Add);
+        if slot != 0 {
+            body.instruction(&Instruction::I32Const((slot * 8) as i32));
+            body.instruction(&Instruction::I32Add);
+        }
         body.instruction(&Instruction::LocalGet(local));
-        if slot == 0 { body.instruction(&Instruction::Call(context.string_hash_function.expect("map key hashing helper"))); }
+        if slot == 0 {
+            body.instruction(&Instruction::Call(
+                context
+                    .string_hash_function
+                    .expect("map key hashing helper"),
+            ));
+        }
         body.instruction(&Instruction::I64Store(slot_memory));
     }
-    body.instruction(&Instruction::LocalGet(context.managed_scratch)); body.instruction(&Instruction::LocalSet(map));
+    body.instruction(&Instruction::LocalGet(context.managed_scratch));
+    body.instruction(&Instruction::LocalSet(map));
 }
 
 fn emit_array_set(context: &EmitContext<'_>, height: usize, body: &mut Function) {
     let output = context.layout.stack_base + (height - 3) as u32;
     let index = output + 1;
     let value = output + 2;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let element_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let element_memory = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
 
     body.instruction(&Instruction::LocalGet(index));
     body.instruction(&Instruction::I64Const(0));
@@ -2745,7 +3482,9 @@ fn emit_array_set(context: &EmitContext<'_>, height: usize, body: &mut Function)
     body.instruction(&Instruction::I32Shl);
     emit_collection_count(body, output, count_memory);
     body.instruction(&Instruction::Call(
-        context.allocator_function.expect("array set requires allocator"),
+        context
+            .allocator_function
+            .expect("array set requires allocator"),
     ));
     body.instruction(&Instruction::LocalSet(context.managed_scratch));
 
@@ -2756,7 +3495,10 @@ fn emit_array_set(context: &EmitContext<'_>, height: usize, body: &mut Function)
     emit_collection_count(body, output, count_memory);
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
-    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
 
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::I32WrapI64);
@@ -2775,8 +3517,16 @@ fn emit_array_push(context: &EmitContext<'_>, height: usize, body: &mut Function
     const MAX_ELEMENTS: i32 = (u32::MAX / 8) as i32;
     let output = context.layout.stack_base + (height - 2) as u32;
     let value = output + 1;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let element_memory = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let element_memory = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
 
     emit_collection_count(body, output, count_memory);
     body.instruction(&Instruction::I32Const(MAX_ELEMENTS));
@@ -2794,7 +3544,9 @@ fn emit_array_push(context: &EmitContext<'_>, height: usize, body: &mut Function
     body.instruction(&Instruction::I32Const(1));
     body.instruction(&Instruction::I32Add);
     body.instruction(&Instruction::Call(
-        context.allocator_function.expect("array push requires allocator"),
+        context
+            .allocator_function
+            .expect("array push requires allocator"),
     ));
     body.instruction(&Instruction::LocalSet(context.managed_scratch));
 
@@ -2805,7 +3557,10 @@ fn emit_array_push(context: &EmitContext<'_>, height: usize, body: &mut Function
     emit_collection_count(body, output, count_memory);
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
-    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
 
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::I32WrapI64);
@@ -2821,7 +3576,11 @@ fn emit_array_push(context: &EmitContext<'_>, height: usize, body: &mut Function
 
 fn emit_array_pop(context: &EmitContext<'_>, height: usize, body: &mut Function) {
     let output = context.layout.stack_base + (height - 1) as u32;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
 
     emit_collection_count(body, output, count_memory);
     body.instruction(&Instruction::I32Eqz);
@@ -2837,7 +3596,9 @@ fn emit_array_pop(context: &EmitContext<'_>, height: usize, body: &mut Function)
     body.instruction(&Instruction::I32Const(1));
     body.instruction(&Instruction::I32Sub);
     body.instruction(&Instruction::Call(
-        context.allocator_function.expect("array pop requires allocator"),
+        context
+            .allocator_function
+            .expect("array pop requires allocator"),
     ));
     body.instruction(&Instruction::LocalSet(context.managed_scratch));
 
@@ -2850,7 +3611,10 @@ fn emit_array_pop(context: &EmitContext<'_>, height: usize, body: &mut Function)
     body.instruction(&Instruction::I32Sub);
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
-    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::LocalSet(output));
     body.instruction(&Instruction::End);
@@ -2860,7 +3624,11 @@ fn emit_array_slice(context: &EmitContext<'_>, height: usize, body: &mut Functio
     let output = context.layout.stack_base + (height - 3) as u32;
     let start = output + 1;
     let end = output + 2;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
 
     for index in [start, end] {
         body.instruction(&Instruction::LocalGet(index));
@@ -2895,7 +3663,9 @@ fn emit_array_slice(context: &EmitContext<'_>, height: usize, body: &mut Functio
     body.instruction(&Instruction::I64Sub);
     body.instruction(&Instruction::I32WrapI64);
     body.instruction(&Instruction::Call(
-        context.allocator_function.expect("array slice requires allocator"),
+        context
+            .allocator_function
+            .expect("array slice requires allocator"),
     ));
     body.instruction(&Instruction::LocalSet(context.managed_scratch));
 
@@ -2914,7 +3684,10 @@ fn emit_array_slice(context: &EmitContext<'_>, height: usize, body: &mut Functio
     body.instruction(&Instruction::I32WrapI64);
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
-    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::LocalSet(output));
 }
@@ -2923,7 +3696,11 @@ fn emit_array_concat(context: &EmitContext<'_>, height: usize, body: &mut Functi
     const MAX_ELEMENTS: i32 = (u32::MAX / 8) as i32;
     let left = context.layout.stack_base + (height - 2) as u32;
     let right = left + 1;
-    let count_memory = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let count_memory = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
 
     emit_collection_count(body, right, count_memory);
     body.instruction(&Instruction::I32Const(MAX_ELEMENTS));
@@ -2949,7 +3726,9 @@ fn emit_array_concat(context: &EmitContext<'_>, height: usize, body: &mut Functi
     emit_collection_count(body, right, count_memory);
     body.instruction(&Instruction::I32Add);
     body.instruction(&Instruction::Call(
-        context.allocator_function.expect("array concat requires allocator"),
+        context
+            .allocator_function
+            .expect("array concat requires allocator"),
     ));
     body.instruction(&Instruction::LocalSet(context.managed_scratch));
 
@@ -2960,7 +3739,10 @@ fn emit_array_concat(context: &EmitContext<'_>, height: usize, body: &mut Functi
     emit_collection_count(body, left, count_memory);
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
-    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
 
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::I32WrapI64);
@@ -2973,7 +3755,10 @@ fn emit_array_concat(context: &EmitContext<'_>, height: usize, body: &mut Functi
     emit_collection_count(body, right, count_memory);
     body.instruction(&Instruction::I32Const(3));
     body.instruction(&Instruction::I32Shl);
-    body.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
     body.instruction(&Instruction::LocalGet(context.managed_scratch));
     body.instruction(&Instruction::LocalSet(left));
 }
@@ -3010,32 +3795,114 @@ fn emit_allocation_counters(body: &mut Function, previous_heap: u32) {
 }
 
 fn compile_string_hash() -> Function {
-    const POINTER: u32 = 1; const LENGTH: u32 = 2; const INDEX: u32 = 3; const HASH: u32 = 4;
+    const POINTER: u32 = 1;
+    const LENGTH: u32 = 2;
+    const INDEX: u32 = 3;
+    const HASH: u32 = 4;
     let mut body = Function::new([(3, ValType::I32), (1, ValType::I64)]);
-    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(POINTER));
-    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(LENGTH));
-    body.instruction(&Instruction::I64Const(0xcbf29ce484222325u64 as i64)); body.instruction(&Instruction::LocalSet(HASH));
+    body.instruction(&Instruction::LocalGet(0));
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalSet(POINTER));
+    body.instruction(&Instruction::LocalGet(0));
+    body.instruction(&Instruction::I64Const(32));
+    body.instruction(&Instruction::I64ShrU);
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalSet(LENGTH));
+    body.instruction(&Instruction::I64Const(0xcbf29ce484222325u64 as i64));
+    body.instruction(&Instruction::LocalSet(HASH));
     body.instruction(&Instruction::Loop(BlockType::Empty));
-    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::LocalGet(LENGTH)); body.instruction(&Instruction::I32GeU); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::LocalGet(HASH)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::LocalGet(HASH)); body.instruction(&Instruction::LocalGet(POINTER)); body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I64Load8U(MemArg { offset: 0, align: 0, memory_index: 0 })); body.instruction(&Instruction::I64Xor); body.instruction(&Instruction::I64Const(0x100000001b3)); body.instruction(&Instruction::I64Mul); body.instruction(&Instruction::LocalSet(HASH));
-    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::LocalSet(INDEX)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::End); body
+    body.instruction(&Instruction::LocalGet(INDEX));
+    body.instruction(&Instruction::LocalGet(LENGTH));
+    body.instruction(&Instruction::I32GeU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::LocalGet(HASH));
+    body.instruction(&Instruction::Return);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(HASH));
+    body.instruction(&Instruction::LocalGet(POINTER));
+    body.instruction(&Instruction::LocalGet(INDEX));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::I64Load8U(MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    }));
+    body.instruction(&Instruction::I64Xor);
+    body.instruction(&Instruction::I64Const(0x100000001b3));
+    body.instruction(&Instruction::I64Mul);
+    body.instruction(&Instruction::LocalSet(HASH));
+    body.instruction(&Instruction::LocalGet(INDEX));
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalSet(INDEX));
+    body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::End);
+    body
 }
 
 fn compile_string_equals() -> Function {
-    const LEFT_PTR: u32 = 2; const RIGHT_PTR: u32 = 3; const LENGTH: u32 = 4; const INDEX: u32 = 5;
+    const LEFT_PTR: u32 = 2;
+    const RIGHT_PTR: u32 = 3;
+    const LENGTH: u32 = 4;
+    const INDEX: u32 = 5;
     let mut body = Function::new([(4, ValType::I32)]);
-    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU);
-    body.instruction(&Instruction::LocalGet(1)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU);
-    body.instruction(&Instruction::I64Ne); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
-    for (parameter, pointer) in [(0, LEFT_PTR), (1, RIGHT_PTR)] { body.instruction(&Instruction::LocalGet(parameter)); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(pointer)); }
-    body.instruction(&Instruction::LocalGet(0)); body.instruction(&Instruction::I64Const(32)); body.instruction(&Instruction::I64ShrU); body.instruction(&Instruction::I32WrapI64); body.instruction(&Instruction::LocalSet(LENGTH));
+    body.instruction(&Instruction::LocalGet(0));
+    body.instruction(&Instruction::I64Const(32));
+    body.instruction(&Instruction::I64ShrU);
+    body.instruction(&Instruction::LocalGet(1));
+    body.instruction(&Instruction::I64Const(32));
+    body.instruction(&Instruction::I64ShrU);
+    body.instruction(&Instruction::I64Ne);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::Return);
+    body.instruction(&Instruction::End);
+    for (parameter, pointer) in [(0, LEFT_PTR), (1, RIGHT_PTR)] {
+        body.instruction(&Instruction::LocalGet(parameter));
+        body.instruction(&Instruction::I32WrapI64);
+        body.instruction(&Instruction::LocalSet(pointer));
+    }
+    body.instruction(&Instruction::LocalGet(0));
+    body.instruction(&Instruction::I64Const(32));
+    body.instruction(&Instruction::I64ShrU);
+    body.instruction(&Instruction::I32WrapI64);
+    body.instruction(&Instruction::LocalSet(LENGTH));
     body.instruction(&Instruction::Loop(BlockType::Empty));
-    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::LocalGet(LENGTH)); body.instruction(&Instruction::I32GeU); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(1)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
-    for pointer in [LEFT_PTR, RIGHT_PTR] { body.instruction(&Instruction::LocalGet(pointer)); body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::I64Load8U(MemArg { offset: 0, align: 0, memory_index: 0 })); }
-    body.instruction(&Instruction::I64Ne); body.instruction(&Instruction::If(BlockType::Empty)); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::Return); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::LocalGet(INDEX)); body.instruction(&Instruction::I32Const(1)); body.instruction(&Instruction::I32Add); body.instruction(&Instruction::LocalSet(INDEX)); body.instruction(&Instruction::Br(0)); body.instruction(&Instruction::End);
-    body.instruction(&Instruction::Unreachable); body.instruction(&Instruction::I64Const(0)); body.instruction(&Instruction::End); body
+    body.instruction(&Instruction::LocalGet(INDEX));
+    body.instruction(&Instruction::LocalGet(LENGTH));
+    body.instruction(&Instruction::I32GeU);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::I64Const(1));
+    body.instruction(&Instruction::Return);
+    body.instruction(&Instruction::End);
+    for pointer in [LEFT_PTR, RIGHT_PTR] {
+        body.instruction(&Instruction::LocalGet(pointer));
+        body.instruction(&Instruction::LocalGet(INDEX));
+        body.instruction(&Instruction::I32Add);
+        body.instruction(&Instruction::I64Load8U(MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }));
+    }
+    body.instruction(&Instruction::I64Ne);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::Return);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(INDEX));
+    body.instruction(&Instruction::I32Const(1));
+    body.instruction(&Instruction::I32Add);
+    body.instruction(&Instruction::LocalSet(INDEX));
+    body.instruction(&Instruction::Br(0));
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::I64Const(0));
+    body.instruction(&Instruction::End);
+    body
 }
 
 fn compile_string_concat() -> Function {
@@ -3281,12 +4148,7 @@ fn store_constant(body: &mut Function, local: u32, value: i64) {
     body.instruction(&Instruction::LocalSet(local));
 }
 
-fn binary(
-    body: &mut Function,
-    layout: &FunctionLayout,
-    height: usize,
-    operation: Instruction<'_>,
-) {
+fn binary(body: &mut Function, layout: &FunctionLayout, height: usize, operation: Instruction<'_>) {
     let output = layout.stack_base + (height - 2) as u32;
     body.instruction(&Instruction::LocalGet(output));
     body.instruction(&Instruction::LocalGet(output + 1));
@@ -3416,7 +4278,10 @@ mod tests {
         imported.string_table.push("mapped".into());
         let imported_artifact = compile_artifact(&imported).unwrap();
         assert_eq!(imported_artifact.source_map.imported_function_count, 1);
-        assert_eq!(imported_artifact.source_map.functions[0].wasm_function_index, 1);
+        assert_eq!(
+            imported_artifact.source_map.functions[0].wasm_function_index,
+            1
+        );
     }
 
     #[test]
@@ -3431,10 +4296,7 @@ mod tests {
 
     #[test]
     fn lowers_straight_line_functions_without_a_dispatcher() {
-        let module = module_with(
-            vec![Op::PushInt(40), Op::PushInt(2), Op::Add, Op::Ret],
-            0,
-        );
+        let module = module_with(vec![Op::PushInt(40), Op::PushInt(2), Op::Add, Op::Ret], 0);
         let wasm = compile(&module).unwrap();
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let mut has_br_table = false;
@@ -3583,12 +4445,27 @@ mod tests {
     fn directly_lowers_nested_if_inside_while_loop() {
         let module = module_with(
             vec![
-                Op::PushInt(0), Op::StoreLocal(0),
-                Op::PushLocal(0), Op::PushInt(3), Op::Lt, Op::JumpIfFalse(19),
-                Op::PushLocal(0), Op::PushInt(1), Op::Eq, Op::JumpIfFalse(12),
-                Op::PushInt(100), Op::Jump(13), Op::PushInt(200), Op::Pop,
-                Op::PushLocal(0), Op::PushInt(1), Op::Add, Op::StoreLocal(0), Op::Jump(2),
-                Op::PushLocal(0), Op::Ret,
+                Op::PushInt(0),
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::PushInt(3),
+                Op::Lt,
+                Op::JumpIfFalse(19),
+                Op::PushLocal(0),
+                Op::PushInt(1),
+                Op::Eq,
+                Op::JumpIfFalse(12),
+                Op::PushInt(100),
+                Op::Jump(13),
+                Op::PushInt(200),
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::PushInt(1),
+                Op::Add,
+                Op::StoreLocal(0),
+                Op::Jump(2),
+                Op::PushLocal(0),
+                Op::Ret,
             ],
             1,
         );
@@ -3610,12 +4487,29 @@ mod tests {
     fn directly_lowers_conditional_break_in_while_loop() {
         let module = module_with(
             vec![
-                Op::PushInt(0), Op::StoreLocal(0),
-                Op::PushLocal(0), Op::PushInt(10), Op::Lt, Op::JumpIfFalse(19),
-                Op::PushLocal(0), Op::PushInt(3), Op::Eq, Op::JumpIfFalse(12),
-                Op::Jump(19), Op::Jump(13), Op::PushNil, Op::Pop,
-                Op::PushLocal(0), Op::PushInt(1), Op::Add, Op::StoreLocal(0), Op::Jump(2),
-                Op::PushNil, Op::Pop, Op::PushLocal(0), Op::Ret,
+                Op::PushInt(0),
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::PushInt(10),
+                Op::Lt,
+                Op::JumpIfFalse(19),
+                Op::PushLocal(0),
+                Op::PushInt(3),
+                Op::Eq,
+                Op::JumpIfFalse(12),
+                Op::Jump(19),
+                Op::Jump(13),
+                Op::PushNil,
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::PushInt(1),
+                Op::Add,
+                Op::StoreLocal(0),
+                Op::Jump(2),
+                Op::PushNil,
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::Ret,
             ],
             1,
         );
@@ -3648,7 +4542,10 @@ mod tests {
         let handle = u64::from_ne_bytes(layout.handles[0].to_ne_bytes());
         assert_eq!(handle as u32, StringLayout::DATA_START + 4);
         assert_eq!((handle >> 32) as usize, text.len());
-        assert_eq!(&layout.data[..4], &(text.chars().count() as u32).to_le_bytes());
+        assert_eq!(
+            &layout.data[..4],
+            &(text.chars().count() as u32).to_le_bytes()
+        );
     }
 
     #[test]
@@ -3664,7 +4561,10 @@ mod tests {
             vec![Op::PushInt(1), Op::PushInt(2), Op::Print(2), Op::Ret],
             0,
         );
-        assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));
+        assert!(matches!(
+            compile(&module),
+            Err(WasmError::Unsupported { .. })
+        ));
     }
 
     #[test]
@@ -3900,24 +4800,77 @@ mod tests {
     fn emits_canvas_2d_drawing_imports() {
         let mut module = module_with(
             vec![
-                Op::PushStr(0), Op::PushInt(640), Op::PushInt(360),
-                Op::CallNative { name: "std::web::canvas_resize".into(), argc: 3 }, Op::Pop,
-                Op::PushStr(0), Op::PushStr(1),
-                Op::CallNative { name: "std::web::canvas_clear".into(), argc: 2 }, Op::Pop,
-                Op::PushStr(0), Op::PushInt(20), Op::PushInt(20), Op::PushInt(120), Op::PushInt(80), Op::PushStr(2),
-                Op::CallNative { name: "std::web::canvas_fill_rect".into(), argc: 6 }, Op::Pop,
-                Op::PushStr(0), Op::PushInt(18), Op::PushInt(18), Op::PushInt(124), Op::PushInt(84), Op::PushStr(3), Op::PushInt(2),
-                Op::CallNative { name: "std::web::canvas_stroke_rect".into(), argc: 7 }, Op::Pop,
-                Op::PushStr(0), Op::PushInt(0), Op::PushInt(0), Op::PushInt(640), Op::PushInt(360), Op::PushStr(3), Op::PushInt(3),
-                Op::CallNative { name: "std::web::canvas_line".into(), argc: 7 }, Op::Pop,
-                Op::PushStr(0), Op::PushStr(4), Op::PushInt(180), Op::PushInt(80), Op::PushStr(3), Op::PushStr(5),
-                Op::CallNative { name: "std::web::canvas_text".into(), argc: 6 }, Op::Ret,
+                Op::PushStr(0),
+                Op::PushInt(640),
+                Op::PushInt(360),
+                Op::CallNative {
+                    name: "std::web::canvas_resize".into(),
+                    argc: 3,
+                },
+                Op::Pop,
+                Op::PushStr(0),
+                Op::PushStr(1),
+                Op::CallNative {
+                    name: "std::web::canvas_clear".into(),
+                    argc: 2,
+                },
+                Op::Pop,
+                Op::PushStr(0),
+                Op::PushInt(20),
+                Op::PushInt(20),
+                Op::PushInt(120),
+                Op::PushInt(80),
+                Op::PushStr(2),
+                Op::CallNative {
+                    name: "std::web::canvas_fill_rect".into(),
+                    argc: 6,
+                },
+                Op::Pop,
+                Op::PushStr(0),
+                Op::PushInt(18),
+                Op::PushInt(18),
+                Op::PushInt(124),
+                Op::PushInt(84),
+                Op::PushStr(3),
+                Op::PushInt(2),
+                Op::CallNative {
+                    name: "std::web::canvas_stroke_rect".into(),
+                    argc: 7,
+                },
+                Op::Pop,
+                Op::PushStr(0),
+                Op::PushInt(0),
+                Op::PushInt(0),
+                Op::PushInt(640),
+                Op::PushInt(360),
+                Op::PushStr(3),
+                Op::PushInt(3),
+                Op::CallNative {
+                    name: "std::web::canvas_line".into(),
+                    argc: 7,
+                },
+                Op::Pop,
+                Op::PushStr(0),
+                Op::PushStr(4),
+                Op::PushInt(180),
+                Op::PushInt(80),
+                Op::PushStr(3),
+                Op::PushStr(5),
+                Op::CallNative {
+                    name: "std::web::canvas_text".into(),
+                    argc: 6,
+                },
+                Op::Ret,
             ],
             0,
         );
         module.string_table = vec![
-            "#scene".into(), "#101827".into(), "#38bdf8".into(),
-            "#f8fafc".into(), "TITAN Canvas".into(), "24px sans-serif".into(),
+            "#scene".into(),
+            "#101827".into(),
+            "#38bdf8".into(),
+            "#f8fafc".into(),
+            "TITAN Canvas".into(),
+            "24px sans-serif".into(),
         ];
         validate(&module);
         let imports = collect_host_imports(&module);
@@ -3935,14 +4888,36 @@ mod tests {
         let mut module = module_with(
             vec![
                 Op::PushStr(0),
-                Op::CallNative { name: "std::web::animation_start".into(), argc: 1 },
+                Op::CallNative {
+                    name: "std::web::animation_start".into(),
+                    argc: 1,
+                },
                 Op::StoreLocal(0),
-                Op::CallNative { name: "std::web::frame_id".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::web::frame_time_ms".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::web::frame_delta_ms".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::web::frame_count".into(), argc: 0 }, Op::Pop,
+                Op::CallNative {
+                    name: "std::web::frame_id".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::web::frame_time_ms".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::web::frame_delta_ms".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::web::frame_count".into(),
+                    argc: 0,
+                },
+                Op::Pop,
                 Op::PushLocal(0),
-                Op::CallNative { name: "std::web::animation_cancel".into(), argc: 1 },
+                Op::CallNative {
+                    name: "std::web::animation_cancel".into(),
+                    argc: 1,
+                },
                 Op::Ret,
             ],
             1,
@@ -3964,23 +4939,54 @@ mod tests {
         let mut module = module_with(
             vec![
                 Op::PushStr(0),
-                Op::CallNative { name: "std::web::webgl_supported".into(), argc: 1 }, Op::Pop,
-                Op::PushStr(0), Op::PushStr(1), Op::PushStr(2), Op::PushStr(3), Op::PushStr(4),
-                Op::CallNative { name: "std::web::webgl_create".into(), argc: 5 },
+                Op::CallNative {
+                    name: "std::web::webgl_supported".into(),
+                    argc: 1,
+                },
+                Op::Pop,
+                Op::PushStr(0),
+                Op::PushStr(1),
+                Op::PushStr(2),
+                Op::PushStr(3),
+                Op::PushStr(4),
+                Op::CallNative {
+                    name: "std::web::webgl_create".into(),
+                    argc: 5,
+                },
                 Op::StoreLocal(0),
-                Op::PushLocal(0), Op::PushStr(5), Op::PushInt(25), Op::PushInt(100),
-                Op::CallNative { name: "std::web::webgl_uniform_f32".into(), argc: 4 }, Op::Pop,
-                Op::PushLocal(0), Op::PushStr(6),
-                Op::CallNative { name: "std::web::webgl_draw".into(), argc: 2 }, Op::Pop,
                 Op::PushLocal(0),
-                Op::CallNative { name: "std::web::webgl_delete".into(), argc: 1 }, Op::Ret,
+                Op::PushStr(5),
+                Op::PushInt(25),
+                Op::PushInt(100),
+                Op::CallNative {
+                    name: "std::web::webgl_uniform_f32".into(),
+                    argc: 4,
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::PushStr(6),
+                Op::CallNative {
+                    name: "std::web::webgl_draw".into(),
+                    argc: 2,
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::CallNative {
+                    name: "std::web::webgl_delete".into(),
+                    argc: 1,
+                },
+                Op::Ret,
             ],
             1,
         );
         module.string_table = vec![
-            "#gl-scene".into(), "vertex shader".into(), "fragment shader".into(),
-            "[-0.5,-0.5,0.5,-0.5,0,0.5]".into(), "[0,1,2]".into(),
-            "u_offset".into(), "[0.02,0.04,0.09,1]".into(),
+            "#gl-scene".into(),
+            "vertex shader".into(),
+            "fragment shader".into(),
+            "[-0.5,-0.5,0.5,-0.5,0,0.5]".into(),
+            "[0,1,2]".into(),
+            "u_offset".into(),
+            "[0.02,0.04,0.09,1]".into(),
         ];
         validate(&module);
         let imports = collect_host_imports(&module);
@@ -3997,23 +5003,38 @@ mod tests {
         let mut module = module_with(
             vec![
                 // 1. Initialize managed map state
-                Op::CallNative { name: "std::map::new".into(), argc: 0 },
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
                 Op::PushStr(0),
                 Op::PushInt(1),
-                Op::CallNative { name: "std::map::insert_new".into(), argc: 3 },
+                Op::CallNative {
+                    name: "std::map::insert_new".into(),
+                    argc: 3,
+                },
                 Op::StoreLocal(0),
                 // 2. Query DOM and update UI
                 Op::PushStr(1),
-                Op::CallNative { name: "std::web::query_exists".into(), argc: 1 },
+                Op::CallNative {
+                    name: "std::web::query_exists".into(),
+                    argc: 1,
+                },
                 Op::Pop,
                 Op::PushStr(2),
                 Op::PushStr(3),
-                Op::CallNative { name: "std::web::set_text".into(), argc: 2 },
+                Op::CallNative {
+                    name: "std::web::set_text".into(),
+                    argc: 2,
+                },
                 // 3. Register DOM event listener
                 Op::PushStr(4),
                 Op::PushStr(5),
                 Op::PushStr(6),
-                Op::CallNative { name: "std::web::listen".into(), argc: 3 },
+                Op::CallNative {
+                    name: "std::web::listen".into(),
+                    argc: 3,
+                },
                 Op::Pop,
                 // 4. Trigger configured fetch request
                 Op::PushStr(7),
@@ -4023,20 +5044,35 @@ mod tests {
                 Op::PushInt(32_768),
                 Op::PushInt(3_000),
                 Op::PushStr(11),
-                Op::CallNative { name: "std::web::request".into(), argc: 7 },
+                Op::CallNative {
+                    name: "std::web::request".into(),
+                    argc: 7,
+                },
                 Op::Pop,
                 // 5. Query managed map state alongside host calls
                 Op::PushLocal(0),
                 Op::PushStr(0),
-                Op::CallNative { name: "std::map::get".into(), argc: 2 },
+                Op::CallNative {
+                    name: "std::map::get".into(),
+                    argc: 2,
+                },
                 Op::Ret,
             ],
             1,
         );
         module.string_table = vec![
-            "active".into(), "#app".into(), "#status".into(), "Running".into(),
-            "#btn".into(), "click".into(), "on_click".into(),
-            "GET".into(), "/state".into(), "".into(), "".into(), "on_fetch".into(),
+            "active".into(),
+            "#app".into(),
+            "#status".into(),
+            "Running".into(),
+            "#btn".into(),
+            "click".into(),
+            "on_click".into(),
+            "GET".into(),
+            "/state".into(),
+            "".into(),
+            "".into(),
+            "on_fetch".into(),
         ];
         validate(&module);
         let imports = collect_host_imports(&module);
@@ -4050,25 +5086,52 @@ mod tests {
     #[test]
     fn rejects_non_browser_native_calls() {
         let module = module_with(
-            vec![Op::CallNative {
-                name: "std::time::unix_millis".into(),
-                argc: 0,
-            }, Op::Ret],
+            vec![
+                Op::CallNative {
+                    name: "std::time::unix_millis".into(),
+                    argc: 0,
+                },
+                Op::Ret,
+            ],
             0,
         );
-        assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));
+        assert!(matches!(
+            compile(&module),
+            Err(WasmError::Unsupported { .. })
+        ));
     }
 
     #[test]
     fn emits_content_based_utf8_string_equality() {
-        let mut module = module_with(vec![Op::PushStr(0), Op::PushStr(0), Op::CallNative { name: "std::text::equals".into(), argc: 2 }, Op::Ret], 0);
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::text::equals".into(),
+                    argc: 2,
+                },
+                Op::Ret,
+            ],
+            0,
+        );
         module.string_table.push("same 🚀".into());
         validate(&module);
     }
 
     #[test]
     fn emits_stable_utf8_string_hashing() {
-        let mut module = module_with(vec![Op::PushStr(0), Op::CallNative { name: "std::text::hash64".into(), argc: 1 }, Op::Ret], 0);
+        let mut module = module_with(
+            vec![
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::text::hash64".into(),
+                    argc: 1,
+                },
+                Op::Ret,
+            ],
+            0,
+        );
         module.string_table.push("hash 🚀".into());
         validate(&module);
     }
@@ -4077,8 +5140,15 @@ mod tests {
     fn emits_managed_empty_map_and_length() {
         let module = module_with(
             vec![
-                Op::CallNative { name: "std::map::new".into(), argc: 0 },
-                Op::CallNative { name: "std::map::length".into(), argc: 1 }, Op::Ret,
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
+                Op::CallNative {
+                    name: "std::map::length".into(),
+                    argc: 1,
+                },
+                Op::Ret,
             ],
             0,
         );
@@ -4087,59 +5157,161 @@ mod tests {
 
     #[test]
     fn emits_persistent_map_insert_new() {
-        let mut module = module_with(vec![
-            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(42),
-            Op::CallNative { name: "std::map::insert_new".into(), argc: 3 },
-            Op::CallNative { name: "std::map::length".into(), argc: 1 }, Op::Ret,
-        ], 0);
+        let mut module = module_with(
+            vec![
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
+                Op::PushStr(0),
+                Op::PushInt(42),
+                Op::CallNative {
+                    name: "std::map::insert_new".into(),
+                    argc: 3,
+                },
+                Op::CallNative {
+                    name: "std::map::length".into(),
+                    argc: 1,
+                },
+                Op::Ret,
+            ],
+            0,
+        );
         module.string_table.push("answer".into());
         validate(&module);
     }
 
     #[test]
     fn emits_collision_safe_map_contains_and_get() {
-        let mut module = module_with(vec![
-            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(42),
-            Op::CallNative { name: "std::map::insert_new".into(), argc: 3 }, Op::StoreLocal(0),
-            Op::PushLocal(0), Op::PushStr(0), Op::CallNative { name: "std::map::contains".into(), argc: 2 }, Op::Pop,
-            Op::PushLocal(0), Op::PushStr(0), Op::CallNative { name: "std::map::get".into(), argc: 2 }, Op::Ret,
-        ], 1);
+        let mut module = module_with(
+            vec![
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
+                Op::PushStr(0),
+                Op::PushInt(42),
+                Op::CallNative {
+                    name: "std::map::insert_new".into(),
+                    argc: 3,
+                },
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::map::contains".into(),
+                    argc: 2,
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::map::get".into(),
+                    argc: 2,
+                },
+                Op::Ret,
+            ],
+            1,
+        );
         module.string_table.push("answer".into());
         validate(&module);
     }
 
     #[test]
     fn emits_persistent_map_insert_replace_or_append() {
-        let mut module = module_with(vec![
-            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(1),
-            Op::CallNative { name: "std::map::insert".into(), argc: 3 }, Op::PushStr(0), Op::PushInt(42),
-            Op::CallNative { name: "std::map::insert".into(), argc: 3 }, Op::PushStr(0),
-            Op::CallNative { name: "std::map::get".into(), argc: 2 }, Op::Ret,
-        ], 0);
+        let mut module = module_with(
+            vec![
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
+                Op::PushStr(0),
+                Op::PushInt(1),
+                Op::CallNative {
+                    name: "std::map::insert".into(),
+                    argc: 3,
+                },
+                Op::PushStr(0),
+                Op::PushInt(42),
+                Op::CallNative {
+                    name: "std::map::insert".into(),
+                    argc: 3,
+                },
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::map::get".into(),
+                    argc: 2,
+                },
+                Op::Ret,
+            ],
+            0,
+        );
         module.string_table.push("answer".into());
         validate(&module);
     }
 
     #[test]
     fn emits_collision_safe_persistent_map_remove() {
-        let mut module = module_with(vec![
-            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(42),
-            Op::CallNative { name: "std::map::insert".into(), argc: 3 }, Op::PushStr(0),
-            Op::CallNative { name: "std::map::remove".into(), argc: 2 },
-            Op::CallNative { name: "std::map::length".into(), argc: 1 }, Op::Ret,
-        ], 0);
+        let mut module = module_with(
+            vec![
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
+                Op::PushStr(0),
+                Op::PushInt(42),
+                Op::CallNative {
+                    name: "std::map::insert".into(),
+                    argc: 3,
+                },
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::map::remove".into(),
+                    argc: 2,
+                },
+                Op::CallNative {
+                    name: "std::map::length".into(),
+                    argc: 1,
+                },
+                Op::Ret,
+            ],
+            0,
+        );
         module.string_table.push("answer".into());
         validate(&module);
     }
 
     #[test]
     fn emits_managed_map_keys_and_values() {
-        let mut module = module_with(vec![
-            Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(42),
-            Op::CallNative { name: "std::map::insert".into(), argc: 3 }, Op::StoreLocal(0),
-            Op::PushLocal(0), Op::CallNative { name: "std::map::keys".into(), argc: 1 }, Op::Pop,
-            Op::PushLocal(0), Op::CallNative { name: "std::map::values".into(), argc: 1 }, Op::Len, Op::Ret,
-        ], 1);
+        let mut module = module_with(
+            vec![
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
+                Op::PushStr(0),
+                Op::PushInt(42),
+                Op::CallNative {
+                    name: "std::map::insert".into(),
+                    argc: 3,
+                },
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::CallNative {
+                    name: "std::map::keys".into(),
+                    argc: 1,
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::CallNative {
+                    name: "std::map::values".into(),
+                    argc: 1,
+                },
+                Op::Len,
+                Op::Ret,
+            ],
+            1,
+        );
         module.string_table.push("answer".into());
         validate(&module);
     }
@@ -4148,15 +5320,33 @@ mod tests {
     fn preserves_map_parameter_and_return_metadata_across_calls() {
         let mut module = module_with(
             vec![
-                Op::CallNative { name: "std::map::new".into(), argc: 0 },
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
                 Op::PushStr(0),
                 Op::PushInt(42),
-                Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] },
-                Op::CallNative { name: "std::map::insert".into(), argc: 3 },
-                Op::Call { function: 1, argc: 1 },
-                Op::Call { function: 2, argc: 0 },
+                Op::NewStruct {
+                    name: "Point".into(),
+                    fields: vec!["x".into()],
+                },
+                Op::CallNative {
+                    name: "std::map::insert".into(),
+                    argc: 3,
+                },
+                Op::Call {
+                    function: 1,
+                    argc: 1,
+                },
+                Op::Call {
+                    function: 2,
+                    argc: 0,
+                },
                 Op::PushStr(0),
-                Op::CallNative { name: "std::map::get".into(), argc: 2 },
+                Op::CallNative {
+                    name: "std::map::get".into(),
+                    argc: 2,
+                },
                 Op::GetField("x".into()),
                 Op::Add,
                 Op::Ret,
@@ -4164,21 +5354,62 @@ mod tests {
             0,
         );
         module.string_table.push("pt".into());
-        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
+        module
+            .struct_schemas
+            .insert("Point".into(), vec!["x".into()]);
         module.functions.push(BytecodeFunc {
-            name: "extract_x".into(), source_file: Some("main.titan".into()), arity: 1,
-            param_types: vec![BytecodeType::MapOf(Box::new(BytecodeType::String), Box::new(BytecodeType::Struct("Point".into())))],
+            name: "extract_x".into(),
+            source_file: Some("main.titan".into()),
+            arity: 1,
+            param_types: vec![BytecodeType::MapOf(
+                Box::new(BytecodeType::String),
+                Box::new(BytecodeType::Struct("Point".into())),
+            )],
             return_type: Some(BytecodeType::Int),
-            captures: 0, locals: 1, max_stack: 4,
-            code: vec![Op::PushLocal(0), Op::PushStr(0), Op::CallNative { name: "std::map::get".into(), argc: 2 }, Op::GetField("x".into()), Op::Ret],
+            captures: 0,
+            locals: 1,
+            max_stack: 4,
+            code: vec![
+                Op::PushLocal(0),
+                Op::PushStr(0),
+                Op::CallNative {
+                    name: "std::map::get".into(),
+                    argc: 2,
+                },
+                Op::GetField("x".into()),
+                Op::Ret,
+            ],
             debug_locations: vec![None; 5],
         });
         module.functions.push(BytecodeFunc {
-            name: "make_map".into(), source_file: Some("main.titan".into()), arity: 0,
+            name: "make_map".into(),
+            source_file: Some("main.titan".into()),
+            arity: 0,
             param_types: Vec::new(),
-            return_type: Some(BytecodeType::MapOf(Box::new(BytecodeType::String), Box::new(BytecodeType::Struct("Point".into())))),
-            captures: 0, locals: 0, max_stack: 4,
-            code: vec![Op::CallNative { name: "std::map::new".into(), argc: 0 }, Op::PushStr(0), Op::PushInt(100), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::CallNative { name: "std::map::insert".into(), argc: 3 }, Op::Ret],
+            return_type: Some(BytecodeType::MapOf(
+                Box::new(BytecodeType::String),
+                Box::new(BytecodeType::Struct("Point".into())),
+            )),
+            captures: 0,
+            locals: 0,
+            max_stack: 4,
+            code: vec![
+                Op::CallNative {
+                    name: "std::map::new".into(),
+                    argc: 0,
+                },
+                Op::PushStr(0),
+                Op::PushInt(100),
+                Op::NewStruct {
+                    name: "Point".into(),
+                    fields: vec!["x".into()],
+                },
+                Op::CallNative {
+                    name: "std::map::insert".into(),
+                    argc: 3,
+                },
+                Op::Ret,
+            ],
             debug_locations: vec![None; 6],
         });
         validate(&module);
@@ -4197,9 +5428,18 @@ mod tests {
     fn emits_managed_numeric_arrays_tuples_len_and_index() {
         let module = module_with(
             vec![
-                Op::PushInt(10), Op::PushInt(20), Op::PushInt(30), Op::NewArray(3),
-                Op::StoreLocal(0), Op::PushLocal(0), Op::Len, Op::Pop,
-                Op::PushLocal(0), Op::PushInt(1), Op::Index, Op::Ret,
+                Op::PushInt(10),
+                Op::PushInt(20),
+                Op::PushInt(30),
+                Op::NewArray(3),
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::Len,
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::PushInt(1),
+                Op::Index,
+                Op::Ret,
             ],
             1,
         );
@@ -4207,8 +5447,12 @@ mod tests {
 
         let tuple = module_with(
             vec![
-                Op::PushInt(7), Op::PushInt(9), Op::NewTuple(2),
-                Op::PushInt(0), Op::Index, Op::Ret,
+                Op::PushInt(7),
+                Op::PushInt(9),
+                Op::NewTuple(2),
+                Op::PushInt(0),
+                Op::Index,
+                Op::Ret,
             ],
             0,
         );
@@ -4219,10 +5463,18 @@ mod tests {
     fn emits_copy_on_write_array_set() {
         let module = module_with(
             vec![
-                Op::PushInt(10), Op::PushInt(20), Op::NewArray(2),
-                Op::PushInt(1), Op::PushInt(99),
-                Op::CallNative { name: "std::array::set".into(), argc: 3 },
-                Op::PushInt(1), Op::Index, Op::Ret,
+                Op::PushInt(10),
+                Op::PushInt(20),
+                Op::NewArray(2),
+                Op::PushInt(1),
+                Op::PushInt(99),
+                Op::CallNative {
+                    name: "std::array::set".into(),
+                    argc: 3,
+                },
+                Op::PushInt(1),
+                Op::Index,
+                Op::Ret,
             ],
             0,
         );
@@ -4233,9 +5485,17 @@ mod tests {
     fn emits_copy_on_write_array_push() {
         let module = module_with(
             vec![
-                Op::PushInt(10), Op::PushInt(20), Op::NewArray(2), Op::PushInt(30),
-                Op::CallNative { name: "std::array::push".into(), argc: 2 },
-                Op::PushInt(2), Op::Index, Op::Ret,
+                Op::PushInt(10),
+                Op::PushInt(20),
+                Op::NewArray(2),
+                Op::PushInt(30),
+                Op::CallNative {
+                    name: "std::array::push".into(),
+                    argc: 2,
+                },
+                Op::PushInt(2),
+                Op::Index,
+                Op::Ret,
             ],
             0,
         );
@@ -4246,8 +5506,16 @@ mod tests {
     fn emits_copy_on_write_array_pop_and_empty_fast_path() {
         let module = module_with(
             vec![
-                Op::PushInt(10), Op::PushInt(20), Op::PushInt(30), Op::NewArray(3),
-                Op::CallNative { name: "std::array::pop".into(), argc: 1 }, Op::Len, Op::Ret,
+                Op::PushInt(10),
+                Op::PushInt(20),
+                Op::PushInt(30),
+                Op::NewArray(3),
+                Op::CallNative {
+                    name: "std::array::pop".into(),
+                    argc: 1,
+                },
+                Op::Len,
+                Op::Ret,
             ],
             0,
         );
@@ -4255,7 +5523,12 @@ mod tests {
         let empty = module_with(
             vec![
                 Op::NewArray(0),
-                Op::CallNative { name: "std::array::pop".into(), argc: 1 }, Op::Len, Op::Ret,
+                Op::CallNative {
+                    name: "std::array::pop".into(),
+                    argc: 1,
+                },
+                Op::Len,
+                Op::Ret,
             ],
             0,
         );
@@ -4266,10 +5539,20 @@ mod tests {
     fn emits_copy_on_write_array_slice() {
         let module = module_with(
             vec![
-                Op::PushInt(10), Op::PushInt(20), Op::PushInt(30), Op::PushInt(40), Op::NewArray(4),
-                Op::PushInt(1), Op::PushInt(3),
-                Op::CallNative { name: "std::array::slice".into(), argc: 3 },
-                Op::PushInt(0), Op::Index, Op::Ret,
+                Op::PushInt(10),
+                Op::PushInt(20),
+                Op::PushInt(30),
+                Op::PushInt(40),
+                Op::NewArray(4),
+                Op::PushInt(1),
+                Op::PushInt(3),
+                Op::CallNative {
+                    name: "std::array::slice".into(),
+                    argc: 3,
+                },
+                Op::PushInt(0),
+                Op::Index,
+                Op::Ret,
             ],
             0,
         );
@@ -4280,10 +5563,19 @@ mod tests {
     fn emits_copy_on_write_array_concat() {
         let module = module_with(
             vec![
-                Op::PushInt(1), Op::PushInt(2), Op::NewArray(2),
-                Op::PushInt(3), Op::PushInt(4), Op::NewArray(2),
-                Op::CallNative { name: "std::array::concat".into(), argc: 2 },
-                Op::PushInt(3), Op::Index, Op::Ret,
+                Op::PushInt(1),
+                Op::PushInt(2),
+                Op::NewArray(2),
+                Op::PushInt(3),
+                Op::PushInt(4),
+                Op::NewArray(2),
+                Op::CallNative {
+                    name: "std::array::concat".into(),
+                    argc: 2,
+                },
+                Op::PushInt(3),
+                Op::Index,
+                Op::Ret,
             ],
             0,
         );
@@ -4294,11 +5586,27 @@ mod tests {
     fn emits_heap_statistics_and_limit_controls() {
         let module = module_with(
             vec![
-                Op::CallNative { name: "std::wasm::heap_used".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_capacity".into(), argc: 0 }, Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_used".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_capacity".into(),
+                    argc: 0,
+                },
+                Op::Pop,
                 Op::PushInt(65_536),
-                Op::CallNative { name: "std::wasm::heap_set_limit".into(), argc: 1 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_limit".into(), argc: 0 }, Op::Ret,
+                Op::CallNative {
+                    name: "std::wasm::heap_set_limit".into(),
+                    argc: 1,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_limit".into(),
+                    argc: 0,
+                },
+                Op::Ret,
             ],
             0,
         );
@@ -4309,17 +5617,51 @@ mod tests {
     fn emits_heap_checkpoint_restore_and_zeroing() {
         let module = module_with(
             vec![
-                Op::CallNative { name: "std::wasm::heap_checkpoint".into(), argc: 0 },
+                Op::CallNative {
+                    name: "std::wasm::heap_checkpoint".into(),
+                    argc: 0,
+                },
                 Op::StoreLocal(0),
-                Op::PushInt(1), Op::PushInt(2), Op::NewArray(2), Op::Pop,
+                Op::PushInt(1),
+                Op::PushInt(2),
+                Op::NewArray(2),
+                Op::Pop,
                 Op::PushLocal(0),
-                Op::CallNative { name: "std::wasm::heap_restore".into(), argc: 1 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_allocations".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_allocated_bytes".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_restores".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_reclaimed_bytes".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_peak_used".into(), argc: 0 }, Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_reset_counters".into(), argc: 0 }, Op::Ret,
+                Op::CallNative {
+                    name: "std::wasm::heap_restore".into(),
+                    argc: 1,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_allocations".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_allocated_bytes".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_restores".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_reclaimed_bytes".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_peak_used".into(),
+                    argc: 0,
+                },
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_reset_counters".into(),
+                    argc: 0,
+                },
+                Op::Ret,
             ],
             1,
         );
@@ -4330,13 +5672,40 @@ mod tests {
     fn emits_nested_lifo_heap_scopes() {
         let module = module_with(
             vec![
-                Op::CallNative { name: "std::wasm::heap_scope_begin".into(), argc: 0 }, Op::StoreLocal(0),
-                Op::PushInt(1), Op::NewArray(1), Op::Pop,
-                Op::CallNative { name: "std::wasm::heap_scope_begin".into(), argc: 0 }, Op::StoreLocal(1),
-                Op::PushInt(2), Op::NewArray(1), Op::Pop,
-                Op::PushLocal(0), Op::CallNative { name: "std::wasm::heap_scope_end".into(), argc: 1 }, Op::Pop,
-                Op::PushLocal(1), Op::CallNative { name: "std::wasm::heap_scope_end".into(), argc: 1 }, Op::Pop,
-                Op::PushLocal(0), Op::CallNative { name: "std::wasm::heap_scope_end".into(), argc: 1 }, Op::Ret,
+                Op::CallNative {
+                    name: "std::wasm::heap_scope_begin".into(),
+                    argc: 0,
+                },
+                Op::StoreLocal(0),
+                Op::PushInt(1),
+                Op::NewArray(1),
+                Op::Pop,
+                Op::CallNative {
+                    name: "std::wasm::heap_scope_begin".into(),
+                    argc: 0,
+                },
+                Op::StoreLocal(1),
+                Op::PushInt(2),
+                Op::NewArray(1),
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::CallNative {
+                    name: "std::wasm::heap_scope_end".into(),
+                    argc: 1,
+                },
+                Op::Pop,
+                Op::PushLocal(1),
+                Op::CallNative {
+                    name: "std::wasm::heap_scope_end".into(),
+                    argc: 1,
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::CallNative {
+                    name: "std::wasm::heap_scope_end".into(),
+                    argc: 1,
+                },
+                Op::Ret,
             ],
             2,
         );
@@ -4345,22 +5714,31 @@ mod tests {
 
     #[test]
     fn rejects_string_indexing_as_array_memory() {
-        let mut module = module_with(
-            vec![Op::PushStr(0), Op::PushInt(0), Op::Index, Op::Ret],
-            0,
-        );
+        let mut module = module_with(vec![Op::PushStr(0), Op::PushInt(0), Op::Index, Op::Ret], 0);
         module.string_table.push("not an i64 array".into());
-        assert!(matches!(compile(&module), Err(WasmError::Unsupported { .. })));
+        assert!(matches!(
+            compile(&module),
+            Err(WasmError::Unsupported { .. })
+        ));
     }
 
     #[test]
     fn emits_managed_struct_construction_and_fields() {
         let module = module_with(
             vec![
-                Op::PushInt(7), Op::PushInt(9),
-                Op::NewStruct { name: "Point".into(), fields: vec!["x".into(), "y".into()] },
-                Op::StoreLocal(0), Op::PushLocal(0), Op::GetField("x".into()),
-                Op::PushLocal(0), Op::GetField("y".into()), Op::Add, Op::Ret,
+                Op::PushInt(7),
+                Op::PushInt(9),
+                Op::NewStruct {
+                    name: "Point".into(),
+                    fields: vec!["x".into(), "y".into()],
+                },
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::GetField("x".into()),
+                Op::PushLocal(0),
+                Op::GetField("y".into()),
+                Op::Add,
+                Op::Ret,
             ],
             1,
         );
@@ -4370,18 +5748,39 @@ mod tests {
     #[test]
     fn preserves_struct_return_metadata_across_function_calls() {
         let mut module = module_with(
-            vec![Op::Call { function: 1, argc: 0 }, Op::GetField("x".into()), Op::Ret],
+            vec![
+                Op::Call {
+                    function: 1,
+                    argc: 0,
+                },
+                Op::GetField("x".into()),
+                Op::Ret,
+            ],
             0,
         );
         module.functions[0].return_type = Some(BytecodeType::Int);
         module.functions.push(BytecodeFunc {
-            name: "make_point".into(), source_file: Some("main.titan".into()), arity: 0,
-            param_types: Vec::new(), return_type: Some(BytecodeType::Struct("Point".into())),
-            captures: 0, locals: 0, max_stack: 4,
-            code: vec![Op::PushInt(42), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::Ret],
+            name: "make_point".into(),
+            source_file: Some("main.titan".into()),
+            arity: 0,
+            param_types: Vec::new(),
+            return_type: Some(BytecodeType::Struct("Point".into())),
+            captures: 0,
+            locals: 0,
+            max_stack: 4,
+            code: vec![
+                Op::PushInt(42),
+                Op::NewStruct {
+                    name: "Point".into(),
+                    fields: vec!["x".into()],
+                },
+                Op::Ret,
+            ],
             debug_locations: vec![None; 3],
         });
-        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
+        module
+            .struct_schemas
+            .insert("Point".into(), vec!["x".into()]);
         validate(&module);
     }
 
@@ -4389,23 +5788,45 @@ mod tests {
     fn preserves_array_parameter_and_return_metadata_across_calls() {
         let mut module = module_with(
             vec![
-                Op::PushInt(5), Op::PushInt(7), Op::NewArray(2),
-                Op::Call { function: 1, argc: 1 },
-                Op::Call { function: 2, argc: 0 }, Op::PushInt(1), Op::Index, Op::Add, Op::Ret,
+                Op::PushInt(5),
+                Op::PushInt(7),
+                Op::NewArray(2),
+                Op::Call {
+                    function: 1,
+                    argc: 1,
+                },
+                Op::Call {
+                    function: 2,
+                    argc: 0,
+                },
+                Op::PushInt(1),
+                Op::Index,
+                Op::Add,
+                Op::Ret,
             ],
             0,
         );
         module.functions.push(BytecodeFunc {
-            name: "first".into(), source_file: Some("main.titan".into()), arity: 1,
-            param_types: vec![BytecodeType::Array], return_type: Some(BytecodeType::Int),
-            captures: 0, locals: 1, max_stack: 4,
+            name: "first".into(),
+            source_file: Some("main.titan".into()),
+            arity: 1,
+            param_types: vec![BytecodeType::Array],
+            return_type: Some(BytecodeType::Int),
+            captures: 0,
+            locals: 1,
+            max_stack: 4,
             code: vec![Op::PushLocal(0), Op::PushInt(0), Op::Index, Op::Ret],
             debug_locations: vec![None; 4],
         });
         module.functions.push(BytecodeFunc {
-            name: "make".into(), source_file: Some("main.titan".into()), arity: 0,
-            param_types: Vec::new(), return_type: Some(BytecodeType::Array),
-            captures: 0, locals: 0, max_stack: 4,
+            name: "make".into(),
+            source_file: Some("main.titan".into()),
+            arity: 0,
+            param_types: Vec::new(),
+            return_type: Some(BytecodeType::Array),
+            captures: 0,
+            locals: 0,
+            max_stack: 4,
             code: vec![Op::PushInt(20), Op::PushInt(22), Op::NewArray(2), Op::Ret],
             debug_locations: vec![None; 4],
         });
@@ -4416,10 +5837,22 @@ mod tests {
     fn emits_managed_enum_tags_and_payloads() {
         let module = module_with(
             vec![
-                Op::PushInt(42), Op::NewEnum { name: "Maybe".into(), variant: "Some".into(), has_payload: true },
-                Op::StoreLocal(0), Op::PushLocal(0),
-                Op::EnumIs { name: "Maybe".into(), variant: "Some".into() }, Op::Pop,
-                Op::PushLocal(0), Op::EnumPayload, Op::Ret,
+                Op::PushInt(42),
+                Op::NewEnum {
+                    name: "Maybe".into(),
+                    variant: "Some".into(),
+                    has_payload: true,
+                },
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::EnumIs {
+                    name: "Maybe".into(),
+                    variant: "Some".into(),
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::EnumPayload,
+                Op::Ret,
             ],
             1,
         );
@@ -4434,54 +5867,132 @@ mod tests {
     #[test]
     fn preserves_generic_array_element_metadata_across_calls() {
         let mut module = module_with(
-            vec![Op::Call { function: 1, argc: 0 }, Op::PushInt(0), Op::Index, Op::GetField("x".into()), Op::Ret],
+            vec![
+                Op::Call {
+                    function: 1,
+                    argc: 0,
+                },
+                Op::PushInt(0),
+                Op::Index,
+                Op::GetField("x".into()),
+                Op::Ret,
+            ],
             0,
         );
         module.functions.push(BytecodeFunc {
-            name: "make_points".into(), source_file: Some("main.titan".into()), arity: 0,
+            name: "make_points".into(),
+            source_file: Some("main.titan".into()),
+            arity: 0,
             param_types: Vec::new(),
-            return_type: Some(BytecodeType::ArrayOf(Box::new(BytecodeType::Struct("Point".into())))),
-            captures: 0, locals: 0, max_stack: 4,
-            code: vec![Op::PushInt(42), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::NewArray(1), Op::Ret],
+            return_type: Some(BytecodeType::ArrayOf(Box::new(BytecodeType::Struct(
+                "Point".into(),
+            )))),
+            captures: 0,
+            locals: 0,
+            max_stack: 4,
+            code: vec![
+                Op::PushInt(42),
+                Op::NewStruct {
+                    name: "Point".into(),
+                    fields: vec!["x".into()],
+                },
+                Op::NewArray(1),
+                Op::Ret,
+            ],
             debug_locations: vec![None; 4],
         });
-        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
+        module
+            .struct_schemas
+            .insert("Point".into(), vec!["x".into()]);
         validate(&module);
     }
 
     #[test]
     fn preserves_enum_return_metadata_across_calls() {
         let mut module = module_with(
-            vec![Op::Call { function: 1, argc: 0 }, Op::EnumPayload, Op::Ret],
+            vec![
+                Op::Call {
+                    function: 1,
+                    argc: 0,
+                },
+                Op::EnumPayload,
+                Op::Ret,
+            ],
             0,
         );
         module.functions.push(BytecodeFunc {
-            name: "make".into(), source_file: Some("main.titan".into()), arity: 0,
-            param_types: Vec::new(), return_type: Some(BytecodeType::Enum("Maybe".into())),
-            captures: 0, locals: 0, max_stack: 4,
-            code: vec![Op::PushInt(42), Op::NewEnum { name: "Maybe".into(), variant: "Some".into(), has_payload: true }, Op::Ret],
+            name: "make".into(),
+            source_file: Some("main.titan".into()),
+            arity: 0,
+            param_types: Vec::new(),
+            return_type: Some(BytecodeType::Enum("Maybe".into())),
+            captures: 0,
+            locals: 0,
+            max_stack: 4,
+            code: vec![
+                Op::PushInt(42),
+                Op::NewEnum {
+                    name: "Maybe".into(),
+                    variant: "Some".into(),
+                    has_payload: true,
+                },
+                Op::Ret,
+            ],
             debug_locations: vec![None; 3],
         });
-        module.enum_schemas.insert("Maybe".into(), vec!["None".into(), "Some".into()]);
+        module
+            .enum_schemas
+            .insert("Maybe".into(), vec!["None".into(), "Some".into()]);
         validate(&module);
     }
 
     #[test]
     fn preserves_generic_enum_payload_metadata_across_calls() {
         let mut module = module_with(
-            vec![Op::Call { function: 1, argc: 0 }, Op::EnumPayload, Op::GetField("x".into()), Op::Ret],
+            vec![
+                Op::Call {
+                    function: 1,
+                    argc: 0,
+                },
+                Op::EnumPayload,
+                Op::GetField("x".into()),
+                Op::Ret,
+            ],
             0,
         );
         module.functions.push(BytecodeFunc {
-            name: "make".into(), source_file: Some("main.titan".into()), arity: 0,
+            name: "make".into(),
+            source_file: Some("main.titan".into()),
+            arity: 0,
             param_types: Vec::new(),
-            return_type: Some(BytecodeType::EnumOf("Option".into(), vec![BytecodeType::Struct("Point".into())])),
-            captures: 0, locals: 0, max_stack: 4,
-            code: vec![Op::PushInt(42), Op::NewStruct { name: "Point".into(), fields: vec!["x".into()] }, Op::NewEnum { name: "Option".into(), variant: "Some".into(), has_payload: true }, Op::Ret],
+            return_type: Some(BytecodeType::EnumOf(
+                "Option".into(),
+                vec![BytecodeType::Struct("Point".into())],
+            )),
+            captures: 0,
+            locals: 0,
+            max_stack: 4,
+            code: vec![
+                Op::PushInt(42),
+                Op::NewStruct {
+                    name: "Point".into(),
+                    fields: vec!["x".into()],
+                },
+                Op::NewEnum {
+                    name: "Option".into(),
+                    variant: "Some".into(),
+                    has_payload: true,
+                },
+                Op::Ret,
+            ],
             debug_locations: vec![None; 4],
         });
-        module.struct_schemas.insert("Point".into(), vec!["x".into()]);
-        module.enum_schemas.insert("Option".into(), vec!["None".into(), "Some".into()]);
+        module
+            .struct_schemas
+            .insert("Point".into(), vec!["x".into()]);
+        module
+            .enum_schemas
+            .insert("Option".into(), vec!["None".into(), "Some".into()]);
         validate(&module);
     }
 
@@ -4489,22 +6000,57 @@ mod tests {
     fn resolves_result_payload_metadata_by_variant() {
         let mut module = module_with(
             vec![
-                Op::Call { function: 1, argc: 0 }, Op::StoreLocal(0),
-                Op::PushLocal(0), Op::EnumIs { name: "Result".into(), variant: "Err".into() }, Op::Pop,
-                Op::PushLocal(0), Op::EnumPayload, Op::GetField("code".into()), Op::Ret,
+                Op::Call {
+                    function: 1,
+                    argc: 0,
+                },
+                Op::StoreLocal(0),
+                Op::PushLocal(0),
+                Op::EnumIs {
+                    name: "Result".into(),
+                    variant: "Err".into(),
+                },
+                Op::Pop,
+                Op::PushLocal(0),
+                Op::EnumPayload,
+                Op::GetField("code".into()),
+                Op::Ret,
             ],
             1,
         );
         module.functions.push(BytecodeFunc {
-            name: "make_error".into(), source_file: Some("main.titan".into()), arity: 0,
+            name: "make_error".into(),
+            source_file: Some("main.titan".into()),
+            arity: 0,
             param_types: Vec::new(),
-            return_type: Some(BytecodeType::EnumOf("Result".into(), vec![BytecodeType::Int, BytecodeType::Struct("Error".into())])),
-            captures: 0, locals: 0, max_stack: 4,
-            code: vec![Op::PushInt(42), Op::NewStruct { name: "Error".into(), fields: vec!["code".into()] }, Op::NewEnum { name: "Result".into(), variant: "Err".into(), has_payload: true }, Op::Ret],
+            return_type: Some(BytecodeType::EnumOf(
+                "Result".into(),
+                vec![BytecodeType::Int, BytecodeType::Struct("Error".into())],
+            )),
+            captures: 0,
+            locals: 0,
+            max_stack: 4,
+            code: vec![
+                Op::PushInt(42),
+                Op::NewStruct {
+                    name: "Error".into(),
+                    fields: vec!["code".into()],
+                },
+                Op::NewEnum {
+                    name: "Result".into(),
+                    variant: "Err".into(),
+                    has_payload: true,
+                },
+                Op::Ret,
+            ],
             debug_locations: vec![None; 4],
         });
-        module.struct_schemas.insert("Error".into(), vec!["code".into()]);
-        module.enum_schemas.insert("Result".into(), vec!["Ok".into(), "Err".into()]);
+        module
+            .struct_schemas
+            .insert("Error".into(), vec!["code".into()]);
+        module
+            .enum_schemas
+            .insert("Result".into(), vec!["Ok".into(), "Err".into()]);
         validate(&module);
     }
 
@@ -4512,7 +6058,10 @@ mod tests {
     fn rejects_unsupported_runtime_values() {
         let module = module_with(
             vec![
-                Op::MakeClosure { function: 0, captures: Vec::new() },
+                Op::MakeClosure {
+                    function: 0,
+                    captures: Vec::new(),
+                },
                 Op::Ret,
             ],
             0,
@@ -4581,6 +6130,9 @@ mod tests {
             ],
             0,
         );
-        assert!(matches!(compile(&module), Err(WasmError::StackMerge { .. })));
+        assert!(matches!(
+            compile(&module),
+            Err(WasmError::StackMerge { .. })
+        ));
     }
 }

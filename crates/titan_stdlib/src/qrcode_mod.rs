@@ -48,7 +48,8 @@ pub fn to_ascii(text: &str, level: &str, dark: &str, light: &str) -> Result<Stri
     let code = build(text, level)?;
     let dark_char = dark.chars().next().unwrap_or('#');
     let light_char = light.chars().next().unwrap_or(' ');
-    Ok(code.render::<char>()
+    Ok(code
+        .render::<char>()
         .dark_color(dark_char)
         .light_color(light_char)
         .quiet_zone(true)
@@ -60,7 +61,8 @@ pub fn to_ascii(text: &str, level: &str, dark: &str, light: &str) -> Result<Stri
 /// terminal row holds two QR rows (looks crisp in most fonts).
 pub fn to_unicode(text: &str, level: &str) -> Result<String, QrError> {
     let code = build(text, level)?;
-    Ok(code.render::<qrcode::render::unicode::Dense1x2>()
+    Ok(code
+        .render::<qrcode::render::unicode::Dense1x2>()
         .dark_color(qrcode::render::unicode::Dense1x2::Dark)
         .light_color(qrcode::render::unicode::Dense1x2::Light)
         .quiet_zone(true)
@@ -70,7 +72,8 @@ pub fn to_unicode(text: &str, level: &str) -> Result<String, QrError> {
 /// SVG bytes suitable for embedding in a webpage.
 pub fn to_svg(text: &str, level: &str, module_pixels: u32) -> Result<Vec<u8>, QrError> {
     let code = build(text, level)?;
-    Ok(code.render::<qrcode::render::svg::Color>()
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
         .min_dimensions(module_pixels, module_pixels)
         .dark_color(qrcode::render::svg::Color("#000000"))
         .light_color(qrcode::render::svg::Color("#ffffff"))
@@ -82,7 +85,8 @@ pub fn to_svg(text: &str, level: &str, module_pixels: u32) -> Result<Vec<u8>, Qr
 /// PNG bytes ready to be written or shared.
 pub fn to_png(text: &str, level: &str, side_pixels: u32) -> Result<Vec<u8>, QrError> {
     let code = build(text, level)?;
-    let image = code.render::<Luma<u8>>()
+    let image = code
+        .render::<Luma<u8>>()
         .min_dimensions(side_pixels, side_pixels)
         .quiet_zone(true)
         .build();
@@ -114,7 +118,7 @@ mod tests {
 
     #[test]
     fn unicode_qr_is_smaller_because_two_rows_per_char() {
-        let ascii   = to_ascii("hola", "M", "#", " ").unwrap();
+        let ascii = to_ascii("hola", "M", "#", " ").unwrap();
         let unicode = to_unicode("hola", "M").unwrap();
         assert!(unicode.lines().count() < ascii.lines().count());
     }

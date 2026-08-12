@@ -69,7 +69,9 @@ mod tests {
     /// any leftover history so each test starts from a clean queue.
     fn test_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
@@ -100,7 +102,11 @@ mod tests {
         assert!(trigger_event("onStop"));
         assert_eq!(get_state(), "Stopped");
         assert!(trigger_event("onResume"));
-        assert_eq!(get_state(), "Running", "resume from stopped, like tapping the icon again");
+        assert_eq!(
+            get_state(),
+            "Running",
+            "resume from stopped, like tapping the icon again"
+        );
     }
 
     #[test]
@@ -118,13 +124,27 @@ mod tests {
     fn unknown_events_are_recorded_but_do_not_move_the_state() {
         let _guard = test_lock();
         let _ = poll_events();
-        assert!(trigger_event("onPause"));         // known anchor state
+        assert!(trigger_event("onPause")); // known anchor state
         let before = get_state();
-        assert!(trigger_event("onWiggle"), "extensibility: accept, don't crash");
+        assert!(
+            trigger_event("onWiggle"),
+            "extensibility: accept, don't crash"
+        );
         assert!(trigger_event("onLowMemory"));
-        assert_eq!(get_state(), before, "unknown events must not mutate the state machine");
+        assert_eq!(
+            get_state(),
+            before,
+            "unknown events must not mutate the state machine"
+        );
         let events = poll_events();
-        assert_eq!(events, vec!["onPause".to_string(), "onWiggle".to_string(), "onLowMemory".to_string()]);
+        assert_eq!(
+            events,
+            vec![
+                "onPause".to_string(),
+                "onWiggle".to_string(),
+                "onLowMemory".to_string()
+            ]
+        );
     }
 
     #[test]

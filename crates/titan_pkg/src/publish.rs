@@ -1,13 +1,56 @@
 //! Deterministic package creation and Ed25519 signing.
-use ed25519_dalek::{Signer,SigningKey};
-use flate2::{Compression,GzBuilder};
-use sha2::{Digest,Sha256};
-use std::path::{Component,Path,PathBuf};
+use ed25519_dalek::{Signer, SigningKey};
+use flate2::{Compression, GzBuilder};
+use sha2::{Digest, Sha256};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
-#[derive(Error,Debug)]pub enum PublishError{#[error("I/O error: {0}")]Io(#[from]std::io::Error),#[error("registry URL must use HTTPS")]HttpsRequired,#[error("registry token is missing or invalid")]Token,#[error("registry rejected publication with HTTP {0}")]Status(u16),#[error("registry request failed: {0}")]Http(String),#[error("publisher key does not match existing package ownership")]Ownership,#[error("package error: {0}")]Package(#[from]crate::PkgError),#[error("private key must contain exactly 32 bytes")]Key,#[error("package source contains unsafe path or symlink")]Unsafe,#[error("package contains too many files or bytes")]Limit,#[error("secure random generation failed")]Random}
-#[derive(Debug,Clone)]pub struct Publication{pub name:String,pub version:String,pub archive:PathBuf,pub sha256:String,pub signing_key:String,pub signature:String}
-#[derive(serde::Serialize)]struct Upload<'a>{name:&'a str,version:&'a str,sha256:&'a str,signing_key:&'a str,signature:&'a str,archive_base64:String}
-pub struct Publisher{base:String,token:String}
+#[derive(Error, Debug)]
+pub enum PublishError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("registry URL must use HTTPS")]
+    HttpsRequired,
+    #[error("registry token is missing or invalid")]
+    Token,
+    #[error("registry rejected publication with HTTP {0}")]
+    Status(u16),
+    #[error("registry request failed: {0}")]
+    Http(String),
+    #[error("publisher key does not match existing package ownership")]
+    Ownership,
+    #[error("package error: {0}")]
+    Package(#[from] crate::PkgError),
+    #[error("private key must contain exactly 32 bytes")]
+    Key,
+    #[error("package source contains unsafe path or symlink")]
+    Unsafe,
+    #[error("package contains too many files or bytes")]
+    Limit,
+    #[error("secure random generation failed")]
+    Random,
+}
+#[derive(Debug, Clone)]
+pub struct Publication {
+    pub name: String,
+    pub version: String,
+    pub archive: PathBuf,
+    pub sha256: String,
+    pub signing_key: String,
+    pub signature: String,
+}
+#[derive(serde::Serialize)]
+struct Upload<'a> {
+    name: &'a str,
+    version: &'a str,
+    sha256: &'a str,
+    signing_key: &'a str,
+    signature: &'a str,
+    archive_base64: String,
+}
+pub struct Publisher {
+    base: String,
+    token: String,
+}
 impl Publisher {
     pub fn new(base: &str, token: &str) -> Result<Self, PublishError> {
         if !base.starts_with("https://") {
@@ -21,10 +64,194 @@ impl Publisher {
             token: token.into(),
         })
     }
-pub fn publish(&self,publication:&Publication)->Result<(),PublishError>{let archive=std::fs::read(&publication.archive)?;let payload=Upload{name:&publication.name,version:&publication.version,sha256:&publication.sha256,signing_key:&publication.signing_key,signature:&publication.signature,archive_base64:titan_stdlib::encoding::base64_encode(&archive)};let body=serde_json::to_vec(&payload).map_err(|error|PublishError::Http(error.to_string()))?;let url=format!("{}/v1/packages/{}/versions",self.base,titan_stdlib::encoding::percent_encode(&publication.name));let response=titan_stdlib::http_client::request(titan_stdlib::http_client::Request{method:"POST".into(),url,headers:std::collections::BTreeMap::from([("Authorization".into(),format!("Bearer {}",self.token)),("Content-Type".into(),"application/json".into())]),body,maximum_body:1024*1024,redirects:0,timeout:std::time::Duration::from_secs(30)}).map_err(|error|PublishError::Http(error.to_string()))?;if matches!(response.status,200|201){Ok(())}else if response.status==409{Err(PublishError::Ownership)}else{Err(PublishError::Status(response.status))}}}
-pub fn generate_key(path:&Path)->Result<(),PublishError>{if path.exists(){return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,"key already exists").into())}let mut bytes=[0u8;32];getrandom::fill(&mut bytes).map_err(|_|PublishError::Random)?;let parent=path.parent().unwrap_or(Path::new("."));std::fs::create_dir_all(parent)?;let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);#[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}std::io::Write::write_all(&mut options.open(path)?,&bytes)?;Ok(())}
-pub fn build(root:&Path,key_path:&Path,output:&Path)->Result<Publication,PublishError>{let canonical_root=root.canonicalize()?;if key_path.canonicalize().is_ok_and(|path|path.starts_with(&canonical_root))||output.parent().and_then(|parent|parent.canonicalize().ok()).is_some_and(|parent|parent.starts_with(&canonical_root)){return Err(PublishError::Unsafe)}let manifest=crate::Manifest::from_dir(root)?;let key=std::fs::read(key_path)?;let key:[u8;32]=key.try_into().map_err(|_|PublishError::Key)?;let signing=SigningKey::from_bytes(&key);let mut files=Vec::new();collect(root,root,&mut files)?;files.sort();if files.len()>10_000{return Err(PublishError::Limit)}let temporary=output.with_extension("tpkg.tmp");let file=std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;let encoder=GzBuilder::new().mtime(0).write(file,Compression::best());let mut archive=tar::Builder::new(encoder);archive.mode(tar::HeaderMode::Deterministic);let mut total=0u64;for relative in files{let source=root.join(&relative);let size=source.metadata()?.len();total=total.saturating_add(size);if total>128*1024*1024{return Err(PublishError::Limit)}let mut header=tar::Header::new_gnu();header.set_size(size);header.set_mode(0o644);header.set_uid(0);header.set_gid(0);header.set_mtime(0);header.set_cksum();archive.append_data(&mut header,relative,std::fs::File::open(source)?)?;}archive.into_inner()?.finish()?;let bytes=std::fs::read(&temporary)?;let digest=Sha256::digest(&bytes);let signature=signing.sign(&digest);std::fs::rename(&temporary,output)?;Ok(Publication{name:manifest.package.name,version:manifest.package.version,archive:output.into(),sha256:format!("{digest:x}"),signing_key:titan_stdlib::encoding::base64_encode(&signing.verifying_key().to_bytes()),signature:titan_stdlib::encoding::base64_encode(&signature.to_bytes())})}
-fn collect(root:&Path,current:&Path,output:&mut Vec<PathBuf>)->Result<(),PublishError>{let mut entries:Vec<_>=std::fs::read_dir(current)?.collect::<Result<_,_>>()?;entries.sort_by_key(|entry|entry.file_name());for entry in entries{let path=entry.path();let relative=path.strip_prefix(root).map_err(|_|PublishError::Unsafe)?;if skip(relative){continue}let file_type=entry.file_type()?;if file_type.is_symlink(){return Err(PublishError::Unsafe)}
-if file_type.is_dir(){collect(root,&path,output)?}else if file_type.is_file(){if !relative.components().all(|component|matches!(component,Component::Normal(_))){return Err(PublishError::Unsafe)}output.push(relative.into())}else{return Err(PublishError::Unsafe)}}Ok(())}
-fn skip(path:&Path)->bool{matches!(path.components().next(),Some(Component::Normal(name))if name==".git"||name==".titan"||name=="target")||matches!(path.file_name().and_then(|name|name.to_str()),Some("Titan.lock"|"Titan.remote.lock"))}
-#[cfg(test)]mod tests{use super::*;#[test]fn publisher_requires_https_and_safe_token(){assert!(Publisher::new("http://registry.example","token").is_err());assert!(Publisher::new("https://registry.example","bad\ntoken").is_err());assert!(Publisher::new("https://registry.example","token").is_ok());}#[test]fn builds_reproducible_signed_package(){let root=std::env::temp_dir().join(format!("titan-publish-{}",std::process::id()));let _=std::fs::remove_dir_all(&root);crate::create_project(&root,"publish_test").unwrap();let key=std::env::temp_dir().join(format!("titan-publish-key-{}",std::process::id()));let first=std::env::temp_dir().join(format!("titan-publish-first-{}.tpkg",std::process::id()));let second=std::env::temp_dir().join(format!("titan-publish-second-{}.tpkg",std::process::id()));let _=std::fs::remove_file(&key);let _=std::fs::remove_file(&first);let _=std::fs::remove_file(&second);generate_key(&key).unwrap();build(&root,&key,&first).unwrap();build(&root,&key,&second).unwrap();assert_eq!(std::fs::read(&first).unwrap(),std::fs::read(&second).unwrap());std::fs::remove_dir_all(root).unwrap();let _=std::fs::remove_file(key);let _=std::fs::remove_file(first);let _=std::fs::remove_file(second);}}
+    pub fn publish(&self, publication: &Publication) -> Result<(), PublishError> {
+        let archive = std::fs::read(&publication.archive)?;
+        let payload = Upload {
+            name: &publication.name,
+            version: &publication.version,
+            sha256: &publication.sha256,
+            signing_key: &publication.signing_key,
+            signature: &publication.signature,
+            archive_base64: titan_stdlib::encoding::base64_encode(&archive),
+        };
+        let body =
+            serde_json::to_vec(&payload).map_err(|error| PublishError::Http(error.to_string()))?;
+        let url = format!(
+            "{}/v1/packages/{}/versions",
+            self.base,
+            titan_stdlib::encoding::percent_encode(&publication.name)
+        );
+        let response = titan_stdlib::http_client::request(titan_stdlib::http_client::Request {
+            method: "POST".into(),
+            url,
+            headers: std::collections::BTreeMap::from([
+                ("Authorization".into(), format!("Bearer {}", self.token)),
+                ("Content-Type".into(), "application/json".into()),
+            ]),
+            body,
+            maximum_body: 1024 * 1024,
+            redirects: 0,
+            timeout: std::time::Duration::from_secs(30),
+        })
+        .map_err(|error| PublishError::Http(error.to_string()))?;
+        if matches!(response.status, 200 | 201) {
+            Ok(())
+        } else if response.status == 409 {
+            Err(PublishError::Ownership)
+        } else {
+            Err(PublishError::Status(response.status))
+        }
+    }
+}
+pub fn generate_key(path: &Path) -> Result<(), PublishError> {
+    if path.exists() {
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::AlreadyExists, "key already exists").into(),
+        );
+    }
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| PublishError::Random)?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    std::io::Write::write_all(&mut options.open(path)?, &bytes)?;
+    Ok(())
+}
+pub fn build(root: &Path, key_path: &Path, output: &Path) -> Result<Publication, PublishError> {
+    let canonical_root = root.canonicalize()?;
+    if key_path
+        .canonicalize()
+        .is_ok_and(|path| path.starts_with(&canonical_root))
+        || output
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .is_some_and(|parent| parent.starts_with(&canonical_root))
+    {
+        return Err(PublishError::Unsafe);
+    }
+    let manifest = crate::Manifest::from_dir(root)?;
+    let key = std::fs::read(key_path)?;
+    let key: [u8; 32] = key.try_into().map_err(|_| PublishError::Key)?;
+    let signing = SigningKey::from_bytes(&key);
+    let mut files = Vec::new();
+    collect(root, root, &mut files)?;
+    files.sort();
+    if files.len() > 10_000 {
+        return Err(PublishError::Limit);
+    }
+    let temporary = output.with_extension("tpkg.tmp");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let encoder = GzBuilder::new().mtime(0).write(file, Compression::best());
+    let mut archive = tar::Builder::new(encoder);
+    archive.mode(tar::HeaderMode::Deterministic);
+    let mut total = 0u64;
+    for relative in files {
+        let source = root.join(&relative);
+        let size = source.metadata()?.len();
+        total = total.saturating_add(size);
+        if total > 128 * 1024 * 1024 {
+            return Err(PublishError::Limit);
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_size(size);
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_cksum();
+        archive.append_data(&mut header, relative, std::fs::File::open(source)?)?;
+    }
+    archive.into_inner()?.finish()?;
+    let bytes = std::fs::read(&temporary)?;
+    let digest = Sha256::digest(&bytes);
+    let signature = signing.sign(&digest);
+    std::fs::rename(&temporary, output)?;
+    Ok(Publication {
+        name: manifest.package.name,
+        version: manifest.package.version,
+        archive: output.into(),
+        sha256: format!("{digest:x}"),
+        signing_key: titan_stdlib::encoding::base64_encode(&signing.verifying_key().to_bytes()),
+        signature: titan_stdlib::encoding::base64_encode(&signature.to_bytes()),
+    })
+}
+fn collect(root: &Path, current: &Path, output: &mut Vec<PathBuf>) -> Result<(), PublishError> {
+    let mut entries: Vec<_> = std::fs::read_dir(current)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let relative = path.strip_prefix(root).map_err(|_| PublishError::Unsafe)?;
+        if skip(relative) {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(PublishError::Unsafe);
+        }
+        if file_type.is_dir() {
+            collect(root, &path, output)?
+        } else if file_type.is_file() {
+            if !relative
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+            {
+                return Err(PublishError::Unsafe);
+            }
+            output.push(relative.into())
+        } else {
+            return Err(PublishError::Unsafe);
+        }
+    }
+    Ok(())
+}
+fn skip(path: &Path) -> bool {
+    matches!(path.components().next(),Some(Component::Normal(name))if name==".git"||name==".titan"||name=="target")
+        || matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("Titan.lock" | "Titan.remote.lock")
+        )
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn publisher_requires_https_and_safe_token() {
+        assert!(Publisher::new("http://registry.example", "token").is_err());
+        assert!(Publisher::new("https://registry.example", "bad\ntoken").is_err());
+        assert!(Publisher::new("https://registry.example", "token").is_ok());
+    }
+    #[test]
+    fn builds_reproducible_signed_package() {
+        let root = std::env::temp_dir().join(format!("titan-publish-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        crate::create_project(&root, "publish_test").unwrap();
+        let key = std::env::temp_dir().join(format!("titan-publish-key-{}", std::process::id()));
+        let first =
+            std::env::temp_dir().join(format!("titan-publish-first-{}.tpkg", std::process::id()));
+        let second =
+            std::env::temp_dir().join(format!("titan-publish-second-{}.tpkg", std::process::id()));
+        let _ = std::fs::remove_file(&key);
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
+        generate_key(&key).unwrap();
+        build(&root, &key, &first).unwrap();
+        build(&root, &key, &second).unwrap();
+        assert_eq!(
+            std::fs::read(&first).unwrap(),
+            std::fs::read(&second).unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        let _ = std::fs::remove_file(key);
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_file(second);
+    }
+}

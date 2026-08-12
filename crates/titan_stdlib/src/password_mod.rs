@@ -18,7 +18,8 @@ use argon2::{
     // its bundled `rand_core 0.6`, no matter what `rand` version other
     // dependencies pull in.
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2, Params,
+    Argon2,
+    Params,
 };
 use thiserror::Error;
 
@@ -30,8 +31,12 @@ pub enum PasswordError {
     Bcrypt(String),
 }
 
-fn arg_err(error: impl std::fmt::Display) -> PasswordError { PasswordError::Hash(error.to_string()) }
-fn bcrypt_err(error: impl std::fmt::Display) -> PasswordError { PasswordError::Bcrypt(error.to_string()) }
+fn arg_err(error: impl std::fmt::Display) -> PasswordError {
+    PasswordError::Hash(error.to_string())
+}
+fn bcrypt_err(error: impl std::fmt::Display) -> PasswordError {
+    PasswordError::Bcrypt(error.to_string())
+}
 
 // ---------------- Argon2id (recommended default) ----------------
 
@@ -40,13 +45,18 @@ pub fn hash_argon2(password: &str) -> Result<String, PasswordError> {
     let salt = SaltString::generate(&mut OsRng);
     let params = Params::new(19_456, 2, 1, None).map_err(arg_err)?;
     let argon = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-    Ok(argon.hash_password(password.as_bytes(), &salt).map_err(arg_err)?.to_string())
+    Ok(argon
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(arg_err)?
+        .to_string())
 }
 
 /// Verifies a password against a PHC-formatted Argon2 hash.
 pub fn verify_argon2(hash: &str, password: &str) -> Result<bool, PasswordError> {
     let parsed = PasswordHash::new(hash).map_err(arg_err)?;
-    Ok(Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
 }
 
 // ---------------- bcrypt (compatibility) ----------------

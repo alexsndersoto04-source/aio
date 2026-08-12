@@ -27,7 +27,11 @@ pub enum WifiError {
     #[error("termux-api CLI '{tool}' is not installed. Run: pkg install termux-api")]
     MissingCli { tool: String },
     #[error("termux-api '{tool}' failed with status {status}: {stderr}")]
-    Failed { tool: String, status: i32, stderr: String },
+    Failed {
+        tool: String,
+        status: i32,
+        stderr: String,
+    },
     #[error("could not parse termux-api output as JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("I/O error running termux-api: {0}")]
@@ -60,7 +64,9 @@ fn spawn_json(tool: &str, args: &[&str]) -> Result<Value, WifiError> {
     // termux-wifi-scaninfo returns `[]` on empty scan (perfectly valid).
     let text = String::from_utf8_lossy(&bytes);
     let trimmed = text.trim();
-    if trimmed.is_empty() { return Ok(Value::Null); }
+    if trimmed.is_empty() {
+        return Ok(Value::Null);
+    }
     Ok(serde_json::from_str(trimmed)?)
 }
 
@@ -74,13 +80,13 @@ fn spawn_json(tool: &str, args: &[&str]) -> Result<Value, WifiError> {
 /// Termux:API app or you'll get an empty list.
 #[derive(Debug, Clone)]
 pub struct AccessPoint {
-    pub ssid:                  String,
-    pub bssid:                 String,
-    pub rssi:                  i64,
-    pub frequency_mhz:         i64,
-    pub timestamp:             i64,
+    pub ssid: String,
+    pub bssid: String,
+    pub rssi: i64,
+    pub frequency_mhz: i64,
+    pub timestamp: i64,
     pub channel_bandwidth_mhz: String,
-    pub center_frequency_mhz:  i64,
+    pub center_frequency_mhz: i64,
 }
 
 /// Connection info returned by `connection_info()` — the currently
@@ -88,16 +94,16 @@ pub struct AccessPoint {
 /// Android version and permissions.
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
-    pub ssid:              String,
-    pub bssid:             String,
-    pub ip:                String,
-    pub mac_address:       String,
-    pub link_speed_mbps:   i64,
-    pub rssi:              i64,
-    pub frequency_mhz:     i64,
-    pub network_id:        i64,
-    pub supplicant_state:  String,
-    pub hidden_ssid:       bool,
+    pub ssid: String,
+    pub bssid: String,
+    pub ip: String,
+    pub mac_address: String,
+    pub link_speed_mbps: i64,
+    pub rssi: i64,
+    pub frequency_mhz: i64,
+    pub network_id: i64,
+    pub supplicant_state: String,
+    pub hidden_ssid: bool,
 }
 
 /// Scan nearby Wi-Fi networks. Returns whatever Android's WifiManager
@@ -108,7 +114,9 @@ pub fn scan() -> Result<Vec<AccessPoint>, WifiError> {
     let value = spawn_json("termux-wifi-scaninfo", &[])?;
     let mut out = Vec::new();
     if let Some(array) = value.as_array() {
-        for item in array { out.push(access_point_from(item)); }
+        for item in array {
+            out.push(access_point_from(item));
+        }
     }
     Ok(out)
 }
@@ -121,21 +129,49 @@ pub fn connection_info() -> Result<Option<ConnectionInfo>, WifiError> {
     // (or the literal `<unknown ssid>`), never a top-level null. We treat
     // any output whose ssid field is missing / null / "<unknown ssid>"
     // as "not connected".
-    let ssid = value.get("ssid").and_then(Value::as_str).unwrap_or("").to_string();
+    let ssid = value
+        .get("ssid")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if ssid.is_empty() || ssid == "<unknown ssid>" || ssid == "0x" {
         return Ok(None);
     }
     Ok(Some(ConnectionInfo {
         ssid,
-        bssid:             value.get("bssid").and_then(Value::as_str).unwrap_or("").into(),
-        ip:                value.get("ip").and_then(Value::as_str).unwrap_or("").into(),
-        mac_address:       value.get("mac_address").and_then(Value::as_str).unwrap_or("").into(),
-        link_speed_mbps:   value.get("link_speed_mbps").and_then(Value::as_i64).unwrap_or(0),
-        rssi:              value.get("rssi").and_then(Value::as_i64).unwrap_or(0),
-        frequency_mhz:     value.get("frequency_mhz").and_then(Value::as_i64).unwrap_or(0),
-        network_id:        value.get("network_id").and_then(Value::as_i64).unwrap_or(-1),
-        supplicant_state:  value.get("supplicant_state").and_then(Value::as_str).unwrap_or("").into(),
-        hidden_ssid:       value.get("ssid_hidden").and_then(Value::as_bool).unwrap_or(false),
+        bssid: value
+            .get("bssid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        ip: value.get("ip").and_then(Value::as_str).unwrap_or("").into(),
+        mac_address: value
+            .get("mac_address")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        link_speed_mbps: value
+            .get("link_speed_mbps")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        rssi: value.get("rssi").and_then(Value::as_i64).unwrap_or(0),
+        frequency_mhz: value
+            .get("frequency_mhz")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        network_id: value
+            .get("network_id")
+            .and_then(Value::as_i64)
+            .unwrap_or(-1),
+        supplicant_state: value
+            .get("supplicant_state")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        hidden_ssid: value
+            .get("ssid_hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }))
 }
 
@@ -152,13 +188,31 @@ pub fn set_enabled(enabled: bool) -> Result<(), WifiError> {
 
 fn access_point_from(item: &Value) -> AccessPoint {
     AccessPoint {
-        ssid:                  item.get("ssid").and_then(Value::as_str).unwrap_or("").into(),
-        bssid:                 item.get("bssid").and_then(Value::as_str).unwrap_or("").into(),
-        rssi:                  item.get("rssi").and_then(Value::as_i64).unwrap_or(0),
-        frequency_mhz:         item.get("frequency_mhz").and_then(Value::as_i64).unwrap_or(0),
-        timestamp:             item.get("timestamp").and_then(Value::as_i64).unwrap_or(0),
-        channel_bandwidth_mhz: item.get("channel_bandwidth_mhz").and_then(Value::as_str).unwrap_or("").into(),
-        center_frequency_mhz:  item.get("center_frequency_mhz").and_then(Value::as_i64).unwrap_or(0),
+        ssid: item
+            .get("ssid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        bssid: item
+            .get("bssid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        rssi: item.get("rssi").and_then(Value::as_i64).unwrap_or(0),
+        frequency_mhz: item
+            .get("frequency_mhz")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        timestamp: item.get("timestamp").and_then(Value::as_i64).unwrap_or(0),
+        channel_bandwidth_mhz: item
+            .get("channel_bandwidth_mhz")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        center_frequency_mhz: item
+            .get("center_frequency_mhz")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
     }
 }
 
@@ -167,11 +221,17 @@ fn access_point_from(item: &Value) -> AccessPoint {
 /// runs without touching the CLI so it can be used to render UI from
 /// a cached AccessPoint list.
 pub fn signal_bars(rssi_dbm: i64) -> u8 {
-    if rssi_dbm >= -50 { 4 }
-    else if rssi_dbm >= -60 { 3 }
-    else if rssi_dbm >= -70 { 2 }
-    else if rssi_dbm >= -80 { 1 }
-    else { 0 }
+    if rssi_dbm >= -50 {
+        4
+    } else if rssi_dbm >= -60 {
+        3
+    } else if rssi_dbm >= -70 {
+        2
+    } else if rssi_dbm >= -80 {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -180,11 +240,11 @@ mod tests {
 
     #[test]
     fn signal_bars_matches_typical_thresholds() {
-        assert_eq!(signal_bars(-30),  4);
-        assert_eq!(signal_bars(-55),  3);
-        assert_eq!(signal_bars(-65),  2);
-        assert_eq!(signal_bars(-75),  1);
-        assert_eq!(signal_bars(-90),  0);
+        assert_eq!(signal_bars(-30), 4);
+        assert_eq!(signal_bars(-55), 3);
+        assert_eq!(signal_bars(-65), 2);
+        assert_eq!(signal_bars(-75), 1);
+        assert_eq!(signal_bars(-90), 0);
     }
 
     /// Live tests only run under Termux with termux-api installed.

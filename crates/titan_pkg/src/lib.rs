@@ -6,16 +6,21 @@ pub mod project;
 pub mod publish;
 pub mod registry;
 pub mod resolver;
-pub use install::{add_remote as add_remote_dependency, sync as sync_remote_dependencies, InstallError};
-pub use publish::{build as build_package, generate_key as generate_signing_key, Publication, PublishError, Publisher};
+pub use install::{
+    add_remote as add_remote_dependency, sync as sync_remote_dependencies, InstallError,
+};
 pub use project::{create_project, default_entry, find_project_root, ProjectError, SourceProject};
-pub use resolver::{resolve as resolve_remote, PackageSource, RemoteLockfile, ResolveError};
+pub use publish::{
+    build as build_package, generate_key as generate_signing_key, Publication, PublishError,
+    Publisher,
+};
 pub use registry::{PackageIndex, PackageVersion, RegistryClient, RegistryError};
+pub use resolver::{resolve as resolve_remote, PackageSource, RemoteLockfile, ResolveError};
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 use thiserror::Error;
-use serde::{Deserialize, Serialize};
 
 #[derive(Error, Debug)]
 pub enum PkgError {
@@ -64,14 +69,18 @@ impl Manifest {
         let content = std::fs::read_to_string(path.join("Titan.toml"))
             .map_err(|_| PkgError::NotFound("Titan.toml".into()))?;
         let manifest: Self = toml::from_str(&content)?;
-        semver::Version::parse(&manifest.package.version).map_err(|_| PkgError::InvalidVersion(manifest.package.version.clone()))?;
+        semver::Version::parse(&manifest.package.version)
+            .map_err(|_| PkgError::InvalidVersion(manifest.package.version.clone()))?;
         Ok(manifest)
     }
     pub fn new(name: &str) -> Self {
         Manifest {
             package: PackageInfo {
-                name: name.into(), version: "0.1.0".into(), edition: "2021".into(),
-                description: String::new(), license: "MIT".into(),
+                name: name.into(),
+                version: "0.1.0".into(),
+                edition: "2021".into(),
+                description: String::new(),
+                license: "MIT".into(),
             },
             dependencies: BTreeMap::new(),
         }
@@ -95,7 +104,9 @@ impl Lockfile {
     pub fn from_dependencies(dependencies: &BTreeMap<String, std::path::PathBuf>) -> Result<Self> {
         let mut packages = Vec::new();
         for (alias, source_root) in dependencies {
-            let root = source_root.parent().ok_or_else(|| PkgError::NotFound(source_root.display().to_string()))?;
+            let root = source_root
+                .parent()
+                .ok_or_else(|| PkgError::NotFound(source_root.display().to_string()))?;
             let manifest = Manifest::from_dir(root)?;
             packages.push(LockedPackage {
                 name: alias.clone(),
@@ -104,16 +115,23 @@ impl Lockfile {
             });
         }
         packages.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Self { version: 1, packages })
+        Ok(Self {
+            version: 1,
+            packages,
+        })
     }
 
-    pub fn read(path: &Path) -> Result<Self> { Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?) }
+    pub fn read(path: &Path) -> Result<Self> {
+        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    }
 
     pub fn write(&self, path: &Path) -> Result<()> {
         let content = serde_json::to_string_pretty(self)? + "\n";
         let temporary = path.with_extension("lock.tmp");
         std::fs::write(&temporary, content)?;
-        if path.exists() { std::fs::remove_file(path)?; }
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
         std::fs::rename(temporary, path)?;
         Ok(())
     }

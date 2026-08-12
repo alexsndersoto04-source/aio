@@ -60,18 +60,21 @@ pub fn create_container(title: &str, width: i64, height: i64) -> i64 {
         }
         let id = state.next_id;
         state.next_id = state.next_id.saturating_add(1);
-        state.widgets.insert(id, Widget {
+        state.widgets.insert(
             id,
-            widget_type: WidgetType::Container,
-            parent_id: None,
-            text: title.to_string(),
-            x: 0,
-            y: 0,
-            width,
-            height,
-            clicked: false,
-            children: Vec::new(),
-        });
+            Widget {
+                id,
+                widget_type: WidgetType::Container,
+                parent_id: None,
+                text: title.to_string(),
+                x: 0,
+                y: 0,
+                width,
+                height,
+                clicked: false,
+                children: Vec::new(),
+            },
+        );
         id
     } else {
         -1
@@ -199,7 +202,10 @@ pub fn shutdown() -> bool {
 /// (`gui_raster`). Widget trees are tiny (per-app controls), so cloning
 /// the whole map is cheaper and simpler than a bespoke query API.
 pub(crate) fn snapshot_widgets() -> HashMap<i64, Widget> {
-    get_gui_state().lock().map(|state| state.widgets.clone()).unwrap_or_default()
+    get_gui_state()
+        .lock()
+        .map(|state| state.widgets.clone())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -211,21 +217,21 @@ mod tests {
         assert!(init());
         let root = create_container("Main Window", 800, 600);
         assert!(root > 0);
-        
+
         let btn = add_button(root, "Click Me", 10, 10, 120, 40);
         assert!(btn > 0);
         let lbl = add_label(root, "Status: Ready", 10, 60);
         assert!(lbl > 0);
-        
+
         assert_eq!(child_count(root), 2);
         assert!(set_text(lbl, "Status: Active"));
         assert_eq!(get_text(lbl), "Status: Active");
-        
+
         assert!(!is_clicked(btn));
         assert!(trigger_click(btn));
         assert!(is_clicked(btn));
         assert!(!is_clicked(btn));
-        
+
         assert!(shutdown());
     }
 }

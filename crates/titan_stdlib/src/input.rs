@@ -110,7 +110,9 @@ mod tests {
     /// test so even a poisoned lock cannot create cross-test interference.
     fn test_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
@@ -177,7 +179,10 @@ mod tests {
         let _guard = test_lock();
         assert!(set_key_state("F3_Lower", true));
         assert!(is_key_pressed("F3_Lower"));
-        assert!(!is_key_pressed("f3_lower"), "case must matter, like real keyboard layouts");
+        assert!(
+            !is_key_pressed("f3_lower"),
+            "case must matter, like real keyboard layouts"
+        );
         assert!(set_key_state("Ñandú", true));
         assert!(is_key_pressed("Ñandú"));
         assert!(set_key_state("F3_Lower", false));
@@ -237,7 +242,11 @@ mod tests {
         assert!(set_touch_point(0, 1, 2, true));
         assert_eq!(touch_pos(0), (1, 2, true));
         assert!(set_touch_point(0, 0, 0, false));
-        assert_eq!(touch_pos(u32::MAX), (0, 0, false), "untouched extreme index");
+        assert_eq!(
+            touch_pos(u32::MAX),
+            (0, 0, false),
+            "untouched extreme index"
+        );
     }
 
     // ---- Cross-domain isolation -----------------------------------------

@@ -46,7 +46,9 @@ pub fn init_frame_allocator(base_paddr: u64, total_size_bytes: u64) -> bool {
 
         // Inicializar pool LIFO de frames libres (en orden reverso para asignar desde el inicio)
         for i in (0..total_frames).rev() {
-            state.free_frames.push(aligned_base.saturating_add(i.saturating_mul(PAGE_SIZE)));
+            state
+                .free_frames
+                .push(aligned_base.saturating_add(i.saturating_mul(PAGE_SIZE)));
         }
         state.initialized = true;
         true
@@ -83,7 +85,10 @@ pub fn deallocate_frame(paddr: u64) -> bool {
 
 pub fn map_page(vaddr: u64, paddr: u64, flags: u32) -> bool {
     if let Ok(mut state) = get_memory_state().lock() {
-        if !state.initialized || !vaddr.is_multiple_of(PAGE_SIZE) || !paddr.is_multiple_of(PAGE_SIZE) {
+        if !state.initialized
+            || !vaddr.is_multiple_of(PAGE_SIZE)
+            || !paddr.is_multiple_of(PAGE_SIZE)
+        {
             return false;
         }
         state.page_table.insert(vaddr, (paddr, flags));

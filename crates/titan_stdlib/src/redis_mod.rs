@@ -22,19 +22,34 @@ pub enum RedisError {
     UnknownHandle(i64),
 }
 
-struct Registry { conns: HashMap<(u64, i64), Connection>, next_id: i64 }
+struct Registry {
+    conns: HashMap<(u64, i64), Connection>,
+    next_id: i64,
+}
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(Registry { conns: HashMap::new(), next_id: 1 }))
+    REG.get_or_init(|| {
+        Mutex::new(Registry {
+            conns: HashMap::new(),
+            next_id: 1,
+        })
+    })
 }
 
-fn handle_key(handle: i64) -> (u64, i64) { crate::native::runtime_handle_key(handle) }
+fn handle_key(handle: i64) -> (u64, i64) {
+    crate::native::runtime_handle_key(handle)
+}
 
 fn with_conn<F, R>(handle: i64, action: F) -> Result<R, RedisError>
-where F: FnOnce(&mut Connection) -> Result<R, RedisError> {
+where
+    F: FnOnce(&mut Connection) -> Result<R, RedisError>,
+{
     let mut reg = registry().lock().expect("redis registry poisoned");
-    let conn = reg.conns.get_mut(&handle_key(handle)).ok_or(RedisError::UnknownHandle(handle))?;
+    let conn = reg
+        .conns
+        .get_mut(&handle_key(handle))
+        .ok_or(RedisError::UnknownHandle(handle))?;
     action(conn)
 }
 
@@ -52,7 +67,9 @@ pub fn connect(url: &str) -> Result<i64, RedisError> {
 
 /// Close a connection. Idempotent.
 pub fn close(handle: i64) {
-    if let Ok(mut reg) = registry().lock() { reg.conns.remove(&handle_key(handle)); }
+    if let Ok(mut reg) = registry().lock() {
+        reg.conns.remove(&handle_key(handle));
+    }
 }
 
 /// PING → OK ("PONG" or the string returned by the server).
@@ -63,11 +80,17 @@ pub fn ping(handle: i64) -> Result<String, RedisError> {
 // ---------------- Strings ---------------------------------------------
 
 pub fn set(handle: i64, key: &str, value: &str) -> Result<(), RedisError> {
-    with_conn(handle, |conn| { let _: () = conn.set(key, value)?; Ok(()) })
+    with_conn(handle, |conn| {
+        let _: () = conn.set(key, value)?;
+        Ok(())
+    })
 }
 
 pub fn set_ex(handle: i64, key: &str, value: &str, seconds: u64) -> Result<(), RedisError> {
-    with_conn(handle, |conn| { let _: () = conn.set_ex(key, value, seconds)?; Ok(()) })
+    with_conn(handle, |conn| {
+        let _: () = conn.set_ex(key, value, seconds)?;
+        Ok(())
+    })
 }
 
 pub fn get(handle: i64, key: &str) -> Result<Option<String>, RedisError> {
@@ -107,7 +130,9 @@ pub fn rpush(handle: i64, key: &str, value: &str) -> Result<u64, RedisError> {
     with_conn(handle, |conn| Ok(conn.rpush::<_, _, u64>(key, value)?))
 }
 pub fn lrange(handle: i64, key: &str, start: i64, stop: i64) -> Result<Vec<String>, RedisError> {
-    with_conn(handle, |conn| Ok(conn.lrange::<_, Vec<String>>(key, start as isize, stop as isize)?))
+    with_conn(handle, |conn| {
+        Ok(conn.lrange::<_, Vec<String>>(key, start as isize, stop as isize)?)
+    })
 }
 pub fn llen(handle: i64, key: &str) -> Result<u64, RedisError> {
     with_conn(handle, |conn| Ok(conn.llen::<_, u64>(key)?))
@@ -116,10 +141,15 @@ pub fn llen(handle: i64, key: &str) -> Result<u64, RedisError> {
 // ---------------- Hashes ----------------------------------------------
 
 pub fn hset(handle: i64, key: &str, field: &str, value: &str) -> Result<(), RedisError> {
-    with_conn(handle, |conn| { let _: () = conn.hset(key, field, value)?; Ok(()) })
+    with_conn(handle, |conn| {
+        let _: () = conn.hset(key, field, value)?;
+        Ok(())
+    })
 }
 pub fn hget(handle: i64, key: &str, field: &str) -> Result<Option<String>, RedisError> {
-    with_conn(handle, |conn| Ok(conn.hget::<_, _, Option<String>>(key, field)?))
+    with_conn(handle, |conn| {
+        Ok(conn.hget::<_, _, Option<String>>(key, field)?)
+    })
 }
 pub fn hdel(handle: i64, key: &str, field: &str) -> Result<u64, RedisError> {
     with_conn(handle, |conn| Ok(conn.hdel::<_, _, u64>(key, field)?))
@@ -136,9 +166,13 @@ pub fn hgetall(handle: i64, key: &str) -> Result<Vec<(String, String)>, RedisErr
 pub fn raw(handle: i64, command_and_args: &str) -> Result<String, RedisError> {
     with_conn(handle, |conn| {
         let parts: Vec<&str> = command_and_args.split_whitespace().collect();
-        if parts.is_empty() { return Ok(String::new()); }
+        if parts.is_empty() {
+            return Ok(String::new());
+        }
         let mut cmd = redis::cmd(parts[0]);
-        for arg in &parts[1..] { cmd.arg(*arg); }
+        for arg in &parts[1..] {
+            cmd.arg(*arg);
+        }
         // Best-effort: bring back the reply as a string.
         let value: redis::Value = cmd.query(conn)?;
         Ok(format!("{value:?}"))
@@ -157,7 +191,10 @@ mod tests {
     #[test]
     fn unknown_handle_reports_typed_error() {
         assert!(matches!(ping(999_999), Err(RedisError::UnknownHandle(_))));
-        assert!(matches!(get(999_999, "x"), Err(RedisError::UnknownHandle(_))));
+        assert!(matches!(
+            get(999_999, "x"),
+            Err(RedisError::UnknownHandle(_))
+        ));
     }
 
     #[test]
@@ -169,7 +206,9 @@ mod tests {
     /// Live tests are opt-in: set TITAN_REDIS_TEST_URL=redis://localhost/.
     #[test]
     fn live_round_trip_when_configured() {
-        let Ok(url) = std::env::var("TITAN_REDIS_TEST_URL") else { return; };
+        let Ok(url) = std::env::var("TITAN_REDIS_TEST_URL") else {
+            return;
+        };
         let handle = connect(&url).expect("connect");
         assert_eq!(ping(handle).unwrap(), "PONG");
         set(handle, "titan:test", "hola").unwrap();

@@ -5,34 +5,71 @@
 //! not expose the directory) so `.titan` code never has to deal with `Option`.
 
 fn opt(path: Option<std::path::PathBuf>) -> String {
-    path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    path.map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
-pub fn home() -> String { opt(dirs::home_dir()) }
-pub fn config() -> String { opt(dirs::config_dir()) }
-pub fn cache() -> String { opt(dirs::cache_dir()) }
-pub fn data() -> String { opt(dirs::data_dir()) }
-pub fn data_local() -> String { opt(dirs::data_local_dir()) }
-pub fn state() -> String { opt(dirs::state_dir()) }
-pub fn executable() -> String { opt(dirs::executable_dir()) }
-pub fn runtime() -> String { opt(dirs::runtime_dir()) }
-pub fn preference() -> String { opt(dirs::preference_dir()) }
+pub fn home() -> String {
+    opt(dirs::home_dir())
+}
+pub fn config() -> String {
+    opt(dirs::config_dir())
+}
+pub fn cache() -> String {
+    opt(dirs::cache_dir())
+}
+pub fn data() -> String {
+    opt(dirs::data_dir())
+}
+pub fn data_local() -> String {
+    opt(dirs::data_local_dir())
+}
+pub fn state() -> String {
+    opt(dirs::state_dir())
+}
+pub fn executable() -> String {
+    opt(dirs::executable_dir())
+}
+pub fn runtime() -> String {
+    opt(dirs::runtime_dir())
+}
+pub fn preference() -> String {
+    opt(dirs::preference_dir())
+}
 
 // Common user "content" folders.
-pub fn desktop() -> String { opt(dirs::desktop_dir()) }
-pub fn documents() -> String { opt(dirs::document_dir()) }
-pub fn downloads() -> String { opt(dirs::download_dir()) }
-pub fn pictures() -> String { opt(dirs::picture_dir()) }
-pub fn music() -> String { opt(dirs::audio_dir()) }
-pub fn videos() -> String { opt(dirs::video_dir()) }
-pub fn public() -> String { opt(dirs::public_dir()) }
+pub fn desktop() -> String {
+    opt(dirs::desktop_dir())
+}
+pub fn documents() -> String {
+    opt(dirs::document_dir())
+}
+pub fn downloads() -> String {
+    opt(dirs::download_dir())
+}
+pub fn pictures() -> String {
+    opt(dirs::picture_dir())
+}
+pub fn music() -> String {
+    opt(dirs::audio_dir())
+}
+pub fn videos() -> String {
+    opt(dirs::video_dir())
+}
+pub fn public() -> String {
+    opt(dirs::public_dir())
+}
 
 /// Temporary directory (always present).
-pub fn temp() -> String { std::env::temp_dir().to_string_lossy().into_owned() }
+pub fn temp() -> String {
+    std::env::temp_dir().to_string_lossy().into_owned()
+}
 
 /// Current working directory of the running process, or empty on error.
 pub fn current() -> String {
-    std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -54,9 +91,22 @@ mod tests {
 
     #[test]
     fn all_helpers_return_without_panicking() {
-        let _ = (config(), cache(), data(), data_local(), state(),
-                 executable(), runtime(), preference(),
-                 desktop(), documents(), downloads(), pictures(),
-                 music(), videos(), public());
+        let _ = (
+            config(),
+            cache(),
+            data(),
+            data_local(),
+            state(),
+            executable(),
+            runtime(),
+            preference(),
+            desktop(),
+            documents(),
+            downloads(),
+            pictures(),
+            music(),
+            videos(),
+            public(),
+        );
     }
 }
