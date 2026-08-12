@@ -71,6 +71,11 @@ liberan en el mismo hilo que las creó.
   líneas `continue-on-error` permanecen en el workflow hasta aplicar desde
   GitHub web la plantilla corregida `docs/CI_WORKFLOW_TEMPLATE.yml`. La GitHub
   App de Arena no tiene permiso para modificar `.github/workflows`.
+- Una ejecución intermedia de tests, [CI 31552230343](https://github.com/alexsndersoto04-source/aio/actions/runs/31552230343),
+  falló de forma transitoria. No se reprodujo en las dos ejecuciones siguientes,
+  incluida la ejecución final sin instrumentación temporal. Se conserva como
+  señal para la auditoría de concurrencia; no se oculta ni se contabiliza como
+  una validación aprobada.
 - El candidato de este commit todavía no se ha instalado en el Redmi 9C. No se
   requiere instalar cada cambio interno; habrá una prueba física agrupada al
   cerrar un milestone importante.
