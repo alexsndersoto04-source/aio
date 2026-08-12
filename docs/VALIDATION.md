@@ -8,25 +8,25 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `57b2b84190a4cd4db9ddafc726d65b8dd1f7bc69`
+- Commit validado: `14268e2f7d5a4b928876678068e90fbc49f8df3d`
 - Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
   canales, red, bases de datos, procesos, colecciones, juego, señales, watchers,
-  progreso, routers, ventanas e imágenes; checks Android ARM de 32 y 64 bits
+  progreso, routers, ventanas, imágenes y tokenizadores; checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
-| `cargo check` con características normales | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
-| `cargo check --no-default-features` | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
-| Cross-check Android AArch64 | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
+| `cargo check` con características normales | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
+| `cargo check --no-default-features` | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
+| Cross-check Android AArch64 | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
 
 Los fallos advisory registrados ya fueron corregidos:
 
@@ -431,6 +431,67 @@ No se necesita una prueba física para estos límites. Los codecs y las rutas
 ARMv7 sí quedaron compilados dentro del binario Android/Bionic; este bloque no
 afirma que el Redmi haya decodificado manualmente cada formato.
 
+### Tokenizadores y encodings con entradas y salidas acotadas
+
+El commit `14268e2` limita tanto los modelos HuggingFace persistentes como las
+operaciones de tokenización. Cada runtime admite:
+
+- 16 handles de tokenizer;
+- 16 MiB de JSON por modelo y 64 MiB de fuentes JSON agregadas;
+- vocabularios de hasta 262.144 entradas y tokens de vocabulario de hasta 256
+  bytes;
+- textos individuales de 64 KiB;
+- batches de 64 textos y 256 KiB agregados;
+- 131.072 tokens por encoding, 262.144 por batch, 8 MiB de strings de tokens por
+  encoding y 16 MiB por batch;
+- padding entre 1 y 65.536 tokens;
+- 131.072 ids por decode y 1 MiB de texto decodificado;
+- dos operaciones pesadas simultáneas.
+
+`load` ya no usa una lectura de archivo que crece hasta EOF. Lee como máximo el
+límite más un byte, rechaza el exceso y valida UTF-8 antes de parsear. Tanto
+`load` como `from_json` hacen una comprobación previa de capacidad y repiten la
+comprobación bajo el lock al insertar, cerrando carreras entre tareas. Los IDs
+usan incremento comprobado.
+
+El tokenizer persistente se guarda en `Arc`. Encode, batch y decode clonan solo
+esa referencia y liberan el registro global antes del trabajo costoso, por lo
+que una tokenización lenta no bloquea close ni el cleanup de otros handles. Un
+permiso RAII limita la concurrencia y se devuelve también ante errores.
+
+Antes de copiar un encoding hacia la VM se miden cantidad de tokens y bytes de
+sus strings. `encode_padded` rechaza longitud cero —que antes podía llegar a
+`max_length - 1`— y cualquier padding mayor al máximo. Los batches validan
+cantidad y bytes antes de activar el paralelismo interno del tokenizer. Decode,
+`token_to_id` e `id_to_token` tienen límites de entrada y salida propios.
+
+Las regresiones verificadas por CI usan un tokenizer WordLevel real y prueban:
+
+1. creación de 16 modelos, rechazo del siguiente, recuperación de un slot y
+   cleanup completo;
+2. encode con padding real y longitud exacta;
+3. rechazo de longitud de padding cero, texto y batch sobredimensionados;
+4. límites agregado de fuentes y vocabulario;
+5. saturación y recuperación de los dos permisos de operación;
+6. conservación de las pruebas opcionales para tokenizadores HuggingFace
+   externos.
+
+Evidencia externa:
+
+- [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245): formato, checks normal y sin características por defecto, todos los
+  tests del workspace y AArch64 aprobados.
+- [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244): NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y artefacto aprobados.
+
+La contabilidad persistente usa los bytes del JSON, no intenta fingir una medida
+exacta de las estructuras internas del crate `tokenizers`. Ese posible factor
+de expansión queda además acotado por vocabulario, longitud de token, handles y
+concurrencia. No se ejecutó un modelo HuggingFace externo en este run; la prueba
+funcional integrada usa un modelo WordLevel pequeño y real, sin simulación.
+
+No hace falta validación física individual para este bloque. El código sí quedó
+compilado y enlazado dentro del binario Android/Bionic ARMv7.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -455,8 +516,8 @@ reales se liberan en el mismo hilo que las creó.
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos,
   colecciones y los recursos ligeros descritos arriba ya están conectadas. Esto
-  no cierra toda la auditoría de crecimiento: KV, Redis, ONNX, PDF,
-  tokenizadores y servidores conservan registros duraderos que deben revisarse
+  no cierra toda la auditoría de crecimiento: KV, Redis, ONNX, PDF y
+  servidores conservan registros duraderos que deben revisarse
   individualmente.
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
   Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
