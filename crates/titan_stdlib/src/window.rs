@@ -7,6 +7,12 @@ use std::sync::{
     Arc, Mutex, OnceLock,
 };
 
+const MAX_WINDOW_HANDLES: usize = 64;
+const MAX_WINDOW_EVENTS: usize = 1_024;
+const MAX_WINDOW_TITLE_BYTES: usize = 64 * 1024;
+const MAX_WINDOW_KEY_BYTES: usize = 256;
+const MAX_WINDOW_DIMENSION: u32 = 16_384;
+
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
 fn registry() -> &'static Arc<Mutex<HashMap<(u64, u64), WindowHandle>>> {
@@ -60,92 +66,134 @@ pub struct WindowHandle {
     pub events: Vec<WindowEvent>,
 }
 
-pub fn create(title: &str, width: u32, height: u32) -> u64 {
-    let id = NEXT_WINDOW_ID.fetch_add(1, Ordering::SeqCst);
+fn validate_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 || width > MAX_WINDOW_DIMENSION || height > MAX_WINDOW_DIMENSION {
+        return Err(format!(
+            "window dimensions must be between 1 and {MAX_WINDOW_DIMENSION}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_title(title: &str) -> Result<(), String> {
+    if title.len() > MAX_WINDOW_TITLE_BYTES {
+        return Err(format!(
+            "window title exceeds byte limit {MAX_WINDOW_TITLE_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_event(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::KeyDown { key } | WindowEvent::KeyUp { key } => {
+            key.len() <= MAX_WINDOW_KEY_BYTES
+        }
+        WindowEvent::Resized { width, height } => validate_dimensions(*width, *height).is_ok(),
+        _ => true,
+    }
+}
+
+pub fn create(title: &str, width: u32, height: u32) -> Result<u64, String> {
+    validate_title(title)?;
+    validate_dimensions(width, height)?;
+    let runtime_id = crate::native::current_runtime_id();
+    let mut registry = crate::native::lock_recover(registry());
+    let active = registry
+        .keys()
+        .filter(|(owner, _)| *owner == runtime_id)
+        .count();
+    if active >= MAX_WINDOW_HANDLES {
+        return Err(format!(
+            "window handle quota exceeded (limit {MAX_WINDOW_HANDLES})"
+        ));
+    }
+    let id = NEXT_WINDOW_ID
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| {
+            (id <= i64::MAX as u64).then(|| id + 1)
+        })
+        .map_err(|_| "window handle space exhausted".to_string())?;
     let config = WindowConfig {
         title: title.to_string(),
         width,
         height,
         ..Default::default()
     };
-    let handle = WindowHandle {
-        id,
-        config,
-        is_open: true,
-        events: Vec::new(),
-    };
-    if let Ok(mut reg) = registry().lock() {
-        reg.insert(handle_key(id), handle);
-    }
-    id
+    registry.insert(
+        (runtime_id, id),
+        WindowHandle {
+            id,
+            config,
+            is_open: true,
+            events: Vec::new(),
+        },
+    );
+    Ok(id)
 }
 
 pub fn is_open(id: u64) -> bool {
-    if let Ok(reg) = registry().lock() {
-        if let Some(win) = reg.get(&handle_key(id)) {
-            return win.is_open;
-        }
-    }
-    false
+    crate::native::lock_recover(registry())
+        .get(&handle_key(id))
+        .is_some_and(|window| window.is_open)
 }
 
 pub fn close(id: u64) -> bool {
-    if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&handle_key(id)) {
-            if win.is_open {
-                win.is_open = false;
-                win.events.push(WindowEvent::CloseRequested);
-                return true;
-            }
-        }
-    }
-    false
+    crate::native::lock_recover(registry())
+        .remove(&handle_key(id))
+        .is_some_and(|window| window.is_open)
 }
 
 pub fn set_title(id: u64, title: &str) -> bool {
-    if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&handle_key(id)) {
-            win.config.title = title.to_string();
-            return true;
-        }
+    if validate_title(title).is_err() {
+        return false;
     }
-    false
+    let mut registry = crate::native::lock_recover(registry());
+    if let Some(window) = registry.get_mut(&handle_key(id)) {
+        window.config.title = title.to_string();
+        true
+    } else {
+        false
+    }
 }
 
 pub fn resize(id: u64, width: u32, height: u32) -> bool {
-    if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&handle_key(id)) {
-            win.config.width = width;
-            win.config.height = height;
-            win.events.push(WindowEvent::Resized { width, height });
-            return true;
-        }
+    if validate_dimensions(width, height).is_err() {
+        return false;
     }
-    false
+    let mut registry = crate::native::lock_recover(registry());
+    if let Some(window) = registry.get_mut(&handle_key(id)) {
+        if !window.is_open || window.events.len() >= MAX_WINDOW_EVENTS {
+            return false;
+        }
+        window.config.width = width;
+        window.config.height = height;
+        window.events.push(WindowEvent::Resized { width, height });
+        true
+    } else {
+        false
+    }
 }
 
 pub fn push_event(id: u64, event: WindowEvent) -> bool {
-    if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&handle_key(id)) {
-            if win.is_open {
-                win.events.push(event);
-                return true;
-            }
+    if !validate_event(&event) {
+        return false;
+    }
+    let mut registry = crate::native::lock_recover(registry());
+    if let Some(window) = registry.get_mut(&handle_key(id)) {
+        if window.is_open && window.events.len() < MAX_WINDOW_EVENTS {
+            window.events.push(event);
+            return true;
         }
     }
     false
 }
 
 pub fn poll_events(id: u64) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Ok(mut reg) = registry().lock() {
-        if let Some(win) = reg.get_mut(&handle_key(id)) {
-            for ev in win.events.drain(..) {
-                out.push(format_event(&ev));
-            }
-        }
-    }
-    out
+    let mut registry = crate::native::lock_recover(registry());
+    registry
+        .get_mut(&handle_key(id))
+        .map(|window| window.events.drain(..).map(|event| format_event(&event)).collect())
+        .unwrap_or_default()
 }
 
 /// Format one window event exactly as `poll_events` reports it. Shared
@@ -176,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_window_lifecycle_and_events() {
-        let win_id = create("Test Window", 1024, 768);
+        let win_id = create("Test Window", 1024, 768).unwrap();
         assert!(is_open(win_id));
 
         assert!(set_title(win_id, "Updated Title"));
@@ -201,5 +249,37 @@ mod tests {
 
         assert!(close(win_id));
         assert!(!is_open(win_id));
+    }
+
+    #[test]
+    fn handles_titles_dimensions_and_event_queues_are_bounded() {
+        let runtime_id = 8_300_003;
+        crate::native::with_runtime_context(runtime_id, || {
+            assert!(create("oversized", 0, 1).is_err());
+            assert!(create(&"x".repeat(MAX_WINDOW_TITLE_BYTES + 1), 1, 1).is_err());
+            let mut handles = (0..MAX_WINDOW_HANDLES)
+                .map(|_| create("bounded", 1, 1).unwrap())
+                .collect::<Vec<_>>();
+            assert!(create("overflow", 1, 1).unwrap_err().contains("handle quota"));
+            assert!(!set_title(
+                handles[0],
+                &"x".repeat(MAX_WINDOW_TITLE_BYTES + 1)
+            ));
+            for index in 0..MAX_WINDOW_EVENTS {
+                assert!(push_event(
+                    handles[0],
+                    WindowEvent::MouseMove {
+                        x: index as i32,
+                        y: 0,
+                    }
+                ));
+            }
+            assert!(!push_event(handles[0], WindowEvent::FocusGained));
+            assert_eq!(poll_events(handles[0]).len(), MAX_WINDOW_EVENTS);
+            assert!(push_event(handles[0], WindowEvent::FocusGained));
+            assert!(close(handles.pop().unwrap()));
+            handles.push(create("recovered", 1, 1).unwrap());
+        });
+        assert_eq!(cleanup_runtime(runtime_id), MAX_WINDOW_HANDLES);
     }
 }

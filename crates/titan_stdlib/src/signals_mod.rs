@@ -60,6 +60,12 @@ fn subscribers() -> &'static Mutex<HashMap<i32, SignalSubscribers>> {
     SUBSCRIBERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn increment_pending(counter: &AtomicUsize) {
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+        pending.checked_add(1)
+    });
+}
+
 /// Register a signal listener for the current runtime. Idempotent per runtime.
 pub fn install(signal_name: &str) -> Result<(), SignalError> {
     let signal = resolve(signal_name)?;
@@ -79,19 +85,22 @@ pub fn install(signal_name: &str) -> Result<(), SignalError> {
     entry
         .runtimes
         .insert(runtime_id, Arc::new(AtomicUsize::new(0)));
-    registry.insert(signal, entry);
-    drop(registry);
-
-    thread::spawn(move || {
-        for _ in signals.forever() {
-            let registry = crate::native::lock_recover(subscribers());
-            if let Some(entry) = registry.get(&signal) {
-                for counter in entry.runtimes.values() {
-                    counter.fetch_add(1, Ordering::SeqCst);
+    thread::Builder::new()
+        .name(format!("titan-signal-{signal}"))
+        .spawn(move || {
+            for _ in signals.forever() {
+                let registry = crate::native::lock_recover(subscribers());
+                if let Some(entry) = registry.get(&signal) {
+                    for counter in entry.runtimes.values() {
+                        increment_pending(counter);
+                    }
                 }
             }
-        }
-    });
+        })
+        .map_err(|error| {
+            SignalError::Hook(format!("failed to start signal dispatcher: {error}"))
+        })?;
+    registry.insert(signal, entry);
     Ok(())
 }
 
@@ -160,6 +169,13 @@ mod tests {
         install("SIGUSR2").unwrap();
         install("SIGUSR2").unwrap();
         assert_eq!(pending("SIGUSR2").unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_counter_saturates_instead_of_wrapping() {
+        let counter = AtomicUsize::new(usize::MAX);
+        increment_pending(&counter);
+        assert_eq!(counter.load(Ordering::Acquire), usize::MAX);
     }
 
     #[test]

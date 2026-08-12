@@ -1000,31 +1000,32 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         "std::window::create" => {
             let title = string!();
-            let w = int!() as u32;
-            let h = int!() as u32;
-            Value::Int(stdlib::window::create(&title, w, h) as i64)
+            let width = u32::try_from(int!()).map_err(|_| "window width out of range")?;
+            let height = u32::try_from(int!()).map_err(|_| "window height out of range")?;
+            let id = stdlib::window::create(&title, width, height).map_err(error)?;
+            Value::Int(i64::try_from(id).map_err(|_| "window handle out of range")?)
         }
         "std::window::is_open" => {
-            let id = int!() as u64;
+            let id = u64::try_from(int!()).map_err(|_| "window handle must be nonnegative")?;
             Value::Bool(stdlib::window::is_open(id))
         }
         "std::window::close" => {
-            let id = int!() as u64;
+            let id = u64::try_from(int!()).map_err(|_| "window handle must be nonnegative")?;
             Value::Bool(stdlib::window::close(id))
         }
         "std::window::set_title" => {
-            let id = int!() as u64;
+            let id = u64::try_from(int!()).map_err(|_| "window handle must be nonnegative")?;
             let title = string!();
             Value::Bool(stdlib::window::set_title(id, &title))
         }
         "std::window::resize" => {
-            let id = int!() as u64;
-            let w = int!() as u32;
-            let h = int!() as u32;
-            Value::Bool(stdlib::window::resize(id, w, h))
+            let id = u64::try_from(int!()).map_err(|_| "window handle must be nonnegative")?;
+            let width = u32::try_from(int!()).map_err(|_| "window width out of range")?;
+            let height = u32::try_from(int!()).map_err(|_| "window height out of range")?;
+            Value::Bool(stdlib::window::resize(id, width, height))
         }
         "std::window::poll_events" => {
-            let id = int!() as u64;
+            let id = u64::try_from(int!()).map_err(|_| "window handle must be nonnegative")?;
             Value::Array(
                 stdlib::window::poll_events(id)
                     .into_iter()
@@ -1035,9 +1036,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(all(feature = "window_live", not(target_os = "android")))]
         "std::window::live_open" => {
             let title = string!();
-            let w = int!();
-            let h = int!();
-            Value::Int(stdlib::window_live::live_open(&title, w as u32, h as u32))
+            let width = u32::try_from(int!()).map_err(|_| "window width out of range")?;
+            let height = u32::try_from(int!()).map_err(|_| "window height out of range")?;
+            Value::Int(stdlib::window_live::live_open(&title, width, height))
         }
         #[cfg(all(feature = "window_live", not(target_os = "android")))]
         "std::window::live_is_open" => {
@@ -2380,15 +2381,17 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::progress::bar_new" => {
             let total =
                 u64::try_from(int!()).map_err(|_| "total must be nonnegative".to_string())?;
-            Value::Int(stdlib::progress_mod::bar_new(total))
+            Value::Int(stdlib::progress_mod::bar_new(total).map_err(error)?)
         }
         #[cfg(feature = "progress_mod")]
-        "std::progress::spinner_new" => Value::Int(stdlib::progress_mod::spinner_new()),
+        "std::progress::spinner_new" => {
+            Value::Int(stdlib::progress_mod::spinner_new().map_err(error)?)
+        }
         #[cfg(feature = "progress_mod")]
         "std::progress::set_message" => {
             let id = int!();
             let message = string!();
-            stdlib::progress_mod::set_message(id, &message);
+            stdlib::progress_mod::set_message(id, &message).map_err(error)?;
             Value::Nil
         }
         #[cfg(feature = "progress_mod")]
@@ -2411,7 +2414,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::progress::finish" => {
             let id = int!();
             let message = string!();
-            stdlib::progress_mod::finish(id, &message);
+            stdlib::progress_mod::finish(id, &message).map_err(error)?;
             Value::Nil
         }
         #[cfg(feature = "progress_mod")]
@@ -3198,7 +3201,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
 
         // ---------------- Phase 11: URL router (matchit) ----------------
         #[cfg(feature = "router_mod")]
-        "std::router::new" => Value::Int(stdlib::router_mod::new()),
+        "std::router::new" => Value::Int(stdlib::router_mod::new().map_err(error)?),
         #[cfg(feature = "router_mod")]
         "std::router::drop" => {
             stdlib::router_mod::drop_router(int!());
@@ -5418,6 +5421,33 @@ mod tests {
             .unwrap();
             assert_eq!(closed, Value::Bool(true));
         }
+    }
+
+    #[test]
+    fn window_bindings_reject_wrapping_numeric_inputs() {
+        let capabilities = RuntimeCapabilities::all();
+        assert!(invoke(
+            "std::window::create",
+            vec![
+                Value::Str("invalid".into()),
+                Value::Int(-1),
+                Value::Int(600),
+            ],
+            capabilities,
+        )
+        .is_err());
+        assert!(invoke(
+            "std::window::resize",
+            vec![Value::Int(1), Value::Int(i64::MAX), Value::Int(600)],
+            capabilities,
+        )
+        .is_err());
+        assert!(invoke(
+            "std::window::close",
+            vec![Value::Int(-1)],
+            capabilities,
+        )
+        .is_err());
     }
 
     #[test]

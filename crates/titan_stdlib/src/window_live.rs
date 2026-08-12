@@ -10,7 +10,8 @@
 //! Availability contract, stated honestly:
 //! * Linux / Windows / macOS with a display: opens a real OS window.
 //! * Headless boxes (CI, SSH, Docker): `live_open` reports `-1` instead
-//!   of pretending — no display, no window.
+//!   of pretending — no display, no window. Invalid or over-quota window
+//!   requests also report `-1` without touching the OS backend.
 //! * Android (Termux bionic target): compiled out entirely — minifb has
 //!   no Android backend; the on-phone ceremony runs through the glibc
 //!   (proot-distro) build plus a Termux:X11 server.
@@ -39,6 +40,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 
@@ -62,6 +64,7 @@ struct LiveWindow {
     buttons_down: HashSet<u8>,
     last_mouse: (i32, i32),
     close_reported: bool,
+    _permit: LiveWindowPermit,
 }
 
 // `minifb::Window` is deliberately not `Send`: native window APIs must remain
@@ -102,7 +105,84 @@ fn handle_key(handle: u64) -> (u64, u64) {
     crate::native::runtime_handle_key(handle)
 }
 
+const MAX_LIVE_WINDOWS_PER_RUNTIME: usize = 16;
+const MAX_LIVE_EVENTS: usize = 1_024;
+const MAX_LIVE_TITLE_BYTES: usize = 4 * 1024;
+const MAX_LIVE_DIMENSION: u32 = 4_096;
+const MAX_LIVE_PIXELS_PER_RUNTIME: usize = 16 * 1024 * 1024;
+
 static NEXT_LIVE_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Default)]
+struct LiveWindowUsage {
+    handles: usize,
+    pixels: usize,
+}
+
+struct LiveWindowPermit {
+    runtime_id: u64,
+    pixels: usize,
+}
+
+impl Drop for LiveWindowPermit {
+    fn drop(&mut self) {
+        let mut usage = crate::native::lock_recover(live_window_usage());
+        if let Some(runtime) = usage.get_mut(&self.runtime_id) {
+            runtime.handles = runtime.handles.saturating_sub(1);
+            runtime.pixels = runtime.pixels.saturating_sub(self.pixels);
+            if runtime.handles == 0 {
+                usage.remove(&self.runtime_id);
+            }
+        }
+    }
+}
+
+fn live_window_usage() -> &'static Mutex<HashMap<u64, LiveWindowUsage>> {
+    static USAGE: OnceLock<Mutex<HashMap<u64, LiveWindowUsage>>> = OnceLock::new();
+    USAGE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn reserve_live_window(width: u32, height: u32) -> Option<LiveWindowPermit> {
+    let runtime_id = crate::native::current_runtime_id();
+    let pixels = (width as usize).checked_mul(height as usize)?;
+    let mut usage = crate::native::lock_recover(live_window_usage());
+    let (handles, used_pixels) = usage
+        .get(&runtime_id)
+        .map_or((0, 0), |runtime| (runtime.handles, runtime.pixels));
+    if handles >= MAX_LIVE_WINDOWS_PER_RUNTIME
+        || used_pixels.checked_add(pixels)? > MAX_LIVE_PIXELS_PER_RUNTIME
+    {
+        return None;
+    }
+    let runtime = usage.entry(runtime_id).or_default();
+    runtime.handles += 1;
+    runtime.pixels += pixels;
+    Some(LiveWindowPermit { runtime_id, pixels })
+}
+
+fn valid_live_request(title: &str, width: u32, height: u32) -> bool {
+    title.len() <= MAX_LIVE_TITLE_BYTES
+        && width > 0
+        && height > 0
+        && width <= MAX_LIVE_DIMENSION
+        && height <= MAX_LIVE_DIMENSION
+}
+
+fn signed_handle_key(handle: i64) -> Option<(u64, u64)> {
+    u64::try_from(handle).ok().map(handle_key)
+}
+
+fn append_events_bounded(queue: &mut Vec<WindowEvent>, events: impl IntoIterator<Item = WindowEvent>) {
+    let remaining = MAX_LIVE_EVENTS.saturating_sub(queue.len());
+    queue.extend(events.into_iter().take(remaining));
+}
+
+fn push_priority_event(queue: &mut Vec<WindowEvent>, event: WindowEvent) {
+    if queue.len() >= MAX_LIVE_EVENTS {
+        queue.remove(0);
+    }
+    queue.push(event);
+}
 
 /// Mouse buttons bridged to TITAN: 1 = left, 2 = right, 3 = middle,
 /// the same convention `std::input` uses since Phase 1.
@@ -112,9 +192,17 @@ const BRIDGED_BUTTONS: [(MouseButton, u8); 3] = [
     (MouseButton::Middle, 3),
 ];
 
-/// Open a real OS window. Returns a positive handle, or `-1` when no
-/// display is available (headless CI, SSH, Termux sin X11).
+/// Open a real OS window. Returns a positive handle, or `-1` when the
+/// request exceeds its bounds or no display/capacity is available.
 pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
+    if !valid_live_request(title, width, height) {
+        return -1;
+    }
+    let Some(permit) = reserve_live_window(width, height) else {
+        return -1;
+    };
+    let runtime_id = permit.runtime_id;
+
     let mut window = match Window::new(
         title,
         width as usize,
@@ -125,10 +213,15 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
         Err(_) => return -1,
     };
     window.set_target_fps(60);
-    let id = NEXT_LIVE_ID.fetch_add(1, Ordering::SeqCst);
+    let id = match NEXT_LIVE_ID.fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| {
+        (id <= i64::MAX as u64).then(|| id + 1)
+    }) {
+        Ok(id) => id,
+        Err(_) => return -1,
+    };
     with_registry_mut(|registry| {
         registry.insert(
-            handle_key(id),
+            (runtime_id, id),
             LiveWindow {
                 window,
                 width,
@@ -139,6 +232,7 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
                 buttons_down: HashSet::new(),
                 last_mouse: (0, 0),
                 close_reported: false,
+                _permit: permit,
             },
         );
         id as i64
@@ -148,9 +242,12 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
 
 /// Whether the live window is still open (false for unknown handles).
 pub fn live_is_open(handle: i64) -> bool {
+    let Some(key) = signed_handle_key(handle) else {
+        return false;
+    };
     with_registry(|registry| {
         registry
-            .get(&handle_key(handle as u64))
+            .get(&key)
             .is_some_and(|entry| entry.window.is_open())
     })
     .unwrap_or(false)
@@ -158,19 +255,25 @@ pub fn live_is_open(handle: i64) -> bool {
 
 /// Close and drop the live window. False for unknown handles.
 pub fn live_close(handle: i64) -> bool {
-    with_registry_mut(|registry| registry.remove(&handle_key(handle as u64)).is_some())
-        .unwrap_or(false)
+    let Some(key) = signed_handle_key(handle) else {
+        return false;
+    };
+    with_registry_mut(|registry| registry.remove(&key).is_some()).unwrap_or(false)
 }
 
 /// Rename the visible OS window title. False for unknown handles.
 pub fn live_set_title(handle: i64, title: &str) -> bool {
+    if title.len() > MAX_LIVE_TITLE_BYTES {
+        return false;
+    }
+    let Some(key) = signed_handle_key(handle) else {
+        return false;
+    };
     with_registry_mut(|registry| {
-        registry
-            .get_mut(&handle_key(handle as u64))
-            .is_some_and(|entry| {
-                entry.window.set_title(title);
-                true
-            })
+        registry.get_mut(&key).is_some_and(|entry| {
+            entry.window.set_title(title);
+            true
+        })
     })
     .unwrap_or(false)
 }
@@ -180,8 +283,11 @@ pub fn live_set_title(handle: i64, title: &str) -> bool {
 /// and queue the new events. See the module header for the honest
 /// status codes (-2..-6, 0 closed, 1 alive).
 pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
+    let Some(key) = signed_handle_key(handle) else {
+        return -2;
+    };
     with_registry_mut(|registry| {
-        let Some(entry) = registry.get_mut(&handle_key(handle as u64)) else {
+        let Some(entry) = registry.get_mut(&key) else {
             return -2;
         };
         let Some((width, height, rgba)) = render_rgba(gui_root) else {
@@ -249,7 +355,7 @@ pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
             input::set_mouse_button(*button, false);
         }
 
-        entry.events.extend(events);
+        append_events_bounded(&mut entry.events, events);
         entry.keys_down = cur_keys;
         entry.buttons_down = cur_buttons;
         entry.last_mouse = cur_pos;
@@ -258,7 +364,7 @@ pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
             1
         } else {
             if !entry.close_reported {
-                entry.events.push(WindowEvent::CloseRequested);
+                push_priority_event(&mut entry.events, WindowEvent::CloseRequested);
                 entry.close_reported = true;
             }
             0
@@ -270,9 +376,12 @@ pub fn live_pump(handle: i64, gui_root: i64) -> i64 {
 /// Drain this window's queued events, formatted exactly like
 /// `std::window::poll_events` (empty for unknown handles).
 pub fn live_poll_events(handle: i64) -> Vec<String> {
+    let Some(key) = signed_handle_key(handle) else {
+        return Vec::new();
+    };
     with_registry_mut(|registry| {
         registry
-            .get_mut(&handle_key(handle as u64))
+            .get_mut(&key)
             .map(|entry| {
                 entry
                     .events
@@ -569,6 +678,46 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn live_window_inputs_and_event_queues_are_bounded() {
+        assert!(valid_live_request("", 1, 1));
+        assert!(!valid_live_request("ok", 0, 1));
+        assert!(!valid_live_request("ok", MAX_LIVE_DIMENSION + 1, 1));
+        assert!(!valid_live_request(
+            &"x".repeat(MAX_LIVE_TITLE_BYTES + 1),
+            1,
+            1
+        ));
+
+        let mut events = Vec::new();
+        append_events_bounded(
+            &mut events,
+            (0..MAX_LIVE_EVENTS + 1).map(|_| WindowEvent::FocusGained),
+        );
+        assert_eq!(events.len(), MAX_LIVE_EVENTS);
+        push_priority_event(&mut events, WindowEvent::CloseRequested);
+        assert_eq!(events.len(), MAX_LIVE_EVENTS);
+        assert_eq!(events.last(), Some(&WindowEvent::CloseRequested));
+
+        let runtime_id = 8_300_005;
+        crate::native::with_runtime_context(runtime_id, || {
+            let mut permits = (0..MAX_LIVE_WINDOWS_PER_RUNTIME)
+                .map(|_| reserve_live_window(1, 1).unwrap())
+                .collect::<Vec<_>>();
+            assert!(reserve_live_window(1, 1).is_none());
+            drop(permits.pop());
+            permits.push(reserve_live_window(1, 1).unwrap());
+        });
+        assert!(!crate::native::lock_recover(live_window_usage()).contains_key(&runtime_id));
+
+        crate::native::with_runtime_context(runtime_id, || {
+            let full = reserve_live_window(MAX_LIVE_DIMENSION, MAX_LIVE_DIMENSION).unwrap();
+            assert!(reserve_live_window(1, 1).is_none());
+            drop(full);
+        });
+        assert!(!crate::native::lock_recover(live_window_usage()).contains_key(&runtime_id));
     }
 
     /// macOS forbids window creation off the main thread (cargo test runs
