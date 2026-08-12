@@ -151,7 +151,8 @@ pub fn stop(handle: i64) -> bool {
 pub fn shutdown() -> bool {
     if let Ok(mut state) = get_audio_state().lock() {
         state.buffers.clear();
-        state.next_handle = 1;
+        // Never rewind opaque IDs: a stale handle must not alias a buffer
+        // created after shutdown and reinitialization.
         state.initialized = false;
         true
     } else {
@@ -181,13 +182,17 @@ mod tests {
             assert!(init());
             assert_eq!(load_wave(440.0, MAX_WAVE_DURATION_MS + 1), -1);
             assert_eq!(load_wave(f64::NAN, 1), -1);
-            for _ in 0..MAX_AUDIO_BUFFERS {
+            let stale = load_wave(440.0, 1);
+            assert!(stale > 0);
+            for _ in 1..MAX_AUDIO_BUFFERS {
                 assert!(load_wave(440.0, 1) > 0);
             }
             assert_eq!(load_wave(440.0, 1), -1);
             assert!(shutdown());
             assert!(init());
-            assert!(load_wave(440.0, 1) > 0);
+            let fresh = load_wave(440.0, 1);
+            assert!(fresh > stale);
+            assert_eq!(sample_count(stale), 0);
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }

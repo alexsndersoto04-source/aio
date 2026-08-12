@@ -40,7 +40,7 @@ fn next_handle() -> Result<u64, String> {
     NEXT_HANDLE
         .get_or_init(|| AtomicU64::new(1))
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |handle| {
-            handle.checked_add(1)
+            (handle <= i64::MAX as u64).then(|| handle + 1)
         })
         .map_err(|_| "collection handle space exhausted".to_string())
 }

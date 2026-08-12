@@ -351,7 +351,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         "std::http::request_id" => {
             let mut request = expect_map(take!())?;
-            let id = REQUEST_IDS.fetch_add(1, Ordering::Relaxed);
+            let id = REQUEST_IDS
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+                .map_err(|_| "HTTP request identifier space exhausted")?;
             request.insert("request_id".into(), Value::Str(format!("titan-{id:016x}")));
             Value::Map(request)
         }
@@ -4073,14 +4075,15 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         ),
         #[cfg(feature = "process_mod")]
         "std::process::send_signal" => {
-            let pid = int!() as i32;
-            let sig = int!() as i32;
-            stdlib::process_mod::send_signal(pid, sig).map_err(|e| e.to_string())?;
+            let pid = i32::try_from(int!()).map_err(|_| "process id out of i32 range")?;
+            let signal = i32::try_from(int!()).map_err(|_| "signal number out of i32 range")?;
+            stdlib::process_mod::send_signal(pid, signal).map_err(|e| e.to_string())?;
             Value::Nil
         }
         #[cfg(feature = "process_mod")]
         "std::process::exit" => {
-            stdlib::process_mod::exit(int!() as i32);
+            let status = i32::try_from(int!()).map_err(|_| "exit status out of i32 range")?;
+            stdlib::process_mod::exit(status);
         }
 
         // ---------------- Phase 34: std::collections ----------------
@@ -4354,7 +4357,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "collections_mod")]
         "std::collections::counter_most_common" => {
             let h = u64::try_from(int!()).map_err(|_| "counter handle".to_string())?;
-            let n = int!() as usize;
+            let n = nonnegative(int!())?;
             let items = stdlib::collections_mod::counter_most_common(h, n)?;
             Value::Array(
                 items
@@ -5474,6 +5477,49 @@ pub fn titan_freestanding_mmio_shutdown() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sensitive_handle_operations_cannot_bypass_capabilities() {
+        for (name, args, capability) in [
+            ("std::server::method", vec![Value::Int(1)], "Network"),
+            ("std::redis::close", vec![Value::Int(1)], "Network"),
+            (
+                "std::kv::get",
+                vec![Value::Int(1), Value::Bytes(Vec::new())],
+                "Filesystem",
+            ),
+            (
+                "std::fswatch::next_event",
+                vec![Value::Int(1), Value::Int(1)],
+                "Filesystem",
+            ),
+            (
+                "std::progress::abandon",
+                vec![Value::Int(1)],
+                "UserInterface",
+            ),
+        ] {
+            assert!(matches!(
+                invoke(name, args, RuntimeCapabilities::sandboxed()),
+                Err(VmError::PermissionDenied {
+                    function,
+                    capability: denied,
+                }) if function == name && denied == capability
+            ));
+        }
+        assert!(invoke(
+            "std::process::send_signal",
+            vec![Value::Int(i64::MAX), Value::Int(15)],
+            RuntimeCapabilities::all(),
+        )
+        .is_err());
+        assert!(invoke(
+            "std::collections::counter_most_common",
+            vec![Value::Int(1), Value::Int(-1)],
+            RuntimeCapabilities::all(),
+        )
+        .is_err());
+    }
 
     #[test]
     fn test_window_native_bindings() {

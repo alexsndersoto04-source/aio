@@ -911,13 +911,34 @@ pub static NATIVES: &[NativeSignature] = &[
         UserInterface
     ),
     // --- Phase 6: Progress (indicatif) ---
-    native!("std::progress::bar_new", [Int], Int),
-    native!("std::progress::spinner_new", [], Int),
-    native!("std::progress::set_message", [Int, String], Nil),
-    native!("std::progress::set_position", [Int, Int], Nil),
-    native!("std::progress::increment", [Int, Int], Nil),
-    native!("std::progress::finish", [Int, String], Nil),
-    native!("std::progress::abandon", [Int], Nil),
+    // Progress bars write to the user's terminal, so every operation is UI-gated.
+    native!("std::progress::bar_new", [Int], Int, UserInterface),
+    native!("std::progress::spinner_new", [], Int, UserInterface),
+    native!(
+        "std::progress::set_message",
+        [Int, String],
+        Nil,
+        UserInterface
+    ),
+    native!(
+        "std::progress::set_position",
+        [Int, Int],
+        Nil,
+        UserInterface
+    ),
+    native!(
+        "std::progress::increment",
+        [Int, Int],
+        Nil,
+        UserInterface
+    ),
+    native!(
+        "std::progress::finish",
+        [Int, String],
+        Nil,
+        UserInterface
+    ),
+    native!("std::progress::abandon", [Int], Nil, UserInterface),
     // --- Phase 7: Images (image crate) ---
     // Load / save are gated with Filesystem so `--sandbox` blocks them.
     native!("std::image::load", [String], Int, Filesystem),
@@ -982,8 +1003,13 @@ pub static NATIVES: &[NativeSignature] = &[
         Filesystem
     ),
     native!("std::fswatch::open", [String, Bool], Int, Filesystem),
-    native!("std::fswatch::next_event", [Int, Int], String),
-    native!("std::fswatch::close", [Int], Nil),
+    native!(
+        "std::fswatch::next_event",
+        [Int, Int],
+        String,
+        Filesystem
+    ),
+    native!("std::fswatch::close", [Int], Nil, Filesystem),
     // --- Phase 8: Unix signals (signal-hook) ---
     native!("std::signals::install", [String], Nil, Process),
     native!("std::signals::pending", [String], Int, Process),
@@ -1022,31 +1048,42 @@ pub static NATIVES: &[NativeSignature] = &[
     // Path I/O -> Filesystem capability. Results that may be missing use
     // Any (returns Bytes or Nil).
     native!("std::kv::open", [String], Int, Filesystem),
-    native!("std::kv::close", [Int], Nil),
-    native!("std::kv::flush", [Int], Int),
-    native!("std::kv::insert", [Int, Bytes, Bytes], Any),
-    native!("std::kv::get", [Int, Bytes], Any),
-    native!("std::kv::remove", [Int, Bytes], Any),
-    native!("std::kv::contains", [Int, Bytes], Bool),
-    native!("std::kv::len", [Int], Int),
-    native!("std::kv::clear", [Int], Nil),
-    native!("std::kv::keys", [Int], Array),
+    native!("std::kv::close", [Int], Nil, Filesystem),
+    native!("std::kv::flush", [Int], Int, Filesystem),
+    native!("std::kv::insert", [Int, Bytes, Bytes], Any, Filesystem),
+    native!("std::kv::get", [Int, Bytes], Any, Filesystem),
+    native!("std::kv::remove", [Int, Bytes], Any, Filesystem),
+    native!("std::kv::contains", [Int, Bytes], Bool, Filesystem),
+    native!("std::kv::len", [Int], Int, Filesystem),
+    native!("std::kv::clear", [Int], Nil, Filesystem),
+    native!("std::kv::keys", [Int], Array, Filesystem),
     // compare_and_swap: pass empty bytes for None (expected / new).
     native!(
         "std::kv::compare_and_swap",
         [Int, Bytes, Bytes, Bytes],
-        Bool
+        Bool,
+        Filesystem
     ),
-    native!("std::kv::open_tree", [Int, String], Int),
-    native!("std::kv::tree_insert", [Int, Bytes, Bytes], Any),
-    native!("std::kv::tree_get", [Int, Bytes], Any),
-    native!("std::kv::tree_remove", [Int, Bytes], Any),
-    native!("std::kv::tree_len", [Int], Int),
-    native!("std::kv::tree_keys", [Int], Array),
+    native!("std::kv::open_tree", [Int, String], Int, Filesystem),
+    native!(
+        "std::kv::tree_insert",
+        [Int, Bytes, Bytes],
+        Any,
+        Filesystem
+    ),
+    native!("std::kv::tree_get", [Int, Bytes], Any, Filesystem),
+    native!(
+        "std::kv::tree_remove",
+        [Int, Bytes],
+        Any,
+        Filesystem
+    ),
+    native!("std::kv::tree_len", [Int], Int, Filesystem),
+    native!("std::kv::tree_keys", [Int], Array, Filesystem),
     // --- Phase 10: Redis client ---
     // Network capability across the board.
     native!("std::redis::connect", [String], Int, Network),
-    native!("std::redis::close", [Int], Nil),
+    native!("std::redis::close", [Int], Nil, Network),
     native!("std::redis::ping", [Int], String, Network),
     native!("std::redis::set", [Int, String, String], Nil, Network),
     native!(
@@ -1084,16 +1121,16 @@ pub static NATIVES: &[NativeSignature] = &[
     // --- Phase 11: bounded HTTP/1.1 + WebSocket server (std::net) ---
     // Any operation that can touch a socket requires Network.
     native!("std::server::start", [String], Int, Network),
-    native!("std::server::local_addr", [Int], String),
+    native!("std::server::local_addr", [Int], String, Network),
     native!("std::server::accept", [Int, Int], Int, Network),
     native!("std::server::stop", [Int], Nil, Network),
-    native!("std::server::method", [Int], String),
-    native!("std::server::url", [Int], String),
-    native!("std::server::path", [Int], String),
-    native!("std::server::query", [Int], String),
-    native!("std::server::remote_addr", [Int], String),
-    native!("std::server::header", [Int, String], Any),
-    native!("std::server::headers", [Int], Map),
+    native!("std::server::method", [Int], String, Network),
+    native!("std::server::url", [Int], String, Network),
+    native!("std::server::path", [Int], String, Network),
+    native!("std::server::query", [Int], String, Network),
+    native!("std::server::remote_addr", [Int], String, Network),
+    native!("std::server::header", [Int, String], Any, Network),
+    native!("std::server::headers", [Int], Map, Network),
     native!("std::server::body", [Int], Bytes, Network),
     native!("std::server::body_text", [Int], String, Network),
     native!("std::server::respond", [Int, Int, String], Nil, Network),
@@ -1468,25 +1505,29 @@ mod tests {
             lookup("std::http::request").unwrap().capability,
             Capability::Network
         );
-        for name in [
-            "std::server::start",
-            "std::server::accept",
-            "std::server::stop",
-            "std::server::body",
-            "std::server::body_text",
-            "std::server::respond",
-            "std::server::respond_full",
-            "std::server::upgrade_websocket",
-            "std::server::ws_send_text",
-            "std::server::ws_send_binary",
-            "std::server::ws_recv",
-            "std::server::ws_close",
-        ] {
+        for signature in NATIVES
+            .iter()
+            .filter(|signature| signature.name.starts_with("std::server::"))
+        {
             assert_eq!(
-                lookup(name).unwrap().capability,
+                signature.capability,
                 Capability::Network,
-                "{name}"
+                "{}",
+                signature.name
             );
+        }
+        for (prefix, capability) in [
+            ("std::redis::", Capability::Network),
+            ("std::kv::", Capability::Filesystem),
+            ("std::fswatch::", Capability::Filesystem),
+            ("std::progress::", Capability::UserInterface),
+        ] {
+            for signature in NATIVES
+                .iter()
+                .filter(|signature| signature.name.starts_with(prefix))
+            {
+                assert_eq!(signature.capability, capability, "{}", signature.name);
+            }
         }
         assert_eq!(
             lookup("std::readline::prompt_persistent")

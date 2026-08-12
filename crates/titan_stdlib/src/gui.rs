@@ -234,7 +234,8 @@ pub fn child_count(parent_id: i64) -> usize {
 pub fn shutdown() -> bool {
     if let Ok(mut state) = get_gui_state().lock() {
         state.widgets.clear();
-        state.next_id = 1;
+        // Keep IDs monotonic so widgets created after a restart cannot be
+        // reached through stale handles from the previous GUI generation.
         state.initialized = false;
         true
     } else {
@@ -295,7 +296,9 @@ mod tests {
             assert!(!set_text(root, &"x".repeat(MAX_WIDGET_TEXT_BYTES + 1)));
             assert!(shutdown());
             assert!(init());
-            assert!(create_container("recovered", 1, 1) > 0);
+            let fresh = create_container("recovered", 1, 1);
+            assert!(fresh > root);
+            assert_eq!(get_text(root), "");
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }

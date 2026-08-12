@@ -892,7 +892,13 @@ fn create_temp_output(target: &Path) -> Result<(File, TempOutput), PdfError> {
         .to_string_lossy();
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
     for _ in 0..TEMP_FILE_ATTEMPTS {
-        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let id = NEXT_TEMP_ID
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .map_err(|_| {
+                PdfError::Io(std::io::Error::other(
+                    "temporary PDF identifier space exhausted",
+                ))
+            })?;
         let path = parent.join(format!(
             ".{file_name}.titan-pdf-{}-{id}.tmp",
             std::process::id()

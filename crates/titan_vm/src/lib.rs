@@ -442,10 +442,30 @@ struct RuntimeState {
     mysql_pools: Mutex<HashMap<u64, titan_mysql::Pool>>,
 }
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_runtime_resource_id(counter: &AtomicU64) -> Result<u64, VmError> {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+        .map_err(|_| VmError::Overflow)
+}
+
+fn next_root_runtime_id() -> u64 {
+    // Vm::new is intentionally infallible. Identifier exhaustion would require
+    // creating u64::MAX runtimes in one process; fail closed instead of ever
+    // wrapping to an existing ownership domain.
+    next_runtime_resource_id(&NEXT_RUNTIME_ID).expect("TITAN runtime identifier space exhausted")
+}
+
+fn increment_saturating(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        Some(value.saturating_add(1))
+    });
+}
+
 impl RuntimeState {
     fn new() -> Self {
         Self {
-            id: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed),
+            id: next_root_runtime_id(),
             next_task: AtomicU64::new(1),
             next_channel: AtomicU64::new(1),
             next_socket: AtomicU64::new(1),
@@ -611,7 +631,7 @@ impl Vm {
             });
         }
 
-        let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
+        let task_id = next_runtime_resource_id(&self.runtime.next_task)?;
         let module = self.module.clone();
         let runtime = Arc::clone(&self.runtime);
         let capabilities = self.capabilities;
@@ -1500,7 +1520,7 @@ impl Vm {
                             limit,
                         });
                     }
-                    let channel_id = self.runtime.next_channel.fetch_add(1, Ordering::Relaxed);
+                    let channel_id = next_runtime_resource_id(&self.runtime.next_channel)?;
                     let (sender, receiver) = mpsc::sync_channel(capacity);
                     channels.insert(
                         channel_id,
@@ -1642,7 +1662,7 @@ impl Vm {
                     let permit = self.runtime.network_handles.reserve("network handle")?;
                     let listener = TcpListener::bind(&address)
                         .map_err(|error| network_error("std::net::tcp_listen", error))?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .listeners
                         .lock()
@@ -1686,7 +1706,7 @@ impl Vm {
                     let (stream, peer) = listener
                         .accept()
                         .map_err(|error| network_error("std::net::tcp_accept", error))?;
-                    let stream_id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let stream_id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .streams
                         .lock()
@@ -1708,7 +1728,7 @@ impl Vm {
                     let permit = self.runtime.network_handles.reserve("network handle")?;
                     let stream = TcpStream::connect(&address)
                         .map_err(|error| network_error("std::net::tcp_connect", error))?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .streams
                         .lock()
@@ -1898,7 +1918,7 @@ impl Vm {
                 }
                 Op::HttpRouterNew => {
                     let permit = self.runtime.network_handles.reserve("network handle")?;
-                    let id = self.runtime.next_router.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_router)?;
                     self.runtime
                         .routers
                         .lock()
@@ -2131,7 +2151,7 @@ impl Vm {
                                 function: "std::tls::connect".into(),
                                 message: error.to_string(),
                             })?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .tls_streams
                         .lock()
@@ -2160,7 +2180,7 @@ impl Vm {
                             function: "std::tls::server_config".into(),
                             message: error.to_string(),
                         })?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .tls_configs
                         .lock()
@@ -2202,7 +2222,7 @@ impl Vm {
                             function: "std::tls::accept".into(),
                             message: error.to_string(),
                         })?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .tls_streams
                         .lock()
@@ -2280,7 +2300,7 @@ impl Vm {
                         "WebSocket decoder maximum",
                     )?;
                     let permit = self.runtime.network_handles.reserve("network handle")?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .websocket_decoders
                         .lock()
@@ -2466,7 +2486,7 @@ impl Vm {
                     let maximum =
                         positive_limit(pop(&mut stack, &function.name)?, "maximum connections")?
                             as u64;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .server_controls
                         .lock()
@@ -2499,7 +2519,7 @@ impl Vm {
                         })
                         .is_ok();
                     if released {
-                        control.completed.fetch_add(1, Ordering::Relaxed);
+                        increment_saturating(&control.completed);
                     }
                     stack.push(Value::Bool(released));
                 }
@@ -2528,7 +2548,7 @@ impl Vm {
                     };
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     let database = titan_sqlite::Database::open(path).map_err(sqlite_error)?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .sqlite
                         .lock()
@@ -2545,7 +2565,7 @@ impl Vm {
                         titan_sqlite::Database::memory_restricted()
                     }
                     .map_err(sqlite_error)?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .sqlite
                         .lock()
@@ -2651,7 +2671,7 @@ impl Vm {
                     };
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     let pool = titan_sqlite::Pool::new(path, maximum).map_err(sqlite_error)?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .sqlite_pools
                         .lock()
@@ -2666,7 +2686,7 @@ impl Vm {
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     match pool.acquire(timeout) {
                         Ok(connection) => {
-                            let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                            let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                             self.runtime
                                 .sqlite
                                 .lock()
@@ -2725,7 +2745,7 @@ impl Vm {
                         titan_postgres::Database::connect(&url)
                     }
                     .map_err(postgres_error)?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .postgres
                         .lock()
@@ -2837,7 +2857,7 @@ impl Vm {
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     let pool =
                         titan_postgres::Pool::new(url, maximum, tls).map_err(postgres_error)?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .postgres_pools
                         .lock()
@@ -2852,7 +2872,7 @@ impl Vm {
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     match pool.acquire(timeout) {
                         Ok(connection) => {
-                            let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                            let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                             self.runtime
                                 .postgres
                                 .lock()
@@ -2908,7 +2928,7 @@ impl Vm {
                     };
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     let database = titan_mysql::Database::connect(&url).map_err(mysql_error)?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .mysql
                         .lock()
@@ -3010,7 +3030,7 @@ impl Vm {
                     };
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     let pool = titan_mysql::Pool::new(url, maximum).map_err(mysql_error)?;
-                    let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                    let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                     self.runtime
                         .mysql_pools
                         .lock()
@@ -3025,7 +3045,7 @@ impl Vm {
                     let permit = self.runtime.database_handles.reserve("database handle")?;
                     match pool.acquire(timeout) {
                         Ok(connection) => {
-                            let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+                            let id = next_runtime_resource_id(&self.runtime.next_socket)?;
                             self.runtime
                                 .mysql
                                 .lock()
@@ -3990,13 +4010,13 @@ fn server_control(runtime: &RuntimeState, value: Value) -> Result<Arc<ServerCont
 }
 fn server_try_acquire(control: &ServerControl) -> bool {
     if control.shutting_down.load(Ordering::Acquire) {
-        control.rejected.fetch_add(1, Ordering::Relaxed);
+        increment_saturating(&control.rejected);
         return false;
     }
     loop {
         let active = control.active.load(Ordering::Acquire);
         if active >= control.maximum {
-            control.rejected.fetch_add(1, Ordering::Relaxed);
+            increment_saturating(&control.rejected);
             return false;
         }
         if control
@@ -4004,7 +4024,7 @@ fn server_try_acquire(control: &ServerControl) -> bool {
             .compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            control.accepted.fetch_add(1, Ordering::Relaxed);
+            increment_saturating(&control.accepted);
             return true;
         }
     }
@@ -4206,7 +4226,7 @@ fn insert_websocket(
     server_side: bool,
     maximum: usize,
 ) -> Result<u64, VmError> {
-    let id = runtime.next_socket.fetch_add(1, Ordering::Relaxed);
+    let id = next_runtime_resource_id(&runtime.next_socket)?;
     runtime
         .websockets
         .lock()
@@ -4641,6 +4661,21 @@ mod tests {
             .run()
             .map_err(|e| e.to_string())
             .map(|v| v.unwrap())
+    }
+
+    #[test]
+    fn atomic_identifiers_and_stats_fail_closed_at_u64_max() {
+        let identifiers = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(
+            next_runtime_resource_id(&identifiers).unwrap(),
+            u64::MAX - 1
+        );
+        assert_eq!(next_runtime_resource_id(&identifiers), Err(VmError::Overflow));
+        assert_eq!(identifiers.load(Ordering::Acquire), u64::MAX);
+
+        let stats = AtomicU64::new(u64::MAX);
+        increment_saturating(&stats);
+        assert_eq!(stats.load(Ordering::Acquire), u64::MAX);
     }
 
     #[cfg(feature = "collections_mod")]

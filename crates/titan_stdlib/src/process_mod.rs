@@ -26,6 +26,7 @@ pub enum ProcessError {
     UnknownHandle(u64),
     ShellSyntax(String),
     Signal(String),
+    HandleSpaceExhausted,
     ResourceLimit {
         resource: &'static str,
         limit: usize,
@@ -40,6 +41,9 @@ impl std::fmt::Display for ProcessError {
             ProcessError::UnknownHandle(h) => write!(f, "unknown process handle {h}"),
             ProcessError::ShellSyntax(e) => write!(f, "shell syntax error: {e}"),
             ProcessError::Signal(e) => write!(f, "signal error: {e}"),
+            ProcessError::HandleSpaceExhausted => {
+                write!(f, "background process handle space exhausted")
+            }
             ProcessError::ResourceLimit { resource, limit } => {
                 write!(f, "{resource} exceeds limit {limit}")
             }
@@ -270,16 +274,23 @@ struct BackgroundProcess {
     _permit: ProcessPermit,
 }
 
-// Background-process registry partitioned by VM runtime ownership.
-static REGISTRY: OnceLock<Mutex<HashMap<(u64, u64), BackgroundProcess>>> = OnceLock::new();
+// Background-process registry partitioned by VM runtime ownership. Entries are
+// independently locked so wait/kill/poll syscalls never run under this global
+// registry lock and block unrelated runtimes.
+type BackgroundEntry = Arc<Mutex<Option<BackgroundProcess>>>;
+static REGISTRY: OnceLock<Mutex<HashMap<(u64, u64), BackgroundEntry>>> = OnceLock::new();
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
-fn registry() -> &'static Mutex<HashMap<(u64, u64), BackgroundProcess>> {
+fn registry() -> &'static Mutex<HashMap<(u64, u64), BackgroundEntry>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn next_handle() -> u64 {
-    NEXT_HANDLE.fetch_add(1, Ordering::Relaxed)
+fn next_handle() -> Result<u64, ProcessError> {
+    NEXT_HANDLE
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |handle| {
+            (handle <= i64::MAX as u64).then(|| handle + 1)
+        })
+        .map_err(|_| ProcessError::HandleSpaceExhausted)
 }
 
 fn handle_key(handle: u64) -> (u64, u64) {
@@ -488,6 +499,9 @@ pub fn spawn_bg(cmd: &str) -> Result<u64, ProcessError> {
         resource: "process count",
         limit: MAX_RUNTIME_PROCESSES,
     })?;
+    // Reserve a representable identifier before creating an OS child so
+    // exhaustion cannot leave an untracked process behind.
+    let handle = next_handle()?;
     let started = Instant::now();
     let mut child = Command::new(&parts[0])
         .args(&parts[1..])
@@ -504,23 +518,32 @@ pub fn spawn_bg(cmd: &str) -> Result<u64, ProcessError> {
             return Err(error);
         }
     };
-    let handle = next_handle();
     crate::native::lock_recover(registry()).insert(
         handle_key(handle),
-        BackgroundProcess {
+        Arc::new(Mutex::new(Some(BackgroundProcess {
             child,
             capture,
             started,
             _permit: permit,
-        },
+        }))),
     );
     Ok(handle)
 }
 
+fn background_entry(handle: u64) -> Result<BackgroundEntry, ProcessError> {
+    crate::native::lock_recover(registry())
+        .get(&handle_key(handle))
+        .cloned()
+        .ok_or(ProcessError::UnknownHandle(handle))
+}
+
 /// Espera a que un proceso background termine y libera su slot aun si falla.
 pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
-    let background = crate::native::lock_recover(registry())
+    let entry = crate::native::lock_recover(registry())
         .remove(&handle_key(handle))
+        .ok_or(ProcessError::UnknownHandle(handle))?;
+    let background = crate::native::lock_recover(&entry)
+        .take()
         .ok_or(ProcessError::UnknownHandle(handle))?;
     finish_process(
         background.child,
@@ -532,9 +555,10 @@ pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
 
 /// Chequea si un proceso background ya terminó (sin bloquear).
 pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
-    let mut registry = crate::native::lock_recover(registry());
-    let background = registry
-        .get_mut(&handle_key(handle))
+    let entry = background_entry(handle)?;
+    let mut entry = crate::native::lock_recover(&entry);
+    let background = entry
+        .as_mut()
         .ok_or(ProcessError::UnknownHandle(handle))?;
     match background
         .child
@@ -548,9 +572,10 @@ pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
 
 /// Mata un proceso background (SIGKILL). `spawn_wait` recolecta el handle.
 pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
-    let mut registry = crate::native::lock_recover(registry());
-    let background = registry
-        .get_mut(&handle_key(handle))
+    let entry = background_entry(handle)?;
+    let mut entry = crate::native::lock_recover(&entry);
+    let background = entry
+        .as_mut()
         .ok_or(ProcessError::UnknownHandle(handle))?;
     background
         .child
@@ -560,9 +585,10 @@ pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
 
 /// PID de un handle background.
 pub fn spawn_pid(handle: u64) -> Result<u32, ProcessError> {
-    let registry = crate::native::lock_recover(registry());
-    let background = registry
-        .get(&handle_key(handle))
+    let entry = background_entry(handle)?;
+    let entry = crate::native::lock_recover(&entry);
+    let background = entry
+        .as_ref()
         .ok_or(ProcessError::UnknownHandle(handle))?;
     Ok(background.child.id())
 }
@@ -663,8 +689,10 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
             .collect::<Vec<_>>()
     };
     let released = children.len();
-    for background in children {
-        terminate_background(background);
+    for entry in children {
+        if let Some(background) = crate::native::lock_recover(&entry).take() {
+            terminate_background(background);
+        }
     }
     released
 }
