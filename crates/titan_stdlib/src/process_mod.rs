@@ -184,9 +184,7 @@ fn start_input_writer(
         .ok_or_else(|| ProcessError::Io("process stdin pipe unavailable".into()))?;
     let input = input.to_vec();
     Ok(Some(std::thread::spawn(move || {
-        stdin
-            .write_all(&input)
-            .map_err(|error| error.to_string())
+        stdin.write_all(&input).map_err(|error| error.to_string())
     })))
 }
 
@@ -196,7 +194,9 @@ fn finish_process(
     writer: Option<JoinHandle<Result<(), String>>>,
     started: Instant,
 ) -> Result<ProcessOutput, ProcessError> {
-    let status = child.wait().map_err(|error| ProcessError::Io(error.to_string()));
+    let status = child
+        .wait()
+        .map_err(|error| ProcessError::Io(error.to_string()));
     let write_result = writer.map(|writer| {
         writer
             .join()
@@ -721,11 +721,7 @@ mod tests {
     #[test]
     fn input_writer_and_output_readers_run_concurrently() {
         let input = vec![b'x'; 131_072];
-        let out = run_with_input(
-            "sh -c 'head -c 131072 /dev/zero >&2; cat'",
-            &input,
-        )
-        .unwrap();
+        let out = run_with_input("sh -c 'head -c 131072 /dev/zero >&2; cat'", &input).unwrap();
         assert_eq!(out.stdout.as_bytes(), input);
         assert_eq!(out.stderr.len(), 131_072);
     }
@@ -803,7 +799,10 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(exited, "background child remained blocked on an undrained pipe");
+        assert!(
+            exited,
+            "background child remained blocked on an undrained pipe"
+        );
         let output =
             crate::native::with_runtime_context(runtime_id, || spawn_wait(handle)).unwrap();
         assert_eq!(output.stdout.len(), 131_072);

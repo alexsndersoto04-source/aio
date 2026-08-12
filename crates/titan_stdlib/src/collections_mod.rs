@@ -165,7 +165,11 @@ fn ensure_handle_entries(current: usize, added: usize) -> Result<(), String> {
 }
 
 fn count_true(value: bool) -> usize {
-    if value { 1 } else { 0 }
+    if value {
+        1
+    } else {
+        0
+    }
 }
 
 fn string_bytes<'a>(items: impl IntoIterator<Item = &'a String>) -> Result<usize, String> {
@@ -189,10 +193,7 @@ fn register_set(values: BTreeSet<String>) -> Result<u64, String> {
     let bytes = string_bytes(values.iter())?;
     let permit = reserve_usage(1, values.len(), bytes)?;
     let handle = next_handle()?;
-    sets()
-        .lock()
-        .unwrap()
-        .insert(handle_key(handle), values);
+    sets().lock().unwrap().insert(handle_key(handle), values);
     permit.commit();
     Ok(handle)
 }
@@ -671,8 +672,7 @@ pub fn omap_drop(h: u64) -> bool {
         let bytes = map
             .iter()
             .map(|(key, value)| {
-                key.len()
-                    + json_bytes(value).expect("stored ordered-map values have valid sizes")
+                key.len() + json_bytes(value).expect("stored ordered-map values have valid sizes")
             })
             .sum();
         release_usage(current_runtime_id(), 1, map.len(), bytes);
@@ -760,7 +760,10 @@ pub fn counter_total(h: u64) -> Result<i64, String> {
     let counter = counters
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown counter {h}"))?;
-    let total = counter.values().map(|value| i128::from(*value)).sum::<i128>();
+    let total = counter
+        .values()
+        .map(|value| i128::from(*value))
+        .sum::<i128>();
     i64::try_from(total).map_err(|_| "counter total overflow".to_string())
 }
 
@@ -1350,9 +1353,7 @@ mod tests {
         crate::native::with_runtime_context(runtime_id, || {
             let full = reserve_usage(0, MAX_COLLECTION_ENTRIES, 0).unwrap();
             full.commit();
-            assert!(reserve_usage(0, 1, 0)
-                .unwrap_err()
-                .contains("entry quota"));
+            assert!(reserve_usage(0, 1, 0).unwrap_err().contains("entry quota"));
             release_usage(runtime_id, 0, 1, 0);
             let replacement = reserve_usage(0, 1, 0).unwrap();
             replacement.commit();

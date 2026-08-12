@@ -2364,7 +2364,8 @@ impl Vm {
                     };
                     let transport =
                         WebSocketTransport::Tcp(take_socket_stream(&self.runtime, stream_id)?);
-                    let id = match insert_websocket(&self.runtime, transport, server_side, maximum) {
+                    let id = match insert_websocket(&self.runtime, transport, server_side, maximum)
+                    {
                         Ok(id) => id,
                         Err(error) => {
                             self.runtime.network_handles.release();
@@ -2384,7 +2385,8 @@ impl Vm {
                     };
                     let transport =
                         WebSocketTransport::Tls(take_tls_stream(&self.runtime, stream_id)?);
-                    let id = match insert_websocket(&self.runtime, transport, server_side, maximum) {
+                    let id = match insert_websocket(&self.runtime, transport, server_side, maximum)
+                    {
                         Ok(id) => id,
                         Err(error) => {
                             self.runtime.network_handles.release();
@@ -4646,15 +4648,13 @@ mod tests {
     fn dropping_runtime_releases_only_its_native_handles() {
         let runtime = Arc::new(RuntimeState::new());
         let runtime_id = runtime.id;
-        let own = titan_stdlib::native::with_runtime_context(
-            runtime_id,
-            || titan_stdlib::collections_mod::set_new().unwrap(),
-        );
+        let own = titan_stdlib::native::with_runtime_context(runtime_id, || {
+            titan_stdlib::collections_mod::set_new().unwrap()
+        });
         let other_id = runtime_id + 1_000_000;
-        let other = titan_stdlib::native::with_runtime_context(
-            other_id,
-            || titan_stdlib::collections_mod::set_new().unwrap(),
-        );
+        let other = titan_stdlib::native::with_runtime_context(other_id, || {
+            titan_stdlib::collections_mod::set_new().unwrap()
+        });
 
         drop(runtime);
 
@@ -4733,7 +4733,10 @@ mod tests {
 
         let first = runtime.network_handles.reserve("network handle").unwrap();
         assert_eq!(
-            runtime.network_handles.reserve("network handle").unwrap_err(),
+            runtime
+                .network_handles
+                .reserve("network handle")
+                .unwrap_err(),
             VmError::ResourceLimit {
                 resource: "network handle".into(),
                 limit: 1,
@@ -4778,10 +4781,13 @@ mod tests {
 
     #[test]
     fn network_handle_quota_rejects_routers_and_recovers_after_tcp_close() {
-        let module = compile("fn main() { let first = std::http::router() std::http::router() }")
-            .unwrap();
+        let module =
+            compile("fn main() { let first = std::http::router() std::http::router() }").unwrap();
         assert_eq!(
-            Vm::new(module).with_network_handle_limit(1).run().unwrap_err(),
+            Vm::new(module)
+                .with_network_handle_limit(1)
+                .run()
+                .unwrap_err(),
             VmError::ResourceLimit {
                 resource: "network handle".into(),
                 limit: 1,
@@ -4797,10 +4803,9 @@ mod tests {
 
     #[test]
     fn database_handle_quota_rejects_excess_and_recovers_after_close() {
-        let module = compile(
-            "fn main() { let first = std::sqlite::memory() std::sqlite::memory() }",
-        )
-        .unwrap();
+        let module =
+            compile("fn main() { let first = std::sqlite::memory() std::sqlite::memory() }")
+                .unwrap();
         assert_eq!(
             Vm::new(module)
                 .with_database_handle_limit(1)
@@ -4814,20 +4819,14 @@ mod tests {
 
         let module = compile("fn main() { let first = std::sqlite::memory() let closed = std::sqlite::close(first) let second = std::sqlite::memory() std::sqlite::close(second); closed }").unwrap();
         assert_eq!(
-            Vm::new(module)
-                .with_database_handle_limit(1)
-                .run()
-                .unwrap(),
+            Vm::new(module).with_database_handle_limit(1).run().unwrap(),
             Some(Value::Bool(true))
         );
     }
 
     #[test]
     fn database_pool_size_has_a_connection_specific_limit() {
-        let module = compile(
-            "fn main() { std::sqlite::pool(\"unused.db\", 65) }",
-        )
-        .unwrap();
+        let module = compile("fn main() { std::sqlite::pool(\"unused.db\", 65) }").unwrap();
         assert_eq!(
             Vm::new(module).run().unwrap_err(),
             VmError::ResourceLimit {

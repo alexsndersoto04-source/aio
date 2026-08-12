@@ -180,11 +180,7 @@ impl CommandSpec {
                     .iter()
                     .map(|(key, value)| key.len().saturating_add(value.len())),
             )
-            .chain(
-                self.cwd
-                    .iter()
-                    .map(|path| path.to_string_lossy().len()),
-            )
+            .chain(self.cwd.iter().map(|path| path.to_string_lossy().len()))
             .try_fold(self.program.len(), |total, bytes| {
                 total.checked_add(bytes).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "command size overflow")
