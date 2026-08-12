@@ -4648,12 +4648,12 @@ mod tests {
         let runtime_id = runtime.id;
         let own = titan_stdlib::native::with_runtime_context(
             runtime_id,
-            titan_stdlib::collections_mod::set_new,
+            || titan_stdlib::collections_mod::set_new().unwrap(),
         );
         let other_id = runtime_id + 1_000_000;
         let other = titan_stdlib::native::with_runtime_context(
             other_id,
-            titan_stdlib::collections_mod::set_new,
+            || titan_stdlib::collections_mod::set_new().unwrap(),
         );
 
         drop(runtime);

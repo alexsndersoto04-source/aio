@@ -16,15 +16,165 @@ use indexmap::IndexMap;
 // Todas las estructuras se guardan en un registro global con handle
 // int64 — igual patron que sqlite/websocket handles en Titan.
 
+const MAX_COLLECTION_HANDLES: usize = 256;
+const MAX_COLLECTION_ENTRIES: usize = 65_536;
+const MAX_ENTRIES_PER_HANDLE: usize = 4_096;
+const MAX_COLLECTION_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ITEM_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CollectionUsage {
+    handles: usize,
+    entries: usize,
+    bytes: usize,
+}
+
 static NEXT_HANDLE: OnceLock<AtomicU64> = OnceLock::new();
-fn next_handle() -> u64 {
+static USAGE: OnceLock<Mutex<HashMap<u64, CollectionUsage>>> = OnceLock::new();
+
+fn usage() -> &'static Mutex<HashMap<u64, CollectionUsage>> {
+    USAGE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_handle() -> Result<u64, String> {
     NEXT_HANDLE
         .get_or_init(|| AtomicU64::new(1))
-        .fetch_add(1, Ordering::Relaxed)
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |handle| {
+            handle.checked_add(1)
+        })
+        .map_err(|_| "collection handle space exhausted".to_string())
 }
 
 fn handle_key(handle: u64) -> (u64, u64) {
     crate::native::runtime_handle_key(handle)
+}
+
+fn current_runtime_id() -> u64 {
+    crate::native::current_runtime_id()
+}
+
+#[derive(Debug)]
+struct UsagePermit {
+    runtime_id: u64,
+    handles: usize,
+    entries: usize,
+    bytes: usize,
+    committed: bool,
+}
+
+impl UsagePermit {
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for UsagePermit {
+    fn drop(&mut self) {
+        if !self.committed {
+            release_usage(self.runtime_id, self.handles, self.entries, self.bytes);
+        }
+    }
+}
+
+fn reserve_usage(handles: usize, entries: usize, bytes: usize) -> Result<UsagePermit, String> {
+    let runtime_id = current_runtime_id();
+    let mut usages = crate::native::lock_recover(usage());
+    let current = usages.get(&runtime_id).copied().unwrap_or_default();
+    let requested = CollectionUsage {
+        handles: current
+            .handles
+            .checked_add(handles)
+            .ok_or_else(|| "collection handle count overflow".to_string())?,
+        entries: current
+            .entries
+            .checked_add(entries)
+            .ok_or_else(|| "collection entry count overflow".to_string())?,
+        bytes: current
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| "collection byte count overflow".to_string())?,
+    };
+    if requested.handles > MAX_COLLECTION_HANDLES {
+        return Err(format!(
+            "collection handle quota exceeded (limit {MAX_COLLECTION_HANDLES})"
+        ));
+    }
+    if requested.entries > MAX_COLLECTION_ENTRIES {
+        return Err(format!(
+            "collection entry quota exceeded (limit {MAX_COLLECTION_ENTRIES})"
+        ));
+    }
+    if requested.bytes > MAX_COLLECTION_BYTES {
+        return Err(format!(
+            "collection byte quota exceeded (limit {MAX_COLLECTION_BYTES})"
+        ));
+    }
+    usages.insert(runtime_id, requested);
+    Ok(UsagePermit {
+        runtime_id,
+        handles,
+        entries,
+        bytes,
+        committed: false,
+    })
+}
+
+fn release_usage(runtime_id: u64, handles: usize, entries: usize, bytes: usize) {
+    let mut usages = crate::native::lock_recover(usage());
+    let remove = if let Some(current) = usages.get_mut(&runtime_id) {
+        debug_assert!(
+            current.handles >= handles && current.entries >= entries && current.bytes >= bytes,
+            "collection usage counter underflow"
+        );
+        current.handles = current.handles.saturating_sub(handles);
+        current.entries = current.entries.saturating_sub(entries);
+        current.bytes = current.bytes.saturating_sub(bytes);
+        *current == CollectionUsage::default()
+    } else {
+        false
+    };
+    if remove {
+        usages.remove(&runtime_id);
+    }
+}
+
+#[cfg(test)]
+fn runtime_usage(runtime_id: u64) -> CollectionUsage {
+    crate::native::lock_recover(usage())
+        .get(&runtime_id)
+        .copied()
+        .unwrap_or_default()
+}
+
+fn validate_item(item: &str) -> Result<(), String> {
+    if item.len() > MAX_ITEM_BYTES {
+        return Err(format!(
+            "collection item exceeds byte limit {MAX_ITEM_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_handle_entries(current: usize, added: usize) -> Result<(), String> {
+    if current.saturating_add(added) > MAX_ENTRIES_PER_HANDLE {
+        return Err(format!(
+            "collection handle entry quota exceeded (limit {MAX_ENTRIES_PER_HANDLE})"
+        ));
+    }
+    Ok(())
+}
+
+fn count_true(value: bool) -> usize {
+    if value { 1 } else { 0 }
+}
+
+fn string_bytes<'a>(items: impl IntoIterator<Item = &'a String>) -> Result<usize, String> {
+    items.into_iter().try_fold(0usize, |total, item| {
+        validate_item(item)?;
+        total
+            .checked_add(item.len())
+            .ok_or_else(|| "collection byte count overflow".to_string())
+    })
 }
 
 // ---------------- Set (BTreeSet<String>) ----------------
@@ -34,122 +184,147 @@ fn sets() -> &'static Mutex<HashMap<(u64, u64), BTreeSet<String>>> {
     SETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn set_new() -> u64 {
-    let h = next_handle();
+fn register_set(values: BTreeSet<String>) -> Result<u64, String> {
+    ensure_handle_entries(0, values.len())?;
+    let bytes = string_bytes(values.iter())?;
+    let permit = reserve_usage(1, values.len(), bytes)?;
+    let handle = next_handle()?;
     sets()
         .lock()
         .unwrap()
-        .insert(handle_key(h), BTreeSet::new());
-    h
+        .insert(handle_key(handle), values);
+    permit.commit();
+    Ok(handle)
 }
 
-pub fn set_from(items: Vec<String>) -> u64 {
-    let h = next_handle();
-    sets()
-        .lock()
-        .unwrap()
-        .insert(handle_key(h), items.into_iter().collect());
-    h
+pub fn set_new() -> Result<u64, String> {
+    register_set(BTreeSet::new())
+}
+
+pub fn set_from(items: Vec<String>) -> Result<u64, String> {
+    ensure_handle_entries(0, items.len())?;
+    for item in &items {
+        validate_item(item)?;
+    }
+    register_set(items.into_iter().collect())
 }
 
 pub fn set_add(h: u64, item: String) -> Result<bool, String> {
+    validate_item(&item)?;
     let mut sets = sets().lock().unwrap();
-    let s = sets
+    let set = sets
         .get_mut(&handle_key(h))
         .ok_or_else(|| format!("unknown set {h}"))?;
-    Ok(s.insert(item))
+    if set.contains(&item) {
+        return Ok(false);
+    }
+    ensure_handle_entries(set.len(), 1)?;
+    let permit = reserve_usage(0, 1, item.len())?;
+    let inserted = set.insert(item);
+    debug_assert!(inserted);
+    permit.commit();
+    Ok(true)
 }
 
 pub fn set_remove(h: u64, item: &str) -> Result<bool, String> {
-    let mut sets = sets().lock().unwrap();
-    let s = sets
-        .get_mut(&handle_key(h))
-        .ok_or_else(|| format!("unknown set {h}"))?;
-    Ok(s.remove(item))
+    let removed = {
+        let mut sets = sets().lock().unwrap();
+        let set = sets
+            .get_mut(&handle_key(h))
+            .ok_or_else(|| format!("unknown set {h}"))?;
+        set.take(item)
+    };
+    if let Some(removed) = removed {
+        release_usage(current_runtime_id(), 0, 1, removed.len());
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 pub fn set_contains(h: u64, item: &str) -> Result<bool, String> {
     let sets = sets().lock().unwrap();
-    let s = sets
+    let set = sets
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown set {h}"))?;
-    Ok(s.contains(item))
+    Ok(set.contains(item))
 }
 
 pub fn set_len(h: u64) -> Result<usize, String> {
     let sets = sets().lock().unwrap();
-    let s = sets
+    let set = sets
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown set {h}"))?;
-    Ok(s.len())
+    Ok(set.len())
 }
 
 pub fn set_to_array(h: u64) -> Result<Vec<String>, String> {
     let sets = sets().lock().unwrap();
-    let s = sets
+    let set = sets
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown set {h}"))?;
-    Ok(s.iter().cloned().collect())
+    Ok(set.iter().cloned().collect())
 }
 
 pub fn set_union(a: u64, b: u64) -> Result<u64, String> {
-    let sets_g = sets().lock().unwrap();
-    let sa = sets_g
+    let sets = sets().lock().unwrap();
+    let left = sets
         .get(&handle_key(a))
         .ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g
+    let right = sets
         .get(&handle_key(b))
         .ok_or_else(|| format!("unknown set {b}"))?;
-    let merged: BTreeSet<String> = sa.union(sb).cloned().collect();
-    drop(sets_g);
-    let h = next_handle();
-    sets().lock().unwrap().insert(handle_key(h), merged);
-    Ok(h)
+    let merged = left.union(right).cloned().collect();
+    drop(sets);
+    register_set(merged)
 }
 
 pub fn set_intersect(a: u64, b: u64) -> Result<u64, String> {
-    let sets_g = sets().lock().unwrap();
-    let sa = sets_g
+    let sets = sets().lock().unwrap();
+    let left = sets
         .get(&handle_key(a))
         .ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g
+    let right = sets
         .get(&handle_key(b))
         .ok_or_else(|| format!("unknown set {b}"))?;
-    let merged: BTreeSet<String> = sa.intersection(sb).cloned().collect();
-    drop(sets_g);
-    let h = next_handle();
-    sets().lock().unwrap().insert(handle_key(h), merged);
-    Ok(h)
+    let merged = left.intersection(right).cloned().collect();
+    drop(sets);
+    register_set(merged)
 }
 
 pub fn set_difference(a: u64, b: u64) -> Result<u64, String> {
-    let sets_g = sets().lock().unwrap();
-    let sa = sets_g
+    let sets = sets().lock().unwrap();
+    let left = sets
         .get(&handle_key(a))
         .ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g
+    let right = sets
         .get(&handle_key(b))
         .ok_or_else(|| format!("unknown set {b}"))?;
-    let merged: BTreeSet<String> = sa.difference(sb).cloned().collect();
-    drop(sets_g);
-    let h = next_handle();
-    sets().lock().unwrap().insert(handle_key(h), merged);
-    Ok(h)
+    let merged = left.difference(right).cloned().collect();
+    drop(sets);
+    register_set(merged)
 }
 
 pub fn set_is_subset(a: u64, b: u64) -> Result<bool, String> {
-    let sets_g = sets().lock().unwrap();
-    let sa = sets_g
+    let sets = sets().lock().unwrap();
+    let left = sets
         .get(&handle_key(a))
         .ok_or_else(|| format!("unknown set {a}"))?;
-    let sb = sets_g
+    let right = sets
         .get(&handle_key(b))
         .ok_or_else(|| format!("unknown set {b}"))?;
-    Ok(sa.is_subset(sb))
+    Ok(left.is_subset(right))
 }
 
 pub fn set_drop(h: u64) -> bool {
-    sets().lock().unwrap().remove(&handle_key(h)).is_some()
+    let removed = sets().lock().unwrap().remove(&handle_key(h));
+    if let Some(set) = removed {
+        let bytes = set.iter().map(String::len).sum();
+        release_usage(current_runtime_id(), 1, set.len(), bytes);
+        true
+    } else {
+        false
+    }
 }
 
 // ---------------- Deque (VecDeque<String>) ----------------
@@ -159,67 +334,93 @@ fn deques() -> &'static Mutex<HashMap<(u64, u64), VecDeque<String>>> {
     DEQUES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn deque_new() -> u64 {
-    let h = next_handle();
+pub fn deque_new() -> Result<u64, String> {
+    let permit = reserve_usage(1, 0, 0)?;
+    let handle = next_handle()?;
     deques()
         .lock()
         .unwrap()
-        .insert(handle_key(h), VecDeque::new());
-    h
+        .insert(handle_key(handle), VecDeque::new());
+    permit.commit();
+    Ok(handle)
+}
+
+fn deque_push(h: u64, item: String, front: bool) -> Result<(), String> {
+    validate_item(&item)?;
+    let mut deques = deques().lock().unwrap();
+    let deque = deques
+        .get_mut(&handle_key(h))
+        .ok_or_else(|| format!("unknown deque {h}"))?;
+    ensure_handle_entries(deque.len(), 1)?;
+    let permit = reserve_usage(0, 1, item.len())?;
+    if front {
+        deque.push_front(item);
+    } else {
+        deque.push_back(item);
+    }
+    permit.commit();
+    Ok(())
 }
 
 pub fn deque_push_front(h: u64, item: String) -> Result<(), String> {
-    let mut d = deques().lock().unwrap();
-    let q = d
-        .get_mut(&handle_key(h))
-        .ok_or_else(|| format!("unknown deque {h}"))?;
-    q.push_front(item);
-    Ok(())
+    deque_push(h, item, true)
 }
 
 pub fn deque_push_back(h: u64, item: String) -> Result<(), String> {
-    let mut d = deques().lock().unwrap();
-    let q = d
-        .get_mut(&handle_key(h))
-        .ok_or_else(|| format!("unknown deque {h}"))?;
-    q.push_back(item);
-    Ok(())
+    deque_push(h, item, false)
+}
+
+fn deque_pop(h: u64, front: bool) -> Result<Option<String>, String> {
+    let removed = {
+        let mut deques = deques().lock().unwrap();
+        let deque = deques
+            .get_mut(&handle_key(h))
+            .ok_or_else(|| format!("unknown deque {h}"))?;
+        if front {
+            deque.pop_front()
+        } else {
+            deque.pop_back()
+        }
+    };
+    if let Some(item) = &removed {
+        release_usage(current_runtime_id(), 0, 1, item.len());
+    }
+    Ok(removed)
 }
 
 pub fn deque_pop_front(h: u64) -> Result<Option<String>, String> {
-    let mut d = deques().lock().unwrap();
-    let q = d
-        .get_mut(&handle_key(h))
-        .ok_or_else(|| format!("unknown deque {h}"))?;
-    Ok(q.pop_front())
+    deque_pop(h, true)
 }
 
 pub fn deque_pop_back(h: u64) -> Result<Option<String>, String> {
-    let mut d = deques().lock().unwrap();
-    let q = d
-        .get_mut(&handle_key(h))
-        .ok_or_else(|| format!("unknown deque {h}"))?;
-    Ok(q.pop_back())
+    deque_pop(h, false)
 }
 
 pub fn deque_len(h: u64) -> Result<usize, String> {
-    let d = deques().lock().unwrap();
-    let q = d
+    let deques = deques().lock().unwrap();
+    let deque = deques
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown deque {h}"))?;
-    Ok(q.len())
+    Ok(deque.len())
 }
 
 pub fn deque_to_array(h: u64) -> Result<Vec<String>, String> {
-    let d = deques().lock().unwrap();
-    let q = d
+    let deques = deques().lock().unwrap();
+    let deque = deques
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown deque {h}"))?;
-    Ok(q.iter().cloned().collect())
+    Ok(deque.iter().cloned().collect())
 }
 
 pub fn deque_drop(h: u64) -> bool {
-    deques().lock().unwrap().remove(&handle_key(h)).is_some()
+    let removed = deques().lock().unwrap().remove(&handle_key(h));
+    if let Some(deque) = removed {
+        let bytes = deque.iter().map(String::len).sum();
+        release_usage(current_runtime_id(), 1, deque.len(), bytes);
+        true
+    } else {
+        false
+    }
 }
 
 // ---------------- PriorityQueue (BinaryHeap) ----------------
@@ -238,70 +439,96 @@ fn pqs() -> &'static Mutex<HashMap<(u64, u64), PQ>> {
     PQS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn pq_new_max() -> u64 {
-    let h = next_handle();
+fn pq_new(is_min: bool) -> Result<u64, String> {
+    let permit = reserve_usage(1, 0, 0)?;
+    let handle = next_handle()?;
     pqs().lock().unwrap().insert(
-        handle_key(h),
+        handle_key(handle),
         PQ {
-            is_min: false,
+            is_min,
             heap: BinaryHeap::new(),
             next_seq: 0,
         },
     );
-    h
+    permit.commit();
+    Ok(handle)
 }
 
-pub fn pq_new_min() -> u64 {
-    let h = next_handle();
-    pqs().lock().unwrap().insert(
-        handle_key(h),
-        PQ {
-            is_min: true,
-            heap: BinaryHeap::new(),
-            next_seq: 0,
-        },
-    );
-    h
+pub fn pq_new_max() -> Result<u64, String> {
+    pq_new(false)
+}
+
+pub fn pq_new_min() -> Result<u64, String> {
+    pq_new(true)
 }
 
 pub fn pq_push(h: u64, item: String, priority: i64) -> Result<(), String> {
-    let mut pqs = pqs().lock().unwrap();
-    let pq = pqs
+    validate_item(&item)?;
+    let mut queues = pqs().lock().unwrap();
+    let queue = queues
         .get_mut(&handle_key(h))
         .ok_or_else(|| format!("unknown pq {h}"))?;
-    let adj = if pq.is_min { -priority } else { priority };
-    let seq = pq.next_seq;
-    pq.next_seq += 1;
-    pq.heap.push((adj, -seq, item));
+    ensure_handle_entries(queue.heap.len(), 1)?;
+    let adjusted = if queue.is_min {
+        priority
+            .checked_neg()
+            .ok_or_else(|| "minimum priority cannot be i64::MIN".to_string())?
+    } else {
+        priority
+    };
+    let sequence = queue.next_seq;
+    let stable_sequence = sequence
+        .checked_neg()
+        .ok_or_else(|| "priority queue sequence overflow".to_string())?;
+    let next_sequence = sequence
+        .checked_add(1)
+        .ok_or_else(|| "priority queue sequence overflow".to_string())?;
+    let permit = reserve_usage(0, 1, item.len())?;
+    queue.next_seq = next_sequence;
+    queue.heap.push((adjusted, stable_sequence, item));
+    permit.commit();
     Ok(())
 }
 
 pub fn pq_pop(h: u64) -> Result<Option<String>, String> {
-    let mut pqs = pqs().lock().unwrap();
-    let pq = pqs
-        .get_mut(&handle_key(h))
-        .ok_or_else(|| format!("unknown pq {h}"))?;
-    Ok(pq.heap.pop().map(|(_, _, item)| item))
+    let removed = {
+        let mut queues = pqs().lock().unwrap();
+        let queue = queues
+            .get_mut(&handle_key(h))
+            .ok_or_else(|| format!("unknown pq {h}"))?;
+        queue.heap.pop().map(|(_, _, item)| item)
+    };
+    if let Some(item) = &removed {
+        release_usage(current_runtime_id(), 0, 1, item.len());
+    }
+    Ok(removed)
 }
 
 pub fn pq_peek(h: u64) -> Result<Option<String>, String> {
-    let pqs = pqs().lock().unwrap();
-    let pq = pqs
+    let queues = pqs().lock().unwrap();
+    let queue = queues
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown pq {h}"))?;
-    Ok(pq.heap.peek().map(|(_, _, item)| item.clone()))
+    Ok(queue.heap.peek().map(|(_, _, item)| item.clone()))
 }
 
 pub fn pq_len(h: u64) -> Result<usize, String> {
-    let pqs = pqs().lock().unwrap();
-    let pq = pqs
+    let queues = pqs().lock().unwrap();
+    let queue = queues
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown pq {h}"))?;
-    Ok(pq.heap.len())
+    Ok(queue.heap.len())
 }
 
 pub fn pq_drop(h: u64) -> bool {
-    pqs().lock().unwrap().remove(&handle_key(h)).is_some()
+    let removed = pqs().lock().unwrap().remove(&handle_key(h));
+    if let Some(queue) = removed {
+        let bytes = queue.heap.iter().map(|(_, _, item)| item.len()).sum();
+        release_usage(current_runtime_id(), 1, queue.heap.len(), bytes);
+        true
+    } else {
+        false
+    }
 }
 
 // ---------------- OrderedMap (IndexMap<String, serde_json::Value>) ----------------
@@ -316,58 +543,143 @@ fn omaps() -> &'static Mutex<HashMap<(u64, u64), IndexMap<String, serde_json::Va
     OMAPS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn omap_new() -> u64 {
-    let h = next_handle();
+struct JsonSize {
+    bytes: usize,
+    exceeded: bool,
+}
+
+impl std::io::Write for JsonSize {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let bytes = self
+            .bytes
+            .checked_add(buffer.len())
+            .ok_or_else(|| std::io::Error::other("JSON size overflow"))?;
+        if bytes > MAX_ITEM_BYTES {
+            self.exceeded = true;
+            return Err(std::io::Error::other("JSON item too large"));
+        }
+        self.bytes = bytes;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_bytes(value: &serde_json::Value) -> Result<usize, String> {
+    let mut size = JsonSize {
+        bytes: 0,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut size, value) {
+        Ok(()) => Ok(size.bytes),
+        Err(_) if size.exceeded => Ok(MAX_ITEM_BYTES + 1),
+        Err(error) => Err(format!("cannot measure ordered-map value: {error}")),
+    }
+}
+
+pub fn omap_new() -> Result<u64, String> {
+    let permit = reserve_usage(1, 0, 0)?;
+    let handle = next_handle()?;
     omaps()
         .lock()
         .unwrap()
-        .insert(handle_key(h), IndexMap::new());
-    h
+        .insert(handle_key(handle), IndexMap::new());
+    permit.commit();
+    Ok(handle)
 }
 
 pub fn omap_insert(h: u64, key: String, value: serde_json::Value) -> Result<(), String> {
-    let mut o = omaps().lock().unwrap();
-    let m = o
+    validate_item(&key)?;
+    let value_bytes = json_bytes(&value)?;
+    let new_bytes = key
+        .len()
+        .checked_add(value_bytes)
+        .ok_or_else(|| "ordered-map item size overflow".to_string())?;
+    if new_bytes > MAX_ITEM_BYTES {
+        return Err(format!(
+            "ordered-map item exceeds byte limit {MAX_ITEM_BYTES}"
+        ));
+    }
+    let mut maps = omaps().lock().unwrap();
+    let map = maps
         .get_mut(&handle_key(h))
         .ok_or_else(|| format!("unknown omap {h}"))?;
-    m.insert(key, value);
+    let old_bytes = map
+        .get(&key)
+        .map(json_bytes)
+        .transpose()?
+        .map(|value_bytes| key.len() + value_bytes);
+    let added_entries = count_true(old_bytes.is_none());
+    ensure_handle_entries(map.len(), added_entries)?;
+    let added_bytes = new_bytes.saturating_sub(old_bytes.unwrap_or(0));
+    let released_bytes = old_bytes.unwrap_or(0).saturating_sub(new_bytes);
+    let permit = reserve_usage(0, added_entries, added_bytes)?;
+    map.insert(key, value);
+    permit.commit();
+    if released_bytes > 0 {
+        release_usage(current_runtime_id(), 0, 0, released_bytes);
+    }
     Ok(())
 }
 
 pub fn omap_get(h: u64, key: &str) -> Result<Option<serde_json::Value>, String> {
-    let o = omaps().lock().unwrap();
-    let m = o
+    let maps = omaps().lock().unwrap();
+    let map = maps
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown omap {h}"))?;
-    Ok(m.get(key).cloned())
+    Ok(map.get(key).cloned())
 }
 
 pub fn omap_remove(h: u64, key: &str) -> Result<bool, String> {
-    let mut o = omaps().lock().unwrap();
-    let m = o
-        .get_mut(&handle_key(h))
-        .ok_or_else(|| format!("unknown omap {h}"))?;
-    Ok(m.shift_remove(key).is_some())
+    let removed = {
+        let mut maps = omaps().lock().unwrap();
+        let map = maps
+            .get_mut(&handle_key(h))
+            .ok_or_else(|| format!("unknown omap {h}"))?;
+        map.shift_remove_entry(key)
+    };
+    if let Some((key, value)) = removed {
+        let bytes = key.len().saturating_add(json_bytes(&value)?);
+        release_usage(current_runtime_id(), 0, 1, bytes);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 pub fn omap_keys(h: u64) -> Result<Vec<String>, String> {
-    let o = omaps().lock().unwrap();
-    let m = o
+    let maps = omaps().lock().unwrap();
+    let map = maps
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown omap {h}"))?;
-    Ok(m.keys().cloned().collect())
+    Ok(map.keys().cloned().collect())
 }
 
 pub fn omap_len(h: u64) -> Result<usize, String> {
-    let o = omaps().lock().unwrap();
-    let m = o
+    let maps = omaps().lock().unwrap();
+    let map = maps
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown omap {h}"))?;
-    Ok(m.len())
+    Ok(map.len())
 }
 
 pub fn omap_drop(h: u64) -> bool {
-    omaps().lock().unwrap().remove(&handle_key(h)).is_some()
+    let removed = omaps().lock().unwrap().remove(&handle_key(h));
+    if let Some(map) = removed {
+        let bytes = map
+            .iter()
+            .map(|(key, value)| {
+                key.len()
+                    + json_bytes(value).expect("stored ordered-map values have valid sizes")
+            })
+            .sum();
+        release_usage(current_runtime_id(), 1, map.len(), bytes);
+        true
+    } else {
+        false
+    }
 }
 
 // ---------------- Counter (frecuencia de items) ----------------
@@ -380,54 +692,87 @@ fn counters() -> &'static Mutex<HashMap<(u64, u64), HashMap<String, i64>>> {
     COUNTERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn counter_from(items: Vec<String>) -> u64 {
-    let h = next_handle();
-    let mut m: HashMap<String, i64> = HashMap::new();
-    for i in items {
-        *m.entry(i).or_insert(0) += 1;
+pub fn counter_from(items: Vec<String>) -> Result<u64, String> {
+    ensure_handle_entries(0, items.len())?;
+    let mut counts = HashMap::new();
+    for item in items {
+        validate_item(&item)?;
+        let count = counts.entry(item).or_insert(0i64);
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| "counter value overflow".to_string())?;
     }
-    counters().lock().unwrap().insert(handle_key(h), m);
-    h
+    ensure_handle_entries(0, counts.len())?;
+    let bytes = string_bytes(counts.keys())?;
+    let permit = reserve_usage(1, counts.len(), bytes)?;
+    let handle = next_handle()?;
+    counters()
+        .lock()
+        .unwrap()
+        .insert(handle_key(handle), counts);
+    permit.commit();
+    Ok(handle)
 }
 
 pub fn counter_add(h: u64, item: String, delta: i64) -> Result<(), String> {
-    let mut c = counters().lock().unwrap();
-    let m = c
+    validate_item(&item)?;
+    let mut counters = counters().lock().unwrap();
+    let counter = counters
         .get_mut(&handle_key(h))
         .ok_or_else(|| format!("unknown counter {h}"))?;
-    *m.entry(item).or_insert(0) += delta;
+    if let Some(value) = counter.get_mut(&item) {
+        *value = value
+            .checked_add(delta)
+            .ok_or_else(|| "counter value overflow".to_string())?;
+        return Ok(());
+    }
+    ensure_handle_entries(counter.len(), 1)?;
+    let permit = reserve_usage(0, 1, item.len())?;
+    counter.insert(item, delta);
+    permit.commit();
     Ok(())
 }
 
 pub fn counter_count(h: u64, item: &str) -> Result<i64, String> {
-    let c = counters().lock().unwrap();
-    let m = c
+    let counters = counters().lock().unwrap();
+    let counter = counters
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown counter {h}"))?;
-    Ok(*m.get(item).unwrap_or(&0))
+    Ok(*counter.get(item).unwrap_or(&0))
 }
 
 pub fn counter_most_common(h: u64, n: usize) -> Result<Vec<(String, i64)>, String> {
-    let c = counters().lock().unwrap();
-    let m = c
+    let counters = counters().lock().unwrap();
+    let counter = counters
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown counter {h}"))?;
-    let mut v: Vec<(String, i64)> = m.iter().map(|(k, v)| (k.clone(), *v)).collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    v.truncate(n);
-    Ok(v)
+    let mut values = counter
+        .iter()
+        .map(|(item, count)| (item.clone(), *count))
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    values.truncate(n);
+    Ok(values)
 }
 
 pub fn counter_total(h: u64) -> Result<i64, String> {
-    let c = counters().lock().unwrap();
-    let m = c
+    let counters = counters().lock().unwrap();
+    let counter = counters
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown counter {h}"))?;
-    Ok(m.values().sum())
+    let total = counter.values().map(|value| i128::from(*value)).sum::<i128>();
+    i64::try_from(total).map_err(|_| "counter total overflow".to_string())
 }
 
 pub fn counter_drop(h: u64) -> bool {
-    counters().lock().unwrap().remove(&handle_key(h)).is_some()
+    let removed = counters().lock().unwrap().remove(&handle_key(h));
+    if let Some(counter) = removed {
+        let bytes = counter.keys().map(String::len).sum();
+        release_usage(current_runtime_id(), 1, counter.len(), bytes);
+        true
+    } else {
+        false
+    }
 }
 
 // ---------------- Graph (directed/undirected + algoritmos) ----------------
@@ -443,34 +788,99 @@ fn graphs() -> &'static Mutex<HashMap<(u64, u64), Graph>> {
     GRAPHS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn graph_new(directed: bool) -> u64 {
-    let h = next_handle();
+fn graph_usage(graph: &Graph) -> (usize, usize) {
+    let edge_count = graph.edges.values().map(Vec::len).sum::<usize>();
+    let bytes = graph.nodes.iter().map(String::len).sum::<usize>()
+        + graph.edges.keys().map(String::len).sum::<usize>()
+        + graph
+            .edges
+            .values()
+            .flatten()
+            .map(|(node, _)| node.len())
+            .sum::<usize>();
+    (graph.nodes.len() + edge_count, bytes)
+}
+
+pub fn graph_new(directed: bool) -> Result<u64, String> {
+    let permit = reserve_usage(1, 0, 0)?;
+    let handle = next_handle()?;
     graphs().lock().unwrap().insert(
-        handle_key(h),
+        handle_key(handle),
         Graph {
             directed,
             edges: HashMap::new(),
             nodes: BTreeSet::new(),
         },
     );
-    h
+    permit.commit();
+    Ok(handle)
 }
 
 pub fn graph_add_node(h: u64, node: String) -> Result<(), String> {
-    let mut g = graphs().lock().unwrap();
-    let graph = g
+    validate_item(&node)?;
+    let mut graphs = graphs().lock().unwrap();
+    let graph = graphs
         .get_mut(&handle_key(h))
         .ok_or_else(|| format!("unknown graph {h}"))?;
+    if graph.nodes.contains(&node) {
+        return Ok(());
+    }
+    let (entries, _) = graph_usage(graph);
+    ensure_handle_entries(entries, 1)?;
+    let bytes = node
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| "graph byte count overflow".to_string())?;
+    let permit = reserve_usage(0, 1, bytes)?;
     graph.nodes.insert(node.clone());
-    graph.edges.entry(node).or_default();
+    graph.edges.insert(node, Vec::new());
+    permit.commit();
     Ok(())
 }
 
 pub fn graph_add_edge(h: u64, from: String, to: String, weight: i64) -> Result<(), String> {
-    let mut g = graphs().lock().unwrap();
-    let graph = g
+    validate_item(&from)?;
+    validate_item(&to)?;
+    if weight < 0 {
+        return Err("graph edge weight must be nonnegative for Dijkstra".into());
+    }
+    let mut graphs = graphs().lock().unwrap();
+    let graph = graphs
         .get_mut(&handle_key(h))
         .ok_or_else(|| format!("unknown graph {h}"))?;
+    let new_from = !graph.nodes.contains(&from);
+    let new_to = !graph.nodes.contains(&to);
+    let added_nodes = count_true(new_from) + count_true(new_to && from != to);
+    let added_edges = if graph.directed { 1 } else { 2 };
+    let (entries, _) = graph_usage(graph);
+    ensure_handle_entries(entries, added_nodes + added_edges)?;
+    let mut node_bytes = 0usize;
+    if new_from {
+        node_bytes = from
+            .len()
+            .checked_mul(2)
+            .ok_or_else(|| "graph byte count overflow".to_string())?;
+    }
+    if new_to && from != to {
+        node_bytes = node_bytes
+            .checked_add(
+                to.len()
+                    .checked_mul(2)
+                    .ok_or_else(|| "graph byte count overflow".to_string())?,
+            )
+            .ok_or_else(|| "graph byte count overflow".to_string())?;
+    }
+    let edge_bytes = if graph.directed {
+        to.len()
+    } else {
+        from.len()
+            .checked_add(to.len())
+            .ok_or_else(|| "graph byte count overflow".to_string())?
+    };
+    let bytes = node_bytes
+        .checked_add(edge_bytes)
+        .ok_or_else(|| "graph byte count overflow".to_string())?;
+    let permit = reserve_usage(0, added_nodes + added_edges, bytes)?;
     graph.nodes.insert(from.clone());
     graph.nodes.insert(to.clone());
     graph
@@ -478,11 +888,12 @@ pub fn graph_add_edge(h: u64, from: String, to: String, weight: i64) -> Result<(
         .entry(from.clone())
         .or_default()
         .push((to.clone(), weight));
-    if !graph.directed {
-        graph.edges.entry(to).or_default().push((from, weight));
-    } else {
+    if graph.directed {
         graph.edges.entry(to).or_default();
+    } else {
+        graph.edges.entry(to).or_default().push((from, weight));
     }
+    permit.commit();
     Ok(())
 }
 
@@ -668,38 +1079,45 @@ pub fn graph_has_cycle(h: u64) -> Result<bool, String> {
         .get(&handle_key(h))
         .ok_or_else(|| format!("unknown graph {h}"))?;
     if graph.directed {
-        // Uso DFS con 3 estados: unvisited, visiting, done.
-        let mut state: HashMap<String, u8> = HashMap::new();
-        for n in &graph.nodes {
-            state.insert(n.clone(), 0);
-        }
-        fn visit(
-            node: &str,
-            edges: &HashMap<String, Vec<(String, i64)>>,
-            state: &mut HashMap<String, u8>,
-        ) -> bool {
-            if let Some(&s) = state.get(node) {
-                if s == 1 {
-                    return true;
-                } // ciclo
-                if s == 2 {
-                    return false;
-                }
+        // DFS iterativo con tres estados para que una cadena válida no pueda
+        // desbordar la pila nativa de Rust.
+        let mut state = graph
+            .nodes
+            .iter()
+            .map(|node| (node.clone(), 0u8))
+            .collect::<HashMap<_, _>>();
+        for start in &graph.nodes {
+            if state.get(start).copied().unwrap_or(0) != 0 {
+                continue;
             }
-            state.insert(node.to_string(), 1);
-            if let Some(nbrs) = edges.get(node) {
-                for (v, _) in nbrs {
-                    if visit(v, edges, state) {
-                        return true;
+            state.insert(start.clone(), 1);
+            let mut stack = vec![(start.clone(), 0usize)];
+            while !stack.is_empty() {
+                let next = {
+                    let (node, index) = stack.last_mut().expect("stack is nonempty");
+                    let neighbor = graph
+                        .edges
+                        .get(node)
+                        .and_then(|neighbors| neighbors.get(*index))
+                        .map(|(neighbor, _)| neighbor.clone());
+                    if neighbor.is_some() {
+                        *index += 1;
                     }
+                    neighbor
+                };
+                if let Some(neighbor) = next {
+                    match state.get(&neighbor).copied().unwrap_or(0) {
+                        1 => return Ok(true),
+                        2 => {}
+                        _ => {
+                            state.insert(neighbor.clone(), 1);
+                            stack.push((neighbor, 0));
+                        }
+                    }
+                } else {
+                    let (completed, _) = stack.pop().expect("stack is nonempty");
+                    state.insert(completed, 2);
                 }
-            }
-            state.insert(node.to_string(), 2);
-            false
-        }
-        for n in &graph.nodes {
-            if state[n] == 0 && visit(n, &graph.edges, &mut state) {
-                return Ok(true);
             }
         }
         Ok(false)
@@ -711,17 +1129,17 @@ pub fn graph_has_cycle(h: u64) -> Result<bool, String> {
             if visited.contains(start) {
                 continue;
             }
-            let mut queue: VecDeque<(String, String)> = VecDeque::new();
-            queue.push_back((start.clone(), String::new()));
-            while let Some((n, parent)) = queue.pop_front() {
-                if visited.contains(&n) {
+            let mut queue: VecDeque<(String, Option<String>)> = VecDeque::new();
+            queue.push_back((start.clone(), None));
+            while let Some((node, parent)) = queue.pop_front() {
+                if visited.contains(&node) {
                     return Ok(true);
                 }
-                visited.insert(n.clone());
-                if let Some(nbrs) = graph.edges.get(&n) {
-                    for (v, _) in nbrs {
-                        if v != &parent {
-                            queue.push_back((v.clone(), n.clone()));
+                visited.insert(node.clone());
+                if let Some(neighbors) = graph.edges.get(&node) {
+                    for (neighbor, _) in neighbors {
+                        if parent.as_ref() != Some(neighbor) {
+                            queue.push_back((neighbor.clone(), Some(node.clone())));
                         }
                     }
                 }
@@ -740,7 +1158,14 @@ pub fn graph_nodes(h: u64) -> Result<Vec<String>, String> {
 }
 
 pub fn graph_drop(h: u64) -> bool {
-    graphs().lock().unwrap().remove(&handle_key(h)).is_some()
+    let removed = graphs().lock().unwrap().remove(&handle_key(h));
+    if let Some(graph) = removed {
+        let (entries, bytes) = graph_usage(&graph);
+        release_usage(current_runtime_id(), 1, entries, bytes);
+        true
+    } else {
+        false
+    }
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
@@ -764,6 +1189,7 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
         &mut crate::native::lock_recover(graphs()),
         runtime_id,
     );
+    crate::native::lock_recover(usage()).remove(&runtime_id);
     released
 }
 
@@ -773,32 +1199,37 @@ mod tests {
 
     #[test]
     fn set_basics() {
-        let s = set_new();
+        let s = set_new().unwrap();
         assert!(set_add(s, "a".into()).unwrap());
         assert!(!set_add(s, "a".into()).unwrap());
         assert_eq!(set_len(s).unwrap(), 1);
         assert!(set_contains(s, "a").unwrap());
+        assert!(set_drop(s));
     }
 
     #[test]
     fn set_union_intersect() {
-        let a = set_from(vec!["1".into(), "2".into(), "3".into()]);
-        let b = set_from(vec!["2".into(), "3".into(), "4".into()]);
+        let a = set_from(vec!["1".into(), "2".into(), "3".into()]).unwrap();
+        let b = set_from(vec!["2".into(), "3".into(), "4".into()]).unwrap();
         let u = set_union(a, b).unwrap();
         let i = set_intersect(a, b).unwrap();
         assert_eq!(set_len(u).unwrap(), 4);
         assert_eq!(set_len(i).unwrap(), 2);
+        for handle in [a, b, u, i] {
+            assert!(set_drop(handle));
+        }
     }
 
     #[test]
     fn pq_min_returns_smallest_first() {
-        let pq = pq_new_min();
+        let pq = pq_new_min().unwrap();
         pq_push(pq, "b".into(), 5).unwrap();
         pq_push(pq, "a".into(), 1).unwrap();
         pq_push(pq, "c".into(), 3).unwrap();
         assert_eq!(pq_pop(pq).unwrap().unwrap(), "a");
         assert_eq!(pq_pop(pq).unwrap().unwrap(), "c");
         assert_eq!(pq_pop(pq).unwrap().unwrap(), "b");
+        assert!(pq_drop(pq));
     }
 
     #[test]
@@ -810,38 +1241,204 @@ mod tests {
             "c".into(),
             "a".into(),
             "b".into(),
-        ]);
+        ])
+        .unwrap();
         let top = counter_most_common(c, 2).unwrap();
         assert_eq!(top[0], ("a".into(), 3));
         assert_eq!(top[1], ("b".into(), 2));
+        assert!(counter_drop(c));
     }
 
     #[test]
     fn graph_dijkstra_finds_shortest() {
-        let g = graph_new(false);
+        let g = graph_new(false).unwrap();
         graph_add_edge(g, "a".into(), "b".into(), 1).unwrap();
         graph_add_edge(g, "b".into(), "c".into(), 1).unwrap();
         graph_add_edge(g, "a".into(), "c".into(), 5).unwrap();
         let path = graph_shortest_path(g, "a", "c").unwrap();
         assert_eq!(path, vec!["a", "b", "c"]);
+        assert!(graph_drop(g));
     }
 
     #[test]
     fn graph_toposort_valid() {
-        let g = graph_new(true);
+        let g = graph_new(true).unwrap();
         graph_add_edge(g, "a".into(), "b".into(), 0).unwrap();
         graph_add_edge(g, "b".into(), "c".into(), 0).unwrap();
         graph_add_edge(g, "a".into(), "c".into(), 0).unwrap();
         let order = graph_topological_sort(g).unwrap();
         assert_eq!(order[0], "a");
         assert_eq!(order[order.len() - 1], "c");
+        assert!(graph_drop(g));
     }
 
     #[test]
     fn graph_cycle_detected() {
-        let g = graph_new(true);
+        let g = graph_new(true).unwrap();
         graph_add_edge(g, "a".into(), "b".into(), 0).unwrap();
         graph_add_edge(g, "b".into(), "a".into(), 0).unwrap();
         assert!(graph_has_cycle(g).unwrap());
+        assert!(graph_drop(g));
+    }
+
+    #[test]
+    fn handle_quota_is_shared_and_recovers_after_drop() {
+        let runtime_id = 8_100_001;
+        crate::native::with_runtime_context(runtime_id, || {
+            let mut handles = (0..MAX_COLLECTION_HANDLES)
+                .map(|_| set_new().unwrap())
+                .collect::<Vec<_>>();
+            assert!(set_new().unwrap_err().contains("handle quota"));
+            assert!(set_drop(handles.pop().unwrap()));
+            handles.push(deque_new().unwrap());
+            assert_eq!(runtime_usage(runtime_id).handles, MAX_COLLECTION_HANDLES);
+        });
+        assert_eq!(cleanup_runtime(runtime_id), MAX_COLLECTION_HANDLES);
+        assert_eq!(runtime_usage(runtime_id), CollectionUsage::default());
+    }
+
+    #[test]
+    fn per_handle_entry_quota_rejects_and_recovers() {
+        let runtime_id = 8_100_002;
+        crate::native::with_runtime_context(runtime_id, || {
+            let set = set_new().unwrap();
+            for index in 0..MAX_ENTRIES_PER_HANDLE {
+                assert!(set_add(set, index.to_string()).unwrap());
+            }
+            assert!(set_add(set, "overflow".into())
+                .unwrap_err()
+                .contains("handle entry quota"));
+            assert!(set_remove(set, "0").unwrap());
+            assert!(set_add(set, "recovered".into()).unwrap());
+            assert_eq!(set_len(set).unwrap(), MAX_ENTRIES_PER_HANDLE);
+            assert!(set_drop(set));
+        });
+        assert_eq!(runtime_usage(runtime_id), CollectionUsage::default());
+    }
+
+    #[test]
+    fn aggregate_byte_quota_rejects_and_recovers() {
+        fn full_item(index: usize) -> String {
+            let mut item = "x".repeat(MAX_ITEM_BYTES);
+            item.replace_range(..8, &format!("{index:08x}"));
+            item
+        }
+
+        let runtime_id = 8_100_003;
+        crate::native::with_runtime_context(runtime_id, || {
+            let set = set_new().unwrap();
+            let first = full_item(0);
+            assert!(set_add(set, first.clone()).unwrap());
+            for index in 1..(MAX_COLLECTION_BYTES / MAX_ITEM_BYTES) {
+                assert!(set_add(set, full_item(index)).unwrap());
+            }
+            let replacement = full_item(MAX_COLLECTION_BYTES / MAX_ITEM_BYTES);
+            assert!(set_add(set, replacement.clone())
+                .unwrap_err()
+                .contains("byte quota"));
+            assert!(set_remove(set, &first).unwrap());
+            assert!(set_add(set, replacement).unwrap());
+            assert_eq!(runtime_usage(runtime_id).bytes, MAX_COLLECTION_BYTES);
+            assert!(set_drop(set));
+        });
+        assert_eq!(runtime_usage(runtime_id), CollectionUsage::default());
+    }
+
+    #[test]
+    fn aggregate_entry_quota_is_atomic_and_recovers() {
+        let runtime_id = 8_100_006;
+        crate::native::with_runtime_context(runtime_id, || {
+            let full = reserve_usage(0, MAX_COLLECTION_ENTRIES, 0).unwrap();
+            full.commit();
+            assert!(reserve_usage(0, 1, 0)
+                .unwrap_err()
+                .contains("entry quota"));
+            release_usage(runtime_id, 0, 1, 0);
+            let replacement = reserve_usage(0, 1, 0).unwrap();
+            replacement.commit();
+            release_usage(runtime_id, 0, MAX_COLLECTION_ENTRIES, 0);
+        });
+        assert_eq!(runtime_usage(runtime_id), CollectionUsage::default());
+    }
+
+    #[test]
+    fn removals_and_replacements_return_bytes_across_collection_families() {
+        let runtime_id = 8_100_007;
+        crate::native::with_runtime_context(runtime_id, || {
+            let deque = deque_new().unwrap();
+            deque_push_back(deque, "deque".into()).unwrap();
+            assert_eq!(deque_pop_front(deque).unwrap().as_deref(), Some("deque"));
+
+            let queue = pq_new_max().unwrap();
+            pq_push(queue, "queue".into(), 1).unwrap();
+            assert_eq!(pq_pop(queue).unwrap().as_deref(), Some("queue"));
+
+            let map = omap_new().unwrap();
+            omap_insert(map, "key".into(), serde_json::json!("a long value")).unwrap();
+            let before = runtime_usage(runtime_id).bytes;
+            omap_insert(map, "key".into(), serde_json::Value::Null).unwrap();
+            assert!(runtime_usage(runtime_id).bytes < before);
+            assert!(omap_remove(map, "key").unwrap());
+
+            assert!(deque_drop(deque));
+            assert!(pq_drop(queue));
+            assert!(omap_drop(map));
+        });
+        assert_eq!(runtime_usage(runtime_id), CollectionUsage::default());
+    }
+
+    #[test]
+    fn oversized_items_and_arithmetic_overflow_are_rejected() {
+        let runtime_id = 8_100_004;
+        crate::native::with_runtime_context(runtime_id, || {
+            let set = set_new().unwrap();
+            assert!(set_add(set, "x".repeat(MAX_ITEM_BYTES + 1))
+                .unwrap_err()
+                .contains("item exceeds"));
+
+            let queue = pq_new_min().unwrap();
+            assert!(pq_push(queue, "minimum".into(), i64::MIN)
+                .unwrap_err()
+                .contains("i64::MIN"));
+
+            let counter = counter_from(vec!["x".into()]).unwrap();
+            counter_add(counter, "x".into(), i64::MAX - 1).unwrap();
+            assert!(counter_add(counter, "x".into(), 1)
+                .unwrap_err()
+                .contains("overflow"));
+
+            let total = counter_from(vec!["a".into(), "b".into()]).unwrap();
+            counter_add(total, "a".into(), i64::MAX - 1).unwrap();
+            counter_add(total, "b".into(), i64::MAX - 1).unwrap();
+            assert!(counter_total(total).unwrap_err().contains("total overflow"));
+
+            assert!(set_drop(set));
+            assert!(pq_drop(queue));
+            assert!(counter_drop(counter));
+            assert!(counter_drop(total));
+        });
+        assert_eq!(runtime_usage(runtime_id), CollectionUsage::default());
+    }
+
+    #[test]
+    fn graphs_reject_negative_weights_and_detect_deep_cycles_iteratively() {
+        let runtime_id = 8_100_005;
+        crate::native::with_runtime_context(runtime_id, || {
+            let graph = graph_new(true).unwrap();
+            assert!(graph_add_edge(graph, "a".into(), "b".into(), -1)
+                .unwrap_err()
+                .contains("nonnegative"));
+            for index in 0..1_500 {
+                graph_add_node(graph, index.to_string()).unwrap();
+                if index > 0 {
+                    graph_add_edge(graph, (index - 1).to_string(), index.to_string(), 1).unwrap();
+                }
+            }
+            assert!(!graph_has_cycle(graph).unwrap());
+            graph_add_edge(graph, "1499".into(), "0".into(), 1).unwrap();
+            assert!(graph_has_cycle(graph).unwrap());
+            assert!(graph_drop(graph));
+        });
+        assert_eq!(runtime_usage(runtime_id), CollectionUsage::default());
     }
 }

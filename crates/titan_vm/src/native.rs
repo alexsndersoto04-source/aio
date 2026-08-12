@@ -3999,7 +3999,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
 
         // ---------------- Phase 34: std::collections ----------------
         #[cfg(feature = "collections_mod")]
-        "std::collections::set_new" => Value::Int(stdlib::collections_mod::set_new() as i64),
+        "std::collections::set_new" => Value::Int(stdlib::collections_mod::set_new()? as i64),
         #[cfg(feature = "collections_mod")]
         "std::collections::set_from" => {
             let arr = array!();
@@ -4007,7 +4007,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .into_iter()
                 .map(expect_string)
                 .collect::<Result<_, _>>()?;
-            Value::Int(stdlib::collections_mod::set_from(items) as i64)
+            Value::Int(stdlib::collections_mod::set_from(items)? as i64)
         }
         #[cfg(feature = "collections_mod")]
         "std::collections::set_add" => {
@@ -4070,7 +4070,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         // Deque
         #[cfg(feature = "collections_mod")]
-        "std::collections::deque_new" => Value::Int(stdlib::collections_mod::deque_new() as i64),
+        "std::collections::deque_new" => {
+            Value::Int(stdlib::collections_mod::deque_new()? as i64)
+        }
         #[cfg(feature = "collections_mod")]
         "std::collections::deque_push_front" => {
             let h = u64::try_from(int!()).map_err(|_| "deque handle".to_string())?;
@@ -4137,9 +4139,13 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         // PriorityQueue
         #[cfg(feature = "collections_mod")]
-        "std::collections::pq_new_max" => Value::Int(stdlib::collections_mod::pq_new_max() as i64),
+        "std::collections::pq_new_max" => {
+            Value::Int(stdlib::collections_mod::pq_new_max()? as i64)
+        }
         #[cfg(feature = "collections_mod")]
-        "std::collections::pq_new_min" => Value::Int(stdlib::collections_mod::pq_new_min() as i64),
+        "std::collections::pq_new_min" => {
+            Value::Int(stdlib::collections_mod::pq_new_min()? as i64)
+        }
         #[cfg(feature = "collections_mod")]
         "std::collections::pq_push" => {
             let h = u64::try_from(int!()).map_err(|_| "pq handle".to_string())?;
@@ -4192,7 +4198,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         // OrderedMap
         #[cfg(feature = "collections_mod")]
-        "std::collections::omap_new" => Value::Int(stdlib::collections_mod::omap_new() as i64),
+        "std::collections::omap_new" => {
+            Value::Int(stdlib::collections_mod::omap_new()? as i64)
+        }
         #[cfg(feature = "collections_mod")]
         "std::collections::omap_insert" => {
             let h = u64::try_from(int!()).map_err(|_| "omap handle".to_string())?;
@@ -4250,7 +4258,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .into_iter()
                 .map(expect_string)
                 .collect::<Result<_, _>>()?;
-            Value::Int(stdlib::collections_mod::counter_from(items) as i64)
+            Value::Int(stdlib::collections_mod::counter_from(items)? as i64)
         }
         #[cfg(feature = "collections_mod")]
         "std::collections::counter_add" => {
@@ -4290,7 +4298,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         // Graph
         #[cfg(feature = "collections_mod")]
         "std::collections::graph_new" => {
-            Value::Int(stdlib::collections_mod::graph_new(boolean!()) as i64)
+            Value::Int(stdlib::collections_mod::graph_new(boolean!())? as i64)
         }
         #[cfg(feature = "collections_mod")]
         "std::collections::graph_add_node" => {
