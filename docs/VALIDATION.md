@@ -200,6 +200,59 @@ en producción y activaba `dead_code` bajo warnings estrictos. El commit
 `3b046e3` lo restringió a tests y la ejecución final aprobó. Esa ejecución
 intermedia no se cuenta como validación verde.
 
+### Colecciones persistentes con cuotas y aritmética segura
+
+El commit `5d16dda` conecta una cuota común por runtime para set, deque, cola de
+prioridad, mapa ordenado, contador y grafo. Los máximos predeterminados son:
+
+- 256 handles entre las seis familias;
+- 65.536 entradas agregadas;
+- 4.096 entradas dentro de un único handle;
+- 16 MiB de strings y JSON serializado;
+- 64 KiB por elemento.
+
+Cada constructor y mutación reserva antes de insertar. Una reserva que falla no
+modifica el registro ni consume cuota; retirar elementos, reemplazar un JSON
+por otro menor y destruir handles devuelven entradas y bytes. El cleanup del
+runtime elimina tanto los registros como la contabilidad residual. El mapa
+ordenado mide JSON mediante un escritor contador acotado, sin construir una
+segunda copia serializada potencialmente grande solo para conocer su tamaño.
+
+También se cerraron errores aritméticos y algorítmicos: la cola mínima rechaza
+`i64::MIN` en vez de desbordar al negarlo, la secuencia estable y los contadores
+usan operaciones comprobadas, y el total del contador se calcula en `i128`
+antes de convertirlo. Los grafos rechazan pesos negativos porque el camino más
+corto usa Dijkstra. La detección de ciclos dirigida ahora es iterativa, por lo
+que una cadena profunda controlada por un programa TITAN no depende de la pila
+nativa de Rust.
+
+Las regresiones ejecutadas por CI demuestran:
+
+1. saturación compartida de los 256 handles, recuperación tras liberar uno y
+   cleanup completo;
+2. rechazo y reutilización del límite de 4.096 entradas por handle;
+3. llenado exacto de los 16 MiB, rechazo del siguiente elemento y recuperación
+   después de retirar uno;
+4. atomicidad y recuperación de la cuota agregada de entradas;
+5. devolución de bytes al extraer de deque y cola, reemplazar/retirar del mapa,
+   y destruir las demás estructuras;
+6. rechazo de elementos sobredimensionados, overflows de prioridad, valor y
+   total, y pesos negativos;
+7. detección de un ciclo al final de una cadena dirigida de 1.500 nodos sin DFS
+   recursiva.
+
+Evidencia externa de este bloque:
+
+- [CI 31557774013](https://github.com/alexsndersoto04-source/aio/actions/runs/31557774013): `cargo fmt --check`, checks con características normales y sin
+  características por defecto, todos los tests y cross-check AArch64
+  aprobados.
+- [Termux ARM 31557773916](https://github.com/alexsndersoto04-source/aio/actions/runs/31557773916): check AArch64 con NDK obligatorio, compilación y enlace
+  Android/Bionic ARMv7, verificación ELF32/ARM, paquete y artefacto aprobados.
+
+Estas pruebas no requieren servicios externos ni una instalación física. El
+candidato quedó validado y empaquetado por GitHub Actions, pero aún no se ha
+ejecutado en el Redmi 9C; esa prueba se agrupará con el siguiente milestone.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -222,9 +275,10 @@ reales se liberan en el mismo hilo que las creó.
 
 ### Límites de esta validación
 
-- Las cuotas de tareas, canales, red, bases de datos y procesos externos ya
-  están conectadas. El bloque de crecimiento controlado todavía debe cubrir las
-  seis familias de colecciones persistentes con handles y sus elementos.
+- Las cuotas de tareas, canales, red, bases de datos, procesos externos y las
+  seis familias de colecciones persistentes ya están conectadas. Esto no cierra
+  toda la auditoría de crecimiento: otros registros duraderos de la stdlib,
+  como el estado de juego, todavía deben revisarse individualmente.
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
   Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
   no levanta un servidor Redis externo ni carga un modelo ONNX real para luego
