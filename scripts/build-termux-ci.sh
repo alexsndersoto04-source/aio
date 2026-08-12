@@ -79,9 +79,11 @@ if git worktree add --quiet --detach "$format_worktree" HEAD; then
         split -b 3800 -d -a 3 "$DIST_DIR/rustfmt.patch.xz.b64" "$DIST_DIR/rustfmt-xz-"
         mapfile -t chunks < <(printf '%s\n' "$DIST_DIR"/rustfmt-xz-* | sort)
         total="${#chunks[@]}"
-        for ((index = 0; index < total && index < 30; index++)); do
-            if (( index < 10 )); then level=notice
-            elif (( index < 20 )); then level=warning
+        start=30
+        for ((index = start; index < total && index < start + 30; index++)); do
+            slot=$((index - start))
+            if (( slot < 10 )); then level=notice
+            elif (( slot < 20 )); then level=warning
             else level=error
             fi
             printf '::%s file=rustfmt.patch,line=1,title=RUSTFMT_XZ_%03d_OF_%03d::%s\n' \
