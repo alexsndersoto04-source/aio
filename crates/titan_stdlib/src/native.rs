@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 thread_local! {
     static CURRENT_RUNTIME_ID: Cell<u64> = const { Cell::new(0) };
@@ -53,11 +53,6 @@ pub(crate) fn runtime_handle_key<T>(handle: T) -> (u64, T) {
 pub(crate) fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-pub(crate) fn read_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    lock.read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
