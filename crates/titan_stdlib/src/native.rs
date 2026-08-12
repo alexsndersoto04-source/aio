@@ -1081,8 +1081,8 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::redis::hdel", [Int, String, String], Int, Network),
     native!("std::redis::hgetall", [Int, String], Array, Network),
     native!("std::redis::raw", [Int, String], String, Network),
-    // --- Phase 11: HTTP server (tiny_http) ---
-    // Binding a port and accepting connections needs Network.
+    // --- Phase 11: bounded HTTP/1.1 + WebSocket server (std::net) ---
+    // Any operation that can touch a socket requires Network.
     native!("std::server::start", [String], Int, Network),
     native!("std::server::local_addr", [Int], String),
     native!("std::server::accept", [Int, Int], Int, Network),
@@ -1478,8 +1478,8 @@ mod tests {
             "std::server::respond_full",
             "std::server::upgrade_websocket",
             "std::server::ws_send_text",
-            "std::server::ws_send_bytes",
-            "std::server::ws_receive",
+            "std::server::ws_send_binary",
+            "std::server::ws_recv",
             "std::server::ws_close",
         ] {
             assert_eq!(

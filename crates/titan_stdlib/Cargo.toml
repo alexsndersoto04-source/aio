@@ -101,8 +101,8 @@ audio_mod    = ["dep:hound"]
 kv_mod       = ["dep:sled"]
 redis_mod    = ["dep:redis"]
 
-# Phase 11 — HTTP server (tiny_http) + URL router (matchit, same as axum)
-server_mod   = ["dep:tiny_http"]
+# Phase 11 — bounded std::net HTTP/WebSocket server + matchit URL router.
+server_mod   = []
 router_mod   = ["dep:matchit"]
 
 # Phase 14 — Charts (SVG only, ttf/font-kit DISABLED to avoid the
@@ -228,11 +228,8 @@ sled              = { version = "0.34", optional = true }
 redis             = { version = "0.27", optional = true, default-features = false }
 
 # Phase 11 — Web server + router.
-# `tiny_http` is a pure-Rust, blocking HTTP/1.1 server. Default features
-# only (NO ssl/openssl/rustls) — Termux gets a plain listener; put a
-# real reverse-proxy in front for TLS.
-# `matchit` is the zero-copy radix-tree router used by axum internally.
-tiny_http         = { version = "0.12", optional = true, default-features = false }
+# The bounded HTTP/WebSocket server uses std::net directly. `matchit` is
+# the zero-copy radix-tree router used by axum internally.
 matchit           = { version = "0.8",  optional = true }
 
 # Phase 14 — Plotters (SVG-only build).

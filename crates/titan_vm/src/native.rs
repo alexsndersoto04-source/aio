@@ -3067,7 +3067,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Str(stdlib::redis_mod::raw(h, &cmd).map_err(error)?)
         }
 
-        // ---------------- Phase 11: HTTP server (tiny_http) ----------------
+        // ---------------- Phase 11: bounded HTTP/WebSocket server ----------
         #[cfg(feature = "server_mod")]
         "std::server::start" => Value::Int(stdlib::server_mod::start(&string!()).map_err(error)?),
         #[cfg(feature = "server_mod")]

@@ -116,7 +116,7 @@ pub mod kv_mod;
 #[cfg(feature = "redis_mod")]
 pub mod redis_mod;
 
-// --- Phase 11: HTTP server (tiny_http) + URL router (matchit) ----------
+// --- Phase 11: bounded HTTP/WebSocket server + URL router (matchit) ---
 #[cfg(feature = "router_mod")]
 pub mod router_mod;
 #[cfg(feature = "server_mod")]

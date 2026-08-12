@@ -1,4 +1,4 @@
-// Demo Fase 11: servidor web real (tiny_http + matchit).
+// Demo Fase 11: servidor HTTP real y acotado (std::net + matchit).
 // Ejecutar en Termux con:
 //     zett run examples/webserver.titan
 //
