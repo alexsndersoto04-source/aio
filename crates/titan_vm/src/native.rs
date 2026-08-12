@@ -6458,6 +6458,133 @@ mod tests {
             Value::Str("a&quot;b".into())
         );
     }
+    #[cfg(feature = "pdf_mod")]
+    #[test]
+    fn pdf_native_bindings_generate_a_real_file_and_enforce_capability() {
+        let capabilities = RuntimeCapabilities::all();
+        let Value::Int(handle) = invoke(
+            "std::pdf::new",
+            vec![
+                Value::Str("PDF desde la VM".into()),
+                Value::Float(210.0),
+                Value::Float(297.0),
+            ],
+            capabilities,
+        )
+        .unwrap()
+        else {
+            panic!("PDF new should return a handle");
+        };
+        assert_eq!(
+            invoke(
+                "std::pdf::page_count",
+                vec![Value::Int(handle)],
+                capabilities
+            )
+            .unwrap(),
+            Value::Int(1)
+        );
+        invoke(
+            "std::pdf::add_text",
+            vec![
+                Value::Int(handle),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Str("Hola desde TITAN".into()),
+                Value::Float(18.0),
+                Value::Float(20.0),
+                Value::Float(270.0),
+            ],
+            capabilities,
+        )
+        .unwrap();
+        invoke(
+            "std::pdf::set_color",
+            vec![
+                Value::Int(handle),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Float(0.2),
+                Value::Float(0.4),
+                Value::Float(0.8),
+            ],
+            capabilities,
+        )
+        .unwrap();
+        invoke(
+            "std::pdf::add_line",
+            vec![
+                Value::Int(handle),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Float(20.0),
+                Value::Float(260.0),
+                Value::Float(190.0),
+                Value::Float(260.0),
+                Value::Float(0.5),
+            ],
+            capabilities,
+        )
+        .unwrap();
+        invoke(
+            "std::pdf::add_rect",
+            vec![
+                Value::Int(handle),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Float(20.0),
+                Value::Float(200.0),
+                Value::Float(50.0),
+                Value::Float(30.0),
+            ],
+            capabilities,
+        )
+        .unwrap();
+        assert_eq!(
+            invoke(
+                "std::pdf::add_page",
+                vec![
+                    Value::Int(handle),
+                    Value::Float(210.0),
+                    Value::Float(297.0),
+                    Value::Str("Página 2".into()),
+                ],
+                capabilities,
+            )
+            .unwrap(),
+            Value::Int(1)
+        );
+
+        let path = std::env::temp_dir().join(format!(
+            "titan-vm-pdf-bindings-{}.pdf",
+            std::process::id()
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        assert!(invoke(
+            "std::pdf::save",
+            vec![Value::Int(handle), Value::Str(path_string.clone())],
+            RuntimeCapabilities::sandboxed(),
+        )
+        .is_err());
+        invoke(
+            "std::pdf::save",
+            vec![Value::Int(handle), Value::Str(path_string)],
+            capabilities,
+        )
+        .unwrap();
+        assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+        assert_eq!(
+            invoke(
+                "std::pdf::close",
+                vec![Value::Int(handle)],
+                capabilities
+            )
+            .unwrap(),
+            Value::Nil
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn rate_limits_are_owned_and_cleaned_by_runtime() {
         let call = |runtime_id| {
