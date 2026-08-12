@@ -2787,7 +2787,13 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Nil
         }
         #[cfg(feature = "kv_mod")]
-        "std::kv::flush" => Value::Int(stdlib::kv_mod::flush(int!()).map_err(error)? as i64),
+        "std::kv::flush" => {
+            let bytes = stdlib::kv_mod::flush(int!()).map_err(error)?;
+            Value::Int(
+                i64::try_from(bytes)
+                    .map_err(|_| "flushed byte count out of i64 range".to_string())?,
+            )
+        }
         #[cfg(feature = "kv_mod")]
         "std::kv::insert" => {
             let h = int!();

@@ -1172,6 +1172,32 @@ mod tests {
     }
 
     #[test]
+    fn logical_usage_tracks_overwrite_remove_tree_and_close() {
+        let runtime_id = 8_300_014;
+        let path = temp_db_path("accounting");
+        crate::native::with_runtime_context(runtime_id, || {
+            let db = open(&path).unwrap();
+            insert(db, b"k", b"one").unwrap();
+            insert(db, b"k", b"longer").unwrap();
+            let tree = open_tree(db, "named").unwrap();
+            tree_insert(tree, b"t", b"v").unwrap();
+            {
+                let usage = crate::native::lock_recover(runtime_usage());
+                let runtime = usage.get(&runtime_id).unwrap();
+                assert_eq!(runtime.logical_bytes, 9);
+                assert_eq!(runtime.entries, 2);
+            }
+            remove(db, b"k").unwrap();
+            tree_remove(tree, b"t").unwrap();
+            assert!(!crate::native::lock_recover(runtime_usage()).contains_key(&runtime_id));
+            close(db).unwrap();
+        });
+        assert!(!crate::native::lock_recover(runtime_usage()).contains_key(&runtime_id));
+        assert_eq!(cleanup_runtime(runtime_id), 0);
+        std::fs::remove_dir_all(path).ok();
+    }
+
+    #[test]
     fn oversized_existing_value_is_rejected_while_opening() {
         let path = temp_db_path("oversized-existing");
         let raw = sled::Config::default()
