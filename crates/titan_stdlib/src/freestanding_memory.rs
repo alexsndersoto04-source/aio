@@ -190,4 +190,19 @@ mod tests {
         assert_eq!(free_frames_count(), 15);
         assert!(shutdown());
     }
+
+    #[test]
+    fn huge_modeled_regions_do_not_allocate_one_host_entry_per_frame() {
+        let runtime_id = 84_001;
+        crate::native::with_runtime_context(runtime_id, || {
+            let modeled_size = 1_u64 << 40;
+            assert!(init_frame_allocator(0x1000, modeled_size));
+            assert_eq!(free_frames_count(), modeled_size / PAGE_SIZE);
+            assert_eq!(allocate_frame(), 0x1000);
+            assert_eq!(allocate_frame(), 0x2000);
+            assert_eq!(free_frames_count(), modeled_size / PAGE_SIZE - 2);
+            assert!(!init_frame_allocator(u64::MAX - 100, PAGE_SIZE));
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
 }
