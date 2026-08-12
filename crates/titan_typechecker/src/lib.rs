@@ -2470,8 +2470,7 @@ impl TypeEnv {
             }
             ("map", 1) => {
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    let result =
-                        self.check_callback_expr("map callback", &args[0], &[item], None);
+                    let result = self.check_callback_expr("map callback", &args[0], &[item], None);
                     return Type::Array(Box::new(result));
                 }
                 self.check_expr(&args[0]);
@@ -2626,13 +2625,7 @@ impl TypeEnv {
             ..
         } = expression
         {
-            self.check_closure(
-                params,
-                return_type.as_ref(),
-                body,
-                Some(arguments),
-                result,
-            )
+            self.check_closure(params, return_type.as_ref(), body, Some(arguments), result)
         } else {
             self.check_expr(expression)
         };
@@ -2796,12 +2789,7 @@ impl TypeEnv {
                 Type::Array(Box::new(item))
             }
             "find" => {
-                self.check_callback_expr(
-                    "find predicate",
-                    &args[1],
-                    &[item],
-                    Some(&Type::Bool),
-                );
+                self.check_callback_expr("find predicate", &args[1], &[item], Some(&Type::Bool));
                 Type::Unknown
             }
             "any" | "all" => {
@@ -4113,10 +4101,9 @@ mod tests {
         assert!(check("fn main() { [1, 2].map(|value: int| value + 1) }").is_ok());
         assert!(check("fn main() { [1, 2].filter(|value: int| value + 1) }").is_err());
         assert!(check("fn main() { [1, 2].filter(|value| value + 1) }").is_err());
-        assert!(check(
-            "fn main() { let values: [string] = [1, 2].map(|value| value + 1) }"
-        )
-        .is_err());
+        assert!(
+            check("fn main() { let values: [string] = [1, 2].map(|value| value + 1) }").is_err()
+        );
         assert!(check("fn main() { [1, 2].map(42) }").is_err());
         assert!(check("fn main() { [1, 2].map(|| 1) }").is_err());
         assert!(
@@ -4130,10 +4117,9 @@ mod tests {
         assert!(check("fn main() { map(42, |value| value) }").is_err());
         assert!(check("fn main() { filter([1, 2], |value: int| value + 1) }").is_err());
         assert!(check("fn main() { filter([1, 2], |value| value + 1) }").is_err());
-        assert!(check(
-            "fn main() { let values: [string] = map([1, 2], |value| value + 1) }"
-        )
-        .is_err());
+        assert!(
+            check("fn main() { let values: [string] = map([1, 2], |value| value + 1) }").is_err()
+        );
         assert!(
             check("fn main() { let values: [string] = map((1, 2), |value: int| \"ok\") }").is_ok()
         );
