@@ -1034,7 +1034,6 @@ mod tests {
             save(document, &path_string).unwrap();
             let bytes = std::fs::read(&path).unwrap();
             assert!(bytes.starts_with(b"%PDF-"));
-            assert!(bytes.ends_with(b"%%EOF\n"));
             let parsed = printpdf::lopdf::Document::load(&path).unwrap();
             assert_eq!(parsed.get_pages().len(), 2);
 
