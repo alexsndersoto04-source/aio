@@ -231,5 +231,4 @@ mod tests {
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
-
 }

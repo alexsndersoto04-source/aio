@@ -4794,7 +4794,10 @@ fn rate_limit(runtime_id: u64, key: &str, maximum: u64, window: Duration) -> Res
         .map_err(|_| "rate limit registry poisoned")?;
     let owned_key = (runtime_id, key.to_string());
     if !limits.contains_key(&owned_key)
-        && limits.keys().filter(|(owner, _)| *owner == runtime_id).count()
+        && limits
+            .keys()
+            .filter(|(owner, _)| *owner == runtime_id)
+            .count()
             >= MAX_RATE_LIMIT_KEYS_PER_RUNTIME
     {
         return Err("rate limit key quota exceeded".into());
@@ -6409,9 +6412,11 @@ mod tests {
             Duration::from_secs(60)
         )
         .is_err());
-        assert_eq!(cleanup_runtime_resources(runtime_id), MAX_RATE_LIMIT_KEYS_PER_RUNTIME);
+        assert_eq!(
+            cleanup_runtime_resources(runtime_id),
+            MAX_RATE_LIMIT_KEYS_PER_RUNTIME
+        );
         assert!(rate_limit(runtime_id, "recovered", 1, Duration::from_secs(60)).unwrap());
         assert_eq!(cleanup_runtime_resources(runtime_id), 1);
     }
-
 }

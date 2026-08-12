@@ -106,9 +106,7 @@ pub fn is_mouse_button_pressed(button: u8) -> bool {
 pub fn set_touch_point(index: u32, x: i32, y: i32, active: bool) -> bool {
     if let Ok(mut st) = state().lock() {
         if active {
-            if !st.touch_points.contains_key(&index)
-                && st.touch_points.len() >= MAX_TOUCH_POINTS
-            {
+            if !st.touch_points.contains_key(&index) && st.touch_points.len() >= MAX_TOUCH_POINTS {
                 return false;
             }
             st.touch_points.insert(index, (x, y));
@@ -315,5 +313,4 @@ mod tests {
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
-
 }

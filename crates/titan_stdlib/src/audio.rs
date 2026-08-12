@@ -62,9 +62,7 @@ pub fn init() -> bool {
 }
 
 pub fn load_wave(freq_hz: f64, duration_ms: i64) -> i64 {
-    if !freq_hz.is_finite()
-        || freq_hz <= 0.0
-        || !(1..=MAX_WAVE_DURATION_MS).contains(&duration_ms)
+    if !freq_hz.is_finite() || freq_hz <= 0.0 || !(1..=MAX_WAVE_DURATION_MS).contains(&duration_ms)
     {
         return -1;
     }
@@ -193,5 +191,4 @@ mod tests {
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
-
 }

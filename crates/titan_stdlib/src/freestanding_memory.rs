@@ -215,10 +215,7 @@ mod tests {
         let runtime_id = 85_008;
         crate::native::with_runtime_context(runtime_id, || {
             let modeled_frames = (MAX_ALLOCATED_FRAMES + 1) as u64;
-            assert!(init_frame_allocator(
-                0x1000,
-                modeled_frames * PAGE_SIZE
-            ));
+            assert!(init_frame_allocator(0x1000, modeled_frames * PAGE_SIZE));
             let first = allocate_frame();
             assert_eq!(first, 0x1000);
             for _ in 1..MAX_ALLOCATED_FRAMES {
@@ -229,16 +226,11 @@ mod tests {
             assert_eq!(allocate_frame(), first);
 
             for page in 0..MAX_PAGE_MAPPINGS {
-                assert!(map_page(
-                    0x1_0000_0000 + page as u64 * PAGE_SIZE,
-                    0x1000,
-                    3
-                ));
+                assert!(map_page(0x1_0000_0000 + page as u64 * PAGE_SIZE, 0x1000, 3));
             }
             assert!(!map_page(0x2_0000_0000, 0x1000, 3));
             assert!(map_page(0x1_0000_0000, 0x2000, 3));
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
-
 }

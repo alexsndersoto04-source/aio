@@ -183,9 +183,15 @@ mod tests {
         crate::native::with_runtime_context(runtime_id, || {
             assert!(init_exception_table(0x8000_0000));
             for syscall in 0..MAX_SYSCALL_HANDLERS {
-                assert!(register_syscall_handler(syscall as u32, 0x1000 + syscall as u64));
+                assert!(register_syscall_handler(
+                    syscall as u32,
+                    0x1000 + syscall as u64
+                ));
             }
-            assert!(!register_syscall_handler(MAX_SYSCALL_HANDLERS as u32, 0x9000));
+            assert!(!register_syscall_handler(
+                MAX_SYSCALL_HANDLERS as u32,
+                0x9000
+            ));
             assert!(register_syscall_handler(0, 0xa000));
             assert!(shutdown());
             assert!(init_exception_table(0x8000_0000));
@@ -193,5 +199,4 @@ mod tests {
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
-
 }

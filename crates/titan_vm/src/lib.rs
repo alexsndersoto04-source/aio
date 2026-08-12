@@ -1164,8 +1164,7 @@ impl Vm {
                     else {
                         return Err(VmError::Type("spawn requires a closure".into()));
                     };
-                    let task_id =
-                        self.spawn_task(task_function, captures, self.memory_limit)?;
+                    let task_id = self.spawn_task(task_function, captures, self.memory_limit)?;
                     stack.push(Value::Task(task_id));
                 }
                 Op::SpawnQuota => {
@@ -4475,7 +4474,10 @@ mod tests {
 
     #[test]
     fn task_quota_rejects_excess_threads_and_join_releases_a_slot() {
-        let module = compile("fn main() { let first = spawn || 1 let second = spawn || 2; [first, second] }").unwrap();
+        let module = compile(
+            "fn main() { let first = spawn || 1 let second = spawn || 2; [first, second] }",
+        )
+        .unwrap();
         let error = Vm::new(module).with_task_limit(1).run().unwrap_err();
         assert_eq!(
             error,
@@ -4506,7 +4508,9 @@ mod tests {
 
     #[test]
     fn channel_count_and_capacity_are_bounded_before_allocation() {
-        let module = compile("fn main() { let first = channel(1) let second = channel(1); second }").unwrap();
+        let module =
+            compile("fn main() { let first = channel(1) let second = channel(1); second }")
+                .unwrap();
         assert_eq!(
             Vm::new(module).with_channel_limit(1).run().unwrap_err(),
             VmError::ResourceLimit {

@@ -97,11 +97,7 @@ pub fn write_mmio_u32(paddr: u64, value: u32) -> bool {
             .then(|| char::from_u32(value & 0xff))
             .flatten();
         if uart_char.is_some_and(|ch| {
-            state
-                .uart_output_buffer
-                .len()
-                .saturating_add(ch.len_utf8())
-                > MAX_UART_BUFFER_BYTES
+            state.uart_output_buffer.len().saturating_add(ch.len_utf8()) > MAX_UART_BUFFER_BYTES
         }) {
             return false;
         }
@@ -144,11 +140,7 @@ pub fn serial_write_str(text: &str) -> usize {
             .sum::<usize>();
         if !state.initialized
             || state.uart_base.is_none()
-            || state
-                .uart_output_buffer
-                .len()
-                .saturating_add(encoded_bytes)
-                > MAX_UART_BUFFER_BYTES
+            || state.uart_output_buffer.len().saturating_add(encoded_bytes) > MAX_UART_BUFFER_BYTES
         {
             return 0;
         }
@@ -217,14 +209,14 @@ mod tests {
             assert!(!init_mmio_region(0x1_0000_0000, 0x1000));
             assert!(shutdown());
 
-            assert!(init_mmio_region(0x1000, (MAX_MMIO_REGISTERS as u64 + 1) * 4));
+            assert!(init_mmio_region(
+                0x1000,
+                (MAX_MMIO_REGISTERS as u64 + 1) * 4
+            ));
             for register in 0..MAX_MMIO_REGISTERS {
                 assert!(write_mmio_u32(0x1000 + register as u64 * 4, 1));
             }
-            assert!(!write_mmio_u32(
-                0x1000 + MAX_MMIO_REGISTERS as u64 * 4,
-                1
-            ));
+            assert!(!write_mmio_u32(0x1000 + MAX_MMIO_REGISTERS as u64 * 4, 1));
             assert!(write_mmio_u32(0x1000, 2));
             assert!(shutdown());
 
@@ -237,5 +229,4 @@ mod tests {
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
-
 }
