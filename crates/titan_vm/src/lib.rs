@@ -4765,8 +4765,8 @@ mod tests {
             .collect::<Vec<_>>();
         let admitted = workers
             .into_iter()
-            .filter(|worker| worker.join().unwrap())
-            .count();
+            .map(|worker| usize::from(worker.join().unwrap()))
+            .sum::<usize>();
 
         assert_eq!(admitted, 4);
         assert_eq!(quota.active.load(Ordering::Acquire), 4);
