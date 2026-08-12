@@ -64,6 +64,23 @@ done
 
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR/elf"
+
+# Temporary diagnostic for the legacy workspace-wide rustfmt advisory. Format
+# a detached worktree (never the caller's checkout) and preserve the exact
+# patch in the CI artifact so the failure can be repaired rather than hidden.
+format_worktree="$(mktemp -d "${TMPDIR:-/tmp}/titan-rustfmt.XXXXXXXX")"
+if git worktree add --quiet --detach "$format_worktree" HEAD; then
+    if (cd "$format_worktree" && cargo fmt --all); then
+        git -C "$format_worktree" diff --binary > "$DIST_DIR/rustfmt.patch"
+    else
+        printf '%s\n' 'cargo fmt could not run in the diagnostic worktree' > "$DIST_DIR/rustfmt-error.txt"
+    fi
+    git worktree remove --force "$format_worktree"
+else
+    printf '%s\n' 'git could not create the diagnostic worktree' > "$DIST_DIR/rustfmt-error.txt"
+    rm -rf "$format_worktree"
+fi
+
 file "$binary" | tee "$DIST_DIR/elf/file.txt"
 readelf -h "$binary" | tee "$DIST_DIR/elf/header.txt"
 readelf -l "$binary" | tee "$DIST_DIR/elf/program-headers.txt"
