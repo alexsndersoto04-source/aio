@@ -7,7 +7,7 @@
 //! only for short handle lookups (never while network I/O is in progress).
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
@@ -194,9 +194,7 @@ impl HandleReservation {
     fn commit(mut self, connection: Connection) -> Result<i64, RedisError> {
         let mut registry = crate::native::lock_recover(registry());
         let id = registry.next_id;
-        registry.next_id = id
-            .checked_add(1)
-            .ok_or(RedisError::HandleSpaceExhausted)?;
+        registry.next_id = id.checked_add(1).ok_or(RedisError::HandleSpaceExhausted)?;
         release_reservation(&mut registry, self.runtime_id);
         registry
             .conns
@@ -277,11 +275,7 @@ fn map_io(error: std::io::Error) -> RedisError {
     }
 }
 
-fn validate_size(
-    value: &str,
-    resource: &'static str,
-    limit: usize,
-) -> Result<(), RedisError> {
+fn validate_size(value: &str, resource: &'static str, limit: usize) -> Result<(), RedisError> {
     if value.len() > limit {
         return Err(RedisError::ResourceLimit { resource, limit });
     }
@@ -302,9 +296,7 @@ fn decimal_len(value: usize) -> usize {
 
 fn request_size(args: &[&[u8]]) -> Result<usize, RedisError> {
     if args.is_empty() {
-        return Err(RedisError::InvalidArgument(
-            "Redis command cannot be empty",
-        ));
+        return Err(RedisError::InvalidArgument("Redis command cannot be empty"));
     }
     if args.len() > MAX_COMMAND_ARGUMENTS {
         return Err(RedisError::ResourceLimit {
@@ -447,12 +439,13 @@ impl<'a> RespDecoder<'a> {
     }
 
     fn add_wire(&mut self, amount: usize) -> Result<(), RedisError> {
-        self.wire_bytes = self.wire_bytes.checked_add(amount).ok_or(
-            RedisError::ResourceLimit {
+        self.wire_bytes = self
+            .wire_bytes
+            .checked_add(amount)
+            .ok_or(RedisError::ResourceLimit {
                 resource: "Redis response wire bytes",
                 limit: MAX_RESPONSE_WIRE_BYTES,
-            },
-        )?;
+            })?;
         if self.wire_bytes > MAX_RESPONSE_WIRE_BYTES {
             return Err(RedisError::ResourceLimit {
                 resource: "Redis response wire bytes",
@@ -463,12 +456,13 @@ impl<'a> RespDecoder<'a> {
     }
 
     fn add_payload(&mut self, amount: usize) -> Result<(), RedisError> {
-        self.payload_bytes = self.payload_bytes.checked_add(amount).ok_or(
-            RedisError::ResourceLimit {
-                resource: "Redis response payload bytes",
-                limit: MAX_RESPONSE_PAYLOAD_BYTES,
-            },
-        )?;
+        self.payload_bytes =
+            self.payload_bytes
+                .checked_add(amount)
+                .ok_or(RedisError::ResourceLimit {
+                    resource: "Redis response payload bytes",
+                    limit: MAX_RESPONSE_PAYLOAD_BYTES,
+                })?;
         if self.payload_bytes > MAX_RESPONSE_PAYLOAD_BYTES {
             return Err(RedisError::ResourceLimit {
                 resource: "Redis response payload bytes",
@@ -571,9 +565,7 @@ impl<'a> RespDecoder<'a> {
             }
         }
         if self.read_byte()? != b'\r' || self.read_byte()? != b'\n' {
-            return Err(RedisError::Protocol(
-                "bulk response did not end with CRLF",
-            ));
+            return Err(RedisError::Protocol("bulk response did not end with CRLF"));
         }
         Ok(value)
     }
@@ -727,7 +719,9 @@ fn into_bool(value: RespValue) -> Result<bool, RedisError> {
     match into_integer(value)? {
         0 => Ok(false),
         1 => Ok(true),
-        _ => Err(RedisError::UnexpectedResponse("expected integer zero or one")),
+        _ => Err(RedisError::UnexpectedResponse(
+            "expected integer zero or one",
+        )),
     }
 }
 
@@ -747,10 +741,7 @@ fn into_array(value: RespValue) -> Result<Vec<RespValue>, RedisError> {
 }
 
 fn into_string_array(value: RespValue) -> Result<Vec<String>, RedisError> {
-    into_array(value)?
-        .into_iter()
-        .map(into_string)
-        .collect()
+    into_array(value)?.into_iter().map(into_string).collect()
 }
 
 /// Open a bounded blocking RESP2 connection to a plain `redis://` URL.
@@ -797,12 +788,7 @@ pub fn connect(url: &str) -> Result<i64, RedisError> {
 
     if let Some(password) = &info.redis.password {
         let reply = if let Some(username) = &info.redis.username {
-            execute_text(
-                &mut connection,
-                deadline,
-                "AUTH",
-                &[username, password],
-            )?
+            execute_text(&mut connection, deadline, "AUTH", &[username, password])?
         } else {
             execute_text(&mut connection, deadline, "AUTH", &[password])?
         };
@@ -843,12 +829,7 @@ pub fn set(handle: i64, key: &str, value: &str) -> Result<(), RedisError> {
     validate_key(key)?;
     validate_value(value)?;
     with_conn(handle, |connection, deadline| {
-        into_ok(execute_text(
-            connection,
-            deadline,
-            "SET",
-            &[key, value],
-        )?)
+        into_ok(execute_text(connection, deadline, "SET", &[key, value])?)
     })
 }
 
@@ -959,12 +940,12 @@ pub fn keys(handle: i64, pattern: &str) -> Result<Vec<String>, RedisError> {
                 });
             }
             for key in page_keys {
-                key_bytes = key_bytes.checked_add(key.len()).ok_or(
-                    RedisError::ResourceLimit {
+                key_bytes = key_bytes
+                    .checked_add(key.len())
+                    .ok_or(RedisError::ResourceLimit {
                         resource: "Redis collection bytes",
                         limit: MAX_COLLECTION_BYTES,
-                    },
-                )?;
+                    })?;
                 if key_bytes > MAX_COLLECTION_BYTES {
                     return Err(RedisError::ResourceLimit {
                         resource: "Redis collection bytes",
@@ -992,12 +973,7 @@ pub fn lpush(handle: i64, key: &str, value: &str) -> Result<u64, RedisError> {
     validate_key(key)?;
     validate_value(value)?;
     with_conn(handle, |connection, deadline| {
-        into_u64(execute_text(
-            connection,
-            deadline,
-            "LPUSH",
-            &[key, value],
-        )?)
+        into_u64(execute_text(connection, deadline, "LPUSH", &[key, value])?)
     })
 }
 
@@ -1005,12 +981,7 @@ pub fn rpush(handle: i64, key: &str, value: &str) -> Result<u64, RedisError> {
     validate_key(key)?;
     validate_value(value)?;
     with_conn(handle, |connection, deadline| {
-        into_u64(execute_text(
-            connection,
-            deadline,
-            "RPUSH",
-            &[key, value],
-        )?)
+        into_u64(execute_text(connection, deadline, "RPUSH", &[key, value])?)
     })
 }
 
@@ -1101,12 +1072,7 @@ pub fn hget(handle: i64, key: &str, field: &str) -> Result<Option<String>, Redis
     validate_key(key)?;
     validate_size(field, "Redis hash field bytes", MAX_KEY_BYTES)?;
     with_conn(handle, |connection, deadline| {
-        into_optional_string(execute_text(
-            connection,
-            deadline,
-            "HGET",
-            &[key, field],
-        )?)
+        into_optional_string(execute_text(connection, deadline, "HGET", &[key, field])?)
     })
 }
 
@@ -1114,24 +1080,14 @@ pub fn hdel(handle: i64, key: &str, field: &str) -> Result<u64, RedisError> {
     validate_key(key)?;
     validate_size(field, "Redis hash field bytes", MAX_KEY_BYTES)?;
     with_conn(handle, |connection, deadline| {
-        into_u64(execute_text(
-            connection,
-            deadline,
-            "HDEL",
-            &[key, field],
-        )?)
+        into_u64(execute_text(connection, deadline, "HDEL", &[key, field])?)
     })
 }
 
 pub fn hgetall(handle: i64, key: &str) -> Result<Vec<(String, String)>, RedisError> {
     validate_key(key)?;
     with_conn(handle, |connection, deadline| {
-        let values = into_string_array(execute_text(
-            connection,
-            deadline,
-            "HGETALL",
-            &[key],
-        )?)?;
+        let values = into_string_array(execute_text(connection, deadline, "HGETALL", &[key])?)?;
         if values.len() % 2 != 0 {
             return Err(RedisError::UnexpectedResponse(
                 "HGETALL returned an odd number of values",
@@ -1308,7 +1264,7 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
@@ -1477,12 +1433,7 @@ mod tests {
             let (url, server) = spawn_server(|stream| {
                 let mut reader = BufReader::new(stream);
                 assert_eq!(server_read_command(&mut reader), vec!["GET", "key"]);
-                write!(
-                    reader.get_mut(),
-                    "${}\r\n",
-                    MAX_RESPONSE_PAYLOAD_BYTES + 1
-                )
-                .unwrap();
+                write!(reader.get_mut(), "${}\r\n", MAX_RESPONSE_PAYLOAD_BYTES + 1).unwrap();
             });
             let handle = connect(&url).unwrap();
             assert!(matches!(
@@ -1492,10 +1443,7 @@ mod tests {
                     ..
                 })
             ));
-            assert!(matches!(
-                ping(handle),
-                Err(RedisError::UnknownHandle(_))
-            ));
+            assert!(matches!(ping(handle), Err(RedisError::UnknownHandle(_))));
             server.join().unwrap();
             assert_eq!(cleanup_runtime(runtime_id), 0);
         });
@@ -1511,10 +1459,7 @@ mod tests {
             });
             let handle = connect(&url).unwrap();
             assert!(matches!(ping(handle), Err(RedisError::Timeout)));
-            assert!(matches!(
-                ping(handle),
-                Err(RedisError::UnknownHandle(_))
-            ));
+            assert!(matches!(ping(handle), Err(RedisError::UnknownHandle(_))));
             server.join().unwrap();
             assert_eq!(cleanup_runtime(runtime_id), 0);
         });
@@ -1631,10 +1576,7 @@ mod tests {
     #[test]
     fn unknown_handle_reports_typed_error() {
         in_test_runtime(|runtime_id| {
-            assert!(matches!(
-                ping(999_999),
-                Err(RedisError::UnknownHandle(_))
-            ));
+            assert!(matches!(ping(999_999), Err(RedisError::UnknownHandle(_))));
             assert!(matches!(
                 get(999_999, "x"),
                 Err(RedisError::UnknownHandle(_))
