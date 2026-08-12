@@ -9,8 +9,3 @@ CC_aarch64_linux_android = { value = "scripts/android-aarch64-clang", relative =
 CXX_aarch64_linux_android = { value = "scripts/android-aarch64-clangxx", relative = true }
 AR_aarch64_linux_android = { value = "scripts/android-aarch64-ar", relative = true }
 RANLIB_aarch64_linux_android = { value = "scripts/android-aarch64-ranlib", relative = true }
-
-# Temporary runner used to surface otherwise Azure-hosted failing test logs in
-# the check annotation API. Removed after the flaky test is identified.
-[target.x86_64-unknown-linux-gnu]
-runner = "scripts/cargo-test-diagnostic-runner"
