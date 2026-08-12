@@ -43,21 +43,22 @@ jobs:
         run: cargo check --workspace --all-targets --no-default-features
 
   aarch64-cross:
-    name: cross-check AArch64 (Termux target)
+    name: cross-check AArch64 Android with NDK
     runs-on: ubuntu-latest
+    env:
+      ANDROID_API: "24"
+      NDK_VERSION: 27.2.12479018
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable + aarch64 target
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
+
+      - name: Install Android command-line tools
+        uses: android-actions/setup-android@v3
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # This just checks the code compiles for AArch64/Android – it does not
-      # link a full binary. Useful to catch regressions before they hit Termux.
-      - name: cargo check for aarch64-linux-android
-        run: cargo check --workspace --target aarch64-linux-android
-        continue-on-error: true
+      - name: Check complete workspace for aarch64-linux-android with NDK
+        run: bash scripts/check-android-aarch64-ci.sh

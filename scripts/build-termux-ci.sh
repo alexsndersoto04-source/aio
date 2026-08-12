@@ -39,6 +39,12 @@ for tool in "$clang" "$clangxx" "$llvm_ar" "$llvm_ranlib"; do
     fi
 done
 
+# Keep the secondary Android architecture check honest too. The old advisory
+# CI job installed only a Rust target and therefore could not compile bundled C
+# dependencies. This check uses the same real NDK as the release lane.
+ANDROID_API="$ANDROID_API" NDK_VERSION="$NDK_VERSION" \
+    bash scripts/check-android-aarch64-ci.sh
+
 export CARGO_INCREMENTAL=0
 export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$clang"
 export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_AR="$llvm_ar"
