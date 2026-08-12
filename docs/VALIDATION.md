@@ -8,26 +8,27 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `3b046e3cd978bf35032dc6b7ddfafb219f10869f`
+- Commit validado: `e31bb4d4e26511d9b80caf854ea3a1b31fc658f5`
 - Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
-  canales, red, bases de datos y procesos externos; checks Android ARM de 32 y 64 bits
+  canales, red, bases de datos, procesos, colecciones y estado de juego; checks
+  Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
-| `cargo check` con características normales | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
-| `cargo check --no-default-features` | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
-| Cross-check Android AArch64 | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
+| `cargo check` con características normales | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
+| `cargo check --no-default-features` | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
+| Cross-check Android AArch64 | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
 
-Los dos fallos advisory anteriores ya fueron corregidos:
+Los fallos advisory registrados ya fueron corregidos:
 
 - Se aplicó el `rustfmt` estable de CI a los 106 archivos Rust que no cumplían
   el formato. El verificador Phase 34 se hizo compatible con macros formateadas
@@ -36,6 +37,11 @@ Los dos fallos advisory anteriores ya fueron corregidos:
   `llvm-ranlib` del Android NDK. Además, la ruta oficial ejecuta un segundo
   check AArch64 real con NDK, `--all-targets`, lockfile y warnings tratados como
   errores antes de construir el paquete ARMv7.
+- Las modificaciones posteriores de red, procesos y colecciones introdujeron
+  nuevas diferencias de `rustfmt`. El workflow histórico las dejó pasar porque
+  ese paso conserva `continue-on-error`. El commit `819f4c9` aplicó exactamente
+  el formato señalado por Rust estable; CI 31558196407 y la ejecución final
+  31558531732 no tienen la anotación de fallo advisory y aprueban el formato.
 
 El workflow ARMv7 oficial usa Android NDK y `armv7-linux-androideabi`. Además de
 compilar y enlazar, comprueba con `readelf` que el binario sea ELF32/ARM,
@@ -138,8 +144,10 @@ Las regresiones verificadas por CI demuestran:
 
 Evidencia externa de este bloque:
 
-- [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990): `cargo fmt --check`, checks normal y
-  `--no-default-features`, todos los tests y cross-check AArch64 aprobados.
+- [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990): checks normal y `--no-default-features`, todos los tests y
+  cross-check AArch64 aprobados. Su paso advisory de formato sí reportó
+  diferencias; el formato completo quedó aprobado posteriormente en
+  [CI 31558196407](https://github.com/alexsndersoto04-source/aio/actions/runs/31558196407).
 - [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007): check AArch64 NDK estricto, compilación y enlace Android/Bionic
   ARMv7, verificaciones del ELF y paquete, y subida del artefacto aprobados.
 
@@ -149,8 +157,10 @@ rutas host, AArch64 y ARMv7, pero este bloque no afirma haber conectado contra
 servidores reales de esas dos bases.
 
 La ejecución intermedia [CI 31555890863](https://github.com/alexsndersoto04-source/aio/actions/runs/31555890863) detectó un error de ownership en el código de la nueva prueba
-concurrente; formato y cross-check AArch64 sí habían pasado. El commit
-`c21517c` corrigió el test y la ejecución final anterior aprobó todos los pasos.
+concurrente; el cross-check AArch64 sí había pasado, mientras el paso advisory
+de formato también reportó diferencias. El commit `c21517c` corrigió el test y
+la ejecución funcional posterior aprobó checks y tests; `819f4c9` cerró después
+el formato pendiente.
 La ejecución intermedia no se cuenta como validación verde.
 
 ### Procesos externos con memoria y concurrencia acotadas
@@ -190,8 +200,10 @@ Las regresiones ejecutan procesos reales y comprueban:
 
 Evidencia externa de este bloque:
 
-- [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296): formato, checks normal y sin features por defecto, todos los tests y
-  cross-check AArch64 aprobados.
+- [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296): checks normal y sin features por defecto, todos los tests y
+  cross-check AArch64 aprobados. Su formato advisory reportó diferencias que
+  quedaron corregidas y aprobadas en
+  [CI 31558196407](https://github.com/alexsndersoto04-source/aio/actions/runs/31558196407).
 - [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301): check NDK estricto, build y enlace Android/Bionic ARMv7,
   verificaciones, paquete y artefacto aprobados.
 
@@ -243,15 +255,49 @@ Las regresiones ejecutadas por CI demuestran:
 
 Evidencia externa de este bloque:
 
-- [CI 31557774013](https://github.com/alexsndersoto04-source/aio/actions/runs/31557774013): `cargo fmt --check`, checks con características normales y sin
+- [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732): formato completo, checks con características normales y sin
   características por defecto, todos los tests y cross-check AArch64
   aprobados.
-- [Termux ARM 31557773916](https://github.com/alexsndersoto04-source/aio/actions/runs/31557773916): check AArch64 con NDK obligatorio, compilación y enlace
+- [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725): check AArch64 con NDK obligatorio, compilación y enlace
   Android/Bionic ARMv7, verificación ELF32/ARM, paquete y artefacto aprobados.
+
+La ejecución funcional original [CI 31557774013](https://github.com/alexsndersoto04-source/aio/actions/runs/31557774013) ya aprobaba compilación y las regresiones de colecciones, pero su
+paso de formato era advisory y reportó diferencias. No se presenta ese paso
+como verde: `819f4c9` aplicó el formato y la ejecución final anterior lo aprobó.
 
 Estas pruebas no requieren servicios externos ni una instalación física. El
 candidato quedó validado y empaquetado por GitHub Actions, pero aún no se ha
 ejecutado en el Redmi 9C; esa prueba se agrupará con el siguiente milestone.
+
+### Estado de juego acotado y validado
+
+Los commits `f3e300f` y `e31bb4d` cierran el crecimiento controlable de
+`std::game`. Sigue existiendo como máximo un estado por runtime, pero ahora el
+título se rechaza antes de copiarlo si supera 64 KiB. El ancho y alto deben ser
+positivos y no superar 16.384. `step`, `fps` y `shutdown` ya no crean un estado
+vacío por el solo hecho de consultar un runtime que nunca inicializó el motor.
+Al apagar, el título se sustituye por un string vacío para liberar también su
+capacidad reservada, y se reinician tiempo, frames y FPS.
+
+La colisión AABB conserva los puntos de tamaño cero ya soportados, pero rechaza
+tamaños negativos, NaN, infinitos y sumas geométricas que desborden a infinito.
+Las regresiones verifican esos bordes, el límite exacto de título y dimensión,
+el rechazo previo sin crear estado, la liberación del título y el cleanup del
+runtime.
+
+Evidencia externa:
+
+- [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732): formato, checks, 281 tests de stdlib —incluidas las nuevas
+  regresiones de juego—, el resto del workspace, no-default-features y AArch64
+  aprobados.
+- [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725): AArch64 NDK estricto, build Android/Bionic ARMv7, ELF, paquete y
+  artefacto aprobados.
+
+La ejecución intermedia [CI 31558364517](https://github.com/alexsndersoto04-source/aio/actions/runs/31558364517) encontró que una prueba antigua todavía esperaba que `shutdown`
+creara implícitamente un estado en un segundo runtime. Las 16 pruebas directas
+de juego pasaron, pero esa regresión de integración falló; `e31bb4d` actualizó
+la expectativa y el conteo de cleanup, y la ejecución final aprobó. El run
+intermedio no se cuenta como verde.
 
 ### Qué prueban las regresiones de limpieza de recursos
 
@@ -277,8 +323,8 @@ reales se liberan en el mismo hilo que las creó.
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos y las
   seis familias de colecciones persistentes ya están conectadas. Esto no cierra
-  toda la auditoría de crecimiento: otros registros duraderos de la stdlib,
-  como el estado de juego, todavía deben revisarse individualmente.
+  toda la auditoría de crecimiento: los demás registros duraderos de la stdlib
+  todavía deben revisarse individualmente.
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
   Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
   no levanta un servidor Redis externo ni carga un modelo ONNX real para luego
