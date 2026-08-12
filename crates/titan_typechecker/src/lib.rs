@@ -3284,6 +3284,57 @@ mod tests {
     fn check(source: &str) -> Result<(), Vec<TypeError>> {
         TypeEnv::new().check_program(&parse(source))
     }
+
+    #[test]
+    fn all_top_level_examples_typecheck() {
+        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut paths: Vec<_> = std::fs::read_dir(examples)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("titan"))
+            .collect();
+        paths.sort();
+        let mut failures = Vec::new();
+        for path in paths {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let mut lexer = Lexer::new(&source);
+            let (tokens, lexer_errors) = lexer.tokenize();
+            if !lexer_errors.is_empty() {
+                failures.push(format!(
+                    "{}: lexer: {}",
+                    path.display(),
+                    lexer_errors
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+                continue;
+            }
+            let mut parser = Parser::new(tokens.to_vec());
+            let program = match parser.parse_program() {
+                Ok(program) => program,
+                Err(error) => {
+                    failures.push(format!("{}: parser: {error}", path.display()));
+                    continue;
+                }
+            };
+            if let Err(errors) = TypeEnv::new().check_program(&program) {
+                failures.push(format!(
+                    "{}: {}",
+                    path.display(),
+                    errors
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     #[test]
     fn accepts_recursive_typed_function() {
         assert!(
