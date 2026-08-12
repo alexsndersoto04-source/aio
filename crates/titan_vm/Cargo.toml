@@ -30,7 +30,8 @@ extras = [
     "process_mod", "collections_mod", "datetime_ext_mod",
     # Fase 2 — ventana viva (minifb).
     "window_live",
-    # "pdf_mod",  # disabled in v0.16.0 (printpdf 0.7 API incompatibilities); opt-in only
+    # Phase 16 — bounded PDF generation; remains part of the single binary.
+    "pdf_mod",
 ]
 regex_mod     = ["titan_stdlib/regex_mod"]
 uuid_mod      = ["titan_stdlib/uuid_mod"]
