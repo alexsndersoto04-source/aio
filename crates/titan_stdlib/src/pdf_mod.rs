@@ -603,7 +603,6 @@ fn append_command(
     command: DrawCommand,
     text_bytes: usize,
 ) -> Result<(), PdfError> {
-    let _permit = reserve_operation()?;
     let state = get_document(handle)?;
     let mut state = crate::native::lock_recover(&state);
     // Validate the page before charging the command quota.
@@ -704,6 +703,7 @@ pub fn add_text(
     x_mm: f64,
     y_mm: f64,
 ) -> Result<(), PdfError> {
+    let _permit = reserve_operation()?;
     validate_text(text, "PDF text bytes", MAX_TEXT_BYTES)?;
     let command = DrawCommand::Text {
         text: text.to_string(),
@@ -722,6 +722,7 @@ pub fn set_color(
     green: f64,
     blue: f64,
 ) -> Result<(), PdfError> {
+    let _permit = reserve_operation()?;
     let command = DrawCommand::Color {
         red: validate_color(red)?,
         green: validate_color(green)?,
@@ -740,6 +741,7 @@ pub fn add_line(
     y2_mm: f64,
     thickness_pt: f64,
 ) -> Result<(), PdfError> {
+    let _permit = reserve_operation()?;
     let command = DrawCommand::Line {
         x1_mm: validate_coordinate(x1_mm)?,
         y1_mm: validate_coordinate(y1_mm)?,
@@ -759,6 +761,7 @@ pub fn add_rect(
     width_mm: f64,
     height_mm: f64,
 ) -> Result<(), PdfError> {
+    let _permit = reserve_operation()?;
     let x_end = x_mm + width_mm;
     let y_end = y_mm + height_mm;
     let command = DrawCommand::Rect {
