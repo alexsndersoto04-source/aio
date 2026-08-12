@@ -8,24 +8,24 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `fe7a83b14fa658a62817ae1a7660c910b59b24e8`
-- Alcance: seguridad de capacidades, aislamiento, primeras cuotas por VM, formato y
-  checks Android ARM de 32 y 64 bits
+- Commit validado: `c21517cb28c666308a83264a9e456af230c0a830`
+- Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
+  canales, red y bases de datos; checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31555029376](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376) |
-| `cargo check` con características normales | Aprobado | [CI 31555029376](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31555029376](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376) |
-| `cargo check --no-default-features` | Aprobado | [CI 31555029376](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376) |
-| Cross-check Android AArch64 | Aprobado | [CI 31555029376](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31555029202](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029202) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31555029202](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029202) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31555029202](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029202) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31555029202](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029202) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
+| `cargo check` con características normales | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
+| `cargo check --no-default-features` | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
+| Cross-check Android AArch64 | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
 
 Los dos fallos advisory anteriores ya fueron corregidos:
 
@@ -104,6 +104,55 @@ Evidencia externa de este bloque:
 - [CI 31555029376](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376): formato, checks, tests, no-default-features y AArch64 aprobados.
 - [Termux ARM 31555029202](https://github.com/alexsndersoto04-source/aio/actions/runs/31555029202): check NDK estricto, build ARMv7, verificación, paquete y artefacto aprobados.
 
+### Cuotas de red y bases de datos
+
+El commit `c21517c` añade dos contadores atómicos compartidos por todas las
+tareas de una VM. El límite predeterminado es de 1.024 handles de red y 256
+handles de base de datos. Quien integra la VM puede reducirlos con
+`with_network_handle_limit` y `with_database_handle_limit`.
+
+La cuota de red cubre listeners y streams TCP, routers HTTP, configuraciones y
+streams TLS, decoders y conexiones WebSocket, y controles de servidor. La cuota
+de datos cubre conexiones directas, pools y conexiones adquiridas de SQLite,
+PostgreSQL y MySQL. Además, el tamaño solicitado para cualquiera de esos pools
+queda limitado específicamente a 64 conexiones; ya no reutiliza el techo
+genérico de 67.108.864.
+
+Cada operación reserva su slot antes de abrir un socket, aceptar una conexión,
+realizar un handshake o abrir/adquirir una base de datos. El permiso RAII
+deshace automáticamente la reserva si la operación falla. El cierre o retirada
+del registro libera el slot. Convertir un stream TCP/TLS existente en WebSocket
+transfiere el mismo slot, en vez de cobrar dos handles por un único transporte.
+
+Las regresiones verificadas por CI demuestran:
+
+1. saturación y recuperación del permiso, además de una carrera de 32 hilos en
+   la que un límite de cuatro nunca admite un quinto;
+2. rechazo del segundo router con límite uno y reutilización después de cerrar
+   un listener TCP local;
+3. rechazo de la segunda base SQLite en memoria y reutilización después de
+   cerrar la primera;
+4. rechazo de un pool de 65 conexiones con el máximo específico de 64;
+5. un eco WebSocket real sobre listener y streams locales con límite tres, lo
+   que prueba que las conversiones TCP a WebSocket no cuentan dos veces.
+
+Evidencia externa de este bloque:
+
+- [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990): `cargo fmt --check`, checks normal y
+  `--no-default-features`, todos los tests y cross-check AArch64 aprobados.
+- [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007): check AArch64 NDK estricto, compilación y enlace Android/Bionic
+  ARMv7, verificaciones del ELF y paquete, y subida del artefacto aprobados.
+
+No fue necesario levantar servicios externos para estas regresiones: se usaron
+sockets loopback y SQLite en memoria. PostgreSQL y MySQL sí compilaron en las
+rutas host, AArch64 y ARMv7, pero este bloque no afirma haber conectado contra
+servidores reales de esas dos bases.
+
+La ejecución intermedia [CI 31555890863](https://github.com/alexsndersoto04-source/aio/actions/runs/31555890863) detectó un error de ownership en el código de la nueva prueba
+concurrente; formato y cross-check AArch64 sí habían pasado. El commit
+`c21517c` corrigió el test y la ejecución final anterior aprobó todos los pasos.
+La ejecución intermedia no se cuenta como validación verde.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -126,10 +175,9 @@ reales se liberan en el mismo hilo que las creó.
 
 ### Límites de esta validación
 
-- Esta es la primera capa de cuotas, no el cierre completo del bloque. Todavía
-  deben limitarse de forma uniforme conexiones de red y bases de datos,
-  colecciones con handles, procesos en background y capturas de salida de
-  procesos externos.
+- Las cuotas de tareas, canales, red y bases de datos ya están conectadas. El
+  bloque de crecimiento controlado todavía debe cubrir colecciones persistentes
+  con handles, procesos en background y capturas de salida de procesos externos.
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
   Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
   no levanta un servidor Redis externo ni carga un modelo ONNX real para luego
