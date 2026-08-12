@@ -8,8 +8,9 @@
 
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex, OnceLock, TryLockError};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, TryLockError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use redis::{Client, ConnectionAddr, ProtocolVersion};
@@ -17,6 +18,9 @@ use thiserror::Error;
 
 const MAX_CONNECTIONS_PER_RUNTIME: usize = 8;
 const MAX_CONCURRENT_OPERATIONS: usize = 4;
+const MAX_DNS_RESOLVERS_PER_RUNTIME: usize = 2;
+const MAX_DNS_RESOLVERS_GLOBAL: usize = 16;
+const MAX_RESOLVED_ADDRESSES: usize = 32;
 const MAX_URL_BYTES: usize = 16 * 1024;
 const MAX_KEY_BYTES: usize = 64 * 1024;
 const MAX_VALUE_BYTES: usize = 8 * 1024 * 1024;
@@ -68,6 +72,8 @@ pub enum RedisError {
     },
     #[error("Redis handle space exhausted")]
     HandleSpaceExhausted,
+    #[error("Redis runtime ownership ended while a connection was opening")]
+    RuntimeClosed,
 }
 
 #[derive(Debug)]
@@ -150,6 +156,58 @@ fn reserve_operation() -> Result<OperationPermit, RedisError> {
     Ok(OperationPermit { runtime_id })
 }
 
+#[derive(Default)]
+struct ResolverUsage {
+    active_global: usize,
+    active_by_runtime: HashMap<u64, usize>,
+}
+
+fn resolver_usage() -> &'static Mutex<ResolverUsage> {
+    static USAGE: OnceLock<Mutex<ResolverUsage>> = OnceLock::new();
+    USAGE.get_or_init(|| Mutex::new(ResolverUsage::default()))
+}
+
+struct ResolverPermit {
+    runtime_id: u64,
+}
+
+impl Drop for ResolverPermit {
+    fn drop(&mut self) {
+        let mut usage = crate::native::lock_recover(resolver_usage());
+        usage.active_global = usage.active_global.saturating_sub(1);
+        if let Some(active) = usage.active_by_runtime.get_mut(&self.runtime_id) {
+            *active = active.saturating_sub(1);
+            if *active == 0 {
+                usage.active_by_runtime.remove(&self.runtime_id);
+            }
+        }
+    }
+}
+
+fn reserve_resolver(runtime_id: u64) -> Result<ResolverPermit, RedisError> {
+    let mut usage = crate::native::lock_recover(resolver_usage());
+    let active_for_runtime = usage
+        .active_by_runtime
+        .get(&runtime_id)
+        .copied()
+        .unwrap_or(0);
+    if active_for_runtime >= MAX_DNS_RESOLVERS_PER_RUNTIME {
+        return Err(RedisError::ResourceLimit {
+            resource: "concurrent Redis DNS resolvers per runtime",
+            limit: MAX_DNS_RESOLVERS_PER_RUNTIME,
+        });
+    }
+    if usage.active_global >= MAX_DNS_RESOLVERS_GLOBAL {
+        return Err(RedisError::ResourceLimit {
+            resource: "concurrent Redis DNS resolvers",
+            limit: MAX_DNS_RESOLVERS_GLOBAL,
+        });
+    }
+    usage.active_global += 1;
+    *usage.active_by_runtime.entry(runtime_id).or_default() += 1;
+    Ok(ResolverPermit { runtime_id })
+}
+
 struct HandleReservation {
     runtime_id: u64,
     committed: bool,
@@ -193,6 +251,15 @@ fn reserve_handle() -> Result<HandleReservation, RedisError> {
 impl HandleReservation {
     fn commit(mut self, connection: Connection) -> Result<i64, RedisError> {
         let mut registry = crate::native::lock_recover(registry());
+        if registry
+            .reserved
+            .get(&self.runtime_id)
+            .copied()
+            .unwrap_or(0)
+            == 0
+        {
+            return Err(RedisError::RuntimeClosed);
+        }
         let id = registry.next_id;
         registry.next_id = id.checked_add(1).ok_or(RedisError::HandleSpaceExhausted)?;
         release_reservation(&mut registry, self.runtime_id);
@@ -645,22 +712,70 @@ impl<'a> RespDecoder<'a> {
     }
 }
 
+fn resolve_addresses(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+) -> Result<Vec<SocketAddr>, RedisError> {
+    if let Ok(address) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(address, port)]);
+    }
+
+    // `ToSocketAddrs` has no timeout API. Resolve on a separately quota-bound
+    // worker so the VM still observes its deadline. If the platform resolver
+    // itself wedges, at most two workers per runtime and sixteen process-wide
+    // can remain until the operating system releases them.
+    let runtime_id = crate::native::current_runtime_id();
+    let permit = reserve_resolver(runtime_id)?;
+    let host = host.to_owned();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("titan-redis-dns".into())
+        .spawn(move || {
+            let result = (host.as_str(), port)
+                .to_socket_addrs()
+                .map_err(map_io)
+                .and_then(|addresses| {
+                    let addresses = addresses
+                        .take(MAX_RESOLVED_ADDRESSES + 1)
+                        .collect::<Vec<_>>();
+                    if addresses.len() > MAX_RESOLVED_ADDRESSES {
+                        return Err(RedisError::ResourceLimit {
+                            resource: "resolved Redis addresses",
+                            limit: MAX_RESOLVED_ADDRESSES,
+                        });
+                    }
+                    if addresses.is_empty() {
+                        return Err(RedisError::InvalidArgument(
+                            "Redis host resolved to no addresses",
+                        ));
+                    }
+                    Ok(addresses)
+                });
+            drop(permit);
+            let _ = sender.send(result);
+        })
+        .map_err(map_io)?;
+
+    let wait = remaining(deadline, CONNECT_TIMEOUT)?;
+    match receiver.recv_timeout(wait) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(RedisError::Timeout),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(RedisError::Io(
+            std::io::Error::other("Redis DNS resolver stopped without a result"),
+        )),
+    }
+}
+
 fn connect_tcp(host: &str, port: u16, deadline: Instant) -> Result<TcpStream, RedisError> {
-    let addresses = (host, port).to_socket_addrs().map_err(map_io)?;
+    let addresses = resolve_addresses(host, port, deadline)?;
     let mut last_error = None;
-    let mut found_address = false;
     for address in addresses {
-        found_address = true;
         let timeout = remaining(deadline, CONNECT_TIMEOUT)?;
         match TcpStream::connect_timeout(&address, timeout) {
             Ok(stream) => return Ok(stream),
             Err(error) => last_error = Some(error),
         }
-    }
-    if !found_address {
-        return Err(RedisError::InvalidArgument(
-            "Redis host resolved to no addresses",
-        ));
     }
     Err(map_io(last_error.unwrap_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "no Redis address connected")
@@ -956,6 +1071,8 @@ pub fn keys(handle: i64, pattern: &str) -> Result<Vec<String>, RedisError> {
             }
             cursor = next_cursor;
             if cursor == "0" {
+                keys.sort_unstable();
+                keys.dedup();
                 return Ok(keys);
             }
             remaining(deadline, OPERATION_TIMEOUT)?;
@@ -1395,7 +1512,7 @@ mod tests {
                 ),
                 (
                     vec!["SCAN", "17", "MATCH", "user:*", "COUNT", "256"],
-                    b"*2\r\n$1\r\n0\r\n*1\r\n$6\r\nuser:2\r\n",
+                    b"*2\r\n$1\r\n0\r\n*2\r\n$6\r\nuser:1\r\n$6\r\nuser:2\r\n",
                 ),
             ]);
             let handle = connect(&url).unwrap();
@@ -1422,6 +1539,103 @@ mod tests {
             let handle = connect(&url).unwrap();
             assert_eq!(lrange(handle, "items", 0, -1).unwrap(), ["a", "b", "c"]);
             close(handle);
+            server.join().unwrap();
+            assert_eq!(cleanup_runtime(runtime_id), 0);
+        });
+    }
+
+    #[test]
+    fn server_error_is_typed_and_does_not_desynchronise_connection() {
+        in_test_runtime(|runtime_id| {
+            let (url, server) = scripted_server(vec![
+                (vec!["GET", "wrong-type"], b"-WRONGTYPE not a string\r\n"),
+                (vec!["PING"], b"+PONG\r\n"),
+            ]);
+            let handle = connect(&url).unwrap();
+            assert!(matches!(
+                get(handle, "wrong-type"),
+                Err(RedisError::Server(message)) if message == "WRONGTYPE not a string"
+            ));
+            assert_eq!(ping(handle).unwrap(), "PONG");
+            close(handle);
+            server.join().unwrap();
+            assert_eq!(cleanup_runtime(runtime_id), 0);
+        });
+    }
+
+    #[test]
+    fn safe_raw_command_executes_and_renders_a_bounded_reply() {
+        in_test_runtime(|runtime_id| {
+            let (url, server) = scripted_server(vec![(vec!["STRLEN", "key"], b":5\r\n")]);
+            let handle = connect(&url).unwrap();
+            assert_eq!(raw(handle, "strlen key").unwrap(), "5");
+            close(handle);
+            server.join().unwrap();
+            assert_eq!(cleanup_runtime(runtime_id), 0);
+        });
+    }
+
+    #[test]
+    fn hostname_resolution_is_real_and_releases_its_quota() {
+        in_test_runtime(|runtime_id| {
+            let (url, server) = scripted_server(vec![(vec!["PING"], b"+PONG\r\n")]);
+            let url = url.replacen("127.0.0.1", "localhost", 1);
+            let handle = connect(&url).unwrap();
+            assert_eq!(ping(handle).unwrap(), "PONG");
+            close(handle);
+            server.join().unwrap();
+            assert!(!crate::native::lock_recover(resolver_usage())
+                .active_by_runtime
+                .contains_key(&runtime_id));
+            assert_eq!(cleanup_runtime(runtime_id), 0);
+        });
+    }
+
+    #[test]
+    fn malformed_and_over_nested_replies_close_the_connection() {
+        in_test_runtime(|runtime_id| {
+            let (url, server) = spawn_server(|stream| {
+                let mut reader = BufReader::new(stream);
+                assert_eq!(server_read_command(&mut reader), vec!["GET", "key"]);
+                reader.get_mut().write_all(b"$3\r\nabcX\n").unwrap();
+            });
+            let handle = connect(&url).unwrap();
+            assert!(matches!(get(handle, "key"), Err(RedisError::Protocol(_))));
+            assert!(matches!(ping(handle), Err(RedisError::UnknownHandle(_))));
+            server.join().unwrap();
+
+            let (url, server) = spawn_server(|stream| {
+                let mut reader = BufReader::new(stream);
+                assert_eq!(server_read_command(&mut reader), vec!["GET", "key"]);
+                let mut reply = b"*1\r\n".repeat(MAX_RESPONSE_DEPTH + 2);
+                reply.extend_from_slice(b"+value\r\n");
+                reader.get_mut().write_all(&reply).unwrap();
+            });
+            let handle = connect(&url).unwrap();
+            assert!(matches!(
+                get(handle, "key"),
+                Err(RedisError::ResourceLimit {
+                    resource: "Redis response nesting depth",
+                    ..
+                })
+            ));
+            assert!(matches!(ping(handle), Err(RedisError::UnknownHandle(_))));
+            server.join().unwrap();
+
+            let (url, server) = spawn_server(|stream| {
+                let mut reader = BufReader::new(stream);
+                assert_eq!(server_read_command(&mut reader), vec!["GET", "key"]);
+                write!(reader.get_mut(), "*{}\r\n", MAX_RESPONSE_ELEMENTS).unwrap();
+            });
+            let handle = connect(&url).unwrap();
+            assert!(matches!(
+                get(handle, "key"),
+                Err(RedisError::ResourceLimit {
+                    resource: "Redis response elements",
+                    ..
+                })
+            ));
+            assert!(matches!(ping(handle), Err(RedisError::UnknownHandle(_))));
             server.join().unwrap();
             assert_eq!(cleanup_runtime(runtime_id), 0);
         });
@@ -1521,6 +1735,30 @@ mod tests {
     }
 
     #[test]
+    fn handles_are_runtime_owned_and_cleanup_closes_the_socket() {
+        in_test_runtime(|runtime_id| {
+            let (url, server) = spawn_server(|mut stream| {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut byte = [0u8; 1];
+                assert_eq!(stream.read(&mut byte).unwrap(), 0);
+            });
+            let handle = connect(&url).unwrap();
+            let other_runtime = NEXT_TEST_RUNTIME.fetch_add(1, Ordering::Relaxed);
+            crate::native::with_runtime_context(other_runtime, || {
+                assert!(matches!(
+                    ping(handle),
+                    Err(RedisError::UnknownHandle(_))
+                ));
+                assert_eq!(cleanup_runtime(other_runtime), 0);
+            });
+            assert_eq!(cleanup_runtime(runtime_id), 1);
+            server.join().unwrap();
+        });
+    }
+
+    #[test]
     fn runtime_ownership_cleanup_and_quotas_are_enforced() {
         in_test_runtime(|runtime_id| {
             let reservations = (0..MAX_CONNECTIONS_PER_RUNTIME)
@@ -1546,8 +1784,23 @@ mod tests {
                 })
             ));
             drop(permits);
+
+            let resolvers = (0..MAX_DNS_RESOLVERS_PER_RUNTIME)
+                .map(|_| reserve_resolver(runtime_id).unwrap())
+                .collect::<Vec<_>>();
+            assert!(matches!(
+                reserve_resolver(runtime_id),
+                Err(RedisError::ResourceLimit {
+                    resource: "concurrent Redis DNS resolvers per runtime",
+                    ..
+                })
+            ));
+            drop(resolvers);
             assert_eq!(cleanup_runtime(runtime_id), 0);
             assert!(!crate::native::lock_recover(runtime_usage()).contains_key(&runtime_id));
+            assert!(!crate::native::lock_recover(resolver_usage())
+                .active_by_runtime
+                .contains_key(&runtime_id));
         });
     }
 
