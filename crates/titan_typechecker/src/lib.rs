@@ -3427,7 +3427,10 @@ fn match_pattern_is_lowerable(pattern: &Pattern) -> bool {
         Pattern::Enum { inner: None, .. } => true,
         Pattern::Enum {
             inner: Some(inner), ..
-        } => matches!(inner.as_ref(), Pattern::Wildcard { .. } | Pattern::Ident { .. }),
+        } => matches!(
+            inner.as_ref(),
+            Pattern::Wildcard { .. } | Pattern::Ident { .. }
+        ),
         Pattern::Or { .. } | Pattern::Tuple { .. } | Pattern::Struct { .. } => false,
     }
 }
