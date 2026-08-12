@@ -492,6 +492,87 @@ funcional integrada usa un modelo WordLevel pequeño y real, sin simulación.
 No hace falta validación física individual para este bloque. El código sí quedó
 compilado y enlazado dentro del binario Android/Bionic ARMv7.
 
+### Modelos ONNX e inferencia con cuotas por runtime
+
+Los commits `788720b` y `f0b8f61` sustituyen el registro ONNX sin límites por
+un registro aislado y acotado. Cada runtime admite como máximo:
+
+- cuatro modelos;
+- 256 MiB por archivo principal y 512 MiB agregados de fuentes persistentes;
+- paths de 16 KiB;
+- 65.536 nodos, ocho entradas y 32 salidas por modelo;
+- rango ocho, 4.194.304 por dimensión y 4.194.304 elementos por tensor;
+- 64 MiB agregados de entrada por inferencia;
+- 4.194.304 elementos y 64 MiB agregados de salida de ancho fijo;
+- una carga o inferencia pesada simultánea.
+
+La carga adquiere primero un permiso RAII, abre una sola vez el archivo, exige
+que sea regular y mide ese mismo descriptor. Tract recibe un `Read::take`
+limitado al tamaño inspeccionado mediante `model_for_read`; ya no se vuelve a
+abrir el path con `model_for_path`. La capacidad se comprueba antes de parsear y
+otra vez bajo el lock al insertar. Los IDs usan incremento comprobado.
+
+El modelo persistente queda en `Arc<Mutex<_>>`. El lock global solo sirve para
+buscar o modificar handles, no permanece tomado durante optimización ni
+inferencia. `close` y cleanup devuelven el slot y los bytes de fuente, y los
+handles continúan siendo privados del runtime que los creó.
+
+Antes de optimizar se limitan entradas, salidas y nodos. Antes de insertar se
+repiten esos límites sobre el grafo ejecutable y se inspeccionan formas, tipos y
+presupuestos estáticos. Las rutas `run_f32`, `run_ids`, BERT de dos y tres
+entradas y pooling usan productos y conversiones comprobados. Después de
+`tract::run`, todas las salidas se validan por cantidad, rango, dimensión,
+elementos y bytes antes de copiar la primera hacia la VM. Tensores String/Blob,
+cuyo contenido no puede acotarse por `size_of`, se rechazan.
+
+El puente VM rechaza arrays de forma antes de convertir más de ocho elementos,
+valida longitudes y bytes antes de duplicar arrays `Value` en buffers f32/i64,
+y rechaza NaN, infinito y valores f64 que no caben en f32.
+
+Las regresiones verificadas por CI prueban:
+
+1. cuatro modelos ejecutables de identidad hechos con tract real, rechazo del
+   quinto, inferencia f32 real, `close`, reemplazo, aislamiento y cleanup;
+2. rangos, dimensiones, productos, bytes de entrada, longitudes y salidas
+   adversariales;
+3. saturación y recuperación del permiso de operación;
+4. rechazo de directorios, de un archivo sparse de 256 MiB más un byte y de un
+   protobuf ONNX malformado, sin filtrar el permiso ni insertar un handle;
+5. conservación del test opt-in que permite cargar un `.onnx` externo válido.
+
+Evidencia externa final para `f0b8f61882b57305906d9c97c2aceb080344765c`:
+
+- [CI 31561938930](https://github.com/alexsndersoto04-source/aio/actions/runs/31561938930): `cargo fmt --check`, checks con características normales y sin
+  características por defecto, todos los tests del workspace y cross-check
+  AArch64 aprobaron.
+- [Termux ARM 31561938779](https://github.com/alexsndersoto04-source/aio/actions/runs/31561938779): check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete Debian y artefacto
+  `zett-termux-arm-61` aprobaron.
+- `verify_phase34.py`: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.
+
+La primera ejecución funcional, [CI 31561809762](https://github.com/alexsndersoto04-source/aio/actions/runs/31561809762), detectó que `TDim::to_i64` devuelve `Result` y no `Option` en
+tract 0.21.14; por eso no se cuenta como verde. `f0b8f61` corrigió esa
+conversión, añadió el límite de nodos y aplicó exactamente el formato exigido
+por Rust 1.97. El Termux correspondiente a aquella revisión también falló y no
+se usa como evidencia.
+
+Límites declarados, sin fingir más cobertura: la contabilidad persistente mide
+bytes del archivo ONNX principal, no el heap exacto del plan optimizado. Una
+salida dinámica solo puede medirse después de que tract la produjo, aunque se
+rechaza antes de expandirla a valores TITAN. La ruta acotada no resuelve pesos
+ONNX guardados en archivos externos, para no abrir datos laterales fuera de la
+cuota. Tampoco hay todavía cancelación segura de una operación nativa tract que
+se quede computando; la cuota impide otra operación ONNX simultánea en ese
+runtime, pero no es un timeout.
+
+CI ejecutó inferencia real sobre un grafo tract construido en memoria y ejercitó
+el parser con entrada malformada; no se suministró un `.onnx` válido de terceros
+automáticamente. El test opt-in sigue disponible para eso. No hace falta una
+prueba física individual: el módulo completo quedó compilado y enlazado en el
+ELF Android/Bionic ARMv7, y el paquete se reserva para el siguiente milestone
+físico agrupado.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -516,13 +597,13 @@ reales se liberan en el mismo hilo que las creó.
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos,
   colecciones y los recursos ligeros descritos arriba ya están conectadas. Esto
-  no cierra toda la auditoría de crecimiento: KV, Redis, ONNX, PDF y
-  servidores conservan registros duraderos que deben revisarse
+  no cierra toda la auditoría de crecimiento: KV, Redis, PDF y servidores
+  conservan registros duraderos que deben revisarse
   individualmente.
-- CI prueba directamente la destrucción con handles de colecciones y tareas.
-  Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
-  no levanta un servidor Redis externo ni carga un modelo ONNX real para luego
-  destruirlo.
+- CI prueba directamente la destrucción con handles de colecciones, tareas,
+  tokenizadores y planes ONNX de tract. Las demás rutas de limpieza compilan y
+  son revisadas por Rust, pero este run no levanta un servidor Redis externo ni
+  carga un `.onnx` válido de terceros para luego destruirlo.
 - Los comandos de formato y del antiguo job AArch64 ya pasan, pero sus dos
   líneas `continue-on-error` permanecen en el workflow hasta aplicar desde
   GitHub web la plantilla corregida `docs/CI_WORKFLOW_TEMPLATE.yml`. La GitHub
