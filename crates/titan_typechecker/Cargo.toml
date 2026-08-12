@@ -12,3 +12,4 @@ thiserror.workspace = true
 [dev-dependencies]
 titan_lexer = { path = "../titan_lexer" }
 titan_parser = { path = "../titan_parser" }
+titan_pkg = { path = "../titan_pkg" }

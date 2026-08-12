@@ -59,6 +59,12 @@ pub enum TypeError {
     OutsideFunction,
     #[error("function '{name}' can finish without returning {expected}")]
     MissingReturn { name: String, expected: Type },
+    #[error("function '{name}' returns incompatible types {first} and {second}")]
+    InconsistentReturns {
+        name: String,
+        first: Type,
+        second: Type,
+    },
     #[error("duplicate {kind} declaration '{name}'")]
     DuplicateDeclaration { kind: String, name: String },
     #[error("unknown type '{name}'")]
@@ -124,6 +130,7 @@ pub struct TypeEnv {
     type_aliases: HashMap<String, Type>,
     errors: Vec<TypeError>,
     return_type: Type,
+    return_candidates: Vec<Vec<Type>>,
     loop_depth: usize,
     function_depth: usize,
 }
@@ -1018,6 +1025,7 @@ impl TypeEnv {
             type_aliases: HashMap::new(),
             errors: Vec::new(),
             return_type: Type::Unknown,
+            return_candidates: Vec::new(),
             loop_depth: 0,
             function_depth: 0,
         }
@@ -1036,6 +1044,7 @@ impl TypeEnv {
         self.type_aliases.clear();
         self.errors.clear();
         self.return_type = Type::Unknown;
+        self.return_candidates.clear();
         self.loop_depth = 0;
         self.function_depth = 0;
         self.validate_declarations(&program.items);
@@ -1043,6 +1052,32 @@ impl TypeEnv {
         self.validate_type_aliases();
         self.validate_declared_types(&program.items);
         self.validate_impl_contracts(&program.items);
+        let validation_errors = std::mem::take(&mut self.errors);
+
+        // Unannotated return types are inferred to a fixed point before the
+        // diagnostic pass. This keeps declaration order irrelevant: a caller
+        // checked before its callee sees the same inferred signature as one
+        // written afterwards.
+        for _ in 0..=count_functions(&program.items) {
+            let previous: HashMap<_, _> = self
+                .functions
+                .iter()
+                .map(|(name, signature)| (name.clone(), signature.result.clone()))
+                .collect();
+            self.reset_analysis_state();
+            for item in &program.items {
+                self.check_item(item);
+            }
+            let stable = self.functions.iter().all(|(name, signature)| {
+                previous.get(name).is_some_and(|result| result == &signature.result)
+            });
+            if stable {
+                break;
+            }
+        }
+
+        self.reset_analysis_state();
+        self.errors = validation_errors;
         for item in &program.items {
             self.check_item(item);
         }
@@ -1051,6 +1086,37 @@ impl TypeEnv {
         } else {
             Err(std::mem::take(&mut self.errors))
         }
+    }
+
+    fn reset_analysis_state(&mut self) {
+        self.scopes = vec![HashMap::new()];
+        self.constants.clear();
+        self.errors.clear();
+        self.return_type = Type::Unknown;
+        self.return_candidates.clear();
+        self.loop_depth = 0;
+        self.function_depth = 0;
+    }
+
+    fn infer_return_type(&mut self, name: &str, candidates: &[Type]) -> Type {
+        let Some(first) = candidates.first() else {
+            return Type::Unit;
+        };
+        let first_resolved = self.resolve_alias(first);
+        for candidate in candidates.iter().skip(1) {
+            let resolved = self.resolve_alias(candidate);
+            if !compatible(&first_resolved, &resolved)
+                && !compatible(&resolved, &first_resolved)
+            {
+                self.errors.push(TypeError::InconsistentReturns {
+                    name: name.into(),
+                    first: first.clone(),
+                    second: candidate.clone(),
+                });
+                return Type::Unknown;
+            }
+        }
+        first.clone()
     }
 
     fn validate_declarations(&mut self, items: &[Item]) {
@@ -1234,7 +1300,7 @@ impl TypeEnv {
                                 .return_type
                                 .as_ref()
                                 .map(type_from_ast)
-                                .unwrap_or(Type::Unit),
+                                .unwrap_or(Type::Unknown),
                         },
                     );
                 }
@@ -1389,6 +1455,9 @@ impl TypeEnv {
                     block.methods.iter().map(|m| m.name.clone()).collect();
                 for method in &block.methods {
                     let mut annotated = method.clone();
+                    if let Some(t) = &type_name {
+                        annotated.name = format!("{}::{}", t, method.name);
+                    }
                     if let (Some(t), Some(first)) = (&type_name, annotated.params.first_mut()) {
                         if first.name == "self" && first.type_ann.is_none() {
                             first.type_ann = Some(TypeExpr::Named {
@@ -1484,14 +1553,28 @@ impl TypeEnv {
                 .return_type
                 .as_ref()
                 .map(type_from_ast)
-                .unwrap_or(Type::Unit),
+                .unwrap_or(Type::Unknown),
         );
         let old_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
         self.function_depth += 1;
+        self.return_candidates.push(Vec::new());
         if let Some(body) = &function.body {
             let body_type = self.check_block(body);
             if body.final_expr.is_some() && self.return_type != Type::Unit {
                 self.require_compatible(&self.return_type.clone(), &body_type);
+            }
+            if function.return_type.is_none() {
+                if body.final_expr.is_some() {
+                    if body_type != Type::Never {
+                        if let Some(candidates) = self.return_candidates.last_mut() {
+                            candidates.push(body_type);
+                        }
+                    }
+                } else if !block_definitely_returns(body) {
+                    if let Some(candidates) = self.return_candidates.last_mut() {
+                        candidates.push(Type::Unit);
+                    }
+                }
             }
             if function.return_type.is_some()
                 && self.return_type != Type::Unit
@@ -1502,6 +1585,13 @@ impl TypeEnv {
                     name: function.name.clone(),
                     expected: self.return_type.clone(),
                 });
+            }
+        }
+        let candidates = self.return_candidates.pop().unwrap_or_default();
+        if function.return_type.is_none() && function.body.is_some() {
+            let inferred = self.infer_return_type(&function.name, &candidates);
+            if let Some(signature) = self.functions.get_mut(&function.name) {
+                signature.result = inferred;
             }
         }
         self.function_depth -= 1;
@@ -1932,6 +2022,9 @@ impl TypeEnv {
                     self.errors.push(TypeError::OutsideFunction);
                 } else {
                     self.require_compatible(&self.return_type.clone(), &found);
+                    if let Some(candidates) = self.return_candidates.last_mut() {
+                        candidates.push(found);
+                    }
                 }
                 Type::Never
             }
@@ -2004,14 +2097,21 @@ impl TypeEnv {
                 );
                 let old_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
                 self.function_depth += 1;
+                self.return_candidates.push(Vec::new());
                 let actual = self.check_expr(body);
+                if actual != Type::Never {
+                    if let Some(candidates) = self.return_candidates.last_mut() {
+                        candidates.push(actual.clone());
+                    }
+                }
+                let candidates = self.return_candidates.pop().unwrap_or_default();
                 self.function_depth -= 1;
                 self.loop_depth = old_loop_depth;
                 self.return_type = old_ret;
                 let result = return_type
                     .as_ref()
                     .map(type_from_ast)
-                    .unwrap_or_else(|| actual.clone());
+                    .unwrap_or_else(|| self.infer_return_type("closure", &candidates));
                 self.require_compatible(&result, &actual);
                 self.pop_scope();
                 Type::Function(p, Box::new(result))
@@ -2637,6 +2737,19 @@ impl TypeEnv {
     fn lookup(&self, name: &str) -> Option<Type> {
         self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
     }
+}
+
+fn count_functions(items: &[Item]) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            Item::Function(_) => 1,
+            Item::Impl(block) => block.methods.len(),
+            Item::Trait(trait_decl) => trait_decl.methods.len(),
+            Item::Module(module) => count_functions(&module.items),
+            _ => 0,
+        })
+        .sum()
 }
 
 fn declaration_errors(
@@ -3297,30 +3410,14 @@ mod tests {
         paths.sort();
         let mut failures = Vec::new();
         for path in paths {
-            let source = std::fs::read_to_string(&path).unwrap();
-            let mut lexer = Lexer::new(&source);
-            let (tokens, lexer_errors) = lexer.tokenize();
-            if !lexer_errors.is_empty() {
-                failures.push(format!(
-                    "{}: lexer: {}",
-                    path.display(),
-                    lexer_errors
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ));
-                continue;
-            }
-            let mut parser = Parser::new(tokens.to_vec());
-            let program = match parser.parse_program() {
-                Ok(program) => program,
+            let project = match titan_pkg::SourceProject::load(&path) {
+                Ok(project) => project,
                 Err(error) => {
-                    failures.push(format!("{}: parser: {error}", path.display()));
+                    failures.push(format!("{}: project loader: {error}", path.display()));
                     continue;
                 }
             };
-            if let Err(errors) = TypeEnv::new().check_program(&program) {
+            if let Err(errors) = TypeEnv::new().check_program(&project.program) {
                 failures.push(format!(
                     "{}: {}",
                     path.display(),
@@ -3441,6 +3538,13 @@ mod tests {
         assert!(check("fn complete(flag: bool) -> int { if flag { return 1 } return 2 }").is_ok());
         assert!(check("const INVALID = return 1 fn main() {}").is_err());
         assert!(check("fn main() { spawn |value: int| value }").is_err());
+    }
+
+    #[test]
+    fn infers_unannotated_return_types_independent_of_order() {
+        assert!(check("fn main() { let value: int = later() } fn later() { 42 }").is_ok());
+        assert!(check("fn mixed(flag: bool) { if flag { return 1 } \"text\" } fn main() { mixed(true) }").is_err());
+        assert!(check("fn main() { let callback = || return 42 let value: int = callback() }").is_ok());
     }
 
     #[test]
