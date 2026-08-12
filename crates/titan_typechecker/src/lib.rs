@@ -59,14 +59,42 @@ pub enum TypeError {
     OutsideFunction,
     #[error("function '{name}' can finish without returning {expected}")]
     MissingReturn { name: String, expected: Type },
+    #[error("duplicate {kind} declaration '{name}'")]
+    DuplicateDeclaration { kind: String, name: String },
+    #[error("unknown type '{name}'")]
+    UnknownType { name: String },
+    #[error("type alias '{name}' is recursive")]
+    RecursiveTypeAlias { name: String },
+    #[error("impl target '{name}' is not a declared struct")]
+    InvalidImplTarget { name: String },
+    #[error("method '{method}' in impl {trait_name} for {target} has an incompatible signature")]
+    TraitMethodMismatch {
+        trait_name: String,
+        target: String,
+        method: String,
+    },
+    #[error("method '{method}' is not declared by trait '{trait_name}'")]
+    UnknownTraitMethod { trait_name: String, method: String },
     #[error("missing field '{field}' in struct '{structure}'")]
     MissingField { structure: String, field: String },
     #[error("unknown field '{field}' in struct '{structure}'")]
     UnknownField { structure: String, field: String },
     #[error("value of type {target} has no fields")]
     NoFields { target: Type },
+    #[error("invalid pattern: {message}")]
+    InvalidPattern { message: String },
+    #[error("unknown variant '{enumeration}::{variant}'")]
+    UnknownVariant {
+        enumeration: String,
+        variant: String,
+    },
     #[error("non-exhaustive boolean match")]
     NonExhaustiveMatch,
+    #[error("non-exhaustive match for enum '{enumeration}'; missing {missing:?}")]
+    NonExhaustiveEnum {
+        enumeration: String,
+        missing: Vec<String>,
+    },
     #[error("break/continue used outside a loop")]
     OutsideLoop,
     #[error("operator ? requires an Option or Result value")]
@@ -1010,7 +1038,11 @@ impl TypeEnv {
         self.return_type = Type::Unknown;
         self.loop_depth = 0;
         self.function_depth = 0;
+        self.validate_declarations(&program.items);
         self.collect_declarations(&program.items);
+        self.validate_type_aliases();
+        self.validate_declared_types(&program.items);
+        self.validate_impl_contracts(&program.items);
         for item in &program.items {
             self.check_item(item);
         }
@@ -1019,6 +1051,131 @@ impl TypeEnv {
         } else {
             Err(std::mem::take(&mut self.errors))
         }
+    }
+
+    fn validate_declarations(&mut self, items: &[Item]) {
+        self.errors
+            .extend(declaration_errors(&self.base_functions, items));
+    }
+
+    fn validate_type_aliases(&mut self) {
+        for (name, target) in &self.type_aliases {
+            let mut visited = HashSet::new();
+            if alias_reaches(name, target, &self.type_aliases, &mut visited) {
+                self.errors
+                    .push(TypeError::RecursiveTypeAlias { name: name.clone() });
+            }
+        }
+    }
+
+    fn validate_declared_types(&mut self, items: &[Item]) {
+        let mut known = builtin_type_names(&self.base_functions);
+        collect_declared_type_names(items, &mut known);
+        let mut unknown = HashSet::new();
+        collect_unknown_types(items, &known, &mut unknown);
+        let mut unknown: Vec<_> = unknown.into_iter().collect();
+        unknown.sort();
+        self.errors.extend(
+            unknown
+                .into_iter()
+                .map(|name| TypeError::UnknownType { name }),
+        );
+    }
+
+    fn validate_impl_contracts(&mut self, items: &[Item]) {
+        let mut methods = HashSet::new();
+        self.validate_impl_contracts_in(items, &mut methods);
+    }
+
+    fn validate_impl_contracts_in(
+        &mut self,
+        items: &[Item],
+        methods: &mut HashSet<String>,
+    ) {
+        for item in items {
+            match item {
+                Item::Impl(block) => {
+                    let Some(target) = direct_named_type(&block.target_type) else {
+                        self.errors.push(TypeError::InvalidImplTarget {
+                            name: format!("{:?}", block.target_type),
+                        });
+                        continue;
+                    };
+                    if !self.structs.contains_key(target) {
+                        self.errors.push(TypeError::InvalidImplTarget {
+                            name: target.into(),
+                        });
+                    }
+                    let provided: HashMap<_, _> = block
+                        .methods
+                        .iter()
+                        .map(|method| (method.name.as_str(), method))
+                        .collect();
+                    for method in &block.methods {
+                        let qualified = format!("{}::{}", target, method.name);
+                        if !methods.insert(qualified.clone()) {
+                            self.errors.push(TypeError::DuplicateDeclaration {
+                                kind: "method".into(),
+                                name: qualified,
+                            });
+                        }
+                    }
+                    let Some(trait_name) = &block.trait_name else {
+                        continue;
+                    };
+                    let Some(trait_decl) = self.traits.get(trait_name).cloned() else {
+                        continue;
+                    };
+                    let trait_methods: HashMap<_, _> = trait_decl
+                        .methods
+                        .iter()
+                        .map(|method| (method.name.as_str(), method))
+                        .collect();
+                    for method in &block.methods {
+                        let Some(contract) = trait_methods.get(method.name.as_str()) else {
+                            self.errors.push(TypeError::UnknownTraitMethod {
+                                trait_name: trait_name.clone(),
+                                method: method.name.clone(),
+                            });
+                            continue;
+                        };
+                        let expected = trait_method_signature(contract, target);
+                        let found = function_signature(method, Some(target));
+                        if !self.signatures_equal(&expected, &found) {
+                            self.errors.push(TypeError::TraitMethodMismatch {
+                                trait_name: trait_name.clone(),
+                                target: target.into(),
+                                method: method.name.clone(),
+                            });
+                        }
+                    }
+                    for method in &trait_decl.methods {
+                        if provided.contains_key(method.name.as_str()) || method.body.is_none() {
+                            continue;
+                        }
+                        let qualified = format!("{}::{}", target, method.name);
+                        if !methods.insert(qualified.clone()) {
+                            self.errors.push(TypeError::DuplicateDeclaration {
+                                kind: "method".into(),
+                                name: qualified,
+                            });
+                        }
+                    }
+                }
+                Item::Module(module) => self.validate_impl_contracts_in(&module.items, methods),
+                _ => {}
+            }
+        }
+    }
+
+    fn signatures_equal(&self, expected: &FunctionSig, found: &FunctionSig) -> bool {
+        expected.params.len() == found.params.len()
+            && expected
+                .params
+                .iter()
+                .zip(&found.params)
+                .all(|(left, right)| self.resolve_alias(left) == self.resolve_alias(right))
+            && self.resolve_alias(&expected.result) == self.resolve_alias(&found.result)
     }
 
     fn collect_traits(&mut self, items: &[Item]) {
@@ -1670,8 +1827,37 @@ impl TypeEnv {
                     }
                     self.pop_scope();
                 }
-                if subject == Type::Bool && !wildcard && bools.len() < 2 {
-                    self.errors.push(TypeError::NonExhaustiveMatch);
+                let has_catchall = arms.iter().any(|arm| {
+                    arm.guard.is_none() && pattern_is_catchall(&arm.pattern)
+                });
+                if self.resolve_alias(&subject) == Type::Bool && !has_catchall {
+                    let mut covered = HashSet::new();
+                    for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
+                        collect_bool_patterns(&arm.pattern, &mut covered);
+                    }
+                    if covered.len() < 2 {
+                        self.errors.push(TypeError::NonExhaustiveMatch);
+                    }
+                }
+                if let Type::Named(enumeration) = self.resolve_alias(&subject) {
+                    let variants = self.enum_variant_names(&enumeration);
+                    if !variants.is_empty() && !has_catchall {
+                        let mut covered = HashSet::new();
+                        for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
+                            collect_enum_patterns(&arm.pattern, &enumeration, &mut covered);
+                        }
+                        let mut missing: Vec<_> = variants
+                            .difference(&covered)
+                            .cloned()
+                            .collect();
+                        missing.sort();
+                        if !missing.is_empty() {
+                            self.errors.push(TypeError::NonExhaustiveEnum {
+                                enumeration,
+                                missing,
+                            });
+                        }
+                    }
                 }
                 result
             }
@@ -2220,40 +2406,44 @@ impl TypeEnv {
             right,
         });
     }
-    /// Phase 28: expand any user-defined `type Alias = Existing` before
-    /// checking. Bounded loop (16 hops) so a chain `type A = B; type B
-    /// = int` resolves cleanly, and any cycle breaks out safely.
-    /// Recurses INTO container types (Array, Tuple, Function) so
-    /// `Array(Named("Tag"))` becomes `Array(String)` when `type Tag =
-    /// string` is declared — otherwise deep container comparisons never
-    /// hop aliases inside their generic parameters.
+    /// Expands aliases recursively without an arbitrary chain limit. Alias
+    /// cycles are diagnosed during declaration validation; the visited set is
+    /// still kept here as a defensive boundary for embedders constructing an
+    /// AST directly.
     fn resolve_alias(&self, ty: &Type) -> Type {
-        // Step 1: unwrap the outermost alias chain (16 hops max).
-        let mut current = ty.clone();
-        for _ in 0..16 {
-            let next = match &current {
-                Type::Named(name) => match self.type_aliases.get(name) {
-                    Some(target) => target.clone(),
-                    None => break,
-                },
-                _ => break,
-            };
-            if next == current {
-                break;
+        self.resolve_alias_inner(ty, &mut HashSet::new())
+    }
+
+    fn resolve_alias_inner(&self, ty: &Type, visited: &mut HashSet<String>) -> Type {
+        match ty {
+            Type::Named(name) => {
+                let Some(target) = self.type_aliases.get(name) else {
+                    return ty.clone();
+                };
+                if !visited.insert(name.clone()) {
+                    return Type::Unknown;
+                }
+                let resolved = self.resolve_alias_inner(target, visited);
+                visited.remove(name);
+                resolved
             }
-            current = next;
-        }
-        // Step 2: recurse into containers so nested aliases also expand.
-        match current {
-            Type::Array(inner) => Type::Array(Box::new(self.resolve_alias(&inner))),
-            Type::Tuple(items) => {
-                Type::Tuple(items.iter().map(|t| self.resolve_alias(t)).collect())
+            Type::Array(inner) => {
+                Type::Array(Box::new(self.resolve_alias_inner(inner, visited)))
             }
-            Type::Function(params, ret) => Type::Function(
-                params.iter().map(|t| self.resolve_alias(t)).collect(),
-                Box::new(self.resolve_alias(&ret)),
+            Type::Tuple(items) => Type::Tuple(
+                items
+                    .iter()
+                    .map(|item| self.resolve_alias_inner(item, visited))
+                    .collect(),
             ),
-            other => other,
+            Type::Function(params, result) => Type::Function(
+                params
+                    .iter()
+                    .map(|param| self.resolve_alias_inner(param, visited))
+                    .collect(),
+                Box::new(self.resolve_alias_inner(result, visited)),
+            ),
+            _ => ty.clone(),
         }
     }
     fn require_compatible(&mut self, expected: &Type, found: &Type) {
@@ -2266,6 +2456,14 @@ impl TypeEnv {
             });
         }
     }
+    fn enum_variant_names(&self, enumeration: &str) -> HashSet<String> {
+        let prefix = format!("{}::", enumeration);
+        self.enum_variants
+            .keys()
+            .filter_map(|qualified| qualified.strip_prefix(&prefix).map(str::to_string))
+            .collect()
+    }
+
     fn bind_pattern(
         &mut self,
         pattern: &Pattern,
@@ -2287,22 +2485,140 @@ impl TypeEnv {
                 self.require_compatible(subject, &found);
             }
             Pattern::Or { left, right, .. } => {
+                let original = self.scopes.last().cloned().unwrap_or_default();
                 self.bind_pattern(left, subject, wildcard, bools);
+                let left_scope = self.scopes.last().cloned().unwrap_or_default();
+                let left_names = pattern_binding_names(left);
+
+                if let Some(scope) = self.scopes.last_mut() {
+                    *scope = original.clone();
+                }
                 self.bind_pattern(right, subject, wildcard, bools);
-            }
-            Pattern::Enum { inner, .. } => {
-                if let Some(inner) = inner {
-                    self.bind_pattern(inner, &Type::Unknown, wildcard, bools);
+                let right_scope = self.scopes.last().cloned().unwrap_or_default();
+                let right_names = pattern_binding_names(right);
+
+                if let Some(scope) = self.scopes.last_mut() {
+                    *scope = original;
+                }
+                if left_names != right_names {
+                    self.errors.push(TypeError::InvalidPattern {
+                        message: "both sides of an or-pattern must bind the same names".into(),
+                    });
+                }
+                for name in left_names.intersection(&right_names) {
+                    let left_type = left_scope.get(name).cloned().unwrap_or(Type::Unknown);
+                    let right_type = right_scope.get(name).cloned().unwrap_or(Type::Unknown);
+                    self.require_compatible(&left_type, &right_type);
+                    self.define(name.clone(), left_type);
                 }
             }
-            Pattern::Tuple { elements, .. } => {
-                for element in elements {
-                    self.bind_pattern(element, &Type::Unknown, wildcard, bools);
+            Pattern::Enum {
+                name,
+                variant,
+                inner,
+                ..
+            } => {
+                self.require_compatible(&Type::Named(name.clone()), subject);
+                let qualified = format!("{}::{}", name, variant);
+                match self.enum_variants.get(&qualified).cloned() {
+                    Some(payload) => match (payload, inner) {
+                        (Some(payload), Some(inner)) => {
+                            self.bind_pattern(inner, &payload, wildcard, bools)
+                        }
+                        (None, Some(inner)) => {
+                            self.errors.push(TypeError::InvalidPattern {
+                                message: format!(
+                                    "variant '{}::{}' has no payload",
+                                    name, variant
+                                ),
+                            });
+                            self.bind_pattern(inner, &Type::Unknown, wildcard, bools);
+                        }
+                        _ => {}
+                    },
+                    None => {
+                        self.errors.push(TypeError::UnknownVariant {
+                            enumeration: name.clone(),
+                            variant: variant.clone(),
+                        });
+                        if let Some(inner) = inner {
+                            self.bind_pattern(inner, &Type::Unknown, wildcard, bools);
+                        }
+                    }
                 }
             }
-            Pattern::Struct { fields, .. } => {
-                for (_, pattern) in fields {
-                    self.bind_pattern(pattern, &Type::Unknown, wildcard, bools);
+            Pattern::Tuple { elements, .. } => match self.resolve_alias(subject) {
+                Type::Tuple(subjects) => {
+                    if subjects.len() != elements.len() {
+                        self.errors.push(TypeError::InvalidPattern {
+                            message: format!(
+                                "tuple pattern has {} elements but value has {}",
+                                elements.len(),
+                                subjects.len()
+                            ),
+                        });
+                    }
+                    for (index, element) in elements.iter().enumerate() {
+                        let element_type = subjects.get(index).cloned().unwrap_or(Type::Unknown);
+                        self.bind_pattern(element, &element_type, wildcard, bools);
+                    }
+                }
+                Type::Unknown => {
+                    for element in elements {
+                        self.bind_pattern(element, &Type::Unknown, wildcard, bools);
+                    }
+                }
+                found => {
+                    self.errors.push(TypeError::InvalidPattern {
+                        message: format!("tuple pattern cannot match {found}"),
+                    });
+                    for element in elements {
+                        self.bind_pattern(element, &Type::Unknown, wildcard, bools);
+                    }
+                }
+            },
+            Pattern::Struct {
+                name,
+                fields,
+                rest,
+                ..
+            } => {
+                self.require_compatible(&Type::Named(name.clone()), subject);
+                let Some(schema) = self.structs.get(name).cloned() else {
+                    self.errors.push(TypeError::UnknownType { name: name.clone() });
+                    for (_, pattern) in fields {
+                        self.bind_pattern(pattern, &Type::Unknown, wildcard, bools);
+                    }
+                    return;
+                };
+                let mut supplied = HashSet::new();
+                for (field, pattern) in fields {
+                    if !supplied.insert(field.as_str()) {
+                        self.errors.push(TypeError::InvalidPattern {
+                            message: format!(
+                                "field '{}.{}' appears more than once in the pattern",
+                                name, field
+                            ),
+                        });
+                    }
+                    let field_type = schema.get(field).cloned().unwrap_or_else(|| {
+                        self.errors.push(TypeError::UnknownField {
+                            structure: name.clone(),
+                            field: field.clone(),
+                        });
+                        Type::Unknown
+                    });
+                    self.bind_pattern(pattern, &field_type, wildcard, bools);
+                }
+                if !rest {
+                    for field in schema.keys() {
+                        if !supplied.contains(field.as_str()) {
+                            self.errors.push(TypeError::MissingField {
+                                structure: name.clone(),
+                                field: field.clone(),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -2314,10 +2630,462 @@ impl TypeEnv {
         self.scopes.pop();
     }
     fn define(&mut self, name: String, ty: Type) {
-        self.scopes.last_mut().unwrap().insert(name, ty);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name, ty);
+        }
     }
     fn lookup(&self, name: &str) -> Option<Type> {
         self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+    }
+}
+
+fn declaration_errors(
+    base_functions: &HashMap<String, FunctionSig>,
+    items: &[Item],
+) -> Vec<TypeError> {
+    struct State {
+        values: HashSet<String>,
+        types: HashSet<String>,
+        impls: HashSet<String>,
+        errors: Vec<TypeError>,
+    }
+
+    fn insert(state: &mut State, namespace: &str, kind: &str, name: &str) {
+        let names = if namespace == "value" {
+            &mut state.values
+        } else {
+            &mut state.types
+        };
+        if !names.insert(name.into()) {
+            state.errors.push(TypeError::DuplicateDeclaration {
+                kind: kind.into(),
+                name: name.into(),
+            });
+        }
+    }
+
+    fn parameters(state: &mut State, owner: &str, params: &[Param]) {
+        let mut names = HashSet::new();
+        for param in params {
+            if !names.insert(param.name.as_str()) {
+                state.errors.push(TypeError::DuplicateDeclaration {
+                    kind: "parameter".into(),
+                    name: format!("{}::{}", owner, param.name),
+                });
+            }
+        }
+    }
+
+    fn visit(state: &mut State, items: &[Item]) {
+        for item in items {
+            match item {
+                Item::Function(function) => {
+                    insert(state, "value", "function", &function.name);
+                    parameters(state, &function.name, &function.params);
+                }
+                Item::Const(constant) => insert(state, "value", "constant", &constant.name),
+                Item::Struct(structure) => {
+                    insert(state, "type", "type", &structure.name);
+                    let mut fields = HashSet::new();
+                    for field in &structure.fields {
+                        if !fields.insert(field.name.as_str()) {
+                            state.errors.push(TypeError::DuplicateDeclaration {
+                                kind: "field".into(),
+                                name: format!("{}::{}", structure.name, field.name),
+                            });
+                        }
+                    }
+                }
+                Item::Enum(enumeration) => {
+                    insert(state, "type", "type", &enumeration.name);
+                    let mut variants = HashSet::new();
+                    for variant in &enumeration.variants {
+                        if !variants.insert(variant.name.as_str()) {
+                            state.errors.push(TypeError::DuplicateDeclaration {
+                                kind: "enum variant".into(),
+                                name: format!("{}::{}", enumeration.name, variant.name),
+                            });
+                        }
+                    }
+                }
+                Item::Trait(trait_decl) => {
+                    insert(state, "type", "trait", &trait_decl.name);
+                    let mut methods = HashSet::new();
+                    for method in &trait_decl.methods {
+                        if !methods.insert(method.name.as_str()) {
+                            state.errors.push(TypeError::DuplicateDeclaration {
+                                kind: "trait method".into(),
+                                name: format!("{}::{}", trait_decl.name, method.name),
+                            });
+                        }
+                        parameters(
+                            state,
+                            &format!("{}::{}", trait_decl.name, method.name),
+                            &method.params,
+                        );
+                    }
+                }
+                Item::TypeAlias(alias) => insert(state, "type", "type", &alias.name),
+                Item::Impl(block) => {
+                    let target = direct_named_type(&block.target_type).unwrap_or("<invalid>");
+                    if let Some(trait_name) = &block.trait_name {
+                        let implementation = format!("{} for {}", trait_name, target);
+                        if !state.impls.insert(implementation.clone()) {
+                            state.errors.push(TypeError::DuplicateDeclaration {
+                                kind: "impl".into(),
+                                name: implementation,
+                            });
+                        }
+                    }
+                    let mut methods = HashSet::new();
+                    for method in &block.methods {
+                        if !methods.insert(method.name.as_str()) {
+                            state.errors.push(TypeError::DuplicateDeclaration {
+                                kind: "method".into(),
+                                name: format!("{}::{}", target, method.name),
+                            });
+                        }
+                        parameters(
+                            state,
+                            &format!("{}::{}", target, method.name),
+                            &method.params,
+                        );
+                    }
+                }
+                Item::Module(module) => visit(state, &module.items),
+                Item::Import(_) => {}
+            }
+        }
+    }
+
+    let values = base_functions
+        .keys()
+        .filter(|name| !name.contains("::"))
+        .cloned()
+        .collect();
+    let mut state = State {
+        values,
+        types: builtin_type_names(base_functions),
+        impls: HashSet::new(),
+        errors: Vec::new(),
+    };
+    visit(&mut state, items);
+    state.errors
+}
+
+fn builtin_type_names(base_functions: &HashMap<String, FunctionSig>) -> HashSet<String> {
+    fn collect(ty: &Type, names: &mut HashSet<String>) {
+        match ty {
+            Type::Named(name) => {
+                names.insert(name.clone());
+            }
+            Type::Array(inner) => collect(inner, names),
+            Type::Tuple(items) => {
+                for item in items {
+                    collect(item, names);
+                }
+            }
+            Type::Function(params, result) => {
+                for param in params {
+                    collect(param, names);
+                }
+                collect(result, names);
+            }
+            _ => {}
+        }
+    }
+
+    let mut names: HashSet<String> = [
+        "int", "i32", "i64", "u64", "usize", "float", "f32", "f64", "bool",
+        "string", "str", "char", "Array", "Vec", "array", "map", "any", "Option",
+        "Result",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    for signature in base_functions.values() {
+        for param in &signature.params {
+            collect(param, &mut names);
+        }
+        collect(&signature.result, &mut names);
+    }
+    names
+}
+
+fn collect_declared_type_names(items: &[Item], names: &mut HashSet<String>) {
+    for item in items {
+        match item {
+            Item::Struct(structure) => {
+                names.insert(structure.name.clone());
+            }
+            Item::Enum(enumeration) => {
+                names.insert(enumeration.name.clone());
+            }
+            Item::TypeAlias(alias) => {
+                names.insert(alias.name.clone());
+            }
+            Item::Module(module) => collect_declared_type_names(&module.items, names),
+            _ => {}
+        }
+    }
+}
+
+fn collect_unknown_types(
+    items: &[Item],
+    known: &HashSet<String>,
+    unknown: &mut HashSet<String>,
+) {
+    fn type_expr(ty: &TypeExpr, known: &HashSet<String>, unknown: &mut HashSet<String>) {
+        match ty {
+            TypeExpr::Named { name, generics } => {
+                if !known.contains(name) {
+                    unknown.insert(name.clone());
+                }
+                for generic in generics {
+                    type_expr(generic, known, unknown);
+                }
+            }
+            TypeExpr::Reference { inner, .. }
+            | TypeExpr::Slice { inner }
+            | TypeExpr::Array { inner, .. } => type_expr(inner, known, unknown),
+            TypeExpr::Tuple { elements } => {
+                for element in elements {
+                    type_expr(element, known, unknown);
+                }
+            }
+            TypeExpr::Function {
+                params,
+                return_type,
+            } => {
+                for param in params {
+                    type_expr(param, known, unknown);
+                }
+                type_expr(return_type, known, unknown);
+            }
+            TypeExpr::Unit | TypeExpr::Never | TypeExpr::Infer(_) => {}
+        }
+    }
+
+    fn params(params: &[Param], known: &HashSet<String>, unknown: &mut HashSet<String>) {
+        for param in params {
+            if let Some(annotation) = &param.type_ann {
+                type_expr(annotation, known, unknown);
+            }
+        }
+    }
+
+    for item in items {
+        match item {
+            Item::Function(function) => {
+                params(&function.params, known, unknown);
+                if let Some(result) = &function.return_type {
+                    type_expr(result, known, unknown);
+                }
+            }
+            Item::Struct(structure) => {
+                for field in &structure.fields {
+                    type_expr(&field.type_ann, known, unknown);
+                }
+            }
+            Item::Enum(enumeration) => {
+                for variant in &enumeration.variants {
+                    if let Some(payload) = &variant.payload {
+                        type_expr(payload, known, unknown);
+                    }
+                }
+            }
+            Item::Trait(trait_decl) => {
+                for method in &trait_decl.methods {
+                    params(&method.params, known, unknown);
+                    if let Some(result) = &method.return_type {
+                        type_expr(result, known, unknown);
+                    }
+                }
+            }
+            Item::Impl(block) => {
+                type_expr(&block.target_type, known, unknown);
+                for method in &block.methods {
+                    params(&method.params, known, unknown);
+                    if let Some(result) = &method.return_type {
+                        type_expr(result, known, unknown);
+                    }
+                }
+            }
+            Item::Const(constant) => {
+                if let Some(annotation) = &constant.type_ann {
+                    type_expr(annotation, known, unknown);
+                }
+            }
+            Item::TypeAlias(alias) => type_expr(&alias.target, known, unknown),
+            Item::Module(module) => collect_unknown_types(&module.items, known, unknown),
+            Item::Import(_) => {}
+        }
+    }
+}
+
+fn alias_reaches(
+    origin: &str,
+    ty: &Type,
+    aliases: &HashMap<String, Type>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        Type::Named(name) => {
+            if name == origin {
+                return true;
+            }
+            let Some(target) = aliases.get(name) else {
+                return false;
+            };
+            if !visited.insert(name.clone()) {
+                return false;
+            }
+            let recursive = alias_reaches(origin, target, aliases, visited);
+            visited.remove(name);
+            recursive
+        }
+        Type::Array(inner) => alias_reaches(origin, inner, aliases, visited),
+        Type::Tuple(items) => items
+            .iter()
+            .any(|item| alias_reaches(origin, item, aliases, visited)),
+        Type::Function(params, result) => {
+            params
+                .iter()
+                .any(|param| alias_reaches(origin, param, aliases, visited))
+                || alias_reaches(origin, result, aliases, visited)
+        }
+        _ => false,
+    }
+}
+
+fn direct_named_type(ty: &TypeExpr) -> Option<&str> {
+    match ty {
+        TypeExpr::Named { name, generics } if generics.is_empty() => Some(name),
+        _ => None,
+    }
+}
+
+fn function_signature(function: &FunctionDecl, self_type: Option<&str>) -> FunctionSig {
+    FunctionSig {
+        params: function
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                if index == 0 && param.name == "self" && param.type_ann.is_none() {
+                    if let Some(self_type) = self_type {
+                        return Type::Named(self_type.into());
+                    }
+                }
+                param
+                    .type_ann
+                    .as_ref()
+                    .map(type_from_ast)
+                    .unwrap_or(Type::Unknown)
+            })
+            .collect(),
+        result: function
+            .return_type
+            .as_ref()
+            .map(type_from_ast)
+            .unwrap_or(Type::Unit),
+    }
+}
+
+fn trait_method_signature(method: &TraitMethod, self_type: &str) -> FunctionSig {
+    FunctionSig {
+        params: method
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                if index == 0 && param.name == "self" && param.type_ann.is_none() {
+                    return Type::Named(self_type.into());
+                }
+                param
+                    .type_ann
+                    .as_ref()
+                    .map(type_from_ast)
+                    .unwrap_or(Type::Unknown)
+            })
+            .collect(),
+        result: method
+            .return_type
+            .as_ref()
+            .map(type_from_ast)
+            .unwrap_or(Type::Unit),
+    }
+}
+
+fn pattern_binding_names(pattern: &Pattern) -> HashSet<String> {
+    let mut names = HashSet::new();
+    match pattern {
+        Pattern::Ident { name, .. } => {
+            names.insert(name.clone());
+        }
+        Pattern::Enum {
+            inner: Some(inner), ..
+        } => names.extend(pattern_binding_names(inner)),
+        Pattern::Tuple { elements, .. } => {
+            for element in elements {
+                names.extend(pattern_binding_names(element));
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, pattern) in fields {
+                names.extend(pattern_binding_names(pattern));
+            }
+        }
+        Pattern::Or { left, right, .. } => {
+            names.extend(pattern_binding_names(left));
+            names.extend(pattern_binding_names(right));
+        }
+        Pattern::Wildcard { .. } | Pattern::Literal { .. } | Pattern::Enum { inner: None, .. } => {}
+    }
+    names
+}
+
+fn pattern_is_catchall(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Wildcard { .. } | Pattern::Ident { .. } => true,
+        Pattern::Or { left, right, .. } => {
+            pattern_is_catchall(left) || pattern_is_catchall(right)
+        }
+        _ => false,
+    }
+}
+
+fn collect_bool_patterns(pattern: &Pattern, covered: &mut HashSet<bool>) {
+    match pattern {
+        Pattern::Literal { value, .. } => {
+            if let Expr::Bool { value, .. } = value.as_ref() {
+                covered.insert(*value);
+            }
+        }
+        Pattern::Or { left, right, .. } => {
+            collect_bool_patterns(left, covered);
+            collect_bool_patterns(right, covered);
+        }
+        _ => {}
+    }
+}
+
+fn collect_enum_patterns(
+    pattern: &Pattern,
+    enumeration: &str,
+    covered: &mut HashSet<String>,
+) {
+    match pattern {
+        Pattern::Enum {
+            name, variant, ..
+        } if name == enumeration => {
+            covered.insert(variant.clone());
+        }
+        Pattern::Or { left, right, .. } => {
+            collect_enum_patterns(left, enumeration, covered);
+            collect_enum_patterns(right, enumeration, covered);
+        }
+        _ => {}
     }
 }
 
@@ -2633,5 +3401,79 @@ mod tests {
         assert!(environment
             .check_program(&parse("fn main() { helper() }"))
             .is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_declarations_and_members() {
+        assert!(check("fn same() {} fn same() {} fn main() {}").is_err());
+        assert!(check("struct Pair { left: int, left: int } fn main() {}").is_err());
+        assert!(check("enum Choice { Yes, Yes } fn main() {}").is_err());
+        assert!(check("fn duplicate(value: int, value: int) {} fn main() {}").is_err());
+    }
+
+    #[test]
+    fn validates_declared_type_names() {
+        assert!(check("fn bad(value: Innt) {} fn main() {}").is_err());
+        assert!(check("fn make() -> Later { Later { value: 1 } } struct Later { value: int } fn main() { make() }").is_ok());
+        assert!(check("fn use_database(database: Sqlite) { std::sqlite::ping(database) } fn main() {}").is_ok());
+    }
+
+    #[test]
+    fn rejects_recursive_aliases_and_resolves_long_chains() {
+        assert!(check("type Cycle = Cycle fn main() {}").is_err());
+        assert!(check("type Cycle = [Cycle] fn main() {}").is_err());
+
+        let mut source = String::new();
+        for index in 0..24 {
+            source.push_str(&format!("type Alias{index} = Alias{} ", index + 1));
+        }
+        source.push_str("type Alias24 = int fn identity(value: Alias0) -> int { value } fn main() { identity(1) }");
+        assert!(check(&source).is_ok());
+    }
+
+    #[test]
+    fn validates_trait_implementation_signatures() {
+        let valid = "trait Measure { fn value(self, scale: int) -> int; } struct Item { value: int } impl Measure for Item { fn value(self, scale: int) -> int { self.value * scale } } fn main() { let item = Item { value: 2 } item.value(3) }";
+        assert!(check(valid).is_ok());
+
+        let wrong_type = "trait Measure { fn value(self, scale: int) -> int; } struct Item { value: int } impl Measure for Item { fn value(self, scale: string) -> int { 0 } } fn main() {}";
+        assert!(check(wrong_type).is_err());
+
+        let extra_method = "trait Measure { fn value(self) -> int; } struct Item { value: int } impl Measure for Item { fn value(self) -> int { self.value } fn extra(self) {} } fn main() {}";
+        assert!(check(extra_method).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_impl_targets_and_method_collisions() {
+        assert!(check("type Number = int impl Number { fn value(self) -> int { self } } fn main() {}").is_err());
+        let collision = "trait First { fn label(self) -> string { \"first\" } } trait Second { fn label(self) -> string { \"second\" } } struct Item { value: int } impl First for Item {} impl Second for Item {} fn main() {}";
+        assert!(check(collision).is_err());
+    }
+
+    #[test]
+    fn validates_enum_patterns_and_exhaustiveness() {
+        let valid = "enum Choice { Number(int), Empty } fn read(choice: Choice) -> int { match choice { Choice::Number(value) => value, Choice::Empty => 0 } } fn main() {}";
+        assert!(check(valid).is_ok());
+
+        let missing = "enum Choice { Number(int), Empty } fn read(choice: Choice) -> int { match choice { Choice::Number(value) => value } } fn main() {}";
+        assert!(check(missing).is_err());
+
+        let unknown = "enum Choice { Empty } fn read(choice: Choice) -> int { match choice { Choice::Missing => 1, _ => 0 } } fn main() {}";
+        assert!(check(unknown).is_err());
+
+        let invalid_payload = "enum Choice { Empty } fn read(choice: Choice) -> int { match choice { Choice::Empty(value) => value, _ => 0 } } fn main() {}";
+        assert!(check(invalid_payload).is_err());
+    }
+
+    #[test]
+    fn guarded_patterns_are_not_considered_exhaustive() {
+        let source = "fn read(value: bool) -> int { match value { true if value => 1, false => 0 } } fn main() {}";
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn or_patterns_must_bind_the_same_names() {
+        let source = "enum Choice { Number(int), Empty } fn read(choice: Choice) -> int { match choice { Choice::Number(value) | Choice::Empty => value, _ => 0 } } fn main() {}";
+        assert!(check(source).is_err());
     }
 }
