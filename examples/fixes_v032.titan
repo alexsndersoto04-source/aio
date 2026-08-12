@@ -68,17 +68,17 @@ fn main() {
 
     // FIX 1: tipos funcion
     print("---- FIX 1: type Callback = fn(int) -> int ----")
-    let doblar = |x| x * 2
-    let cuadrar = |x| x * x
+    let doblar: Callback = |x| x * 2
+    let cuadrar: Callback = |x| x * x
     print("aplicar(5, doblar)   = " + aplicar(5, doblar))     // 10
     print("aplicar(5, cuadrar)  = " + aplicar(5, cuadrar))    // 25
 
-    let es_par = |x| x % 2 == 0
-    let mayor_5 = |x| x > 5
+    let es_par: Predicate = |x| x % 2 == 0
+    let mayor_5: Predicate = |x| x > 5
     print("pares en [1..10]:    " + contar_matches([1,2,3,4,5,6,7,8,9,10], es_par))
     print("mayores 5 en [1..10]: " + contar_matches([1,2,3,4,5,6,7,8,9,10], mayor_5))
 
-    let saludo = || "Hola desde Producer"
+    let saludo: Producer = || "Hola desde Producer"
     print("ejecutar(saludo)     = " + ejecutar(saludo))
 
     // FIX 2: let _ = expr

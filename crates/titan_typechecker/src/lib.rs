@@ -21,9 +21,18 @@ pub enum Type {
     Unknown,
 }
 
+// Internal evidence that an inferred collection contains incompatible concrete
+// element types. It behaves as dynamic data when the expected contract is
+// `any`, but unlike Unknown it cannot silently satisfy `[int]` or `[string]`.
+const MIXED_ELEMENT_TYPE: &str = "$titan::mixed-element";
+
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        if matches!(self, Type::Named(name) if name == MIXED_ELEMENT_TYPE) {
+            f.write_str("mixed")
+        } else {
+            write!(f, "{:?}", self)
+        }
     }
 }
 
@@ -1793,16 +1802,10 @@ impl TypeEnv {
             Expr::Nil { .. } => Type::Nil,
             Expr::Ident { name, .. } => self.check_identifier(name),
             Expr::Array { elements, .. } => {
-                // v0.16.0 QoL: allow heterogeneous array literals.
-                // Rule:
-                //   * empty        -> Array(Unknown)
-                //   * homogeneous  -> Array(T)  (T = element type)
-                //   * heterogeneous-> Array(Unknown), NO error emitted
-                //     so users can freely mix types like [label_string, xs_array, ys_array]
-                //     without the typechecker rejecting them.
-                // Runtime already stores every Value uniformly and works
-                // fine with mixed arrays — the old rule was purely a
-                // static-typing artefact that caused more pain than help.
+                // Heterogeneous arrays remain valid runtime values, but retain
+                // evidence that their element type is mixed. Widening them to
+                // Unknown lost that evidence and allowed `[1, "text"]` to
+                // satisfy a later `[int]` contract through an inferred local.
                 // Phase 28: resolve aliases per-element so a literal like
                 // [Named("Tag"), ...] (where `type Tag = string`) unifies
                 // to Array(String) — otherwise a struct field typed as
@@ -1822,7 +1825,7 @@ impl TypeEnv {
                         if types.iter().skip(1).all(|t| compatible(head, t)) {
                             head.clone()
                         } else {
-                            Type::Unknown
+                            Type::Named(MIXED_ELEMENT_TYPE.into())
                         }
                     }
                 };
@@ -2338,25 +2341,39 @@ impl TypeEnv {
     /// parameter annotations are not silently treated as dynamic values.
     fn check_expr_expected(&mut self, expression: &Expr, expected: &Type) -> Type {
         let expected_resolved = self.resolve_alias(expected);
-        let found = if let (
-            Expr::Closure {
-                params,
-                return_type,
-                body,
-                ..
-            },
-            Type::Function(parameters, result),
-        ) = (expression, &expected_resolved)
-        {
-            self.check_closure(
+        let found = match (expression, &expected_resolved) {
+            (
+                Expr::Closure {
+                    params,
+                    return_type,
+                    body,
+                    ..
+                },
+                Type::Function(parameters, result),
+            ) => self.check_closure(
                 params,
                 return_type.as_ref(),
                 body,
                 Some(parameters),
                 Some(result),
-            )
-        } else {
-            self.check_expr(expression)
+            ),
+            (Expr::Array { elements, .. }, Type::Array(item)) => {
+                for element in elements {
+                    self.check_expr_expected(element, item);
+                }
+                Type::Array(item.clone())
+            }
+            (Expr::Tuple { elements, .. }, Type::Tuple(items))
+                if elements.len() == items.len() =>
+            {
+                let found = elements
+                    .iter()
+                    .zip(items)
+                    .map(|(element, item)| self.check_expr_expected(element, item))
+                    .collect();
+                Type::Tuple(found)
+            }
+            _ => self.check_expr(expression),
         };
         self.require_compatible(expected, &found);
         found
@@ -2647,11 +2664,21 @@ impl TypeEnv {
                         found: params.len(),
                     });
                 }
-                for (expected, found) in params.iter().zip(arguments) {
-                    self.require_compatible(expected, found);
+                for (parameter, argument) in params.iter().zip(arguments) {
+                    if !strict_function_component(argument, parameter) {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: argument.clone(),
+                            found: parameter.clone(),
+                        });
+                    }
                 }
                 if let Some(expected) = result {
-                    self.require_compatible(expected, &found_result);
+                    if !strict_function_component(expected, &found_result) {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: expected.clone(),
+                            found: *found_result.clone(),
+                        });
+                    }
                 }
                 *found_result
             }
@@ -3881,6 +3908,37 @@ fn native_compatible(expected: &Type, found: &Type) -> bool {
         _ => false,
     }
 }
+fn strict_function_component(expected: &Type, found: &Type) -> bool {
+    if expected == found {
+        return true;
+    }
+    if matches!(
+        (expected, found),
+        (Type::Unit, Type::Nil) | (Type::Nil, Type::Unit)
+    ) {
+        return true;
+    }
+    match (expected, found) {
+        (Type::Array(left), Type::Array(right)) => strict_function_component(left, right),
+        (Type::Tuple(left), Type::Tuple(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| strict_function_component(left, right))
+        }
+        (Type::Function(left_params, left_result), Type::Function(right_params, right_result)) => {
+            left_params.len() == right_params.len()
+                && left_params
+                    .iter()
+                    .zip(right_params)
+                    .all(|(left, right)| strict_function_component(left, right))
+                && strict_function_component(left_result, right_result)
+        }
+        _ => false,
+    }
+}
+
 fn compatible(a: &Type, b: &Type) -> bool {
     // Base cases: identical types, Unknown-matches-anything, Never
     // (bottom type) matches anything, and the historical Unit<->Nil
@@ -3906,15 +3964,17 @@ fn compatible(a: &Type, b: &Type) -> bool {
         (Type::Tuple(xs), Type::Tuple(ys)) => {
             xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(x, y)| compatible(x, y))
         }
-        // Phase 32 fix: function types are compatible when their arity
-        // matches and every param + return type is compatible
-        // (recursively). Combined with Unknown-matches-anything this
-        // means a closure |x| x*2 (Function([Unknown], Unknown)) satisfies
-        // any concrete signature like fn(int) -> int.
+        // Function components are deliberately stricter than ordinary dynamic
+        // values. An already-inferred `fn(any) -> any` cannot safely become
+        // `fn(string) -> int`; closures receive concrete context before their
+        // body is checked instead.
         (Type::Function(ap, ar), Type::Function(bp, br)) => {
             ap.len() == bp.len()
-                && ap.iter().zip(bp.iter()).all(|(x, y)| compatible(x, y))
-                && compatible(ar, br)
+                && ap
+                    .iter()
+                    .zip(bp.iter())
+                    .all(|(x, y)| strict_function_component(x, y))
+                && strict_function_component(ar, br)
         }
         _ => false,
     }
@@ -4141,6 +4201,31 @@ mod tests {
         .is_err());
         assert!(check(
             "fn invalid_factory() -> fn(string) -> int { |value| value * 2 } fn main() {}"
+        )
+        .is_err());
+        assert!(check(
+            "fn main() { let loose = |value| value * 2 let invalid: fn(string) -> int = loose }"
+        )
+        .is_err());
+        assert!(check(
+            "fn apply(callback: fn(int) -> int) -> int { callback(1) } fn main() { let loose = |value| value * 2 apply(loose) }"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn preserves_mixed_array_evidence_across_inferred_bindings() {
+        assert!(check("fn main() { let values: [int] = [1, \"bad\"] }").is_err());
+        assert!(check(
+            "fn main() { let mixed = [1, \"bad\"] let values: [int] = mixed }"
+        )
+        .is_err());
+        assert!(check(
+            "fn main() { let mixed = [1, \"ok\"] let values: array = mixed print(values) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn take(values: [int]) {} fn main() { let mixed = [1, \"bad\"] take(mixed) }"
         )
         .is_err());
     }
