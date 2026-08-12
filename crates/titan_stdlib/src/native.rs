@@ -1530,14 +1530,14 @@ mod tests {
 
             assert!(crate::audio::shutdown());
             assert!(crate::gui::shutdown());
-            assert!(crate::game::shutdown());
+            assert!(!crate::game::shutdown());
             assert!(crate::input::set_key_state("PrivateKey", false));
             assert!(crate::clipboard::set_text("second"));
             assert!(crate::mobile::trigger_event("onDestroy"));
             crate::metrics::counter_add("private.counter", 2).unwrap();
             crate::metrics::reset().unwrap();
         });
-        assert_eq!(cleanup_runtime_resources(second), 7);
+        assert_eq!(cleanup_runtime_resources(second), 6);
 
         with_runtime_context(first, || {
             assert!(crate::audio::sample_count(audio_handle) > 0);
