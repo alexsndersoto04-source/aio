@@ -1770,9 +1770,8 @@ mod tests {
             Err(CodegenError::Unsupported(_))
         ));
 
-        let captured = parse(
-            "fn main() { let mut value = 1 let update = || { value = 2 } update() }",
-        );
+        let captured =
+            parse("fn main() { let mut value = 1 let update = || { value = 2 } update() }");
         assert!(matches!(
             AstCompiler::new().compile_program(&captured),
             Err(CodegenError::Unsupported(_))

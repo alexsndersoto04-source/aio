@@ -1127,12 +1127,11 @@ impl TypeEnv {
 
     fn reset_analysis_state(&mut self) {
         self.scopes = vec![self.constant_types.clone()];
-        self.bindings = vec![
-            self.constant_types
-                .keys()
-                .map(|name| (name.clone(), (false, 0)))
-                .collect(),
-        ];
+        self.bindings = vec![self
+            .constant_types
+            .keys()
+            .map(|name| (name.clone(), (false, 0)))
+            .collect()];
         self.constants = self.constant_types.keys().cloned().collect();
         self.constant_stack.clear();
         self.checked_constants.clear();
@@ -1629,14 +1628,9 @@ impl TypeEnv {
         }
         self.lookup(name)
             .or_else(|| {
-                self.functions
-                    .get(name)
-                    .map(|signature| {
-                        Type::Function(
-                            signature.params.clone(),
-                            Box::new(signature.result.clone()),
-                        )
-                    })
+                self.functions.get(name).map(|signature| {
+                    Type::Function(signature.params.clone(), Box::new(signature.result.clone()))
+                })
             })
             .or_else(|| {
                 self.enum_variants.get(name).and_then(|payload| {
@@ -1649,7 +1643,8 @@ impl TypeEnv {
                 })
             })
             .unwrap_or_else(|| {
-                self.errors.push(TypeError::UnknownVariable { name: name.into() });
+                self.errors
+                    .push(TypeError::UnknownVariable { name: name.into() });
                 Type::Unknown
             })
     }
@@ -4019,10 +4014,10 @@ mod tests {
         assert!(check("fn main() { let mut value = 1 value += 2 }").is_ok());
         assert!(check("fn bump(mut value: int) -> int { value += 1 value } fn main() {}").is_ok());
         assert!(check("fn bump(value: int) -> int { value += 1 value } fn main() {}").is_err());
-        assert!(check(
-            "fn main() { let mut value = 1 let update = || { value = 2 } update() }"
-        )
-        .is_err());
+        assert!(
+            check("fn main() { let mut value = 1 let update = || { value = 2 } update() }")
+                .is_err()
+        );
         assert!(check("const VALUE: int = 1 fn main() { VALUE = 2 }").is_err());
     }
 
