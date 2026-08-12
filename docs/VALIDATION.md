@@ -573,6 +573,92 @@ prueba física individual: el módulo completo quedó compilado y enlazado en el
 ELF Android/Bionic ARMv7, y el paquete se reserva para el siguiente milestone
 físico agrupado.
 
+### KV/sled con handles, memoria y crecimiento lógico acotados
+
+Los commits `acdeeac`, `dd9eacb`, `4033708` y `b807666` reemplazan el
+registro sled global y sin cuotas por estados de base compartidos, aislados por
+runtime y con contabilidad persistente. Cada runtime admite como máximo:
+
+- ocho bases de datos y 32 handles de árboles;
+- 256 MiB y 524.288 entradas lógicas entre todas sus bases;
+- cuatro operaciones KV simultáneas.
+
+Cada base admite:
+
+- un path de 16 KiB y cache sled configurado a 16 MiB;
+- 64 árboles nombrados, con nombres de hasta 1 KiB;
+- 128 MiB y 262.144 entradas lógicas entre el árbol principal y los nombrados;
+- claves de 64 KiB y valores de 8 MiB;
+- listados de hasta 65.536 claves UTF-8 y 8 MiB de strings agregados.
+
+`open` reserva el slot antes de tocar el filesystem, abre sled con cache
+explícita y recorre de forma incremental el árbol principal y todos los árboles
+existentes. Rechaza una base preexistente si cualquiera de sus claves, valores,
+árboles, bytes o entradas ya excede los límites. Solo después reserva la cuota
+agregada e inserta el handle mediante un ID con incremento comprobado. Una
+apertura fallida devuelve tanto la reserva del handle como la operación.
+
+Cada base usa `Arc<DatabaseState>` y un mutex propio para serializar mutaciones
+y su contabilidad. El registro global se libera antes de `get`, iteraciones,
+flush, escrituras o compare-and-swap; una base lenta ya no bloquea el I/O de
+otras bases o runtimes. Reservas separadas cierran la carrera entre aperturas
+concurrentes y el último slot disponible.
+
+Insert, overwrite, remove, clear y compare-and-swap actualizan exactamente los
+bytes `clave + valor` y las entradas del árbol, la base y el runtime. Un
+crecimiento se reserva antes de escribir y se revierte si sled falla o el CAS
+pierde. Una reducción se descuenta solo después del éxito. La misma ruta cubre
+árboles nombrados. `keys` ya no ignora errores de iteración de sled y valida el
+presupuesto antes de construir el array de salida.
+
+`close` retira primero la base y todos sus handles de árboles, marca el estado
+cerrado, espera cualquier mutación ya iniciada y hace flush. Un árbol ya no
+queda vivo durante todo el proceso después de cerrar su base padre. Cleanup
+realiza la misma invalidación por runtime y un flush de mejor esfuerzo. El
+puente VM también dejó de convertir sin comprobación el contador de bytes de
+`flush` a `i64`.
+
+Las regresiones ejecutadas por CI verifican:
+
+1. persistencia real después de flush, cierre y reapertura de sled;
+2. insert, overwrite, get, remove y CAS reales;
+3. aislamiento de árboles y su invalidación al cerrar la base padre;
+4. saturación de ocho bases y 32 árboles, rechazo del siguiente, reemplazo de
+   una base cerrada y cleanup;
+5. saturación y recuperación de cuatro permisos de operación;
+6. contabilidad exacta al crecer, reducir y borrar datos del árbol principal y
+   uno nombrado;
+7. rechazo durante `open` de una base sled real que ya contiene un valor de más
+   de 8 MiB.
+
+Evidencia externa final para `b8076664d85357fa0127f2204429caebe130fe6c`:
+
+- [CI 31563194128](https://github.com/alexsndersoto04-source/aio/actions/runs/31563194128): formato sin anotaciones ocultas de fallo, checks normal y sin
+  características por defecto, todos los tests del workspace y AArch64
+  aprobaron.
+- [Termux ARM 31563194228](https://github.com/alexsndersoto04-source/aio/actions/runs/31563194228): check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y artefacto `zett-termux-arm-66` aprobaron.
+- `verify_phase34.py`: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.
+
+Las ejecuciones intermedias no se ocultan: [CI 31562783972](https://github.com/alexsndersoto04-source/aio/actions/runs/31562783972) encontró cuatro argumentos de test omitidos y el diff inicial de
+rustfmt. Más tarde [CI 31563012653](https://github.com/alexsndersoto04-source/aio/actions/runs/31563012653) aprobó compilación y tests, pero una anotación reveló que el paso advisory de
+formato aún pedía dos cambios; por eso tampoco se usa como validación final. El
+commit `b807666` aplicó ese diff y el run final solo conserva las advertencias de
+Node.js 20 de actions de terceros.
+
+Límites declarados: la cuota persistente mide bytes lógicos de claves y valores,
+no el tamaño físico exacto del log, índices o archivos temporales de compactación
+de sled. Por ello protege la cantidad de datos aceptada y la cache, pero no
+promete que el directorio ocupe exactamente 128 MiB. Abrir una base existente
+requiere recorrerla hasta medirla o encontrar el primer exceso, y una operación
+sled bloqueada en el filesystem todavía no tiene timeout seguro.
+
+No hace falta validación física individual. Las rutas sled y sus regresiones
+corrieron en Linux, y el módulo completo quedó compilado y enlazado dentro del
+ELF Android/Bionic ARMv7. El paquete se reserva para el siguiente milestone
+físico agrupado.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -597,12 +683,13 @@ reales se liberan en el mismo hilo que las creó.
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos,
   colecciones y los recursos ligeros descritos arriba ya están conectadas. Esto
-  no cierra toda la auditoría de crecimiento: KV, Redis, PDF y servidores
+  no cierra toda la auditoría de crecimiento: Redis, PDF y servidores
   conservan registros duraderos que deben revisarse
   individualmente.
 - CI prueba directamente la destrucción con handles de colecciones, tareas,
-  tokenizadores y planes ONNX de tract. Las demás rutas de limpieza compilan y
-  son revisadas por Rust, pero este run no levanta un servidor Redis externo ni
+  tokenizadores, planes ONNX de tract y bases/árboles sled. Las demás rutas de
+  limpieza compilan y son revisadas por Rust, pero este run no levanta un
+  servidor Redis externo ni
   carga un `.onnx` válido de terceros para luego destruirlo.
 - Los comandos de formato y del antiguo job AArch64 ya pasan, pero sus dos
   líneas `continue-on-error` permanecen en el workflow hasta aplicar desde
