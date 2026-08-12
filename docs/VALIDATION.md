@@ -8,37 +8,41 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `1dce945e37dba4a1d5604ef8e3db1931a0145c9f`
-- Cambio: liberación automática de recursos nativos al terminar una VM
+- Commit validado: `c694874e9c3ddc52039384b40527428494815cdf`
+- Alcance: seguridad de capacidades, limpieza de recursos, formato y checks
+  Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
-### Evidencia automatizada
+### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato Rust (`cargo fmt --check`) | **Fallo advisory (exit 1)** | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
-| `cargo check` con características normales | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
-| `cargo check --no-default-features` | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
-| Cross-check Android AArch64 | **Fallo advisory (exit 101)** | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31549327029](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327029) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31549327029](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327029) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31549327029](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327029) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
+| `cargo check` con características normales | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
+| `cargo check --no-default-features` | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
+| Cross-check Android AArch64 | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
 
-La página general de CI aparece verde porque actualmente formato y cross-check
-AArch64 tienen `continue-on-error`. Las anotaciones del job registran sus fallos,
-por lo que **no se contabilizan como aprobados**. Los pasos obligatorios de
-`cargo check`, tests y `--no-default-features` sí terminaron correctamente.
-Esta distinción evita confundir un workflow verde con que absolutamente todos
-sus comandos hayan pasado.
+Los dos fallos advisory anteriores ya fueron corregidos:
 
-El workflow ARMv7 oficial no tiene esa excepción: usa Android NDK y
-`armv7-linux-androideabi`. Además de compilar y enlazar, comprueba con `readelf`
-que el binario sea ELF32/ARM, verifica los metadatos del `.deb`, extrae el
-paquete y compara byte por byte el ejecutable empaquetado con el ejecutable
-construido. Ese workflow sí terminó completamente aprobado.
+- Se aplicó el `rustfmt` estable de CI a los 106 archivos Rust que no cumplían
+  el formato. El verificador Phase 34 se hizo compatible con macros formateadas
+  en varias líneas y volvió a confirmar 758 nativas únicas y 837 llamadas.
+- AArch64 ahora encuentra automáticamente clang, clang++, `llvm-ar` y
+  `llvm-ranlib` del Android NDK. Además, la ruta oficial ejecuta un segundo
+  check AArch64 real con NDK, `--all-targets`, lockfile y warnings tratados como
+  errores antes de construir el paquete ARMv7.
 
-### Qué prueban las regresiones nuevas
+El workflow ARMv7 oficial usa Android NDK y `armv7-linux-androideabi`. Además de
+compilar y enlazar, comprueba con `readelf` que el binario sea ELF32/ARM,
+verifica los metadatos del `.deb`, extrae el paquete y compara byte por byte el
+ejecutable empaquetado con el ejecutable construido.
+
+### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
    de existir.
@@ -60,12 +64,13 @@ liberan en el mismo hilo que las creó.
 ### Límites de esta validación
 
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
-- El formato completo del repositorio y el cross-check AArch64 continúan
-  pendientes; sus fallos están en modo advisory y no invalidan el paquete
-  ARMv7 oficial, pero tampoco se presentan como aprobados.
-  Las demás rutas de limpieza compilan y son revisadas por el typechecker de
-  Rust, pero este run no levanta servicios externos reales de Redis ni carga un
-  modelo ONNX para destruirlos.
+  Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
+  no levanta un servidor Redis externo ni carga un modelo ONNX real para luego
+  destruirlo.
+- Los comandos de formato y del antiguo job AArch64 ya pasan, pero sus dos
+  líneas `continue-on-error` permanecen en el workflow hasta aplicar desde
+  GitHub web la plantilla corregida `docs/CI_WORKFLOW_TEMPLATE.yml`. La GitHub
+  App de Arena no tiene permiso para modificar `.github/workflows`.
 - El candidato de este commit todavía no se ha instalado en el Redmi 9C. No se
   requiere instalar cada cambio interno; habrá una prueba física agrupada al
   cerrar un milestone importante.
@@ -74,16 +79,15 @@ liberan en el mismo hilo que las creó.
 - El workflow histórico `android-apk - NEON FRACTURE (FIXED)` no forma parte de
   la validación oficial y sus resultados se ignoran.
 
-## Bloque de capacidades anterior
+## Bloque de capacidades
 
-El commit `ca7e3e7` también quedó validado externamente:
+El commit `ca7e3e7` protege terminal, readline, información de
+procesos/directorios, señales y detectores del entorno, incluida la exigencia
+combinada de filesystem e interfaz de usuario para el historial persistente de
+readline.
 
-- [CI 31548478710](https://github.com/alexsndersoto04-source/aio/actions/runs/31548478710): aprobado.
-- [Termux ARM 31548478652](https://github.com/alexsndersoto04-source/aio/actions/runs/31548478652): aprobado.
-
-Ese bloque protege terminal, readline, información de procesos/directorios,
-señales y detectores del entorno, incluida la exigencia combinada de filesystem
-e interfaz de usuario para el historial persistente de readline.
+- [CI 31548478710](https://github.com/alexsndersoto04-source/aio/actions/runs/31548478710)
+- [Termux ARM 31548478652](https://github.com/alexsndersoto04-source/aio/actions/runs/31548478652)
 
 ## Ceremonia para candidatos físicos
 
