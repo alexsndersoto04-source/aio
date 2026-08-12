@@ -1126,9 +1126,7 @@ impl TypeEnv {
         let first_resolved = self.resolve_alias(first);
         for candidate in candidates.iter().skip(1) {
             let resolved = self.resolve_alias(candidate);
-            if !compatible(&first_resolved, &resolved)
-                && !compatible(&resolved, &first_resolved)
-            {
+            if !compatible(&first_resolved, &resolved) && !compatible(&resolved, &first_resolved) {
                 self.errors.push(TypeError::InconsistentReturns {
                     name: name.into(),
                     first: first.clone(),
@@ -1174,11 +1172,7 @@ impl TypeEnv {
         self.validate_impl_contracts_in(items, &mut methods);
     }
 
-    fn validate_impl_contracts_in(
-        &mut self,
-        items: &[Item],
-        methods: &mut HashSet<String>,
-    ) {
+    fn validate_impl_contracts_in(&mut self, items: &[Item], methods: &mut HashSet<String>) {
         for item in items {
             match item {
                 Item::Impl(block) => {
@@ -1775,7 +1769,8 @@ impl TypeEnv {
                         }
                     }
                 } else {
-                    self.errors.push(TypeError::UnknownType { name: name.clone() });
+                    self.errors
+                        .push(TypeError::UnknownType { name: name.clone() });
                     for (_, value) in fields {
                         self.check_expr(value);
                     }
@@ -1963,9 +1958,9 @@ impl TypeEnv {
                     }
                     self.pop_scope();
                 }
-                let has_catchall = arms.iter().any(|arm| {
-                    arm.guard.is_none() && pattern_is_catchall(&arm.pattern)
-                });
+                let has_catchall = arms
+                    .iter()
+                    .any(|arm| arm.guard.is_none() && pattern_is_catchall(&arm.pattern));
                 if !has_catchall {
                     match self.resolve_alias(&subject) {
                         Type::Bool => {
@@ -1986,7 +1981,8 @@ impl TypeEnv {
                                 collect_pattern_enum_names(&arm.pattern, &mut enumerations);
                             }
                             if enumerations.len() == 1 {
-                                let enumeration = enumerations.into_iter().next().unwrap_or_default();
+                                let enumeration =
+                                    enumerations.into_iter().next().unwrap_or_default();
                                 self.check_enum_exhaustiveness(&enumeration, arms);
                             } else {
                                 self.errors.push(TypeError::NonExhaustiveMatch);
@@ -2440,7 +2436,8 @@ impl TypeEnv {
             }
             Type::Unknown => Type::Unknown,
             _ => {
-                self.errors.push(TypeError::NotCallable { name: name.into() });
+                self.errors
+                    .push(TypeError::NotCallable { name: name.into() });
                 Type::Unknown
             }
         }
@@ -2531,7 +2528,12 @@ impl TypeEnv {
             }
             "filter" => {
                 let callable = self.check_expr(&args[1]);
-                self.check_callback("filter predicate", &callable, &[item.clone()], Some(&Type::Bool));
+                self.check_callback(
+                    "filter predicate",
+                    &callable,
+                    &[item.clone()],
+                    Some(&Type::Bool),
+                );
                 Type::Array(Box::new(item))
             }
             "fold" => {
@@ -2737,9 +2739,7 @@ impl TypeEnv {
                 visited.remove(name);
                 resolved
             }
-            Type::Array(inner) => {
-                Type::Array(Box::new(self.resolve_alias_inner(inner, visited)))
-            }
+            Type::Array(inner) => Type::Array(Box::new(self.resolve_alias_inner(inner, visited))),
             Type::Tuple(items) => Type::Tuple(
                 items
                     .iter()
@@ -2857,10 +2857,7 @@ impl TypeEnv {
                         }
                         (None, Some(inner)) => {
                             self.errors.push(TypeError::InvalidPattern {
-                                message: format!(
-                                    "variant '{}::{}' has no payload",
-                                    name, variant
-                                ),
+                                message: format!("variant '{}::{}' has no payload", name, variant),
                             });
                             self.bind_pattern(inner, &Type::Unknown, wildcard, bools);
                         }
@@ -2916,14 +2913,12 @@ impl TypeEnv {
                 }
             },
             Pattern::Struct {
-                name,
-                fields,
-                rest,
-                ..
+                name, fields, rest, ..
             } => {
                 self.require_compatible(&Type::Named(name.clone()), subject);
                 let Some(schema) = self.structs.get(name).cloned() else {
-                    self.errors.push(TypeError::UnknownType { name: name.clone() });
+                    self.errors
+                        .push(TypeError::UnknownType { name: name.clone() });
                     for (_, pattern) in fields {
                         self.bind_pattern(pattern, &Type::Unknown, wildcard, bools);
                     }
@@ -2981,16 +2976,13 @@ fn is_template_path(value: &str) -> bool {
     if value.is_empty() {
         return false;
     }
-    value
-        .replace("::", ".")
-        .split('.')
-        .all(|segment| {
-            let mut chars = segment.chars();
-            chars
-                .next()
-                .is_some_and(|first| first == '_' || first.is_alphabetic())
-                && chars.all(|character| character == '_' || character.is_alphanumeric())
-        })
+    value.replace("::", ".").split('.').all(|segment| {
+        let mut chars = segment.chars();
+        chars
+            .next()
+            .is_some_and(|first| first == '_' || first.is_alphabetic())
+            && chars.all(|character| character == '_' || character.is_alphanumeric())
+    })
 }
 
 fn count_inference_targets(items: &[Item]) -> usize {
@@ -3163,9 +3155,8 @@ fn builtin_type_names(base_functions: &HashMap<String, FunctionSig>) -> HashSet<
     }
 
     let mut names: HashSet<String> = [
-        "int", "i32", "i64", "u64", "usize", "float", "f32", "f64", "bool",
-        "string", "str", "char", "Array", "Vec", "array", "map", "any", "Option",
-        "Result",
+        "int", "i32", "i64", "u64", "usize", "float", "f32", "f64", "bool", "string", "str",
+        "char", "Array", "Vec", "array", "map", "any", "Option", "Result",
     ]
     .into_iter()
     .map(str::to_string)
@@ -3197,11 +3188,7 @@ fn collect_declared_type_names(items: &[Item], names: &mut HashSet<String>) {
     }
 }
 
-fn collect_unknown_types(
-    items: &[Item],
-    known: &HashSet<String>,
-    unknown: &mut HashSet<String>,
-) {
+fn collect_unknown_types(items: &[Item], known: &HashSet<String>, unknown: &mut HashSet<String>) {
     fn type_expr(ty: &TypeExpr, known: &HashSet<String>, unknown: &mut HashSet<String>) {
         match ty {
             TypeExpr::Named { name, generics } => {
@@ -3415,9 +3402,7 @@ fn pattern_binding_names(pattern: &Pattern) -> HashSet<String> {
 fn pattern_is_catchall(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Wildcard { .. } | Pattern::Ident { .. } => true,
-        Pattern::Or { left, right, .. } => {
-            pattern_is_catchall(left) || pattern_is_catchall(right)
-        }
+        Pattern::Or { left, right, .. } => pattern_is_catchall(left) || pattern_is_catchall(right),
         _ => false,
     }
 }
@@ -3450,15 +3435,9 @@ fn collect_pattern_enum_names(pattern: &Pattern, names: &mut HashSet<String>) {
     }
 }
 
-fn collect_enum_patterns(
-    pattern: &Pattern,
-    enumeration: &str,
-    covered: &mut HashSet<String>,
-) {
+fn collect_enum_patterns(pattern: &Pattern, enumeration: &str, covered: &mut HashSet<String>) {
     match pattern {
-        Pattern::Enum {
-            name, variant, ..
-        } if name == enumeration => {
+        Pattern::Enum { name, variant, .. } if name == enumeration => {
             covered.insert(variant.clone());
         }
         Pattern::Or { left, right, .. } => {
@@ -3509,9 +3488,7 @@ fn builtin_method_arity(receiver: &Type, method: &str) -> Option<usize> {
             _ => None,
         },
         Type::String => (method == "len").then_some(0),
-        Type::Named(name) if name == "bytes" || name == "map" => {
-            (method == "len").then_some(0)
-        }
+        Type::Named(name) if name == "bytes" || name == "map" => (method == "len").then_some(0),
         _ => None,
     }
 }
@@ -3816,7 +3793,9 @@ mod tests {
         assert!(check("fn main() { [1, 2].filter(|value: int| value + 1) }").is_err());
         assert!(check("fn main() { [1, 2].map(42) }").is_err());
         assert!(check("fn main() { [1, 2].map(|| 1) }").is_err());
-        assert!(check("fn main() { let values: [int] = (1, 2).map(|value: int| value + 1) }").is_ok());
+        assert!(
+            check("fn main() { let values: [int] = (1, 2).map(|value: int| value + 1) }").is_ok()
+        );
     }
 
     #[test]
@@ -3824,7 +3803,9 @@ mod tests {
         assert!(check("fn main() { len(42) }").is_err());
         assert!(check("fn main() { map(42, |value| value) }").is_err());
         assert!(check("fn main() { filter([1, 2], |value: int| value + 1) }").is_err());
-        assert!(check("fn main() { let values: [string] = map((1, 2), |value: int| \"ok\") }").is_ok());
+        assert!(
+            check("fn main() { let values: [string] = map((1, 2), |value: int| \"ok\") }").is_ok()
+        );
     }
 
     #[test]
@@ -3832,7 +3813,9 @@ mod tests {
         assert!(check("fn main() { print(\"value={missing}\") }").is_err());
         assert!(check("fn id(value: int) -> int { value } fn main() { let value = 1 print(\"value={id(value)}\") }").is_ok());
         assert!(check("fn id(value: int) -> int { value } fn main() { let bad = \"x\" print(\"value={id(bad)}\") }").is_err());
-        assert!(check("fn main() { let value = 1 print(\"ok={value}, bad={value + 1}\") }").is_err());
+        assert!(
+            check("fn main() { let value = 1 print(\"ok={value}, bad={value + 1}\") }").is_err()
+        );
     }
 
     #[test]
@@ -3853,8 +3836,13 @@ mod tests {
     #[test]
     fn infers_unannotated_return_types_independent_of_order() {
         assert!(check("fn main() { let value: int = later() } fn later() { 42 }").is_ok());
-        assert!(check("fn mixed(flag: bool) { if flag { return 1 } \"text\" } fn main() { mixed(true) }").is_err());
-        assert!(check("fn main() { let callback = || return 42 let value: int = callback() }").is_ok());
+        assert!(check(
+            "fn mixed(flag: bool) { if flag { return 1 } \"text\" } fn main() { mixed(true) }"
+        )
+        .is_err());
+        assert!(
+            check("fn main() { let callback = || return 42 let value: int = callback() }").is_ok()
+        );
     }
 
     #[test]
@@ -3882,7 +3870,10 @@ mod tests {
     fn validates_declared_type_names() {
         assert!(check("fn bad(value: Innt) {} fn main() {}").is_err());
         assert!(check("fn make() -> Later { Later { value: 1 } } struct Later { value: int } fn main() { make() }").is_ok());
-        assert!(check("fn use_database(database: Sqlite) { std::sqlite::ping(database) } fn main() {}").is_ok());
+        assert!(check(
+            "fn use_database(database: Sqlite) { std::sqlite::ping(database) } fn main() {}"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -3918,7 +3909,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_impl_targets_and_method_collisions() {
-        assert!(check("type Number = int impl Number { fn value(self) -> int { self } } fn main() {}").is_err());
+        assert!(check(
+            "type Number = int impl Number { fn value(self) -> int { self } } fn main() {}"
+        )
+        .is_err());
         let collision = "trait First { fn label(self) -> string { \"first\" } } trait Second { fn label(self) -> string { \"second\" } } struct Item { value: int } impl First for Item {} impl Second for Item {} fn main() {}";
         assert!(check(collision).is_err());
     }
@@ -3943,8 +3937,13 @@ mod tests {
 
     #[test]
     fn open_ended_matches_require_a_catch_all() {
-        assert!(check("fn read(value: int) -> int { match value { 1 => 1 } } fn main() {}").is_err());
-        assert!(check("fn read(value: int) -> int { match value { 1 => 1, _ => 0 } } fn main() {}").is_ok());
+        assert!(
+            check("fn read(value: int) -> int { match value { 1 => 1 } } fn main() {}").is_err()
+        );
+        assert!(check(
+            "fn read(value: int) -> int { match value { 1 => 1, _ => 0 } } fn main() {}"
+        )
+        .is_ok());
     }
 
     #[test]
