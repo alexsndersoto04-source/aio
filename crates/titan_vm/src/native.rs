@@ -2432,8 +2432,8 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         #[cfg(feature = "image_mod")]
         "std::image::from_rgba" => {
-            let width = int!() as u32;
-            let height = int!() as u32;
+            let width = u32::try_from(int!()).map_err(|_| "width out of range".to_string())?;
+            let height = u32::try_from(int!()).map_err(|_| "height out of range".to_string())?;
             let data = bytes!();
             Value::Int(stdlib::image_mod::from_rgba(width, height, &data).map_err(error)?)
         }
@@ -2498,15 +2498,18 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::image::grayscale" => Value::Int(stdlib::image_mod::grayscale(int!()).map_err(error)?),
         #[cfg(feature = "image_mod")]
         "std::image::blur" => {
-            let h = int!();
-            let s = float!() as f32;
-            Value::Int(stdlib::image_mod::blur(h, s).map_err(error)?)
+            let handle = int!();
+            let sigma = float!();
+            if !sigma.is_finite() || sigma < f32::MIN as f64 || sigma > f32::MAX as f64 {
+                return Err("blur sigma out of range".to_string());
+            }
+            Value::Int(stdlib::image_mod::blur(handle, sigma as f32).map_err(error)?)
         }
         #[cfg(feature = "image_mod")]
         "std::image::brighten" => {
-            let h = int!();
-            let v = i32::try_from(int!()).unwrap_or(0);
-            Value::Int(stdlib::image_mod::brighten(h, v).map_err(error)?)
+            let handle = int!();
+            let value = i32::try_from(int!()).map_err(|_| "brightness out of range".to_string())?;
+            Value::Int(stdlib::image_mod::brighten(handle, value).map_err(error)?)
         }
         #[cfg(feature = "image_mod")]
         "std::image::rotate90" => Value::Int(stdlib::image_mod::rotate90(int!()).map_err(error)?),
