@@ -8,25 +8,26 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `14268e2f7d5a4b928876678068e90fbc49f8df3d`
+- Commit funcional validado: `1af829becaf931a90d3756967a1601f3f6f6b9b6`
 - Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
   canales, red, bases de datos, procesos, colecciones, juego, señales, watchers,
-  progreso, routers, ventanas, imágenes y tokenizadores; checks Android ARM de 32 y 64 bits
-- Fecha: 2026-08-11
+  progreso, routers, ventanas, imágenes, tokenizadores, ONNX, KV/sled y Redis;
+  checks Android ARM de 32 y 64 bits
+- Fecha: 2026-08-12
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
-| `cargo check` con características normales | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
-| `cargo check --no-default-features` | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
-| Cross-check Android AArch64 | Aprobado | [CI 31560961245](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31560961244](https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244) |
+| Formato completo, `cargo fmt --check` | Aprobado, sin fallo oculto | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
+| `cargo check` con características normales | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
+| `cargo check --no-default-features` | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
+| Cross-check Android AArch64 | Aprobado | [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
+| Artefacto `zett-termux-arm-72`, 25.286.749 bytes | Aprobado | [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835) |
 
 Los fallos advisory registrados ya fueron corregidos:
 
@@ -659,6 +660,123 @@ corrieron en Linux, y el módulo completo quedó compilado y enlazado dentro del
 ELF Android/Bionic ARMv7. El paquete se reserva para el siguiente milestone
 físico agrupado.
 
+### Redis/RESP2 con red, respuestas y ciclo de vida acotados
+
+Los commits `e37f146`, `1ee1f57`, `ffd323a`, `f024ac8` y `1af829b`
+sustituyen la conexión bloqueante del crate `redis` bajo un mutex global por
+un cliente RESP2 acotado sobre sockets TCP reales. El crate `redis 0.27.6`
+continúa parseando y decodificando de forma segura la URL, usuario, contraseña
+y base; TITAN realiza directamente el intercambio RESP2 para poder rechazar una
+longitud hostil **antes** de reservar el cuerpo anunciado.
+
+Cada runtime admite como máximo:
+
+- ocho conexiones Redis publicadas;
+- cuatro operaciones Redis simultáneas;
+- dos resoluciones DNS activas, con un techo adicional de 16 en todo el proceso.
+
+Los límites por petición y respuesta son:
+
+- URL de 16 KiB, claves/campos/patrones de 64 KiB y valores de 8 MiB;
+- comando `raw` de 64 KiB, 32 argumentos y petición RESP completa de 9 MiB;
+- 8 MiB de payload y 9 MiB de bytes de protocolo por respuesta;
+- 65.536 nodos RESP, profundidad 16 y líneas de cabecera de 64 KiB;
+- 65.536 elementos y 8 MiB acumulados al devolver colecciones;
+- 256 páginas `SCAN`, solicitadas en lotes indicativos de 256.
+
+Una operación normal tiene un deadline total de cinco segundos; cada intento de
+conexión usa como máximo tres segundos sin superar ese deadline. Escritura,
+lectura, autenticación, selección de base y las páginas sucesivas de `SCAN`
+comparten el presupuesto total correspondiente. Como la biblioteca estándar no
+ofrece timeout para `ToSocketAddrs`, los nombres se resuelven en workers
+separados que conservan su permiso hasta terminar. Así una resolución del SO
+atascada no retiene a la VM ni permite acumular más de dos hilos por runtime o
+16 globales.
+
+El registro global solo se toma para reservar, publicar, buscar o retirar un
+handle. El socket vive en un `Arc<Mutex<_>>` por conexión; nunca se hace I/O
+bajo el registro global. Una segunda llamada simultánea al mismo handle recibe
+un error `busy`, mientras otras conexiones y runtimes continúan. Los IDs usan
+incremento comprobado y una reserva previa evita sobrepasar el último slot. Si
+cleanup ocurre durante `connect`, invalida también la reserva para impedir que
+la conexión aparezca después de destruir su runtime.
+
+Toda conexión configura timeouts de lectura y escritura. Un timeout, error de
+transporte, respuesta incompleta, prefijo RESP3, cabecera inválida, profundidad,
+elementos o bytes excesivos marca el transporte como roto, lo retira del
+registro y cierra el socket: nunca se reutiliza una conexión desincronizada. Un
+error normal `-ERR` del servidor sí queda tipado y la conexión sigue utilizable
+porque esa respuesta se consumió completa.
+
+`connect` ejecuta de verdad `AUTH` —con usuario cuando corresponde— y `SELECT`
+antes de publicar el handle. Una URL que solicita RESP3 se rechaza. Esta build
+no habilita TLS en `redis`, por lo que `rediss://` y sockets Unix se rechazan en
+vez de fingir soporte; la superficie validada es `redis://` RESP2 sobre TCP.
+
+La API histórica `keys` ya no envía `KEYS`: recorre páginas `SCAN`, valida
+cursor, elementos y bytes, y elimina duplicados permitidos por SCAN. `LRANGE`
+consulta primero `LLEN`, normaliza índices negativos y envía un intervalo fijo
+de como máximo 65.536 entradas, por lo que una mutación concurrente no puede
+agrandar la respuesta solicitada. `GET`, `HGETALL` y todas las demás respuestas
+pasan por el mismo decoder acotado.
+
+`raw` conserva la separación histórica por espacios, pero ya no acepta cualquier
+comando. Solo permite una lista explícita de comandos de una respuesta. Rechaza
+suscripciones, variantes bloqueantes, `MULTI`, cambios de protocolo/sesión,
+`CLIENT`, scripts, administración y comandos desconocidos que podrían bloquear
+o desincronizar el transporte. Su salida escapada también se detiene en 8 MiB.
+
+Las 18 regresiones del módulo incluyen 17 casos deterministas con servidores
+TCP loopback reales y un caso de interoperabilidad externo opt-in. Verifican:
+
+1. codificación y respuestas RESP2 de wrappers de strings, listas y hashes;
+2. `AUTH`, `SELECT`, errores normales y reutilización posterior del socket;
+3. `SCAN` multipágina sin `KEYS`, deduplicación y `LRANGE` fijo;
+4. ejecución de un `raw` permitido y rechazo de comandos bloqueantes,
+   stateful, scripts o desconocidos;
+5. DNS real de `localhost` y devolución de su permiso;
+6. rechazo previo a la asignación de un bulk mayor de 8 MiB, un agregado con
+   demasiados nodos, profundidad excesiva, CRLF malformado y RESP3;
+7. timeout de un peer que no responde y cierre obligatorio del handle;
+8. que un peer lento no bloquea el registro ni otra conexión rápida;
+9. aislamiento entre runtimes, cleanup del socket, cuotas recuperables y la
+   carrera cleanup/reserva durante `connect`.
+
+Estos peers de prueba no sustituyen la implementación: son servidores TCP que
+leen los comandos RESP enviados por el cliente de producción y contestan bytes
+reales, incluidos casos adversariales difíciles de pedir a un Redis normal. El
+test opt-in `TITAN_REDIS_TEST_URL` se conserva, pero este run no recibió una
+instancia Redis externa; por tanto no se afirma una prueba contra una versión
+concreta del servidor Redis.
+
+Evidencia externa final para `1af829becaf931a90d3756967a1601f3f6f6b9b6`:
+
+- [CI 31565041845](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845): formato, check normal, las 18 regresiones Redis dentro de todos
+  los tests del workspace, no-default-features y AArch64 aprobaron. Las
+  annotations finales solo contienen la advertencia externa de Node.js 20.
+- [Termux ARM 31565041835](https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835): check NDK estricto, compilación y enlace
+  Android/Bionic ARMv7, verificación ELF32/ARM, paquete y upload aprobaron;
+  produjo `zett-termux-arm-72` de 25.286.749 bytes.
+- `verify_phase34.py`: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.
+
+Los fallos intermedios permanecen visibles. [CI 31564268476](https://github.com/alexsndersoto04-source/aio/actions/runs/31564268476) y [Termux ARM 31564268480](https://github.com/alexsndersoto04-source/aio/actions/runs/31564268480) detectaron un import `BufRead` no usado y el primer diff de rustfmt;
+no cuentan como verdes. [CI 31564766319](https://github.com/alexsndersoto04-source/aio/actions/runs/31564766319) y [CI 31564905958](https://github.com/alexsndersoto04-source/aio/actions/runs/31564905958) aprobaron compilación y tests, pero las annotations revelaron dos y una
+diferencias de formato, respectivamente. `1af829b` aplicó el último resultado
+de Rust 1.97 y cerró el fallo advisory.
+
+Límites declarados: RESP2/TCP no ofrece confidencialidad; para un servidor
+remoto debe usarse una red protegida o túnel externo hasta que la build integre
+un transporte `rediss://` acotado. El deadline sí devuelve el control a la VM
+durante DNS, pero la API del SO no permite cancelar el worker ya iniciado; las
+cuotas de dos y 16 limitan ese residuo. `SCAN` puede ser no atómico frente a
+mutaciones del servidor, aunque la memoria, rondas y duración del cliente sí
+quedan acotadas.
+
+No hace falta validación física individual para este bloque. El cliente quedó
+compilado y enlazado dentro del ELF Android/Bionic ARMv7; una instalación en el
+Redmi se agrupará con el siguiente milestone físico.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -683,14 +801,12 @@ reales se liberan en el mismo hilo que las creó.
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos,
   colecciones y los recursos ligeros descritos arriba ya están conectadas. Esto
-  no cierra toda la auditoría de crecimiento: Redis, PDF y servidores
-  conservan registros duraderos que deben revisarse
-  individualmente.
+  no cierra toda la auditoría de crecimiento: PDF y servidores conservan
+  registros duraderos que deben revisarse individualmente.
 - CI prueba directamente la destrucción con handles de colecciones, tareas,
-  tokenizadores, planes ONNX de tract y bases/árboles sled. Las demás rutas de
-  limpieza compilan y son revisadas por Rust, pero este run no levanta un
-  servidor Redis externo ni
-  carga un `.onnx` válido de terceros para luego destruirlo.
+  tokenizadores, planes ONNX de tract, bases/árboles sled y sockets Redis
+  loopback. Las demás rutas de limpieza compilan y son revisadas por Rust. Este
+  run no conecta un Redis externo ni carga un `.onnx` válido de terceros.
 - Los comandos de formato y del antiguo job AArch64 ya pasan, pero sus dos
   líneas `continue-on-error` permanecen en el workflow hasta aplicar desde
   GitHub web la plantilla corregida `docs/CI_WORKFLOW_TEMPLATE.yml`. La GitHub
