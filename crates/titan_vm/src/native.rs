@@ -3157,9 +3157,26 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             let status = u16::try_from(int!()).map_err(|_| "status out of range")?;
             let ctype = string!();
             let headers_map = expect_map(take!())?;
+            // Keep this preflight aligned with server_mod so a hostile map
+            // cannot trigger a second large allocation before the module sees it.
+            if headers_map.len() > 128 {
+                return Err("too many HTTP response headers (limit 128)".into());
+            }
+            let mut header_bytes = 0usize;
             let mut headers: Vec<(String, String)> = Vec::with_capacity(headers_map.len());
             for (k, v) in headers_map {
-                headers.push((k, expect_string(v)?));
+                let value = expect_string(v)?;
+                if k.len() > 256 || value.len() > 8 * 1024 {
+                    return Err("HTTP response header exceeds its size limit".into());
+                }
+                header_bytes = header_bytes
+                    .checked_add(k.len())
+                    .and_then(|bytes| bytes.checked_add(value.len()))
+                    .ok_or_else(|| "HTTP response headers are too large".to_string())?;
+                if header_bytes > 64 * 1024 {
+                    return Err("HTTP response headers exceed 64 KiB".into());
+                }
+                headers.push((k, value));
             }
             let data = bytes!();
             stdlib::server_mod::respond_full(h, status, &ctype, &headers, data).map_err(error)?;
@@ -3199,7 +3216,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             let h = int!();
             let code_raw = int!();
             let reason = string!();
-            let code = if code_raw <= 0 {
+            let code = if code_raw < 0 {
+                return Err("close code must be nonnegative".into());
+            } else if code_raw == 0 {
                 None
             } else {
                 Some(u16::try_from(code_raw).map_err(|_| "close code out of range")?)

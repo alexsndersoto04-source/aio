@@ -1086,7 +1086,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::server::start", [String], Int, Network),
     native!("std::server::local_addr", [Int], String),
     native!("std::server::accept", [Int, Int], Int, Network),
-    native!("std::server::stop", [Int], Nil),
+    native!("std::server::stop", [Int], Nil, Network),
     native!("std::server::method", [Int], String),
     native!("std::server::url", [Int], String),
     native!("std::server::path", [Int], String),
@@ -1094,8 +1094,8 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::server::remote_addr", [Int], String),
     native!("std::server::header", [Int, String], Any),
     native!("std::server::headers", [Int], Map),
-    native!("std::server::body", [Int], Bytes),
-    native!("std::server::body_text", [Int], String),
+    native!("std::server::body", [Int], Bytes, Network),
+    native!("std::server::body_text", [Int], String, Network),
     native!("std::server::respond", [Int, Int, String], Nil, Network),
     native!(
         "std::server::respond_html",
@@ -1468,6 +1468,26 @@ mod tests {
             lookup("std::http::request").unwrap().capability,
             Capability::Network
         );
+        for name in [
+            "std::server::start",
+            "std::server::accept",
+            "std::server::stop",
+            "std::server::body",
+            "std::server::body_text",
+            "std::server::respond",
+            "std::server::respond_full",
+            "std::server::upgrade_websocket",
+            "std::server::ws_send_text",
+            "std::server::ws_send_bytes",
+            "std::server::ws_receive",
+            "std::server::ws_close",
+        ] {
+            assert_eq!(
+                lookup(name).unwrap().capability,
+                Capability::Network,
+                "{name}"
+            );
+        }
         assert_eq!(
             lookup("std::readline::prompt_persistent")
                 .unwrap()
