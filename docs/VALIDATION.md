@@ -16,19 +16,27 @@ por separado porque CI no puede sustituir un teléfono real.
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato Rust | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
+| Formato Rust (`cargo fmt --check`) | **Fallo advisory (exit 1)** | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
 | `cargo check` con características normales | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
 | Tests del workspace, todos los targets | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
 | `cargo check --no-default-features` | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
-| Cross-check Android AArch64 | Aprobado | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
+| Cross-check Android AArch64 | **Fallo advisory (exit 101)** | [CI 31549327056](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327056) |
 | Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31549327029](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327029) |
 | ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31549327029](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327029) |
 | Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31549327029](https://github.com/alexsndersoto04-source/aio/actions/runs/31549327029) |
 
-El workflow ARM usa Android NDK y `armv7-linux-androideabi`. Además de compilar,
-comprueba con `readelf` que el binario sea ELF32/ARM, verifica los metadatos del
-`.deb`, extrae el paquete y compara byte por byte el ejecutable empaquetado con
-el ejecutable construido.
+La página general de CI aparece verde porque actualmente formato y cross-check
+AArch64 tienen `continue-on-error`. Las anotaciones del job registran sus fallos,
+por lo que **no se contabilizan como aprobados**. Los pasos obligatorios de
+`cargo check`, tests y `--no-default-features` sí terminaron correctamente.
+Esta distinción evita confundir un workflow verde con que absolutamente todos
+sus comandos hayan pasado.
+
+El workflow ARMv7 oficial no tiene esa excepción: usa Android NDK y
+`armv7-linux-androideabi`. Además de compilar y enlazar, comprueba con `readelf`
+que el binario sea ELF32/ARM, verifica los metadatos del `.deb`, extrae el
+paquete y compara byte por byte el ejecutable empaquetado con el ejecutable
+construido. Ese workflow sí terminó completamente aprobado.
 
 ### Qué prueban las regresiones nuevas
 
@@ -52,6 +60,9 @@ liberan en el mismo hilo que las creó.
 ### Límites de esta validación
 
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
+- El formato completo del repositorio y el cross-check AArch64 continúan
+  pendientes; sus fallos están en modo advisory y no invalidan el paquete
+  ARMv7 oficial, pero tampoco se presentan como aprobados.
   Las demás rutas de limpieza compilan y son revisadas por el typechecker de
   Rust, pero este run no levanta servicios externos reales de Redis ni carga un
   modelo ONNX para destruirlos.
