@@ -8,25 +8,25 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `7c25b2368cee657236fa2e57daf89e9e8b046371`
+- Commit validado: `57b2b84190a4cd4db9ddafc726d65b8dd1f7bc69`
 - Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
   canales, red, bases de datos, procesos, colecciones, juego, señales, watchers,
-  progreso, routers y ventanas virtuales/reales; checks Android ARM de 32 y 64 bits
+  progreso, routers, ventanas e imágenes; checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
-| `cargo check` con características normales | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
-| `cargo check --no-default-features` | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
-| Cross-check Android AArch64 | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
+| `cargo check` con características normales | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
+| `cargo check --no-default-features` | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
+| Cross-check Android AArch64 | Aprobado | [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721) |
 
 Los fallos advisory registrados ya fueron corregidos:
 
@@ -369,6 +369,68 @@ ventana real continúa respaldada por la prueba física X11 ya registrada, pero
 este commit no afirma haber repetido esa ceremonia en el Redmi. El paquete
 producido se reserva para una validación física agrupada del próximo milestone.
 
+### Imágenes decodificadas y transformaciones con memoria acotada
+
+Los commits `82ea1ab` y `57b2b84` endurecen el registro de imágenes y todas las
+operaciones que pueden decodificar, copiar o producir píxeles. Cada runtime
+admite como máximo:
+
+- 64 handles de imagen;
+- 8.192 píxeles de ancho o alto y 64 MiB decodificados por imagen;
+- 128 MiB decodificados entre todas sus imágenes persistentes;
+- 32 MiB de entrada codificada y 64 MiB de salida codificada;
+- cuatro operaciones simultáneas y 128 MiB de presupuesto transitorio. Una
+  operación que reserva el máximo de 64 MiB permite, por tanto, como máximo dos
+  transformaciones pesadas simultáneas.
+
+`load` y `load_bytes` configuran los límites del decodificador de `image` antes
+de leer los píxeles, y vuelven a medir el buffer decodificado exacto antes de
+insertarlo. `encode` ya no escribe en un `Vec` libre: usa un writer con `Write +
+Seek` que devuelve error antes de cruzar 64 MiB. Los paths se rechazan por
+encima de 16 KiB.
+
+El registro guarda cada `DynamicImage` detrás de `Arc`. Una transformación puede
+liberar el lock global y trabajar sin clonar todo el origen. El resultado sigue
+cubierto por un permiso RAII transitorio hasta que la inserción termina o falla.
+Cerrar o limpiar devuelve inmediatamente handles y bytes persistentes; cualquier
+error devuelve también el permiso transitorio.
+
+Se validan dimensiones positivas antes de reservar. Los recortes comprueban
+sumas de coordenadas y bordes antes de llamar al codec, y `blur` rechaza NaN,
+infinito, negativos y sigma mayor que 100. En el puente VM, `from_rgba` dejó de
+convertir enteros mediante `as`, y brillo dejó de convertir silenciosamente un
+entero fuera de `i32` en cero.
+
+Las regresiones ejecutadas externamente demuestran:
+
+1. saturación de 64 handles, rechazo del siguiente, liberación de uno,
+   reutilización y cleanup completo;
+2. rechazo de dimensiones, recortes y sigma inválidos;
+3. rechazo en el borde de 128 MiB persistentes sin insertar el resultado;
+4. saturación independiente del número de operaciones y del presupuesto
+   transitorio, con recuperación RAII;
+5. writer codificado que conserva exactamente el límite y falla antes del byte
+   siguiente;
+6. carga, resize, transformaciones y encode PNG reales conservando las pruebas
+   funcionales existentes.
+
+Evidencia externa:
+
+- [CI 31560352682](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682): formato con Rust 1.97, checks normal y sin características por
+  defecto, todos los tests del workspace y AArch64 aprobados.
+- [Termux ARM 31560352721](https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721): check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y artefacto aprobados.
+
+La ejecución intermedia [CI 31560187616](https://github.com/alexsndersoto04-source/aio/actions/runs/31560187616) aprobó compilación, tests y AArch64, pero el paso advisory de formato
+detectó cambios exigidos por el `rustfmt` estable recién actualizado a Rust
+1.97. El commit `57b2b84` aplicó exactamente ese diff, incluidos los archivos
+del bloque ligero anterior, y la ejecución final aprobó formato. El run
+intermedio no se presenta como completamente verde.
+
+No se necesita una prueba física para estos límites. Los codecs y las rutas
+ARMv7 sí quedaron compilados dentro del binario Android/Bionic; este bloque no
+afirma que el Redmi haya decodificado manualmente cada formato.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -393,7 +455,7 @@ reales se liberan en el mismo hilo que las creó.
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos,
   colecciones y los recursos ligeros descritos arriba ya están conectadas. Esto
-  no cierra toda la auditoría de crecimiento: imagen, KV, Redis, ONNX, PDF,
+  no cierra toda la auditoría de crecimiento: KV, Redis, ONNX, PDF,
   tokenizadores y servidores conservan registros duraderos que deben revisarse
   individualmente.
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
