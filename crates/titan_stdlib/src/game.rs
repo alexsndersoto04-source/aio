@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+const MAX_GAME_TITLE_BYTES: usize = 64 * 1024;
+const MAX_GAME_DIMENSION: i64 = 16_384;
+
 struct GameState {
     initialized: bool,
     title: String,
@@ -35,7 +38,13 @@ fn game_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<GameState>>>> {
     STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_game_state() -> Arc<Mutex<GameState>> {
+fn existing_game_state() -> Option<Arc<Mutex<GameState>>> {
+    crate::native::lock_recover(game_states())
+        .get(&crate::native::current_runtime_id())
+        .cloned()
+}
+
+fn create_game_state() -> Arc<Mutex<GameState>> {
     let runtime_id = crate::native::current_runtime_id();
     let mut states = crate::native::lock_recover(game_states());
     Arc::clone(
@@ -54,49 +63,54 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
 }
 
 pub fn init(title: &str, width: i64, height: i64) -> bool {
-    if let Ok(mut state) = get_game_state().lock() {
-        state.title = title.to_string();
-        state.width = width;
-        state.height = height;
-        state.last_frame = Some(Instant::now());
-        state.frame_count = 0;
-        state.initialized = true;
-        true
-    } else {
-        false
+    if title.len() > MAX_GAME_TITLE_BYTES
+        || !(1..=MAX_GAME_DIMENSION).contains(&width)
+        || !(1..=MAX_GAME_DIMENSION).contains(&height)
+    {
+        return false;
     }
+    let game = create_game_state();
+    let mut state = crate::native::lock_recover(&game);
+    state.title = title.to_string();
+    state.width = width;
+    state.height = height;
+    state.last_frame = Some(Instant::now());
+    state.frame_count = 0;
+    state.fps = 60;
+    state.initialized = true;
+    true
 }
 
 pub fn step() -> f64 {
-    if let Ok(mut state) = get_game_state().lock() {
-        if !state.initialized {
-            return 0.0;
-        }
-        let now = Instant::now();
-        let delta = if let Some(last) = state.last_frame {
-            let dt = now.duration_since(last).as_secs_f64();
-            if dt > 0.0 {
-                state.fps = (1.0 / dt).round() as i64;
-            }
-            dt
-        } else {
-            0.016_666_666_666_666_666
-        };
-        state.last_frame = Some(now);
-        state.frame_count = state.frame_count.saturating_add(1);
-        delta
-    } else {
-        0.0
+    let Some(game) = existing_game_state() else {
+        return 0.0;
+    };
+    let mut state = crate::native::lock_recover(&game);
+    if !state.initialized {
+        return 0.0;
     }
+    let now = Instant::now();
+    let delta = if let Some(last) = state.last_frame {
+        let dt = now.duration_since(last).as_secs_f64();
+        if dt > 0.0 {
+            state.fps = (1.0 / dt).round() as i64;
+        }
+        dt
+    } else {
+        0.016_666_666_666_666_666
+    };
+    state.last_frame = Some(now);
+    state.frame_count = state.frame_count.saturating_add(1);
+    delta
 }
 
 pub fn fps() -> i64 {
-    if let Ok(state) = get_game_state().lock() {
-        if state.initialized {
-            state.fps
-        } else {
-            0
-        }
+    let Some(game) = existing_game_state() else {
+        return 0;
+    };
+    let state = crate::native::lock_recover(&game);
+    if state.initialized {
+        state.fps
     } else {
         0
     }
@@ -110,20 +124,42 @@ pub fn check_collision(
     pos2: (f64, f64),
     size2: (f64, f64),
 ) -> bool {
-    pos1.0 < pos2.0 + size2.0
-        && pos1.0 + size1.0 > pos2.0
-        && pos1.1 < pos2.1 + size2.1
-        && pos1.1 + size1.1 > pos2.1
+    let values = [
+        pos1.0, pos1.1, size1.0, size1.1, pos2.0, pos2.1, size2.0, size2.1,
+    ];
+    if values.iter().any(|value| !value.is_finite())
+        || size1.0 < 0.0
+        || size1.1 < 0.0
+        || size2.0 < 0.0
+        || size2.1 < 0.0
+    {
+        return false;
+    }
+    let right1 = pos1.0 + size1.0;
+    let bottom1 = pos1.1 + size1.1;
+    let right2 = pos2.0 + size2.0;
+    let bottom2 = pos2.1 + size2.1;
+    right1.is_finite()
+        && bottom1.is_finite()
+        && right2.is_finite()
+        && bottom2.is_finite()
+        && pos1.0 < right2
+        && right1 > pos2.0
+        && pos1.1 < bottom2
+        && bottom1 > pos2.1
 }
 
 pub fn shutdown() -> bool {
-    if let Ok(mut state) = get_game_state().lock() {
-        state.initialized = false;
-        state.last_frame = None;
-        true
-    } else {
-        false
-    }
+    let Some(game) = existing_game_state() else {
+        return false;
+    };
+    let mut state = crate::native::lock_recover(&game);
+    state.initialized = false;
+    state.title = String::new();
+    state.last_frame = None;
+    state.frame_count = 0;
+    state.fps = 0;
+    true
 }
 
 #[cfg(test)]
@@ -229,6 +265,34 @@ mod tests {
         assert!(shutdown());
     }
 
+    #[test]
+    fn invalid_initialization_is_rejected_without_creating_runtime_state() {
+        let runtime_id = 8_200_001;
+        crate::native::with_runtime_context(runtime_id, || {
+            assert_eq!(step(), 0.0);
+            assert_eq!(fps(), 0);
+            assert!(!shutdown());
+            assert!(!crate::native::lock_recover(game_states()).contains_key(&runtime_id));
+
+            assert!(!init(&"x".repeat(MAX_GAME_TITLE_BYTES + 1), 640, 480));
+            assert!(!init("bad width", 0, 480));
+            assert!(!init("bad height", 640, MAX_GAME_DIMENSION + 1));
+            assert!(!crate::native::lock_recover(game_states()).contains_key(&runtime_id));
+
+            assert!(init(
+                &"x".repeat(MAX_GAME_TITLE_BYTES),
+                MAX_GAME_DIMENSION,
+                1
+            ));
+            assert!(shutdown());
+            let game = existing_game_state().unwrap();
+            let state = crate::native::lock_recover(&game);
+            assert!(state.title.is_empty());
+            assert_eq!(state.title.capacity(), 0);
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
     // ---- AABB collision math (pure functions — no global state) --------
 
     #[test]
@@ -326,6 +390,28 @@ mod tests {
             (10.0, 10.0),
             (0.0, 0.0),
             (10.0, 10.0)
+        ));
+    }
+
+    #[test]
+    fn collision_rejects_nonfinite_coordinates_and_negative_sizes() {
+        assert!(!check_collision(
+            (f64::NAN, 0.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+            (1.0, 1.0)
+        ));
+        assert!(!check_collision(
+            (0.0, 0.0),
+            (-1.0, 1.0),
+            (0.0, 0.0),
+            (1.0, 1.0)
+        ));
+        assert!(!check_collision(
+            (f64::MAX, 0.0),
+            (f64::MAX, 1.0),
+            (0.0, 0.0),
+            (1.0, 1.0)
         ));
     }
 
