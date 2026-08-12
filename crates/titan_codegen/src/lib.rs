@@ -571,12 +571,17 @@ impl AstCompiler {
             } => self.compile_range(start, end, *inclusive)?,
             Expr::Unary { op, expr, .. } => {
                 self.compile_expr(expr)?;
-                self.emit(match op {
+                let instruction = match op {
                     UnaryOp::Neg => Op::Neg,
                     UnaryOp::Not => Op::Not,
                     UnaryOp::BitNot => Op::BitNot,
-                    _ => Op::Nop,
-                });
+                    UnaryOp::Ref | UnaryOp::RefMut | UnaryOp::Deref => {
+                        return Err(CodegenError::Unsupported(
+                            "references and dereferencing".into(),
+                        ))
+                    }
+                };
+                self.emit(instruction);
             }
             Expr::Call { callee, args, .. } => self.compile_call(callee, args)?,
             Expr::MethodCall {
@@ -648,9 +653,10 @@ impl AstCompiler {
             } => self.compile_for(pattern, iterator, body)?,
             Expr::Loop { body, .. } => self.compile_loop(body)?,
             Expr::Break { value, .. } => {
-                if let Some(value) = value {
-                    self.compile_expr(value)?;
-                    self.emit(Op::Pop);
+                if value.is_some() {
+                    return Err(CodegenError::Unsupported(
+                        "values carried by break".into(),
+                    ));
                 }
                 let jump = self.jump();
                 self.loops
@@ -1628,5 +1634,33 @@ fn split_variant(name: &str) -> Result<(&str, &str), CodegenError> {
 impl Default for AstCompiler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use titan_lexer::Lexer;
+    use titan_parser::Parser;
+
+    fn parse(source: &str) -> Program {
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize().0.to_vec();
+        Parser::new(tokens).parse_program().unwrap()
+    }
+
+    #[test]
+    fn rejects_reference_and_break_value_bytecode() {
+        let reference = parse("fn main() { let value = 1; &value }");
+        assert!(matches!(
+            AstCompiler::new().compile_program(&reference),
+            Err(CodegenError::Unsupported(_))
+        ));
+
+        let break_value = parse("fn main() { loop { break 1 } }");
+        assert!(matches!(
+            AstCompiler::new().compile_program(&break_value),
+            Err(CodegenError::Unsupported(_))
+        ));
     }
 }

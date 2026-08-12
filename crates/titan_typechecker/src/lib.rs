@@ -115,6 +115,8 @@ pub enum TypeError {
     OutsideLoop,
     #[error("operator ? requires an Option or Result value")]
     InvalidTry,
+    #[error("unsupported language feature: {feature}")]
+    UnsupportedFeature { feature: String },
 }
 
 #[derive(Clone)]
@@ -1656,7 +1658,9 @@ impl TypeEnv {
                 Stmt::Expr(expr) => {
                     self.check_expr(expr);
                 }
-                Stmt::Item(item) => self.check_item(item),
+                Stmt::Item(_) => self.errors.push(TypeError::UnsupportedFeature {
+                    feature: "nested declarations".into(),
+                }),
             }
         }
         let result = block
@@ -1825,7 +1829,12 @@ impl TypeEnv {
                             Type::Int
                         }
                     }
-                    UnaryOp::Ref | UnaryOp::RefMut | UnaryOp::Deref => ty,
+                    UnaryOp::Ref | UnaryOp::RefMut | UnaryOp::Deref => {
+                        self.errors.push(TypeError::UnsupportedFeature {
+                            feature: "references and dereferencing".into(),
+                        });
+                        Type::Unknown
+                    }
                 }
             }
             Expr::Call { callee, args, .. } => self.check_call(callee, args),
@@ -1944,6 +1953,11 @@ impl TypeEnv {
                 let mut wildcard = false;
                 let mut bools = HashSet::new();
                 for arm in arms {
+                    if !match_pattern_is_lowerable(&arm.pattern) {
+                        self.errors.push(TypeError::UnsupportedFeature {
+                            feature: "or-patterns and nested destructuring in match".into(),
+                        });
+                    }
                     self.push_scope();
                     self.bind_pattern(&arm.pattern, &subject, &mut wildcard, &mut bools);
                     if let Some(guard) = &arm.guard {
@@ -1999,6 +2013,11 @@ impl TypeEnv {
                 body,
                 ..
             } => {
+                if !matches!(pattern.as_ref(), Pattern::Ident { .. }) {
+                    self.errors.push(TypeError::UnsupportedFeature {
+                        feature: "destructuring patterns in for loops".into(),
+                    });
+                }
                 let raw = self.check_expr(iterator);
                 let iterator_type = self.resolve_alias(&raw);
                 let item = match &iterator_type {
@@ -2046,6 +2065,9 @@ impl TypeEnv {
                 }
                 if let Some(value) = value {
                     self.check_expr(value);
+                    self.errors.push(TypeError::UnsupportedFeature {
+                        feature: "values carried by break".into(),
+                    });
                 }
                 Type::Never
             }
@@ -3399,6 +3421,17 @@ fn pattern_binding_names(pattern: &Pattern) -> HashSet<String> {
     names
 }
 
+fn match_pattern_is_lowerable(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Wildcard { .. } | Pattern::Ident { .. } | Pattern::Literal { .. } => true,
+        Pattern::Enum { inner: None, .. } => true,
+        Pattern::Enum {
+            inner: Some(inner), ..
+        } => matches!(inner.as_ref(), Pattern::Wildcard { .. } | Pattern::Ident { .. }),
+        Pattern::Or { .. } | Pattern::Tuple { .. } | Pattern::Struct { .. } => false,
+    }
+}
+
 fn pattern_is_catchall(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Wildcard { .. } | Pattern::Ident { .. } => true,
@@ -3831,6 +3864,22 @@ mod tests {
         assert!(check("fn complete(flag: bool) -> int { if flag { return 1 } return 2 }").is_ok());
         assert!(check("const INVALID = return 1 fn main() {}").is_err());
         assert!(check("fn main() { spawn |value: int| value }").is_err());
+    }
+
+    #[test]
+    fn rejects_syntax_that_bytecode_cannot_lower() {
+        assert!(check("fn main() { let value = 1; &value }").is_err());
+        assert!(check("fn main() { loop { break 1 } }").is_err());
+        assert!(check("fn main() { fn nested() {} }").is_err());
+        assert!(check("fn main() { for _ in [1, 2] {} }").is_err());
+        assert!(check(
+            "fn read(value: bool) -> int { match value { true | false => 1 } } fn main() {}"
+        )
+        .is_err());
+        assert!(check(
+            "enum Inner { Yes } enum Outer { Wrap(Inner) } fn read(value: Outer) -> int { match value { Outer::Wrap(Inner::Yes) => 1, _ => 0 } } fn main() {}"
+        )
+        .is_err());
     }
 
     #[test]
