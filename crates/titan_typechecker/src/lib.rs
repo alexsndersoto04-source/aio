@@ -85,6 +85,16 @@ pub enum TypeError {
     MissingField { structure: String, field: String },
     #[error("unknown field '{field}' in struct '{structure}'")]
     UnknownField { structure: String, field: String },
+    #[error("field '{field}' appears more than once in struct literal '{structure}'")]
+    DuplicateField { structure: String, field: String },
+    #[error("invalid argument to '{function}': expected {expected}, found {found}")]
+    InvalidArgument {
+        function: String,
+        expected: String,
+        found: Type,
+    },
+    #[error("invalid string interpolation expression '{expression}'")]
+    InvalidInterpolation { expression: String },
     #[error("value of type {target} has no fields")]
     NoFields { target: Type },
     #[error("invalid pattern: {message}")]
@@ -94,7 +104,7 @@ pub enum TypeError {
         enumeration: String,
         variant: String,
     },
-    #[error("non-exhaustive boolean match")]
+    #[error("non-exhaustive match; add a catch-all arm")]
     NonExhaustiveMatch,
     #[error("non-exhaustive match for enum '{enumeration}'; missing {missing:?}")]
     NonExhaustiveEnum {
@@ -1642,7 +1652,11 @@ impl TypeEnv {
         match expr {
             Expr::Int { .. } => Type::Int,
             Expr::Float { .. } => Type::Float,
-            Expr::String { .. } | Expr::StringTemplate { .. } => Type::String,
+            Expr::String { .. } => Type::String,
+            Expr::StringTemplate { value, span } => {
+                self.check_string_template(value, *span);
+                Type::String
+            }
             Expr::Char { .. } => Type::Char,
             Expr::Bool { .. } => Type::Bool,
             Expr::Nil { .. } => Type::Nil,
@@ -1708,31 +1722,37 @@ impl TypeEnv {
             }
             Expr::StructLit { name, fields, .. } => {
                 if let Some(expected_fields) = self.structs.get(name).cloned() {
-                    let supplied: HashSet<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
-                    for (field, expected) in &expected_fields {
+                    let mut supplied = HashSet::new();
+                    for (field, value) in fields {
+                        if !supplied.insert(field.as_str()) {
+                            self.errors.push(TypeError::DuplicateField {
+                                structure: name.clone(),
+                                field: field.clone(),
+                            });
+                        }
+                        let found = self.check_expr(value);
+                        if let Some(expected) = expected_fields.get(field) {
+                            self.require_compatible(expected, &found);
+                        } else {
+                            self.errors.push(TypeError::UnknownField {
+                                structure: name.clone(),
+                                field: field.clone(),
+                            });
+                        }
+                    }
+                    for field in expected_fields.keys() {
                         if !supplied.contains(field.as_str()) {
                             self.errors.push(TypeError::MissingField {
                                 structure: name.clone(),
                                 field: field.clone(),
                             });
                         }
-                        if let Some((_, value)) = fields.iter().find(|(n, _)| n == field) {
-                            let found = self.check_expr(value);
-                            self.require_compatible(expected, &found);
-                        }
-                    }
-                    for (field, value) in fields {
-                        if !expected_fields.contains_key(field) {
-                            self.errors.push(TypeError::UnknownField {
-                                structure: name.clone(),
-                                field: field.clone(),
-                            });
-                        }
-                        self.check_expr(value);
                     }
                 } else {
-                    self.errors
-                        .push(TypeError::UnknownVariable { name: name.clone() });
+                    self.errors.push(TypeError::UnknownType { name: name.clone() });
+                    for (_, value) in fields {
+                        self.check_expr(value);
+                    }
                 }
                 Type::Named(name.clone())
             }
@@ -1920,33 +1940,33 @@ impl TypeEnv {
                 let has_catchall = arms.iter().any(|arm| {
                     arm.guard.is_none() && pattern_is_catchall(&arm.pattern)
                 });
-                if self.resolve_alias(&subject) == Type::Bool && !has_catchall {
-                    let mut covered = HashSet::new();
-                    for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
-                        collect_bool_patterns(&arm.pattern, &mut covered);
-                    }
-                    if covered.len() < 2 {
-                        self.errors.push(TypeError::NonExhaustiveMatch);
-                    }
-                }
-                if let Type::Named(enumeration) = self.resolve_alias(&subject) {
-                    let variants = self.enum_variant_names(&enumeration);
-                    if !variants.is_empty() && !has_catchall {
-                        let mut covered = HashSet::new();
-                        for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
-                            collect_enum_patterns(&arm.pattern, &enumeration, &mut covered);
+                if !has_catchall {
+                    match self.resolve_alias(&subject) {
+                        Type::Bool => {
+                            let mut covered = HashSet::new();
+                            for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
+                                collect_bool_patterns(&arm.pattern, &mut covered);
+                            }
+                            if covered.len() < 2 {
+                                self.errors.push(TypeError::NonExhaustiveMatch);
+                            }
                         }
-                        let mut missing: Vec<_> = variants
-                            .difference(&covered)
-                            .cloned()
-                            .collect();
-                        missing.sort();
-                        if !missing.is_empty() {
-                            self.errors.push(TypeError::NonExhaustiveEnum {
-                                enumeration,
-                                missing,
-                            });
+                        Type::Named(enumeration) => {
+                            self.check_enum_exhaustiveness(&enumeration, arms);
                         }
+                        Type::Unknown => {
+                            let mut enumerations = HashSet::new();
+                            for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
+                                collect_pattern_enum_names(&arm.pattern, &mut enumerations);
+                            }
+                            if enumerations.len() == 1 {
+                                let enumeration = enumerations.into_iter().next().unwrap_or_default();
+                                self.check_enum_exhaustiveness(&enumeration, arms);
+                            } else {
+                                self.errors.push(TypeError::NonExhaustiveMatch);
+                            }
+                        }
+                        _ => self.errors.push(TypeError::NonExhaustiveMatch),
                     }
                 }
                 result
@@ -2119,6 +2139,92 @@ impl TypeEnv {
         }
     }
 
+    fn check_string_template(&mut self, template: &str, span: titan_lexer::Span) {
+        let mut rest = template;
+        while let Some(open) = rest.find('{') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('}') else {
+                self.errors.push(TypeError::InvalidInterpolation {
+                    expression: template.into(),
+                });
+                return;
+            };
+            let source = after[..close].trim();
+            if let Some(open_call) = source.find('(') {
+                if !source.ends_with(')') {
+                    self.errors.push(TypeError::InvalidInterpolation {
+                        expression: source.into(),
+                    });
+                } else {
+                    let name = source[..open_call].trim();
+                    let arguments = &source[open_call + 1..source.len() - 1];
+                    if !is_template_path(name) {
+                        self.errors.push(TypeError::InvalidInterpolation {
+                            expression: source.into(),
+                        });
+                    } else {
+                        let mut args = Vec::new();
+                        let mut valid = true;
+                        for argument in arguments
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|argument| !argument.is_empty())
+                        {
+                            if let Ok(value) = argument.parse::<i64>() {
+                                args.push(Expr::Int { value, span });
+                            } else if is_template_path(argument)
+                                && !self.is_global_constant_binding(argument)
+                            {
+                                args.push(Expr::Ident {
+                                    name: argument.into(),
+                                    span,
+                                });
+                            } else {
+                                valid = false;
+                                self.errors.push(TypeError::InvalidInterpolation {
+                                    expression: argument.into(),
+                                });
+                            }
+                        }
+                        if valid {
+                            let is_user_function = self.functions.contains_key(name)
+                                && !self.base_functions.contains_key(name);
+                            if is_user_function || titan_stdlib::native::contains(name) {
+                                self.check_call(
+                                    &Expr::Ident {
+                                        name: name.into(),
+                                        span,
+                                    },
+                                    &args,
+                                );
+                            } else {
+                                self.errors.push(TypeError::InvalidInterpolation {
+                                    expression: source.into(),
+                                });
+                            }
+                        }
+                    }
+                }
+            } else if is_template_path(source) {
+                if self.is_global_constant_binding(source) {
+                    self.errors.push(TypeError::InvalidInterpolation {
+                        expression: source.into(),
+                    });
+                } else {
+                    self.check_expr(&Expr::Ident {
+                        name: source.into(),
+                        span,
+                    });
+                }
+            } else {
+                self.errors.push(TypeError::InvalidInterpolation {
+                    expression: source.into(),
+                });
+            }
+            rest = &after[close + 1..];
+        }
+    }
+
     fn check_method_call(&mut self, receiver: &Expr, method: &str, args: &[Expr]) -> Type {
         let receiver_raw = self.check_expr(receiver);
         let receiver_type = self.resolve_alias(&receiver_raw);
@@ -2140,17 +2246,9 @@ impl TypeEnv {
             }
             ("map", 1) => {
                 let callable = self.check_expr(&args[0]);
-                if let Type::Array(item) = &receiver_type {
-                    let result = self.check_callback(
-                        "map callback",
-                        &callable,
-                        &[*item.clone()],
-                        None,
-                    );
+                if let Some(item) = sequence_item_type(&receiver_type) {
+                    let result = self.check_callback("map callback", &callable, &[item], None);
                     return Type::Array(Box::new(result));
-                }
-                if receiver_type == Type::Unknown {
-                    return Type::Array(Box::new(Type::Unknown));
                 }
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
@@ -2160,17 +2258,14 @@ impl TypeEnv {
             }
             ("filter", 1) => {
                 let callable = self.check_expr(&args[0]);
-                if let Type::Array(item) = &receiver_type {
+                if let Some(item) = sequence_item_type(&receiver_type) {
                     self.check_callback(
                         "filter predicate",
                         &callable,
-                        &[*item.clone()],
+                        &[item.clone()],
                         Some(&Type::Bool),
                     );
-                    return receiver_type;
-                }
-                if receiver_type == Type::Unknown {
-                    return Type::Array(Box::new(Type::Unknown));
+                    return Type::Array(Box::new(item));
                 }
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
@@ -2181,17 +2276,14 @@ impl TypeEnv {
             ("fold", 2) => {
                 let initial = self.check_expr(&args[0]);
                 let callable = self.check_expr(&args[1]);
-                if let Type::Array(item) = &receiver_type {
+                if let Some(item) = sequence_item_type(&receiver_type) {
                     self.check_callback(
                         "fold callback",
                         &callable,
-                        &[initial.clone(), *item.clone()],
+                        &[initial.clone(), item],
                         Some(&initial),
                     );
                     return initial;
-                }
-                if receiver_type == Type::Unknown {
-                    return Type::Unknown;
                 }
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
@@ -2201,11 +2293,11 @@ impl TypeEnv {
             }
             ("sort_by", 1) => {
                 let callable = self.check_expr(&args[0]);
-                if let Type::Array(item) = &receiver_type {
+                if let Some(item) = sequence_item_type(&receiver_type) {
                     let result = self.check_callback(
                         "sort_by comparator",
                         &callable,
-                        &[*item.clone(), *item.clone()],
+                        &[item.clone(), item.clone()],
                         None,
                     );
                     if !is_numeric(&self.resolve_alias(&result)) {
@@ -2214,10 +2306,7 @@ impl TypeEnv {
                             found: result,
                         });
                     }
-                    return receiver_type;
-                }
-                if receiver_type == Type::Unknown {
-                    return Type::Array(Box::new(Type::Unknown));
+                    return Type::Array(Box::new(item));
                 }
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
@@ -2227,20 +2316,13 @@ impl TypeEnv {
             }
             ("find", 1) | ("any", 1) | ("all", 1) => {
                 let callable = self.check_expr(&args[0]);
-                if let Type::Array(item) = &receiver_type {
+                if let Some(item) = sequence_item_type(&receiver_type) {
                     self.check_callback(
                         &format!("{method} predicate"),
                         &callable,
-                        &[*item.clone()],
+                        &[item],
                         Some(&Type::Bool),
                     );
-                    return if method == "find" {
-                        Type::Unknown
-                    } else {
-                        Type::Bool
-                    };
-                }
-                if receiver_type == Type::Unknown {
                     return if method == "find" {
                         Type::Unknown
                     } else {
@@ -2375,6 +2457,103 @@ impl TypeEnv {
             .is_some_and(|(index, _)| index == 0 && self.constants.contains(name))
     }
 
+    fn check_collection_call(&mut self, name: &str, args: &[Expr]) -> Option<Type> {
+        let expected_arity = match name {
+            "len" => 1,
+            "map" | "filter" | "sort_by" | "find" | "any" | "all" => 2,
+            "fold" => 3,
+            _ => return None,
+        };
+        // The ordinary call checker reports malformed arity and still visits
+        // every argument. Only apply the intrinsic contract when codegen will
+        // lower the exact call shape to a collection opcode.
+        if args.len() != expected_arity {
+            return None;
+        }
+        if name == "len" {
+            let raw = self.check_expr(&args[0]);
+            let found = self.resolve_alias(&raw);
+            if !is_length_supported(&found) {
+                self.errors.push(TypeError::InvalidArgument {
+                    function: name.into(),
+                    expected: "array, tuple, string, bytes, or map".into(),
+                    found,
+                });
+            }
+            return Some(Type::Int);
+        }
+
+        let raw = self.check_expr(&args[0]);
+        let sequence = self.resolve_alias(&raw);
+        let item = match sequence_item_type(&sequence) {
+            Some(item) => item,
+            None => {
+                self.errors.push(TypeError::InvalidArgument {
+                    function: name.into(),
+                    expected: "array or tuple".into(),
+                    found: sequence,
+                });
+                Type::Unknown
+            }
+        };
+        let result = match name {
+            "map" => {
+                let callable = self.check_expr(&args[1]);
+                let output = self.check_callback("map callback", &callable, &[item], None);
+                Type::Array(Box::new(output))
+            }
+            "filter" => {
+                let callable = self.check_expr(&args[1]);
+                self.check_callback("filter predicate", &callable, &[item.clone()], Some(&Type::Bool));
+                Type::Array(Box::new(item))
+            }
+            "fold" => {
+                let initial = self.check_expr(&args[1]);
+                let callable = self.check_expr(&args[2]);
+                self.check_callback(
+                    "fold callback",
+                    &callable,
+                    &[initial.clone(), item],
+                    Some(&initial),
+                );
+                initial
+            }
+            "sort_by" => {
+                let callable = self.check_expr(&args[1]);
+                let output = self.check_callback(
+                    "sort_by comparator",
+                    &callable,
+                    &[item.clone(), item.clone()],
+                    None,
+                );
+                if !is_numeric(&self.resolve_alias(&output)) {
+                    self.errors.push(TypeError::Mismatch {
+                        expected: Type::Int,
+                        found: output,
+                    });
+                }
+                Type::Array(Box::new(item))
+            }
+            "find" => {
+                let callable = self.check_expr(&args[1]);
+                self.check_callback("find predicate", &callable, &[item], Some(&Type::Bool));
+                Type::Unknown
+            }
+            "any" | "all" => {
+                let callable = self.check_expr(&args[1]);
+                self.check_callback(
+                    &format!("{name} predicate"),
+                    &callable,
+                    &[item],
+                    Some(&Type::Bool),
+                );
+                Type::Bool
+            }
+            _ => unreachable!("collection intrinsic was filtered above"),
+        };
+        Some(result)
+    }
+
     fn check_call(&mut self, callee: &Expr, args: &[Expr]) -> Type {
         let name = if let Expr::Ident { name, .. } = callee {
             Some(name.clone())
@@ -2382,6 +2561,9 @@ impl TypeEnv {
             None
         };
         if let Some(name) = &name {
+            if let Some(result) = self.check_collection_call(name, args) {
+                return result;
+            }
             if let Some(signature) = titan_stdlib::native::lookup(name) {
                 // std::try::catch is variadic: (fn, args...). Skip arity check.
                 let variadic = name == "std::try::catch";
@@ -2490,7 +2672,8 @@ impl TypeEnv {
             // whole expression is a String.
             Add if left == Type::String => Type::String,
             Add if right == Type::String => Type::String,
-            Add | Sub | Mul | Div | Mod if is_numeric(&left) && compatible(&left, &right) => left,
+            Add | Sub | Mul | Div if is_numeric(&left) && compatible(&left, &right) => left,
+            Mod if left == Type::Int && right == Type::Int => Type::Int,
             And | Or | Xor if left == Type::Int && right == Type::Int => Type::Int,
             _ => {
                 self.invalid(op, left, right);
@@ -2564,6 +2747,26 @@ impl TypeEnv {
             .collect()
     }
 
+    fn check_enum_exhaustiveness(&mut self, enumeration: &str, arms: &[MatchArm]) {
+        let variants = self.enum_variant_names(enumeration);
+        if variants.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveMatch);
+            return;
+        }
+        let mut covered = HashSet::new();
+        for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
+            collect_enum_patterns(&arm.pattern, enumeration, &mut covered);
+        }
+        let mut missing: Vec<_> = variants.difference(&covered).cloned().collect();
+        missing.sort();
+        if !missing.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveEnum {
+                enumeration: enumeration.into(),
+                missing,
+            });
+        }
+    }
+
     fn bind_pattern(
         &mut self,
         pattern: &Pattern,
@@ -2634,7 +2837,15 @@ impl TypeEnv {
                             });
                             self.bind_pattern(inner, &Type::Unknown, wildcard, bools);
                         }
-                        _ => {}
+                        (Some(_), None) => {
+                            self.errors.push(TypeError::InvalidPattern {
+                                message: format!(
+                                    "variant '{}::{}' requires a payload pattern",
+                                    name, variant
+                                ),
+                            });
+                        }
+                        (None, None) => {}
                     },
                     None => {
                         self.errors.push(TypeError::UnknownVariant {
@@ -2737,6 +2948,22 @@ impl TypeEnv {
     fn lookup(&self, name: &str) -> Option<Type> {
         self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
     }
+}
+
+fn is_template_path(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    value
+        .replace("::", ".")
+        .split('.')
+        .all(|segment| {
+            let mut chars = segment.chars();
+            chars
+                .next()
+                .is_some_and(|first| first == '_' || first.is_alphabetic())
+                && chars.all(|character| character == '_' || character.is_alphanumeric())
+        })
 }
 
 fn count_functions(items: &[Item]) -> usize {
@@ -3183,6 +3410,19 @@ fn collect_bool_patterns(pattern: &Pattern, covered: &mut HashSet<bool>) {
     }
 }
 
+fn collect_pattern_enum_names(pattern: &Pattern, names: &mut HashSet<String>) {
+    match pattern {
+        Pattern::Enum { name, .. } => {
+            names.insert(name.clone());
+        }
+        Pattern::Or { left, right, .. } => {
+            collect_pattern_enum_names(left, names);
+            collect_pattern_enum_names(right, names);
+        }
+        _ => {}
+    }
+}
+
 fn collect_enum_patterns(
     pattern: &Pattern,
     enumeration: &str,
@@ -3211,6 +3451,15 @@ fn common_type(types: &[Type]) -> Option<Type> {
         .then(|| first.clone())
 }
 
+fn sequence_item_type(ty: &Type) -> Option<Type> {
+    match ty {
+        Type::Array(item) => Some(*item.clone()),
+        Type::Tuple(items) => Some(common_type(items).unwrap_or(Type::Unknown)),
+        Type::Unknown => Some(Type::Unknown),
+        _ => None,
+    }
+}
+
 fn is_length_supported(ty: &Type) -> bool {
     matches!(
         ty,
@@ -3226,7 +3475,13 @@ fn builtin_method_arity(receiver: &Type, method: &str) -> Option<usize> {
             "fold" => Some(2),
             _ => None,
         },
-        Type::Tuple(_) | Type::String => (method == "len").then_some(0),
+        Type::Tuple(_) => match method {
+            "len" => Some(0),
+            "map" | "filter" | "sort_by" | "find" | "any" | "all" => Some(1),
+            "fold" => Some(2),
+            _ => None,
+        },
+        Type::String => (method == "len").then_some(0),
         Type::Named(name) if name == "bytes" || name == "map" => {
             (method == "len").then_some(0)
         }
@@ -3347,7 +3602,7 @@ fn compatible(a: &Type, b: &Type) -> bool {
     if matches!(b, Type::Unknown | Type::Never) {
         return true;
     }
-    if matches!(a, Type::Unit) && matches!(b, Type::Nil) {
+    if matches!((a, b), (Type::Unit, Type::Nil) | (Type::Nil, Type::Unit)) {
         return true;
     }
     // v0.16.0 QoL: recursively unify inside container types so
@@ -3482,9 +3737,11 @@ mod tests {
     }
 
     #[test]
-    fn validates_unary_operator_domains() {
+    fn validates_unary_and_binary_operator_domains() {
         assert!(check("fn main() { let a = -true let b = ~\"text\" }").is_err());
         assert!(check("fn main() { let a = -1.5 let b = ~7 }").is_ok());
+        assert!(check("fn main() { 5.0 % 2.0 }").is_err());
+        assert!(check("fn unit() {} fn main() { nil == unit() unit() == nil }").is_ok());
     }
 
     #[test]
@@ -3523,6 +3780,23 @@ mod tests {
         assert!(check("fn main() { [1, 2].filter(|value: int| value + 1) }").is_err());
         assert!(check("fn main() { [1, 2].map(42) }").is_err());
         assert!(check("fn main() { [1, 2].map(|| 1) }").is_err());
+        assert!(check("fn main() { let values: [int] = (1, 2).map(|value: int| value + 1) }").is_ok());
+    }
+
+    #[test]
+    fn validates_global_collection_intrinsics() {
+        assert!(check("fn main() { len(42) }").is_err());
+        assert!(check("fn main() { map(42, |value| value) }").is_err());
+        assert!(check("fn main() { filter([1, 2], |value: int| value + 1) }").is_err());
+        assert!(check("fn main() { let values: [string] = map((1, 2), |value: int| \"ok\") }").is_ok());
+    }
+
+    #[test]
+    fn validates_string_template_references_and_calls() {
+        assert!(check("fn main() { print(\"value={missing}\") }").is_err());
+        assert!(check("fn id(value: int) -> int { value } fn main() { let value = 1 print(\"value={id(value)}\") }").is_ok());
+        assert!(check("fn id(value: int) -> int { value } fn main() { let bad = \"x\" print(\"value={id(bad)}\") }").is_err());
+        assert!(check("fn main() { let value = 1 print(\"ok={value}, bad={value + 1}\") }").is_err());
     }
 
     #[test]
@@ -3564,6 +3838,8 @@ mod tests {
         assert!(check("struct Pair { left: int, left: int } fn main() {}").is_err());
         assert!(check("enum Choice { Yes, Yes } fn main() {}").is_err());
         assert!(check("fn duplicate(value: int, value: int) {} fn main() {}").is_err());
+        assert!(check("struct Point { x: int } fn main() { Point { x: 1, x: 2 } }").is_err());
+        assert!(check("fn main() { Missing { value: unknown } }").is_err());
     }
 
     #[test]
@@ -3618,6 +3894,15 @@ mod tests {
 
         let invalid_payload = "enum Choice { Empty } fn read(choice: Choice) -> int { match choice { Choice::Empty(value) => value, _ => 0 } } fn main() {}";
         assert!(check(invalid_payload).is_err());
+
+        let missing_payload = "enum Choice { Number(int), Empty } fn read(choice: Choice) -> int { match choice { Choice::Number => 1, Choice::Empty => 0 } } fn main() {}";
+        assert!(check(missing_payload).is_err());
+    }
+
+    #[test]
+    fn open_ended_matches_require_a_catch_all() {
+        assert!(check("fn read(value: int) -> int { match value { 1 => 1 } } fn main() {}").is_err());
+        assert!(check("fn read(value: int) -> int { match value { 1 => 1, _ => 0 } } fn main() {}").is_ok());
     }
 
     #[test]
