@@ -8,24 +8,24 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `c694874e9c3ddc52039384b40527428494815cdf`
-- Alcance: seguridad de capacidades, limpieza de recursos, formato y checks
-  Android ARM de 32 y 64 bits
+- Commit validado: `02b28bee6311b54ca9a74f3afc915b65a9683b12`
+- Alcance: seguridad de capacidades, aislamiento y limpieza por VM, formato y
+  checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
-| `cargo check` con características normales | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
-| `cargo check --no-default-features` | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
-| Cross-check Android AArch64 | Aprobado | [CI 31552463594](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463594) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31552463503](https://github.com/alexsndersoto04-source/aio/actions/runs/31552463503) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31554057225](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057225) |
+| `cargo check` con características normales | Aprobado | [CI 31554057225](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057225) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31554057225](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057225) |
+| `cargo check --no-default-features` | Aprobado | [CI 31554057225](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057225) |
+| Cross-check Android AArch64 | Aprobado | [CI 31554057225](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057225) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31554057226](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057226) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31554057226](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057226) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31554057226](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057226) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31554057226](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057226) |
 
 Los dos fallos advisory anteriores ya fueron corregidos:
 
@@ -42,6 +42,34 @@ compilar y enlazar, comprueba con `readelf` que el binario sea ELF32/ARM,
 verifica los metadatos del `.deb`, extrae el paquete y compara byte por byte el
 ejecutable empaquetado con el ejecutable construido.
 
+### Aislamiento de estado mutable por VM
+
+El commit validado elimina el estado compartido entre VMs en audio, juego, GUI,
+input, portapapeles/notificaciones, ciclo de vida móvil y métricas. También
+separa los cuatro emuladores freestanding (plataforma, CPU, memoria y MMIO), los
+contadores de señales y los límites de frecuencia HTTP. Las métricas creadas
+internamente por el dispatcher HTTP reciben de forma explícita el identificador
+del runtime correcto; no caen en el runtime global por defecto.
+
+Las regresiones crean dos dominios de runtime simultáneos y comprueban que el
+segundo no puede leer handles, clicks, teclas, coordenadas, texto, eventos,
+métricas, registros MMIO, mapas de páginas ni fallos de CPU del primero. Luego
+reinician y limpian selectivamente el segundo y demuestran que el estado del
+primero sigue intacto. Señales y rate limits tienen pruebas específicas de
+consumo y cleanup independientes.
+
+El asignador freestanding ya no crea un `Vec` proporcional a toda la memoria
+física simulada. Usa asignación dispersa O(1) y valida overflow de direcciones.
+Una regresión inicializa una región modelada de 1 TiB, asigna dos frames y
+comprueba el conteo sin reservar cientos de millones de entradas host.
+
+Evidencia externa:
+
+- [CI 31554057225](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057225): formato, checks normales y sin características por defecto, todos
+  los tests y cross-check AArch64 aprobados.
+- [Termux ARM 31554057226](https://github.com/alexsndersoto04-source/aio/actions/runs/31554057226): AArch64 NDK estricto, build ARMv7, verificación, paquete y artefacto
+  aprobados.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -54,12 +82,13 @@ ejecutable empaquetado con el ejecutable construido.
 5. Existe una barrera de apagado para impedir que una tarea cree otra tarea
    después de que haya comenzado la destrucción del runtime.
 
-La limpieza está conectada a los registros de ventanas, KV/sled, watchers,
-Redis, imágenes, tokenizadores, ONNX, PDF, barras de progreso, routers,
-servidores HTTP, solicitudes pendientes, WebSockets, procesos en segundo plano
-y las seis familias de colecciones. La ruta de procesos mata y recolecta al
-hijo; KV intenta vaciar escrituras antes de cerrar; las ventanas reales se
-liberan en el mismo hilo que las creó.
+La limpieza está conectada a los registros aislados de UI/móvil/audio,
+métricas, señales, emuladores freestanding, límites HTTP, ventanas, KV/sled,
+watchers, Redis, imágenes, tokenizadores, ONNX, PDF, barras de progreso,
+routers, servidores HTTP, solicitudes pendientes, WebSockets, procesos en
+segundo plano y las seis familias de colecciones. La ruta de procesos mata y
+recolecta al hijo; KV intenta vaciar escrituras antes de cerrar; las ventanas
+reales se liberan en el mismo hilo que las creó.
 
 ### Límites de esta validación
 
