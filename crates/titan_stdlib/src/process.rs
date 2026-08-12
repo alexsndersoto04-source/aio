@@ -42,7 +42,7 @@ fn process_limit_error() -> io::Error {
     ))
 }
 
-#[cfg(any(test, feature = "process_mod"))]
+#[cfg(test)]
 pub(crate) fn active_processes(runtime_id: u64) -> usize {
     crate::native::lock_recover(process_counts())
         .get(&runtime_id)
