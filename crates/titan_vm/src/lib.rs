@@ -336,6 +336,83 @@ impl std::ops::DerefMut for DatabaseHandle {
         }
     }
 }
+
+const DEFAULT_NETWORK_HANDLE_LIMIT: usize = 1_024;
+const DEFAULT_DATABASE_HANDLE_LIMIT: usize = 256;
+const MAX_DATABASE_POOL_SIZE: usize = 64;
+
+#[derive(Debug)]
+struct ResourceQuota {
+    active: AtomicUsize,
+    limit: AtomicUsize,
+}
+
+impl ResourceQuota {
+    fn new(limit: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit: AtomicUsize::new(limit),
+        }
+    }
+
+    fn reserve(&self, resource: &str) -> Result<ResourcePermit<'_>, VmError> {
+        let mut active = self.active.load(Ordering::Acquire);
+        loop {
+            let limit = self.limit.load(Ordering::Acquire);
+            if active >= limit {
+                return Err(VmError::ResourceLimit {
+                    resource: resource.into(),
+                    limit,
+                });
+            }
+            match self.active.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(ResourcePermit {
+                        quota: self,
+                        committed: false,
+                    })
+                }
+                Err(current) => active = current,
+            }
+        }
+    }
+
+    fn release(&self) {
+        let released = self
+            .active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                active.checked_sub(1)
+            })
+            .is_ok();
+        debug_assert!(released, "resource quota counter underflow");
+    }
+}
+
+#[derive(Debug)]
+struct ResourcePermit<'a> {
+    quota: &'a ResourceQuota,
+    committed: bool,
+}
+
+impl ResourcePermit<'_> {
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ResourcePermit<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.quota.release();
+        }
+    }
+}
+
 struct RuntimeState {
     id: u64,
     next_task: AtomicU64,
@@ -345,6 +422,8 @@ struct RuntimeState {
     shutting_down: AtomicBool,
     task_limit: AtomicUsize,
     channel_limit: AtomicUsize,
+    network_handles: ResourceQuota,
+    database_handles: ResourceQuota,
     tasks: Mutex<HashMap<u64, TaskRecord>>,
     channels: Mutex<HashMap<u64, Arc<Channel>>>,
     listeners: Mutex<HashMap<u64, Arc<TcpListener>>>,
@@ -374,6 +453,8 @@ impl RuntimeState {
             shutting_down: AtomicBool::new(false),
             task_limit: AtomicUsize::new(256),
             channel_limit: AtomicUsize::new(1_024),
+            network_handles: ResourceQuota::new(DEFAULT_NETWORK_HANDLE_LIMIT),
+            database_handles: ResourceQuota::new(DEFAULT_DATABASE_HANDLE_LIMIT),
             tasks: Mutex::new(HashMap::new()),
             channels: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
@@ -481,6 +562,20 @@ impl Vm {
     }
     pub fn with_channel_limit(self, limit: usize) -> Self {
         self.runtime.channel_limit.store(limit, Ordering::Release);
+        self
+    }
+    pub fn with_network_handle_limit(self, limit: usize) -> Self {
+        self.runtime
+            .network_handles
+            .limit
+            .store(limit, Ordering::Release);
+        self
+    }
+    pub fn with_database_handle_limit(self, limit: usize) -> Self {
+        self.runtime
+            .database_handles
+            .limit
+            .store(limit, Ordering::Release);
         self
     }
     pub fn track_allocation(&mut self, bytes: usize) -> Result<(), VmError> {
@@ -1544,6 +1639,7 @@ impl Vm {
                             "tcp_listen requires an address string".into(),
                         ));
                     };
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let listener = TcpListener::bind(&address)
                         .map_err(|error| network_error("std::net::tcp_listen", error))?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
@@ -1552,6 +1648,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("listener registry poisoned".into()))?
                         .insert(id, Arc::new(listener));
+                    permit.commit();
                     stack.push(Value::TcpListener(id));
                 }
                 Op::TcpLocalAddr => {
@@ -1585,6 +1682,7 @@ impl Vm {
                         .get(&listener_id)
                         .cloned()
                         .ok_or_else(|| VmError::Type("unknown TCP listener".into()))?;
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let (stream, peer) = listener
                         .accept()
                         .map_err(|error| network_error("std::net::tcp_accept", error))?;
@@ -1594,6 +1692,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("stream registry poisoned".into()))?
                         .insert(stream_id, Arc::new(Mutex::new(stream)));
+                    permit.commit();
                     stack.push(Value::Tuple(vec![
                         Value::TcpStream(stream_id),
                         Value::Str(peer.to_string()),
@@ -1606,6 +1705,7 @@ impl Vm {
                             "tcp_connect requires an address string".into(),
                         ));
                     };
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let stream = TcpStream::connect(&address)
                         .map_err(|error| network_error("std::net::tcp_connect", error))?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
@@ -1614,6 +1714,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("stream registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(stream)));
+                    permit.commit();
                     stack.push(Value::TcpStream(id));
                 }
                 Op::TcpRead => {
@@ -1698,6 +1799,9 @@ impl Vm {
                             ))
                         }
                     };
+                    if removed {
+                        self.runtime.network_handles.release();
+                    }
                     stack.push(Value::Bool(removed));
                 }
                 Op::HttpServeConnection => {
@@ -1793,12 +1897,14 @@ impl Vm {
                     stack.push(Value::Str(peer.to_string()));
                 }
                 Op::HttpRouterNew => {
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let id = self.runtime.next_router.fetch_add(1, Ordering::Relaxed);
                     self.runtime
                         .routers
                         .lock()
                         .map_err(|_| VmError::Type("router registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(HttpRouterState::default())));
+                    permit.commit();
                     stack.push(Value::HttpRouter(id));
                 }
                 Op::HttpRouteAdd => {
@@ -2018,6 +2124,7 @@ impl Vm {
                     let Value::Str(address) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("TLS address must be string".into()));
                     };
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let stream =
                         titan_tls::connect(&address, &server_name, titan_tls::client_config())
                             .map_err(|error| VmError::Native {
@@ -2030,6 +2137,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("TLS stream registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(stream)));
+                    permit.commit();
                     stack.push(Value::TlsStream(id));
                 }
                 Op::TlsServerConfig => {
@@ -2046,6 +2154,7 @@ impl Vm {
                     let Value::Str(cert) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("TLS certificate path must be string".into()));
                     };
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let config =
                         titan_tls::server_config(cert, key).map_err(|error| VmError::Native {
                             function: "std::tls::server_config".into(),
@@ -2057,6 +2166,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("TLS config registry poisoned".into()))?
                         .insert(id, config);
+                    permit.commit();
                     stack.push(Value::TlsServerConfig(id));
                 }
                 Op::TlsAccept => {
@@ -2083,6 +2193,7 @@ impl Vm {
                         .get(&listener_id)
                         .cloned()
                         .ok_or_else(|| VmError::Type("unknown TCP listener".into()))?;
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let (socket, peer) = listener
                         .accept()
                         .map_err(|error| network_error("std::tls::accept", error))?;
@@ -2097,6 +2208,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("TLS stream registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(stream)));
+                    permit.commit();
                     stack.push(Value::Tuple(vec![
                         Value::TlsStream(id),
                         Value::Str(peer.to_string()),
@@ -2150,23 +2262,24 @@ impl Vm {
                     let Value::TlsStream(id) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("tls_close requires stream".into()));
                     };
-                    stack.push(Value::Bool(
-                        self.runtime
-                            .tls_streams
-                            .lock()
-                            .map_err(|_| VmError::Type("TLS stream registry poisoned".into()))?
-                            .remove(&id)
-                            .is_some(),
-                    ));
+                    let removed = self
+                        .runtime
+                        .tls_streams
+                        .lock()
+                        .map_err(|_| VmError::Type("TLS stream registry poisoned".into()))?
+                        .remove(&id)
+                        .is_some();
+                    if removed {
+                        self.runtime.network_handles.release();
+                    }
+                    stack.push(Value::Bool(removed));
                 }
                 Op::WsDecoderNew => {
-                    let maximum = pop(&mut stack, &function.name)?;
-                    let Value::Int(maximum) = maximum else {
-                        return Err(VmError::Type("WebSocket maximum must be int".into()));
-                    };
-                    let maximum = usize::try_from(maximum).map_err(|_| {
-                        VmError::Type("WebSocket maximum must be nonnegative".into())
-                    })?;
+                    let maximum = positive_limit(
+                        pop(&mut stack, &function.name)?,
+                        "WebSocket decoder maximum",
+                    )?;
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
                     self.runtime
                         .websocket_decoders
@@ -2178,6 +2291,7 @@ impl Vm {
                                 maximum,
                             ))),
                         );
+                    permit.commit();
                     stack.push(Value::WebSocketDecoder(id));
                 }
                 Op::WsDecoderPush => {
@@ -2250,7 +2364,13 @@ impl Vm {
                     };
                     let transport =
                         WebSocketTransport::Tcp(take_socket_stream(&self.runtime, stream_id)?);
-                    let id = insert_websocket(&self.runtime, transport, server_side, maximum)?;
+                    let id = match insert_websocket(&self.runtime, transport, server_side, maximum) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            self.runtime.network_handles.release();
+                            return Err(error);
+                        }
+                    };
                     stack.push(Value::WebSocket(id));
                 }
                 Op::WsAttachTls => {
@@ -2264,7 +2384,13 @@ impl Vm {
                     };
                     let transport =
                         WebSocketTransport::Tls(take_tls_stream(&self.runtime, stream_id)?);
-                    let id = insert_websocket(&self.runtime, transport, server_side, maximum)?;
+                    let id = match insert_websocket(&self.runtime, transport, server_side, maximum) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            self.runtime.network_handles.release();
+                            return Err(error);
+                        }
+                    };
                     stack.push(Value::WebSocket(id));
                 }
                 Op::WsSendText => {
@@ -2293,11 +2419,16 @@ impl Vm {
                     let closed = matches!(&message, titan_stdlib::websocket::Message::Close { .. });
                     stack.push(websocket_message_value(message));
                     if closed {
-                        self.runtime
+                        let removed = self
+                            .runtime
                             .websockets
                             .lock()
                             .map_err(|_| VmError::Type("WebSocket registry poisoned".into()))?
-                            .remove(&socket_id);
+                            .remove(&socket_id)
+                            .is_some();
+                        if removed {
+                            self.runtime.network_handles.release();
+                        }
                     }
                 }
                 Op::WsClose => {
@@ -2316,14 +2447,20 @@ impl Vm {
                     };
                     let socket = pop_websocket(&self.runtime, Value::WebSocket(socket_id))?;
                     websocket_close(&socket, code, &reason)?;
-                    self.runtime
+                    let removed = self
+                        .runtime
                         .websockets
                         .lock()
                         .map_err(|_| VmError::Type("WebSocket registry poisoned".into()))?
-                        .remove(&socket_id);
+                        .remove(&socket_id)
+                        .is_some();
+                    if removed {
+                        self.runtime.network_handles.release();
+                    }
                     stack.push(Value::Nil);
                 }
                 Op::ServerControlNew => {
+                    let permit = self.runtime.network_handles.reserve("network handle")?;
                     let maximum =
                         positive_limit(pop(&mut stack, &function.name)?, "maximum connections")?
                             as u64;
@@ -2343,6 +2480,7 @@ impl Vm {
                                 shutting_down: AtomicBool::new(false),
                             }),
                         );
+                    permit.commit();
                     stack.push(Value::ServerControl(id));
                 }
                 Op::ServerTryAcquire => {
@@ -2386,6 +2524,7 @@ impl Vm {
                     let Value::Str(path) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("SQLite path must be string".into()));
                     };
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     let database = titan_sqlite::Database::open(path).map_err(sqlite_error)?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
                     self.runtime
@@ -2393,9 +2532,11 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("SQLite registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(DatabaseHandle::Direct(database))));
+                    permit.commit();
                     stack.push(Value::Sqlite(id));
                 }
                 Op::SqliteMemory => {
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     let database = if self.capabilities.filesystem {
                         titan_sqlite::Database::memory()
                     } else {
@@ -2408,6 +2549,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("SQLite registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(DatabaseHandle::Direct(database))));
+                    permit.commit();
                     stack.push(Value::Sqlite(id));
                 }
                 operation @ (Op::SqliteExecute | Op::SqliteQuery) => {
@@ -2468,14 +2610,17 @@ impl Vm {
                     let Value::Sqlite(id) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("close requires SQLite connection".into()));
                     };
-                    stack.push(Value::Bool(
-                        self.runtime
-                            .sqlite
-                            .lock()
-                            .map_err(|_| VmError::Type("SQLite registry poisoned".into()))?
-                            .remove(&id)
-                            .is_some(),
-                    ));
+                    let removed = self
+                        .runtime
+                        .sqlite
+                        .lock()
+                        .map_err(|_| VmError::Type("SQLite registry poisoned".into()))?
+                        .remove(&id)
+                        .is_some();
+                    if removed {
+                        self.runtime.database_handles.release();
+                    }
+                    stack.push(Value::Bool(removed));
                 }
                 Op::SqlitePing => {
                     let database =
@@ -2495,11 +2640,14 @@ impl Vm {
                             capability: "Filesystem".into(),
                         });
                     }
-                    let maximum =
-                        positive_limit(pop(&mut stack, &function.name)?, "SQLite pool maximum")?;
+                    let maximum = database_pool_limit(
+                        pop(&mut stack, &function.name)?,
+                        "SQLite pool maximum",
+                    )?;
                     let Value::Str(path) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("SQLite pool path must be string".into()));
                     };
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     let pool = titan_sqlite::Pool::new(path, maximum).map_err(sqlite_error)?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
                     self.runtime
@@ -2507,11 +2655,13 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("SQLite pool registry poisoned".into()))?
                         .insert(id, pool);
+                    permit.commit();
                     stack.push(Value::SqlitePool(id));
                 }
                 Op::SqlitePoolAcquire => {
                     let timeout = timeout_value(pop(&mut stack, &function.name)?)?;
                     let pool = sqlite_pool(&self.runtime, pop(&mut stack, &function.name)?)?;
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     match pool.acquire(timeout) {
                         Ok(connection) => {
                             let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
@@ -2523,6 +2673,7 @@ impl Vm {
                                     id,
                                     Arc::new(Mutex::new(DatabaseHandle::Pooled(connection))),
                                 );
+                            permit.commit();
                             stack.push(option_some(Value::Sqlite(id)));
                         }
                         Err(titan_sqlite::DbError::PoolTimeout) => stack.push(option_none()),
@@ -2556,6 +2707,7 @@ impl Vm {
                         .map_err(|_| VmError::Type("SQLite pool registry poisoned".into()))?
                         .remove(&id)
                         .ok_or_else(|| VmError::Type("unknown SQLite pool".into()))?;
+                    self.runtime.database_handles.release();
                     pool.close().map_err(sqlite_error)?;
                     stack.push(Value::Nil);
                 }
@@ -2564,6 +2716,7 @@ impl Vm {
                     let Value::Str(url) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("PostgreSQL URL must be string".into()));
                     };
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     let database = if matches!(operation, Op::PostgresConnectTls) {
                         titan_postgres::Database::connect_tls(&url)
                     } else {
@@ -2576,6 +2729,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("PostgreSQL registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(PostgresHandle::Direct(database))));
+                    permit.commit();
                     stack.push(Value::Postgres(id));
                 }
                 operation @ (Op::PostgresExecute | Op::PostgresQuery) => {
@@ -2643,14 +2797,17 @@ impl Vm {
                     let Value::Postgres(id) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("close requires PostgreSQL connection".into()));
                     };
-                    stack.push(Value::Bool(
-                        self.runtime
-                            .postgres
-                            .lock()
-                            .map_err(|_| VmError::Type("PostgreSQL registry poisoned".into()))?
-                            .remove(&id)
-                            .is_some(),
-                    ));
+                    let removed = self
+                        .runtime
+                        .postgres
+                        .lock()
+                        .map_err(|_| VmError::Type("PostgreSQL registry poisoned".into()))?
+                        .remove(&id)
+                        .is_some();
+                    if removed {
+                        self.runtime.database_handles.release();
+                    }
+                    stack.push(Value::Bool(removed));
                 }
                 Op::PostgresPing => {
                     let database =
@@ -2668,13 +2825,14 @@ impl Vm {
                     let Value::Bool(tls) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("PostgreSQL pool tls must be bool".into()));
                     };
-                    let maximum = positive_limit(
+                    let maximum = database_pool_limit(
                         pop(&mut stack, &function.name)?,
                         "PostgreSQL pool maximum",
                     )?;
                     let Value::Str(url) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("PostgreSQL pool URL must be string".into()));
                     };
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     let pool =
                         titan_postgres::Pool::new(url, maximum, tls).map_err(postgres_error)?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
@@ -2683,11 +2841,13 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("PostgreSQL pool registry poisoned".into()))?
                         .insert(id, pool);
+                    permit.commit();
                     stack.push(Value::PostgresPool(id));
                 }
                 Op::PostgresPoolAcquire => {
                     let timeout = timeout_value(pop(&mut stack, &function.name)?)?;
                     let pool = postgres_pool(&self.runtime, pop(&mut stack, &function.name)?)?;
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     match pool.acquire(timeout) {
                         Ok(connection) => {
                             let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
@@ -2699,6 +2859,7 @@ impl Vm {
                                     id,
                                     Arc::new(Mutex::new(PostgresHandle::Pooled(connection))),
                                 );
+                            permit.commit();
                             stack.push(option_some(Value::Postgres(id)));
                         }
                         Err(titan_postgres::PgError::PoolTimeout) => stack.push(option_none()),
@@ -2734,6 +2895,7 @@ impl Vm {
                         .map_err(|_| VmError::Type("PostgreSQL pool registry poisoned".into()))?
                         .remove(&id)
                         .ok_or_else(|| VmError::Type("unknown PostgreSQL pool".into()))?;
+                    self.runtime.database_handles.release();
                     pool.close().map_err(postgres_error)?;
                     stack.push(Value::Nil);
                 }
@@ -2742,6 +2904,7 @@ impl Vm {
                     let Value::Str(url) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("MySQL URL must be string".into()));
                     };
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     let database = titan_mysql::Database::connect(&url).map_err(mysql_error)?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
                     self.runtime
@@ -2749,6 +2912,7 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("MySQL registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(MysqlHandle::Direct(database))));
+                    permit.commit();
                     stack.push(Value::Mysql(id));
                 }
                 operation @ (Op::MysqlExecute | Op::MysqlQuery) => {
@@ -2811,14 +2975,17 @@ impl Vm {
                     let Value::Mysql(id) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("close requires MySQL connection".into()));
                     };
-                    stack.push(Value::Bool(
-                        self.runtime
-                            .mysql
-                            .lock()
-                            .map_err(|_| VmError::Type("MySQL registry poisoned".into()))?
-                            .remove(&id)
-                            .is_some(),
-                    ));
+                    let removed = self
+                        .runtime
+                        .mysql
+                        .lock()
+                        .map_err(|_| VmError::Type("MySQL registry poisoned".into()))?
+                        .remove(&id)
+                        .is_some();
+                    if removed {
+                        self.runtime.database_handles.release();
+                    }
+                    stack.push(Value::Bool(removed));
                 }
                 Op::MysqlPing => {
                     let database = mysql_database(&self.runtime, pop(&mut stack, &function.name)?)?;
@@ -2832,11 +2999,14 @@ impl Vm {
                 }
                 Op::MysqlPoolNew => {
                     require_network(self.capabilities, "std::mysql::pool")?;
-                    let maximum =
-                        positive_limit(pop(&mut stack, &function.name)?, "MySQL pool maximum")?;
+                    let maximum = database_pool_limit(
+                        pop(&mut stack, &function.name)?,
+                        "MySQL pool maximum",
+                    )?;
                     let Value::Str(url) = pop(&mut stack, &function.name)? else {
                         return Err(VmError::Type("MySQL pool URL must be string".into()));
                     };
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     let pool = titan_mysql::Pool::new(url, maximum).map_err(mysql_error)?;
                     let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
                     self.runtime
@@ -2844,11 +3014,13 @@ impl Vm {
                         .lock()
                         .map_err(|_| VmError::Type("MySQL pool registry poisoned".into()))?
                         .insert(id, pool);
+                    permit.commit();
                     stack.push(Value::MysqlPool(id));
                 }
                 Op::MysqlPoolAcquire => {
                     let timeout = timeout_value(pop(&mut stack, &function.name)?)?;
                     let pool = mysql_pool(&self.runtime, pop(&mut stack, &function.name)?)?;
+                    let permit = self.runtime.database_handles.reserve("database handle")?;
                     match pool.acquire(timeout) {
                         Ok(connection) => {
                             let id = self.runtime.next_socket.fetch_add(1, Ordering::Relaxed);
@@ -2857,6 +3029,7 @@ impl Vm {
                                 .lock()
                                 .map_err(|_| VmError::Type("MySQL registry poisoned".into()))?
                                 .insert(id, Arc::new(Mutex::new(MysqlHandle::Pooled(connection))));
+                            permit.commit();
                             stack.push(option_some(Value::Mysql(id)));
                         }
                         Err(titan_mysql::MyError::PoolTimeout) => stack.push(option_none()),
@@ -2891,6 +3064,7 @@ impl Vm {
                         .map_err(|_| VmError::Type("MySQL pool registry poisoned".into()))?
                         .remove(&id)
                         .ok_or_else(|| VmError::Type("unknown MySQL pool".into()))?;
+                    self.runtime.database_handles.release();
                     pool.close().map_err(mysql_error)?;
                     stack.push(Value::Nil);
                 }
@@ -3094,6 +3268,9 @@ impl Vm {
                             ))
                         }
                     };
+                    if closed {
+                        self.runtime.database_handles.release();
+                    }
                     stack.push(Value::Bool(closed));
                 }
                 Op::DbPing => {
@@ -3906,6 +4083,7 @@ fn websocket_connect(
     protocol: &str,
     maximum: usize,
 ) -> Result<u64, VmError> {
+    let permit = runtime.network_handles.reserve("network handle")?;
     let parsed = titan_stdlib::websocket::parse_url(url).map_err(|error| VmError::Native {
         function: "std::ws::connect".into(),
         message: error.to_string(),
@@ -3975,8 +4153,7 @@ fn websocket_connect(
     )?;
     let id = insert_websocket(runtime, transport, false, maximum)?;
     if response.len() > consumed {
-        let socket = pop_websocket(runtime, Value::WebSocket(id))?;
-        socket
+        let preload = pop_websocket(runtime, Value::WebSocket(id))?
             .decoder
             .lock()
             .map_err(|_| VmError::Type("WebSocket decoder poisoned".into()))?
@@ -3984,8 +4161,17 @@ fn websocket_connect(
             .map_err(|error| VmError::Native {
                 function: "std::ws::connect".into(),
                 message: error.to_string(),
-            })?;
+            });
+        if let Err(error) = preload {
+            runtime
+                .websockets
+                .lock()
+                .map_err(|_| VmError::Type("WebSocket registry poisoned".into()))?
+                .remove(&id);
+            return Err(error);
+        }
     }
+    permit.commit();
     Ok(id)
 }
 fn positive_limit(value: Value, name: &str) -> Result<usize, VmError> {
@@ -4001,6 +4187,17 @@ fn positive_limit(value: Value, name: &str) -> Result<usize, VmError> {
     }
     Ok(value)
 }
+fn database_pool_limit(value: Value, name: &str) -> Result<usize, VmError> {
+    let limit = positive_limit(value, name)?;
+    if limit > MAX_DATABASE_POOL_SIZE {
+        return Err(VmError::ResourceLimit {
+            resource: "database pool size".into(),
+            limit: MAX_DATABASE_POOL_SIZE,
+        });
+    }
+    Ok(limit)
+}
+
 fn insert_websocket(
     runtime: &RuntimeState,
     transport: WebSocketTransport,
@@ -4525,6 +4722,117 @@ mod tests {
             VmError::ResourceLimit {
                 resource: "channel capacity".into(),
                 limit: 65_536,
+            }
+        );
+    }
+
+    #[test]
+    fn resource_reservations_reject_saturation_and_roll_back_on_failure() {
+        let runtime = RuntimeState::new();
+        runtime.network_handles.limit.store(1, Ordering::Release);
+
+        let first = runtime.network_handles.reserve("network handle").unwrap();
+        assert_eq!(
+            runtime.network_handles.reserve("network handle").unwrap_err(),
+            VmError::ResourceLimit {
+                resource: "network handle".into(),
+                limit: 1,
+            }
+        );
+        drop(first);
+        assert_eq!(runtime.network_handles.active.load(Ordering::Acquire), 0);
+
+        let committed = runtime.network_handles.reserve("network handle").unwrap();
+        committed.commit();
+        assert_eq!(runtime.network_handles.active.load(Ordering::Acquire), 1);
+        runtime.network_handles.release();
+        assert_eq!(runtime.network_handles.active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn resource_quota_is_atomic_across_workers() {
+        let quota = Arc::new(ResourceQuota::new(4));
+        let workers = (0..32)
+            .map(|_| {
+                let quota = Arc::clone(&quota);
+                std::thread::spawn(move || {
+                    quota
+                        .reserve("network handle")
+                        .map(|permit| permit.commit())
+                        .is_ok()
+                })
+            })
+            .collect::<Vec<_>>();
+        let admitted = workers
+            .into_iter()
+            .filter(|worker| worker.join().unwrap())
+            .count();
+
+        assert_eq!(admitted, 4);
+        assert_eq!(quota.active.load(Ordering::Acquire), 4);
+        for _ in 0..admitted {
+            quota.release();
+        }
+        assert_eq!(quota.active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn network_handle_quota_rejects_routers_and_recovers_after_tcp_close() {
+        let module = compile("fn main() { let first = std::http::router() std::http::router() }")
+            .unwrap();
+        assert_eq!(
+            Vm::new(module).with_network_handle_limit(1).run().unwrap_err(),
+            VmError::ResourceLimit {
+                resource: "network handle".into(),
+                limit: 1,
+            }
+        );
+
+        let module = compile("fn main() { let first = std::net::tcp_listen(\"127.0.0.1:0\") let closed = std::net::tcp_close(first) let second = std::net::tcp_listen(\"127.0.0.1:0\") std::net::tcp_close(second); closed }").unwrap();
+        assert_eq!(
+            Vm::new(module).with_network_handle_limit(1).run().unwrap(),
+            Some(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn database_handle_quota_rejects_excess_and_recovers_after_close() {
+        let module = compile(
+            "fn main() { let first = std::sqlite::memory() std::sqlite::memory() }",
+        )
+        .unwrap();
+        assert_eq!(
+            Vm::new(module)
+                .with_database_handle_limit(1)
+                .run()
+                .unwrap_err(),
+            VmError::ResourceLimit {
+                resource: "database handle".into(),
+                limit: 1,
+            }
+        );
+
+        let module = compile("fn main() { let first = std::sqlite::memory() let closed = std::sqlite::close(first) let second = std::sqlite::memory() std::sqlite::close(second); closed }").unwrap();
+        assert_eq!(
+            Vm::new(module)
+                .with_database_handle_limit(1)
+                .run()
+                .unwrap(),
+            Some(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn database_pool_size_has_a_connection_specific_limit() {
+        let module = compile(
+            "fn main() { std::sqlite::pool(\"unused.db\", 65) }",
+        )
+        .unwrap();
+        assert_eq!(
+            Vm::new(module).run().unwrap_err(),
+            VmError::ResourceLimit {
+                resource: "database pool size".into(),
+                limit: 64,
             }
         );
     }
@@ -5077,8 +5385,12 @@ mod tests {
         assert_eq!(run("fn main(){let decoder=std::ws::decoder(1024) let frame=std::ws::encode(1,std::encoding::utf8_encode(\"hello\"),true) std::ws::decoder_push(decoder,frame) let message=std::ws::decoder_next(decoder,true)? message.text}").unwrap(),Value::Str("hello".into()));
     }
     #[test]
-    fn high_level_websocket_connection_round_trips_text() {
-        assert_eq!(run("fn main(){let listener=std::net::tcp_listen(\"127.0.0.1:0\") let address=std::net::tcp_local_addr(listener) let server=spawn || {let accepted=std::net::tcp_accept(listener) let ws=std::ws::attach_tcp(accepted[0],true,1024) let message=std::ws::receive(ws) std::ws::send_text(ws,message.text) std::ws::close(ws,1000,\"done\")} let client_stream=std::net::tcp_connect(address) let client=std::ws::attach_tcp(client_stream,false,1024) std::ws::send_text(client,\"hello\") let response=std::ws::receive(client) std::ws::close(client,1000,\"done\") join(server) std::net::tcp_close(listener) response.text}").unwrap(),Value::Str("hello".into()));
+    fn high_level_websocket_connection_round_trips_text_without_double_counting_transfers() {
+        let module = compile("fn main(){let listener=std::net::tcp_listen(\"127.0.0.1:0\") let address=std::net::tcp_local_addr(listener) let server=spawn || {let accepted=std::net::tcp_accept(listener) let ws=std::ws::attach_tcp(accepted[0],true,1024) let message=std::ws::receive(ws) std::ws::send_text(ws,message.text) std::ws::close(ws,1000,\"done\")} let client_stream=std::net::tcp_connect(address) let client=std::ws::attach_tcp(client_stream,false,1024) std::ws::send_text(client,\"hello\") let response=std::ws::receive(client) std::ws::close(client,1000,\"done\") join(server) std::net::tcp_close(listener) response.text}").unwrap();
+        assert_eq!(
+            Vm::new(module).with_network_handle_limit(3).run().unwrap(),
+            Some(Value::Str("hello".into()))
+        );
     }
     #[test]
     fn websocket_client_performs_automatic_http_upgrade() {
