@@ -761,9 +761,9 @@ fn resolve_addresses(
     match receiver.recv_timeout(wait) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => Err(RedisError::Timeout),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(RedisError::Io(
-            std::io::Error::other("Redis DNS resolver stopped without a result"),
-        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(RedisError::Io(std::io::Error::other(
+            "Redis DNS resolver stopped without a result",
+        ))),
     }
 }
 
@@ -1747,14 +1747,37 @@ mod tests {
             let handle = connect(&url).unwrap();
             let other_runtime = NEXT_TEST_RUNTIME.fetch_add(1, Ordering::Relaxed);
             crate::native::with_runtime_context(other_runtime, || {
-                assert!(matches!(
-                    ping(handle),
-                    Err(RedisError::UnknownHandle(_))
-                ));
+                assert!(matches!(ping(handle), Err(RedisError::UnknownHandle(_))));
                 assert_eq!(cleanup_runtime(other_runtime), 0);
             });
             assert_eq!(cleanup_runtime(runtime_id), 1);
             server.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn cleanup_invalidates_an_inflight_handle_reservation() {
+        in_test_runtime(|runtime_id| {
+            let reservation = reserve_handle().unwrap();
+            let (url, server) = spawn_server(|mut stream| {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut byte = [0u8; 1];
+                assert_eq!(stream.read(&mut byte).unwrap(), 0);
+            });
+            let address = url
+                .strip_prefix("redis://")
+                .unwrap()
+                .trim_end_matches('/');
+            let connection = Connection::new(TcpStream::connect(address).unwrap()).unwrap();
+            assert_eq!(cleanup_runtime(runtime_id), 0);
+            assert!(matches!(
+                reservation.commit(connection),
+                Err(RedisError::RuntimeClosed)
+            ));
+            server.join().unwrap();
+            assert_eq!(cleanup_runtime(runtime_id), 0);
         });
     }
 
