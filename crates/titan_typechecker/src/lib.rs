@@ -2378,9 +2378,7 @@ impl TypeEnv {
                 }
                 Type::Array(item.clone())
             }
-            (Expr::Tuple { elements, .. }, Type::Tuple(items))
-                if elements.len() == items.len() =>
-            {
+            (Expr::Tuple { elements, .. }, Type::Tuple(items)) if elements.len() == items.len() => {
                 let found = elements
                     .iter()
                     .zip(items)
@@ -4277,10 +4275,7 @@ mod tests {
     #[test]
     fn preserves_mixed_array_evidence_across_inferred_bindings() {
         assert!(check("fn main() { let values: [int] = [1, \"bad\"] }").is_err());
-        assert!(check(
-            "fn main() { let mixed = [1, \"bad\"] let values: [int] = mixed }"
-        )
-        .is_err());
+        assert!(check("fn main() { let mixed = [1, \"bad\"] let values: [int] = mixed }").is_err());
         assert!(check(
             "fn main() { let mixed = [1, \"ok\"] let values: array = mixed print(values) }"
         )
@@ -4359,10 +4354,7 @@ mod tests {
         assert!(check("fn main() { std::try::catch() }").is_err());
         assert!(check("fn main() { std::try::catch(42) }").is_err());
         assert!(check("fn main() { std::try::catch(|| 1, 2) }").is_err());
-        assert!(check(
-            "fn main() { std::try::catch(|value: string| value, 2) }"
-        )
-        .is_err());
+        assert!(check("fn main() { std::try::catch(|value: string| value, 2) }").is_err());
     }
 
     #[test]
