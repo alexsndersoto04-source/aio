@@ -1142,12 +1142,8 @@ mod tests {
         std::fs::remove_dir_all(path).ok();
 
         crate::native::with_runtime_context(runtime_id, || {
-            reserve_runtime_storage(
-                runtime_id,
-                MAX_RUNTIME_LOGICAL_BYTES,
-                MAX_RUNTIME_ENTRIES,
-            )
-            .unwrap();
+            reserve_runtime_storage(runtime_id, MAX_RUNTIME_LOGICAL_BYTES, MAX_RUNTIME_ENTRIES)
+                .unwrap();
             assert!(matches!(
                 reserve_runtime_storage(runtime_id, 1, 0),
                 Err(KvError::ResourceLimit {
@@ -1162,11 +1158,7 @@ mod tests {
                     ..
                 })
             ));
-            release_runtime_storage(
-                runtime_id,
-                MAX_RUNTIME_LOGICAL_BYTES,
-                MAX_RUNTIME_ENTRIES,
-            );
+            release_runtime_storage(runtime_id, MAX_RUNTIME_LOGICAL_BYTES, MAX_RUNTIME_ENTRIES);
         });
         assert!(!crate::native::lock_recover(runtime_usage()).contains_key(&runtime_id));
     }
