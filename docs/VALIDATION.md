@@ -8,25 +8,25 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `e31bb4d4e26511d9b80caf854ea3a1b31fc658f5`
+- Commit validado: `7c25b2368cee657236fa2e57daf89e9e8b046371`
 - Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
-  canales, red, bases de datos, procesos, colecciones y estado de juego; checks
-  Android ARM de 32 y 64 bits
+  canales, red, bases de datos, procesos, colecciones, juego, señales, watchers,
+  progreso, routers y ventanas virtuales/reales; checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
-| `cargo check` con características normales | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
-| `cargo check --no-default-features` | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
-| Cross-check Android AArch64 | Aprobado | [CI 31558531732](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31558531725](https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
+| `cargo check` con características normales | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
+| `cargo check --no-default-features` | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
+| Cross-check Android AArch64 | Aprobado | [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583) |
 
 Los fallos advisory registrados ya fueron corregidos:
 
@@ -299,6 +299,76 @@ de juego pasaron, pero esa regresión de integración falló; `e31bb4d` actualiz
 la expectativa y el conteo de cleanup, y la ejecución final aprobó. El run
 intermedio no se cuenta como verde.
 
+### Señales, watchers, progreso, routers y ventanas acotados
+
+El commit `7c25b23` cierra el crecimiento sin límite de varios registros nativos
+ligeros y de sus colas. Todos los máximos se aplican por runtime antes de crear
+o insertar el recurso:
+
+- señales: los ocho tipos admitidos siguen teniendo un único dispatcher real
+  por señal de proceso, pero el contador pendiente ahora se satura en
+  `usize::MAX` en vez de volver a cero por overflow;
+- filesystem watchers: 32 watchers activos entre operaciones persistentes y
+  `watch_once`, paths de 16 KiB, timeout máximo de 24 horas, 1.024 eventos
+  pendientes y descripción de evento de 64 KiB;
+- progreso: 64 barras o spinners y mensajes de 4 KiB;
+- routers: 64 handles, 4.096 rutas y 1 MiB por router, además de 8 MiB entre
+  todos los routers del runtime; patrón de 8 KiB y valor/path de 64 KiB;
+- ventanas virtuales: 64 handles, 1.024 eventos por ventana, título de 64 KiB y
+  dimensiones entre 1 y 16.384;
+- ventanas reales: 16 handles, 1.024 eventos por ventana, título de 4 KiB,
+  dimensión máxima de 4.096 y 16.777.216 píxeles agregados por runtime.
+
+Los watchers usan ahora un canal sincronizado de capacidad fija. Cuando el
+backend del sistema operativo produce eventos más rápido que el programa, se
+descarta el exceso en vez de hacer crecer memoria. `next_event` clona solamente
+la referencia a su receptor y libera el lock del registro antes de esperar, así
+que una espera larga no impide cerrar, limpiar ni crear otros watchers. El
+permiso RAII se devuelve al fallar la creación, cerrar el handle, terminar
+`watch_once` o limpiar el runtime.
+
+Las ventanas reales conservan el requisito de vivir en el hilo del sistema
+operativo que las creó, pero su permiso y su presupuesto de píxeles son globales
+al runtime: abrir ventanas desde tareas en hilos distintos no multiplica la
+cuota. Las colas virtuales y reales dejan de crecer al alcanzar 1.024 eventos;
+un cierre real conserva prioridad para que `CloseRequested` no se pierda. Cerrar
+una ventana virtual elimina el handle inmediatamente y recupera su slot.
+
+Todos los generadores de handles modificados usan incremento comprobado. El
+puente de la VM propaga los errores de creación de progreso, router y ventana,
+y convierte handles y dimensiones con `try_from`; enteros negativos o mayores
+que `u32` ya no se transforman silenciosamente mediante `as`.
+
+Las regresiones ejecutadas por CI demuestran:
+
+1. saturación y recuperación de handles de progreso, routers, ventanas
+   virtuales, ventanas reales y watchers;
+2. rechazo de mensajes, títulos, paths, timeouts y dimensiones
+   sobredimensionados, y truncado seguro de descripciones al límite exacto;
+3. límite de 4.096 rutas, 1 MiB por router y 8 MiB agregado, sin cargar bytes por
+   una inserción rechazada;
+4. llenado y drenaje de una cola virtual de 1.024 eventos, y conservación del
+   cierre prioritario en la cola real;
+5. saturación del contador de señales sin wrap;
+6. rechazo desde la VM de anchos y handles negativos o fuera de rango;
+7. cleanup que libera todos los slots del runtime usado por cada prueba.
+
+Evidencia externa de este bloque:
+
+- [CI 31559566600](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600): `cargo fmt --check`, checks con características normales y sin
+  características por defecto, todos los tests del workspace y cross-check
+  AArch64 aprobados.
+- [Termux ARM 31559566583](https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583): check AArch64 con Android NDK y warnings estrictos, compilación y
+  enlace Android/Bionic ARMv7, verificación ELF32/ARM, paquete Debian y subida
+  del artefacto aprobados.
+- `verify_phase34.py`: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.
+
+No hizo falta una validación física para probar estas cuotas y rechazos. La
+ventana real continúa respaldada por la prueba física X11 ya registrada, pero
+este commit no afirma haber repetido esa ceremonia en el Redmi. El paquete
+producido se reserva para una validación física agrupada del próximo milestone.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -321,10 +391,11 @@ reales se liberan en el mismo hilo que las creó.
 
 ### Límites de esta validación
 
-- Las cuotas de tareas, canales, red, bases de datos, procesos externos y las
-  seis familias de colecciones persistentes ya están conectadas. Esto no cierra
-  toda la auditoría de crecimiento: los demás registros duraderos de la stdlib
-  todavía deben revisarse individualmente.
+- Las cuotas de tareas, canales, red, bases de datos, procesos externos,
+  colecciones y los recursos ligeros descritos arriba ya están conectadas. Esto
+  no cierra toda la auditoría de crecimiento: imagen, KV, Redis, ONNX, PDF,
+  tokenizadores y servidores conservan registros duraderos que deben revisarse
+  individualmente.
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
   Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
   no levanta un servidor Redis externo ni carga un modelo ONNX real para luego
