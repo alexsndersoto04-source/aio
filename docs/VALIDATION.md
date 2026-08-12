@@ -8,26 +8,26 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit funcional validado: `0d10e162f936d7f71bba2be0134f35d3b276161e`
-- Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
-  canales, red, bases de datos, procesos, colecciones, juego, señales, watchers,
-  progreso, routers, ventanas, imágenes, tokenizadores, ONNX, KV/sled, Redis y
-  generación PDF real; checks Android ARM de 32 y 64 bits
+- Commit funcional validado: `1875e3a2b0d7386c5027f4e5f46909f5800e97e9`
+- Alcance: cierre de la fase 2 de sandbox y seguridad; capacidades, aislamiento,
+  cuotas y cleanup por runtime para tareas, canales, red, bases de datos,
+  procesos, colecciones y recursos stdlib; servidor HTTP/WebSocket acotado,
+  KV/sled, Redis, ONNX y generación PDF real; checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-12
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado, sin fallo oculto | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
-| `cargo check` con características normales | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
-| `cargo check --no-default-features` | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
-| Cross-check Android AArch64 | Aprobado | [CI 31566525679](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
-| Artefacto `zett-termux-arm-76`, 26.849.784 bytes | Aprobado | [Termux ARM 31566525670](https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670) |
+| Formato completo, `cargo fmt --check` | Aprobado, sin fallo oculto | [CI 31633367279](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279) |
+| `cargo check` con características normales | Aprobado | [CI 31633367279](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31633367279](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279) |
+| `cargo check --no-default-features` | Aprobado | [CI 31633367279](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279) |
+| Cross-check Android AArch64 | Aprobado | [CI 31633367279](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31633367369](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31633367369](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31633367369](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369) |
+| Artefacto `zett-termux-arm-81`, 26.718.677 bytes | Aprobado | [Termux ARM 31633367369](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369) |
 
 Los fallos advisory registrados ya fueron corregidos:
 
@@ -777,6 +777,119 @@ No hace falta validación física individual para este bloque. El cliente quedó
 compilado y enlazado dentro del ELF Android/Bionic ARMv7; una instalación en el
 Redmi se agrupará con el siguiente milestone físico.
 
+### Servidor HTTP/WebSocket real, acotado y aislado
+
+Los commits `a323391` y `4b71994` sustituyen `tiny_http` por un backend propio
+sobre `std::net`. La razón no fue cosmética: `tiny_http 0.12` acumulaba líneas y
+cabeceras antes de entregar la petición y no exponía el socket aceptado para
+fijar deadlines a tiempo. Aplicar límites después de `recv` habría sido una
+protección tardía. La dependencia y sus paquetes exclusivos también fueron
+retirados de `Cargo.toml` y `Cargo.lock`; el producto continúa siendo un solo
+binario.
+
+Antes de publicar un handle, el parser HTTP/1.1 limita:
+
+- 64 KiB de cabecera completa, 128 cabeceras, target de 16 KiB, nombre de 256
+  bytes y valor de 8 KiB;
+- exactamente un `Host` no vacío en HTTP/1.1;
+- un único `Content-Length` decimal o `Transfer-Encoding: chunked`, nunca ambos;
+- cuerpos fijos o chunked de hasta 8 MiB, líneas chunk de 1 KiB y 32 trailers;
+- deadline total de 5 segundos para cabeceras y, en producción, 30 segundos para
+  cada lectura o escritura completa. El timeout solicitado a `accept` también
+  está limitado a 30 segundos.
+
+Las cuotas por runtime son ocho listeners, 256 peticiones pendientes, 64
+WebSockets, 16 MiB de metadatos de peticiones y ocho operaciones concurrentes.
+Las reservas se realizan bajo el mismo registro antes de aceptar o publicar el
+recurso; el asignador de IDs usa suma comprobada. Listeners, peticiones y
+WebSockets llevan ownership de runtime y locks propios. El registro global solo
+se usa para localizar o retirar un `Arc`: nunca permanece tomado durante red,
+espera, parser ni cierre. Cleanup retira primero los recursos y después usa
+clones de los sockets para interrumpir I/O bloqueado sin afectar otra VM; una
+reserva concurrente no puede revivir un runtime ya limpiado.
+
+Las respuestas validan status, content type y cabeceras antes de consumir la
+petición. Se rechazan CR/LF, nombres inválidos, framing reservado y cuerpos de
+más de 8 MiB. Cada conexión HTTP procesa una petición y responde con
+`Connection: close`, decisión deliberada que elimina ambigüedad de pipelining en
+esta superficie de bajo nivel.
+
+El upgrade WebSocket valida GET/HTTP/1.1, tokens `Connection`/`Upgrade`, versión
+13 y una clave base64 de 16 bytes. Conserva bytes de frames que llegaron junto
+con el handshake. Los frames se procesan con el codec RFC 6455 ya integrado:
+mask obligatorio del cliente, control frames, fragmentación, ping/pong, UTF-8,
+códigos de cierre válidos y máximo configurable con techo de 4 MiB. Enviar,
+recibir y cerrar operan sobre locks por conexión, no sobre el registro global.
+
+Ocho regresiones loopback reales comprueban HTTP con metadatos/cuerpo/respuesta,
+chunked y trailers, upgrade y frame WebSocket enmascarado, framing ambiguo,
+límites de cabeceras/cuerpo/respuesta, deadlines totales, ausencia de lock global
+mientras un cliente se estanca, ownership entre dos runtimes, cleanup,
+reservas en vuelo y recuperación de cuotas. En el primer run del backend,
+[CI 31632116052](https://github.com/alexsndersoto04-source/aio/actions/runs/31632116052), las ocho regresiones de servidor, formato, compilación y AArch64
+aprobaron; el run quedó rojo únicamente porque una prueba nueva de metadatos de
+capacidades usó dos nombres WebSocket inexistentes. El nombre se corrigió sin
+ocultar ese fallo. [CI 31632346274](https://github.com/alexsndersoto04-source/aio/actions/runs/31632346274) aprobó formato, check, todos los tests, no-default-features y
+AArch64 con el backend final y sin `tiny_http`. [Termux ARM 31632346324](https://github.com/alexsndersoto04-source/aio/actions/runs/31632346324) compiló y enlazó el mismo código para Android/Bionic ARMv7.
+
+Límites declarados: este listener es HTTP plano; TLS debe terminar en el backend
+TLS del producto o en un reverse proxy. No ofrece keep-alive, HTTP/2,
+compresión WebSocket ni negociación de subprotocolos en esta API. No se afirma
+resistencia a una saturación del backlog del sistema operativo anterior a
+`accept`; sí se acotan los recursos una vez aceptados. No hace falta validación
+física aislada para este bloque: protocolo, sockets y frames se ejercitaron en
+loopback real, y las dos arquitecturas Android compilaron dentro del binario. Se
+reserva la instalación en el Redmi para el candidato agrupado del milestone.
+
+### Barrido transversal final de sandbox y handles
+
+El commit `1875e3a2b0d7386c5027f4e5f46909f5800e97e9` cerró el barrido posterior al
+servidor:
+
+- las 23 nativas `std::server::*` exigen `Network`, incluidas consultas de
+  metadatos y cierre; las 21 de Redis también;
+- las 17 operaciones KV/sled y las cuatro de watchers exigen `Filesystem`, no
+  solo `open`; las siete barras de progreso exigen `UserInterface` porque
+  escriben en el terminal;
+- una regresión de la VM demuestra que handles enteros forjados no permiten
+  saltarse esas capacidades: el rechazo ocurre antes de buscar el recurso;
+- IDs de runtimes, tareas, canales, sockets, TLS, WebSockets, routers, bases de
+  datos, pools, request IDs, procesos, colecciones y temporales PDF dejaron de
+  usar incremento con wrap. Al agotarse fallan cerrados; los contadores de
+  estadísticas saturan en vez de volver a cero;
+- handles de audio y GUI ya no vuelven a 1 tras `shutdown`, por lo que un handle
+  viejo no puede convertirse en alias de un objeto creado después del reinicio;
+- PID, señal, estado de salida y cantidad de `most_common` usan conversiones
+  comprobadas en la VM en vez de casts que envolvían valores negativos o
+  demasiado grandes;
+- procesos en background usan `Arc<Mutex<Option<_>>>` por recurso. `poll`,
+  `kill`, PID, espera y cleanup sueltan el registro global antes de tocar el
+  proceso del sistema operativo; cleanup mata y recolecta fuera del registro.
+
+La revisión de registros duraderos confirmó cleanup para estado UI/móvil/audio,
+emuladores, métricas, señales, rate limits, watchers, ventanas, KV, Redis,
+imágenes, tokenizadores, ONNX, PDF, progreso, routers, servidor, procesos y las
+seis familias de colecciones. Las estructuras internas de red y bases de datos
+de la VM viven dentro de `RuntimeState`; este estado se destruye únicamente
+cuando root y todas las tareas han soltado su `Arc`. Por eso una operación de una
+tarea en vuelo impide que el cleanup de su runtime empiece, además de la barrera
+`shutting_down` que impide crear tareas hijas durante cierre.
+
+Evidencia final:
+
+- [CI 31633367279](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279): todos los pasos individuales aprobaron, incluidos formato,
+  check normal, workspace tests, no-default-features y AArch64;
+- [Termux ARM 31633367369](https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369): check NDK estricto, build/enlace Android/Bionic ARMv7,
+  ELF32/ARM, paquete y upload aprobaron;
+- artefacto `zett-termux-arm-81`, id `9156036875`, 26.718.677 bytes, digest
+  `sha256:28cee74a0bdb810bd7b2ccd12c075ab65b65a84d92284bec1cacef517cd21cd5`;
+- `verify_phase34.py`: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.
+
+Con esta evidencia queda cerrada la fase 2 de sandbox y seguridad. Esto no
+convierte automáticamente las fases restantes en terminadas: el siguiente
+bloque es la fase 3, typechecker y reglas del lenguaje.
+
 ### PDF real con memoria, ownership y publicación acotados
 
 Los commits `6c54c9b`, `64a508c` y `0d10e16` reemplazan el registro PDF sin
@@ -905,9 +1018,10 @@ reales se liberan en el mismo hilo que las creó.
 ### Límites de esta validación
 
 - Las cuotas de tareas, canales, red, bases de datos, procesos externos,
-  colecciones, PDF y los recursos ligeros descritos arriba ya están conectadas.
-  Esto no cierra toda la auditoría de crecimiento: los servidores HTTP conservan
-  registros duraderos que deben revisarse individualmente.
+  colecciones, PDF, HTTP/WebSocket y los recursos ligeros descritos arriba ya
+  están conectadas. La fase 2 queda cerrada para ese alcance; los límites de
+  memoria y concurrencia propios de fases posteriores siguen auditándose en sus
+  bloques correspondientes.
 - CI prueba directamente la destrucción con handles de colecciones, tareas,
   tokenizadores, planes ONNX de tract, bases/árboles sled, sockets Redis loopback
   y documentos PDF. Las demás rutas de limpieza compilan y son revisadas por
