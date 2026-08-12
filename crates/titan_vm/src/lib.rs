@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     mpsc::{self, Receiver, SyncSender},
     Arc, Mutex,
 };
@@ -165,6 +165,8 @@ pub enum VmError {
     CallDepth,
     #[error("task memory limit exceeded ({bytes} > {limit} bytes)")]
     MemoryLimit { bytes: usize, limit: usize },
+    #[error("runtime {resource} limit exceeded ({limit})")]
+    ResourceLimit { resource: String, limit: usize },
     #[error("native function '{function}' failed: {message}")]
     Native { function: String, message: String },
     #[error("native function '{function}' requires capability '{capability}'")]
@@ -341,6 +343,8 @@ struct RuntimeState {
     next_socket: AtomicU64,
     next_router: AtomicU64,
     shutting_down: AtomicBool,
+    task_limit: AtomicUsize,
+    channel_limit: AtomicUsize,
     tasks: Mutex<HashMap<u64, TaskRecord>>,
     channels: Mutex<HashMap<u64, Arc<Channel>>>,
     listeners: Mutex<HashMap<u64, Arc<TcpListener>>>,
@@ -368,6 +372,8 @@ impl RuntimeState {
             next_socket: AtomicU64::new(1),
             next_router: AtomicU64::new(1),
             shutting_down: AtomicBool::new(false),
+            task_limit: AtomicUsize::new(256),
+            channel_limit: AtomicUsize::new(1_024),
             tasks: Mutex::new(HashMap::new()),
             channels: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
@@ -469,6 +475,14 @@ impl Vm {
         self.memory_limit = limit;
         self
     }
+    pub fn with_task_limit(self, limit: usize) -> Self {
+        self.runtime.task_limit.store(limit, Ordering::Release);
+        self
+    }
+    pub fn with_channel_limit(self, limit: usize) -> Self {
+        self.runtime.channel_limit.store(limit, Ordering::Release);
+        self
+    }
     pub fn track_allocation(&mut self, bytes: usize) -> Result<(), VmError> {
         self.allocated_bytes = self.allocated_bytes.saturating_add(bytes);
         if self.allocated_bytes > self.memory_limit {
@@ -478,6 +492,73 @@ impl Vm {
             });
         }
         Ok(())
+    }
+
+    fn spawn_task(
+        &self,
+        task_function: usize,
+        captures: Vec<Value>,
+        memory_limit: usize,
+    ) -> Result<u64, VmError> {
+        let mut tasks = self
+            .runtime
+            .tasks
+            .lock()
+            .map_err(|_| VmError::Type("task registry poisoned".into()))?;
+        if self.runtime.shutting_down.load(Ordering::Acquire) {
+            return Err(VmError::TaskCancelled);
+        }
+        let limit = self.runtime.task_limit.load(Ordering::Acquire);
+        if tasks.len() >= limit {
+            return Err(VmError::ResourceLimit {
+                resource: "task".into(),
+                limit,
+            });
+        }
+
+        let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
+        let module = self.module.clone();
+        let runtime = Arc::clone(&self.runtime);
+        let capabilities = self.capabilities;
+        let output = self.output.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let task_cancelled = Arc::clone(&cancelled);
+        let instruction_limit = self.instruction_limit;
+        let max_call_depth = self.max_call_depth;
+        let gc_threshold = self.gc_threshold;
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let handle = std::thread::Builder::new()
+            .name(format!("titan-task-{task_id}"))
+            .spawn(move || {
+                let mut child = Vm {
+                    module,
+                    instruction_limit,
+                    instructions: 0,
+                    max_call_depth,
+                    capabilities,
+                    output,
+                    runtime,
+                    cancellation: Some(task_cancelled),
+                    memory_limit,
+                    allocated_bytes: 0,
+                    gc_threshold,
+                };
+                let result = child.execute(task_function, Vec::new(), captures, 0, &mut None);
+                let _ = result_tx.send(result);
+            })
+            .map_err(|error| VmError::Native {
+                function: "std::runtime::spawn".into(),
+                message: error.to_string(),
+            })?;
+        tasks.insert(
+            task_id,
+            TaskRecord {
+                handle,
+                result: result_rx,
+                cancelled,
+            },
+        );
+        Ok(task_id)
     }
 
     pub fn run(&mut self) -> Result<Option<Value>, VmError> {
@@ -1083,51 +1164,8 @@ impl Vm {
                     else {
                         return Err(VmError::Type("spawn requires a closure".into()));
                     };
-                    let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
-                    let module = self.module.clone();
-                    let runtime = Arc::clone(&self.runtime);
-                    let capabilities = self.capabilities;
-                    let output = self.output.clone();
-                    let cancelled = Arc::new(AtomicBool::new(false));
-                    let task_cancelled = Arc::clone(&cancelled);
-                    let (result_tx, result_rx) = mpsc::sync_channel(1);
-                    let handle = std::thread::spawn(move || {
-                        let mut child = Vm {
-                            module,
-                            instruction_limit: 10_000_000,
-                            instructions: 0,
-                            max_call_depth: 4096,
-                            capabilities,
-                            output,
-                            runtime,
-                            cancellation: Some(task_cancelled),
-                            memory_limit: usize::MAX,
-                            allocated_bytes: 0,
-                            gc_threshold: 1024 * 1024,
-                        };
-                        let result =
-                            child.execute(task_function, Vec::new(), captures, 0, &mut None);
-                        let _ = result_tx.send(result);
-                    });
-                    let mut tasks = self
-                        .runtime
-                        .tasks
-                        .lock()
-                        .map_err(|_| VmError::Type("task registry poisoned".into()))?;
-                    if self.runtime.shutting_down.load(Ordering::Acquire) {
-                        cancelled.store(true, Ordering::Release);
-                        drop(tasks);
-                        drop(handle);
-                        return Err(VmError::TaskCancelled);
-                    }
-                    tasks.insert(
-                        task_id,
-                        TaskRecord {
-                            handle,
-                            result: result_rx,
-                            cancelled,
-                        },
-                    );
+                    let task_id =
+                        self.spawn_task(task_function, captures, self.memory_limit)?;
                     stack.push(Value::Task(task_id));
                 }
                 Op::SpawnQuota => {
@@ -1145,51 +1183,8 @@ impl Vm {
                         pop(&mut stack, &function.name)?,
                         "std::runtime::spawn_quota memory limit",
                     )?;
-                    let task_id = self.runtime.next_task.fetch_add(1, Ordering::Relaxed);
-                    let module = self.module.clone();
-                    let runtime = Arc::clone(&self.runtime);
-                    let capabilities = self.capabilities;
-                    let output = self.output.clone();
-                    let cancelled = Arc::new(AtomicBool::new(false));
-                    let task_cancelled = Arc::clone(&cancelled);
-                    let (result_tx, result_rx) = mpsc::sync_channel(1);
-                    let handle = std::thread::spawn(move || {
-                        let mut child = Vm {
-                            module,
-                            instruction_limit: 10_000_000,
-                            instructions: 0,
-                            max_call_depth: 4096,
-                            capabilities,
-                            output,
-                            runtime,
-                            cancellation: Some(task_cancelled),
-                            memory_limit: quota_bytes,
-                            allocated_bytes: 0,
-                            gc_threshold: 1024 * 1024,
-                        };
-                        let result =
-                            child.execute(task_function, Vec::new(), captures, 0, &mut None);
-                        let _ = result_tx.send(result);
-                    });
-                    let mut tasks = self
-                        .runtime
-                        .tasks
-                        .lock()
-                        .map_err(|_| VmError::Type("task registry poisoned".into()))?;
-                    if self.runtime.shutting_down.load(Ordering::Acquire) {
-                        cancelled.store(true, Ordering::Release);
-                        drop(tasks);
-                        drop(handle);
-                        return Err(VmError::TaskCancelled);
-                    }
-                    tasks.insert(
-                        task_id,
-                        TaskRecord {
-                            handle,
-                            result: result_rx,
-                            cancelled,
-                        },
-                    );
+                    let memory_limit = quota_bytes.min(self.memory_limit);
+                    let task_id = self.spawn_task(task_function, captures, memory_limit)?;
                     stack.push(Value::Task(task_id));
                 }
                 Op::RuntimeMemoryLimit => {
@@ -1385,6 +1380,7 @@ impl Vm {
                     stack.push(Value::Bool(cancelled));
                 }
                 Op::NewChannel => {
+                    const MAX_CHANNEL_CAPACITY: usize = 65_536;
                     let capacity = pop(&mut stack, &function.name)?;
                     let Value::Int(capacity) = capacity else {
                         return Err(VmError::Type("channel capacity must be int".into()));
@@ -1392,19 +1388,33 @@ impl Vm {
                     let capacity = usize::try_from(capacity).map_err(|_| {
                         VmError::Type("channel capacity must be nonnegative".into())
                     })?;
-                    let channel_id = self.runtime.next_channel.fetch_add(1, Ordering::Relaxed);
-                    let (sender, receiver) = mpsc::sync_channel(capacity);
-                    self.runtime
+                    if capacity > MAX_CHANNEL_CAPACITY {
+                        return Err(VmError::ResourceLimit {
+                            resource: "channel capacity".into(),
+                            limit: MAX_CHANNEL_CAPACITY,
+                        });
+                    }
+                    let mut channels = self
+                        .runtime
                         .channels
                         .lock()
-                        .map_err(|_| VmError::Type("channel registry poisoned".into()))?
-                        .insert(
-                            channel_id,
-                            Arc::new(Channel {
-                                sender,
-                                receiver: Mutex::new(receiver),
-                            }),
-                        );
+                        .map_err(|_| VmError::Type("channel registry poisoned".into()))?;
+                    let limit = self.runtime.channel_limit.load(Ordering::Acquire);
+                    if channels.len() >= limit {
+                        return Err(VmError::ResourceLimit {
+                            resource: "channel".into(),
+                            limit,
+                        });
+                    }
+                    let channel_id = self.runtime.next_channel.fetch_add(1, Ordering::Relaxed);
+                    let (sender, receiver) = mpsc::sync_channel(capacity);
+                    channels.insert(
+                        channel_id,
+                        Arc::new(Channel {
+                            sender,
+                            receiver: Mutex::new(receiver),
+                        }),
+                    );
                     stack.push(Value::Tuple(vec![
                         Value::ChannelSender(channel_id),
                         Value::ChannelReceiver(channel_id),
@@ -4461,6 +4471,58 @@ mod tests {
         })
         .unwrap());
         titan_stdlib::native::cleanup_runtime_resources(other_id);
+    }
+
+    #[test]
+    fn task_quota_rejects_excess_threads_and_join_releases_a_slot() {
+        let module = compile("fn main() { let first = spawn || 1 let second = spawn || 2; [first, second] }").unwrap();
+        let error = Vm::new(module).with_task_limit(1).run().unwrap_err();
+        assert_eq!(
+            error,
+            VmError::ResourceLimit {
+                resource: "task".into(),
+                limit: 1,
+            }
+        );
+
+        let module = compile(
+            "fn main() { let first = spawn || 1 let a = join(first) let second = spawn || 2; [a, join(second)] }",
+        )
+        .unwrap();
+        assert_eq!(
+            Vm::new(module).with_task_limit(1).run().unwrap(),
+            Some(Value::Array(vec![Value::Int(1), Value::Int(2)]))
+        );
+    }
+
+    #[test]
+    fn child_tasks_inherit_and_cannot_raise_the_parent_memory_limit() {
+        let module = compile("fn main() { let normal = spawn || std::runtime::memory_limit() let first = join(normal) let requested = std::runtime::spawn_quota(999999, || std::runtime::memory_limit()); [first, join(requested)] }").unwrap();
+        assert_eq!(
+            Vm::new(module).with_memory_limit(1_234).run().unwrap(),
+            Some(Value::Array(vec![Value::Int(1_234), Value::Int(1_234)]))
+        );
+    }
+
+    #[test]
+    fn channel_count_and_capacity_are_bounded_before_allocation() {
+        let module = compile("fn main() { let first = channel(1) let second = channel(1); second }").unwrap();
+        assert_eq!(
+            Vm::new(module).with_channel_limit(1).run().unwrap_err(),
+            VmError::ResourceLimit {
+                resource: "channel".into(),
+                limit: 1,
+            }
+        );
+
+        let module = compile("fn main() { channel(65537) }").unwrap();
+        assert_eq!(
+            Vm::new(module).run().unwrap_err(),
+            VmError::ResourceLimit {
+                resource: "channel capacity".into(),
+                limit: 65_536,
+            }
+        );
     }
 
     #[test]

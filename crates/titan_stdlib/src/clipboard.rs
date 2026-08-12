@@ -3,6 +3,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+const MAX_CLIPBOARD_BYTES: usize = 1_048_576;
+const MAX_NOTIFICATIONS: usize = 256;
+const MAX_NOTIFICATION_TITLE_BYTES: usize = 4_096;
+const MAX_NOTIFICATION_BODY_BYTES: usize = 65_536;
+
 struct SystemServices {
     clipboard_text: String,
     notifications: Vec<(String, String)>,
@@ -40,6 +45,9 @@ pub fn get_text() -> String {
 }
 
 pub fn set_text(text: &str) -> bool {
+    if text.len() > MAX_CLIPBOARD_BYTES {
+        return false;
+    }
     if let Ok(mut srv) = services().lock() {
         srv.clipboard_text = text.to_string();
         return true;
@@ -48,7 +56,13 @@ pub fn set_text(text: &str) -> bool {
 }
 
 pub fn send_notification(title: &str, body: &str) -> bool {
+    if title.len() > MAX_NOTIFICATION_TITLE_BYTES || body.len() > MAX_NOTIFICATION_BODY_BYTES {
+        return false;
+    }
     if let Ok(mut srv) = services().lock() {
+        if srv.notifications.len() >= MAX_NOTIFICATIONS {
+            return false;
+        }
         srv.notifications
             .push((title.to_string(), body.to_string()));
         return true;
@@ -78,4 +92,20 @@ mod tests {
         assert_eq!(notifs[0].0, "Update");
         assert_eq!(notifs[0].1, "Compilation finished");
     }
+    #[test]
+    fn clipboard_and_notification_queues_are_bounded() {
+        let runtime_id = 85_004;
+        crate::native::with_runtime_context(runtime_id, || {
+            assert!(!set_text(&"x".repeat(MAX_CLIPBOARD_BYTES + 1)));
+            for index in 0..MAX_NOTIFICATIONS {
+                assert!(send_notification("title", &index.to_string()));
+            }
+            assert!(!send_notification("overflow", "overflow"));
+            assert_eq!(poll_notifications().len(), MAX_NOTIFICATIONS);
+            assert!(send_notification("recovered", "slot"));
+            assert_eq!(poll_notifications().len(), 1);
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

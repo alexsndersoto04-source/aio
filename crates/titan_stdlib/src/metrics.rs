@@ -2,6 +2,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock, RwLock};
 use thiserror::Error;
+
+const MAX_METRICS_PER_RUNTIME: usize = 4_096;
 #[derive(Error, Debug)]
 pub enum MetricsError {
     #[error("invalid metric name")]
@@ -10,6 +12,8 @@ pub enum MetricsError {
     Value,
     #[error("metrics registry poisoned")]
     Poisoned,
+    #[error("metric quota exceeded ({0})")]
+    Quota(usize),
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Histogram {
@@ -62,10 +66,25 @@ fn validate(name: &str) -> Result<(), MetricsError> {
         Ok(())
     }
 }
+fn metric_count(metrics: &Registry) -> usize {
+    metrics
+        .counters
+        .len()
+        .saturating_add(metrics.gauges.len())
+        .saturating_add(metrics.histograms.len())
+}
+fn require_metric_slot(metrics: &Registry, exists: bool) -> Result<(), MetricsError> {
+    if !exists && metric_count(metrics) >= MAX_METRICS_PER_RUNTIME {
+        Err(MetricsError::Quota(MAX_METRICS_PER_RUNTIME))
+    } else {
+        Ok(())
+    }
+}
 pub fn counter_add(name: &str, amount: u64) -> Result<u64, MetricsError> {
     validate(name)?;
     let registry = registry();
     let mut metrics = registry.write().map_err(|_| MetricsError::Poisoned)?;
+    require_metric_slot(&metrics, metrics.counters.contains_key(name))?;
     let value = metrics.counters.entry(name.into()).or_default();
     *value = value.saturating_add(amount);
     Ok(*value)
@@ -82,11 +101,9 @@ pub fn gauge_set(name: &str, value: f64) -> Result<(), MetricsError> {
         return Err(MetricsError::Value);
     }
     let registry = registry();
-    registry
-        .write()
-        .map_err(|_| MetricsError::Poisoned)?
-        .gauges
-        .insert(name.into(), value);
+    let mut metrics = registry.write().map_err(|_| MetricsError::Poisoned)?;
+    require_metric_slot(&metrics, metrics.gauges.contains_key(name))?;
+    metrics.gauges.insert(name.into(), value);
     Ok(())
 }
 pub fn gauge_get(name: &str) -> Result<f64, MetricsError> {
@@ -102,6 +119,7 @@ pub fn histogram_record(name: &str, value: f64) -> Result<(), MetricsError> {
     }
     let registry = registry();
     let mut metrics = registry.write().map_err(|_| MetricsError::Poisoned)?;
+    require_metric_slot(&metrics, metrics.histograms.contains_key(name))?;
     let histogram = metrics.histograms.entry(name.into()).or_insert(Histogram {
         count: 0,
         sum: 0.0,
@@ -217,4 +235,22 @@ mod tests {
         assert_eq!(cleanup_runtime(70_003), 1);
         assert_eq!(cleanup_runtime(70_004), 1);
     }
+    #[test]
+    fn metric_name_quota_is_per_runtime_and_reset_recovers_capacity() {
+        let runtime_id = 85_006;
+        crate::native::with_runtime_context(runtime_id, || {
+            for index in 0..MAX_METRICS_PER_RUNTIME {
+                counter_add(&format!("metric.{index}"), 1).unwrap();
+            }
+            assert!(matches!(
+                counter_add("metric.overflow", 1),
+                Err(MetricsError::Quota(MAX_METRICS_PER_RUNTIME))
+            ));
+            counter_add("metric.0", 1).unwrap();
+            reset().unwrap();
+            counter_add("metric.recovered", 1).unwrap();
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

@@ -4,6 +4,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+const MAX_MOBILE_EVENTS: usize = 1_024;
+const MAX_MOBILE_EVENT_BYTES: usize = 256;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     Running,
@@ -54,7 +57,13 @@ pub fn get_state() -> String {
 }
 
 pub fn trigger_event(event: &str) -> bool {
+    if event.is_empty() || event.len() > MAX_MOBILE_EVENT_BYTES {
+        return false;
+    }
     if let Ok(mut srv) = service().lock() {
+        if srv.event_history.len() >= MAX_MOBILE_EVENTS {
+            return false;
+        }
         srv.event_history.push(event.to_string());
         match event {
             "onStart" | "onResume" => srv.state = AppState::Running,
@@ -207,4 +216,20 @@ mod tests {
         assert!(trigger_event("onDestroy"));
         assert_eq!(get_state(), "Destroyed");
     }
+    #[test]
+    fn lifecycle_event_queue_is_bounded_and_draining_recovers_it() {
+        let runtime_id = 85_005;
+        crate::native::with_runtime_context(runtime_id, || {
+            for _ in 0..MAX_MOBILE_EVENTS {
+                assert!(trigger_event("onPause"));
+            }
+            assert!(!trigger_event("onPause"));
+            assert!(!trigger_event(&"x".repeat(MAX_MOBILE_EVENT_BYTES + 1)));
+            assert_eq!(poll_events().len(), MAX_MOBILE_EVENTS);
+            assert!(trigger_event("onResume"));
+            assert_eq!(poll_events(), vec!["onResume".to_string()]);
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+const MAX_GUI_WIDGETS: usize = 1_024;
+const MAX_WIDGET_TEXT_BYTES: usize = 65_536;
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum WidgetType {
     Container,
@@ -72,11 +75,17 @@ pub fn init() -> bool {
 
 pub fn create_container(title: &str, width: i64, height: i64) -> i64 {
     if let Ok(mut state) = get_gui_state().lock() {
-        if !state.initialized {
+        if !state.initialized
+            || state.widgets.len() >= MAX_GUI_WIDGETS
+            || title.len() > MAX_WIDGET_TEXT_BYTES
+        {
             return -1;
         }
         let id = state.next_id;
-        state.next_id = state.next_id.saturating_add(1);
+        let Some(next_id) = id.checked_add(1) else {
+            return -1;
+        };
+        state.next_id = next_id;
         state.widgets.insert(
             id,
             Widget {
@@ -100,11 +109,18 @@ pub fn create_container(title: &str, width: i64, height: i64) -> i64 {
 
 pub fn add_button(parent_id: i64, label: &str, x: i64, y: i64, width: i64, height: i64) -> i64 {
     if let Ok(mut state) = get_gui_state().lock() {
-        if !state.initialized || !state.widgets.contains_key(&parent_id) {
+        if !state.initialized
+            || !state.widgets.contains_key(&parent_id)
+            || state.widgets.len() >= MAX_GUI_WIDGETS
+            || label.len() > MAX_WIDGET_TEXT_BYTES
+        {
             return -1;
         }
         let id = state.next_id;
-        state.next_id = state.next_id.saturating_add(1);
+        let Some(next_id) = id.checked_add(1) else {
+            return -1;
+        };
+        state.next_id = next_id;
         let widget = Widget {
             id,
             widget_type: WidgetType::Button,
@@ -129,11 +145,18 @@ pub fn add_button(parent_id: i64, label: &str, x: i64, y: i64, width: i64, heigh
 
 pub fn add_label(parent_id: i64, text: &str, x: i64, y: i64) -> i64 {
     if let Ok(mut state) = get_gui_state().lock() {
-        if !state.initialized || !state.widgets.contains_key(&parent_id) {
+        if !state.initialized
+            || !state.widgets.contains_key(&parent_id)
+            || state.widgets.len() >= MAX_GUI_WIDGETS
+            || text.len() > MAX_WIDGET_TEXT_BYTES
+        {
             return -1;
         }
         let id = state.next_id;
-        state.next_id = state.next_id.saturating_add(1);
+        let Some(next_id) = id.checked_add(1) else {
+            return -1;
+        };
+        state.next_id = next_id;
         let widget = Widget {
             id,
             widget_type: WidgetType::Label,
@@ -157,6 +180,9 @@ pub fn add_label(parent_id: i64, text: &str, x: i64, y: i64) -> i64 {
 }
 
 pub fn set_text(widget_id: i64, new_text: &str) -> bool {
+    if new_text.len() > MAX_WIDGET_TEXT_BYTES {
+        return false;
+    }
     if let Ok(mut state) = get_gui_state().lock() {
         if let Some(widget) = state.widgets.get_mut(&widget_id) {
             widget.text = new_text.to_string();
@@ -208,6 +234,7 @@ pub fn child_count(parent_id: i64) -> usize {
 pub fn shutdown() -> bool {
     if let Ok(mut state) = get_gui_state().lock() {
         state.widgets.clear();
+        state.next_id = 1;
         state.initialized = false;
         true
     } else {
@@ -251,4 +278,26 @@ mod tests {
 
         assert!(shutdown());
     }
+    #[test]
+    fn widget_count_and_text_size_are_bounded() {
+        let runtime_id = 85_002;
+        crate::native::with_runtime_context(runtime_id, || {
+            assert!(init());
+            assert_eq!(
+                create_container(&"x".repeat(MAX_WIDGET_TEXT_BYTES + 1), 1, 1),
+                -1
+            );
+            let root = create_container("root", 1, 1);
+            for index in 1..MAX_GUI_WIDGETS {
+                assert!(add_label(root, &index.to_string(), 0, 0) > 0);
+            }
+            assert_eq!(add_label(root, "overflow", 0, 0), -1);
+            assert!(!set_text(root, &"x".repeat(MAX_WIDGET_TEXT_BYTES + 1)));
+            assert!(shutdown());
+            assert!(init());
+            assert!(create_container("recovered", 1, 1) > 0);
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

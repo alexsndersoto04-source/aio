@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub const PAGE_SIZE: u64 = 4096; // 0x1000 bytes
 
+const MAX_ALLOCATED_FRAMES: usize = 16_384;
+const MAX_PAGE_MAPPINGS: usize = 16_384;
+
 struct MemoryState {
     initialized: bool,
     base_paddr: u64,
@@ -84,7 +87,7 @@ pub fn init_frame_allocator(base_paddr: u64, total_size_bytes: u64) -> bool {
 
 pub fn allocate_frame() -> u64 {
     if let Ok(mut state) = get_memory_state().lock() {
-        if !state.initialized {
+        if !state.initialized || state.allocated_frames.len() >= MAX_ALLOCATED_FRAMES {
             return 0;
         }
         let frame = if let Some(frame) = state.recycled_frames.pop() {
@@ -120,6 +123,8 @@ pub fn map_page(vaddr: u64, paddr: u64, flags: u32) -> bool {
         if !state.initialized
             || !vaddr.is_multiple_of(PAGE_SIZE)
             || !paddr.is_multiple_of(PAGE_SIZE)
+            || (!state.page_table.contains_key(&vaddr)
+                && state.page_table.len() >= MAX_PAGE_MAPPINGS)
         {
             return false;
         }
@@ -205,4 +210,35 @@ mod tests {
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
+    #[test]
+    fn active_frame_and_page_mapping_quotas_are_finite() {
+        let runtime_id = 85_008;
+        crate::native::with_runtime_context(runtime_id, || {
+            let modeled_frames = (MAX_ALLOCATED_FRAMES + 1) as u64;
+            assert!(init_frame_allocator(
+                0x1000,
+                modeled_frames * PAGE_SIZE
+            ));
+            let first = allocate_frame();
+            assert_eq!(first, 0x1000);
+            for _ in 1..MAX_ALLOCATED_FRAMES {
+                assert_ne!(allocate_frame(), 0);
+            }
+            assert_eq!(allocate_frame(), 0);
+            assert!(deallocate_frame(first));
+            assert_eq!(allocate_frame(), first);
+
+            for page in 0..MAX_PAGE_MAPPINGS {
+                assert!(map_page(
+                    0x1_0000_0000 + page as u64 * PAGE_SIZE,
+                    0x1000,
+                    3
+                ));
+            }
+            assert!(!map_page(0x2_0000_0000, 0x1000, 3));
+            assert!(map_page(0x1_0000_0000, 0x2000, 3));
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

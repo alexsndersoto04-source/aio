@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+const MAX_MMIO_REGIONS: usize = 256;
+const MAX_MMIO_REGISTERS: usize = 16_384;
+const MAX_UART_BUFFER_BYTES: usize = 262_144;
+
 struct MmioState {
     initialized: bool,
     regions: Vec<(u64, u64)>, // (base_paddr, size_bytes)
@@ -46,7 +50,10 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
 
 pub fn init_mmio_region(base_paddr: u64, size_bytes: u64) -> bool {
     if let Ok(mut state) = get_mmio_state().lock() {
-        if size_bytes == 0 {
+        if size_bytes == 0
+            || base_paddr.checked_add(size_bytes).is_none()
+            || state.regions.len() >= MAX_MMIO_REGIONS
+        {
             return false;
         }
         state.regions.push((base_paddr, size_bytes));
@@ -80,17 +87,27 @@ pub fn read_mmio_u32(paddr: u64) -> u32 {
 
 pub fn write_mmio_u32(paddr: u64, value: u32) -> bool {
     if let Ok(mut state) = get_mmio_state().lock() {
-        if !state.initialized || !is_in_region(&state, paddr) {
+        if !state.initialized
+            || !is_in_region(&state, paddr)
+            || (!state.regs.contains_key(&paddr) && state.regs.len() >= MAX_MMIO_REGISTERS)
+        {
+            return false;
+        }
+        let uart_char = (state.uart_base == Some(paddr))
+            .then(|| char::from_u32(value & 0xff))
+            .flatten();
+        if uart_char.is_some_and(|ch| {
+            state
+                .uart_output_buffer
+                .len()
+                .saturating_add(ch.len_utf8())
+                > MAX_UART_BUFFER_BYTES
+        }) {
             return false;
         }
         state.regs.insert(paddr, value);
-        // Si la escritura es en el registro de transmisión de datos del UART, añadir al buffer
-        if let Some(uart_base) = state.uart_base {
-            if paddr == uart_base {
-                if let Some(ch) = char::from_u32(value & 0xFF) {
-                    state.uart_output_buffer.push(ch);
-                }
-            }
+        if let Some(ch) = uart_char {
+            state.uart_output_buffer.push(ch);
         }
         true
     } else {
@@ -100,10 +117,16 @@ pub fn write_mmio_u32(paddr: u64, value: u32) -> bool {
 
 pub fn serial_init(uart_base_paddr: u64, baudrate: u32) -> bool {
     if let Ok(mut state) = get_mmio_state().lock() {
-        if baudrate == 0 {
+        let region = (uart_base_paddr, 0x1000);
+        if baudrate == 0
+            || uart_base_paddr.checked_add(region.1).is_none()
+            || (!state.regions.contains(&region) && state.regions.len() >= MAX_MMIO_REGIONS)
+        {
             return false;
         }
-        state.regions.push((uart_base_paddr, 0x1000));
+        if !state.regions.contains(&region) {
+            state.regions.push(region);
+        }
         state.uart_base = Some(uart_base_paddr);
         state.uart_output_buffer.clear();
         state.initialized = true;
@@ -115,10 +138,24 @@ pub fn serial_init(uart_base_paddr: u64, baudrate: u32) -> bool {
 
 pub fn serial_write_str(text: &str) -> usize {
     if let Ok(mut state) = get_mmio_state().lock() {
-        if !state.initialized || state.uart_base.is_none() {
+        let encoded_bytes = text
+            .bytes()
+            .map(|byte| (byte as char).len_utf8())
+            .sum::<usize>();
+        if !state.initialized
+            || state.uart_base.is_none()
+            || state
+                .uart_output_buffer
+                .len()
+                .saturating_add(encoded_bytes)
+                > MAX_UART_BUFFER_BYTES
+        {
             return 0;
         }
         let uart_base = state.uart_base.unwrap();
+        if !state.regs.contains_key(&uart_base) && state.regs.len() >= MAX_MMIO_REGISTERS {
+            return 0;
+        }
         let mut count: usize = 0;
         for byte in text.bytes() {
             state.regs.insert(uart_base, byte as u32);
@@ -170,4 +207,35 @@ mod tests {
 
         assert!(shutdown());
     }
+    #[test]
+    fn mmio_register_region_and_uart_quotas_are_finite() {
+        let runtime_id = 85_009;
+        crate::native::with_runtime_context(runtime_id, || {
+            for region in 0..MAX_MMIO_REGIONS {
+                assert!(init_mmio_region(region as u64 * 0x1_0000, 0x1_0000));
+            }
+            assert!(!init_mmio_region(0x1_0000_0000, 0x1000));
+            assert!(shutdown());
+
+            assert!(init_mmio_region(0x1000, (MAX_MMIO_REGISTERS as u64 + 1) * 4));
+            for register in 0..MAX_MMIO_REGISTERS {
+                assert!(write_mmio_u32(0x1000 + register as u64 * 4, 1));
+            }
+            assert!(!write_mmio_u32(
+                0x1000 + MAX_MMIO_REGISTERS as u64 * 4,
+                1
+            ));
+            assert!(write_mmio_u32(0x1000, 2));
+            assert!(shutdown());
+
+            assert!(serial_init(0x1000_0000, 115_200));
+            assert_eq!(
+                serial_write_str(&"x".repeat(MAX_UART_BUFFER_BYTES)),
+                MAX_UART_BUFFER_BYTES
+            );
+            assert_eq!(serial_write_str("overflow"), 0);
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

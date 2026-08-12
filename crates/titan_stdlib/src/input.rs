@@ -4,6 +4,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
+const MAX_KEYS_DOWN: usize = 256;
+const MAX_KEY_NAME_BYTES: usize = 256;
+const MAX_TOUCH_POINTS: usize = 32;
+
 struct InputState {
     keys_down: HashSet<String>,
     mouse_x: i32,
@@ -40,8 +44,14 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
 }
 
 pub fn set_key_state(key: &str, pressed: bool) -> bool {
+    if key.is_empty() || key.len() > MAX_KEY_NAME_BYTES {
+        return false;
+    }
     if let Ok(mut st) = state().lock() {
         if pressed {
+            if !st.keys_down.contains(key) && st.keys_down.len() >= MAX_KEYS_DOWN {
+                return false;
+            }
             st.keys_down.insert(key.to_string());
         } else {
             st.keys_down.remove(key);
@@ -96,6 +106,11 @@ pub fn is_mouse_button_pressed(button: u8) -> bool {
 pub fn set_touch_point(index: u32, x: i32, y: i32, active: bool) -> bool {
     if let Ok(mut st) = state().lock() {
         if active {
+            if !st.touch_points.contains_key(&index)
+                && st.touch_points.len() >= MAX_TOUCH_POINTS
+            {
+                return false;
+            }
             st.touch_points.insert(index, (x, y));
         } else {
             st.touch_points.remove(&index);
@@ -279,4 +294,26 @@ mod tests {
         assert!(set_mouse_button(251, false));
         assert!(set_touch_point(84, 0, 0, false));
     }
+    #[test]
+    fn input_sets_have_finite_quotas_and_release_slots() {
+        let runtime_id = 85_003;
+        crate::native::with_runtime_context(runtime_id, || {
+            for index in 0..MAX_KEYS_DOWN {
+                assert!(set_key_state(&format!("key-{index}"), true));
+            }
+            assert!(!set_key_state("one-too-many", true));
+            assert!(set_key_state("key-0", false));
+            assert!(set_key_state("replacement", true));
+            assert!(!set_key_state(&"x".repeat(MAX_KEY_NAME_BYTES + 1), true));
+
+            for index in 0..MAX_TOUCH_POINTS {
+                assert!(set_touch_point(index as u32, 1, 2, true));
+            }
+            assert!(!set_touch_point(MAX_TOUCH_POINTS as u32, 1, 2, true));
+            assert!(set_touch_point(0, 0, 0, false));
+            assert!(set_touch_point(MAX_TOUCH_POINTS as u32, 1, 2, true));
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

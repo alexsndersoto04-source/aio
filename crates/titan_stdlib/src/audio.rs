@@ -2,6 +2,10 @@ use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::{Arc, Mutex, OnceLock};
 
+const MAX_AUDIO_BUFFERS: usize = 256;
+const MAX_WAVE_DURATION_MS: i64 = 60_000;
+const MAX_AUDIO_SAMPLES: usize = 44_100 * 300;
+
 struct AudioBuffer {
     samples: Vec<f32>,
     volume: f64,
@@ -58,12 +62,26 @@ pub fn init() -> bool {
 }
 
 pub fn load_wave(freq_hz: f64, duration_ms: i64) -> i64 {
+    if !freq_hz.is_finite()
+        || freq_hz <= 0.0
+        || !(1..=MAX_WAVE_DURATION_MS).contains(&duration_ms)
+    {
+        return -1;
+    }
     if let Ok(mut state) = get_audio_state().lock() {
-        if !state.initialized {
+        if !state.initialized || state.buffers.len() >= MAX_AUDIO_BUFFERS {
             return -1;
         }
-        let sample_rate = 44100.0;
-        let total_samples = ((duration_ms.max(1) as f64 / 1000.0) * sample_rate) as usize;
+        let total_samples = duration_ms as usize * 44_100 / 1_000;
+        let current_samples = state
+            .buffers
+            .values()
+            .map(|buffer| buffer.samples.len())
+            .sum::<usize>();
+        if current_samples.saturating_add(total_samples) > MAX_AUDIO_SAMPLES {
+            return -1;
+        }
+        let sample_rate = 44_100.0;
         let mut samples = Vec::with_capacity(total_samples);
         for i in 0..total_samples {
             let t = i as f64 / sample_rate;
@@ -71,7 +89,10 @@ pub fn load_wave(freq_hz: f64, duration_ms: i64) -> i64 {
             samples.push(sample);
         }
         let handle = state.next_handle;
-        state.next_handle = state.next_handle.saturating_add(1);
+        let Some(next_handle) = handle.checked_add(1) else {
+            return -1;
+        };
+        state.next_handle = next_handle;
         state.buffers.insert(
             handle,
             AudioBuffer {
@@ -132,6 +153,7 @@ pub fn stop(handle: i64) -> bool {
 pub fn shutdown() -> bool {
     if let Ok(mut state) = get_audio_state().lock() {
         state.buffers.clear();
+        state.next_handle = 1;
         state.initialized = false;
         true
     } else {
@@ -154,4 +176,22 @@ mod tests {
         assert!(stop(handle));
         assert!(shutdown());
     }
+    #[test]
+    fn audio_quotas_reject_unbounded_samples_and_recover_after_shutdown() {
+        let runtime_id = 85_001;
+        crate::native::with_runtime_context(runtime_id, || {
+            assert!(init());
+            assert_eq!(load_wave(440.0, MAX_WAVE_DURATION_MS + 1), -1);
+            assert_eq!(load_wave(f64::NAN, 1), -1);
+            for _ in 0..MAX_AUDIO_BUFFERS {
+                assert!(load_wave(440.0, 1) > 0);
+            }
+            assert_eq!(load_wave(440.0, 1), -1);
+            assert!(shutdown());
+            assert!(init());
+            assert!(load_wave(440.0, 1) > 0);
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }

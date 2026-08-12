@@ -4761,6 +4761,8 @@ fn http_response_map(status: i64, content_type: &str, body: Vec<u8>) -> Value {
     ]))
 }
 static REQUEST_IDS: AtomicU64 = AtomicU64::new(1);
+const MAX_RATE_LIMIT_KEYS_PER_RUNTIME: usize = 4_096;
+const MAX_RATE_LIMIT_KEY_BYTES: usize = 256;
 static RATE_LIMITS: OnceLock<Mutex<HashMap<(u64, String), (Instant, u64)>>> = OnceLock::new();
 fn with_response_headers(
     mut response: Value,
@@ -4782,12 +4784,22 @@ fn rate_limit(runtime_id: u64, key: &str, maximum: u64, window: Duration) -> Res
     if maximum == 0 || window.is_zero() {
         return Ok(false);
     }
+    if key.is_empty() || key.len() > MAX_RATE_LIMIT_KEY_BYTES {
+        return Err("invalid rate limit key".into());
+    }
     let now = Instant::now();
     let mut limits = RATE_LIMITS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| "rate limit registry poisoned")?;
-    let entry = limits.entry((runtime_id, key.into())).or_insert((now, 0));
+    let owned_key = (runtime_id, key.to_string());
+    if !limits.contains_key(&owned_key)
+        && limits.keys().filter(|(owner, _)| *owner == runtime_id).count()
+            >= MAX_RATE_LIMIT_KEYS_PER_RUNTIME
+    {
+        return Err("rate limit key quota exceeded".into());
+    }
+    let entry = limits.entry(owned_key).or_insert((now, 0));
     if now.duration_since(entry.0) >= window {
         *entry = (now, 0);
     }
@@ -6377,4 +6389,29 @@ mod tests {
         assert_eq!(cleanup_runtime_resources(82_001), 1);
         assert_eq!(cleanup_runtime_resources(82_002), 1);
     }
+    #[test]
+    fn rate_limit_key_quota_is_finite_and_cleanup_recovers_it() {
+        let runtime_id = 85_010;
+        for index in 0..MAX_RATE_LIMIT_KEYS_PER_RUNTIME {
+            assert!(rate_limit(
+                runtime_id,
+                &format!("key-{index}"),
+                1,
+                Duration::from_secs(60)
+            )
+            .unwrap());
+        }
+        assert!(rate_limit(runtime_id, "overflow", 1, Duration::from_secs(60)).is_err());
+        assert!(rate_limit(
+            runtime_id,
+            &"x".repeat(MAX_RATE_LIMIT_KEY_BYTES + 1),
+            1,
+            Duration::from_secs(60)
+        )
+        .is_err());
+        assert_eq!(cleanup_runtime_resources(runtime_id), MAX_RATE_LIMIT_KEYS_PER_RUNTIME);
+        assert!(rate_limit(runtime_id, "recovered", 1, Duration::from_secs(60)).unwrap());
+        assert_eq!(cleanup_runtime_resources(runtime_id), 1);
+    }
+
 }

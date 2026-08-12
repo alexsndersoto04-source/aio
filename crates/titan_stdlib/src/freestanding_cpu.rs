@@ -8,6 +8,8 @@ pub const VECTOR_IRQ: u32 = 1;
 pub const VECTOR_FIQ: u32 = 2;
 pub const VECTOR_SERROR: u32 = 3;
 
+const MAX_SYSCALL_HANDLERS: usize = 1_024;
+
 struct CpuState {
     initialized: bool,
     vbar_base: u64,
@@ -99,7 +101,11 @@ pub fn dispatch_exception(vector_id: u32, fault_addr: u64, error_code: u64) -> u
 
 pub fn register_syscall_handler(syscall_num: u32, handler_vaddr: u64) -> bool {
     if let Ok(mut state) = get_cpu_state().lock() {
-        if !state.initialized || handler_vaddr == 0 {
+        if !state.initialized
+            || handler_vaddr == 0
+            || (!state.syscall_handlers.contains_key(&syscall_num)
+                && state.syscall_handlers.len() >= MAX_SYSCALL_HANDLERS)
+        {
             return false;
         }
         state.syscall_handlers.insert(syscall_num, handler_vaddr);
@@ -171,4 +177,21 @@ mod tests {
 
         assert!(shutdown());
     }
+    #[test]
+    fn syscall_handler_quota_rejects_growth_and_shutdown_recovers() {
+        let runtime_id = 85_007;
+        crate::native::with_runtime_context(runtime_id, || {
+            assert!(init_exception_table(0x8000_0000));
+            for syscall in 0..MAX_SYSCALL_HANDLERS {
+                assert!(register_syscall_handler(syscall as u32, 0x1000 + syscall as u64));
+            }
+            assert!(!register_syscall_handler(MAX_SYSCALL_HANDLERS as u32, 0x9000));
+            assert!(register_syscall_handler(0, 0xa000));
+            assert!(shutdown());
+            assert!(init_exception_table(0x8000_0000));
+            assert!(register_syscall_handler(0, 0xb000));
+        });
+        assert_eq!(cleanup_runtime(runtime_id), 1);
+    }
+
 }
