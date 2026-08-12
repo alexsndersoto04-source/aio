@@ -8,24 +8,24 @@ por separado porque CI no puede sustituir un teléfono real.
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`
-- Commit validado: `c21517cb28c666308a83264a9e456af230c0a830`
+- Commit validado: `3b046e3cd978bf35032dc6b7ddfafb219f10869f`
 - Alcance: seguridad de capacidades, aislamiento y cuotas por runtime para tareas,
-  canales, red y bases de datos; checks Android ARM de 32 y 64 bits
+  canales, red, bases de datos y procesos externos; checks Android ARM de 32 y 64 bits
 - Fecha: 2026-08-11
 
 ### Evidencia automatizada más reciente
 
 | Comprobación | Resultado | Evidencia |
 |---|---:|---|
-| Formato completo, `cargo fmt --check` | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
-| `cargo check` con características normales | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
-| Tests del workspace, todos los targets | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
-| `cargo check --no-default-features` | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
-| Cross-check Android AArch64 | Aprobado | [CI 31555988990](https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990) |
-| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
-| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
-| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
-| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31555989007](https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007) |
+| Formato completo, `cargo fmt --check` | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
+| `cargo check` con características normales | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
+| Tests del workspace, todos los targets | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
+| `cargo check --no-default-features` | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
+| Cross-check Android AArch64 | Aprobado | [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296) |
+| AArch64 con compiladores reales de Android NDK y warnings estrictos | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
+| Compilación y enlace Android/Bionic ARMv7 | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
+| ELF32 ARM y paquete Debian `Architecture: arm` | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
+| Artefacto Termux subido por GitHub | Aprobado | [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301) |
 
 Los dos fallos advisory anteriores ya fueron corregidos:
 
@@ -153,6 +153,53 @@ concurrente; formato y cross-check AArch64 sí habían pasado. El commit
 `c21517c` corrigió el test y la ejecución final anterior aprobó todos los pasos.
 La ejecución intermedia no se cuenta como validación verde.
 
+### Procesos externos con memoria y concurrencia acotadas
+
+El commit `3b046e3` conecta una cuota común de 32 procesos hijo por runtime. La
+cuota incluye ejecuciones sincrónicas, `run_timeout`, procesos background y
+cada hijo que compone un pipeline. La reserva se realiza antes de `spawn` y un
+permiso RAII la devuelve tras `wait`, error de creación o cleanup. Un handle
+background terminado continúa ocupando su slot hasta que se recolecta con
+`spawn_wait`, evitando acumular zombies y resultados abandonados.
+
+También se aplican estos límites antes o durante la operación:
+
+- 64 KiB para comando y argumentos;
+- 8 MiB para la entrada enviada por stdin;
+- 4 MiB combinados entre stdout y stderr;
+- ocho comandos por pipeline.
+
+La salida ya no se recoge con vectores que crecen hasta agotar la memoria. Dos
+lectores concurrentes comparten el presupuesto de 4 MiB; cuando se llena,
+continúan drenando y descartan el exceso para que el hijo no quede bloqueado por
+un pipe lleno. `run_with_input` escribe stdin en paralelo con esos lectores.
+Los pipelines drenan el stderr de todos los procesos intermedios mientras leen
+el stdout final. Los procesos background empiezan a drenar inmediatamente, no
+solo cuando alguien llama posteriormente a `spawn_wait`.
+
+Las regresiones ejecutan procesos reales y comprueban:
+
+1. stdin, stdout y stderr simultáneos de 128 KiB, mayores que un pipe típico,
+   sin interbloqueo;
+2. stderr intermedio de 128 KiB en un pipeline, conservando además su stdout;
+3. un proceso background que produce 128 KiB termina antes de `spawn_wait`;
+4. salida de 4 MiB más un byte rechazada como `ResourceLimit`;
+5. rechazo previo de comandos, entradas y pipelines sobredimensionados;
+6. saturación de los 32 permisos, liberación y reutilización;
+7. cleanup de runtime que mata, espera y elimina un `sleep` background real.
+
+Evidencia externa de este bloque:
+
+- [CI 31557012296](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296): formato, checks normal y sin features por defecto, todos los tests y
+  cross-check AArch64 aprobados.
+- [Termux ARM 31557012301](https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301): check NDK estricto, build y enlace Android/Bionic ARMv7,
+  verificaciones, paquete y artefacto aprobados.
+
+La ejecución intermedia [CI 31556925627](https://github.com/alexsndersoto04-source/aio/actions/runs/31556925627) señaló que un inspector usado solo por tests seguía compilándose
+en producción y activaba `dead_code` bajo warnings estrictos. El commit
+`3b046e3` lo restringió a tests y la ejecución final aprobó. Esa ejecución
+intermedia no se cuenta como validación verde.
+
 ### Qué prueban las regresiones de limpieza de recursos
 
 1. Al destruir el último estado de un runtime, sus handles de colecciones dejan
@@ -175,9 +222,9 @@ reales se liberan en el mismo hilo que las creó.
 
 ### Límites de esta validación
 
-- Las cuotas de tareas, canales, red y bases de datos ya están conectadas. El
-  bloque de crecimiento controlado todavía debe cubrir colecciones persistentes
-  con handles, procesos en background y capturas de salida de procesos externos.
+- Las cuotas de tareas, canales, red, bases de datos y procesos externos ya
+  están conectadas. El bloque de crecimiento controlado todavía debe cubrir las
+  seis familias de colecciones persistentes con handles y sus elementos.
 - CI prueba directamente la destrucción con handles de colecciones y tareas.
   Las demás rutas de limpieza compilan y son revisadas por Rust, pero este run
   no levanta un servidor Redis externo ni carga un modelo ONNX real para luego
