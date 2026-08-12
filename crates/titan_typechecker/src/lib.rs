@@ -1683,7 +1683,10 @@ impl TypeEnv {
         self.return_candidates.push(Vec::new());
         if let Some(body) = &function.body {
             let body_type = self.check_block(body);
-            if body.final_expr.is_some() && self.return_type != Type::Unit {
+            // A trailing expression is part of the function's return value,
+            // including for an explicit `-> ()` contract. Skipping Unit here
+            // let `fn bad() -> () { 42 }` return a value despite its contract.
+            if body.final_expr.is_some() {
                 self.require_compatible(&self.return_type.clone(), &body_type);
             }
             if function.return_type.is_none() {
@@ -1700,7 +1703,7 @@ impl TypeEnv {
                 }
             }
             if function.return_type.is_some()
-                && self.return_type != Type::Unit
+                && !compatible(&self.return_type, &Type::Unit)
                 && body.final_expr.is_none()
                 && !block_definitely_returns(body)
             {
@@ -2001,16 +2004,22 @@ impl TypeEnv {
                 let a = self.check_block(then_branch);
                 if let Some(other) = else_branch {
                     let b = self.check_block(other);
-                    // v0.16.0 QoL: if the two branches yield different
-                    // types (typical case: one ends in `print` -> Nil, the
-                    // other ends in a `handle()` call -> Unit), don't
-                    // error out — just widen to Unknown. The result of
-                    // the if-expression is then only usable as an
-                    // Unknown, which mirrors what the runtime already
-                    // does with mixed control flow.
-                    if compatible(&a, &b) {
+                    // A branch which cannot continue does not contribute a
+                    // value to the expression. For continuing branches, keep
+                    // concrete disagreements visible instead of widening them
+                    // to Unknown: that widening previously allowed an `int`
+                    // return contract to hide a String produced on one path.
+                    if a == Type::Never {
+                        b
+                    } else if b == Type::Never {
+                        a
+                    } else if compatible(&self.resolve_alias(&a), &self.resolve_alias(&b)) {
                         a
                     } else {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: a,
+                            found: b,
+                        });
                         Type::Unknown
                     }
                 } else {
@@ -2198,14 +2207,31 @@ impl TypeEnv {
                 }
                 Type::Named("Task".into())
             }
-            Expr::Try { expr, .. } => match self.check_expr(expr) {
-                Type::Named(name) if name == "Option" || name == "Result" => Type::Unknown,
-                Type::Unknown => Type::Unknown,
-                _ => {
-                    self.errors.push(TypeError::InvalidTry);
-                    Type::Unknown
+            Expr::Try { expr, .. } => {
+                let raw = self.check_expr(expr);
+                match self.resolve_alias(&raw) {
+                    Type::Named(name) if name == "Option" || name == "Result" => {
+                        // `?` can return the wrapper from the current function
+                        // before the surrounding expression completes. Treat
+                        // that path as a real return candidate and validate it
+                        // against explicit contracts.
+                        let wrapped = Type::Named(name);
+                        if self.function_depth == 0 {
+                            self.errors.push(TypeError::OutsideFunction);
+                        } else {
+                            self.require_compatible(&self.return_type.clone(), &wrapped);
+                            if let Some(candidates) = self.return_candidates.last_mut() {
+                                candidates.push(wrapped);
+                            }
+                        }
+                        Type::Unknown
+                    }
+                    _ => {
+                        self.errors.push(TypeError::InvalidTry);
+                        Type::Unknown
+                    }
                 }
-            },
+            }
             Expr::Closure {
                 params,
                 return_type,
@@ -2720,7 +2746,15 @@ impl TypeEnv {
                 for argument in args.iter().skip(signature.params.len()) {
                     self.check_expr(argument);
                 }
-                return native_type(signature.result);
+                // The VM always wraps this intrinsic in Result::Ok/Err. Its
+                // generic native ABI uses `Any`, but exposing Unknown here
+                // made the statically checked `?` operator indistinguishable
+                // from applying `?` to an arbitrary dynamic value.
+                return if name == "std::try::catch" {
+                    Type::Named("Result".into())
+                } else {
+                    native_type(signature.result)
+                };
             }
             if let Some(payload) = self.enum_variants.get(name).cloned() {
                 let expected = usize::from(payload.is_some());
@@ -4025,8 +4059,34 @@ mod tests {
     fn validates_returns_and_spawned_closure_arity() {
         assert!(check("fn missing(flag: bool) -> int { if flag { return 1 } }").is_err());
         assert!(check("fn complete(flag: bool) -> int { if flag { return 1 } return 2 }").is_ok());
+        assert!(check("fn branch(flag: bool) -> int { if flag { return 1 } else { 2 } }").is_ok());
+        assert!(check("fn mixed(flag: bool) -> int { if flag { 1 } else { \"bad\" } }").is_err());
+        assert!(check("fn bad_unit() -> () { 42 }").is_err());
+        assert!(check("fn empty_unit() -> () {}").is_ok());
+        assert!(check(
+            "fn compatible_unit(flag: bool) -> () { if flag { print(\"ok\") } else { nil } }"
+        )
+        .is_ok());
         assert!(check("const INVALID = return 1 fn main() {}").is_err());
         assert!(check("fn main() { spawn |value: int| value }").is_err());
+    }
+
+    #[test]
+    fn validates_try_operands_and_propagated_return_paths() {
+        assert!(check(
+            "fn good() -> Result { let value = Result::Ok(1)? Result::Ok(value) } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { let value = Result::Ok(1)? Result::Ok(value) } fn main() { inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn wrong_contract() -> int { let value = Result::Ok(1)? value } fn main() {}"
+        )
+        .is_err());
+        assert!(check("fn dynamic(value: any) -> any { value? } fn main() {}").is_err());
+        assert!(check("const INVALID = Result::Ok(1)? fn main() {}").is_err());
     }
 
     #[test]

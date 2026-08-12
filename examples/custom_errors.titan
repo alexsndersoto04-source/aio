@@ -55,7 +55,7 @@ fn http_status(err: ApiError) -> int {
 
 // "Base de datos" en memoria (map global fingido). Buscar por id.
 // Retorna Result::Ok(usuario) o Result::Err(ApiError).
-fn find_user(id: string) -> any {
+fn find_user(id: string) -> Result {
     if id == "" {
         return Result::Err(ApiError::BadInput("id"))
     }
@@ -68,7 +68,7 @@ fn find_user(id: string) -> any {
     return Result::Err(ApiError::NotFound(id))
 }
 
-fn create_user(id: string, name: string) -> any {
+fn create_user(id: string, name: string) -> Result {
     if id == "" {
         return Result::Err(ApiError::BadInput("id"))
     }
@@ -87,14 +87,14 @@ fn create_user(id: string, name: string) -> any {
 // Combina dos operaciones con el operador `?`. Si `find_user` retorna
 // Err, `?` lo propaga directo hacia afuera de esta funcion — sin
 // necesidad de escribir match. Mismo modelo que Rust.
-fn describe_user(id: string) -> any {
+fn describe_user(id: string) -> Result {
     let user = find_user(id)?
     let name = std::map::get(user, "name")
     return Result::Ok("Usuario " + id + " se llama " + name)
 }
 
 // Rate limiter simulado. Retorna un Err si el user X pidio mucho.
-fn check_rate_limit(user_id: string) -> any {
+fn check_rate_limit(user_id: string) -> Result {
     if user_id == "spammer" {
         return Result::Err(ApiError::RateLimited(30))
     }
@@ -102,7 +102,7 @@ fn check_rate_limit(user_id: string) -> any {
 }
 
 // Requerir autenticacion. `token` vacio = sin auth.
-fn require_auth(token: string) -> any {
+fn require_auth(token: string) -> Result {
     if token == "" {
         return Result::Err(ApiError::Unauthorized)
     }
@@ -111,7 +111,7 @@ fn require_auth(token: string) -> any {
 
 // Handler de "endpoint" — combina TODO usando `?` para propagar
 // cualquier error del pipeline hacia el nivel superior.
-fn handle_request(token: string, user_id: string) -> any {
+fn handle_request(token: string, user_id: string) -> Result {
     require_auth(token)?
     check_rate_limit(user_id)?
     let mensaje = describe_user(user_id)?
