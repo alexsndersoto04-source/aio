@@ -131,6 +131,7 @@ pub struct TypeEnv {
     enum_variants: HashMap<String, Option<Type>>,
     base_enum_variants: HashMap<String, Option<Type>>,
     constants: HashSet<String>,
+    constant_types: HashMap<String, Type>,
     /// Phase 22: trait declarations indexed by name, so `impl Trait for
     /// Type` blocks can pull default method bodies + signatures.
     traits: HashMap<String, TraitDecl>,
@@ -1031,6 +1032,7 @@ impl TypeEnv {
             base_enum_variants: enum_variants.clone(),
             enum_variants,
             constants: HashSet::new(),
+            constant_types: HashMap::new(),
             traits: HashMap::new(),
             type_aliases: HashMap::new(),
             errors: Vec::new(),
@@ -1050,6 +1052,7 @@ impl TypeEnv {
         self.structs.clear();
         self.enum_variants = self.base_enum_variants.clone();
         self.constants.clear();
+        self.constant_types.clear();
         self.traits.clear();
         self.type_aliases.clear();
         self.errors.clear();
@@ -1061,30 +1064,38 @@ impl TypeEnv {
         self.collect_declarations(&program.items);
         self.validate_type_aliases();
         self.validate_declared_types(&program.items);
-        self.validate_impl_contracts(&program.items);
-        let validation_errors = std::mem::take(&mut self.errors);
+        let mut validation_errors = std::mem::take(&mut self.errors);
 
-        // Unannotated return types are inferred to a fixed point before the
-        // diagnostic pass. This keeps declaration order irrelevant: a caller
-        // checked before its callee sees the same inferred signature as one
-        // written afterwards.
-        for _ in 0..=count_functions(&program.items) {
-            let previous: HashMap<_, _> = self
+        // Unannotated function returns and global constants are inferred
+        // together to a fixed point before the diagnostic pass. Both are
+        // predeclared, so their types do not depend on source order and a
+        // constant may safely refer to another constant declared later.
+        for _ in 0..=count_inference_targets(&program.items) {
+            let previous_functions: HashMap<_, _> = self
                 .functions
                 .iter()
                 .map(|(name, signature)| (name.clone(), signature.result.clone()))
                 .collect();
+            let previous_constants = self.constant_types.clone();
             self.reset_analysis_state();
             for item in &program.items {
                 self.check_item(item);
             }
-            let stable = self.functions.iter().all(|(name, signature)| {
-                previous.get(name).is_some_and(|result| result == &signature.result)
+            let functions_stable = self.functions.iter().all(|(name, signature)| {
+                previous_functions
+                    .get(name)
+                    .is_some_and(|result| result == &signature.result)
             });
-            if stable {
+            if functions_stable && previous_constants == self.constant_types {
                 break;
             }
         }
+
+        // Trait contracts must use the inferred method results, not the
+        // initial Unknown placeholders collected from unannotated methods.
+        self.errors.clear();
+        self.validate_impl_contracts(&program.items);
+        validation_errors.append(&mut self.errors);
 
         self.reset_analysis_state();
         self.errors = validation_errors;
@@ -1099,8 +1110,8 @@ impl TypeEnv {
     }
 
     fn reset_analysis_state(&mut self) {
-        self.scopes = vec![HashMap::new()];
-        self.constants.clear();
+        self.scopes = vec![self.constant_types.clone()];
+        self.constants = self.constant_types.keys().cloned().collect();
         self.errors.clear();
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
@@ -1216,7 +1227,12 @@ impl TypeEnv {
                             continue;
                         };
                         let expected = trait_method_signature(contract, target);
-                        let found = function_signature(method, Some(target));
+                        let qualified = format!("{}::{}", target, method.name);
+                        let found = self
+                            .functions
+                            .get(&qualified)
+                            .cloned()
+                            .unwrap_or_else(|| function_signature(method, Some(target)));
                         if !self.signatures_equal(&expected, &found) {
                             self.errors.push(TypeError::TraitMethodMismatch {
                                 trait_name: trait_name.clone(),
@@ -1331,6 +1347,14 @@ impl TypeEnv {
                             variant.payload.as_ref().map(type_from_ast),
                         );
                     }
+                }
+                Item::Const(constant) => {
+                    let declared = constant
+                        .type_ann
+                        .as_ref()
+                        .map(type_from_ast)
+                        .unwrap_or(Type::Unknown);
+                    self.constant_types.insert(constant.name.clone(), declared);
                 }
                 Item::Module(module) => self.collect_declarations(&module.items),
                 // Phase 20: register `impl Type { fn m() {} }` methods
@@ -1534,8 +1558,10 @@ impl TypeEnv {
                 if let Some(expected) = &declared {
                     self.require_compatible(expected, &found);
                 }
-                self.scopes[0].insert(constant.name.clone(), declared.unwrap_or(found));
-                self.constants.insert(constant.name.clone());
+                let inferred = declared.unwrap_or(found);
+                self.constant_types
+                    .insert(constant.name.clone(), inferred.clone());
+                self.scopes[0].insert(constant.name.clone(), inferred);
             }
             _ => {}
         }
@@ -2967,14 +2993,14 @@ fn is_template_path(value: &str) -> bool {
         })
 }
 
-fn count_functions(items: &[Item]) -> usize {
+fn count_inference_targets(items: &[Item]) -> usize {
     items
         .iter()
         .map(|item| match item {
-            Item::Function(_) => 1,
+            Item::Function(_) | Item::Const(_) => 1,
             Item::Impl(block) => block.methods.len(),
             Item::Trait(trait_decl) => trait_decl.methods.len(),
-            Item::Module(module) => count_functions(&module.items),
+            Item::Module(module) => count_inference_targets(&module.items),
             _ => 0,
         })
         .sum()
@@ -3738,6 +3764,14 @@ mod tests {
     }
 
     #[test]
+    fn infers_global_constants_independent_of_order() {
+        let forward =
+            "fn main() { let value: int = FIRST } const FIRST = SECOND + 1 const SECOND = 41";
+        assert!(check(forward).is_ok());
+        assert!(check("const FIRST: string = SECOND const SECOND = 42 fn main() {}").is_err());
+    }
+
+    #[test]
     fn validates_unary_and_binary_operator_domains() {
         assert!(check("fn main() { let a = -true let b = ~\"text\" }").is_err());
         assert!(check("fn main() { let a = -1.5 let b = ~7 }").is_ok());
@@ -3874,6 +3908,12 @@ mod tests {
 
         let extra_method = "trait Measure { fn value(self) -> int; } struct Item { value: int } impl Measure for Item { fn value(self) -> int { self.value } fn extra(self) {} } fn main() {}";
         assert!(check(extra_method).is_err());
+
+        let inferred = "trait Measure { fn value(self) -> int; } struct Item { value: int } impl Measure for Item { fn value(self) { self.value } } fn main() { let item = Item { value: 2 } let value: int = item.value() }";
+        assert!(check(inferred).is_ok());
+
+        let inferred_mismatch = "trait Measure { fn value(self) -> int; } struct Item { value: int } impl Measure for Item { fn value(self) { \"wrong\" } } fn main() {}";
+        assert!(check(inferred_mismatch).is_err());
     }
 
     #[test]
