@@ -4203,6 +4203,7 @@ dependencies = [
  "titan_ast",
  "titan_lexer",
  "titan_parser",
+ "titan_pkg",
  "titan_stdlib",
 ]
 
