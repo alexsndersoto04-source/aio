@@ -1,6 +1,7 @@
 //! Native Mobile & Android Lifecycle Management (`std::mobile`).
 //! Manages app states (`Running`, `Paused`, `Stopped`) and lifecycle events (`onStart`, `onResume`, `onPause`, `onStop`, `onDestroy`).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,14 +17,28 @@ struct MobileService {
     event_history: Vec<String>,
 }
 
-fn service() -> &'static Arc<Mutex<MobileService>> {
-    static SERVICE: OnceLock<Arc<Mutex<MobileService>>> = OnceLock::new();
-    SERVICE.get_or_init(|| {
+fn service_registry() -> &'static Mutex<HashMap<u64, Arc<Mutex<MobileService>>>> {
+    static SERVICES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<MobileService>>>>> = OnceLock::new();
+    SERVICES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn service() -> Arc<Mutex<MobileService>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut registry = crate::native::lock_recover(service_registry());
+    Arc::clone(registry.entry(runtime_id).or_insert_with(|| {
         Arc::new(Mutex::new(MobileService {
             state: AppState::Running,
             event_history: Vec::new(),
         }))
-    })
+    }))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(
+        crate::native::lock_recover(service_registry())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 
 pub fn get_state() -> String {

@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 thread_local! {
     static CURRENT_RUNTIME_ID: Cell<u64> = const { Cell::new(0) };
@@ -42,13 +42,27 @@ pub fn with_runtime_context<R>(runtime_id: u64, operation: impl FnOnce() -> R) -
     })
 }
 
+pub(crate) fn current_runtime_id() -> u64 {
+    CURRENT_RUNTIME_ID.with(Cell::get)
+}
+
 pub(crate) fn runtime_handle_key<T>(handle: T) -> (u64, T) {
-    CURRENT_RUNTIME_ID.with(|current| (current.get(), handle))
+    (current_runtime_id(), handle)
 }
 
 pub(crate) fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn read_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn write_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -67,6 +81,21 @@ pub(crate) fn remove_runtime_entries<K: Eq + Hash, V>(
 #[doc(hidden)]
 pub fn cleanup_runtime_resources(runtime_id: u64) -> usize {
     let mut released = crate::window::cleanup_runtime(runtime_id);
+    released += crate::audio::cleanup_runtime(runtime_id);
+    released += crate::game::cleanup_runtime(runtime_id);
+    released += crate::gui::cleanup_runtime(runtime_id);
+    released += crate::input::cleanup_runtime(runtime_id);
+    released += crate::clipboard::cleanup_runtime(runtime_id);
+    released += crate::mobile::cleanup_runtime(runtime_id);
+    released += crate::metrics::cleanup_runtime(runtime_id);
+    released += crate::freestanding::cleanup_runtime(runtime_id);
+    released += crate::freestanding_cpu::cleanup_runtime(runtime_id);
+    released += crate::freestanding_memory::cleanup_runtime(runtime_id);
+    released += crate::freestanding_mmio::cleanup_runtime(runtime_id);
+    #[cfg(all(feature = "signals_mod", unix))]
+    {
+        released += crate::signals_mod::cleanup_runtime(runtime_id);
+    }
 
     #[cfg(feature = "kv_mod")]
     {
@@ -1470,4 +1499,130 @@ mod tests {
         });
         assert_eq!(runtime_handle_key(9), (0, 9));
     }
+    #[test]
+    fn mutable_service_state_is_isolated_and_selectively_cleaned_per_runtime() {
+        let first = 80_001;
+        let second = 80_002;
+        let (audio_handle, root, button) = with_runtime_context(first, || {
+            assert!(crate::audio::init());
+            let audio_handle = crate::audio::load_wave(440.0, 10);
+            assert!(crate::gui::init());
+            let root = crate::gui::create_container("first", 320, 240);
+            let button = crate::gui::add_button(root, "private", 0, 0, 10, 10);
+            assert!(crate::gui::trigger_click(button));
+            assert!(crate::input::set_key_state("PrivateKey", true));
+            assert!(crate::input::set_mouse_pos(17, 29));
+            assert!(crate::clipboard::set_text("first secret"));
+            assert!(crate::clipboard::send_notification("first", "private"));
+            assert!(crate::mobile::trigger_event("onPause"));
+            assert!(crate::game::init("first game", 320, 240));
+            crate::metrics::counter_add("private.counter", 9).unwrap();
+            (audio_handle, root, button)
+        });
+
+        with_runtime_context(second, || {
+            assert_eq!(crate::audio::sample_count(audio_handle), 0);
+            assert_eq!(crate::gui::get_text(root), "");
+            assert!(!crate::gui::is_clicked(button));
+            assert!(!crate::input::is_key_pressed("PrivateKey"));
+            assert_eq!(crate::input::mouse_pos(), (0, 0));
+            assert_eq!(crate::clipboard::get_text(), "");
+            assert!(crate::clipboard::poll_notifications().is_empty());
+            assert_eq!(crate::mobile::get_state(), "Running");
+            assert!(crate::mobile::poll_events().is_empty());
+            assert_eq!(crate::game::step(), 0.0);
+            assert_eq!(crate::metrics::counter_get("private.counter").unwrap(), 0);
+
+            assert!(crate::audio::shutdown());
+            assert!(crate::gui::shutdown());
+            assert!(crate::game::shutdown());
+            assert!(crate::input::set_key_state("PrivateKey", false));
+            assert!(crate::clipboard::set_text("second"));
+            assert!(crate::mobile::trigger_event("onDestroy"));
+            crate::metrics::counter_add("private.counter", 2).unwrap();
+            crate::metrics::reset().unwrap();
+        });
+        assert_eq!(cleanup_runtime_resources(second), 7);
+
+        with_runtime_context(first, || {
+            assert!(crate::audio::sample_count(audio_handle) > 0);
+            assert_eq!(crate::gui::get_text(root), "first");
+            assert!(crate::gui::is_clicked(button));
+            assert!(crate::input::is_key_pressed("PrivateKey"));
+            assert_eq!(crate::input::mouse_pos(), (17, 29));
+            assert_eq!(crate::clipboard::get_text(), "first secret");
+            assert_eq!(
+                crate::clipboard::poll_notifications(),
+                vec![("first".to_string(), "private".to_string())]
+            );
+            assert_eq!(crate::mobile::get_state(), "Paused");
+            assert_eq!(crate::mobile::poll_events(), vec!["onPause".to_string()]);
+            assert!(crate::game::step() > 0.0);
+            assert_eq!(crate::metrics::counter_get("private.counter").unwrap(), 9);
+        });
+        assert_eq!(cleanup_runtime_resources(first), 7);
+    }
+
+    #[test]
+    fn freestanding_emulator_state_is_isolated_and_selectively_cleaned_per_runtime() {
+        let first = 81_001;
+        let second = 81_002;
+        with_runtime_context(first, || {
+            assert!(crate::freestanding::init("aarch64-unknown-none"));
+            assert!(crate::freestanding_memory::init_frame_allocator(
+                0x10_0000,
+                0x4000
+            ));
+            let frame = crate::freestanding_memory::allocate_frame();
+            assert_eq!(frame, 0x10_0000);
+            assert!(crate::freestanding_memory::map_page(0x40_0000, frame, 3));
+            assert!(crate::freestanding_cpu::init_exception_table(0x8000_0000));
+            assert!(crate::freestanding_cpu::register_exception_handler(0, 0x9000));
+            assert_ne!(
+                crate::freestanding_cpu::dispatch_exception(0, 0x1234, 5),
+                0
+            );
+            assert!(crate::freestanding_mmio::init_mmio_region(0x3f00_0000, 0x1000));
+            assert!(crate::freestanding_mmio::write_mmio_u32(
+                0x3f00_0004,
+                0xdead_beef
+            ));
+            assert!(crate::freestanding_mmio::serial_init(0x1000_0000, 115_200));
+            assert_eq!(crate::freestanding_mmio::serial_write_str("private"), 7);
+        });
+
+        with_runtime_context(second, || {
+            assert_eq!(crate::freestanding::get_active_target(), "");
+            assert_eq!(crate::freestanding_memory::free_frames_count(), 0);
+            assert_eq!(crate::freestanding_memory::translate_page(0x40_0000), 0);
+            assert_eq!(crate::freestanding_cpu::get_last_fault_addr(), 0);
+            assert_eq!(crate::freestanding_mmio::read_mmio_u32(0x3f00_0004), 0);
+            assert_eq!(crate::freestanding_mmio::serial_get_buffer(), "");
+            assert!(crate::freestanding::shutdown());
+            assert!(crate::freestanding_memory::shutdown());
+            assert!(crate::freestanding_cpu::shutdown());
+            assert!(crate::freestanding_mmio::shutdown());
+        });
+        assert_eq!(cleanup_runtime_resources(second), 4);
+
+        with_runtime_context(first, || {
+            assert_eq!(
+                crate::freestanding::get_active_target(),
+                "aarch64-unknown-none"
+            );
+            assert_eq!(crate::freestanding_memory::free_frames_count(), 3);
+            assert_eq!(
+                crate::freestanding_memory::translate_page(0x40_0042),
+                0x10_0042
+            );
+            assert_eq!(crate::freestanding_cpu::get_last_fault_addr(), 0x1234);
+            assert_eq!(
+                crate::freestanding_mmio::read_mmio_u32(0x3f00_0004),
+                0xdead_beef
+            );
+            assert_eq!(crate::freestanding_mmio::serial_get_buffer(), "private");
+        });
+        assert_eq!(cleanup_runtime_resources(first), 4);
+    }
+
 }

@@ -1,5 +1,6 @@
 //! Cross-platform Clipboard and OS Notification System (`std::clipboard`, `std::notify`).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 struct SystemServices {
@@ -7,14 +8,28 @@ struct SystemServices {
     notifications: Vec<(String, String)>,
 }
 
-fn services() -> &'static Arc<Mutex<SystemServices>> {
-    static SERVICES: OnceLock<Arc<Mutex<SystemServices>>> = OnceLock::new();
-    SERVICES.get_or_init(|| {
+fn service_registry() -> &'static Mutex<HashMap<u64, Arc<Mutex<SystemServices>>>> {
+    static SERVICES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<SystemServices>>>>> = OnceLock::new();
+    SERVICES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn services() -> Arc<Mutex<SystemServices>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut registry = crate::native::lock_recover(service_registry());
+    Arc::clone(registry.entry(runtime_id).or_insert_with(|| {
         Arc::new(Mutex::new(SystemServices {
             clipboard_text: String::new(),
             notifications: Vec::new(),
         }))
-    })
+    }))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(
+        crate::native::lock_recover(service_registry())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 
 pub fn get_text() -> String {

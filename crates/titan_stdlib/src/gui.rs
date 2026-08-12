@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum WidgetType {
@@ -38,10 +38,19 @@ impl GuiState {
     }
 }
 
-static GUI_STATE: OnceLock<Mutex<GuiState>> = OnceLock::new();
+fn gui_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<GuiState>>>> {
+    static STATES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<GuiState>>>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-fn get_gui_state() -> &'static Mutex<GuiState> {
-    GUI_STATE.get_or_init(|| Mutex::new(GuiState::new()))
+fn get_gui_state() -> Arc<Mutex<GuiState>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut states = crate::native::lock_recover(gui_states());
+    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(GuiState::new()))))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(crate::native::lock_recover(gui_states()).remove(&runtime_id).is_some())
 }
 
 pub fn init() -> bool {

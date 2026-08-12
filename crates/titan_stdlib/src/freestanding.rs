@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 struct FreestandingState {
     initialized: bool,
@@ -15,10 +16,19 @@ impl FreestandingState {
     }
 }
 
-static FREESTANDING_STATE: OnceLock<Mutex<FreestandingState>> = OnceLock::new();
+fn freestanding_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<FreestandingState>>>> {
+    static STATES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<FreestandingState>>>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-fn get_freestanding_state() -> &'static Mutex<FreestandingState> {
-    FREESTANDING_STATE.get_or_init(|| Mutex::new(FreestandingState::new()))
+fn get_freestanding_state() -> Arc<Mutex<FreestandingState>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut states = crate::native::lock_recover(freestanding_states());
+    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(FreestandingState::new()))))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(crate::native::lock_recover(freestanding_states()).remove(&runtime_id).is_some())
 }
 
 pub fn validate_target_spec(target: &str) -> bool {

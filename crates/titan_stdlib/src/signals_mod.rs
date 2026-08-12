@@ -1,21 +1,8 @@
 //! Unix signals (`std::signals::*`) via the `signal-hook` crate.
 //!
-//! Provides two levels of API:
-//!
-//! * `install(signal_name)` — starts counting occurrences of a signal.
-//!   Subsequent `pending(signal_name)` calls return how many hits landed
-//!   since the last poll. Ideal for a graceful-shutdown loop:
-//!
-//!   ```titan
-//!   std::signals::install("SIGINT")
-//!   loop {
-//!       if std::signals::pending("SIGINT") > 0 { break }
-//!       // ... work ...
-//!   }
-//!   ```
-//!
-//! * `wait_any(timeout_ms)` — blocks up to `timeout_ms` for ANY installed
-//!   signal, returning its name (or "timeout").
+//! Each runtime gets an independent pending counter. A process signal is
+//! broadcast to every runtime that installed it, so polling in one VM cannot
+//! consume another VM's notification.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -63,66 +50,96 @@ fn name_from(sig: i32) -> &'static str {
     }
 }
 
-/// A per-signal counter incremented by a background thread.
-struct Counter {
-    count: Arc<AtomicUsize>,
+#[derive(Default)]
+struct SignalSubscribers {
+    runtimes: HashMap<u64, Arc<AtomicUsize>>,
 }
 
-fn counters() -> &'static Mutex<HashMap<i32, Counter>> {
-    static COUNTERS: OnceLock<Mutex<HashMap<i32, Counter>>> = OnceLock::new();
-    COUNTERS.get_or_init(|| Mutex::new(HashMap::new()))
+fn subscribers() -> &'static Mutex<HashMap<i32, SignalSubscribers>> {
+    static SUBSCRIBERS: OnceLock<Mutex<HashMap<i32, SignalSubscribers>>> = OnceLock::new();
+    SUBSCRIBERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Register a signal handler if not already installed. Idempotent.
+/// Register a signal listener for the current runtime. Idempotent per runtime.
 pub fn install(signal_name: &str) -> Result<(), SignalError> {
-    let sig = resolve(signal_name)?;
-    let mut map = counters().lock().expect("signal counters poisoned");
-    if map.contains_key(&sig) {
+    let signal = resolve(signal_name)?;
+    let runtime_id = crate::native::current_runtime_id();
+    let mut registry = crate::native::lock_recover(subscribers());
+    if let Some(entry) = registry.get_mut(&signal) {
+        entry
+            .runtimes
+            .entry(runtime_id)
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)));
         return Ok(());
     }
-    let count = Arc::new(AtomicUsize::new(0));
-    let count_thread = Arc::clone(&count);
-    let mut signals = Signals::new([sig]).map_err(|e| SignalError::Hook(e.to_string()))?;
+
+    let mut signals = Signals::new([signal]).map_err(|error| SignalError::Hook(error.to_string()))?;
+    let mut entry = SignalSubscribers::default();
+    entry
+        .runtimes
+        .insert(runtime_id, Arc::new(AtomicUsize::new(0)));
+    registry.insert(signal, entry);
+    drop(registry);
+
     thread::spawn(move || {
         for _ in signals.forever() {
-            count_thread.fetch_add(1, Ordering::SeqCst);
-        }
-    });
-    map.insert(sig, Counter { count });
-    Ok(())
-}
-
-/// Number of times `signal_name` fired since last `pending` call.
-/// The counter is reset to zero on read (like `sig_atomic_t` polling).
-pub fn pending(signal_name: &str) -> Result<usize, SignalError> {
-    let sig = resolve(signal_name)?;
-    let map = counters().lock().expect("signal counters poisoned");
-    if let Some(entry) = map.get(&sig) {
-        Ok(entry.count.swap(0, Ordering::SeqCst))
-    } else {
-        Ok(0)
-    }
-}
-
-/// Blocks up to `timeout_ms` for ANY installed signal to fire. Returns
-/// the signal name that fired first, or "timeout".
-pub fn wait_any(timeout_ms: u64) -> Result<String, SignalError> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    loop {
-        {
-            let map = counters().lock().expect("signal counters poisoned");
-            for (sig, entry) in map.iter() {
-                if entry.count.load(Ordering::SeqCst) > 0 {
-                    entry.count.fetch_sub(1, Ordering::SeqCst);
-                    return Ok(name_from(*sig).into());
+            let registry = crate::native::lock_recover(subscribers());
+            if let Some(entry) = registry.get(&signal) {
+                for counter in entry.runtimes.values() {
+                    counter.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }
-        if Instant::now() >= deadline {
+    });
+    Ok(())
+}
+
+/// Number of times `signal_name` fired since this runtime's last poll.
+pub fn pending(signal_name: &str) -> Result<usize, SignalError> {
+    let signal = resolve(signal_name)?;
+    let runtime_id = crate::native::current_runtime_id();
+    let registry = crate::native::lock_recover(subscribers());
+    Ok(registry
+        .get(&signal)
+        .and_then(|entry| entry.runtimes.get(&runtime_id))
+        .map_or(0, |counter| counter.swap(0, Ordering::SeqCst)))
+}
+
+/// Blocks up to `timeout_ms` for any signal installed by this runtime.
+pub fn wait_any(timeout_ms: u64) -> Result<String, SignalError> {
+    let runtime_id = crate::native::current_runtime_id();
+    let timeout = Duration::from_millis(timeout_ms);
+    let started = Instant::now();
+    loop {
+        {
+            let registry = crate::native::lock_recover(subscribers());
+            for (signal, entry) in registry.iter() {
+                if let Some(counter) = entry.runtimes.get(&runtime_id) {
+                    if counter
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                            count.checked_sub(1)
+                        })
+                        .is_ok()
+                    {
+                        return Ok(name_from(*signal).into());
+                    }
+                }
+            }
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
             return Ok("timeout".into());
         }
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep((timeout - elapsed).min(Duration::from_millis(20)));
     }
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut registry = crate::native::lock_recover(subscribers());
+    registry
+        .values_mut()
+        .map(|entry| usize::from(entry.runtimes.remove(&runtime_id).is_some()))
+        .sum()
 }
 
 #[cfg(test)]
@@ -141,13 +158,27 @@ mod tests {
     fn install_is_idempotent() {
         install("SIGUSR2").unwrap();
         install("SIGUSR2").unwrap();
-        // After install, pending must not blow up.
         assert_eq!(pending("SIGUSR2").unwrap(), 0);
     }
 
     #[test]
-    fn wait_any_times_out_cleanly() {
-        install("SIGUSR2").unwrap();
-        assert_eq!(wait_any(50).unwrap(), "timeout");
+    fn pending_signals_and_cleanup_are_runtime_scoped() {
+        let first = 83_001;
+        let second = 83_002;
+        crate::native::with_runtime_context(first, || install("SIGUSR1").unwrap());
+        crate::native::with_runtime_context(second, || install("SIGUSR1").unwrap());
+
+        {
+            let registry = crate::native::lock_recover(subscribers());
+            registry[&SIGUSR1].runtimes[&first].fetch_add(1, Ordering::SeqCst);
+        }
+        crate::native::with_runtime_context(second, || {
+            assert_eq!(pending("SIGUSR1").unwrap(), 0)
+        });
+        crate::native::with_runtime_context(first, || {
+            assert_eq!(pending("SIGUSR1").unwrap(), 1)
+        });
+        assert_eq!(cleanup_runtime(first), 1);
+        assert_eq!(cleanup_runtime(second), 1);
     }
 }

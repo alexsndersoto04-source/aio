@@ -1,6 +1,6 @@
 //! Thread-safe in-process metrics for server observability.
-use std::collections::BTreeMap;
-use std::sync::{OnceLock, RwLock};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, OnceLock, RwLock};
 use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum MetricsError {
@@ -30,9 +30,25 @@ struct Registry {
     gauges: BTreeMap<String, f64>,
     histograms: BTreeMap<String, Histogram>,
 }
-static METRICS: OnceLock<RwLock<Registry>> = OnceLock::new();
-fn registry() -> &'static RwLock<Registry> {
-    METRICS.get_or_init(|| RwLock::new(Registry::default()))
+fn registries() -> &'static RwLock<HashMap<u64, Arc<RwLock<Registry>>>> {
+    static REGISTRIES: OnceLock<RwLock<HashMap<u64, Arc<RwLock<Registry>>>>> = OnceLock::new();
+    REGISTRIES.get_or_init(|| RwLock::new(HashMap::new()))
+}
+fn registry() -> Arc<RwLock<Registry>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut registries = crate::native::write_recover(registries());
+    Arc::clone(
+        registries
+            .entry(runtime_id)
+            .or_insert_with(|| Arc::new(RwLock::new(Registry::default()))),
+    )
+}
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(
+        crate::native::write_recover(registries())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 fn validate(name: &str) -> Result<(), MetricsError> {
     if name.is_empty()
@@ -48,14 +64,16 @@ fn validate(name: &str) -> Result<(), MetricsError> {
 }
 pub fn counter_add(name: &str, amount: u64) -> Result<u64, MetricsError> {
     validate(name)?;
-    let mut metrics = registry().write().map_err(|_| MetricsError::Poisoned)?;
+    let registry = registry();
+    let mut metrics = registry.write().map_err(|_| MetricsError::Poisoned)?;
     let value = metrics.counters.entry(name.into()).or_default();
     *value = value.saturating_add(amount);
     Ok(*value)
 }
 pub fn counter_get(name: &str) -> Result<u64, MetricsError> {
     validate(name)?;
-    let metrics = registry().read().map_err(|_| MetricsError::Poisoned)?;
+    let registry = registry();
+    let metrics = registry.read().map_err(|_| MetricsError::Poisoned)?;
     Ok(metrics.counters.get(name).copied().unwrap_or(0))
 }
 pub fn gauge_set(name: &str, value: f64) -> Result<(), MetricsError> {
@@ -63,7 +81,8 @@ pub fn gauge_set(name: &str, value: f64) -> Result<(), MetricsError> {
     if !value.is_finite() {
         return Err(MetricsError::Value);
     }
-    registry()
+    let registry = registry();
+    registry
         .write()
         .map_err(|_| MetricsError::Poisoned)?
         .gauges
@@ -72,7 +91,8 @@ pub fn gauge_set(name: &str, value: f64) -> Result<(), MetricsError> {
 }
 pub fn gauge_get(name: &str) -> Result<f64, MetricsError> {
     validate(name)?;
-    let metrics = registry().read().map_err(|_| MetricsError::Poisoned)?;
+    let registry = registry();
+    let metrics = registry.read().map_err(|_| MetricsError::Poisoned)?;
     Ok(metrics.gauges.get(name).copied().unwrap_or(0.0))
 }
 pub fn histogram_record(name: &str, value: f64) -> Result<(), MetricsError> {
@@ -80,7 +100,8 @@ pub fn histogram_record(name: &str, value: f64) -> Result<(), MetricsError> {
     if !value.is_finite() {
         return Err(MetricsError::Value);
     }
-    let mut metrics = registry().write().map_err(|_| MetricsError::Poisoned)?;
+    let registry = registry();
+    let mut metrics = registry.write().map_err(|_| MetricsError::Poisoned)?;
     let histogram = metrics.histograms.entry(name.into()).or_insert(Histogram {
         count: 0,
         sum: 0.0,
@@ -94,7 +115,8 @@ pub fn histogram_record(name: &str, value: f64) -> Result<(), MetricsError> {
     Ok(())
 }
 pub fn snapshot() -> Result<Snapshot, MetricsError> {
-    let metrics = registry().read().map_err(|_| MetricsError::Poisoned)?;
+    let registry = registry();
+    let metrics = registry.read().map_err(|_| MetricsError::Poisoned)?;
     Ok(Snapshot {
         counters: metrics.counters.clone(),
         gauges: metrics.gauges.clone(),
@@ -119,14 +141,23 @@ pub fn prometheus_export() -> Result<String, MetricsError> {
     Ok(out)
 }
 pub fn reset() -> Result<(), MetricsError> {
-    *registry().write().map_err(|_| MetricsError::Poisoned)? = Registry::default();
+    let registry = registry();
+    *registry.write().map_err(|_| MetricsError::Poisoned)? = Registry::default();
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    fn test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        crate::native::lock_recover(LOCK.get_or_init(|| Mutex::new(())))
+    }
+
     #[test]
     fn records_and_snapshots_all_metric_types() {
+        let _guard = test_lock();
         reset().unwrap();
         counter_add("http.requests", 2).unwrap();
         gauge_set("http.active", 3.0).unwrap();
@@ -147,6 +178,7 @@ mod tests {
     }
     #[test]
     fn exports_prometheus_text_and_gets_values() {
+        let _guard = test_lock();
         reset().unwrap();
         counter_add("http.requests", 5).unwrap();
         gauge_set("http.active", 2.5).unwrap();
@@ -162,7 +194,28 @@ mod tests {
     }
     #[test]
     fn rejects_invalid_names_and_values() {
+        let _guard = test_lock();
         assert!(counter_add("bad name", 1).is_err());
         assert!(gauge_set("valid", f64::NAN).is_err());
     }
+    #[test]
+    fn runtimes_cannot_read_or_reset_each_others_metrics() {
+        crate::native::with_runtime_context(70_003, || {
+            counter_add("private.counter", 9).unwrap();
+            gauge_set("private.gauge", 4.5).unwrap();
+        });
+        crate::native::with_runtime_context(70_004, || {
+            assert_eq!(counter_get("private.counter").unwrap(), 0);
+            assert_eq!(gauge_get("private.gauge").unwrap(), 0.0);
+            counter_add("private.counter", 2).unwrap();
+            reset().unwrap();
+        });
+        crate::native::with_runtime_context(70_003, || {
+            assert_eq!(counter_get("private.counter").unwrap(), 9);
+            assert_eq!(gauge_get("private.gauge").unwrap(), 4.5);
+        });
+        assert_eq!(cleanup_runtime(70_003), 1);
+        assert_eq!(cleanup_runtime(70_004), 1);
+    }
+
 }

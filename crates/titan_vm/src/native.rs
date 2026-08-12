@@ -35,11 +35,11 @@ pub fn invoke_for_runtime(
         ));
     }
     require_capability(name, signature.capability, capabilities)?;
-    stdlib::native::with_runtime_context(runtime_id, || dispatch(name, args))
+    stdlib::native::with_runtime_context(runtime_id, || dispatch(name, args, runtime_id))
         .map_err(|message| failure(name, &message))
 }
 
-fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
+fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, String> {
     macro_rules! take {
         () => {
             args.remove(0)
@@ -361,7 +361,7 @@ fn dispatch(name: &str, mut args: Vec<Value>) -> Result<Value, String> {
                 u64::try_from(int!()).map_err(|_| "rate limit maximum must be nonnegative")?;
             let window =
                 u64::try_from(int!()).map_err(|_| "rate limit window must be nonnegative")?;
-            Value::Bool(rate_limit(&key, maximum, Duration::from_millis(window))?)
+            Value::Bool(rate_limit(runtime_id, &key, maximum, Duration::from_millis(window))?)
         }
         "std::http::json_response" => {
             let status = int!();
@@ -4756,7 +4756,7 @@ fn http_response_map(status: i64, content_type: &str, body: Vec<u8>) -> Value {
     ]))
 }
 static REQUEST_IDS: AtomicU64 = AtomicU64::new(1);
-static RATE_LIMITS: OnceLock<Mutex<HashMap<String, (Instant, u64)>>> = OnceLock::new();
+static RATE_LIMITS: OnceLock<Mutex<HashMap<(u64, String), (Instant, u64)>>> = OnceLock::new();
 fn with_response_headers(
     mut response: Value,
     update: impl FnOnce(&mut BTreeMap<String, Value>) -> Result<(), String>,
@@ -4773,7 +4773,12 @@ fn with_response_headers(
     update(headers)?;
     Ok(response)
 }
-fn rate_limit(key: &str, maximum: u64, window: Duration) -> Result<bool, String> {
+fn rate_limit(
+    runtime_id: u64,
+    key: &str,
+    maximum: u64,
+    window: Duration,
+) -> Result<bool, String> {
     if maximum == 0 || window.is_zero() {
         return Ok(false);
     }
@@ -4782,7 +4787,7 @@ fn rate_limit(key: &str, maximum: u64, window: Duration) -> Result<bool, String>
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| "rate limit registry poisoned")?;
-    let entry = limits.entry(key.into()).or_insert((now, 0));
+    let entry = limits.entry((runtime_id, key.into())).or_insert((now, 0));
     if now.duration_since(entry.0) >= window {
         *entry = (now, 0);
     }
@@ -4792,6 +4797,19 @@ fn rate_limit(key: &str, maximum: u64, window: Duration) -> Result<bool, String>
     entry.1 += 1;
     Ok(true)
 }
+
+pub(crate) fn cleanup_runtime_resources(runtime_id: u64) -> usize {
+    let Some(limits) = RATE_LIMITS.get() else {
+        return 0;
+    };
+    let mut limits = limits
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let before = limits.len();
+    limits.retain(|(owner, _), _| *owner != runtime_id);
+    before - limits.len()
+}
+
 fn require_capability(
     name: &str,
     capability: Capability,
@@ -6336,4 +6354,28 @@ mod tests {
             Value::Str("a&quot;b".into())
         );
     }
+    #[test]
+    fn rate_limits_are_owned_and_cleaned_by_runtime() {
+        let call = |runtime_id| {
+            invoke_for_runtime(
+                "std::http::rate_limit",
+                vec![
+                    Value::Str("shared-key".into()),
+                    Value::Int(1),
+                    Value::Int(60_000),
+                ],
+                RuntimeCapabilities::all(),
+                runtime_id,
+            )
+            .unwrap()
+        };
+        assert_eq!(call(82_001), Value::Bool(true));
+        assert_eq!(call(82_001), Value::Bool(false));
+        assert_eq!(call(82_002), Value::Bool(true));
+        assert_eq!(cleanup_runtime_resources(82_001), 1);
+        assert_eq!(call(82_001), Value::Bool(true));
+        assert_eq!(cleanup_runtime_resources(82_001), 1);
+        assert_eq!(cleanup_runtime_resources(82_002), 1);
+    }
+
 }

@@ -390,6 +390,7 @@ impl RuntimeState {
 
 impl Drop for RuntimeState {
     fn drop(&mut self) {
+        native::cleanup_runtime_resources(self.id);
         titan_stdlib::native::cleanup_runtime_resources(self.id);
     }
 }
@@ -1997,7 +1998,7 @@ impl Vm {
                             ));
                         }
                     }
-                    record_http_metrics(&response, dispatch_started.elapsed());
+                    record_http_metrics(self.runtime.id, &response, dispatch_started.elapsed());
                     stack.push(response);
                 }
                 Op::TlsConnect => {
@@ -3870,7 +3871,7 @@ fn server_health_response(control: &ServerControl) -> Value {
         ("keep_alive".into(), Value::Bool(false)),
     ]))
 }
-fn record_http_metrics(response: &Value, elapsed: Duration) {
+fn record_http_metrics(runtime_id: u64, response: &Value, elapsed: Duration) {
     let status = if let Value::Map(map) = response {
         if let Some(Value::Int(status)) = map.get("status") {
             *status
@@ -3881,12 +3882,14 @@ fn record_http_metrics(response: &Value, elapsed: Duration) {
         500
     };
     let class = format!("http.responses.{}xx", status.clamp(0, 999) / 100);
-    let _ = titan_stdlib::metrics::counter_add("http.requests.total", 1);
-    let _ = titan_stdlib::metrics::counter_add(&class, 1);
-    let _ = titan_stdlib::metrics::histogram_record(
-        "http.request.duration_ms",
-        elapsed.as_secs_f64() * 1000.0,
-    );
+    titan_stdlib::native::with_runtime_context(runtime_id, || {
+        let _ = titan_stdlib::metrics::counter_add("http.requests.total", 1);
+        let _ = titan_stdlib::metrics::counter_add(&class, 1);
+        let _ = titan_stdlib::metrics::histogram_record(
+            "http.request.duration_ms",
+            elapsed.as_secs_f64() * 1000.0,
+        );
+    });
 }
 fn websocket_connect(
     runtime: &RuntimeState,
@@ -4979,12 +4982,7 @@ mod tests {
     }
     #[test]
     fn health_responses_and_dispatch_metrics_reflect_lifecycle() {
-        assert_eq!(run("fn main(){let control=std::server::control(10) let healthy=std::server::health_response(control) let router=std::http::router() let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/missing\\\"}\") std::http::dispatch(router,request) std::server::shutdown(control) let draining=std::server::health_response(control); [healthy.status,draining.status]}").unwrap(),Value::Array(vec![Value::Int(200),Value::Int(503)]));
-        assert!(titan_stdlib::metrics::snapshot()
-            .unwrap()
-            .counters
-            .get("http.requests.total")
-            .is_some_and(|count| *count >= 1));
+        assert_eq!(run("fn main(){let control=std::server::control(10) let healthy=std::server::health_response(control) let router=std::http::router() let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/missing\\\"}\") std::http::dispatch(router,request) let requests=std::metrics::counter_get(\"http.requests.total\") std::server::shutdown(control) let draining=std::server::health_response(control); [healthy.status,draining.status,requests]}").unwrap(),Value::Array(vec![Value::Int(200),Value::Int(503),Value::Int(1)]));
     }
     #[test]
     fn http_routing_is_callable_from_titan() {

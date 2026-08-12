@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const VECTOR_TABLE_ALIGNMENT: u64 = 1024; // VBAR_EL1 en AArch64 requiere alineación de 1KB (0x400)
 
@@ -30,10 +30,19 @@ impl CpuState {
     }
 }
 
-static CPU_STATE: OnceLock<Mutex<CpuState>> = OnceLock::new();
+fn cpu_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<CpuState>>>> {
+    static STATES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<CpuState>>>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-fn get_cpu_state() -> &'static Mutex<CpuState> {
-    CPU_STATE.get_or_init(|| Mutex::new(CpuState::new()))
+fn get_cpu_state() -> Arc<Mutex<CpuState>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut states = crate::native::lock_recover(cpu_states());
+    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(CpuState::new()))))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(crate::native::lock_recover(cpu_states()).remove(&runtime_id).is_some())
 }
 
 pub fn init_exception_table(base_vbar: u64) -> bool {

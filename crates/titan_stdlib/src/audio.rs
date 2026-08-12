@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 struct AudioBuffer {
     samples: Vec<f32>,
@@ -25,10 +25,19 @@ impl AudioState {
     }
 }
 
-static AUDIO_STATE: OnceLock<Mutex<AudioState>> = OnceLock::new();
+fn audio_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<AudioState>>>> {
+    static STATES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<AudioState>>>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-fn get_audio_state() -> &'static Mutex<AudioState> {
-    AUDIO_STATE.get_or_init(|| Mutex::new(AudioState::new()))
+fn get_audio_state() -> Arc<Mutex<AudioState>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut states = crate::native::lock_recover(audio_states());
+    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(AudioState::new()))))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(crate::native::lock_recover(audio_states()).remove(&runtime_id).is_some())
 }
 
 pub fn init() -> bool {

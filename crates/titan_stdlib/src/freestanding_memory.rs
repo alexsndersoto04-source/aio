@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const PAGE_SIZE: u64 = 4096; // 0x1000 bytes
 
@@ -8,7 +8,8 @@ struct MemoryState {
     base_paddr: u64,
     total_frames: u64,
     allocated_frames: HashSet<u64>,
-    free_frames: Vec<u64>,
+    recycled_frames: Vec<u64>,
+    next_frame: u64,
     page_table: HashMap<u64, (u64, u32)>, // vaddr -> (paddr, flags)
 }
 
@@ -19,37 +20,53 @@ impl MemoryState {
             base_paddr: 0,
             total_frames: 0,
             allocated_frames: HashSet::new(),
-            free_frames: Vec::new(),
+            recycled_frames: Vec::new(),
+            next_frame: 0,
             page_table: HashMap::new(),
         }
     }
 }
 
-static MEMORY_STATE: OnceLock<Mutex<MemoryState>> = OnceLock::new();
+fn memory_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<MemoryState>>>> {
+    static STATES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<MemoryState>>>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-fn get_memory_state() -> &'static Mutex<MemoryState> {
-    MEMORY_STATE.get_or_init(|| Mutex::new(MemoryState::new()))
+fn get_memory_state() -> Arc<Mutex<MemoryState>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut states = crate::native::lock_recover(memory_states());
+    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(MemoryState::new()))))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(crate::native::lock_recover(memory_states()).remove(&runtime_id).is_some())
 }
 
 pub fn init_frame_allocator(base_paddr: u64, total_size_bytes: u64) -> bool {
+    let Some(aligned_base) = base_paddr
+        .checked_add(PAGE_SIZE - 1)
+        .map(|address| address & !(PAGE_SIZE - 1))
+    else {
+        return false;
+    };
+    let total_frames = total_size_bytes / PAGE_SIZE;
+    let Some(last_offset) = total_frames
+        .checked_sub(1)
+        .and_then(|frames| frames.checked_mul(PAGE_SIZE))
+    else {
+        return false;
+    };
+    if aligned_base.checked_add(last_offset).is_none() {
+        return false;
+    }
+
     if let Ok(mut state) = get_memory_state().lock() {
-        let aligned_base = (base_paddr + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-        let total_frames = total_size_bytes / PAGE_SIZE;
-        if total_frames == 0 {
-            return false;
-        }
         state.base_paddr = aligned_base;
         state.total_frames = total_frames;
         state.allocated_frames.clear();
-        state.free_frames.clear();
+        state.recycled_frames.clear();
+        state.next_frame = 0;
         state.page_table.clear();
-
-        // Inicializar pool LIFO de frames libres (en orden reverso para asignar desde el inicio)
-        for i in (0..total_frames).rev() {
-            state
-                .free_frames
-                .push(aligned_base.saturating_add(i.saturating_mul(PAGE_SIZE)));
-        }
         state.initialized = true;
         true
     } else {
@@ -62,10 +79,17 @@ pub fn allocate_frame() -> u64 {
         if !state.initialized {
             return 0;
         }
-        if let Some(frame) = state.free_frames.pop() {
-            state.allocated_frames.insert(frame);
-            return frame;
-        }
+        let frame = if let Some(frame) = state.recycled_frames.pop() {
+            frame
+        } else if state.next_frame < state.total_frames {
+            let frame = state.base_paddr + state.next_frame * PAGE_SIZE;
+            state.next_frame += 1;
+            frame
+        } else {
+            return 0;
+        };
+        state.allocated_frames.insert(frame);
+        return frame;
     }
     0
 }
@@ -76,7 +100,7 @@ pub fn deallocate_frame(paddr: u64) -> bool {
             return false;
         }
         if state.allocated_frames.remove(&paddr) {
-            state.free_frames.push(paddr);
+            state.recycled_frames.push(paddr);
             return true;
         }
     }
@@ -112,7 +136,9 @@ pub fn translate_page(vaddr: u64) -> u64 {
 pub fn free_frames_count() -> u64 {
     if let Ok(state) = get_memory_state().lock() {
         if state.initialized {
-            return state.free_frames.len() as u64;
+            return state
+                .total_frames
+                .saturating_sub(state.allocated_frames.len() as u64);
         }
     }
     0
@@ -120,9 +146,10 @@ pub fn free_frames_count() -> u64 {
 
 pub fn shutdown() -> bool {
     if let Ok(mut state) = get_memory_state().lock() {
-        state.free_frames.clear();
+        state.recycled_frames.clear();
         state.allocated_frames.clear();
         state.page_table.clear();
+        state.next_frame = 0;
         state.initialized = false;
         true
     } else {

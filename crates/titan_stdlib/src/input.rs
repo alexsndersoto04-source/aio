@@ -12,9 +12,15 @@ struct InputState {
     touch_points: HashMap<u32, (i32, i32)>,
 }
 
-fn state() -> &'static Arc<Mutex<InputState>> {
-    static STATE: OnceLock<Arc<Mutex<InputState>>> = OnceLock::new();
-    STATE.get_or_init(|| {
+fn states() -> &'static Mutex<HashMap<u64, Arc<Mutex<InputState>>>> {
+    static STATES: OnceLock<Mutex<HashMap<u64, Arc<Mutex<InputState>>>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn state() -> Arc<Mutex<InputState>> {
+    let runtime_id = crate::native::current_runtime_id();
+    let mut states = crate::native::lock_recover(states());
+    Arc::clone(states.entry(runtime_id).or_insert_with(|| {
         Arc::new(Mutex::new(InputState {
             keys_down: HashSet::new(),
             mouse_x: 0,
@@ -22,7 +28,11 @@ fn state() -> &'static Arc<Mutex<InputState>> {
             mouse_buttons: HashSet::new(),
             touch_points: HashMap::new(),
         }))
-    })
+    }))
+}
+
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    usize::from(crate::native::lock_recover(states()).remove(&runtime_id).is_some())
 }
 
 pub fn set_key_state(key: &str, pressed: bool) -> bool {
