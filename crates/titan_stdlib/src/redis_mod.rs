@@ -1766,10 +1766,7 @@ mod tests {
                 let mut byte = [0u8; 1];
                 assert_eq!(stream.read(&mut byte).unwrap(), 0);
             });
-            let address = url
-                .strip_prefix("redis://")
-                .unwrap()
-                .trim_end_matches('/');
+            let address = url.strip_prefix("redis://").unwrap().trim_end_matches('/');
             let connection = Connection::new(TcpStream::connect(address).unwrap()).unwrap();
             assert_eq!(cleanup_runtime(runtime_id), 0);
             assert!(matches!(
