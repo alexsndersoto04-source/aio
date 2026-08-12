@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/android-ndk-tool" \
+    "aarch64-linux-android${ANDROID_API:-24}-clang++" "$@"

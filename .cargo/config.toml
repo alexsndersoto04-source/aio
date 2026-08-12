@@ -1,0 +1,11 @@
+[target.aarch64-linux-android]
+linker = "scripts/android-aarch64-clang"
+
+[env]
+# Cargo build scripts (notably bundled SQLite via the `cc` crate) do not use
+# the Rust linker setting when compiling C/C++. Point their target-specific
+# variables at wrappers that locate the NDK already installed on CI runners.
+CC_aarch64_linux_android = { value = "../scripts/android-aarch64-clang", relative = true }
+CXX_aarch64_linux_android = { value = "../scripts/android-aarch64-clangxx", relative = true }
+AR_aarch64_linux_android = { value = "../scripts/android-aarch64-ar", relative = true }
+RANLIB_aarch64_linux_android = { value = "../scripts/android-aarch64-ranlib", relative = true }
