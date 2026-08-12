@@ -155,7 +155,11 @@ fn reserve_operation() -> Result<OperationPermit, TokenizeError> {
     Ok(OperationPermit { runtime_id })
 }
 
-fn validate_capacity(active: usize, runtime_bytes: usize, source_bytes: usize) -> Result<(), TokenizeError> {
+fn validate_capacity(
+    active: usize,
+    runtime_bytes: usize,
+    source_bytes: usize,
+) -> Result<(), TokenizeError> {
     if active >= MAX_TOKENIZER_HANDLES {
         return Err(TokenizeError::ResourceLimit {
             resource: "tokenizer handles",
@@ -185,7 +189,10 @@ fn current_capacity() -> (usize, usize) {
         .iter()
         .filter(|((owner, _), _)| *owner == runtime_id)
         .fold((0usize, 0usize), |(handles, bytes), (_, entry)| {
-            (handles.saturating_add(1), bytes.saturating_add(entry.source_bytes))
+            (
+                handles.saturating_add(1),
+                bytes.saturating_add(entry.source_bytes),
+            )
         })
 }
 
@@ -202,7 +209,10 @@ fn insert(tokenizer: Tokenizer, source_bytes: usize) -> Result<i64, TokenizeErro
         .iter()
         .filter(|((owner, _), _)| *owner == runtime_id)
         .fold((0usize, 0usize), |(handles, bytes), (_, entry)| {
-            (handles.saturating_add(1), bytes.saturating_add(entry.source_bytes))
+            (
+                handles.saturating_add(1),
+                bytes.saturating_add(entry.source_bytes),
+            )
         });
     validate_capacity(active, runtime_bytes, source_bytes)?;
     let id = registry.next_id;
@@ -239,12 +249,17 @@ fn validate_text(text: &str) -> Result<(), TokenizeError> {
 
 fn encoding_size(encoding: &tokenizers::Encoding) -> Result<(usize, usize), TokenizeError> {
     let tokens = encoding.len();
-    let token_bytes = encoding.get_tokens().iter().try_fold(0usize, |total, token| {
-        total.checked_add(token.len()).ok_or(TokenizeError::ResourceLimit {
-            resource: "encoded token bytes",
-            limit: MAX_ENCODING_TOKEN_BYTES,
-        })
-    })?;
+    let token_bytes = encoding
+        .get_tokens()
+        .iter()
+        .try_fold(0usize, |total, token| {
+            total
+                .checked_add(token.len())
+                .ok_or(TokenizeError::ResourceLimit {
+                    resource: "encoded token bytes",
+                    limit: MAX_ENCODING_TOKEN_BYTES,
+                })
+        })?;
     Ok((tokens, token_bytes))
 }
 
@@ -494,16 +509,16 @@ pub fn encode_batch(
     let batch = tokenizer
         .encode_batch(inputs, add_special_tokens)
         .map_err(|error| TokenizeError::Backend(error.to_string()))?;
-    let (tokens, token_bytes) = batch.iter().try_fold(
-        (0usize, 0usize),
-        |(total_tokens, total_bytes), encoding| {
-            let (encoding_tokens, encoding_bytes) = encoding_size(encoding)?;
-            Ok::<_, TokenizeError>((
-                total_tokens.saturating_add(encoding_tokens),
-                total_bytes.saturating_add(encoding_bytes),
-            ))
-        },
-    )?;
+    let (tokens, token_bytes) =
+        batch
+            .iter()
+            .try_fold((0usize, 0usize), |(total_tokens, total_bytes), encoding| {
+                let (encoding_tokens, encoding_bytes) = encoding_size(encoding)?;
+                Ok::<_, TokenizeError>((
+                    total_tokens.saturating_add(encoding_tokens),
+                    total_bytes.saturating_add(encoding_bytes),
+                ))
+            })?;
     if tokens > MAX_BATCH_TOKENS {
         return Err(TokenizeError::ResourceLimit {
             resource: "tokens per batch",
@@ -567,7 +582,10 @@ pub fn token_to_id(handle: i64, token: &str) -> Result<Option<u32>, TokenizeErro
 /// Convert a numeric id back to its token string, if present.
 pub fn id_to_token(handle: i64, id: u32) -> Result<Option<String>, TokenizeError> {
     let token = get(handle)?.id_to_token(id);
-    if token.as_ref().is_some_and(|token| token.len() > MAX_TOKEN_BYTES) {
+    if token
+        .as_ref()
+        .is_some_and(|token| token.len() > MAX_TOKEN_BYTES)
+    {
         return Err(TokenizeError::ResourceLimit {
             resource: "token bytes",
             limit: MAX_TOKEN_BYTES,
@@ -615,11 +633,7 @@ mod tests {
             Err(TokenizeError::ResourceLimit { .. })
         ));
         assert!(matches!(
-            encode_batch(
-                999_999,
-                &vec![String::new(); MAX_BATCH_TEXTS + 1],
-                false
-            ),
+            encode_batch(999_999, &vec![String::new(); MAX_BATCH_TEXTS + 1], false),
             Err(TokenizeError::ResourceLimit { .. })
         ));
 

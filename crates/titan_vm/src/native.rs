@@ -3495,10 +3495,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .into_iter()
                 .map(|value| {
                     let value = expect_float(value)?;
-                    if !value.is_finite()
-                        || value < f32::MIN as f64
-                        || value > f32::MAX as f64
-                    {
+                    if !value.is_finite() || value < f32::MIN as f64 || value > f32::MAX as f64 {
                         return Err("ONNX input float out of f32 range".to_string());
                     }
                     Ok(value as f32)

@@ -49,6 +49,7 @@ const MAX_RUNTIME_MODEL_FILE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_MODEL_PATH_BYTES: usize = 16 * 1024;
 const MAX_MODEL_INPUTS: usize = 8;
 const MAX_MODEL_OUTPUTS: usize = 32;
+const MAX_MODEL_NODES: usize = 65_536;
 const MAX_SHAPE_RANK: usize = 8;
 const MAX_TENSOR_DIMENSION: usize = 4_194_304;
 const MAX_TENSOR_ELEMENTS: usize = 4_194_304;
@@ -150,7 +151,11 @@ fn reserve_operation() -> Result<OperationPermit, OnnxError> {
     Ok(OperationPermit { runtime_id })
 }
 
-fn validate_capacity(active: usize, runtime_bytes: usize, source_bytes: usize) -> Result<(), OnnxError> {
+fn validate_capacity(
+    active: usize,
+    runtime_bytes: usize,
+    source_bytes: usize,
+) -> Result<(), OnnxError> {
     if active >= MAX_MODEL_HANDLES {
         return Err(OnnxError::ResourceLimit {
             resource: "ONNX model handles",
@@ -211,7 +216,9 @@ fn inspect_source(path: &str) -> Result<(std::fs::File, usize), OnnxError> {
 
 fn parse_model(file: std::fs::File, source_bytes: usize) -> Result<InferenceModel, OnnxError> {
     let mut reader = BufReader::new(file.take(source_bytes as u64));
-    tract_onnx::onnx().model_for_read(&mut reader).map_err(map_err)
+    tract_onnx::onnx()
+        .model_for_read(&mut reader)
+        .map_err(map_err)
 }
 
 fn validate_fact_shape(fact: &TypedFact, allow_zero: bool) -> Result<(usize, usize), OnnxError> {
@@ -227,7 +234,11 @@ fn validate_fact_shape(fact: &TypedFact, allow_zero: bool) -> Result<(usize, usi
         ));
     }
     let mut known_elements = 1usize;
-    for dimension in fact.shape.iter().filter_map(|dimension| dimension.to_i64()) {
+    for dimension in fact
+        .shape
+        .iter()
+        .filter_map(|dimension| dimension.to_i64().ok())
+    {
         let dimension = usize::try_from(dimension).map_err(|_| OnnxError::BadShape)?;
         if dimension == 0 && !allow_zero {
             return Err(OnnxError::BadShape);
@@ -260,7 +271,11 @@ fn validate_fact_shape(fact: &TypedFact, allow_zero: bool) -> Result<(usize, usi
     Ok((known_elements, known_bytes))
 }
 
-fn validate_model_ports(input_count: usize, output_count: usize) -> Result<(), OnnxError> {
+fn validate_model_structure(
+    input_count: usize,
+    output_count: usize,
+    node_count: usize,
+) -> Result<(), OnnxError> {
     if input_count > MAX_MODEL_INPUTS {
         return Err(OnnxError::ResourceLimit {
             resource: "ONNX model inputs",
@@ -273,11 +288,21 @@ fn validate_model_ports(input_count: usize, output_count: usize) -> Result<(), O
             limit: MAX_MODEL_OUTPUTS,
         });
     }
+    if node_count > MAX_MODEL_NODES {
+        return Err(OnnxError::ResourceLimit {
+            resource: "ONNX model nodes",
+            limit: MAX_MODEL_NODES,
+        });
+    }
     Ok(())
 }
 
 fn validate_model(model: &RunnableModel) -> Result<(), OnnxError> {
-    validate_model_ports(model.model().inputs.len(), model.model().outputs.len())?;
+    validate_model_structure(
+        model.model().inputs.len(),
+        model.model().outputs.len(),
+        model.model().nodes.len(),
+    )?;
     let mut input_bytes = 0usize;
     for index in 0..model.model().inputs.len() {
         let (_, known_bytes) =
@@ -301,12 +326,13 @@ fn validate_model(model: &RunnableModel) -> Result<(), OnnxError> {
     for index in 0..model.model().outputs.len() {
         let (known_elements, known_bytes) =
             validate_fact_shape(model.model().output_fact(index).map_err(map_err)?, true)?;
-        output_elements = output_elements
-            .checked_add(known_elements)
-            .ok_or(OnnxError::ResourceLimit {
-                resource: "model output elements",
-                limit: MAX_OUTPUT_ELEMENTS,
-            })?;
+        output_elements =
+            output_elements
+                .checked_add(known_elements)
+                .ok_or(OnnxError::ResourceLimit {
+                    resource: "model output elements",
+                    limit: MAX_OUTPUT_ELEMENTS,
+                })?;
         output_bytes = output_bytes
             .checked_add(known_bytes)
             .ok_or(OnnxError::ResourceLimit {
@@ -400,10 +426,12 @@ fn checked_shape(shape: &[i64]) -> Result<(Vec<usize>, usize), OnnxError> {
                 limit: MAX_TENSOR_DIMENSION,
             });
         }
-        elements = elements.checked_mul(dimension).ok_or(OnnxError::ResourceLimit {
-            resource: "tensor elements",
-            limit: MAX_TENSOR_ELEMENTS,
-        })?;
+        elements = elements
+            .checked_mul(dimension)
+            .ok_or(OnnxError::ResourceLimit {
+                resource: "tensor elements",
+                limit: MAX_TENSOR_ELEMENTS,
+            })?;
         if elements > MAX_TENSOR_ELEMENTS {
             return Err(OnnxError::ResourceLimit {
                 resource: "tensor elements",
@@ -415,7 +443,11 @@ fn checked_shape(shape: &[i64]) -> Result<(Vec<usize>, usize), OnnxError> {
     Ok((converted, elements))
 }
 
-fn validate_input_bytes(elements: usize, element_bytes: usize, tensors: usize) -> Result<(), OnnxError> {
+fn validate_input_bytes(
+    elements: usize,
+    element_bytes: usize,
+    tensors: usize,
+) -> Result<(), OnnxError> {
     let bytes = elements
         .checked_mul(element_bytes)
         .and_then(|bytes| bytes.checked_mul(tensors))
@@ -521,7 +553,7 @@ pub fn load(path: &str) -> Result<i64, OnnxError> {
     let _permit = reserve_operation()?;
     let (file, source_bytes) = inspect_source(path)?;
     let model = parse_model(file, source_bytes)?;
-    validate_model_ports(model.inputs.len(), model.outputs.len())?;
+    validate_model_structure(model.inputs.len(), model.outputs.len(), model.nodes.len())?;
     let model = model
         .into_optimized()
         .map_err(map_err)?
@@ -539,7 +571,7 @@ pub fn load_with_input_shape(path: &str, input_shape: &[i64]) -> Result<i64, Onn
     let _permit = reserve_operation()?;
     let (file, source_bytes) = inspect_source(path)?;
     let model = parse_model(file, source_bytes)?;
-    validate_model_ports(model.inputs.len(), model.outputs.len())?;
+    validate_model_structure(model.inputs.len(), model.outputs.len(), model.nodes.len())?;
     let model = model
         .with_input_fact(0, f32::fact(&shape).into())
         .map_err(map_err)?
@@ -559,7 +591,7 @@ pub fn load_bert_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, Onnx
     let _permit = reserve_operation()?;
     let (file, source_bytes) = inspect_source(path)?;
     let model = parse_model(file, source_bytes)?;
-    validate_model_ports(model.inputs.len(), model.outputs.len())?;
+    validate_model_structure(model.inputs.len(), model.outputs.len(), model.nodes.len())?;
     let model = model
         .with_input_fact(0, i64::fact(&shape).into())
         .map_err(map_err)?
@@ -581,7 +613,7 @@ pub fn load_bert3_shape(path: &str, batch: i64, seq_len: i64) -> Result<i64, Onn
     let _permit = reserve_operation()?;
     let (file, source_bytes) = inspect_source(path)?;
     let model = parse_model(file, source_bytes)?;
-    validate_model_ports(model.inputs.len(), model.outputs.len())?;
+    validate_model_structure(model.inputs.len(), model.outputs.len(), model.nodes.len())?;
     let model = model
         .with_input_fact(0, i64::fact(&shape).into())
         .map_err(map_err)?
@@ -926,6 +958,13 @@ mod tests {
 
     #[test]
     fn models_shapes_inputs_and_outputs_are_bounded() {
+        assert!(matches!(
+            validate_model_structure(0, 0, MAX_MODEL_NODES + 1),
+            Err(OnnxError::ResourceLimit {
+                resource: "ONNX model nodes",
+                ..
+            })
+        ));
         assert!(matches!(
             validate_capacity(MAX_MODEL_HANDLES, 0, 0),
             Err(OnnxError::ResourceLimit {
