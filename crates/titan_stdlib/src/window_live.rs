@@ -315,6 +315,11 @@ fn diff_events(
     events
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    with_registry_mut(|registry| crate::native::remove_runtime_entries(registry, runtime_id))
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

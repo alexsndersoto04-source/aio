@@ -174,6 +174,16 @@ pub fn tree_keys(tree_handle: i64) -> Result<Vec<String>, KvError> {
         .collect()))
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut reg = crate::native::lock_recover(registry());
+    let mut released = crate::native::remove_runtime_entries(&mut reg.trees, runtime_id);
+    for ((owner, _), database) in &reg.dbs {
+        if *owner == runtime_id { let _ = database.flush(); }
+    }
+    released += crate::native::remove_runtime_entries(&mut reg.dbs, runtime_id);
+    released
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

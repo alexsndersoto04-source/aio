@@ -560,6 +560,28 @@ pub fn graph_nodes(h: u64) -> Result<Vec<String>, String> {
 
 pub fn graph_drop(h: u64) -> bool { graphs().lock().unwrap().remove(&handle_key(h)).is_some() }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut released = crate::native::remove_runtime_entries(
+        &mut crate::native::lock_recover(sets()), runtime_id,
+    );
+    released += crate::native::remove_runtime_entries(
+        &mut crate::native::lock_recover(deques()), runtime_id,
+    );
+    released += crate::native::remove_runtime_entries(
+        &mut crate::native::lock_recover(pqs()), runtime_id,
+    );
+    released += crate::native::remove_runtime_entries(
+        &mut crate::native::lock_recover(omaps()), runtime_id,
+    );
+    released += crate::native::remove_runtime_entries(
+        &mut crate::native::lock_recover(counters()), runtime_id,
+    );
+    released += crate::native::remove_runtime_entries(
+        &mut crate::native::lock_recover(graphs()), runtime_id,
+    );
+    released
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

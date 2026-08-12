@@ -145,6 +145,11 @@ pub fn raw(handle: i64, command_and_args: &str) -> Result<String, RedisError> {
     })
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut reg = crate::native::lock_recover(registry());
+    crate::native::remove_runtime_entries(&mut reg.conns, runtime_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

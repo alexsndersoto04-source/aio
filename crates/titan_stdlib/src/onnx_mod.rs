@@ -359,6 +359,11 @@ pub fn run_bert_pooled(
     })
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut reg = crate::native::lock_recover(registry());
+    crate::native::remove_runtime_entries(&mut reg.models, runtime_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

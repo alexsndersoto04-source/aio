@@ -100,6 +100,11 @@ pub fn matches(handle: i64, path: &str) -> Result<bool, RouterError> {
     Ok(router.at(path).is_ok())
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut reg = crate::native::lock_recover(registry());
+    crate::native::remove_runtime_entries(&mut reg.routers, runtime_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

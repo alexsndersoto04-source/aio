@@ -87,6 +87,20 @@ pub fn abandon(id: i64) {
     }
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let bars = {
+        let mut reg = crate::native::lock_recover(registry());
+        let keys: Vec<_> = reg.bars.keys()
+            .filter(|(owner, _)| *owner == runtime_id)
+            .copied()
+            .collect();
+        keys.into_iter().filter_map(|key| reg.bars.remove(&key)).collect::<Vec<_>>()
+    };
+    let released = bars.len();
+    for bar in bars { bar.finish_and_clear(); }
+    released
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

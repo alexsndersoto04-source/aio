@@ -212,6 +212,11 @@ pub fn close(handle: i64) {
     if let Ok(mut reg) = registry().lock() { reg.docs.remove(&handle_key(handle)); }
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut reg = crate::native::lock_recover(registry());
+    crate::native::remove_runtime_entries(&mut reg.docs, runtime_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

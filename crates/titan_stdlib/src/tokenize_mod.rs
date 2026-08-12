@@ -215,6 +215,11 @@ pub fn id_to_token(handle: i64, id: u32) -> Result<Option<String>, TokenizeError
     with(handle, |t| Ok(t.id_to_token(id)))
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut reg = crate::native::lock_recover(registry());
+    crate::native::remove_runtime_entries(&mut reg.tokenizers, runtime_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

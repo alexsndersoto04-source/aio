@@ -124,6 +124,7 @@ struct RuntimeState {
     next_channel: AtomicU64,
     next_socket: AtomicU64,
     next_router: AtomicU64,
+    shutting_down: AtomicBool,
     tasks: Mutex<HashMap<u64, TaskRecord>>,
     channels: Mutex<HashMap<u64, Arc<Channel>>>,
     listeners: Mutex<HashMap<u64, Arc<TcpListener>>>,
@@ -142,7 +143,13 @@ struct RuntimeState {
     mysql_pools: Mutex<HashMap<u64, titan_mysql::Pool>>,
 }
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
-impl RuntimeState { fn new() -> Self { Self { id: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed), next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()), server_controls: Mutex::new(HashMap::new()), sqlite: Mutex::new(HashMap::new()), sqlite_pools: Mutex::new(HashMap::new()), postgres: Mutex::new(HashMap::new()), postgres_pools: Mutex::new(HashMap::new()), mysql: Mutex::new(HashMap::new()), mysql_pools: Mutex::new(HashMap::new()) } } }
+impl RuntimeState { fn new() -> Self { Self { id: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed), next_task: AtomicU64::new(1), next_channel: AtomicU64::new(1), next_socket: AtomicU64::new(1), next_router: AtomicU64::new(1), shutting_down: AtomicBool::new(false), tasks: Mutex::new(HashMap::new()), channels: Mutex::new(HashMap::new()), listeners: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), routers: Mutex::new(HashMap::new()), tls_streams: Mutex::new(HashMap::new()), tls_configs: Mutex::new(HashMap::new()), websocket_decoders: Mutex::new(HashMap::new()), websockets: Mutex::new(HashMap::new()), server_controls: Mutex::new(HashMap::new()), sqlite: Mutex::new(HashMap::new()), sqlite_pools: Mutex::new(HashMap::new()), postgres: Mutex::new(HashMap::new()), postgres_pools: Mutex::new(HashMap::new()), mysql: Mutex::new(HashMap::new()), mysql_pools: Mutex::new(HashMap::new()) } } }
+
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        titan_stdlib::native::cleanup_runtime_resources(self.id);
+    }
+}
 
 pub struct Vm {
     module: CompiledModule,
@@ -158,9 +165,33 @@ pub struct Vm {
     gc_threshold: usize,
 }
 
+impl Drop for Vm {
+    fn drop(&mut self) {
+        // A task owns only the runtime resources created on its own OS thread
+        // (currently live windows). The root VM additionally requests
+        // cancellation of every outstanding task. RuntimeState itself remains
+        // alive until those tasks have observed cancellation and dropped their
+        // Arc, so process-wide handles cannot be freed while a task is using
+        // them.
+        titan_stdlib::native::cleanup_thread_local_runtime_resources(self.runtime.id);
+        if self.cancellation.is_none() {
+            self.runtime.shutting_down.store(true, Ordering::Release);
+            let tasks = self.runtime.tasks.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for task in tasks.values() {
+                task.cancelled.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
 impl Vm {
     pub fn new(module: CompiledModule) -> Self { Self { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities: RuntimeCapabilities::all(), output: None, runtime: Arc::new(RuntimeState::new()), cancellation: None, memory_limit: usize::MAX, allocated_bytes: 0, gc_threshold: 1024 * 1024 } }
-    pub fn sandboxed(module: CompiledModule) -> Self { Self { capabilities: RuntimeCapabilities::sandboxed(), ..Self::new(module) } }
+    pub fn sandboxed(module: CompiledModule) -> Self {
+        let mut vm = Self::new(module);
+        vm.capabilities = RuntimeCapabilities::sandboxed();
+        vm
+    }
     pub fn with_instruction_limit(mut self, limit: usize) -> Self { self.instruction_limit = limit; self }
     pub fn with_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self { self.capabilities = capabilities; self }
     pub fn with_output_sender(mut self, output: std::sync::mpsc::Sender<String>) -> Self { self.output = Some(output); self }
@@ -446,7 +477,14 @@ impl Vm {
                     let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
                     let cancelled = Arc::new(AtomicBool::new(false)); let task_cancelled = Arc::clone(&cancelled); let (result_tx, result_rx) = mpsc::sync_channel(1);
                     let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: usize::MAX, allocated_bytes: 0, gc_threshold: 1024 * 1024 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
-                    self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
+                    let mut tasks = self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?;
+                    if self.runtime.shutting_down.load(Ordering::Acquire) {
+                        cancelled.store(true, Ordering::Release);
+                        drop(tasks);
+                        drop(handle);
+                        return Err(VmError::TaskCancelled);
+                    }
+                    tasks.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
                     stack.push(Value::Task(task_id));
                 }
                 Op::SpawnQuota => {
@@ -457,7 +495,14 @@ impl Vm {
                     let module = self.module.clone(); let runtime = Arc::clone(&self.runtime); let capabilities = self.capabilities; let output = self.output.clone();
                     let cancelled = Arc::new(AtomicBool::new(false)); let task_cancelled = Arc::clone(&cancelled); let (result_tx, result_rx) = mpsc::sync_channel(1);
                     let handle = std::thread::spawn(move || { let mut child = Vm { module, instruction_limit: 10_000_000, instructions: 0, max_call_depth: 4096, capabilities, output, runtime, cancellation: Some(task_cancelled), memory_limit: quota_bytes, allocated_bytes: 0, gc_threshold: 1024 * 1024 }; let result = child.execute(task_function, Vec::new(), captures, 0, &mut None); let _ = result_tx.send(result); });
-                    self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
+                    let mut tasks = self.runtime.tasks.lock().map_err(|_| VmError::Type("task registry poisoned".into()))?;
+                    if self.runtime.shutting_down.load(Ordering::Acquire) {
+                        cancelled.store(true, Ordering::Release);
+                        drop(tasks);
+                        drop(handle);
+                        return Err(VmError::TaskCancelled);
+                    }
+                    tasks.insert(task_id, TaskRecord { handle, result: result_rx, cancelled });
                     stack.push(Value::Task(task_id));
                 }
                 Op::RuntimeMemoryLimit => {
@@ -1010,6 +1055,41 @@ mod tests {
     fn compile(source: &str) -> Result<CompiledModule, String> { let mut lexer = Lexer::new(source); let tokens = lexer.tokenize().0.to_vec(); let program = Parser::new(tokens).parse_program().map_err(|e| e.to_string())?; AstCompiler::new().compile_program(&program).map_err(|e| e.to_string()) }
     fn run(source: &str) -> Result<Value, String> { Vm::new(compile(source)?).run().map_err(|e| e.to_string()).map(|v| v.unwrap()) }
     fn run_sandboxed(source: &str) -> Result<Value, String> { Vm::sandboxed(compile(source)?).run().map_err(|e| e.to_string()).map(|v| v.unwrap()) }
+
+    #[cfg(feature = "collections_mod")]
+    #[test]
+    fn dropping_runtime_releases_only_its_native_handles() {
+        let runtime = Arc::new(RuntimeState::new());
+        let runtime_id = runtime.id;
+        let own = titan_stdlib::native::with_runtime_context(runtime_id, titan_stdlib::collections_mod::set_new);
+        let other_id = runtime_id + 1_000_000;
+        let other = titan_stdlib::native::with_runtime_context(other_id, titan_stdlib::collections_mod::set_new);
+
+        drop(runtime);
+
+        assert!(titan_stdlib::native::with_runtime_context(runtime_id, || {
+            titan_stdlib::collections_mod::set_add(own, "stale".into())
+        }).is_err());
+        assert!(titan_stdlib::native::with_runtime_context(other_id, || {
+            titan_stdlib::collections_mod::set_add(other, "alive".into())
+        }).unwrap());
+        titan_stdlib::native::cleanup_runtime_resources(other_id);
+    }
+
+    #[test]
+    fn dropping_root_vm_cancels_unjoined_tasks_and_releases_runtime() {
+        let module = compile("fn main() { let task = spawn || { while true {} } 1 }").unwrap();
+        let mut vm = Vm::new(module);
+        let runtime = Arc::downgrade(&vm.runtime);
+        assert_eq!(vm.run().unwrap(), Some(Value::Int(1)));
+        drop(vm);
+
+        for _ in 0..200 {
+            if runtime.upgrade().is_none() { return; }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("cancelled task kept its runtime alive after the root VM was dropped");
+    }
     #[test] fn arithmetic_returns_value() { assert_eq!(run("fn main() { 40 + 2 }").unwrap(), Value::Int(42)); }
     #[test] fn recursion_works() { assert_eq!(run("fn fact(n: int) -> int { if n <= 1 { return 1 } n * fact(n-1) } fn main() { fact(5) }").unwrap(), Value::Int(120)); }
     #[test] fn loops_and_ranges_work() { assert_eq!(run("fn main() { let x = 0 for i in 0..5 { x += i } x }").unwrap(), Value::Int(10)); }

@@ -295,6 +295,25 @@ pub fn send_signal(_pid: i32, _signal_num: i32) -> Result<(), ProcessError> {
     Err(ProcessError::Signal("signals only supported on Unix".into()))
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let children = {
+        let mut reg = crate::native::lock_recover(registry());
+        let keys: Vec<_> = reg.keys()
+            .filter(|(owner, _)| *owner == runtime_id)
+            .copied()
+            .collect();
+        keys.into_iter().filter_map(|key| reg.remove(&key)).collect::<Vec<_>>()
+    };
+    let released = children.len();
+    for mut child in children {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            _ => { let _ = child.kill(); let _ = child.wait(); }
+        }
+    }
+    released
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

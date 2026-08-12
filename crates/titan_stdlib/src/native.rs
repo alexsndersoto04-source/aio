@@ -5,6 +5,9 @@
 //! authoritative registry without introducing a crate dependency cycle.
 
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::sync::{Mutex, MutexGuard};
 
 thread_local! {
     static CURRENT_RUNTIME_ID: Cell<u64> = const { Cell::new(0) };
@@ -36,6 +39,65 @@ pub fn with_runtime_context<R>(runtime_id: u64, operation: impl FnOnce() -> R) -
 
 pub(crate) fn runtime_handle_key<T>(handle: T) -> (u64, T) {
     CURRENT_RUNTIME_ID.with(|current| (current.get(), handle))
+}
+
+pub(crate) fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn remove_runtime_entries<K: Eq + Hash, V>(
+    entries: &mut HashMap<(u64, K), V>,
+    runtime_id: u64,
+) -> usize {
+    let before = entries.len();
+    entries.retain(|(owner, _), _| *owner != runtime_id);
+    before - entries.len()
+}
+
+/// Releases process-wide native handles after the last VM/task in an
+/// ownership domain has gone away. Each module removes only entries carrying
+/// `runtime_id`; handles belonging to other live VMs are left untouched.
+#[doc(hidden)]
+pub fn cleanup_runtime_resources(runtime_id: u64) -> usize {
+    let mut released = crate::window::cleanup_runtime(runtime_id);
+
+    #[cfg(feature = "kv_mod")]
+    { released += crate::kv_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "fswatch_mod")]
+    { released += crate::fswatch_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "redis_mod")]
+    { released += crate::redis_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "image_mod")]
+    { released += crate::image_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "tokenize_mod")]
+    { released += crate::tokenize_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "onnx_mod")]
+    { released += crate::onnx_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "pdf_mod")]
+    { released += crate::pdf_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "progress_mod")]
+    { released += crate::progress_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "router_mod")]
+    { released += crate::router_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "server_mod")]
+    { released += crate::server_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "process_mod")]
+    { released += crate::process_mod::cleanup_runtime(runtime_id); }
+    #[cfg(feature = "collections_mod")]
+    { released += crate::collections_mod::cleanup_runtime(runtime_id); }
+
+    released
+}
+
+/// Native windows are deliberately thread-local because OS window objects are
+/// not `Send`. Every VM (root or task) cleans the windows it created on its own
+/// thread when that VM is dropped.
+#[doc(hidden)]
+pub fn cleanup_thread_local_runtime_resources(runtime_id: u64) -> usize {
+    #[cfg(all(feature = "window_live", not(target_os = "android")))]
+    { return crate::window_live::cleanup_runtime(runtime_id); }
+    #[cfg(not(all(feature = "window_live", not(target_os = "android"))))]
+    { let _ = runtime_id; 0 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

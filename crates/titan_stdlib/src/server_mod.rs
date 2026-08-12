@@ -386,6 +386,17 @@ pub fn ws_close(handle: i64, code: Option<u16>, reason: &str) -> Result<(), Serv
     Ok(())
 }
 
+pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+    let mut released = {
+        let mut reg = crate::native::lock_recover(registry());
+        let requests = crate::native::remove_runtime_entries(&mut reg.requests, runtime_id);
+        requests + crate::native::remove_runtime_entries(&mut reg.servers, runtime_id)
+    };
+    let mut websockets = crate::native::lock_recover(ws_registry());
+    released += crate::native::remove_runtime_entries(&mut websockets.entries, runtime_id);
+    released
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
