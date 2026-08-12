@@ -51,6 +51,7 @@ pub struct FunctionDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
+    pub mutable: bool,
     pub type_ann: Option<TypeExpr>,
     pub default: Option<Box<Expr>>,
     pub span: Span,

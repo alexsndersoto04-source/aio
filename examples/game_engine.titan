@@ -19,11 +19,11 @@ fn main() {
     let alto = 600.0
 
     // pelota 20x20 en el centro
-    let x = 390.0
-    let y = 290.0
+    let mut x = 390.0
+    let mut y = 290.0
     let tam = 20.0
-    let vx = 300.0
-    let vy = 520.0
+    let mut vx = 300.0
+    let mut vy = 520.0
 
     // obstaculo (una "paleta" enemiga abajo en el centro)
     let ox = 500.0
@@ -31,9 +31,9 @@ fn main() {
     let o_w = 60.0
     let o_h = 40.0
 
-    let bordes = 0
-    let goles = 0
-    let sub = 0
+    let mut bordes = 0
+    let mut goles = 0
+    let mut sub = 0
 
     for i in 0..90 {
         // ritmo humano: ~60 fps de verdad

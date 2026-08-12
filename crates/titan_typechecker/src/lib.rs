@@ -53,7 +53,7 @@ pub enum TypeError {
     NotIterable { target: Type },
     #[error("type {receiver} has no method '{method}'")]
     UnknownMethod { receiver: Type, method: String },
-    #[error("assignment target must be a mutable local variable")]
+    #[error("assignment target must be a mutable local variable in the current function")]
     InvalidAssignmentTarget,
     #[error("return used outside a function or closure")]
     OutsideFunction,
@@ -129,6 +129,7 @@ struct FunctionSig {
 
 pub struct TypeEnv {
     scopes: Vec<HashMap<String, Type>>,
+    bindings: Vec<HashMap<String, (bool, usize)>>,
     functions: HashMap<String, FunctionSig>,
     base_functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, HashMap<String, Type>>,
@@ -1033,6 +1034,7 @@ impl TypeEnv {
         ]);
         Self {
             scopes: vec![HashMap::new()],
+            bindings: vec![HashMap::new()],
             base_functions: functions.clone(),
             functions,
             structs: HashMap::new(),
@@ -1058,6 +1060,7 @@ impl TypeEnv {
         // declarations and local scopes from a previous program must never
         // leak into the next one; only the built-in registry is persistent.
         self.scopes = vec![HashMap::new()];
+        self.bindings = vec![HashMap::new()];
         self.functions = self.base_functions.clone();
         self.structs.clear();
         self.enum_variants = self.base_enum_variants.clone();
@@ -1124,6 +1127,12 @@ impl TypeEnv {
 
     fn reset_analysis_state(&mut self) {
         self.scopes = vec![self.constant_types.clone()];
+        self.bindings = vec![
+            self.constant_types
+                .keys()
+                .map(|name| (name.clone(), (false, 0)))
+                .collect(),
+        ];
         self.constants = self.constant_types.keys().cloned().collect();
         self.constant_stack.clear();
         self.checked_constants.clear();
@@ -1603,6 +1612,7 @@ impl TypeEnv {
         let inferred = declared.unwrap_or(found);
         self.constant_types.insert(name.into(), inferred.clone());
         self.scopes[0].insert(name.into(), inferred.clone());
+        self.bindings[0].insert(name.into(), (false, 0));
         self.checked_constants.insert(name.into());
         inferred
     }
@@ -1658,7 +1668,12 @@ impl TypeEnv {
             }
             // A default may refer to earlier parameters, but a parameter is
             // not in scope inside its own default expression.
-            self.define(param.name.clone(), param_type);
+            self.define_at_depth(
+                param.name.clone(),
+                param_type,
+                param.mutable,
+                self.function_depth + 1,
+            );
         }
         let old_return = std::mem::replace(
             &mut self.return_type,
@@ -1719,6 +1734,7 @@ impl TypeEnv {
             match stmt {
                 Stmt::Let {
                     name,
+                    mutable,
                     type_ann,
                     value,
                     ..
@@ -1729,7 +1745,7 @@ impl TypeEnv {
                         .map(type_from_ast)
                         .unwrap_or_else(|| found.clone());
                     self.require_compatible(&ty, &found);
-                    self.define(name.clone(), ty);
+                    self.define_mutable(name.clone(), ty, *mutable);
                 }
                 Stmt::Assign {
                     target, op, value, ..
@@ -2155,6 +2171,7 @@ impl TypeEnv {
             }
             Expr::Let {
                 name,
+                mutable,
                 type_ann,
                 value,
                 ..
@@ -2165,7 +2182,7 @@ impl TypeEnv {
                     .map(type_from_ast)
                     .unwrap_or_else(|| found.clone());
                 self.require_compatible(&ty, &found);
-                self.define(name.clone(), ty.clone());
+                self.define_mutable(name.clone(), ty.clone(), *mutable);
                 ty
             }
             Expr::Assign {
@@ -2211,7 +2228,12 @@ impl TypeEnv {
                     })
                     .collect();
                 for (param, ty) in params.iter().zip(&p) {
-                    self.define(param.name.clone(), ty.clone());
+                    self.define_at_depth(
+                        param.name.clone(),
+                        ty.clone(),
+                        param.mutable,
+                        self.function_depth + 1,
+                    );
                 }
                 let old_ret = std::mem::replace(
                     &mut self.return_type,
@@ -2541,6 +2563,14 @@ impl TypeEnv {
             return Type::Unknown;
         };
         if self.is_global_constant_binding(name) {
+            self.check_expr(value);
+            self.errors.push(TypeError::InvalidAssignmentTarget);
+            return target_type;
+        }
+        let mutable_in_this_function = self
+            .binding(name)
+            .is_some_and(|(mutable, depth)| mutable && depth == self.function_depth);
+        if !mutable_in_this_function {
             self.check_expr(value);
             self.errors.push(TypeError::InvalidAssignmentTarget);
             return target_type;
@@ -2899,6 +2929,7 @@ impl TypeEnv {
             }
             Pattern::Or { left, right, .. } => {
                 let original = self.scopes.last().cloned().unwrap_or_default();
+                let original_bindings = self.bindings.last().cloned().unwrap_or_default();
                 self.bind_pattern(left, subject, wildcard, bools);
                 let left_scope = self.scopes.last().cloned().unwrap_or_default();
                 let left_names = pattern_binding_names(left);
@@ -2906,12 +2937,18 @@ impl TypeEnv {
                 if let Some(scope) = self.scopes.last_mut() {
                     *scope = original.clone();
                 }
+                if let Some(bindings) = self.bindings.last_mut() {
+                    *bindings = original_bindings.clone();
+                }
                 self.bind_pattern(right, subject, wildcard, bools);
                 let right_scope = self.scopes.last().cloned().unwrap_or_default();
                 let right_names = pattern_binding_names(right);
 
                 if let Some(scope) = self.scopes.last_mut() {
                     *scope = original;
+                }
+                if let Some(bindings) = self.bindings.last_mut() {
+                    *bindings = original_bindings;
                 }
                 if left_names != right_names {
                     self.errors.push(TypeError::InvalidPattern {
@@ -3041,17 +3078,34 @@ impl TypeEnv {
     }
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.bindings.push(HashMap::new());
     }
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.bindings.pop();
     }
     fn define(&mut self, name: String, ty: Type) {
+        self.define_at_depth(name, ty, false, self.function_depth);
+    }
+    fn define_mutable(&mut self, name: String, ty: Type, mutable: bool) {
+        self.define_at_depth(name, ty, mutable, self.function_depth);
+    }
+    fn define_at_depth(&mut self, name: String, ty: Type, mutable: bool, depth: usize) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, ty);
+            scope.insert(name.clone(), ty);
+        }
+        if let Some(bindings) = self.bindings.last_mut() {
+            bindings.insert(name, (mutable, depth));
         }
     }
     fn lookup(&self, name: &str) -> Option<Type> {
         self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+    }
+    fn binding(&self, name: &str) -> Option<(bool, usize)> {
+        self.bindings
+            .iter()
+            .rev()
+            .find_map(|bindings| bindings.get(name).copied())
     }
 }
 
@@ -3178,11 +3232,16 @@ fn declaration_errors(
                                 name: format!("{}::{}", trait_decl.name, method.name),
                             });
                         }
-                        parameters(
-                            state,
-                            &format!("{}::{}", trait_decl.name, method.name),
-                            &method.params,
-                        );
+                        let qualified = format!("{}::{}", trait_decl.name, method.name);
+                        parameters(state, &qualified, &method.params);
+                        if method.body.is_some() && method.return_type.is_none() {
+                            state.errors.push(TypeError::UnsupportedFeature {
+                                feature: format!(
+                                    "trait default method '{}' without an explicit return type",
+                                    qualified
+                                ),
+                            });
+                        }
                     }
                 }
                 Item::TypeAlias(alias) => insert(state, "type", "type", &alias.name),
@@ -3953,9 +4012,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_local_and_invalid_compound_assignments() {
+    fn validates_assignment_mutability_and_compound_types() {
         assert!(check("fn main() { let values = [1] values[0] = 2 }").is_err());
-        assert!(check("fn main() { let value = \"text\" value -= 1 }").is_err());
+        assert!(check("fn main() { let value = 1 value = 2 }").is_err());
+        assert!(check("fn main() { let mut value = \"text\" value -= 1 }").is_err());
+        assert!(check("fn main() { let mut value = 1 value += 2 }").is_ok());
+        assert!(check("fn bump(mut value: int) -> int { value += 1 value } fn main() {}").is_ok());
+        assert!(check("fn bump(value: int) -> int { value += 1 value } fn main() {}").is_err());
+        assert!(check(
+            "fn main() { let mut value = 1 let update = || { value = 2 } update() }"
+        )
+        .is_err());
         assert!(check("const VALUE: int = 1 fn main() { VALUE = 2 }").is_err());
     }
 
@@ -4055,6 +4122,18 @@ mod tests {
 
         let inferred_mismatch = "trait Measure { fn value(self) -> int; } struct Item { value: int } impl Measure for Item { fn value(self) { \"wrong\" } } fn main() {}";
         assert!(check(inferred_mismatch).is_err());
+    }
+
+    #[test]
+    fn trait_defaults_require_an_explicit_contract_return_type() {
+        let inferred_default = "trait Label { fn label(self) { \"label\" } } struct Item { value: int } impl Label for Item {} fn main() {}";
+        assert!(check(inferred_default).is_err());
+
+        let explicit_default = "trait Label { fn label(self) -> string { \"label\" } } struct Item { value: int } impl Label for Item {} fn main() { let item = Item { value: 1 } let label: string = item.label() }";
+        assert!(check(explicit_default).is_ok());
+
+        let unit_requirement = "trait Reset { fn reset(self); } struct Item { value: int } impl Reset for Item { fn reset(self) {} } fn main() {}";
+        assert!(check(unit_requirement).is_ok());
     }
 
     #[test]

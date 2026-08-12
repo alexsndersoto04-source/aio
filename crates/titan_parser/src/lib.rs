@@ -29,7 +29,7 @@ pub type Result<T> = std::result::Result<T, ParseError>;
 #[derive(Debug, Clone)]
 enum TuplePart {
     Wildcard,
-    Ident(String),
+    Ident(String, bool),
     Tuple(Vec<TuplePart>),
     Struct(Vec<(String, TuplePart)>),
 }
@@ -124,7 +124,7 @@ impl Parser {
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) {
             let pspan = self.span();
-            self.eat(TokenKind::Mut);
+            let mutable = self.eat(TokenKind::Mut);
             let pname = if self.eat(TokenKind::Self_) {
                 "self".into()
             } else {
@@ -142,6 +142,7 @@ impl Parser {
             };
             params.push(Param {
                 name: pname,
+                mutable,
                 type_ann,
                 default,
                 span: pspan,
@@ -408,7 +409,12 @@ impl Parser {
     /// still gets bound so the RHS runs exactly once. Nested patterns
     /// are supported by recursing: `let (a, (b, c)) = expr` produces
     /// three plain `let` statements plus an inner temp.
-    fn desugar_tuple_let(&mut self, stmts: &mut Vec<Stmt>, span: Span) -> Result<()> {
+    fn desugar_tuple_let(
+        &mut self,
+        stmts: &mut Vec<Stmt>,
+        span: Span,
+        mutable: bool,
+    ) -> Result<()> {
         self.expect(TokenKind::LParen)?;
         let mut sub_patterns: Vec<TuplePart> = Vec::new();
         while !self.at(TokenKind::RParen) {
@@ -424,6 +430,7 @@ impl Parser {
         let temp = self.fresh_destr_name();
         stmts.push(Stmt::Let {
             name: temp.clone(),
+            mutable: false,
             type_ann: None,
             value,
             span,
@@ -440,7 +447,7 @@ impl Parser {
                 }),
                 span,
             };
-            self.emit_pattern_binding(stmts, part, idx_expr, span)?;
+            self.emit_pattern_binding(stmts, part, idx_expr, span, mutable)?;
         }
         Ok(())
     }
@@ -454,7 +461,12 @@ impl Parser {
     /// documentation — Titan already has dynamic field access via
     /// GetField, so we don't need runtime type checks. Sub-patterns
     /// like `let Point { x: (a, b) }` recurse via emit_pattern_binding.
-    fn desugar_struct_let(&mut self, stmts: &mut Vec<Stmt>, span: Span) -> Result<()> {
+    fn desugar_struct_let(
+        &mut self,
+        stmts: &mut Vec<Stmt>,
+        span: Span,
+        mutable: bool,
+    ) -> Result<()> {
         let _struct_name = self.expect_ident()?;
         self.expect(TokenKind::LBrace)?;
         let mut fields: Vec<(String, TuplePart)> = Vec::new();
@@ -463,7 +475,7 @@ impl Parser {
             let bound = if self.eat(TokenKind::Colon) {
                 self.parse_destructure_part()?
             } else {
-                TuplePart::Ident(field.clone())
+                TuplePart::Ident(field.clone(), false)
             };
             fields.push((field, bound));
             if !self.eat(TokenKind::Comma) {
@@ -477,6 +489,7 @@ impl Parser {
         let temp = self.fresh_destr_name();
         stmts.push(Stmt::Let {
             name: temp.clone(),
+            mutable: false,
             type_ann: None,
             value,
             span,
@@ -490,7 +503,7 @@ impl Parser {
                 field: field_name,
                 span,
             };
-            self.emit_pattern_binding(stmts, part, access, span)?;
+            self.emit_pattern_binding(stmts, part, access, span, mutable)?;
         }
         Ok(())
     }
@@ -524,7 +537,7 @@ impl Parser {
                 let bound = if self.eat(TokenKind::Colon) {
                     self.parse_destructure_part()?
                 } else {
-                    TuplePart::Ident(field.clone())
+                    TuplePart::Ident(field.clone(), false)
                 };
                 inner.push((field, bound));
                 if !self.eat(TokenKind::Comma) {
@@ -534,9 +547,9 @@ impl Parser {
             self.expect(TokenKind::RBrace)?;
             return Ok(TuplePart::Struct(inner));
         }
-        self.eat(TokenKind::Mut);
+        let mutable = self.eat(TokenKind::Mut);
         let name = self.expect_ident()?;
-        Ok(TuplePart::Ident(name))
+        Ok(TuplePart::Ident(name, mutable))
     }
 
     /// Emit `let <part> = <access>` recursively.
@@ -546,12 +559,14 @@ impl Parser {
         part: TuplePart,
         access: Expr,
         span: Span,
+        default_mutable: bool,
     ) -> Result<()> {
         match part {
             TuplePart::Wildcard => Ok(()),
-            TuplePart::Ident(name) => {
+            TuplePart::Ident(name, mutable) => {
                 stmts.push(Stmt::Let {
                     name,
+                    mutable: mutable || default_mutable,
                     type_ann: None,
                     value: access,
                     span,
@@ -562,6 +577,7 @@ impl Parser {
                 let temp = self.fresh_destr_name();
                 stmts.push(Stmt::Let {
                     name: temp.clone(),
+                    mutable: false,
                     type_ann: None,
                     value: access,
                     span,
@@ -578,7 +594,7 @@ impl Parser {
                         }),
                         span,
                     };
-                    self.emit_pattern_binding(stmts, sub, idx, span)?;
+                    self.emit_pattern_binding(stmts, sub, idx, span, default_mutable)?;
                 }
                 Ok(())
             }
@@ -586,6 +602,7 @@ impl Parser {
                 let temp = self.fresh_destr_name();
                 stmts.push(Stmt::Let {
                     name: temp.clone(),
+                    mutable: false,
                     type_ann: None,
                     value: access,
                     span,
@@ -599,7 +616,7 @@ impl Parser {
                         field: fname,
                         span,
                     };
-                    self.emit_pattern_binding(stmts, sub, acc, span)?;
+                    self.emit_pattern_binding(stmts, sub, acc, span, default_mutable)?;
                 }
                 Ok(())
             }
@@ -654,14 +671,14 @@ impl Parser {
             }
             if self.eat(TokenKind::Let) {
                 let span = self.previous_span();
-                self.eat(TokenKind::Mut);
+                let mutable = self.eat(TokenKind::Mut);
                 // Phase 23: destructuring. If we see `(` or `Ident {`
                 // after the (optional) `mut`, this is a tuple or struct
                 // pattern. Desugar into a fresh temporary plus one
                 // ordinary `let` per bound name — the runtime never
                 // sees patterns, only plain identifier bindings.
                 if self.at(TokenKind::LParen) {
-                    self.desugar_tuple_let(&mut stmts, span)?;
+                    self.desugar_tuple_let(&mut stmts, span, mutable)?;
                     continue;
                 }
                 // Phase 23: `let Point { ... } = expr` is a struct
@@ -674,7 +691,7 @@ impl Parser {
                     self.tokens.get(self.pos + 1).map(|t| t.kind.clone()),
                 ) {
                     if self.destructure_struct_looks_like_pattern() {
-                        self.desugar_struct_let(&mut stmts, span)?;
+                        self.desugar_struct_let(&mut stmts, span, mutable)?;
                         continue;
                     }
                 }
@@ -698,6 +715,7 @@ impl Parser {
                 self.eat(TokenKind::Semicolon);
                 stmts.push(Stmt::Let {
                     name,
+                    mutable,
                     type_ann,
                     value,
                     span,
@@ -919,12 +937,14 @@ impl Parser {
             stmts: vec![
                 Stmt::Let {
                     name: ta,
+                    mutable: false,
                     type_ann: None,
                     value: left,
                     span,
                 },
                 Stmt::Let {
                     name: tb,
+                    mutable: false,
                     type_ann: None,
                     value: right,
                     span,
@@ -1304,6 +1324,7 @@ impl Parser {
         let mut params = Vec::new();
         while !self.at(TokenKind::Pipe) {
             let param_span = self.span();
+            let mutable = self.eat(TokenKind::Mut);
             let name = self.expect_ident()?;
             let type_ann = if self.eat(TokenKind::Colon) {
                 Some(self.parse_type()?)
@@ -1312,6 +1333,7 @@ impl Parser {
             };
             params.push(Param {
                 name,
+                mutable,
                 type_ann,
                 default: None,
                 span: param_span,
@@ -1479,7 +1501,7 @@ impl Parser {
                 }),
                 span,
             };
-            self.emit_pattern_binding(&mut extra, part, idx_expr, span)?;
+            self.emit_pattern_binding(&mut extra, part, idx_expr, span, false)?;
         }
         extra.append(&mut body.stmts);
         body.stmts = extra;
@@ -1502,7 +1524,7 @@ impl Parser {
             let bound = if self.eat(TokenKind::Colon) {
                 self.parse_destructure_part()?
             } else {
-                TuplePart::Ident(field.clone())
+                TuplePart::Ident(field.clone(), false)
             };
             fields.push((field, bound));
             if !self.eat(TokenKind::Comma) {
@@ -1525,7 +1547,7 @@ impl Parser {
                 field: field_name,
                 span,
             };
-            self.emit_pattern_binding(&mut extra, part, access, span)?;
+            self.emit_pattern_binding(&mut extra, part, access, span, false)?;
         }
         extra.append(&mut body.stmts);
         body.stmts = extra;

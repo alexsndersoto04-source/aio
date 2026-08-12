@@ -4898,7 +4898,7 @@ mod tests {
     #[test]
     fn loops_and_ranges_work() {
         assert_eq!(
-            run("fn main() { let x = 0 for i in 0..5 { x += i } x }").unwrap(),
+            run("fn main() { let mut x = 0 for i in 0..5 { x += i } x }").unwrap(),
             Value::Int(10)
         );
     }

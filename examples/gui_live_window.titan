@@ -39,11 +39,11 @@ fn main() {
     print("ventana abierta con id {win} — empieza el latido a 60 fps")
     print("controles: dedo mueve | tocar presiona | se despide sola en ~60 seg")
 
-    let frame = 0
-    let clics = 0
-    let eventos_vistos = 0
-    let click_estaba_abajo = false
-    let viva = 1
+    let mut frame = 0
+    let mut clics = 0
+    let mut eventos_vistos = 0
+    let mut click_estaba_abajo = false
+    let mut viva = 1
     // ~60 seg x 60 fps: la ceremonia se despide sola, con resumen incluido.
     let despedida = 3600
 

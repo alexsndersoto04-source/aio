@@ -315,6 +315,7 @@ pub struct AstCompiler {
     module: CompiledModule,
     current: BytecodeFunc,
     locals: Vec<HashMap<String, usize>>,
+    local_mutability: Vec<HashMap<String, bool>>,
     next_local: usize,
     strings: HashMap<String, usize>,
     function_ids: HashMap<String, usize>,
@@ -345,6 +346,7 @@ impl AstCompiler {
             },
             current: empty_function(),
             locals: Vec::new(),
+            local_mutability: Vec::new(),
             next_local: 0,
             strings: HashMap::new(),
             function_ids: HashMap::new(),
@@ -459,10 +461,11 @@ impl AstCompiler {
             debug_locations: Vec::new(),
         };
         self.locals = vec![HashMap::new()];
+        self.local_mutability = vec![HashMap::new()];
         self.next_local = 0;
         self.loops.clear();
         for param in &function.params {
-            self.add_local(&param.name);
+            self.add_mutable_local(&param.name, param.mutable);
         }
         self.compile_block(body, true)?;
         if !matches!(self.current.code.last(), Some(Op::Ret)) {
@@ -497,9 +500,14 @@ impl AstCompiler {
                     self.emit(Op::Pop);
                 }
             }
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let {
+                name,
+                mutable,
+                value,
+                ..
+            } => {
                 self.compile_expr(value)?;
-                let local = self.add_local(name);
+                let local = self.add_mutable_local(name, *mutable);
                 self.emit(Op::StoreLocal(local));
             }
             Stmt::Assign {
@@ -713,10 +721,15 @@ impl AstCompiler {
                 }
                 self.emit(Op::Ret);
             }
-            Expr::Let { name, value, .. } => {
+            Expr::Let {
+                name,
+                mutable,
+                value,
+                ..
+            } => {
                 self.compile_expr(value)?;
                 self.emit(Op::Dup);
-                let local = self.add_local(name);
+                let local = self.add_mutable_local(name, *mutable);
                 self.emit(Op::StoreLocal(local));
             }
             Expr::Assign {
@@ -1011,6 +1024,11 @@ impl AstCompiler {
         let local = self
             .find_local(name)
             .ok_or_else(|| CodegenError::UnknownVariable(name.clone()))?;
+        if !self.is_local_mutable(name) {
+            return Err(CodegenError::Unsupported(format!(
+                "assignment to immutable or captured local '{name}'"
+            )));
+        }
         if let Some(op) = op {
             self.emit(Op::PushLocal(local));
             self.compile_expr(value)?;
@@ -1311,6 +1329,7 @@ impl AstCompiler {
 
         let outer_function = std::mem::replace(&mut self.current, empty_function());
         let outer_locals = std::mem::take(&mut self.locals);
+        let outer_mutability = std::mem::take(&mut self.local_mutability);
         let outer_next = self.next_local;
         let outer_loops = std::mem::take(&mut self.loops);
 
@@ -1331,12 +1350,13 @@ impl AstCompiler {
             debug_locations: Vec::new(),
         };
         self.locals = vec![HashMap::new()];
+        self.local_mutability = vec![HashMap::new()];
         self.next_local = 0;
         for (name, _) in &captures {
             self.add_local(name);
         }
         for param in params {
-            self.add_local(&param.name);
+            self.add_mutable_local(&param.name, param.mutable);
         }
         let result = self.compile_expr(body);
         if result.is_ok() {
@@ -1347,6 +1367,7 @@ impl AstCompiler {
 
         self.current = outer_function;
         self.locals = outer_locals;
+        self.local_mutability = outer_mutability;
         self.next_local = outer_next;
         self.loops = outer_loops;
         result?;
@@ -1402,14 +1423,23 @@ impl AstCompiler {
     }
     fn push_scope(&mut self) {
         self.locals.push(HashMap::new());
+        self.local_mutability.push(HashMap::new());
     }
     fn pop_scope(&mut self) {
         self.locals.pop();
+        self.local_mutability.pop();
     }
     fn add_local(&mut self, name: &str) -> usize {
+        self.add_mutable_local(name, false)
+    }
+    fn add_mutable_local(&mut self, name: &str, mutable: bool) -> usize {
         let id = self.next_local;
         self.next_local += 1;
         self.locals.last_mut().unwrap().insert(name.into(), id);
+        self.local_mutability
+            .last_mut()
+            .unwrap()
+            .insert(name.into(), mutable);
         id
     }
     fn add_temp(&mut self, prefix: &str) -> usize {
@@ -1421,6 +1451,13 @@ impl AstCompiler {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).copied())
+    }
+    fn is_local_mutable(&self, name: &str) -> bool {
+        self.local_mutability
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+            .unwrap_or(false)
     }
 }
 
@@ -1723,5 +1760,25 @@ mod tests {
                     if message.contains("recursive constant expansion")
             ));
         }
+    }
+
+    #[test]
+    fn enforces_mutable_local_assignment_defensively() {
+        let immutable = parse("fn main() { let value = 1 value = 2 }");
+        assert!(matches!(
+            AstCompiler::new().compile_program(&immutable),
+            Err(CodegenError::Unsupported(_))
+        ));
+
+        let captured = parse(
+            "fn main() { let mut value = 1 let update = || { value = 2 } update() }",
+        );
+        assert!(matches!(
+            AstCompiler::new().compile_program(&captured),
+            Err(CodegenError::Unsupported(_))
+        ));
+
+        let mutable = parse("fn main() { let mut value = 1 value += 2 value }");
+        assert!(AstCompiler::new().compile_program(&mutable).is_ok());
     }
 }

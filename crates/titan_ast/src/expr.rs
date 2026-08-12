@@ -128,6 +128,7 @@ pub enum Expr {
     },
     Let {
         name: String,
+        mutable: bool,
         type_ann: Option<TypeExpr>,
         value: Box<Expr>,
         span: Span,
@@ -197,6 +198,7 @@ pub enum Stmt {
     Expr(Expr),
     Let {
         name: String,
+        mutable: bool,
         type_ann: Option<TypeExpr>,
         value: Expr,
         span: Span,
