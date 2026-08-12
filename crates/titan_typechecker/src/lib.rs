@@ -1682,13 +1682,14 @@ impl TypeEnv {
         self.function_depth += 1;
         self.return_candidates.push(Vec::new());
         if let Some(body) = &function.body {
-            let body_type = self.check_block(body);
-            // A trailing expression is part of the function's return value,
-            // including for an explicit `-> ()` contract. Skipping Unit here
-            // let `fn bad() -> () { 42 }` return a value despite its contract.
-            if body.final_expr.is_some() {
-                self.require_compatible(&self.return_type.clone(), &body_type);
-            }
+            // Feed an explicit return contract into a trailing closure before
+            // checking its body. A post-hoc Unknown-compatible comparison is
+            // too late to validate omitted closure parameter annotations.
+            let body_type = if function.return_type.is_some() {
+                self.check_block_expected(body, Some(&self.return_type.clone()))
+            } else {
+                self.check_block(body)
+            };
             if function.return_type.is_none() {
                 if body.final_expr.is_some() {
                     if body_type != Type::Never {
@@ -1727,6 +1728,10 @@ impl TypeEnv {
     }
 
     fn check_block(&mut self, block: &Block) -> Type {
+        self.check_block_expected(block, None)
+    }
+
+    fn check_block_expected(&mut self, block: &Block, expected: Option<&Type>) -> Type {
         self.push_scope();
         for stmt in &block.stmts {
             match stmt {
@@ -1737,12 +1742,13 @@ impl TypeEnv {
                     value,
                     ..
                 } => {
-                    let found = self.check_expr(value);
-                    let ty = type_ann
-                        .as_ref()
-                        .map(type_from_ast)
-                        .unwrap_or_else(|| found.clone());
-                    self.require_compatible(&ty, &found);
+                    let ty = if let Some(annotation) = type_ann {
+                        let ty = type_from_ast(annotation);
+                        self.check_expr_expected(value, &ty);
+                        ty
+                    } else {
+                        self.check_expr(value)
+                    };
                     self.define_mutable(name.clone(), ty, *mutable);
                 }
                 Stmt::Assign {
@@ -1761,7 +1767,13 @@ impl TypeEnv {
         let result = block
             .final_expr
             .as_ref()
-            .map(|e| self.check_expr(e))
+            .map(|expression| {
+                if let Some(expected) = expected {
+                    self.check_expr_expected(expression, expected)
+                } else {
+                    self.check_expr(expression)
+                }
+            })
             .unwrap_or(Type::Unit);
         self.pop_scope();
         result
@@ -1829,10 +1841,10 @@ impl TypeEnv {
                                 field: field.clone(),
                             });
                         }
-                        let found = self.check_expr(value);
                         if let Some(expected) = expected_fields.get(field) {
-                            self.require_compatible(expected, &found);
+                            self.check_expr_expected(value, expected);
                         } else {
+                            self.check_expr(value);
                             self.errors.push(TypeError::UnknownField {
                                 structure: name.clone(),
                                 field: field.clone(),
@@ -2161,12 +2173,20 @@ impl TypeEnv {
             Expr::Return { value, .. } => {
                 let found = value
                     .as_ref()
-                    .map(|v| self.check_expr(v))
+                    .map(|expression| {
+                        if self.function_depth == 0 {
+                            self.check_expr(expression)
+                        } else {
+                            self.check_expr_expected(expression, &self.return_type.clone())
+                        }
+                    })
                     .unwrap_or(Type::Unit);
                 if self.function_depth == 0 {
                     self.errors.push(TypeError::OutsideFunction);
                 } else {
-                    self.require_compatible(&self.return_type.clone(), &found);
+                    if value.is_none() {
+                        self.require_compatible(&self.return_type.clone(), &found);
+                    }
                     if let Some(candidates) = self.return_candidates.last_mut() {
                         candidates.push(found);
                     }
@@ -2180,12 +2200,13 @@ impl TypeEnv {
                 value,
                 ..
             } => {
-                let found = self.check_expr(value);
-                let ty = type_ann
-                    .as_ref()
-                    .map(type_from_ast)
-                    .unwrap_or_else(|| found.clone());
-                self.require_compatible(&ty, &found);
+                let ty = if let Some(annotation) = type_ann {
+                    let ty = type_from_ast(annotation);
+                    self.check_expr_expected(value, &ty);
+                    ty
+                } else {
+                    self.check_expr(value)
+                };
                 self.define_mutable(name.clone(), ty.clone(), *mutable);
                 ty
             }
@@ -2237,54 +2258,108 @@ impl TypeEnv {
                 return_type,
                 body,
                 ..
-            } => {
-                self.push_scope();
-                let p: Vec<Type> = params
-                    .iter()
-                    .map(|x| {
-                        x.type_ann
-                            .as_ref()
-                            .map(type_from_ast)
-                            .unwrap_or(Type::Unknown)
-                    })
-                    .collect();
-                for (param, ty) in params.iter().zip(&p) {
-                    self.define_at_depth(
-                        param.name.clone(),
-                        ty.clone(),
-                        param.mutable,
-                        self.function_depth + 1,
-                    );
-                }
-                let old_ret = std::mem::replace(
-                    &mut self.return_type,
-                    return_type
-                        .as_ref()
-                        .map(type_from_ast)
-                        .unwrap_or(Type::Unknown),
-                );
-                let old_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
-                self.function_depth += 1;
-                self.return_candidates.push(Vec::new());
-                let actual = self.check_expr(body);
-                if actual != Type::Never {
-                    if let Some(candidates) = self.return_candidates.last_mut() {
-                        candidates.push(actual.clone());
-                    }
-                }
-                let candidates = self.return_candidates.pop().unwrap_or_default();
-                self.function_depth -= 1;
-                self.loop_depth = old_loop_depth;
-                self.return_type = old_ret;
-                let result = return_type
-                    .as_ref()
-                    .map(type_from_ast)
-                    .unwrap_or_else(|| self.infer_return_type("closure", &candidates));
-                self.require_compatible(&result, &actual);
-                self.pop_scope();
-                Type::Function(p, Box::new(result))
+            } => self.check_closure(params, return_type.as_ref(), body, None, None),
+        }
+    }
+
+    /// Checks a closure with optional parameter/return context supplied by a
+    /// function contract or a collection callback. Unannotated parameters must
+    /// inherit that context before the body is checked; treating them as
+    /// Unknown first allowed invalid bodies such as `|text| text * 2` to satisfy
+    /// an unrelated `fn(string) -> int` contract.
+    fn check_closure(
+        &mut self,
+        params: &[Param],
+        declared_return: Option<&TypeExpr>,
+        body: &Expr,
+        contextual_params: Option<&[Type]>,
+        contextual_result: Option<&Type>,
+    ) -> Type {
+        if let Some(expected) = contextual_params {
+            if params.len() != expected.len() {
+                self.errors.push(TypeError::Arity {
+                    expected: expected.len(),
+                    found: params.len(),
+                });
             }
         }
+
+        self.push_scope();
+        let parameter_types: Vec<Type> = params
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| {
+                parameter
+                    .type_ann
+                    .as_ref()
+                    .map(type_from_ast)
+                    .or_else(|| contextual_params.and_then(|types| types.get(index).cloned()))
+                    .unwrap_or(Type::Unknown)
+            })
+            .collect();
+        for (parameter, ty) in params.iter().zip(&parameter_types) {
+            self.define_at_depth(
+                parameter.name.clone(),
+                ty.clone(),
+                parameter.mutable,
+                self.function_depth + 1,
+            );
+        }
+
+        let declared_result = declared_return.map(type_from_ast);
+        let expected_result = declared_result
+            .clone()
+            .or_else(|| contextual_result.cloned())
+            .unwrap_or(Type::Unknown);
+        let old_return = std::mem::replace(&mut self.return_type, expected_result.clone());
+        let old_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
+        self.function_depth += 1;
+        self.return_candidates.push(Vec::new());
+        let actual = self.check_expr(body);
+        if actual != Type::Never {
+            if let Some(candidates) = self.return_candidates.last_mut() {
+                candidates.push(actual.clone());
+            }
+        }
+        let candidates = self.return_candidates.pop().unwrap_or_default();
+        self.function_depth -= 1;
+        self.loop_depth = old_loop_depth;
+        self.return_type = old_return;
+
+        let result = declared_result
+            .or_else(|| contextual_result.cloned())
+            .unwrap_or_else(|| self.infer_return_type("closure", &candidates));
+        self.require_compatible(&result, &actual);
+        self.pop_scope();
+        Type::Function(parameter_types, Box::new(result))
+    }
+
+    /// Applies an expected type before checking closures, so their omitted
+    /// parameter annotations are not silently treated as dynamic values.
+    fn check_expr_expected(&mut self, expression: &Expr, expected: &Type) -> Type {
+        let expected_resolved = self.resolve_alias(expected);
+        let found = if let (
+            Expr::Closure {
+                params,
+                return_type,
+                body,
+                ..
+            },
+            Type::Function(parameters, result),
+        ) = (expression, &expected_resolved)
+        {
+            self.check_closure(
+                params,
+                return_type.as_ref(),
+                body,
+                Some(parameters),
+                Some(result),
+            )
+        } else {
+            self.check_expr(expression)
+        };
+        self.require_compatible(expected, &found);
+        found
     }
 
     fn check_string_template(&mut self, template: &str) {
@@ -2394,11 +2469,12 @@ impl TypeEnv {
                 return Type::Unknown;
             }
             ("map", 1) => {
-                let callable = self.check_expr(&args[0]);
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    let result = self.check_callback("map callback", &callable, &[item], None);
+                    let result =
+                        self.check_callback_expr("map callback", &args[0], &[item], None);
                     return Type::Array(Box::new(result));
                 }
+                self.check_expr(&args[0]);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
@@ -2406,16 +2482,16 @@ impl TypeEnv {
                 return Type::Unknown;
             }
             ("filter", 1) => {
-                let callable = self.check_expr(&args[0]);
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    self.check_callback(
+                    self.check_callback_expr(
                         "filter predicate",
-                        &callable,
+                        &args[0],
                         &[item.clone()],
                         Some(&Type::Bool),
                     );
                     return Type::Array(Box::new(item));
                 }
+                self.check_expr(&args[0]);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
@@ -2424,16 +2500,16 @@ impl TypeEnv {
             }
             ("fold", 2) => {
                 let initial = self.check_expr(&args[0]);
-                let callable = self.check_expr(&args[1]);
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    self.check_callback(
+                    self.check_callback_expr(
                         "fold callback",
-                        &callable,
+                        &args[1],
                         &[initial.clone(), item],
                         Some(&initial),
                     );
                     return initial;
                 }
+                self.check_expr(&args[1]);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
@@ -2441,11 +2517,10 @@ impl TypeEnv {
                 return Type::Unknown;
             }
             ("sort_by", 1) => {
-                let callable = self.check_expr(&args[0]);
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    let result = self.check_callback(
+                    let result = self.check_callback_expr(
                         "sort_by comparator",
-                        &callable,
+                        &args[0],
                         &[item.clone(), item.clone()],
                         None,
                     );
@@ -2457,6 +2532,7 @@ impl TypeEnv {
                     }
                     return Type::Array(Box::new(item));
                 }
+                self.check_expr(&args[0]);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
@@ -2464,11 +2540,10 @@ impl TypeEnv {
                 return Type::Unknown;
             }
             ("find", 1) | ("any", 1) | ("all", 1) => {
-                let callable = self.check_expr(&args[0]);
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    self.check_callback(
+                    self.check_callback_expr(
                         &format!("{method} predicate"),
-                        &callable,
+                        &args[0],
                         &[item],
                         Some(&Type::Bool),
                     );
@@ -2478,6 +2553,7 @@ impl TypeEnv {
                         Type::Bool
                     };
                 }
+                self.check_expr(&args[0]);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
@@ -2508,8 +2584,7 @@ impl TypeEnv {
                     });
                 }
                 for (argument, expected) in args.iter().zip(params) {
-                    let found = self.check_expr(argument);
-                    self.require_compatible(expected, &found);
+                    self.check_expr_expected(argument, expected);
                 }
                 for argument in args.iter().skip(params.len()) {
                     self.check_expr(argument);
@@ -2535,6 +2610,33 @@ impl TypeEnv {
             }
         }
         Type::Unknown
+    }
+
+    fn check_callback_expr(
+        &mut self,
+        name: &str,
+        expression: &Expr,
+        arguments: &[Type],
+        result: Option<&Type>,
+    ) -> Type {
+        let callable = if let Expr::Closure {
+            params,
+            return_type,
+            body,
+            ..
+        } = expression
+        {
+            self.check_closure(
+                params,
+                return_type.as_ref(),
+                body,
+                Some(arguments),
+                result,
+            )
+        } else {
+            self.check_expr(expression)
+        };
+        self.check_callback(name, &callable, arguments, result)
     }
 
     fn check_callback(
@@ -2596,12 +2698,12 @@ impl TypeEnv {
             self.errors.push(TypeError::InvalidAssignmentTarget);
             return target_type;
         }
-        let value_type = self.check_expr(value);
         if let Some(operator) = op {
+            let value_type = self.check_expr(value);
             let result = self.check_binary(operator, target_type.clone(), value_type);
             self.require_compatible(&target_type, &result);
         } else {
-            self.require_compatible(&target_type, &value_type);
+            self.check_expr_expected(value, &target_type);
         }
         target_type
     }
@@ -2656,15 +2758,13 @@ impl TypeEnv {
         };
         let result = match name {
             "map" => {
-                let callable = self.check_expr(&args[1]);
-                let output = self.check_callback("map callback", &callable, &[item], None);
+                let output = self.check_callback_expr("map callback", &args[1], &[item], None);
                 Type::Array(Box::new(output))
             }
             "filter" => {
-                let callable = self.check_expr(&args[1]);
-                self.check_callback(
+                self.check_callback_expr(
                     "filter predicate",
-                    &callable,
+                    &args[1],
                     &[item.clone()],
                     Some(&Type::Bool),
                 );
@@ -2672,20 +2772,18 @@ impl TypeEnv {
             }
             "fold" => {
                 let initial = self.check_expr(&args[1]);
-                let callable = self.check_expr(&args[2]);
-                self.check_callback(
+                self.check_callback_expr(
                     "fold callback",
-                    &callable,
+                    &args[2],
                     &[initial.clone(), item],
                     Some(&initial),
                 );
                 initial
             }
             "sort_by" => {
-                let callable = self.check_expr(&args[1]);
-                let output = self.check_callback(
+                let output = self.check_callback_expr(
                     "sort_by comparator",
-                    &callable,
+                    &args[1],
                     &[item.clone(), item.clone()],
                     None,
                 );
@@ -2698,15 +2796,18 @@ impl TypeEnv {
                 Type::Array(Box::new(item))
             }
             "find" => {
-                let callable = self.check_expr(&args[1]);
-                self.check_callback("find predicate", &callable, &[item], Some(&Type::Bool));
+                self.check_callback_expr(
+                    "find predicate",
+                    &args[1],
+                    &[item],
+                    Some(&Type::Bool),
+                );
                 Type::Unknown
             }
             "any" | "all" => {
-                let callable = self.check_expr(&args[1]);
-                self.check_callback(
+                self.check_callback_expr(
                     &format!("{name} predicate"),
-                    &callable,
+                    &args[1],
                     &[item],
                     Some(&Type::Bool),
                 );
@@ -2765,8 +2866,7 @@ impl TypeEnv {
                     });
                 }
                 if let (Some(expected), Some(argument)) = (payload, args.first()) {
-                    let found = self.check_expr(argument);
-                    self.require_compatible(&expected, &found);
+                    self.check_expr_expected(argument, &expected);
                 }
                 return Type::Named(
                     name.split_once("::")
@@ -2792,8 +2892,7 @@ impl TypeEnv {
                     });
                 }
                 for (arg, expected) in args.iter().zip(&params) {
-                    let found = self.check_expr(arg);
-                    self.require_compatible(expected, &found);
+                    self.check_expr_expected(arg, expected);
                 }
                 for arg in args.iter().skip(params.len()) {
                     self.check_expr(arg);
@@ -4013,6 +4112,11 @@ mod tests {
     fn validates_collection_method_callbacks() {
         assert!(check("fn main() { [1, 2].map(|value: int| value + 1) }").is_ok());
         assert!(check("fn main() { [1, 2].filter(|value: int| value + 1) }").is_err());
+        assert!(check("fn main() { [1, 2].filter(|value| value + 1) }").is_err());
+        assert!(check(
+            "fn main() { let values: [string] = [1, 2].map(|value| value + 1) }"
+        )
+        .is_err());
         assert!(check("fn main() { [1, 2].map(42) }").is_err());
         assert!(check("fn main() { [1, 2].map(|| 1) }").is_err());
         assert!(
@@ -4025,9 +4129,34 @@ mod tests {
         assert!(check("fn main() { len(42) }").is_err());
         assert!(check("fn main() { map(42, |value| value) }").is_err());
         assert!(check("fn main() { filter([1, 2], |value: int| value + 1) }").is_err());
+        assert!(check("fn main() { filter([1, 2], |value| value + 1) }").is_err());
+        assert!(check(
+            "fn main() { let values: [string] = map([1, 2], |value| value + 1) }"
+        )
+        .is_err());
         assert!(
             check("fn main() { let values: [string] = map((1, 2), |value: int| \"ok\") }").is_ok()
         );
+    }
+
+    #[test]
+    fn contextualizes_closures_before_checking_their_bodies() {
+        assert!(check(
+            "fn main() { let transform: fn(int) -> int = |value| value + 1 transform(2) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let invalid: fn(string) -> int = |value| value * 2 invalid(\"x\") }"
+        )
+        .is_err());
+        assert!(check(
+            "fn apply(callback: fn(string) -> int) -> int { callback(\"x\") } fn main() { apply(|value| value * 2) }"
+        )
+        .is_err());
+        assert!(check(
+            "fn invalid_factory() -> fn(string) -> int { |value| value * 2 } fn main() {}"
+        )
+        .is_err());
     }
 
     #[test]
