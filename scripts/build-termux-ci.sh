@@ -72,15 +72,17 @@ format_worktree="$(mktemp -d "${TMPDIR:-/tmp}/titan-rustfmt.XXXXXXXX")"
 if git worktree add --quiet --detach "$format_worktree" HEAD; then
     if (cd "$format_worktree" && cargo fmt --all); then
         git -C "$format_worktree" diff --binary > "$DIST_DIR/rustfmt.patch"
-        # The sandbox cannot download Azure-backed Actions artifacts. Publish a
-        # compressed patch as numbered, machine-readable notice annotations too.
+        # The sandbox cannot download Azure-backed Actions artifacts. Preserve
+        # the compressed patch in the job summary too, which is retrievable via
+        # the GitHub API without the Azure download redirect.
         gzip -n -c "$DIST_DIR/rustfmt.patch" | base64 -w 0 > "$DIST_DIR/rustfmt.patch.gz.b64"
-        split -b 60000 -d -a 2 "$DIST_DIR/rustfmt.patch.gz.b64" "$DIST_DIR/rustfmt-chunk-"
-        for chunk in "$DIST_DIR"/rustfmt-chunk-*; do
-            chunk_id="${chunk##*-}"
-            printf '::notice file=rustfmt.patch,line=1,title=RUSTFMT_PATCH_%s::%s\n' \
-                "$chunk_id" "$(cat "$chunk")"
-        done
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            {
+                printf '%s\n' '<!-- RUSTFMT_PATCH_GZIP_BASE64_BEGIN -->'
+                cat "$DIST_DIR/rustfmt.patch.gz.b64"
+                printf '\n%s\n' '<!-- RUSTFMT_PATCH_GZIP_BASE64_END -->'
+            } >> "$GITHUB_STEP_SUMMARY"
+        fi
     else
         printf '%s\n' 'cargo fmt could not run in the diagnostic worktree' > "$DIST_DIR/rustfmt-error.txt"
     fi
