@@ -217,5 +217,4 @@ mod tests {
         assert_eq!(cleanup_runtime(70_003), 1);
         assert_eq!(cleanup_runtime(70_004), 1);
     }
-
 }

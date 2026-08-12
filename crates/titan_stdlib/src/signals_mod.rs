@@ -73,7 +73,8 @@ pub fn install(signal_name: &str) -> Result<(), SignalError> {
         return Ok(());
     }
 
-    let mut signals = Signals::new([signal]).map_err(|error| SignalError::Hook(error.to_string()))?;
+    let mut signals =
+        Signals::new([signal]).map_err(|error| SignalError::Hook(error.to_string()))?;
     let mut entry = SignalSubscribers::default();
     entry
         .runtimes
@@ -172,12 +173,8 @@ mod tests {
             let registry = crate::native::lock_recover(subscribers());
             registry[&SIGUSR1].runtimes[&first].fetch_add(1, Ordering::SeqCst);
         }
-        crate::native::with_runtime_context(second, || {
-            assert_eq!(pending("SIGUSR1").unwrap(), 0)
-        });
-        crate::native::with_runtime_context(first, || {
-            assert_eq!(pending("SIGUSR1").unwrap(), 1)
-        });
+        crate::native::with_runtime_context(second, || assert_eq!(pending("SIGUSR1").unwrap(), 0));
+        crate::native::with_runtime_context(first, || assert_eq!(pending("SIGUSR1").unwrap(), 1));
         assert_eq!(cleanup_runtime(first), 1);
         assert_eq!(cleanup_runtime(second), 1);
     }

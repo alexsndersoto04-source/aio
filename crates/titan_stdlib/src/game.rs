@@ -38,11 +38,19 @@ fn game_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<GameState>>>> {
 fn get_game_state() -> Arc<Mutex<GameState>> {
     let runtime_id = crate::native::current_runtime_id();
     let mut states = crate::native::lock_recover(game_states());
-    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(GameState::new()))))
+    Arc::clone(
+        states
+            .entry(runtime_id)
+            .or_insert_with(|| Arc::new(Mutex::new(GameState::new()))),
+    )
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
-    usize::from(crate::native::lock_recover(game_states()).remove(&runtime_id).is_some())
+    usize::from(
+        crate::native::lock_recover(game_states())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 
 pub fn init(title: &str, width: i64, height: i64) -> bool {

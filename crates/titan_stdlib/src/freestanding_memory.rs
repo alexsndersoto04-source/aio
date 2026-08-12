@@ -35,11 +35,19 @@ fn memory_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<MemoryState>>>> {
 fn get_memory_state() -> Arc<Mutex<MemoryState>> {
     let runtime_id = crate::native::current_runtime_id();
     let mut states = crate::native::lock_recover(memory_states());
-    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(MemoryState::new()))))
+    Arc::clone(
+        states
+            .entry(runtime_id)
+            .or_insert_with(|| Arc::new(Mutex::new(MemoryState::new()))),
+    )
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
-    usize::from(crate::native::lock_recover(memory_states()).remove(&runtime_id).is_some())
+    usize::from(
+        crate::native::lock_recover(memory_states())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 
 pub fn init_frame_allocator(base_paddr: u64, total_size_bytes: u64) -> bool {

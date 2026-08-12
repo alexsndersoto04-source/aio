@@ -24,11 +24,19 @@ fn freestanding_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<FreestandingSt
 fn get_freestanding_state() -> Arc<Mutex<FreestandingState>> {
     let runtime_id = crate::native::current_runtime_id();
     let mut states = crate::native::lock_recover(freestanding_states());
-    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(FreestandingState::new()))))
+    Arc::clone(
+        states
+            .entry(runtime_id)
+            .or_insert_with(|| Arc::new(Mutex::new(FreestandingState::new()))),
+    )
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
-    usize::from(crate::native::lock_recover(freestanding_states()).remove(&runtime_id).is_some())
+    usize::from(
+        crate::native::lock_recover(freestanding_states())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 
 pub fn validate_target_spec(target: &str) -> bool {

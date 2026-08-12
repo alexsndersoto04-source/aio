@@ -38,11 +38,19 @@ fn cpu_states() -> &'static Mutex<HashMap<u64, Arc<Mutex<CpuState>>>> {
 fn get_cpu_state() -> Arc<Mutex<CpuState>> {
     let runtime_id = crate::native::current_runtime_id();
     let mut states = crate::native::lock_recover(cpu_states());
-    Arc::clone(states.entry(runtime_id).or_insert_with(|| Arc::new(Mutex::new(CpuState::new()))))
+    Arc::clone(
+        states
+            .entry(runtime_id)
+            .or_insert_with(|| Arc::new(Mutex::new(CpuState::new()))),
+    )
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
-    usize::from(crate::native::lock_recover(cpu_states()).remove(&runtime_id).is_some())
+    usize::from(
+        crate::native::lock_recover(cpu_states())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 
 pub fn init_exception_table(base_vbar: u64) -> bool {

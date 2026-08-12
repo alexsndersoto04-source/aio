@@ -1565,19 +1565,20 @@ mod tests {
         with_runtime_context(first, || {
             assert!(crate::freestanding::init("aarch64-unknown-none"));
             assert!(crate::freestanding_memory::init_frame_allocator(
-                0x10_0000,
-                0x4000
+                0x10_0000, 0x4000
             ));
             let frame = crate::freestanding_memory::allocate_frame();
             assert_eq!(frame, 0x10_0000);
             assert!(crate::freestanding_memory::map_page(0x40_0000, frame, 3));
             assert!(crate::freestanding_cpu::init_exception_table(0x8000_0000));
-            assert!(crate::freestanding_cpu::register_exception_handler(0, 0x9000));
-            assert_ne!(
-                crate::freestanding_cpu::dispatch_exception(0, 0x1234, 5),
-                0
-            );
-            assert!(crate::freestanding_mmio::init_mmio_region(0x3f00_0000, 0x1000));
+            assert!(crate::freestanding_cpu::register_exception_handler(
+                0, 0x9000
+            ));
+            assert_ne!(crate::freestanding_cpu::dispatch_exception(0, 0x1234, 5), 0);
+            assert!(crate::freestanding_mmio::init_mmio_region(
+                0x3f00_0000,
+                0x1000
+            ));
             assert!(crate::freestanding_mmio::write_mmio_u32(
                 0x3f00_0004,
                 0xdead_beef
@@ -1619,5 +1620,4 @@ mod tests {
         });
         assert_eq!(cleanup_runtime_resources(first), 4);
     }
-
 }

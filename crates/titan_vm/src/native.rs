@@ -361,7 +361,12 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 u64::try_from(int!()).map_err(|_| "rate limit maximum must be nonnegative")?;
             let window =
                 u64::try_from(int!()).map_err(|_| "rate limit window must be nonnegative")?;
-            Value::Bool(rate_limit(runtime_id, &key, maximum, Duration::from_millis(window))?)
+            Value::Bool(rate_limit(
+                runtime_id,
+                &key,
+                maximum,
+                Duration::from_millis(window),
+            )?)
         }
         "std::http::json_response" => {
             let status = int!();
@@ -4773,12 +4778,7 @@ fn with_response_headers(
     update(headers)?;
     Ok(response)
 }
-fn rate_limit(
-    runtime_id: u64,
-    key: &str,
-    maximum: u64,
-    window: Duration,
-) -> Result<bool, String> {
+fn rate_limit(runtime_id: u64, key: &str, maximum: u64, window: Duration) -> Result<bool, String> {
     if maximum == 0 || window.is_zero() {
         return Ok(false);
     }
@@ -6377,5 +6377,4 @@ mod tests {
         assert_eq!(cleanup_runtime_resources(82_001), 1);
         assert_eq!(cleanup_runtime_resources(82_002), 1);
     }
-
 }

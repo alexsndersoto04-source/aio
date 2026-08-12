@@ -50,22 +50,6 @@ export RANLIB_aarch64_linux_android="$llvm_ranlib"
 # This is a real Android cross-check: build scripts for bundled C components
 # such as SQLite receive the NDK compiler instead of accidentally searching for
 # a nonexistent host aarch64-linux-android-gcc.
-# Temporary diagnostic for environments where the Actions log archive is not
-# retrievable: expose rustfmt's exact patch as bounded check annotations.
-if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-    fmt_log="$(mktemp "${TMPDIR:-/tmp}/titan-rustfmt.XXXXXXXX.log")"
-    if ! cargo fmt --all -- --check >"$fmt_log" 2>&1; then
-        python3 - "$fmt_log" <<'PYFMT'
-import pathlib, sys
-text = pathlib.Path(sys.argv[1]).read_text(errors="replace")[-40_000:]
-for index in range(0, len(text), 3_800):
-    message = text[index:index + 3_800]
-    message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    print(f"::error file=scripts/check-android-aarch64-ci.sh,line=1,title=RUSTFMT_{index // 3800:02d}::{message}")
-PYFMT
-    fi
-    rm -f "$fmt_log"
-fi
 check_log="$(mktemp "${TMPDIR:-/tmp}/titan-aarch64-check.XXXXXXXX.log")"
 trap 'rm -f "$check_log"' EXIT
 if ! cargo check --locked --workspace --all-targets --target "$TARGET" 2>&1 | tee "$check_log"; then

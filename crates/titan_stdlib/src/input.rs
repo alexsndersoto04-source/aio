@@ -32,7 +32,11 @@ fn state() -> Arc<Mutex<InputState>> {
 }
 
 pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
-    usize::from(crate::native::lock_recover(states()).remove(&runtime_id).is_some())
+    usize::from(
+        crate::native::lock_recover(states())
+            .remove(&runtime_id)
+            .is_some(),
+    )
 }
 
 pub fn set_key_state(key: &str, pressed: bool) -> bool {
