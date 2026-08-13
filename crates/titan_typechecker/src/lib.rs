@@ -2162,13 +2162,23 @@ impl TypeEnv {
                 self.loop_depth += 1;
                 self.check_block(body);
                 self.loop_depth -= 1;
-                Type::Unit
+                if matches!(condition.as_ref(), Expr::Bool { value: true, .. })
+                    && !block_may_break_current_loop(body)
+                {
+                    Type::Never
+                } else {
+                    Type::Unit
+                }
             }
             Expr::Loop { body, .. } => {
                 self.loop_depth += 1;
                 self.check_block(body);
                 self.loop_depth -= 1;
-                Type::Unit
+                if block_may_break_current_loop(body) {
+                    Type::Unit
+                } else {
+                    Type::Never
+                }
             }
             Expr::Break { value, .. } => {
                 if self.loop_depth == 0 {
@@ -3867,9 +3877,106 @@ fn builtin_method_arity(receiver: &Type, method: &str) -> Option<usize> {
     }
 }
 
+fn block_may_break_current_loop(block: &Block) -> bool {
+    block.stmts.iter().any(|statement| match statement {
+        Stmt::Expr(expression) => expr_may_break_current_loop(expression),
+        Stmt::Let { value, .. } => expr_may_break_current_loop(value),
+        Stmt::Assign { target, value, .. } => {
+            expr_may_break_current_loop(target) || expr_may_break_current_loop(value)
+        }
+        Stmt::Item(_) => false,
+    }) || block
+        .final_expr
+        .as_deref()
+        .is_some_and(expr_may_break_current_loop)
+}
+
+fn expr_may_break_current_loop(expression: &Expr) -> bool {
+    match expression {
+        Expr::Break { .. } => true,
+        Expr::Array { elements, .. } | Expr::Tuple { elements, .. } => {
+            elements.iter().any(expr_may_break_current_loop)
+        }
+        Expr::StructLit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_may_break_current_loop(value)),
+        Expr::Binary { left, right, .. } | Expr::Range { start: left, end: right, .. } => {
+            expr_may_break_current_loop(left) || expr_may_break_current_loop(right)
+        }
+        Expr::Unary { expr, .. }
+        | Expr::FieldAccess { target: expr, .. }
+        | Expr::Spawn { expr, .. }
+        | Expr::Try { expr, .. } => expr_may_break_current_loop(expr),
+        Expr::Call { callee, args, .. } => {
+            expr_may_break_current_loop(callee)
+                || args.iter().any(expr_may_break_current_loop)
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            expr_may_break_current_loop(receiver)
+                || args.iter().any(expr_may_break_current_loop)
+        }
+        Expr::Index { target, index, .. } => {
+            expr_may_break_current_loop(target) || expr_may_break_current_loop(index)
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_may_break_current_loop(condition)
+                || block_may_break_current_loop(then_branch)
+                || else_branch
+                    .as_ref()
+                    .is_some_and(block_may_break_current_loop)
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_may_break_current_loop(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_deref()
+                        .is_some_and(expr_may_break_current_loop)
+                        || block_may_break_current_loop(&arm.body)
+                })
+        }
+        // A break in the iterable/condition executes before entering the
+        // nested loop. Breaks in its body belong to that nested loop.
+        Expr::For { iterator, .. } => expr_may_break_current_loop(iterator),
+        Expr::While { condition, .. } => expr_may_break_current_loop(condition),
+        Expr::Loop { .. } | Expr::Closure { .. } => false,
+        Expr::Return { value, .. } => value
+            .as_deref()
+            .is_some_and(expr_may_break_current_loop),
+        Expr::Let { value, .. } => expr_may_break_current_loop(value),
+        Expr::Assign { target, value, .. } => {
+            expr_may_break_current_loop(target) || expr_may_break_current_loop(value)
+        }
+        Expr::Block(block) => block_may_break_current_loop(block),
+        Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::String { .. }
+        | Expr::StringTemplate { .. }
+        | Expr::Char { .. }
+        | Expr::Bool { .. }
+        | Expr::Nil { .. }
+        | Expr::Ident { .. }
+        | Expr::Continue { .. } => false,
+    }
+}
+
 fn block_definitely_returns(block: &Block) -> bool {
     for statement in &block.stmts {
-        if matches!(statement, Stmt::Expr(expr) if expr_definitely_returns(expr)) {
+        let exits = match statement {
+            Stmt::Expr(expression) => expr_definitely_returns(expression),
+            Stmt::Let { value, .. } => expr_definitely_returns(value),
+            Stmt::Assign { target, value, .. } => {
+                expr_definitely_returns(target) || expr_definitely_returns(value)
+            }
+            Stmt::Item(_) => false,
+        };
+        if exits {
             return true;
         }
     }
@@ -3897,6 +4004,13 @@ fn expr_definitely_returns(expr: &Expr) -> bool {
                     )
             });
             exhaustive && arms.iter().all(|arm| block_definitely_returns(&arm.body))
+        }
+        Expr::Loop { body, .. } => !block_may_break_current_loop(body),
+        Expr::While {
+            condition, body, ..
+        } => {
+            matches!(condition.as_ref(), Expr::Bool { value: true, .. })
+                && !block_may_break_current_loop(body)
         }
         Expr::Let { value, .. } => expr_definitely_returns(value),
         Expr::Assign { value, .. } => expr_definitely_returns(value),
@@ -3999,13 +4113,17 @@ fn strict_function_component(expected: &Type, found: &Type) -> bool {
 }
 
 fn compatible(a: &Type, b: &Type) -> bool {
-    // Base cases: identical types, Unknown-matches-anything, Never
-    // (bottom type) matches anything, and the historical Unit<->Nil
-    // gap so control-flow can flow either way.
+    // Compatibility is directional. Never is the bottom type: an expression
+    // that never completes can satisfy any expected type, but a concrete value
+    // cannot satisfy an explicit `!` contract. Unknown remains the gradual
+    // escape hatch in either direction, except that it cannot prove `!`.
     if a == b {
         return true;
     }
-    if matches!(a, Type::Unknown | Type::Never) {
+    if a == &Type::Never {
+        return false;
+    }
+    if a == &Type::Unknown {
         return true;
     }
     if matches!(b, Type::Unknown | Type::Never) {
@@ -4325,6 +4443,22 @@ mod tests {
         .is_ok());
         assert!(check("const INVALID = return 1 fn main() {}").is_err());
         assert!(check("fn main() { spawn |value: int| value }").is_err());
+    }
+
+    #[test]
+    fn enforces_directional_never_and_infinite_loop_types() {
+        assert!(check("fn invalid() -> ! { 1 } fn main() {}").is_err());
+        assert!(check("fn invalid() -> ! { return 1 } fn main() {}").is_err());
+        assert!(check("fn main() { let impossible: ! = 1 }").is_err());
+        assert!(check("fn halt() -> ! { loop {} } fn main() {}").is_ok());
+        assert!(check("fn halt() -> int { loop {} } fn main() {}").is_ok());
+        assert!(check("fn halt() -> int { let never = loop {} } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { while true {} } fn main() {}").is_ok());
+        assert!(check(
+            "fn exits(flag: bool) -> int { loop { if flag { break } } } fn main() {}"
+        )
+        .is_err());
+        assert!(check("fn nested() -> ! { loop { loop { break } } } fn main() {}").is_ok());
     }
 
     #[test]
