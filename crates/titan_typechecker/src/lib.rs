@@ -3008,9 +3008,7 @@ impl TypeEnv {
                     }
                 }
                 if let Some(expected) = result {
-                    if *found_result != Type::Never
-                        && !strict_function_component(expected, &found_result)
-                    {
+                    if !strict_function_result(expected, &found_result) {
                         self.errors.push(TypeError::Mismatch {
                             expected: expected.clone(),
                             found: *found_result.clone(),
@@ -4671,10 +4669,14 @@ fn strict_function_component(expected: &Type, found: &Type) -> bool {
                     .iter()
                     .zip(right_params)
                     .all(|(left, right)| strict_function_component(left, right))
-                && strict_function_component(left_result, right_result)
+                && strict_function_result(left_result, right_result)
         }
         _ => false,
     }
+}
+
+fn strict_function_result(expected: &Type, found: &Type) -> bool {
+    found == &Type::Never || strict_function_component(expected, found)
 }
 
 fn compatible(a: &Type, b: &Type) -> bool {
@@ -4716,7 +4718,7 @@ fn compatible(a: &Type, b: &Type) -> bool {
                     .iter()
                     .zip(bp.iter())
                     .all(|(x, y)| strict_function_component(x, y))
-                && strict_function_component(ar, br)
+                && strict_function_result(ar, br)
         }
         _ => false,
     }
@@ -5080,6 +5082,18 @@ mod tests {
         .is_ok());
         assert!(check(
             "fn work(first: any, second: any) -> int { 1 } fn inferred() { std::try::catch(work, loop {}, return 1) } fn main() { let impossible: ! = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop {} } fn invoke(callback: fn() -> int) -> int { callback() } fn main() { invoke(halt) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn value() -> int { 1 } fn require_never(callback: fn() -> !) { callback() } fn main() { require_never(value) }"
+        )
+        .is_err());
+        assert!(check(
+            "fn stop(value: int) -> ! { loop {} } fn main() { let values: [int] = filter([1], stop) }"
         )
         .is_ok());
         assert!(check("fn main() { let halt = || loop {} let impossible: ! = halt() }").is_ok());
