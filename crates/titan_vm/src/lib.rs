@@ -4666,8 +4666,7 @@ mod tests {
     #[test]
     fn local_callables_shadow_collection_intrinsics_at_runtime() {
         assert_eq!(
-            run("fn main() { let len = |value: string| value + \"!\" len(\"ok\") }")
-                .unwrap(),
+            run("fn main() { let len = |value: string| value + \"!\" len(\"ok\") }").unwrap(),
             Value::Str("ok!".into())
         );
         assert_eq!(

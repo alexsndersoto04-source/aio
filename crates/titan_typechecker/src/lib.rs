@@ -3400,8 +3400,8 @@ impl TypeEnv {
         let static_name = name
             .as_ref()
             .filter(|name| !self.is_local_binding(name.as_str()));
-        let variadic_print = static_name
-            .is_some_and(|name| matches!(name.as_str(), "print" | "println"));
+        let variadic_print =
+            static_name.is_some_and(|name| matches!(name.as_str(), "print" | "println"));
         if let Some(name) = static_name {
             if let Some(result) = self.check_collection_call(name, args) {
                 return result;
@@ -5067,14 +5067,8 @@ mod tests {
             "fn main() { let map: fn(int, int) -> int = |left, right| left + right map(\"bad\", 2) }"
         )
         .is_err());
-        assert!(check(
-            "fn main() { let print: fn(int) -> int = |value| value print(1) }"
-        )
-        .is_ok());
-        assert!(check(
-            "fn main() { let print: fn(int) -> int = |value| value print() }"
-        )
-        .is_err());
+        assert!(check("fn main() { let print: fn(int) -> int = |value| value print(1) }").is_ok());
+        assert!(check("fn main() { let print: fn(int) -> int = |value| value print() }").is_err());
         assert!(check("fn main() { print() print(1, 2, 3) }").is_ok());
     }
 
