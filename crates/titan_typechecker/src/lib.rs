@@ -2590,12 +2590,9 @@ impl TypeEnv {
             ),
             (Expr::Array { elements, .. }, Type::Array(item)) => {
                 let mut reachable = true;
-                let found: Vec<_> = elements
-                    .iter()
-                    .map(|element| {
-                        self.check_evaluated_expr(element, Some(item), &mut reachable)
-                    })
-                    .collect();
+                for element in elements {
+                    self.check_evaluated_expr(element, Some(item), &mut reachable);
+                }
                 if !reachable {
                     Type::Never
                 } else {
@@ -2938,17 +2935,6 @@ impl TypeEnv {
         }
     }
 
-    fn check_callback_expr(
-        &mut self,
-        name: &str,
-        expression: &Expr,
-        arguments: &[Type],
-        result: Option<&Type>,
-    ) -> Type {
-        self.check_callback_expr_evaluation(name, expression, arguments, result)
-            .0
-    }
-
     fn check_evaluated_callback(
         &mut self,
         name: &str,
@@ -3185,8 +3171,7 @@ impl TypeEnv {
                 Type::Array(Box::new(item))
             }
             "fold" => {
-                let initial =
-                    self.check_evaluated_expr(&args[1], None, &mut reachable);
+                let initial = self.check_evaluated_expr(&args[1], None, &mut reachable);
                 self.check_evaluated_callback(
                     "fold callback",
                     &args[2],
@@ -3204,10 +3189,7 @@ impl TypeEnv {
                     None,
                     &mut reachable,
                 );
-                if reachable
-                    && output != Type::Never
-                    && !is_numeric(&self.resolve_alias(&output))
-                {
+                if reachable && output != Type::Never && !is_numeric(&self.resolve_alias(&output)) {
                     self.errors.push(TypeError::Mismatch {
                         expected: Type::Int,
                         found: output,
@@ -3262,11 +3244,7 @@ impl TypeEnv {
         let callable = if inline_closure {
             None
         } else {
-            Some(self.check_evaluated_expr(
-                callable_expression,
-                None,
-                &mut reachable,
-            ))
+            Some(self.check_evaluated_expr(callable_expression, None, &mut reachable))
         };
         let argument_types: Vec<Type> = call_args
             .iter()
@@ -3438,7 +3416,11 @@ impl TypeEnv {
                 for arg in args.iter().skip(params.len()) {
                     self.check_evaluated_expr(arg, None, &mut reachable);
                 }
-                if reachable { *result } else { Type::Never }
+                if reachable {
+                    *result
+                } else {
+                    Type::Never
+                }
             }
             Type::Unknown => {
                 for arg in args {
