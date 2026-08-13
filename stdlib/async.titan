@@ -41,7 +41,7 @@ fn measure(work: fn() -> any) -> any {
 //
 // Ejemplo:
 //     let r = retry(|| fetch_api(url), 3, 500)
-fn retry(work: fn() -> any, veces: int, delay_ms: int) -> any {
+fn retry(work: fn() -> any, veces: int, delay_ms: int) -> Result {
     let mut intentos = 0
     let mut ultimo = std::try::catch(work)
     while intentos < veces {
@@ -65,7 +65,7 @@ fn retry(work: fn() -> any, veces: int, delay_ms: int) -> any {
 // Ejemplo:
 //     let r = retry_backoff(|| fetch_api(url), 5, 100)
 //     (esperas: 100ms, 200ms, 400ms, 800ms entre intentos)
-fn retry_backoff(work: fn() -> any, veces: int, base_ms: int) -> any {
+fn retry_backoff(work: fn() -> any, veces: int, base_ms: int) -> Result {
     let mut intentos = 0
     let mut espera = base_ms
     let mut ultimo = std::try::catch(work)
@@ -94,7 +94,7 @@ fn retry_backoff(work: fn() -> any, veces: int, base_ms: int) -> any {
 //
 // Para timeouts REALES (aborta la task) usar `spawn` + `join_timeout`
 // que ya existen en el runtime.
-fn timeout(work: fn() -> any, max_ms: int) -> any {
+fn timeout(work: fn() -> any, max_ms: int) -> Result {
     let start = std::time::unix_millis()
     let intento = std::try::catch(work)
     let dur = std::time::unix_millis() - start

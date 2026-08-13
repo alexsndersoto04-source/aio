@@ -120,7 +120,7 @@ fn handle_request(token: string, user_id: string) -> Result {
 
 // ---------------- Main: demostracion ----------------
 
-fn probar(titulo: string, resultado: any) {
+fn probar(titulo: string, resultado: Result) {
     print("---- " + titulo + " ----")
     match resultado {
         Result::Ok(v) => print("OK: " + v),

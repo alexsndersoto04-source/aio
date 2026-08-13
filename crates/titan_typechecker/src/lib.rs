@@ -4161,6 +4161,7 @@ fn native_type(ty: titan_stdlib::native::NativeType) -> Type {
         NativeType::Bytes => Type::Named("bytes".into()),
         NativeType::Array => Type::Array(Box::new(Type::Unknown)),
         NativeType::Map => Type::Named("map".into()),
+        NativeType::Option => Type::Named("Option".into()),
         NativeType::Nil => Type::Nil,
     }
 }
