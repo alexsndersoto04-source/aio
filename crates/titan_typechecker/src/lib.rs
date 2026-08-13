@@ -3393,7 +3393,14 @@ impl TypeEnv {
         } else {
             None
         };
-        if let Some(name) = &name {
+        // Codegen gives local values priority over statically named builtins.
+        // Apply intrinsic/native/constructor contracts only when this name is
+        // not shadowed by a parameter or local binding; otherwise the ordinary
+        // callable path below must validate the actual local function type.
+        let static_name = name
+            .as_ref()
+            .filter(|name| !self.is_local_binding(name.as_str()));
+        if let Some(name) = static_name {
             if let Some(result) = self.check_collection_call(name, args) {
                 return result;
             }
@@ -5045,6 +5052,22 @@ mod tests {
         assert!(
             check("fn main() { let values: [string] = map((1, 2), |value: int| \"ok\") }").is_ok()
         );
+    }
+
+    #[test]
+    fn local_callables_shadow_collection_intrinsics() {
+        assert!(check(
+            "fn main() { let len: fn(string) -> string = |value| value let result: string = len(\"ok\") result }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let map: fn(int, int) -> int = |left, right| left + right let result: int = map(20, 22) result }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let map: fn(int, int) -> int = |left, right| left + right map(\"bad\", 2) }"
+        )
+        .is_err());
     }
 
     #[test]

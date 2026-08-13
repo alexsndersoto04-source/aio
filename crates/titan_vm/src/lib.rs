@@ -4664,6 +4664,20 @@ mod tests {
     }
 
     #[test]
+    fn local_callables_shadow_collection_intrinsics_at_runtime() {
+        assert_eq!(
+            run("fn main() { let len = |value: string| value + \"!\" len(\"ok\") }")
+                .unwrap(),
+            Value::Str("ok!".into())
+        );
+        assert_eq!(
+            run("fn main() { let map = |left: int, right: int| left + right map(20, 22) }")
+                .unwrap(),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
     fn atomic_identifiers_and_stats_fail_closed_at_u64_max() {
         let identifiers = AtomicU64::new(u64::MAX - 1);
         assert_eq!(
