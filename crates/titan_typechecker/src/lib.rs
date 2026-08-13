@@ -3900,20 +3900,21 @@ fn expr_may_break_current_loop(expression: &Expr) -> bool {
         Expr::StructLit { fields, .. } => fields
             .iter()
             .any(|(_, value)| expr_may_break_current_loop(value)),
-        Expr::Binary { left, right, .. } | Expr::Range { start: left, end: right, .. } => {
-            expr_may_break_current_loop(left) || expr_may_break_current_loop(right)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Range {
+            start: left,
+            end: right,
+            ..
+        } => expr_may_break_current_loop(left) || expr_may_break_current_loop(right),
         Expr::Unary { expr, .. }
         | Expr::FieldAccess { target: expr, .. }
         | Expr::Spawn { expr, .. }
         | Expr::Try { expr, .. } => expr_may_break_current_loop(expr),
         Expr::Call { callee, args, .. } => {
-            expr_may_break_current_loop(callee)
-                || args.iter().any(expr_may_break_current_loop)
+            expr_may_break_current_loop(callee) || args.iter().any(expr_may_break_current_loop)
         }
         Expr::MethodCall { receiver, args, .. } => {
-            expr_may_break_current_loop(receiver)
-                || args.iter().any(expr_may_break_current_loop)
+            expr_may_break_current_loop(receiver) || args.iter().any(expr_may_break_current_loop)
         }
         Expr::Index { target, index, .. } => {
             expr_may_break_current_loop(target) || expr_may_break_current_loop(index)
@@ -3946,9 +3947,7 @@ fn expr_may_break_current_loop(expression: &Expr) -> bool {
         Expr::For { iterator, .. } => expr_may_break_current_loop(iterator),
         Expr::While { condition, .. } => expr_may_break_current_loop(condition),
         Expr::Loop { .. } | Expr::Closure { .. } => false,
-        Expr::Return { value, .. } => value
-            .as_deref()
-            .is_some_and(expr_may_break_current_loop),
+        Expr::Return { value, .. } => value.as_deref().is_some_and(expr_may_break_current_loop),
         Expr::Let { value, .. } => expr_may_break_current_loop(value),
         Expr::Assign { target, value, .. } => {
             expr_may_break_current_loop(target) || expr_may_break_current_loop(value)
@@ -4454,10 +4453,10 @@ mod tests {
         assert!(check("fn halt() -> int { loop {} } fn main() {}").is_ok());
         assert!(check("fn halt() -> int { let never = loop {} } fn main() {}").is_ok());
         assert!(check("fn halt() -> ! { while true {} } fn main() {}").is_ok());
-        assert!(check(
-            "fn exits(flag: bool) -> int { loop { if flag { break } } } fn main() {}"
-        )
-        .is_err());
+        assert!(
+            check("fn exits(flag: bool) -> int { loop { if flag { break } } } fn main() {}")
+                .is_err()
+        );
         assert!(check("fn nested() -> ! { loop { loop { break } } } fn main() {}").is_ok());
     }
 
