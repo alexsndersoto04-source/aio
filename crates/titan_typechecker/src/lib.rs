@@ -1867,9 +1867,7 @@ impl TypeEnv {
                 {
                     candidates.truncate(count);
                 }
-                if let (Some(current), Some(previous)) =
-                    (self.loop_breaks.last_mut(), loop_broke)
-                {
+                if let (Some(current), Some(previous)) = (self.loop_breaks.last_mut(), loop_broke) {
                     *current = previous;
                 }
             }
@@ -1895,9 +1893,7 @@ impl TypeEnv {
             {
                 candidates.truncate(count);
             }
-            if let (Some(current), Some(previous)) =
-                (self.loop_breaks.last_mut(), loop_broke)
-            {
+            if let (Some(current), Some(previous)) = (self.loop_breaks.last_mut(), loop_broke) {
                 *current = previous;
             }
         }
@@ -2711,8 +2707,7 @@ impl TypeEnv {
                         {
                             if let Ok(value) = argument.parse::<i64>() {
                                 args.push(Expr::Int { value, span });
-                            } else if is_template_path(argument)
-                                && self.is_local_binding(argument)
+                            } else if is_template_path(argument) && self.is_local_binding(argument)
                             {
                                 args.push(Expr::Ident {
                                     name: argument.into(),
@@ -3011,9 +3006,7 @@ impl TypeEnv {
             {
                 candidates.truncate(count);
             }
-            if let (Some(current), Some(previous)) =
-                (self.loop_breaks.last_mut(), loop_broke)
-            {
+            if let (Some(current), Some(previous)) = (self.loop_breaks.last_mut(), loop_broke) {
                 *current = previous;
             }
         } else if diverges {
@@ -3385,9 +3378,7 @@ impl TypeEnv {
             {
                 candidates.truncate(count);
             }
-            if let (Some(current), Some(previous)) =
-                (self.loop_breaks.last_mut(), loop_broke)
-            {
+            if let (Some(current), Some(previous)) = (self.loop_breaks.last_mut(), loop_broke) {
                 *current = previous;
             }
         } else if self.resolve_alias(&found) == Type::Never {
@@ -4747,9 +4738,7 @@ fn function_parameter_accepts(parameter: &Type, argument: &Type) -> bool {
                 && parameters
                     .iter()
                     .zip(arguments)
-                    .all(|(parameter, argument)| {
-                        function_parameter_accepts(parameter, argument)
-                    })
+                    .all(|(parameter, argument)| function_parameter_accepts(parameter, argument))
         }
         (
             Type::Function(parameter_params, parameter_result),
@@ -4782,9 +4771,7 @@ fn function_result_compatible(expected: &Type, found: &Type) -> bool {
         return true;
     }
     match (expected, found) {
-        (Type::Array(expected), Type::Array(found)) => {
-            function_result_compatible(expected, found)
-        }
+        (Type::Array(expected), Type::Array(found)) => function_result_compatible(expected, found),
         (Type::Tuple(expected), Type::Tuple(found)) => {
             expected.len() == found.len()
                 && expected
@@ -4795,12 +4782,7 @@ fn function_result_compatible(expected: &Type, found: &Type) -> bool {
         (
             Type::Function(expected_params, expected_result),
             Type::Function(found_params, found_result),
-        ) => function_type_compatible(
-            expected_params,
-            expected_result,
-            found_params,
-            found_result,
-        ),
+        ) => function_type_compatible(expected_params, expected_result, found_params, found_result),
         _ => false,
     }
 }
@@ -4852,14 +4834,10 @@ fn compatible(a: &Type, b: &Type) -> bool {
         // values. An already-inferred `fn(any) -> any` cannot safely become
         // `fn(string) -> int`; closures receive concrete context before their
         // body is checked instead.
-        (Type::Function(expected_params, expected_result), Type::Function(found_params, found_result)) => {
-            function_type_compatible(
-                expected_params,
-                expected_result,
-                found_params,
-                found_result,
-            )
-        }
+        (
+            Type::Function(expected_params, expected_result),
+            Type::Function(found_params, found_result),
+        ) => function_type_compatible(expected_params, expected_result, found_params, found_result),
         _ => false,
     }
 }
@@ -5115,10 +5093,10 @@ mod tests {
             "fn keep(value: any) -> bool { true } fn main() { let values: [int] = filter([1], keep) }"
         )
         .is_ok());
-        assert!(check(
-            "fn dynamic(value: int) -> any { true } fn main() { filter([1], dynamic) }"
-        )
-        .is_err());
+        assert!(
+            check("fn dynamic(value: int) -> any { true } fn main() { filter([1], dynamic) }")
+                .is_err()
+        );
     }
 
     #[test]
@@ -5147,10 +5125,9 @@ mod tests {
             "fn callback() -> int { 1 } fn render(value: any) -> any { value } fn main() { print(\"value={render(callback)}\") }"
         )
         .is_err());
-        assert!(check(
-            "fn callback() -> int { 1 } fn main() { print(\"value={callback}\") }"
-        )
-        .is_err());
+        assert!(
+            check("fn callback() -> int { 1 } fn main() { print(\"value={callback}\") }").is_err()
+        );
         assert!(check(
             "fn render(value: any) -> any { value } fn main() { let callback = || 1 print(\"value={render(callback)}\") }"
         )
