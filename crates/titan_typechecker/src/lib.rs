@@ -70,9 +70,10 @@ impl MatchCoverage {
                 self.atoms.contains(&MatchAtom::Bool(false))
                     && self.atoms.contains(&MatchAtom::Bool(true))
             }
-            MatchDomain::Enum { variants, .. } => variants
-                .iter()
-                .all(|variant| self.atoms.contains(&MatchAtom::EnumVariant(variant.clone()))),
+            MatchDomain::Enum { variants, .. } => variants.iter().all(|variant| {
+                self.atoms
+                    .contains(&MatchAtom::EnumVariant(variant.clone()))
+            }),
             MatchDomain::Open => false,
         }
     }
@@ -1882,7 +1883,11 @@ impl TypeEnv {
             }
         }
         self.pop_scope();
-        if diverges { Type::Never } else { result }
+        if diverges {
+            Type::Never
+        } else {
+            result
+        }
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Type {
@@ -1916,14 +1921,15 @@ impl TypeEnv {
                 // `tags: [string]` receives `Array(Named("Tag"))` and the
                 // require_compatible check against the field type fails
                 // deep inside the container (compatible doesn't hop aliases).
+                let mut reachable = true;
                 let types: Vec<Type> = elements
                     .iter()
-                    .map(|e| {
-                        let t = self.check_expr(e);
-                        self.resolve_alias(&t)
+                    .map(|element| {
+                        let ty = self.check_evaluated_expr(element, None, &mut reachable);
+                        self.resolve_alias(&ty)
                     })
                     .collect();
-                if types.contains(&Type::Never) {
+                if !reachable {
                     Type::Never
                 } else {
                     let inner = match types.first() {
@@ -1940,18 +1946,19 @@ impl TypeEnv {
                 }
             }
             Expr::Tuple { elements, .. } => {
-                let types: Vec<_> = elements.iter().map(|e| self.check_expr(e)).collect();
-                if types
+                let mut reachable = true;
+                let types: Vec<_> = elements
                     .iter()
-                    .any(|ty| self.resolve_alias(ty) == Type::Never)
-                {
+                    .map(|element| self.check_evaluated_expr(element, None, &mut reachable))
+                    .collect();
+                if !reachable {
                     Type::Never
                 } else {
                     Type::Tuple(types)
                 }
             }
             Expr::StructLit { name, fields, .. } => {
-                let mut diverges = false;
+                let mut reachable = true;
                 if let Some(expected_fields) = self.structs.get(name).cloned() {
                     let mut supplied = HashSet::new();
                     for (field, value) in fields {
@@ -1961,17 +1968,15 @@ impl TypeEnv {
                                 field: field.clone(),
                             });
                         }
-                        let value_type = if let Some(expected) = expected_fields.get(field) {
-                            self.check_expr_expected(value, expected)
+                        if let Some(expected) = expected_fields.get(field) {
+                            self.check_evaluated_expr(value, Some(expected), &mut reachable);
                         } else {
-                            let value_type = self.check_expr(value);
+                            self.check_evaluated_expr(value, None, &mut reachable);
                             self.errors.push(TypeError::UnknownField {
                                 structure: name.clone(),
                                 field: field.clone(),
                             });
-                            value_type
-                        };
-                        diverges |= self.resolve_alias(&value_type) == Type::Never;
+                        }
                     }
                     for field in expected_fields.keys() {
                         if !supplied.contains(field.as_str()) {
@@ -1985,11 +1990,10 @@ impl TypeEnv {
                     self.errors
                         .push(TypeError::UnknownType { name: name.clone() });
                     for (_, value) in fields {
-                        let value_type = self.check_expr(value);
-                        diverges |= self.resolve_alias(&value_type) == Type::Never;
+                        self.check_evaluated_expr(value, None, &mut reachable);
                     }
                 }
-                if diverges {
+                if !reachable {
                     Type::Never
                 } else {
                     Type::Named(name.clone())
@@ -1998,15 +2002,15 @@ impl TypeEnv {
             Expr::Binary {
                 left, op, right, ..
             } => {
-                let left = self.check_expr(left);
-                let right = self.check_expr(right);
+                let mut reachable = true;
+                let left = self.check_evaluated_expr(left, None, &mut reachable);
+                let right = self.check_evaluated_expr(right, None, &mut reachable);
                 // Phase 28: normalize both sides through type aliases
                 // so `Score >= int` (where `type Score = int`) works.
                 let left = self.resolve_alias(&left);
                 let right = self.resolve_alias(&right);
                 if left == Type::Never
-                    || (right == Type::Never
-                        && !matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr))
+                    || (right == Type::Never && !matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr))
                 {
                     Type::Never
                 } else {
@@ -2014,13 +2018,12 @@ impl TypeEnv {
                 }
             }
             Expr::Range { start, end, .. } => {
-                let a = self.check_expr(start);
-                let b = self.check_expr(end);
+                let mut reachable = true;
+                let a = self.check_evaluated_expr(start, None, &mut reachable);
+                let b = self.check_evaluated_expr(end, None, &mut reachable);
                 self.require_compatible(&Type::Int, &a);
                 self.require_compatible(&Type::Int, &b);
-                if self.resolve_alias(&a) == Type::Never
-                    || self.resolve_alias(&b) == Type::Never
-                {
+                if self.resolve_alias(&a) == Type::Never || self.resolve_alias(&b) == Type::Never {
                     Type::Never
                 } else {
                     Type::Array(Box::new(Type::Int))
@@ -2095,9 +2098,10 @@ impl TypeEnv {
                 }
             }
             Expr::Index { target, index, .. } => {
-                let target_raw = self.check_expr(target);
+                let mut reachable = true;
+                let target_raw = self.check_evaluated_expr(target, None, &mut reachable);
                 let target_type = self.resolve_alias(&target_raw);
-                let index_type = self.check_expr(index);
+                let index_type = self.check_evaluated_expr(index, None, &mut reachable);
                 if target_type == Type::Never || index_type == Type::Never {
                     return Type::Never;
                 }
@@ -2585,23 +2589,29 @@ impl TypeEnv {
                 Some(result),
             ),
             (Expr::Array { elements, .. }, Type::Array(item)) => {
+                let mut reachable = true;
                 let found: Vec<_> = elements
                     .iter()
-                    .map(|element| self.check_expr_expected(element, item))
+                    .map(|element| {
+                        self.check_evaluated_expr(element, Some(item), &mut reachable)
+                    })
                     .collect();
-                if found.contains(&Type::Never) {
+                if !reachable {
                     Type::Never
                 } else {
                     Type::Array(item.clone())
                 }
             }
             (Expr::Tuple { elements, .. }, Type::Tuple(items)) if elements.len() == items.len() => {
+                let mut reachable = true;
                 let found: Vec<_> = elements
                     .iter()
                     .zip(items)
-                    .map(|(element, item)| self.check_expr_expected(element, item))
+                    .map(|(element, item)| {
+                        self.check_evaluated_expr(element, Some(item), &mut reachable)
+                    })
                     .collect();
-                if found.contains(&Type::Never) {
+                if !reachable {
                     Type::Never
                 } else {
                     Type::Tuple(found)
@@ -2701,11 +2711,12 @@ impl TypeEnv {
     }
 
     fn check_method_call(&mut self, receiver: &Expr, method: &str, args: &[Expr]) -> Type {
-        let receiver_raw = self.check_expr(receiver);
+        let mut reachable = true;
+        let receiver_raw = self.check_evaluated_expr(receiver, None, &mut reachable);
         let receiver_type = self.resolve_alias(&receiver_raw);
         if receiver_type == Type::Never {
             for argument in args {
-                self.check_expr(argument);
+                self.check_evaluated_expr(argument, None, &mut reachable);
             }
             return Type::Never;
         }
@@ -2727,94 +2738,141 @@ impl TypeEnv {
             }
             ("map", 1) => {
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    let result = self.check_callback_expr("map callback", &args[0], &[item], None);
-                    return Type::Array(Box::new(result));
+                    let result = self.check_evaluated_callback(
+                        "map callback",
+                        &args[0],
+                        &[item],
+                        None,
+                        &mut reachable,
+                    );
+                    return if reachable {
+                        Type::Array(Box::new(result))
+                    } else {
+                        Type::Never
+                    };
                 }
-                self.check_expr(&args[0]);
+                self.check_evaluated_expr(&args[0], None, &mut reachable);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
                 });
-                return Type::Unknown;
+                return if reachable {
+                    Type::Unknown
+                } else {
+                    Type::Never
+                };
             }
             ("filter", 1) => {
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    self.check_callback_expr(
+                    self.check_evaluated_callback(
                         "filter predicate",
                         &args[0],
                         &[item.clone()],
                         Some(&Type::Bool),
+                        &mut reachable,
                     );
-                    return Type::Array(Box::new(item));
+                    return if reachable {
+                        Type::Array(Box::new(item))
+                    } else {
+                        Type::Never
+                    };
                 }
-                self.check_expr(&args[0]);
+                self.check_evaluated_expr(&args[0], None, &mut reachable);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
                 });
-                return Type::Unknown;
+                return if reachable {
+                    Type::Unknown
+                } else {
+                    Type::Never
+                };
             }
             ("fold", 2) => {
-                let initial = self.check_expr(&args[0]);
+                let initial = self.check_evaluated_expr(&args[0], None, &mut reachable);
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    self.check_callback_expr(
+                    self.check_evaluated_callback(
                         "fold callback",
                         &args[1],
                         &[initial.clone(), item],
                         Some(&initial),
+                        &mut reachable,
                     );
-                    return initial;
+                    return if reachable { initial } else { Type::Never };
                 }
-                self.check_expr(&args[1]);
+                self.check_evaluated_expr(&args[1], None, &mut reachable);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
                 });
-                return Type::Unknown;
+                return if reachable {
+                    Type::Unknown
+                } else {
+                    Type::Never
+                };
             }
             ("sort_by", 1) => {
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    let result = self.check_callback_expr(
+                    let result = self.check_evaluated_callback(
                         "sort_by comparator",
                         &args[0],
                         &[item.clone(), item.clone()],
                         None,
+                        &mut reachable,
                     );
-                    if !is_numeric(&self.resolve_alias(&result)) {
+                    if reachable
+                        && result != Type::Never
+                        && !is_numeric(&self.resolve_alias(&result))
+                    {
                         self.errors.push(TypeError::Mismatch {
                             expected: Type::Int,
                             found: result,
                         });
                     }
-                    return Type::Array(Box::new(item));
+                    return if reachable {
+                        Type::Array(Box::new(item))
+                    } else {
+                        Type::Never
+                    };
                 }
-                self.check_expr(&args[0]);
+                self.check_evaluated_expr(&args[0], None, &mut reachable);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
                 });
-                return Type::Unknown;
+                return if reachable {
+                    Type::Unknown
+                } else {
+                    Type::Never
+                };
             }
             ("find", 1) | ("any", 1) | ("all", 1) => {
                 if let Some(item) = sequence_item_type(&receiver_type) {
-                    self.check_callback_expr(
+                    self.check_evaluated_callback(
                         &format!("{method} predicate"),
                         &args[0],
                         &[item],
                         Some(&Type::Bool),
+                        &mut reachable,
                     );
-                    return if method == "find" {
+                    return if !reachable {
+                        Type::Never
+                    } else if method == "find" {
                         Type::Unknown
                     } else {
                         Type::Bool
                     };
                 }
-                self.check_expr(&args[0]);
+                self.check_evaluated_expr(&args[0], None, &mut reachable);
                 self.errors.push(TypeError::UnknownMethod {
                     receiver: receiver_type,
                     method: method.into(),
                 });
-                return Type::Unknown;
+                return if reachable {
+                    Type::Unknown
+                } else {
+                    Type::Never
+                };
             }
             _ => {}
         }
@@ -2824,13 +2882,17 @@ impl TypeEnv {
             if let Some(signature) = self.functions.get(&qualified).cloned() {
                 let Some((self_type, params)) = signature.params.split_first() else {
                     for arg in args {
-                        self.check_expr(arg);
+                        self.check_evaluated_expr(arg, None, &mut reachable);
                     }
                     self.errors.push(TypeError::Arity {
                         expected: 0,
                         found: args.len() + 1,
                     });
-                    return signature.result;
+                    return if reachable {
+                        signature.result
+                    } else {
+                        Type::Never
+                    };
                 };
                 self.require_compatible(self_type, &receiver_type);
                 if params.len() != args.len() {
@@ -2840,17 +2902,21 @@ impl TypeEnv {
                     });
                 }
                 for (argument, expected) in args.iter().zip(params) {
-                    self.check_expr_expected(argument, expected);
+                    self.check_evaluated_expr(argument, Some(expected), &mut reachable);
                 }
                 for argument in args.iter().skip(params.len()) {
-                    self.check_expr(argument);
+                    self.check_evaluated_expr(argument, None, &mut reachable);
                 }
-                return signature.result;
+                return if reachable {
+                    signature.result
+                } else {
+                    Type::Never
+                };
             }
         }
 
         for arg in args {
-            self.check_expr(arg);
+            self.check_evaluated_expr(arg, None, &mut reachable);
         }
         if receiver_type != Type::Unknown {
             if let Some(expected) = builtin_method_arity(&receiver_type, method) {
@@ -2865,7 +2931,11 @@ impl TypeEnv {
                 });
             }
         }
-        Type::Unknown
+        if reachable {
+            Type::Unknown
+        } else {
+            Type::Never
+        }
     }
 
     fn check_callback_expr(
@@ -2875,6 +2945,41 @@ impl TypeEnv {
         arguments: &[Type],
         result: Option<&Type>,
     ) -> Type {
+        self.check_callback_expr_evaluation(name, expression, arguments, result)
+            .0
+    }
+
+    fn check_evaluated_callback(
+        &mut self,
+        name: &str,
+        expression: &Expr,
+        arguments: &[Type],
+        result: Option<&Type>,
+        reachable: &mut bool,
+    ) -> Type {
+        let was_reachable = *reachable;
+        let candidate_count = self.return_candidates.last().map(Vec::len);
+        let (found, diverges) =
+            self.check_callback_expr_evaluation(name, expression, arguments, result);
+        if !was_reachable {
+            if let (Some(candidates), Some(count)) =
+                (self.return_candidates.last_mut(), candidate_count)
+            {
+                candidates.truncate(count);
+            }
+        } else if diverges {
+            *reachable = false;
+        }
+        found
+    }
+
+    fn check_callback_expr_evaluation(
+        &mut self,
+        name: &str,
+        expression: &Expr,
+        arguments: &[Type],
+        result: Option<&Type>,
+    ) -> (Type, bool) {
         let callable = if let Expr::Closure {
             params,
             return_type,
@@ -2886,7 +2991,11 @@ impl TypeEnv {
         } else {
             self.check_expr(expression)
         };
-        self.check_callback(name, &callable, arguments, result)
+        let diverges = self.resolve_alias(&callable) == Type::Never;
+        (
+            self.check_callback(name, &callable, arguments, result),
+            diverges,
+        )
     }
 
     fn check_callback(
@@ -2913,7 +3022,9 @@ impl TypeEnv {
                     }
                 }
                 if let Some(expected) = result {
-                    if !strict_function_component(expected, &found_result) {
+                    if *found_result != Type::Never
+                        && !strict_function_component(expected, &found_result)
+                    {
                         self.errors.push(TypeError::Mismatch {
                             expected: expected.clone(),
                             found: *found_result.clone(),
@@ -3032,11 +3143,12 @@ impl TypeEnv {
             return Some(Type::Int);
         }
 
-        let raw = self.check_expr(&args[0]);
+        let mut reachable = true;
+        let raw = self.check_evaluated_expr(&args[0], None, &mut reachable);
         let sequence = self.resolve_alias(&raw);
         if sequence == Type::Never {
             for argument in &args[1..] {
-                self.check_expr(argument);
+                self.check_evaluated_expr(argument, None, &mut reachable);
             }
             return Some(Type::Never);
         }
@@ -3053,36 +3165,49 @@ impl TypeEnv {
         };
         let result = match name {
             "map" => {
-                let output = self.check_callback_expr("map callback", &args[1], &[item], None);
+                let output = self.check_evaluated_callback(
+                    "map callback",
+                    &args[1],
+                    &[item],
+                    None,
+                    &mut reachable,
+                );
                 Type::Array(Box::new(output))
             }
             "filter" => {
-                self.check_callback_expr(
+                self.check_evaluated_callback(
                     "filter predicate",
                     &args[1],
                     &[item.clone()],
                     Some(&Type::Bool),
+                    &mut reachable,
                 );
                 Type::Array(Box::new(item))
             }
             "fold" => {
-                let initial = self.check_expr(&args[1]);
-                self.check_callback_expr(
+                let initial =
+                    self.check_evaluated_expr(&args[1], None, &mut reachable);
+                self.check_evaluated_callback(
                     "fold callback",
                     &args[2],
                     &[initial.clone(), item],
                     Some(&initial),
+                    &mut reachable,
                 );
                 initial
             }
             "sort_by" => {
-                let output = self.check_callback_expr(
+                let output = self.check_evaluated_callback(
                     "sort_by comparator",
                     &args[1],
                     &[item.clone(), item.clone()],
                     None,
+                    &mut reachable,
                 );
-                if !is_numeric(&self.resolve_alias(&output)) {
+                if reachable
+                    && output != Type::Never
+                    && !is_numeric(&self.resolve_alias(&output))
+                {
                     self.errors.push(TypeError::Mismatch {
                         expected: Type::Int,
                         found: output,
@@ -3091,21 +3216,32 @@ impl TypeEnv {
                 Type::Array(Box::new(item))
             }
             "find" => {
-                self.check_callback_expr("find predicate", &args[1], &[item], Some(&Type::Bool));
+                self.check_evaluated_callback(
+                    "find predicate",
+                    &args[1],
+                    &[item],
+                    Some(&Type::Bool),
+                    &mut reachable,
+                );
                 Type::Unknown
             }
             "any" | "all" => {
-                self.check_callback_expr(
+                self.check_evaluated_callback(
                     &format!("{name} predicate"),
                     &args[1],
                     &[item],
                     Some(&Type::Bool),
+                    &mut reachable,
                 );
                 Type::Bool
             }
             _ => unreachable!("collection intrinsic was filtered above"),
         };
-        Some(result)
+        if reachable {
+            Some(result)
+        } else {
+            Some(Type::Never)
+        }
     }
 
     fn check_try_catch_call(&mut self, args: &[Expr]) -> Type {
@@ -3118,11 +3254,23 @@ impl TypeEnv {
             return result_type;
         };
 
-        // Check invocation arguments first so an inline closure can inherit
-        // their concrete types before its body is analyzed.
+        let mut reachable = true;
+        // Inline closures need the argument types as context, but constructing
+        // the closure itself cannot diverge. Other callable expressions are
+        // evaluated before the invocation arguments, matching codegen.
+        let inline_closure = matches!(callable_expression, Expr::Closure { .. });
+        let callable = if inline_closure {
+            None
+        } else {
+            Some(self.check_evaluated_expr(
+                callable_expression,
+                None,
+                &mut reachable,
+            ))
+        };
         let argument_types: Vec<Type> = call_args
             .iter()
-            .map(|argument| self.check_expr(argument))
+            .map(|argument| self.check_evaluated_expr(argument, None, &mut reachable))
             .collect();
         let callable = if let Expr::Closure {
             params,
@@ -3139,7 +3287,7 @@ impl TypeEnv {
                 None,
             )
         } else {
-            self.check_expr(callable_expression)
+            callable.unwrap_or(Type::Unknown)
         };
 
         match self.resolve_alias(&callable) {
@@ -3159,7 +3307,40 @@ impl TypeEnv {
                 name: "first argument to std::try::catch".into(),
             }),
         }
-        result_type
+        if reachable {
+            result_type
+        } else {
+            Type::Never
+        }
+    }
+
+    /// Typechecks an expression that is evaluated after earlier siblings.
+    /// Diagnostics are still produced for unreachable syntax, but `return`
+    /// candidates from that syntax must not affect the enclosing function's
+    /// inferred result.
+    fn check_evaluated_expr(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        reachable: &mut bool,
+    ) -> Type {
+        let was_reachable = *reachable;
+        let candidate_count = self.return_candidates.last().map(Vec::len);
+        let found = if let Some(expected) = expected {
+            self.check_expr_expected(expression, expected)
+        } else {
+            self.check_expr(expression)
+        };
+        if !was_reachable {
+            if let (Some(candidates), Some(count)) =
+                (self.return_candidates.last_mut(), candidate_count)
+            {
+                candidates.truncate(count);
+            }
+        } else if self.resolve_alias(&found) == Type::Never {
+            *reachable = false;
+        }
+        found
     }
 
     fn check_call(&mut self, callee: &Expr, args: &[Expr]) -> Type {
@@ -3182,17 +3363,22 @@ impl TypeEnv {
                         found: args.len(),
                     });
                 }
+                let mut reachable = true;
                 for (argument, expected) in args.iter().zip(signature.params) {
-                    let found = self.check_expr(argument);
+                    let found = self.check_evaluated_expr(argument, None, &mut reachable);
                     let expected = native_type(*expected);
                     if !native_compatible(&expected, &found) {
                         self.errors.push(TypeError::Mismatch { expected, found });
                     }
                 }
                 for argument in args.iter().skip(signature.params.len()) {
-                    self.check_expr(argument);
+                    self.check_evaluated_expr(argument, None, &mut reachable);
                 }
-                return native_type(signature.result);
+                return if reachable {
+                    native_type(signature.result)
+                } else {
+                    Type::Never
+                };
             }
             if let Some(payload) = self.enum_variants.get(name).cloned() {
                 let expected = usize::from(payload.is_some());
@@ -3202,17 +3388,29 @@ impl TypeEnv {
                         found: args.len(),
                     });
                 }
-                if let (Some(expected), Some(argument)) = (payload, args.first()) {
-                    self.check_expr_expected(argument, &expected);
+                let mut reachable = true;
+                let checked = if let (Some(expected), Some(argument)) = (payload, args.first()) {
+                    self.check_evaluated_expr(argument, Some(&expected), &mut reachable);
+                    1
+                } else {
+                    0
+                };
+                for argument in args.iter().skip(checked) {
+                    self.check_evaluated_expr(argument, None, &mut reachable);
                 }
-                return Type::Named(
-                    name.split_once("::")
-                        .map_or(name.as_str(), |(e, _)| e)
-                        .into(),
-                );
+                return if reachable {
+                    Type::Named(
+                        name.split_once("::")
+                            .map_or(name.as_str(), |(e, _)| e)
+                            .into(),
+                    )
+                } else {
+                    Type::Never
+                };
             }
         }
-        let ty = self.check_expr(callee);
+        let mut reachable = true;
+        let ty = self.check_evaluated_expr(callee, None, &mut reachable);
         // Phase 32 fix: expand type aliases so `Named("Callback")`
         // (where `type Callback = fn(int) -> int`) resolves to the
         // real Function(...) shape before the callable check.
@@ -3220,7 +3418,7 @@ impl TypeEnv {
         match ty {
             Type::Never => {
                 for arg in args {
-                    self.check_expr(arg);
+                    self.check_evaluated_expr(arg, None, &mut reachable);
                 }
                 Type::Never
             }
@@ -3235,24 +3433,35 @@ impl TypeEnv {
                     });
                 }
                 for (arg, expected) in args.iter().zip(&params) {
-                    self.check_expr_expected(arg, expected);
+                    self.check_evaluated_expr(arg, Some(expected), &mut reachable);
                 }
                 for arg in args.iter().skip(params.len()) {
-                    self.check_expr(arg);
+                    self.check_evaluated_expr(arg, None, &mut reachable);
                 }
-                *result
+                if reachable { *result } else { Type::Never }
             }
             Type::Unknown => {
                 for arg in args {
-                    self.check_expr(arg);
+                    self.check_evaluated_expr(arg, None, &mut reachable);
                 }
-                Type::Unknown
+                if reachable {
+                    Type::Unknown
+                } else {
+                    Type::Never
+                }
             }
             _ => {
+                for arg in args {
+                    self.check_evaluated_expr(arg, None, &mut reachable);
+                }
                 self.errors.push(TypeError::NotCallable {
                     name: name.unwrap_or_else(|| "expression".into()),
                 });
-                Type::Unknown
+                if reachable {
+                    Type::Unknown
+                } else {
+                    Type::Never
+                }
             }
         }
     }
@@ -3378,11 +3587,7 @@ impl TypeEnv {
         }
     }
 
-    fn pattern_coverage(
-        &self,
-        pattern: &Pattern,
-        domain: &MatchDomain,
-    ) -> Option<PatternCoverage> {
+    fn pattern_coverage(&self, pattern: &Pattern, domain: &MatchDomain) -> Option<PatternCoverage> {
         match pattern {
             Pattern::Wildcard { .. } | Pattern::Ident { .. } => Some(PatternCoverage {
                 all: true,
@@ -3555,9 +3760,7 @@ impl TypeEnv {
                 let qualified = format!("{}::{}", name, variant);
                 match self.enum_variants.get(&qualified).cloned() {
                     Some(payload) => match (payload, inner) {
-                        (Some(payload), Some(inner)) => {
-                            self.bind_pattern(inner, &payload)
-                        }
+                        (Some(payload), Some(inner)) => self.bind_pattern(inner, &payload),
                         (None, Some(inner)) => {
                             self.errors.push(TypeError::InvalidPattern {
                                 message: format!("variant '{}::{}' has no payload", name, variant),
@@ -4355,8 +4558,7 @@ fn expr_definitely_returns(expr: &Expr) -> bool {
             ..
         } => {
             expr_definitely_returns(condition)
-                || (block_definitely_returns(then_branch)
-                    && block_definitely_returns(else_branch))
+                || (block_definitely_returns(then_branch) && block_definitely_returns(else_branch))
         }
         // Match checking rejects every non-exhaustive expression before this
         // control-flow pass runs, including guarded catch-alls. Therefore a
@@ -4366,10 +4568,7 @@ fn expr_definitely_returns(expr: &Expr) -> bool {
             scrutinee, arms, ..
         } => {
             expr_definitely_returns(scrutinee)
-                || (!arms.is_empty()
-                    && arms
-                        .iter()
-                        .all(|arm| block_definitely_returns(&arm.body)))
+                || (!arms.is_empty() && arms.iter().all(|arm| block_definitely_returns(&arm.body)))
         }
         Expr::Loop { body, .. } => !block_may_break_current_loop(body),
         Expr::For { iterator, .. } => expr_definitely_returns(iterator),
@@ -4864,17 +5063,11 @@ mod tests {
         assert!(check("fn halt() -> ! { (loop {})() } fn main() {}").is_ok());
         assert!(check("fn halt() -> ! { (loop {}).len() } fn main() {}").is_ok());
         assert!(check("fn halt() -> ! { (loop {})? } fn main() {}").is_ok());
-        assert!(check(
-            "fn halt() -> ! { if loop {} { 1 } else { 2 } } fn main() {}"
-        )
-        .is_ok());
+        assert!(check("fn halt() -> ! { if loop {} { 1 } else { 2 } } fn main() {}").is_ok());
         assert!(check("fn halt() -> ! { match loop {} {} } fn main() {}").is_ok());
         assert!(check("fn halt() -> ! { for item in loop {} {} } fn main() {}").is_ok());
         assert!(check("fn halt() -> ! { while loop {} {} } fn main() {}").is_ok());
-        assert!(check(
-            "fn halt() -> ! { let mut value = 0 value = loop {} } fn main() {}"
-        )
-        .is_ok());
+        assert!(check("fn halt() -> ! { let mut value = 0 value = loop {} } fn main() {}").is_ok());
         assert!(check(
             "fn inferred() { loop {} return 1 } fn main() { let impossible: ! = inferred() }"
         )
@@ -4884,9 +5077,30 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "fn main() { let halt = || loop {} let impossible: ! = halt() }"
+            "fn sink(first: any, second: any) -> nil {} fn inferred() { sink(loop {}, return 1) } fn main() { let impossible: ! = inferred() }"
         )
         .is_ok());
+        assert!(check(
+            "fn sink(first: any, second: any) -> nil {} fn inferred() { sink(return 1, return \"unreachable\") } fn main() { let number: int = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { [loop {}, return 1] } fn main() { let impossible: ! = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { fold([1], loop {}, return 1) } fn main() { let impossible: ! = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { [1].fold(loop {}, return 1) } fn main() { let impossible: ! = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn work(first: any, second: any) -> int { 1 } fn inferred() { std::try::catch(work, loop {}, return 1) } fn main() { let impossible: ! = inferred() }"
+        )
+        .is_ok());
+        assert!(check("fn main() { let halt = || loop {} let impossible: ! = halt() }").is_ok());
 
         // The right side of a lazy boolean operator is not guaranteed to run.
         assert!(check(
