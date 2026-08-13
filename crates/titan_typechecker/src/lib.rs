@@ -3063,7 +3063,7 @@ impl TypeEnv {
                     });
                 }
                 for (parameter, argument) in params.iter().zip(arguments) {
-                    if !strict_function_component(argument, parameter) {
+                    if !function_parameter_accepts(parameter, argument) {
                         self.errors.push(TypeError::Mismatch {
                             expected: argument.clone(),
                             found: parameter.clone(),
@@ -3071,7 +3071,7 @@ impl TypeEnv {
                     }
                 }
                 if let Some(expected) = result {
-                    if !strict_function_result(expected, &found_result) {
+                    if !function_result_compatible(expected, &found_result) {
                         self.errors.push(TypeError::Mismatch {
                             expected: expected.clone(),
                             found: *found_result.clone(),
@@ -4721,9 +4721,59 @@ fn native_compatible(expected: &Type, found: &Type) -> bool {
         _ => false,
     }
 }
-fn strict_function_component(expected: &Type, found: &Type) -> bool {
-    if expected == found {
+/// Returns whether a function parameter can safely accept every value that a
+/// caller of the expected function contract may provide. Function parameters
+/// are contravariant: accepting `any` is valid where callers only send `int`,
+/// but accepting only `int` is not valid where callers may send `any`.
+fn function_parameter_accepts(parameter: &Type, argument: &Type) -> bool {
+    if parameter == argument || argument == &Type::Never || parameter == &Type::Unknown {
         return true;
+    }
+    if argument == &Type::Unknown || parameter == &Type::Never {
+        return false;
+    }
+    if matches!(
+        (parameter, argument),
+        (Type::Unit, Type::Nil) | (Type::Nil, Type::Unit)
+    ) {
+        return true;
+    }
+    match (parameter, argument) {
+        (Type::Array(parameter), Type::Array(argument)) => {
+            function_parameter_accepts(parameter, argument)
+        }
+        (Type::Tuple(parameters), Type::Tuple(arguments)) => {
+            parameters.len() == arguments.len()
+                && parameters
+                    .iter()
+                    .zip(arguments)
+                    .all(|(parameter, argument)| {
+                        function_parameter_accepts(parameter, argument)
+                    })
+        }
+        (
+            Type::Function(parameter_params, parameter_result),
+            Type::Function(argument_params, argument_result),
+        ) => function_type_compatible(
+            parameter_params,
+            parameter_result,
+            argument_params,
+            argument_result,
+        ),
+        _ => false,
+    }
+}
+
+/// Function results are covariant while preserving the strict boundary around
+/// `any`: a concrete result can satisfy `any`, but an unproven dynamic result
+/// cannot satisfy a concrete function contract. `!` is safe for every result
+/// because it never produces an incompatible value.
+fn function_result_compatible(expected: &Type, found: &Type) -> bool {
+    if expected == found || found == &Type::Never || expected == &Type::Unknown {
+        return true;
+    }
+    if found == &Type::Unknown || expected == &Type::Never {
+        return false;
     }
     if matches!(
         (expected, found),
@@ -4732,28 +4782,41 @@ fn strict_function_component(expected: &Type, found: &Type) -> bool {
         return true;
     }
     match (expected, found) {
-        (Type::Array(left), Type::Array(right)) => strict_function_component(left, right),
-        (Type::Tuple(left), Type::Tuple(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|(left, right)| strict_function_component(left, right))
+        (Type::Array(expected), Type::Array(found)) => {
+            function_result_compatible(expected, found)
         }
-        (Type::Function(left_params, left_result), Type::Function(right_params, right_result)) => {
-            left_params.len() == right_params.len()
-                && left_params
+        (Type::Tuple(expected), Type::Tuple(found)) => {
+            expected.len() == found.len()
+                && expected
                     .iter()
-                    .zip(right_params)
-                    .all(|(left, right)| strict_function_component(left, right))
-                && strict_function_result(left_result, right_result)
+                    .zip(found)
+                    .all(|(expected, found)| function_result_compatible(expected, found))
         }
+        (
+            Type::Function(expected_params, expected_result),
+            Type::Function(found_params, found_result),
+        ) => function_type_compatible(
+            expected_params,
+            expected_result,
+            found_params,
+            found_result,
+        ),
         _ => false,
     }
 }
 
-fn strict_function_result(expected: &Type, found: &Type) -> bool {
-    found == &Type::Never || strict_function_component(expected, found)
+fn function_type_compatible(
+    expected_params: &[Type],
+    expected_result: &Type,
+    found_params: &[Type],
+    found_result: &Type,
+) -> bool {
+    expected_params.len() == found_params.len()
+        && found_params
+            .iter()
+            .zip(expected_params)
+            .all(|(parameter, argument)| function_parameter_accepts(parameter, argument))
+        && function_result_compatible(expected_result, found_result)
 }
 
 fn compatible(a: &Type, b: &Type) -> bool {
@@ -4789,13 +4852,13 @@ fn compatible(a: &Type, b: &Type) -> bool {
         // values. An already-inferred `fn(any) -> any` cannot safely become
         // `fn(string) -> int`; closures receive concrete context before their
         // body is checked instead.
-        (Type::Function(ap, ar), Type::Function(bp, br)) => {
-            ap.len() == bp.len()
-                && ap
-                    .iter()
-                    .zip(bp.iter())
-                    .all(|(x, y)| strict_function_component(x, y))
-                && strict_function_result(ar, br)
+        (Type::Function(expected_params, expected_result), Type::Function(found_params, found_result)) => {
+            function_type_compatible(
+                expected_params,
+                expected_result,
+                found_params,
+                found_result,
+            )
         }
         _ => false,
     }
@@ -5030,6 +5093,30 @@ mod tests {
         .is_err());
         assert!(check(
             "fn apply(callback: fn(int) -> int) -> int { callback(1) } fn main() { let loose = |value| value * 2 apply(loose) }"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn checks_function_parameter_and_result_variance() {
+        assert!(check(
+            "fn flexible(value: any) -> string { \"ok\" } fn apply(callback: fn(string) -> any) -> any { callback(\"x\") } fn main() { apply(flexible) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn narrow(value: string) -> int { 1 } fn apply(callback: fn(any) -> int) -> int { callback(1) } fn main() { apply(narrow) }"
+        )
+        .is_err());
+        assert!(check(
+            "fn dynamic() -> any { 1 } fn apply(callback: fn() -> int) -> int { callback() } fn main() { apply(dynamic) }"
+        )
+        .is_err());
+        assert!(check(
+            "fn keep(value: any) -> bool { true } fn main() { let values: [int] = filter([1], keep) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn dynamic(value: int) -> any { true } fn main() { filter([1], dynamic) }"
         )
         .is_err());
     }
