@@ -28,6 +28,7 @@ const MIXED_ELEMENT_TYPE: &str = "$titan::mixed-element";
 
 #[derive(Debug, Clone)]
 enum MatchDomain {
+    Empty,
     Bool,
     Enum {
         name: String,
@@ -64,6 +65,7 @@ impl MatchCoverage {
             return true;
         }
         match domain {
+            MatchDomain::Empty => true,
             MatchDomain::Bool => {
                 self.atoms.contains(&MatchAtom::Bool(false))
                     && self.atoms.contains(&MatchAtom::Bool(true))
@@ -1770,12 +1772,19 @@ impl TypeEnv {
                 if body.final_expr.is_some() {
                     if body_type != Type::Never {
                         if let Some(candidates) = self.return_candidates.last_mut() {
-                            candidates.push(body_type);
+                            candidates.push(body_type.clone());
                         }
                     }
                 } else if !block_definitely_returns(body) {
                     if let Some(candidates) = self.return_candidates.last_mut() {
                         candidates.push(Type::Unit);
+                    }
+                }
+                if body_type == Type::Never {
+                    if let Some(candidates) = self.return_candidates.last_mut() {
+                        if candidates.is_empty() {
+                            candidates.push(Type::Never);
+                        }
                     }
                 }
             }
@@ -1809,8 +1818,11 @@ impl TypeEnv {
 
     fn check_block_expected(&mut self, block: &Block, expected: Option<&Type>) -> Type {
         self.push_scope();
+        let mut diverges = false;
         for stmt in &block.stmts {
-            match stmt {
+            let was_diverged = diverges;
+            let candidate_count = self.return_candidates.last().map(Vec::len);
+            let statement_type = match stmt {
                 Stmt::Let {
                     name,
                     mutable,
@@ -1818,28 +1830,39 @@ impl TypeEnv {
                     value,
                     ..
                 } => {
-                    let ty = if let Some(annotation) = type_ann {
-                        let ty = type_from_ast(annotation);
-                        self.check_expr_expected(value, &ty);
-                        ty
+                    let (binding_type, value_type) = if let Some(annotation) = type_ann {
+                        let binding_type = type_from_ast(annotation);
+                        let value_type = self.check_expr_expected(value, &binding_type);
+                        (binding_type, value_type)
                     } else {
-                        self.check_expr(value)
+                        let value_type = self.check_expr(value);
+                        (value_type.clone(), value_type)
                     };
-                    self.define_mutable(name.clone(), ty, *mutable);
+                    self.define_mutable(name.clone(), binding_type, *mutable);
+                    value_type
                 }
                 Stmt::Assign {
                     target, op, value, ..
-                } => {
-                    self.check_assignment(target, *op, value);
+                } => self.check_assignment(target, *op, value),
+                Stmt::Expr(expr) => self.check_expr(expr),
+                Stmt::Item(_) => {
+                    self.errors.push(TypeError::UnsupportedFeature {
+                        feature: "nested declarations".into(),
+                    });
+                    Type::Unit
                 }
-                Stmt::Expr(expr) => {
-                    self.check_expr(expr);
+            };
+            if was_diverged {
+                if let (Some(candidates), Some(count)) =
+                    (self.return_candidates.last_mut(), candidate_count)
+                {
+                    candidates.truncate(count);
                 }
-                Stmt::Item(_) => self.errors.push(TypeError::UnsupportedFeature {
-                    feature: "nested declarations".into(),
-                }),
             }
+            diverges |= statement_type == Type::Never;
         }
+
+        let candidate_count = self.return_candidates.last().map(Vec::len);
         let result = block
             .final_expr
             .as_ref()
@@ -1851,8 +1874,15 @@ impl TypeEnv {
                 }
             })
             .unwrap_or(Type::Unit);
+        if diverges {
+            if let (Some(candidates), Some(count)) =
+                (self.return_candidates.last_mut(), candidate_count)
+            {
+                candidates.truncate(count);
+            }
+        }
         self.pop_scope();
-        result
+        if diverges { Type::Never } else { result }
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Type {
@@ -1867,7 +1897,14 @@ impl TypeEnv {
             Expr::Char { .. } => Type::Char,
             Expr::Bool { .. } => Type::Bool,
             Expr::Nil { .. } => Type::Nil,
-            Expr::Ident { name, .. } => self.check_identifier(name),
+            Expr::Ident { name, .. } => {
+                let ty = self.check_identifier(name);
+                if self.resolve_alias(&ty) == Type::Never {
+                    Type::Never
+                } else {
+                    ty
+                }
+            }
             Expr::Array { elements, .. } => {
                 // Heterogeneous arrays remain valid runtime values, but retain
                 // evidence that their element type is mixed. Widening them to
@@ -1886,22 +1923,35 @@ impl TypeEnv {
                         self.resolve_alias(&t)
                     })
                     .collect();
-                let inner = match types.first() {
-                    None => Type::Unknown,
-                    Some(head) => {
-                        if types.iter().skip(1).all(|t| compatible(head, t)) {
-                            head.clone()
-                        } else {
-                            Type::Named(MIXED_ELEMENT_TYPE.into())
+                if types.contains(&Type::Never) {
+                    Type::Never
+                } else {
+                    let inner = match types.first() {
+                        None => Type::Unknown,
+                        Some(head) => {
+                            if types.iter().skip(1).all(|t| compatible(head, t)) {
+                                head.clone()
+                            } else {
+                                Type::Named(MIXED_ELEMENT_TYPE.into())
+                            }
                         }
-                    }
-                };
-                Type::Array(Box::new(inner))
+                    };
+                    Type::Array(Box::new(inner))
+                }
             }
             Expr::Tuple { elements, .. } => {
-                Type::Tuple(elements.iter().map(|e| self.check_expr(e)).collect())
+                let types: Vec<_> = elements.iter().map(|e| self.check_expr(e)).collect();
+                if types
+                    .iter()
+                    .any(|ty| self.resolve_alias(ty) == Type::Never)
+                {
+                    Type::Never
+                } else {
+                    Type::Tuple(types)
+                }
             }
             Expr::StructLit { name, fields, .. } => {
+                let mut diverges = false;
                 if let Some(expected_fields) = self.structs.get(name).cloned() {
                     let mut supplied = HashSet::new();
                     for (field, value) in fields {
@@ -1911,15 +1961,17 @@ impl TypeEnv {
                                 field: field.clone(),
                             });
                         }
-                        if let Some(expected) = expected_fields.get(field) {
-                            self.check_expr_expected(value, expected);
+                        let value_type = if let Some(expected) = expected_fields.get(field) {
+                            self.check_expr_expected(value, expected)
                         } else {
-                            self.check_expr(value);
+                            let value_type = self.check_expr(value);
                             self.errors.push(TypeError::UnknownField {
                                 structure: name.clone(),
                                 field: field.clone(),
                             });
-                        }
+                            value_type
+                        };
+                        diverges |= self.resolve_alias(&value_type) == Type::Never;
                     }
                     for field in expected_fields.keys() {
                         if !supplied.contains(field.as_str()) {
@@ -1933,10 +1985,15 @@ impl TypeEnv {
                     self.errors
                         .push(TypeError::UnknownType { name: name.clone() });
                     for (_, value) in fields {
-                        self.check_expr(value);
+                        let value_type = self.check_expr(value);
+                        diverges |= self.resolve_alias(&value_type) == Type::Never;
                     }
                 }
-                Type::Named(name.clone())
+                if diverges {
+                    Type::Never
+                } else {
+                    Type::Named(name.clone())
+                }
             }
             Expr::Binary {
                 left, op, right, ..
@@ -1947,18 +2004,34 @@ impl TypeEnv {
                 // so `Score >= int` (where `type Score = int`) works.
                 let left = self.resolve_alias(&left);
                 let right = self.resolve_alias(&right);
-                self.check_binary(*op, left, right)
+                if left == Type::Never
+                    || (right == Type::Never
+                        && !matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr))
+                {
+                    Type::Never
+                } else {
+                    self.check_binary(*op, left, right)
+                }
             }
             Expr::Range { start, end, .. } => {
                 let a = self.check_expr(start);
                 let b = self.check_expr(end);
                 self.require_compatible(&Type::Int, &a);
                 self.require_compatible(&Type::Int, &b);
-                Type::Array(Box::new(Type::Int))
+                if self.resolve_alias(&a) == Type::Never
+                    || self.resolve_alias(&b) == Type::Never
+                {
+                    Type::Never
+                } else {
+                    Type::Array(Box::new(Type::Int))
+                }
             }
             Expr::Unary { op, expr, .. } => {
                 let raw = self.check_expr(expr);
                 let ty = self.resolve_alias(&raw);
+                if ty == Type::Never {
+                    return Type::Never;
+                }
                 match op {
                     UnaryOp::Not => {
                         self.require_compatible(&Type::Bool, &ty);
@@ -1994,17 +2067,40 @@ impl TypeEnv {
                     }
                 }
             }
-            Expr::Call { callee, args, .. } => self.check_call(callee, args),
+            Expr::Call { callee, args, .. } => {
+                let result = self.check_call(callee, args);
+                if self.resolve_alias(&result) == Type::Never
+                    || expr_definitely_returns(callee)
+                    || args.iter().any(expr_definitely_returns)
+                {
+                    Type::Never
+                } else {
+                    result
+                }
+            }
             Expr::MethodCall {
                 receiver,
                 method,
                 args,
                 ..
-            } => self.check_method_call(receiver, method, args),
+            } => {
+                let result = self.check_method_call(receiver, method, args);
+                if self.resolve_alias(&result) == Type::Never
+                    || expr_definitely_returns(receiver)
+                    || args.iter().any(expr_definitely_returns)
+                {
+                    Type::Never
+                } else {
+                    result
+                }
+            }
             Expr::Index { target, index, .. } => {
                 let target_raw = self.check_expr(target);
                 let target_type = self.resolve_alias(&target_raw);
                 let index_type = self.check_expr(index);
+                if target_type == Type::Never || index_type == Type::Never {
+                    return Type::Never;
+                }
                 match target_type {
                     Type::Array(inner) => {
                         self.require_compatible(&Type::Int, &index_type);
@@ -2053,6 +2149,7 @@ impl TypeEnv {
             Expr::FieldAccess { target, field, .. } => {
                 let raw = self.check_expr(target);
                 match self.resolve_alias(&raw) {
+                    Type::Never => Type::Never,
                     Type::Named(name) if name == "map" => Type::Unknown,
                     Type::Named(name) => self
                         .structs
@@ -2083,15 +2180,23 @@ impl TypeEnv {
             } => {
                 let condition = self.check_expr(condition);
                 self.require_compatible(&Type::Bool, &condition);
+                let candidate_count = self.return_candidates.last().map(Vec::len);
                 let a = self.check_block(then_branch);
                 if let Some(other) = else_branch {
                     let b = self.check_block(other);
-                    // A branch which cannot continue does not contribute a
-                    // value to the expression. For continuing branches, keep
-                    // concrete disagreements visible instead of widening them
-                    // to Unknown: that widening previously allowed an `int`
-                    // return contract to hide a String produced on one path.
-                    if a == Type::Never {
+                    if condition == Type::Never {
+                        if let (Some(candidates), Some(count)) =
+                            (self.return_candidates.last_mut(), candidate_count)
+                        {
+                            candidates.truncate(count);
+                        }
+                    }
+                    // A condition that never completes prevents either branch
+                    // from running. Otherwise a branch which cannot continue
+                    // does not contribute a value to the expression.
+                    if condition == Type::Never {
+                        Type::Never
+                    } else if a == Type::Never {
                         b
                     } else if b == Type::Never {
                         a
@@ -2104,6 +2209,13 @@ impl TypeEnv {
                         });
                         Type::Unknown
                     }
+                } else if condition == Type::Never {
+                    if let (Some(candidates), Some(count)) =
+                        (self.return_candidates.last_mut(), candidate_count)
+                    {
+                        candidates.truncate(count);
+                    }
+                    Type::Never
                 } else {
                     Type::Unit
                 }
@@ -2113,6 +2225,8 @@ impl TypeEnv {
             } => {
                 let subject = self.check_expr(scrutinee);
                 self.check_match_coverage(&subject, arms);
+                let subject_never = self.resolve_alias(&subject) == Type::Never;
+                let candidate_count = self.return_candidates.last().map(Vec::len);
                 let mut result: Option<Type> = None;
                 for arm in arms {
                     if !match_pattern_is_lowerable(&arm.pattern) {
@@ -2122,11 +2236,25 @@ impl TypeEnv {
                     }
                     self.push_scope();
                     self.bind_pattern(&arm.pattern, &subject);
-                    if let Some(guard) = &arm.guard {
-                        let g = self.check_expr(guard);
-                        self.require_compatible(&Type::Bool, &g);
-                    }
-                    let found = self.check_block(&arm.body);
+                    let guard_never = if let Some(guard) = &arm.guard {
+                        let guard_type = self.check_expr(guard);
+                        self.require_compatible(&Type::Bool, &guard_type);
+                        guard_type == Type::Never
+                    } else {
+                        false
+                    };
+                    let body_candidate_count = self.return_candidates.last().map(Vec::len);
+                    let body_type = self.check_block(&arm.body);
+                    let found = if guard_never {
+                        if let (Some(candidates), Some(count)) =
+                            (self.return_candidates.last_mut(), body_candidate_count)
+                        {
+                            candidates.truncate(count);
+                        }
+                        Type::Never
+                    } else {
+                        body_type
+                    };
                     result = Some(match result {
                         None => found,
                         Some(current) if current == Type::Never => found,
@@ -2149,7 +2277,16 @@ impl TypeEnv {
                     });
                     self.pop_scope();
                 }
-                result.unwrap_or(Type::Unknown)
+                if subject_never {
+                    if let (Some(candidates), Some(count)) =
+                        (self.return_candidates.last_mut(), candidate_count)
+                    {
+                        candidates.truncate(count);
+                    }
+                    Type::Never
+                } else {
+                    result.unwrap_or(Type::Unknown)
+                }
             }
             Expr::For {
                 pattern,
@@ -2165,6 +2302,7 @@ impl TypeEnv {
                 let raw = self.check_expr(iterator);
                 let iterator_type = self.resolve_alias(&raw);
                 let item = match &iterator_type {
+                    Type::Never => Type::Never,
                     Type::Array(inner) => *inner.clone(),
                     Type::Tuple(items) => common_type(items).unwrap_or(Type::Unknown),
                     Type::String => Type::Char,
@@ -2180,10 +2318,20 @@ impl TypeEnv {
                 self.push_scope();
                 self.bind_pattern(pattern, &item);
                 self.loop_depth += 1;
+                let candidate_count = self.return_candidates.last().map(Vec::len);
                 self.check_block(body);
                 self.loop_depth -= 1;
                 self.pop_scope();
-                Type::Unit
+                if iterator_type == Type::Never {
+                    if let (Some(candidates), Some(count)) =
+                        (self.return_candidates.last_mut(), candidate_count)
+                    {
+                        candidates.truncate(count);
+                    }
+                    Type::Never
+                } else {
+                    Type::Unit
+                }
             }
             Expr::While {
                 condition, body, ..
@@ -2191,9 +2339,17 @@ impl TypeEnv {
                 let c = self.check_expr(condition);
                 self.require_compatible(&Type::Bool, &c);
                 self.loop_depth += 1;
+                let candidate_count = self.return_candidates.last().map(Vec::len);
                 self.check_block(body);
                 self.loop_depth -= 1;
-                if matches!(condition.as_ref(), Expr::Bool { value: true, .. })
+                if c == Type::Never {
+                    if let (Some(candidates), Some(count)) =
+                        (self.return_candidates.last_mut(), candidate_count)
+                    {
+                        candidates.truncate(count);
+                    }
+                    Type::Never
+                } else if matches!(condition.as_ref(), Expr::Bool { value: true, .. })
                     && !block_may_break_current_loop(body)
                 {
                     Type::Never
@@ -2246,8 +2402,10 @@ impl TypeEnv {
                     if value.is_none() {
                         self.require_compatible(&self.return_type.clone(), &found);
                     }
-                    if let Some(candidates) = self.return_candidates.last_mut() {
-                        candidates.push(found);
+                    if found != Type::Never {
+                        if let Some(candidates) = self.return_candidates.last_mut() {
+                            candidates.push(found);
+                        }
                     }
                 }
                 Type::Never
@@ -2259,15 +2417,20 @@ impl TypeEnv {
                 value,
                 ..
             } => {
-                let ty = if let Some(annotation) = type_ann {
-                    let ty = type_from_ast(annotation);
-                    self.check_expr_expected(value, &ty);
-                    ty
+                let (binding_type, value_type) = if let Some(annotation) = type_ann {
+                    let binding_type = type_from_ast(annotation);
+                    let value_type = self.check_expr_expected(value, &binding_type);
+                    (binding_type, value_type)
                 } else {
-                    self.check_expr(value)
+                    let value_type = self.check_expr(value);
+                    (value_type.clone(), value_type)
                 };
-                self.define_mutable(name.clone(), ty.clone(), *mutable);
-                ty
+                self.define_mutable(name.clone(), binding_type.clone(), *mutable);
+                if value_type == Type::Never {
+                    Type::Never
+                } else {
+                    binding_type
+                }
             }
             Expr::Assign {
                 target, op, value, ..
@@ -2276,6 +2439,7 @@ impl TypeEnv {
             Expr::Spawn { expr, .. } => {
                 let raw = self.check_expr(expr);
                 match self.resolve_alias(&raw) {
+                    Type::Never => return Type::Never,
                     Type::Function(params, _) if params.is_empty() => {}
                     Type::Function(params, _) => self.errors.push(TypeError::Arity {
                         expected: 0,
@@ -2290,6 +2454,7 @@ impl TypeEnv {
             Expr::Try { expr, .. } => {
                 let raw = self.check_expr(expr);
                 match self.resolve_alias(&raw) {
+                    Type::Never => Type::Never,
                     Type::Named(name) if name == "Option" || name == "Result" => {
                         // `?` can return the wrapper from the current function
                         // before the surrounding expression completes. Treat
@@ -2387,7 +2552,13 @@ impl TypeEnv {
 
         let result = declared_result
             .or_else(|| contextual_result.cloned())
-            .unwrap_or_else(|| self.infer_return_type("closure", &candidates));
+            .unwrap_or_else(|| {
+                if actual == Type::Never && candidates.is_empty() {
+                    Type::Never
+                } else {
+                    self.infer_return_type("closure", &candidates)
+                }
+            });
         self.require_compatible(&result, &actual);
         self.pop_scope();
         Type::Function(parameter_types, Box::new(result))
@@ -2414,18 +2585,27 @@ impl TypeEnv {
                 Some(result),
             ),
             (Expr::Array { elements, .. }, Type::Array(item)) => {
-                for element in elements {
-                    self.check_expr_expected(element, item);
+                let found: Vec<_> = elements
+                    .iter()
+                    .map(|element| self.check_expr_expected(element, item))
+                    .collect();
+                if found.contains(&Type::Never) {
+                    Type::Never
+                } else {
+                    Type::Array(item.clone())
                 }
-                Type::Array(item.clone())
             }
             (Expr::Tuple { elements, .. }, Type::Tuple(items)) if elements.len() == items.len() => {
-                let found = elements
+                let found: Vec<_> = elements
                     .iter()
                     .zip(items)
                     .map(|(element, item)| self.check_expr_expected(element, item))
                     .collect();
-                Type::Tuple(found)
+                if found.contains(&Type::Never) {
+                    Type::Never
+                } else {
+                    Type::Tuple(found)
+                }
             }
             _ => self.check_expr(expression),
         };
@@ -2523,6 +2703,12 @@ impl TypeEnv {
     fn check_method_call(&mut self, receiver: &Expr, method: &str, args: &[Expr]) -> Type {
         let receiver_raw = self.check_expr(receiver);
         let receiver_type = self.resolve_alias(&receiver_raw);
+        if receiver_type == Type::Never {
+            for argument in args {
+                self.check_expr(argument);
+            }
+            return Type::Never;
+        }
 
         // These exact method shapes are lowered to dedicated bytecode by
         // codegen, before user-defined method dispatch. Validate the same
@@ -2736,6 +2922,7 @@ impl TypeEnv {
                 }
                 *found_result
             }
+            Type::Never => Type::Never,
             Type::Unknown => Type::Unknown,
             _ => {
                 self.errors
@@ -2747,39 +2934,64 @@ impl TypeEnv {
 
     fn check_assignment(&mut self, target: &Expr, op: Option<BinaryOp>, value: &Expr) -> Type {
         let Expr::Ident { name, .. } = target else {
-            self.check_expr(target);
-            self.check_expr(value);
+            let target_type = self.check_expr(target);
+            let value_type = self.check_expr(value);
             self.errors.push(TypeError::InvalidAssignmentTarget);
-            return Type::Unknown;
+            return if target_type == Type::Never || value_type == Type::Never {
+                Type::Never
+            } else {
+                Type::Unknown
+            };
         };
         let Some(target_type) = self.lookup(name) else {
             self.errors
                 .push(TypeError::UnknownVariable { name: name.clone() });
-            self.check_expr(value);
+            let value_type = self.check_expr(value);
             self.errors.push(TypeError::InvalidAssignmentTarget);
-            return Type::Unknown;
+            return if value_type == Type::Never {
+                Type::Never
+            } else {
+                Type::Unknown
+            };
         };
         if self.is_global_constant_binding(name) {
-            self.check_expr(value);
+            let value_type = self.check_expr(value);
             self.errors.push(TypeError::InvalidAssignmentTarget);
-            return target_type;
+            return if value_type == Type::Never {
+                Type::Never
+            } else {
+                target_type
+            };
         }
         let mutable_in_this_function = self
             .binding(name)
             .is_some_and(|(mutable, depth)| mutable && depth == self.function_depth);
         if !mutable_in_this_function {
-            self.check_expr(value);
-            self.errors.push(TypeError::InvalidAssignmentTarget);
-            return target_type;
-        }
-        if let Some(operator) = op {
             let value_type = self.check_expr(value);
-            let result = self.check_binary(operator, target_type.clone(), value_type);
-            self.require_compatible(&target_type, &result);
-        } else {
-            self.check_expr_expected(value, &target_type);
+            self.errors.push(TypeError::InvalidAssignmentTarget);
+            return if value_type == Type::Never {
+                Type::Never
+            } else {
+                target_type
+            };
         }
-        target_type
+        let value_type = if let Some(operator) = op {
+            let value_type = self.check_expr(value);
+            let result = if value_type == Type::Never {
+                Type::Never
+            } else {
+                self.check_binary(operator, target_type.clone(), value_type.clone())
+            };
+            self.require_compatible(&target_type, &result);
+            value_type
+        } else {
+            self.check_expr_expected(value, &target_type)
+        };
+        if value_type == Type::Never {
+            Type::Never
+        } else {
+            target_type
+        }
     }
 
     fn is_global_constant_binding(&self, name: &str) -> bool {
@@ -2807,6 +3019,9 @@ impl TypeEnv {
         if name == "len" {
             let raw = self.check_expr(&args[0]);
             let found = self.resolve_alias(&raw);
+            if found == Type::Never {
+                return Some(Type::Never);
+            }
             if !is_length_supported(&found) {
                 self.errors.push(TypeError::InvalidArgument {
                     function: name.into(),
@@ -2819,6 +3034,12 @@ impl TypeEnv {
 
         let raw = self.check_expr(&args[0]);
         let sequence = self.resolve_alias(&raw);
+        if sequence == Type::Never {
+            for argument in &args[1..] {
+                self.check_expr(argument);
+            }
+            return Some(Type::Never);
+        }
         let item = match sequence_item_type(&sequence) {
             Some(item) => item,
             None => {
@@ -2922,6 +3143,7 @@ impl TypeEnv {
         };
 
         match self.resolve_alias(&callable) {
+            Type::Never => return Type::Never,
             Type::Function(params, _) => {
                 if params.len() != argument_types.len() {
                     self.errors.push(TypeError::Arity {
@@ -2996,6 +3218,12 @@ impl TypeEnv {
         // real Function(...) shape before the callable check.
         let ty = self.resolve_alias(&ty);
         match ty {
+            Type::Never => {
+                for arg in args {
+                    self.check_expr(arg);
+                }
+                Type::Never
+            }
             Type::Function(params, result) => {
                 if params.len() != args.len()
                     && name.as_deref() != Some("print")
@@ -3132,6 +3360,7 @@ impl TypeEnv {
 
     fn match_domain(&self, subject: &Type) -> MatchDomain {
         match self.resolve_alias(subject) {
+            Type::Never => MatchDomain::Empty,
             Type::Bool => MatchDomain::Bool,
             Type::Named(name) => {
                 let variants = self.enum_variant_names(&name);
@@ -3219,7 +3448,8 @@ impl TypeEnv {
 
         for (index, arm) in arms.iter().enumerate() {
             let pattern = self.pattern_coverage(&arm.pattern, &domain);
-            let unreachable = coverage.all
+            let unreachable = matches!(&domain, MatchDomain::Empty)
+                || coverage.all
                 || pattern
                     .as_ref()
                     .is_some_and(|pattern| coverage.covers(pattern, &domain));
@@ -3237,6 +3467,7 @@ impl TypeEnv {
         }
 
         match domain {
+            MatchDomain::Empty => {}
             MatchDomain::Bool => {
                 if !coverage.is_complete(&MatchDomain::Bool) {
                     self.errors.push(TypeError::NonExhaustiveMatch);
@@ -4087,29 +4318,86 @@ fn block_definitely_returns(block: &Block) -> bool {
 fn expr_definitely_returns(expr: &Expr) -> bool {
     match expr {
         Expr::Return { .. } => true,
+        Expr::Array { elements, .. } | Expr::Tuple { elements, .. } => {
+            elements.iter().any(expr_definitely_returns)
+        }
+        Expr::StructLit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_definitely_returns(value)),
+        Expr::Binary {
+            left, op, right, ..
+        } => {
+            expr_definitely_returns(left)
+                || (!matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr)
+                    && expr_definitely_returns(right))
+        }
+        Expr::Range { start, end, .. } => {
+            expr_definitely_returns(start) || expr_definitely_returns(end)
+        }
+        Expr::Unary { expr, .. }
+        | Expr::FieldAccess { target: expr, .. }
+        | Expr::Spawn { expr, .. }
+        | Expr::Try { expr, .. } => expr_definitely_returns(expr),
+        Expr::Call { callee, args, .. } => {
+            expr_definitely_returns(callee) || args.iter().any(expr_definitely_returns)
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            expr_definitely_returns(receiver) || args.iter().any(expr_definitely_returns)
+        }
+        Expr::Index { target, index, .. } => {
+            expr_definitely_returns(target) || expr_definitely_returns(index)
+        }
         Expr::Block(block) => block_definitely_returns(block),
         Expr::If {
+            condition,
             then_branch,
             else_branch: Some(else_branch),
             ..
-        } => block_definitely_returns(then_branch) && block_definitely_returns(else_branch),
+        } => {
+            expr_definitely_returns(condition)
+                || (block_definitely_returns(then_branch)
+                    && block_definitely_returns(else_branch))
+        }
         // Match checking rejects every non-exhaustive expression before this
         // control-flow pass runs, including guarded catch-alls. Therefore a
         // non-empty match exits exactly when every reachable arm exits; it
         // does not need a syntactic wildcard (booleans and enums are finite).
-        Expr::Match { arms, .. } => {
-            !arms.is_empty() && arms.iter().all(|arm| block_definitely_returns(&arm.body))
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_definitely_returns(scrutinee)
+                || (!arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| block_definitely_returns(&arm.body)))
         }
         Expr::Loop { body, .. } => !block_may_break_current_loop(body),
+        Expr::For { iterator, .. } => expr_definitely_returns(iterator),
         Expr::While {
             condition, body, ..
         } => {
-            matches!(condition.as_ref(), Expr::Bool { value: true, .. })
-                && !block_may_break_current_loop(body)
+            expr_definitely_returns(condition)
+                || (matches!(condition.as_ref(), Expr::Bool { value: true, .. })
+                    && !block_may_break_current_loop(body))
         }
         Expr::Let { value, .. } => expr_definitely_returns(value),
-        Expr::Assign { value, .. } => expr_definitely_returns(value),
-        _ => false,
+        Expr::Assign { target, value, .. } => {
+            expr_definitely_returns(target) || expr_definitely_returns(value)
+        }
+        Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::String { .. }
+        | Expr::StringTemplate { .. }
+        | Expr::Char { .. }
+        | Expr::Bool { .. }
+        | Expr::Nil { .. }
+        | Expr::Ident { .. }
+        | Expr::If {
+            else_branch: None, ..
+        }
+        | Expr::Break { .. }
+        | Expr::Continue { .. }
+        | Expr::Closure { .. } => false,
     }
 }
 
@@ -4555,6 +4843,56 @@ mod tests {
                 .is_err()
         );
         assert!(check("fn nested() -> ! { loop { loop { break } } } fn main() {}").is_ok());
+    }
+
+    #[test]
+    fn propagates_never_through_eager_expression_evaluation() {
+        assert!(check("fn halt() -> ! { [1, loop {}] } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { (1, loop {}) } fn main() {}").is_ok());
+        assert!(check(
+            "struct Item { value: int } fn halt() -> ! { Item { value: loop {} } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check("fn halt() -> ! { 1 + loop {} } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { -(loop {}) } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { 0..loop {} } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { [1][loop {}] } fn main() {}").is_ok());
+        assert!(check(
+            "fn consume(value: int) -> int { value } fn halt() -> ! { consume(loop {}) } fn main() {}"
+        )
+        .is_ok());
+        assert!(check("fn halt() -> ! { (loop {})() } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { (loop {}).len() } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { (loop {})? } fn main() {}").is_ok());
+        assert!(check(
+            "fn halt() -> ! { if loop {} { 1 } else { 2 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check("fn halt() -> ! { match loop {} {} } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { for item in loop {} {} } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { while loop {} {} } fn main() {}").is_ok());
+        assert!(check(
+            "fn halt() -> ! { let mut value = 0 value = loop {} } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { loop {} return 1 } fn main() { let impossible: ! = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Nope = ! fn halt() -> Nope { loop {} } fn main() { let impossible: ! = halt() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let halt = || loop {} let impossible: ! = halt() }"
+        )
+        .is_ok());
+
+        // The right side of a lazy boolean operator is not guaranteed to run.
+        assert!(check(
+            "fn value() -> bool { false && loop {} } fn main() { let result: bool = value() }"
+        )
+        .is_ok());
     }
 
     #[test]
