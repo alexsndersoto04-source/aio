@@ -2712,7 +2712,7 @@ impl TypeEnv {
                             if let Ok(value) = argument.parse::<i64>() {
                                 args.push(Expr::Int { value, span });
                             } else if is_template_path(argument)
-                                && !self.is_global_constant_binding(argument)
+                                && self.is_local_binding(argument)
                             {
                                 args.push(Expr::Ident {
                                     name: argument.into(),
@@ -2745,14 +2745,14 @@ impl TypeEnv {
                     }
                 }
             } else if is_template_path(source) {
-                if self.is_global_constant_binding(source) {
-                    self.errors.push(TypeError::InvalidInterpolation {
-                        expression: source.into(),
-                    });
-                } else {
+                if self.is_local_binding(source) {
                     self.check_expr(&Expr::Ident {
                         name: source.into(),
                         span,
+                    });
+                } else {
+                    self.errors.push(TypeError::InvalidInterpolation {
+                        expression: source.into(),
                     });
                 }
             } else {
@@ -3150,6 +3150,14 @@ impl TypeEnv {
         } else {
             target_type
         }
+    }
+
+    fn is_local_binding(&self, name: &str) -> bool {
+        self.scopes
+            .iter()
+            .skip(1)
+            .rev()
+            .any(|scope| scope.contains_key(name))
     }
 
     fn is_global_constant_binding(&self, name: &str) -> bool {
@@ -5048,6 +5056,18 @@ mod tests {
         assert!(
             check("fn main() { let value = 1 print(\"ok={value}, bad={value + 1}\") }").is_err()
         );
+        assert!(check(
+            "fn callback() -> int { 1 } fn render(value: any) -> any { value } fn main() { print(\"value={render(callback)}\") }"
+        )
+        .is_err());
+        assert!(check(
+            "fn callback() -> int { 1 } fn main() { print(\"value={callback}\") }"
+        )
+        .is_err());
+        assert!(check(
+            "fn render(value: any) -> any { value } fn main() { let callback = || 1 print(\"value={render(callback)}\") }"
+        )
+        .is_ok());
     }
 
     #[test]
