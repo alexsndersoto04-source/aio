@@ -5059,11 +5059,11 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "fn sink(first: any, second: any) -> nil {} fn inferred() { sink(loop {}, return 1) } fn main() { let impossible: ! = inferred() }"
+            "fn sink(first: any, second: any) {} fn inferred() { sink(loop {}, return 1) } fn main() { let impossible: ! = inferred() }"
         )
         .is_ok());
         assert!(check(
-            "fn sink(first: any, second: any) -> nil {} fn inferred() { sink(return 1, return \"unreachable\") } fn main() { let number: int = inferred() }"
+            "fn sink(first: any, second: any) {} fn inferred() { sink(return 1, return \"unreachable\") } fn main() { let number: int = inferred() }"
         )
         .is_ok());
         assert!(check(
