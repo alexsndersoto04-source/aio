@@ -5183,7 +5183,7 @@ mod tests {
         assert!(check("fn value() -> int { while true { return 1 break } } fn main() {}").is_ok());
         assert!(check("fn halt() -> ! { loop { loop {} break } } fn main() {}").is_ok());
         assert!(check(
-            "fn sink(first: any, second: any) {} fn halt() -> ! { loop { sink(loop {}, break) } } fn main() {}"
+            "fn sink(first: any, second: any) {} fn halt() -> ! { loop { sink(loop {}, { break }) } } fn main() {}"
         )
         .is_ok());
         assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
