@@ -4675,6 +4675,10 @@ mod tests {
                 .unwrap(),
             Value::Int(42)
         );
+        assert_eq!(
+            run("fn main() { let print = |value: int| value + 1 print(41) }").unwrap(),
+            Value::Int(42)
+        );
     }
 
     #[test]
