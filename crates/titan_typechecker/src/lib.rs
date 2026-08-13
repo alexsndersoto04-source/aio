@@ -26,6 +26,71 @@ pub enum Type {
 // `any`, but unlike Unknown it cannot silently satisfy `[int]` or `[string]`.
 const MIXED_ELEMENT_TYPE: &str = "$titan::mixed-element";
 
+#[derive(Debug, Clone)]
+enum MatchDomain {
+    Bool,
+    Enum {
+        name: String,
+        variants: HashSet<String>,
+    },
+    Open,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum MatchAtom {
+    Bool(bool),
+    EnumVariant(String),
+    Int(i64),
+    String(String),
+    Char(char),
+    Nil,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PatternCoverage {
+    all: bool,
+    atoms: HashSet<MatchAtom>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MatchCoverage {
+    all: bool,
+    atoms: HashSet<MatchAtom>,
+}
+
+impl MatchCoverage {
+    fn is_complete(&self, domain: &MatchDomain) -> bool {
+        if self.all {
+            return true;
+        }
+        match domain {
+            MatchDomain::Bool => {
+                self.atoms.contains(&MatchAtom::Bool(false))
+                    && self.atoms.contains(&MatchAtom::Bool(true))
+            }
+            MatchDomain::Enum { variants, .. } => variants
+                .iter()
+                .all(|variant| self.atoms.contains(&MatchAtom::EnumVariant(variant.clone()))),
+            MatchDomain::Open => false,
+        }
+    }
+
+    fn covers(&self, pattern: &PatternCoverage, domain: &MatchDomain) -> bool {
+        if self.all {
+            return true;
+        }
+        if pattern.all {
+            return self.is_complete(domain);
+        }
+        !pattern.atoms.is_empty() && pattern.atoms.is_subset(&self.atoms)
+    }
+
+    fn add(&mut self, pattern: PatternCoverage) {
+        self.all |= pattern.all;
+        self.atoms.extend(pattern.atoms);
+    }
+}
+
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if matches!(self, Type::Named(name) if name == MIXED_ELEMENT_TYPE) {
@@ -122,6 +187,8 @@ pub enum TypeError {
         enumeration: String,
         missing: Vec<String>,
     },
+    #[error("match arm {arm} has an unreachable pattern")]
+    UnreachablePattern { arm: usize },
     #[error("break/continue used outside a loop")]
     OutsideLoop,
     #[error("operator ? requires an Option or Result value")]
@@ -2045,9 +2112,8 @@ impl TypeEnv {
                 scrutinee, arms, ..
             } => {
                 let subject = self.check_expr(scrutinee);
+                self.check_match_coverage(&subject, arms);
                 let mut result: Option<Type> = None;
-                let mut wildcard = false;
-                let mut bools = HashSet::new();
                 for arm in arms {
                     if !match_pattern_is_lowerable(&arm.pattern) {
                         self.errors.push(TypeError::UnsupportedFeature {
@@ -2055,7 +2121,7 @@ impl TypeEnv {
                         });
                     }
                     self.push_scope();
-                    self.bind_pattern(&arm.pattern, &subject, &mut wildcard, &mut bools);
+                    self.bind_pattern(&arm.pattern, &subject);
                     if let Some(guard) = &arm.guard {
                         let g = self.check_expr(guard);
                         self.require_compatible(&Type::Bool, &g);
@@ -2082,39 +2148,6 @@ impl TypeEnv {
                         }
                     });
                     self.pop_scope();
-                }
-                let has_catchall = arms
-                    .iter()
-                    .any(|arm| arm.guard.is_none() && pattern_is_catchall(&arm.pattern));
-                if !has_catchall {
-                    match self.resolve_alias(&subject) {
-                        Type::Bool => {
-                            let mut covered = HashSet::new();
-                            for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
-                                collect_bool_patterns(&arm.pattern, &mut covered);
-                            }
-                            if covered.len() < 2 {
-                                self.errors.push(TypeError::NonExhaustiveMatch);
-                            }
-                        }
-                        Type::Named(enumeration) => {
-                            self.check_enum_exhaustiveness(&enumeration, arms);
-                        }
-                        Type::Unknown => {
-                            let mut enumerations = HashSet::new();
-                            for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
-                                collect_pattern_enum_names(&arm.pattern, &mut enumerations);
-                            }
-                            if enumerations.len() == 1 {
-                                let enumeration =
-                                    enumerations.into_iter().next().unwrap_or_default();
-                                self.check_enum_exhaustiveness(&enumeration, arms);
-                            } else {
-                                self.errors.push(TypeError::NonExhaustiveMatch);
-                            }
-                        }
-                        _ => self.errors.push(TypeError::NonExhaustiveMatch),
-                    }
                 }
                 result.unwrap_or(Type::Unknown)
             }
@@ -2145,9 +2178,7 @@ impl TypeEnv {
                     }
                 };
                 self.push_scope();
-                let mut w = false;
-                let mut b = HashSet::new();
-                self.bind_pattern(pattern, &item, &mut w, &mut b);
+                self.bind_pattern(pattern, &item);
                 self.loop_depth += 1;
                 self.check_block(body);
                 self.loop_depth -= 1;
@@ -3099,50 +3130,159 @@ impl TypeEnv {
             .collect()
     }
 
-    fn check_enum_exhaustiveness(&mut self, enumeration: &str, arms: &[MatchArm]) {
-        let variants = self.enum_variant_names(enumeration);
-        if variants.is_empty() {
-            self.errors.push(TypeError::NonExhaustiveMatch);
-            return;
-        }
-        let mut covered = HashSet::new();
-        for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
-            collect_enum_patterns(&arm.pattern, enumeration, &mut covered);
-        }
-        let mut missing: Vec<_> = variants.difference(&covered).cloned().collect();
-        missing.sort();
-        if !missing.is_empty() {
-            self.errors.push(TypeError::NonExhaustiveEnum {
-                enumeration: enumeration.into(),
-                missing,
-            });
+    fn match_domain(&self, subject: &Type) -> MatchDomain {
+        match self.resolve_alias(subject) {
+            Type::Bool => MatchDomain::Bool,
+            Type::Named(name) => {
+                let variants = self.enum_variant_names(&name);
+                if variants.is_empty() {
+                    MatchDomain::Open
+                } else {
+                    MatchDomain::Enum { name, variants }
+                }
+            }
+            // A dynamic value may contain more than the variants mentioned by
+            // the source. Enum-looking arms therefore cannot make an `any`
+            // match exhaustive without a real catch-all.
+            Type::Unknown => MatchDomain::Open,
+            _ => MatchDomain::Open,
         }
     }
 
-    fn bind_pattern(
-        &mut self,
+    fn pattern_coverage(
+        &self,
         pattern: &Pattern,
-        subject: &Type,
-        wildcard: &mut bool,
-        bools: &mut HashSet<bool>,
-    ) {
+        domain: &MatchDomain,
+    ) -> Option<PatternCoverage> {
         match pattern {
-            Pattern::Wildcard { .. } => *wildcard = true,
+            Pattern::Wildcard { .. } | Pattern::Ident { .. } => Some(PatternCoverage {
+                all: true,
+                atoms: HashSet::new(),
+            }),
+            Pattern::Literal { value, .. } => {
+                let atom = match (domain, value.as_ref()) {
+                    (MatchDomain::Bool, Expr::Bool { value, .. }) => MatchAtom::Bool(*value),
+                    (MatchDomain::Open, Expr::Int { value, .. }) => MatchAtom::Int(*value),
+                    (MatchDomain::Open, Expr::String { value, .. }) => {
+                        MatchAtom::String(value.clone())
+                    }
+                    (MatchDomain::Open, Expr::Char { value, .. }) => MatchAtom::Char(*value),
+                    (MatchDomain::Open, Expr::Nil { .. }) => MatchAtom::Nil,
+                    _ => return None,
+                };
+                Some(PatternCoverage {
+                    all: false,
+                    atoms: HashSet::from([atom]),
+                })
+            }
+            Pattern::Enum {
+                name,
+                variant,
+                inner,
+                ..
+            } => {
+                let MatchDomain::Enum {
+                    name: enumeration,
+                    variants,
+                } = domain
+                else {
+                    return None;
+                };
+                if name != enumeration || !variants.contains(variant) {
+                    return None;
+                }
+                let qualified = format!("{}::{}", name, variant);
+                let covers_variant = match (self.enum_variants.get(&qualified), inner) {
+                    (Some(None), None) => true,
+                    (Some(Some(_)), Some(inner)) => pattern_is_catchall(inner),
+                    _ => false,
+                };
+                covers_variant.then(|| PatternCoverage {
+                    all: false,
+                    atoms: HashSet::from([MatchAtom::EnumVariant(variant.clone())]),
+                })
+            }
+            Pattern::Or { left, right, .. } => {
+                let mut left = self.pattern_coverage(left, domain)?;
+                let right = self.pattern_coverage(right, domain)?;
+                left.all |= right.all;
+                left.atoms.extend(right.atoms);
+                Some(left)
+            }
+            Pattern::Tuple { .. } | Pattern::Struct { .. } => None,
+        }
+    }
+
+    fn check_match_coverage(&mut self, subject: &Type, arms: &[MatchArm]) {
+        let domain = self.match_domain(subject);
+        let mut coverage = MatchCoverage::default();
+
+        for (index, arm) in arms.iter().enumerate() {
+            let pattern = self.pattern_coverage(&arm.pattern, &domain);
+            let unreachable = coverage.all
+                || pattern
+                    .as_ref()
+                    .is_some_and(|pattern| coverage.covers(pattern, &domain));
+            if unreachable {
+                self.errors
+                    .push(TypeError::UnreachablePattern { arm: index + 1 });
+            }
+            // A guard can fail at runtime, so guarded arms never contribute to
+            // exhaustiveness or make a later arm unreachable.
+            if arm.guard.is_none() {
+                if let Some(pattern) = pattern {
+                    coverage.add(pattern);
+                }
+            }
+        }
+
+        match domain {
+            MatchDomain::Bool => {
+                if !coverage.is_complete(&MatchDomain::Bool) {
+                    self.errors.push(TypeError::NonExhaustiveMatch);
+                }
+            }
+            MatchDomain::Enum { name, variants } => {
+                if !coverage.all {
+                    let mut missing: Vec<_> = variants
+                        .into_iter()
+                        .filter(|variant| {
+                            !coverage
+                                .atoms
+                                .contains(&MatchAtom::EnumVariant(variant.clone()))
+                        })
+                        .collect();
+                    missing.sort();
+                    if !missing.is_empty() {
+                        self.errors.push(TypeError::NonExhaustiveEnum {
+                            enumeration: name,
+                            missing,
+                        });
+                    }
+                }
+            }
+            MatchDomain::Open => {
+                if !coverage.all {
+                    self.errors.push(TypeError::NonExhaustiveMatch);
+                }
+            }
+        }
+    }
+
+    fn bind_pattern(&mut self, pattern: &Pattern, subject: &Type) {
+        match pattern {
+            Pattern::Wildcard { .. } => {}
             Pattern::Ident { name, .. } => {
                 self.define(name.clone(), subject.clone());
-                *wildcard = true;
             }
             Pattern::Literal { value, .. } => {
-                if let Expr::Bool { value, .. } = value.as_ref() {
-                    bools.insert(*value);
-                }
                 let found = self.check_expr(value);
                 self.require_compatible(subject, &found);
             }
             Pattern::Or { left, right, .. } => {
                 let original = self.scopes.last().cloned().unwrap_or_default();
                 let original_bindings = self.bindings.last().cloned().unwrap_or_default();
-                self.bind_pattern(left, subject, wildcard, bools);
+                self.bind_pattern(left, subject);
                 let left_scope = self.scopes.last().cloned().unwrap_or_default();
                 let left_names = pattern_binding_names(left);
 
@@ -3152,7 +3292,7 @@ impl TypeEnv {
                 if let Some(bindings) = self.bindings.last_mut() {
                     *bindings = original_bindings.clone();
                 }
-                self.bind_pattern(right, subject, wildcard, bools);
+                self.bind_pattern(right, subject);
                 let right_scope = self.scopes.last().cloned().unwrap_or_default();
                 let right_names = pattern_binding_names(right);
 
@@ -3185,13 +3325,13 @@ impl TypeEnv {
                 match self.enum_variants.get(&qualified).cloned() {
                     Some(payload) => match (payload, inner) {
                         (Some(payload), Some(inner)) => {
-                            self.bind_pattern(inner, &payload, wildcard, bools)
+                            self.bind_pattern(inner, &payload)
                         }
                         (None, Some(inner)) => {
                             self.errors.push(TypeError::InvalidPattern {
                                 message: format!("variant '{}::{}' has no payload", name, variant),
                             });
-                            self.bind_pattern(inner, &Type::Unknown, wildcard, bools);
+                            self.bind_pattern(inner, &Type::Unknown);
                         }
                         (Some(_), None) => {
                             self.errors.push(TypeError::InvalidPattern {
@@ -3209,7 +3349,7 @@ impl TypeEnv {
                             variant: variant.clone(),
                         });
                         if let Some(inner) = inner {
-                            self.bind_pattern(inner, &Type::Unknown, wildcard, bools);
+                            self.bind_pattern(inner, &Type::Unknown);
                         }
                     }
                 }
@@ -3227,12 +3367,12 @@ impl TypeEnv {
                     }
                     for (index, element) in elements.iter().enumerate() {
                         let element_type = subjects.get(index).cloned().unwrap_or(Type::Unknown);
-                        self.bind_pattern(element, &element_type, wildcard, bools);
+                        self.bind_pattern(element, &element_type);
                     }
                 }
                 Type::Unknown => {
                     for element in elements {
-                        self.bind_pattern(element, &Type::Unknown, wildcard, bools);
+                        self.bind_pattern(element, &Type::Unknown);
                     }
                 }
                 found => {
@@ -3240,7 +3380,7 @@ impl TypeEnv {
                         message: format!("tuple pattern cannot match {found}"),
                     });
                     for element in elements {
-                        self.bind_pattern(element, &Type::Unknown, wildcard, bools);
+                        self.bind_pattern(element, &Type::Unknown);
                     }
                 }
             },
@@ -3252,7 +3392,7 @@ impl TypeEnv {
                     self.errors
                         .push(TypeError::UnknownType { name: name.clone() });
                     for (_, pattern) in fields {
-                        self.bind_pattern(pattern, &Type::Unknown, wildcard, bools);
+                        self.bind_pattern(pattern, &Type::Unknown);
                     }
                     return;
                 };
@@ -3273,7 +3413,7 @@ impl TypeEnv {
                         });
                         Type::Unknown
                     });
-                    self.bind_pattern(pattern, &field_type, wildcard, bools);
+                    self.bind_pattern(pattern, &field_type);
                 }
                 if !rest {
                     for field in schema.keys() {
@@ -3791,47 +3931,6 @@ fn pattern_is_catchall(pattern: &Pattern) -> bool {
     }
 }
 
-fn collect_bool_patterns(pattern: &Pattern, covered: &mut HashSet<bool>) {
-    match pattern {
-        Pattern::Literal { value, .. } => {
-            if let Expr::Bool { value, .. } = value.as_ref() {
-                covered.insert(*value);
-            }
-        }
-        Pattern::Or { left, right, .. } => {
-            collect_bool_patterns(left, covered);
-            collect_bool_patterns(right, covered);
-        }
-        _ => {}
-    }
-}
-
-fn collect_pattern_enum_names(pattern: &Pattern, names: &mut HashSet<String>) {
-    match pattern {
-        Pattern::Enum { name, .. } => {
-            names.insert(name.clone());
-        }
-        Pattern::Or { left, right, .. } => {
-            collect_pattern_enum_names(left, names);
-            collect_pattern_enum_names(right, names);
-        }
-        _ => {}
-    }
-}
-
-fn collect_enum_patterns(pattern: &Pattern, enumeration: &str, covered: &mut HashSet<String>) {
-    match pattern {
-        Pattern::Enum { name, variant, .. } if name == enumeration => {
-            covered.insert(variant.clone());
-        }
-        Pattern::Or { left, right, .. } => {
-            collect_enum_patterns(left, enumeration, covered);
-            collect_enum_patterns(right, enumeration, covered);
-        }
-        _ => {}
-    }
-}
-
 fn common_type(types: &[Type]) -> Option<Type> {
     let first = types.first()?;
     types
@@ -3994,15 +4093,12 @@ fn expr_definitely_returns(expr: &Expr) -> bool {
             else_branch: Some(else_branch),
             ..
         } => block_definitely_returns(then_branch) && block_definitely_returns(else_branch),
+        // Match checking rejects every non-exhaustive expression before this
+        // control-flow pass runs, including guarded catch-alls. Therefore a
+        // non-empty match exits exactly when every reachable arm exits; it
+        // does not need a syntactic wildcard (booleans and enums are finite).
         Expr::Match { arms, .. } => {
-            let exhaustive = arms.iter().any(|arm| {
-                arm.guard.is_none()
-                    && matches!(
-                        &arm.pattern,
-                        Pattern::Wildcard { .. } | Pattern::Ident { .. }
-                    )
-            });
-            exhaustive && arms.iter().all(|arm| block_definitely_returns(&arm.body))
+            !arms.is_empty() && arms.iter().all(|arm| block_definitely_returns(&arm.body))
         }
         Expr::Loop { body, .. } => !block_may_break_current_loop(body),
         Expr::While {
@@ -4647,6 +4743,48 @@ mod tests {
     fn guarded_patterns_are_not_considered_exhaustive() {
         let source = "fn read(value: bool) -> int { match value { true if value => 1, false => 0 } } fn main() {}";
         assert!(check(source).is_err());
+
+        let fallback = "fn read(value: bool) -> int { match value { true if value => 1, true => 2, false => 0 } } fn main() {}";
+        assert!(check(fallback).is_ok());
+    }
+
+    #[test]
+    fn rejects_unreachable_match_patterns() {
+        let duplicate_bool = "fn read(value: bool) -> int { match value { true => 1, true => 2, false => 0 } } fn main() {}";
+        let errors = check(duplicate_bool).unwrap_err();
+        assert!(errors.contains(&TypeError::UnreachablePattern { arm: 2 }));
+
+        let after_catchall =
+            "fn read(value: int) -> int { match value { _ => 0, 1 => 1 } } fn main() {}";
+        let errors = check(after_catchall).unwrap_err();
+        assert!(errors.contains(&TypeError::UnreachablePattern { arm: 2 }));
+
+        let duplicate_variant = "enum Choice { First, Second } fn read(value: Choice) -> int { match value { Choice::First => 1, Choice::First => 2, Choice::Second => 0 } } fn main() {}";
+        let errors = check(duplicate_variant).unwrap_err();
+        assert!(errors.contains(&TypeError::UnreachablePattern { arm: 2 }));
+
+        let after_finite_coverage = "fn read(value: bool) -> int { match value { true => 1, false => 0, _ => 2 } } fn main() {}";
+        let errors = check(after_finite_coverage).unwrap_err();
+        assert!(errors.contains(&TypeError::UnreachablePattern { arm: 3 }));
+
+        let guarded_after_coverage = "fn read(value: bool) -> int { match value { true => 1, true if value => 2, false => 0 } } fn main() {}";
+        let errors = check(guarded_after_coverage).unwrap_err();
+        assert!(errors.contains(&TypeError::UnreachablePattern { arm: 2 }));
+    }
+
+    #[test]
+    fn dynamic_matches_require_a_real_catchall() {
+        let enum_only = "fn read(value: any) -> int { match value { Option::Some(inner) => 1, Option::None => 0 } } fn main() {}";
+        assert!(check(enum_only).is_err());
+
+        let with_catchall = "fn read(value: any) -> int { match value { Option::Some(inner) => 1, Option::None => 0, _ => -1 } } fn main() {}";
+        assert!(check(with_catchall).is_ok());
+    }
+
+    #[test]
+    fn exhaustive_finite_matches_count_as_control_flow_exits() {
+        let source = "fn stop(value: bool) -> int { let never = match value { true => return 1, false => return 2 } } fn main() {}";
+        assert!(check(source).is_ok());
     }
 
     #[test]
