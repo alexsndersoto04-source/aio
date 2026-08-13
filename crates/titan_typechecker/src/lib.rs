@@ -230,6 +230,7 @@ pub struct TypeEnv {
     return_type: Type,
     return_candidates: Vec<Vec<Type>>,
     loop_depth: usize,
+    loop_breaks: Vec<bool>,
     function_depth: usize,
 }
 
@@ -1130,6 +1131,7 @@ impl TypeEnv {
             return_type: Type::Unknown,
             return_candidates: Vec::new(),
             loop_depth: 0,
+            loop_breaks: Vec::new(),
             function_depth: 0,
         }
     }
@@ -1154,6 +1156,7 @@ impl TypeEnv {
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
+        self.loop_breaks.clear();
         self.function_depth = 0;
         self.validate_declarations(&program.items);
         self.collect_declarations(&program.items);
@@ -1218,6 +1221,7 @@ impl TypeEnv {
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
+        self.loop_breaks.clear();
         self.function_depth = 0;
     }
 
@@ -1758,6 +1762,7 @@ impl TypeEnv {
                 .unwrap_or(Type::Unknown),
         );
         let old_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let old_loop_breaks = std::mem::take(&mut self.loop_breaks);
         self.function_depth += 1;
         self.return_candidates.push(Vec::new());
         if let Some(body) = &function.body {
@@ -1776,7 +1781,7 @@ impl TypeEnv {
                             candidates.push(body_type.clone());
                         }
                     }
-                } else if !block_definitely_returns(body) {
+                } else if body_type != Type::Never && !block_definitely_returns(body) {
                     if let Some(candidates) = self.return_candidates.last_mut() {
                         candidates.push(Type::Unit);
                     }
@@ -1792,6 +1797,7 @@ impl TypeEnv {
             if function.return_type.is_some()
                 && !compatible(&self.return_type, &Type::Unit)
                 && body.final_expr.is_none()
+                && body_type != Type::Never
                 && !block_definitely_returns(body)
             {
                 self.errors.push(TypeError::MissingReturn {
@@ -1809,6 +1815,7 @@ impl TypeEnv {
         }
         self.function_depth -= 1;
         self.loop_depth = old_loop_depth;
+        self.loop_breaks = old_loop_breaks;
         self.return_type = old_return;
         self.pop_scope();
     }
@@ -1823,6 +1830,7 @@ impl TypeEnv {
         for stmt in &block.stmts {
             let was_diverged = diverges;
             let candidate_count = self.return_candidates.last().map(Vec::len);
+            let loop_broke = self.loop_breaks.last().copied();
             let statement_type = match stmt {
                 Stmt::Let {
                     name,
@@ -1859,11 +1867,17 @@ impl TypeEnv {
                 {
                     candidates.truncate(count);
                 }
+                if let (Some(current), Some(previous)) =
+                    (self.loop_breaks.last_mut(), loop_broke)
+                {
+                    *current = previous;
+                }
             }
             diverges |= statement_type == Type::Never;
         }
 
         let candidate_count = self.return_candidates.last().map(Vec::len);
+        let loop_broke = self.loop_breaks.last().copied();
         let result = block
             .final_expr
             .as_ref()
@@ -1880,6 +1894,11 @@ impl TypeEnv {
                 (self.return_candidates.last_mut(), candidate_count)
             {
                 candidates.truncate(count);
+            }
+            if let (Some(current), Some(previous)) =
+                (self.loop_breaks.last_mut(), loop_broke)
+            {
+                *current = previous;
             }
         }
         self.pop_scope();
@@ -2185,6 +2204,7 @@ impl TypeEnv {
                 let condition = self.check_expr(condition);
                 self.require_compatible(&Type::Bool, &condition);
                 let candidate_count = self.return_candidates.last().map(Vec::len);
+                let loop_broke = self.loop_breaks.last().copied();
                 let a = self.check_block(then_branch);
                 if let Some(other) = else_branch {
                     let b = self.check_block(other);
@@ -2193,6 +2213,11 @@ impl TypeEnv {
                             (self.return_candidates.last_mut(), candidate_count)
                         {
                             candidates.truncate(count);
+                        }
+                        if let (Some(current), Some(previous)) =
+                            (self.loop_breaks.last_mut(), loop_broke)
+                        {
+                            *current = previous;
                         }
                     }
                     // A condition that never completes prevents either branch
@@ -2219,6 +2244,11 @@ impl TypeEnv {
                     {
                         candidates.truncate(count);
                     }
+                    if let (Some(current), Some(previous)) =
+                        (self.loop_breaks.last_mut(), loop_broke)
+                    {
+                        *current = previous;
+                    }
                     Type::Never
                 } else {
                     Type::Unit
@@ -2231,6 +2261,7 @@ impl TypeEnv {
                 self.check_match_coverage(&subject, arms);
                 let subject_never = self.resolve_alias(&subject) == Type::Never;
                 let candidate_count = self.return_candidates.last().map(Vec::len);
+                let loop_broke = self.loop_breaks.last().copied();
                 let mut result: Option<Type> = None;
                 for arm in arms {
                     if !match_pattern_is_lowerable(&arm.pattern) {
@@ -2248,12 +2279,18 @@ impl TypeEnv {
                         false
                     };
                     let body_candidate_count = self.return_candidates.last().map(Vec::len);
+                    let body_loop_broke = self.loop_breaks.last().copied();
                     let body_type = self.check_block(&arm.body);
                     let found = if guard_never {
                         if let (Some(candidates), Some(count)) =
                             (self.return_candidates.last_mut(), body_candidate_count)
                         {
                             candidates.truncate(count);
+                        }
+                        if let (Some(current), Some(previous)) =
+                            (self.loop_breaks.last_mut(), body_loop_broke)
+                        {
+                            *current = previous;
                         }
                         Type::Never
                     } else {
@@ -2286,6 +2323,11 @@ impl TypeEnv {
                         (self.return_candidates.last_mut(), candidate_count)
                     {
                         candidates.truncate(count);
+                    }
+                    if let (Some(current), Some(previous)) =
+                        (self.loop_breaks.last_mut(), loop_broke)
+                    {
+                        *current = previous;
                     }
                     Type::Never
                 } else {
@@ -2322,8 +2364,10 @@ impl TypeEnv {
                 self.push_scope();
                 self.bind_pattern(pattern, &item);
                 self.loop_depth += 1;
+                self.loop_breaks.push(false);
                 let candidate_count = self.return_candidates.last().map(Vec::len);
                 self.check_block(body);
+                self.loop_breaks.pop();
                 self.loop_depth -= 1;
                 self.pop_scope();
                 if iterator_type == Type::Never {
@@ -2343,8 +2387,10 @@ impl TypeEnv {
                 let c = self.check_expr(condition);
                 self.require_compatible(&Type::Bool, &c);
                 self.loop_depth += 1;
+                self.loop_breaks.push(false);
                 let candidate_count = self.return_candidates.last().map(Vec::len);
                 self.check_block(body);
+                let body_may_break = self.loop_breaks.pop().unwrap_or(false);
                 self.loop_depth -= 1;
                 if c == Type::Never {
                     if let (Some(candidates), Some(count)) =
@@ -2354,7 +2400,7 @@ impl TypeEnv {
                     }
                     Type::Never
                 } else if matches!(condition.as_ref(), Expr::Bool { value: true, .. })
-                    && !block_may_break_current_loop(body)
+                    && !body_may_break
                 {
                     Type::Never
                 } else {
@@ -2363,23 +2409,32 @@ impl TypeEnv {
             }
             Expr::Loop { body, .. } => {
                 self.loop_depth += 1;
+                self.loop_breaks.push(false);
                 self.check_block(body);
+                let body_may_break = self.loop_breaks.pop().unwrap_or(false);
                 self.loop_depth -= 1;
-                if block_may_break_current_loop(body) {
+                if body_may_break {
                     Type::Unit
                 } else {
                     Type::Never
                 }
             }
             Expr::Break { value, .. } => {
-                if self.loop_depth == 0 {
-                    self.errors.push(TypeError::OutsideLoop);
-                }
-                if let Some(value) = value {
-                    self.check_expr(value);
+                let reaches_break = if let Some(value) = value {
+                    let found = self.check_expr(value);
                     self.errors.push(TypeError::UnsupportedFeature {
                         feature: "values carried by break".into(),
                     });
+                    self.resolve_alias(&found) != Type::Never
+                } else {
+                    true
+                };
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeError::OutsideLoop);
+                } else if reaches_break {
+                    if let Some(current) = self.loop_breaks.last_mut() {
+                        *current = true;
+                    }
                 }
                 Type::Never
             }
@@ -2541,6 +2596,7 @@ impl TypeEnv {
             .unwrap_or(Type::Unknown);
         let old_return = std::mem::replace(&mut self.return_type, expected_result.clone());
         let old_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let old_loop_breaks = std::mem::take(&mut self.loop_breaks);
         self.function_depth += 1;
         self.return_candidates.push(Vec::new());
         let actual = self.check_expr(body);
@@ -2552,6 +2608,7 @@ impl TypeEnv {
         let candidates = self.return_candidates.pop().unwrap_or_default();
         self.function_depth -= 1;
         self.loop_depth = old_loop_depth;
+        self.loop_breaks = old_loop_breaks;
         self.return_type = old_return;
 
         let result = declared_result
@@ -2945,6 +3002,7 @@ impl TypeEnv {
     ) -> Type {
         let was_reachable = *reachable;
         let candidate_count = self.return_candidates.last().map(Vec::len);
+        let loop_broke = self.loop_breaks.last().copied();
         let (found, diverges) =
             self.check_callback_expr_evaluation(name, expression, arguments, result);
         if !was_reachable {
@@ -2952,6 +3010,11 @@ impl TypeEnv {
                 (self.return_candidates.last_mut(), candidate_count)
             {
                 candidates.truncate(count);
+            }
+            if let (Some(current), Some(previous)) =
+                (self.loop_breaks.last_mut(), loop_broke)
+            {
+                *current = previous;
             }
         } else if diverges {
             *reachable = false;
@@ -3302,6 +3365,7 @@ impl TypeEnv {
     ) -> Type {
         let was_reachable = *reachable;
         let candidate_count = self.return_candidates.last().map(Vec::len);
+        let loop_broke = self.loop_breaks.last().copied();
         let found = if let Some(expected) = expected {
             self.check_expr_expected(expression, expected)
         } else {
@@ -3312,6 +3376,11 @@ impl TypeEnv {
                 (self.return_candidates.last_mut(), candidate_count)
             {
                 candidates.truncate(count);
+            }
+            if let (Some(current), Some(previous)) =
+                (self.loop_breaks.last_mut(), loop_broke)
+            {
+                *current = previous;
             }
         } else if self.resolve_alias(&found) == Type::Never {
             *reachable = false;
@@ -5103,6 +5172,21 @@ mod tests {
             "fn value() -> bool { false && loop {} } fn main() { let result: bool = value() }"
         )
         .is_ok());
+    }
+
+    #[test]
+    fn ignores_unreachable_breaks_when_classifying_loops() {
+        assert!(check(
+            "fn inferred() { loop { return 1 break } } fn main() { let value: int = inferred() }"
+        )
+        .is_ok());
+        assert!(check("fn value() -> int { while true { return 1 break } } fn main() {}").is_ok());
+        assert!(check("fn halt() -> ! { loop { loop {} break } } fn main() {}").is_ok());
+        assert!(check(
+            "fn sink(first: any, second: any) {} fn halt() -> ! { loop { sink(loop {}, break) } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
     }
 
     #[test]
