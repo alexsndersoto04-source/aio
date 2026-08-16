@@ -4212,11 +4212,9 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
                     // advertise generic guarantees the checker does not keep.
                     let expected = usize::from(matches!(name.as_str(), "Array" | "Vec"));
                     if generics.len() != expected {
-                        issues.invalid_arguments.insert((
-                            name.clone(),
-                            expected,
-                            generics.len(),
-                        ));
+                        issues
+                            .invalid_arguments
+                            .insert((name.clone(), expected, generics.len()));
                     }
                 } else {
                     issues.unknown.insert(name.clone());
@@ -4525,13 +4523,15 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
     unknown
         .into_iter()
         .map(|name| TypeError::UnknownType { name })
-        .chain(invalid_arguments.into_iter().map(|(name, expected, found)| {
-            TypeError::InvalidTypeArguments {
-                name,
-                expected,
-                found,
-            }
-        }))
+        .chain(
+            invalid_arguments
+                .into_iter()
+                .map(|(name, expected, found)| TypeError::InvalidTypeArguments {
+                    name,
+                    expected,
+                    found,
+                }),
+        )
         .chain(
             unsupported
                 .into_iter()
@@ -5674,16 +5674,27 @@ mod tests {
             ("fn consume(value: Array) {} fn main() {}", "Array", 1, 0),
             (
                 "fn consume(value: Array<int, string>) {} fn main() {}",
-                "Array", 1, 2,
+                "Array",
+                1,
+                2,
             ),
             (
                 "fn consume(value: Option<int>) {} fn main() {}",
-                "Option", 0, 1,
+                "Option",
+                0,
+                1,
             ),
-            ("fn consume(value: int<string>) {} fn main() {}", "int", 0, 1),
+            (
+                "fn consume(value: int<string>) {} fn main() {}",
+                "int",
+                0,
+                1,
+            ),
             (
                 "fn consume(value: map<string, int>) {} fn main() {}",
-                "map", 0, 2,
+                "map",
+                0,
+                2,
             ),
         ] {
             let errors = check(source).unwrap_err();
