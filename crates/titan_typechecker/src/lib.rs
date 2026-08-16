@@ -457,10 +457,7 @@ impl TypeEnv {
                     Type::Named("HttpRouter".into()),
                     Type::String,
                     Type::String,
-                    Type::Function(
-                        vec![Type::Named("map".into())],
-                        Box::new(Type::Unknown),
-                    ),
+                    Type::Function(vec![Type::Named("map".into())], Box::new(Type::Unknown)),
                 ],
                 result: Type::Nil,
             },
