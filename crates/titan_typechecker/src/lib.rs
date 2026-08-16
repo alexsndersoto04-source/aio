@@ -4264,8 +4264,8 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
         }
     }
 
-    fn pattern(pattern: &Pattern, known: &HashSet<String>, issues: &mut Issues) {
-        match pattern {
+    fn pattern(current: &Pattern, known: &HashSet<String>, issues: &mut Issues) {
+        match current {
             Pattern::Literal { value, .. } => expr(value, known, issues),
             Pattern::Struct { fields, .. } => {
                 for (_, field) in fields {
