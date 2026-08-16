@@ -1908,10 +1908,7 @@ impl TypeEnv {
             Expr::Int { .. } => Type::Int,
             Expr::Float { .. } => Type::Float,
             Expr::String { .. } => Type::String,
-            Expr::StringTemplate { value, .. } => {
-                self.check_string_template(value);
-                Type::String
-            }
+            Expr::StringTemplate { value, .. } => self.check_string_template(value),
             Expr::Char { .. } => Type::Char,
             Expr::Bool { .. } => Type::Bool,
             Expr::Nil { .. } => Type::Nil,
@@ -2680,16 +2677,17 @@ impl TypeEnv {
         found
     }
 
-    fn check_string_template(&mut self, template: &str) {
+    fn check_string_template(&mut self, template: &str) -> Type {
         let span = Default::default();
         let mut rest = template;
+        let mut diverges = false;
         while let Some(open) = rest.find('{') {
             let after = &rest[open + 1..];
             let Some(close) = after.find('}') else {
                 self.errors.push(TypeError::InvalidInterpolation {
                     expression: template.into(),
                 });
-                return;
+                break;
             };
             let source = after[..close].trim();
             if let Some(open_call) = source.find('(') {
@@ -2731,13 +2729,14 @@ impl TypeEnv {
                             let is_user_function = self.functions.contains_key(name)
                                 && !self.base_functions.contains_key(name);
                             if is_user_function || titan_stdlib::native::contains(name) {
-                                self.check_call(
+                                let result = self.check_call(
                                     &Expr::Ident {
                                         name: name.into(),
                                         span,
                                     },
                                     &args,
                                 );
+                                diverges |= self.resolve_alias(&result) == Type::Never;
                             } else {
                                 self.errors.push(TypeError::InvalidInterpolation {
                                     expression: source.into(),
@@ -2748,10 +2747,11 @@ impl TypeEnv {
                 }
             } else if is_template_path(source) {
                 if self.is_local_binding(source) {
-                    self.check_expr(&Expr::Ident {
+                    let result = self.check_expr(&Expr::Ident {
                         name: source.into(),
                         span,
                     });
+                    diverges |= self.resolve_alias(&result) == Type::Never;
                 } else {
                     self.errors.push(TypeError::InvalidInterpolation {
                         expression: source.into(),
@@ -2763,6 +2763,11 @@ impl TypeEnv {
                 });
             }
             rest = &after[close + 1..];
+        }
+        if diverges {
+            Type::Never
+        } else {
+            Type::String
         }
     }
 
@@ -5422,6 +5427,18 @@ mod tests {
             "fn render(value: any) -> any { value } fn main() { let callback = || 1 print(\"value={render(callback)}\") }"
         )
         .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop {} } fn render() -> ! { \"value={halt()}\" } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop {} } fn inferred() { \"value={halt()}\" } fn main() { let impossible: ! = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop {} } fn main() { print(\"stop={halt()}, bad={missing}\") }"
+        )
+        .is_err());
     }
 
     #[test]
