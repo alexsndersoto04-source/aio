@@ -146,6 +146,12 @@ pub enum TypeError {
     DuplicateDeclaration { kind: String, name: String },
     #[error("unknown type '{name}'")]
     UnknownType { name: String },
+    #[error("type '{name}' expects {expected} type arguments, found {found}")]
+    InvalidTypeArguments {
+        name: String,
+        expected: usize,
+        found: usize,
+    },
     #[error("recursive constant dependency: {cycle}")]
     RecursiveConstant { cycle: String },
     #[error("type alias '{name}' is recursive")]
@@ -1262,15 +1268,7 @@ impl TypeEnv {
     fn validate_declared_types(&mut self, items: &[Item]) {
         let mut known = builtin_type_names(&self.base_functions);
         collect_declared_type_names(items, &mut known);
-        let mut unknown = HashSet::new();
-        collect_unknown_types(items, &known, &mut unknown);
-        let mut unknown: Vec<_> = unknown.into_iter().collect();
-        unknown.sort();
-        self.errors.extend(
-            unknown
-                .into_iter()
-                .map(|name| TypeError::UnknownType { name }),
-        );
+        self.errors.extend(declared_type_errors(items, &known));
     }
 
     fn validate_impl_contracts(&mut self, items: &[Item]) {
@@ -2559,6 +2557,15 @@ impl TypeEnv {
                 self.errors.push(TypeError::Arity {
                     expected: expected.len(),
                     found: params.len(),
+                });
+            }
+        }
+        let mut parameter_names = HashSet::new();
+        for parameter in params {
+            if !parameter_names.insert(parameter.name.as_str()) {
+                self.errors.push(TypeError::DuplicateDeclaration {
+                    kind: "closure parameter".into(),
+                    name: parameter.name.clone(),
                 });
             }
         }
@@ -4186,23 +4193,51 @@ fn collect_declared_type_names(items: &[Item], names: &mut HashSet<String>) {
     }
 }
 
-fn collect_unknown_types(items: &[Item], known: &HashSet<String>, unknown: &mut HashSet<String>) {
-    fn type_expr(ty: &TypeExpr, known: &HashSet<String>, unknown: &mut HashSet<String>) {
+fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeError> {
+    #[derive(Default)]
+    struct Issues {
+        unknown: HashSet<String>,
+        invalid_arguments: HashSet<(String, usize, usize)>,
+        unsupported: HashSet<String>,
+    }
+
+    fn type_expr(ty: &TypeExpr, known: &HashSet<String>, issues: &mut Issues) {
         match ty {
             TypeExpr::Named { name, generics } => {
-                if !known.contains(name) {
-                    unknown.insert(name.clone());
+                if known.contains(name) {
+                    // Titan currently has one real parameterized type shape:
+                    // Array<T>/Vec<T>. Other named types are monomorphic. In
+                    // particular, accepting and then discarding arguments on
+                    // `Option<T>`, `map<K, V>`, primitives, or user types would
+                    // advertise generic guarantees the checker does not keep.
+                    let expected = usize::from(matches!(name.as_str(), "Array" | "Vec"));
+                    if generics.len() != expected {
+                        issues.invalid_arguments.insert((
+                            name.clone(),
+                            expected,
+                            generics.len(),
+                        ));
+                    }
+                } else {
+                    issues.unknown.insert(name.clone());
                 }
                 for generic in generics {
-                    type_expr(generic, known, unknown);
+                    type_expr(generic, known, issues);
                 }
             }
-            TypeExpr::Reference { inner, .. }
-            | TypeExpr::Slice { inner }
-            | TypeExpr::Array { inner, .. } => type_expr(inner, known, unknown),
+            TypeExpr::Reference { inner, .. } => {
+                issues.unsupported.insert("reference types".into());
+                type_expr(inner, known, issues);
+            }
+            TypeExpr::Slice { inner } => type_expr(inner, known, issues),
+            TypeExpr::Array { inner, size } => {
+                issues.unsupported.insert("fixed-size array types".into());
+                type_expr(inner, known, issues);
+                expr(size, known, issues);
+            }
             TypeExpr::Tuple { elements } => {
                 for element in elements {
-                    type_expr(element, known, unknown);
+                    type_expr(element, known, issues);
                 }
             }
             TypeExpr::Function {
@@ -4210,69 +4245,299 @@ fn collect_unknown_types(items: &[Item], known: &HashSet<String>, unknown: &mut 
                 return_type,
             } => {
                 for param in params {
-                    type_expr(param, known, unknown);
+                    type_expr(param, known, issues);
                 }
-                type_expr(return_type, known, unknown);
+                type_expr(return_type, known, issues);
             }
             TypeExpr::Unit | TypeExpr::Never | TypeExpr::Infer(_) => {}
         }
     }
 
-    fn params(params: &[Param], known: &HashSet<String>, unknown: &mut HashSet<String>) {
+    fn params(params: &[Param], known: &HashSet<String>, issues: &mut Issues) {
         for param in params {
             if let Some(annotation) = &param.type_ann {
-                type_expr(annotation, known, unknown);
+                type_expr(annotation, known, issues);
+            }
+            if let Some(default) = &param.default {
+                expr(default, known, issues);
             }
         }
     }
 
-    for item in items {
+    fn pattern(pattern: &Pattern, known: &HashSet<String>, issues: &mut Issues) {
+        match pattern {
+            Pattern::Literal { value, .. } => expr(value, known, issues),
+            Pattern::Struct { fields, .. } => {
+                for (_, field) in fields {
+                    pattern(field, known, issues);
+                }
+            }
+            Pattern::Enum {
+                inner: Some(inner), ..
+            } => pattern(inner, known, issues),
+            Pattern::Tuple { elements, .. } => {
+                for element in elements {
+                    pattern(element, known, issues);
+                }
+            }
+            Pattern::Or { left, right, .. } => {
+                pattern(left, known, issues);
+                pattern(right, known, issues);
+            }
+            Pattern::Wildcard { .. }
+            | Pattern::Ident { .. }
+            | Pattern::Enum { inner: None, .. } => {}
+        }
+    }
+
+    fn block(block: &Block, known: &HashSet<String>, issues: &mut Issues) {
+        for statement in &block.stmts {
+            match statement {
+                Stmt::Expr(expression) => expr(expression, known, issues),
+                Stmt::Let {
+                    type_ann, value, ..
+                } => {
+                    if let Some(annotation) = type_ann {
+                        type_expr(annotation, known, issues);
+                    }
+                    expr(value, known, issues);
+                }
+                Stmt::Assign { target, value, .. } => {
+                    expr(target, known, issues);
+                    expr(value, known, issues);
+                }
+                Stmt::Item(item) => visit_item(item, known, issues),
+            }
+        }
+        if let Some(final_expression) = &block.final_expr {
+            expr(final_expression, known, issues);
+        }
+    }
+
+    fn expr(expression: &Expr, known: &HashSet<String>, issues: &mut Issues) {
+        match expression {
+            Expr::Array { elements, .. } | Expr::Tuple { elements, .. } => {
+                for element in elements {
+                    expr(element, known, issues);
+                }
+            }
+            Expr::StructLit { fields, .. } => {
+                for (_, value) in fields {
+                    expr(value, known, issues);
+                }
+            }
+            Expr::Binary { left, right, .. }
+            | Expr::Range {
+                start: left,
+                end: right,
+                ..
+            }
+            | Expr::Index {
+                target: left,
+                index: right,
+                ..
+            }
+            | Expr::Assign {
+                target: left,
+                value: right,
+                ..
+            } => {
+                expr(left, known, issues);
+                expr(right, known, issues);
+            }
+            Expr::Unary {
+                expr: inner_expr, ..
+            }
+            | Expr::FieldAccess {
+                target: inner_expr, ..
+            }
+            | Expr::Spawn {
+                expr: inner_expr, ..
+            }
+            | Expr::Try {
+                expr: inner_expr, ..
+            } => expr(inner_expr, known, issues),
+            Expr::Call { callee, args, .. } => {
+                expr(callee, known, issues);
+                for argument in args {
+                    expr(argument, known, issues);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                expr(receiver, known, issues);
+                for argument in args {
+                    expr(argument, known, issues);
+                }
+            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                expr(condition, known, issues);
+                block(then_branch, known, issues);
+                if let Some(other) = else_branch {
+                    block(other, known, issues);
+                }
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                expr(scrutinee, known, issues);
+                for arm in arms {
+                    pattern(&arm.pattern, known, issues);
+                    if let Some(guard) = &arm.guard {
+                        expr(guard, known, issues);
+                    }
+                    block(&arm.body, known, issues);
+                }
+            }
+            Expr::For {
+                pattern: item_pattern,
+                iterator,
+                body,
+                ..
+            } => {
+                pattern(item_pattern, known, issues);
+                expr(iterator, known, issues);
+                block(body, known, issues);
+            }
+            Expr::While {
+                condition, body, ..
+            } => {
+                expr(condition, known, issues);
+                block(body, known, issues);
+            }
+            Expr::Loop { body, .. } => block(body, known, issues),
+            Expr::Block(body) => block(body, known, issues),
+            Expr::Break { value, .. } | Expr::Return { value, .. } => {
+                if let Some(value) = value {
+                    expr(value, known, issues);
+                }
+            }
+            Expr::Let {
+                type_ann, value, ..
+            } => {
+                if let Some(annotation) = type_ann {
+                    type_expr(annotation, known, issues);
+                }
+                expr(value, known, issues);
+            }
+            Expr::Closure {
+                params: closure_params,
+                return_type,
+                body,
+                ..
+            } => {
+                params(closure_params, known, issues);
+                if let Some(result) = return_type {
+                    type_expr(result, known, issues);
+                }
+                expr(body, known, issues);
+            }
+            Expr::Int { .. }
+            | Expr::Float { .. }
+            | Expr::String { .. }
+            | Expr::StringTemplate { .. }
+            | Expr::Char { .. }
+            | Expr::Bool { .. }
+            | Expr::Nil { .. }
+            | Expr::Ident { .. }
+            | Expr::Continue { .. } => {}
+        }
+    }
+
+    fn visit_item(item: &Item, known: &HashSet<String>, issues: &mut Issues) {
         match item {
             Item::Function(function) => {
-                params(&function.params, known, unknown);
+                params(&function.params, known, issues);
                 if let Some(result) = &function.return_type {
-                    type_expr(result, known, unknown);
+                    type_expr(result, known, issues);
+                }
+                if let Some(body) = &function.body {
+                    block(body, known, issues);
                 }
             }
             Item::Struct(structure) => {
                 for field in &structure.fields {
-                    type_expr(&field.type_ann, known, unknown);
+                    type_expr(&field.type_ann, known, issues);
                 }
             }
             Item::Enum(enumeration) => {
                 for variant in &enumeration.variants {
                     if let Some(payload) = &variant.payload {
-                        type_expr(payload, known, unknown);
+                        type_expr(payload, known, issues);
                     }
                 }
             }
             Item::Trait(trait_decl) => {
                 for method in &trait_decl.methods {
-                    params(&method.params, known, unknown);
+                    params(&method.params, known, issues);
                     if let Some(result) = &method.return_type {
-                        type_expr(result, known, unknown);
+                        type_expr(result, known, issues);
+                    }
+                    if let Some(body) = &method.body {
+                        block(body, known, issues);
                     }
                 }
             }
-            Item::Impl(block) => {
-                type_expr(&block.target_type, known, unknown);
-                for method in &block.methods {
-                    params(&method.params, known, unknown);
+            Item::Impl(implementation) => {
+                type_expr(&implementation.target_type, known, issues);
+                for method in &implementation.methods {
+                    params(&method.params, known, issues);
                     if let Some(result) = &method.return_type {
-                        type_expr(result, known, unknown);
+                        type_expr(result, known, issues);
+                    }
+                    if let Some(body) = &method.body {
+                        block(body, known, issues);
                     }
                 }
             }
             Item::Const(constant) => {
                 if let Some(annotation) = &constant.type_ann {
-                    type_expr(annotation, known, unknown);
+                    type_expr(annotation, known, issues);
+                }
+                expr(&constant.value, known, issues);
+            }
+            Item::TypeAlias(alias) => type_expr(&alias.target, known, issues),
+            Item::Module(module) => {
+                for item in &module.items {
+                    visit_item(item, known, issues);
                 }
             }
-            Item::TypeAlias(alias) => type_expr(&alias.target, known, unknown),
-            Item::Module(module) => collect_unknown_types(&module.items, known, unknown),
             Item::Import(_) => {}
         }
     }
+
+    let mut issues = Issues::default();
+    for item in items {
+        visit_item(item, known, &mut issues);
+    }
+
+    let mut unknown: Vec<_> = issues.unknown.into_iter().collect();
+    unknown.sort();
+    let mut invalid_arguments: Vec<_> = issues.invalid_arguments.into_iter().collect();
+    invalid_arguments.sort();
+    let mut unsupported: Vec<_> = issues.unsupported.into_iter().collect();
+    unsupported.sort();
+
+    unknown
+        .into_iter()
+        .map(|name| TypeError::UnknownType { name })
+        .chain(invalid_arguments.into_iter().map(|(name, expected, found)| {
+            TypeError::InvalidTypeArguments {
+                name,
+                expected,
+                found,
+            }
+        }))
+        .chain(
+            unsupported
+                .into_iter()
+                .map(|feature| TypeError::UnsupportedFeature { feature }),
+        )
+        .collect()
 }
 
 fn alias_reaches(
@@ -5373,6 +5638,10 @@ mod tests {
         assert!(check("struct Pair { left: int, left: int } fn main() {}").is_err());
         assert!(check("enum Choice { Yes, Yes } fn main() {}").is_err());
         assert!(check("fn duplicate(value: int, value: int) {} fn main() {}").is_err());
+        assert!(check(
+            "fn main() { let duplicate = |value: int, value: int| value duplicate(1, 2) }"
+        )
+        .is_err());
         assert!(check("struct Point { x: int } fn main() { Point { x: 1, x: 2 } }").is_err());
         assert!(check("fn main() { Missing { value: unknown } }").is_err());
     }
@@ -5385,6 +5654,61 @@ mod tests {
             "fn use_database(database: Sqlite) { std::sqlite::ping(database) } fn main() {}"
         )
         .is_ok());
+
+        let local_errors =
+            check("fn main() { let value: Missing = 1 let callback = |item: AlsoMissing| item }")
+                .unwrap_err();
+        assert!(local_errors
+            .iter()
+            .any(|error| matches!(error, TypeError::UnknownType { name } if name == "Missing")));
+        assert!(local_errors.iter().any(
+            |error| matches!(error, TypeError::UnknownType { name } if name == "AlsoMissing")
+        ));
+    }
+
+    #[test]
+    fn rejects_unimplemented_type_shapes_and_generic_arguments() {
+        assert!(check("fn consume(value: Array<int>) {} fn main() {}").is_ok());
+
+        for (source, expected_name, expected, found) in [
+            ("fn consume(value: Array) {} fn main() {}", "Array", 1, 0),
+            (
+                "fn consume(value: Array<int, string>) {} fn main() {}",
+                "Array", 1, 2,
+            ),
+            (
+                "fn consume(value: Option<int>) {} fn main() {}",
+                "Option", 0, 1,
+            ),
+            ("fn consume(value: int<string>) {} fn main() {}", "int", 0, 1),
+            (
+                "fn consume(value: map<string, int>) {} fn main() {}",
+                "map", 0, 2,
+            ),
+        ] {
+            let errors = check(source).unwrap_err();
+            assert!(errors.iter().any(|error| matches!(
+                error,
+                TypeError::InvalidTypeArguments { name, expected: actual_expected, found: actual_found }
+                    if name == expected_name
+                        && *actual_expected == expected
+                        && *actual_found == found
+            )));
+        }
+
+        for (source, expected_feature) in [
+            ("fn consume(value: &int) {} fn main() {}", "reference types"),
+            (
+                "fn consume(value: [int; 3]) {} fn main() {}",
+                "fixed-size array types",
+            ),
+        ] {
+            let errors = check(source).unwrap_err();
+            assert!(errors.iter().any(|error| matches!(
+                error,
+                TypeError::UnsupportedFeature { feature } if feature == expected_feature
+            )));
+        }
     }
 
     #[test]
