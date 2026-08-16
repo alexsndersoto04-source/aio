@@ -3526,8 +3526,28 @@ impl TypeEnv {
                         found: args.len(),
                     });
                 }
-                for (arg, expected) in args.iter().zip(&params) {
-                    self.check_evaluated_expr(arg, Some(expected), &mut reachable);
+                for (index, (arg, expected)) in args.iter().zip(&params).enumerate() {
+                    let accepts_utf8 = index == 1
+                        && matches!(
+                            name.as_deref(),
+                            Some("std::net::tcp_write" | "std::tls::write")
+                        );
+                    if accepts_utf8 {
+                        let found = self.check_evaluated_expr(arg, None, &mut reachable);
+                        let expected_resolved = self.resolve_alias(expected);
+                        let found_resolved = self.resolve_alias(&found);
+                        if !compatible(&expected_resolved, &found_resolved)
+                            && !(matches!(&expected_resolved, Type::Named(name) if name == "bytes")
+                                && found_resolved == Type::String)
+                        {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: expected.clone(),
+                                found,
+                            });
+                        }
+                    } else {
+                        self.check_evaluated_expr(arg, Some(expected), &mut reachable);
+                    }
                 }
                 for arg in args.iter().skip(params.len()) {
                     self.check_evaluated_expr(arg, None, &mut reachable);
@@ -5265,6 +5285,22 @@ mod tests {
     #[test]
     fn checks_tcp_handle_and_byte_signatures() {
         assert!(check("fn main() { let listener = std::net::tcp_listen(\"127.0.0.1:0\") let address = std::net::tcp_local_addr(listener) let stream = std::net::tcp_connect(address) let bytes = std::encoding::utf8_encode(\"ping\") std::net::tcp_write(stream, bytes) }").is_ok());
+        assert!(check(
+            "fn write(stream: TcpStream, tls: TlsStream) { std::net::tcp_write(stream, \"ping\") std::tls::write(tls, \"ping\") } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "type Text = string fn write(stream: TcpStream, value: Text) { std::net::tcp_write(stream, value) } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn write(socket: WebSocket) { std::ws::send_binary(socket, \"not bytes\") } fn main() {}"
+        )
+        .is_err());
+        assert!(check(
+            "fn feed(decoder: WebSocketDecoder) { std::ws::decoder_push(decoder, \"not bytes\") } fn main() {}"
+        )
+        .is_err());
     }
 
     #[test]
