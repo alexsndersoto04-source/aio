@@ -3446,6 +3446,111 @@ impl TypeEnv {
         found
     }
 
+    /// Dedicated VM operations sometimes accept a runtime shape that cannot be
+    /// expressed by Titan's current source-level types (for example, TCP close
+    /// accepts either a stream or a listener, and database operations accept
+    /// any of three connection handles). These built-ins are direct-call only,
+    /// so enforce their precise runtime contracts at that boundary without
+    /// weakening `any` or ordinary user function parameters.
+    fn check_dedicated_call_argument(
+        &mut self,
+        function: &str,
+        index: usize,
+        expression: &Expr,
+        expected: &Type,
+        reachable: &mut bool,
+    ) -> bool {
+        let accepts_utf8 = index == 1
+            && matches!(
+                function,
+                "std::net::tcp_write" | "std::tls::write"
+            );
+        let sequence_item = match (function, index) {
+            ("select", 0) => Some(Type::Named("Receiver".into())),
+            (
+                "std::sqlite::execute"
+                | "std::sqlite::query"
+                | "std::postgres::execute"
+                | "std::postgres::query"
+                | "std::mysql::execute"
+                | "std::mysql::query"
+                | "std::db::execute"
+                | "std::db::query",
+                2,
+            ) => Some(Type::Unknown),
+            (
+                "std::sqlite::migrate"
+                | "std::postgres::migrate"
+                | "std::mysql::migrate"
+                | "std::db::migrate",
+                1,
+            ) => Some(Type::Named("map".into())),
+            _ => None,
+        };
+        let tcp_handle = function == "std::net::tcp_close" && index == 0;
+        let database_handle = index == 0
+            && matches!(
+                function,
+                "std::db::execute"
+                    | "std::db::query"
+                    | "std::db::begin"
+                    | "std::db::commit"
+                    | "std::db::rollback"
+                    | "std::db::migrate"
+                    | "std::db::close"
+                    | "std::db::ping"
+            );
+        if !accepts_utf8 && sequence_item.is_none() && !tcp_handle && !database_handle {
+            return false;
+        }
+
+        let found = self.check_evaluated_expr(expression, None, reachable);
+        let found_resolved = self.resolve_alias(&found);
+        if accepts_utf8 {
+            let expected_resolved = self.resolve_alias(expected);
+            if !compatible(&expected_resolved, &found_resolved)
+                && !(matches!(&expected_resolved, Type::Named(name) if name == "bytes")
+                    && found_resolved == Type::String)
+            {
+                self.errors.push(TypeError::Mismatch {
+                    expected: expected.clone(),
+                    found,
+                });
+            }
+        } else if let Some(item) = sequence_item {
+            if !sequence_matches(&item, &found_resolved) {
+                self.errors.push(TypeError::Mismatch {
+                    expected: Type::Array(Box::new(item)),
+                    found,
+                });
+            }
+        } else {
+            let valid = matches!(&found_resolved, Type::Unknown | Type::Never)
+                || matches!(
+                    (&found_resolved, tcp_handle, database_handle),
+                    (Type::Named(name), true, false)
+                        if matches!(name.as_str(), "TcpStream" | "TcpListener")
+                )
+                || matches!(
+                    (&found_resolved, tcp_handle, database_handle),
+                    (Type::Named(name), false, true)
+                        if matches!(name.as_str(), "Sqlite" | "Postgres" | "Mysql")
+                );
+            if !valid {
+                self.errors.push(TypeError::InvalidArgument {
+                    function: function.into(),
+                    expected: if tcp_handle {
+                        "TCP stream or listener".into()
+                    } else {
+                        "SQLite, PostgreSQL, or MySQL connection".into()
+                    },
+                    found,
+                });
+            }
+        }
+        true
+    }
+
     fn check_call(&mut self, callee: &Expr, args: &[Expr]) -> Type {
         let name = if let Expr::Ident { name, .. } = callee {
             Some(name.clone())
@@ -3554,25 +3659,16 @@ impl TypeEnv {
                     });
                 }
                 for (index, (arg, expected)) in args.iter().zip(&params).enumerate() {
-                    let accepts_utf8 = index == 1
-                        && matches!(
-                            name.as_deref(),
-                            Some("std::net::tcp_write" | "std::tls::write")
-                        );
-                    if accepts_utf8 {
-                        let found = self.check_evaluated_expr(arg, None, &mut reachable);
-                        let expected_resolved = self.resolve_alias(expected);
-                        let found_resolved = self.resolve_alias(&found);
-                        if !compatible(&expected_resolved, &found_resolved)
-                            && !(matches!(&expected_resolved, Type::Named(name) if name == "bytes")
-                                && found_resolved == Type::String)
-                        {
-                            self.errors.push(TypeError::Mismatch {
-                                expected: expected.clone(),
-                                found,
-                            });
-                        }
-                    } else {
+                    let dedicated = static_name.is_some_and(|function| {
+                        self.check_dedicated_call_argument(
+                            function,
+                            index,
+                            arg,
+                            expected,
+                            &mut reachable,
+                        )
+                    });
+                    if !dedicated {
                         self.check_evaluated_expr(arg, Some(expected), &mut reachable);
                     }
                 }
@@ -4786,6 +4882,20 @@ fn sequence_item_type(ty: &Type) -> Option<Type> {
     }
 }
 
+/// Dedicated VM collection arguments accept both Value::Array and
+/// Value::Tuple through `array_value`. Check every statically known tuple item
+/// rather than collapsing a mixed tuple to Unknown and losing evidence.
+fn sequence_matches(expected_item: &Type, found: &Type) -> bool {
+    match found {
+        Type::Array(item) => compatible(expected_item, item),
+        Type::Tuple(items) => items
+            .iter()
+            .all(|item| compatible(expected_item, item)),
+        Type::Unknown | Type::Never => true,
+        _ => false,
+    }
+}
+
 fn is_length_supported(ty: &Type) -> bool {
     matches!(
         ty,
@@ -5308,7 +5418,7 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "fn main() { let first = channel(1) let second = channel(1) select([first[1], second[1]], 10) }"
+            "fn main() { let first = channel(1) let second = channel(1) select([first[1], second[1]], 10) select((first[1], second[1]), 10) }"
         )
         .is_ok());
         assert!(check(
@@ -5322,6 +5432,10 @@ mod tests {
                 .is_err()
         );
         assert!(check("fn main() { select([\"not a receiver\"], 10) }").is_err());
+        assert!(check(
+            "fn main() { let select = |value: int, timeout: int| value + timeout select(42, 10) }"
+        )
+        .is_ok());
     }
     #[test]
     fn checks_tcp_handle_and_byte_signatures() {
@@ -5335,11 +5449,39 @@ mod tests {
         )
         .is_ok());
         assert!(check(
+            "type Socket = TcpStream type Listener = TcpListener fn close(stream: Socket, listener: Listener) { std::net::tcp_close(stream) std::net::tcp_close(listener) } fn main() {}"
+        )
+        .is_ok());
+        assert!(check("fn main() { std::net::tcp_close(42) }").is_err());
+        assert!(check("fn main() { std::net::tcp_close(\"not a handle\") }").is_err());
+        assert!(check(
             "fn write(socket: WebSocket) { std::ws::send_binary(socket, \"not bytes\") } fn main() {}"
         )
         .is_err());
         assert!(check(
             "fn feed(decoder: WebSocketDecoder) { std::ws::decoder_push(decoder, \"not bytes\") } fn main() {}"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn validates_dedicated_database_argument_shapes() {
+        assert!(check(
+            "type LocalDb = Sqlite fn use_all(local: LocalDb, postgres: Postgres, mysql: Mysql) { std::db::ping(local) std::db::begin(postgres) std::db::close(mysql) std::db::execute(local, \"SELECT 1\", []) std::db::query(postgres, \"SELECT 1\", (1, \"two\")) std::db::migrate(mysql, []) } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn use_specific(local: Sqlite, postgres: Postgres, mysql: Mysql) { std::sqlite::execute(local, \"SELECT 1\", []) std::postgres::query(postgres, \"SELECT 1\", (1, \"two\")) std::mysql::migrate(mysql, []) } fn main() {}"
+        )
+        .is_ok());
+        assert!(check("fn main() { std::db::ping(42) }").is_err());
+        assert!(check("fn main() { std::db::query(42, \"SELECT 1\", []) }").is_err());
+        assert!(check(
+            "fn query(local: Sqlite) { std::sqlite::execute(local, \"SELECT 1\", \"not parameters\") } fn main() {}"
+        )
+        .is_err());
+        assert!(check(
+            "fn migrate(local: Sqlite) { std::db::migrate(local, [1, 2]) } fn main() {}"
         )
         .is_err());
     }
