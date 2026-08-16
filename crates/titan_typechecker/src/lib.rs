@@ -2060,18 +2060,36 @@ impl TypeEnv {
                 left, op, right, ..
             } => {
                 let mut reachable = true;
-                let left = self.check_evaluated_expr(left, None, &mut reachable);
-                let right = self.check_evaluated_expr(right, None, &mut reachable);
+                let left_type = self.check_evaluated_expr(left, None, &mut reachable);
+                let lazy_right = if lazy_rhs_is_skipped(*op, left) {
+                    Some(false)
+                } else if lazy_rhs_is_guaranteed(*op, left) {
+                    Some(true)
+                } else {
+                    None
+                };
+                // A compile-time short-circuit still has its unreachable side
+                // typechecked, but returns and breaks there cannot affect the
+                // enclosing function or loop. Conversely, when a boolean
+                // literal guarantees RHS evaluation, divergence must propagate
+                // exactly as it does for an eager operator.
+                let right_type = if lazy_right == Some(false) {
+                    let mut right_reachable = false;
+                    self.check_evaluated_expr(right, None, &mut right_reachable)
+                } else {
+                    self.check_evaluated_expr(right, None, &mut reachable)
+                };
                 // Phase 28: normalize both sides through type aliases
                 // so `Score >= int` (where `type Score = int`) works.
-                let left = self.resolve_alias(&left);
-                let right = self.resolve_alias(&right);
-                if left == Type::Never
-                    || (right == Type::Never && !matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr))
+                let left_type = self.resolve_alias(&left_type);
+                let right_type = self.resolve_alias(&right_type);
+                let lazy = matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr);
+                if left_type == Type::Never
+                    || (right_type == Type::Never && (!lazy || lazy_right == Some(true)))
                 {
                     Type::Never
                 } else {
-                    self.check_binary(*op, left, right)
+                    self.check_binary(*op, left_type, right_type)
                 }
             }
             Expr::Range { start, end, .. } => {
@@ -3737,7 +3755,11 @@ impl TypeEnv {
             Add if right == Type::String => Type::String,
             Add | Sub | Mul | Div if is_numeric(&left) && compatible(&left, &right) => left,
             Mod if compatible(&Type::Int, &left) && compatible(&Type::Int, &right) => Type::Int,
-            And | Or | Xor if left == Type::Int && right == Type::Int => Type::Int,
+            And | Or | Xor
+                if compatible(&Type::Int, &left) && compatible(&Type::Int, &right) =>
+            {
+                Type::Int
+            }
             _ => {
                 self.invalid(op, left, right);
                 Type::Unknown
@@ -4923,6 +4945,22 @@ fn builtin_method_arity(receiver: &Type, method: &str) -> Option<usize> {
     }
 }
 
+fn lazy_rhs_is_skipped(operator: BinaryOp, left: &Expr) -> bool {
+    matches!(
+        (operator, left),
+        (BinaryOp::LazyAnd, Expr::Bool { value: false, .. })
+            | (BinaryOp::LazyOr, Expr::Bool { value: true, .. })
+    )
+}
+
+fn lazy_rhs_is_guaranteed(operator: BinaryOp, left: &Expr) -> bool {
+    matches!(
+        (operator, left),
+        (BinaryOp::LazyAnd, Expr::Bool { value: true, .. })
+            | (BinaryOp::LazyOr, Expr::Bool { value: false, .. })
+    )
+}
+
 fn block_may_break_current_loop(block: &Block) -> bool {
     block.stmts.iter().any(|statement| match statement {
         Stmt::Expr(expression) => expr_may_break_current_loop(expression),
@@ -4946,12 +4984,15 @@ fn expr_may_break_current_loop(expression: &Expr) -> bool {
         Expr::StructLit { fields, .. } => fields
             .iter()
             .any(|(_, value)| expr_may_break_current_loop(value)),
-        Expr::Binary { left, right, .. }
-        | Expr::Range {
-            start: left,
-            end: right,
-            ..
-        } => expr_may_break_current_loop(left) || expr_may_break_current_loop(right),
+        Expr::Binary {
+            left, op, right, ..
+        } => {
+            expr_may_break_current_loop(left)
+                || (!lazy_rhs_is_skipped(*op, left) && expr_may_break_current_loop(right))
+        }
+        Expr::Range { start, end, .. } => {
+            expr_may_break_current_loop(start) || expr_may_break_current_loop(end)
+        }
         Expr::Unary { expr, .. }
         | Expr::FieldAccess { target: expr, .. }
         | Expr::Spawn { expr, .. }
@@ -5044,7 +5085,8 @@ fn expr_definitely_returns(expr: &Expr) -> bool {
             left, op, right, ..
         } => {
             expr_definitely_returns(left)
-                || (!matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr)
+                || ((!matches!(op, BinaryOp::LazyAnd | BinaryOp::LazyOr)
+                    || lazy_rhs_is_guaranteed(*op, left))
                     && expr_definitely_returns(right))
         }
         Expr::Range { start, end, .. } => {
@@ -5567,6 +5609,9 @@ mod tests {
         assert!(check("fn main() { let a = -1.5 let b = ~7 }").is_ok());
         assert!(check("fn main() { 5.0 % 2.0 }").is_err());
         assert!(check("fn main() { [1, 2].filter(|value| value % 2 == 0) }").is_ok());
+        assert!(check("fn bits(left: any, right: any) -> int { left & right } fn main() {}")
+            .is_ok());
+        assert!(check("fn main() { true | 1 }").is_err());
         assert!(check("fn unit() {} fn main() { nil == unit() unit() == nil }").is_ok());
     }
 
@@ -5864,9 +5909,26 @@ mod tests {
         .is_ok());
         assert!(check("fn main() { let halt = || loop {} let impossible: ! = halt() }").is_ok());
 
-        // The right side of a lazy boolean operator is not guaranteed to run.
+        // A dynamic lazy RHS is conditional, while a literal can either skip
+        // it entirely or guarantee that it runs.
         assert!(check(
             "fn value() -> bool { false && loop {} } fn main() { let result: bool = value() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn value() -> bool { true || loop {} } fn main() { let result: bool = value() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt_and() -> ! { true && loop {} } fn halt_or() -> ! { false || loop {} } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { false && return 1 true } fn main() { let result: bool = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { true || return 1 false } fn main() { let result: bool = inferred() }"
         )
         .is_ok());
     }
@@ -5883,7 +5945,13 @@ mod tests {
             "fn sink(first: any, second: any) {} fn halt() -> ! { loop { sink(loop {}, { break }) } } fn main() {}"
         )
         .is_ok());
+        assert!(check(
+            "fn halt_and() -> ! { loop { false && { break } } } fn halt_or() -> ! { loop { true || { break } } } fn main() {}"
+        )
+        .is_ok());
         assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
+        assert!(check("fn completes() -> ! { loop { true && { break } } } fn main() {}").is_err());
+        assert!(check("fn completes() -> ! { loop { false || { break } } } fn main() {}").is_err());
     }
 
     #[test]
