@@ -432,7 +432,14 @@ impl TypeEnv {
         functions.insert(
             "std::http::serve_connection".into(),
             FunctionSig {
-                params: vec![Type::Named("TcpListener".into()), Type::Unknown, Type::Int],
+                params: vec![
+                    Type::Named("TcpListener".into()),
+                    Type::Function(
+                        vec![Type::Named("map".into())],
+                        Box::new(Type::Named("map".into())),
+                    ),
+                    Type::Int,
+                ],
                 result: Type::String,
             },
         );
@@ -450,7 +457,10 @@ impl TypeEnv {
                     Type::Named("HttpRouter".into()),
                     Type::String,
                     Type::String,
-                    Type::Unknown,
+                    Type::Function(
+                        vec![Type::Named("map".into())],
+                        Box::new(Type::Unknown),
+                    ),
                 ],
                 result: Type::Nil,
             },
@@ -458,28 +468,46 @@ impl TypeEnv {
         functions.insert(
             "std::http::middleware".into(),
             FunctionSig {
-                params: vec![Type::Named("HttpRouter".into()), Type::Unknown],
+                params: vec![
+                    Type::Named("HttpRouter".into()),
+                    Type::Function(
+                        vec![Type::Named("map".into())],
+                        Box::new(Type::Named("map".into())),
+                    ),
+                ],
                 result: Type::Nil,
             },
         );
         functions.insert(
             "std::http::after".into(),
             FunctionSig {
-                params: vec![Type::Named("HttpRouter".into()), Type::Unknown],
+                params: vec![
+                    Type::Named("HttpRouter".into()),
+                    Type::Function(
+                        vec![Type::Named("map".into())],
+                        Box::new(Type::Named("map".into())),
+                    ),
+                ],
                 result: Type::Nil,
             },
         );
         functions.insert(
             "std::http::on_error".into(),
             FunctionSig {
-                params: vec![Type::Named("HttpRouter".into()), Type::Unknown],
+                params: vec![
+                    Type::Named("HttpRouter".into()),
+                    Type::Function(
+                        vec![Type::Named("map".into()), Type::Named("map".into())],
+                        Box::new(Type::Named("map".into())),
+                    ),
+                ],
                 result: Type::Nil,
             },
         );
         functions.insert(
             "std::http::dispatch".into(),
             FunctionSig {
-                params: vec![Type::Named("HttpRouter".into()), Type::Unknown],
+                params: vec![Type::Named("HttpRouter".into()), Type::Named("map".into())],
                 result: Type::Unknown,
             },
         );
@@ -1101,14 +1129,20 @@ impl TypeEnv {
         functions.insert(
             "std::runtime::benchmark".into(),
             FunctionSig {
-                params: vec![Type::Int, Type::Unknown],
+                params: vec![
+                    Type::Int,
+                    Type::Function(Vec::new(), Box::new(Type::Unknown)),
+                ],
                 result: Type::Named("map".into()),
             },
         );
         functions.insert(
             "std::runtime::spawn_quota".into(),
             FunctionSig {
-                params: vec![Type::Int, Type::Unknown],
+                params: vec![
+                    Type::Int,
+                    Type::Function(Vec::new(), Box::new(Type::Unknown)),
+                ],
                 result: Type::Named("Task".into()),
             },
         );
@@ -5234,6 +5268,39 @@ mod tests {
     #[test]
     fn checks_tcp_handle_and_byte_signatures() {
         assert!(check("fn main() { let listener = std::net::tcp_listen(\"127.0.0.1:0\") let address = std::net::tcp_local_addr(listener) let stream = std::net::tcp_connect(address) let bytes = std::encoding::utf8_encode(\"ping\") std::net::tcp_write(stream, bytes) }").is_ok());
+    }
+
+    #[test]
+    fn validates_vm_managed_callback_contracts() {
+        assert!(check(
+            "fn register(listener: TcpListener) { std::http::serve_connection(listener, |request| request, 1) } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let router = std::http::router() std::http::route(router, \"GET\", \"/\", |request| request.path) std::http::middleware(router, |request| request) std::http::after(router, |response| response) std::http::on_error(router, |request, error| request) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn register(listener: TcpListener) { std::http::serve_connection(listener, 42, 1) } fn main() {}"
+        )
+        .is_err());
+        assert!(check(
+            "fn main() { let router = std::http::router() std::http::route(router, \"GET\", \"/\", 42) }"
+        )
+        .is_err());
+        assert!(check(
+            "fn main() { let router = std::http::router() std::http::middleware(router, |request| 42) }"
+        )
+        .is_err());
+        assert!(check(
+            "fn main() { let router = std::http::router() std::http::dispatch(router, 42) }"
+        )
+        .is_err());
+        assert!(check("fn main() { std::runtime::benchmark(1, || 42) }").is_ok());
+        assert!(check("fn main() { std::runtime::benchmark(1, 42) }").is_err());
+        assert!(check("fn main() { std::runtime::benchmark(1, |value| value) }").is_err());
+        assert!(check("fn main() { std::runtime::spawn_quota(1024, || 42) }").is_ok());
+        assert!(check("fn main() { std::runtime::spawn_quota(1024, 42) }").is_err());
     }
 
     #[test]
