@@ -1950,6 +1950,21 @@ impl TypeEnv {
         }
     }
 
+    fn restore_control_flow(
+        &mut self,
+        candidate_count: Option<usize>,
+        loop_broke: Option<bool>,
+    ) {
+        if let (Some(candidates), Some(count)) =
+            (self.return_candidates.last_mut(), candidate_count)
+        {
+            candidates.truncate(count);
+        }
+        if let (Some(current), Some(previous)) = (self.loop_breaks.last_mut(), loop_broke) {
+            *current = previous;
+        }
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             Expr::Int { .. } => Type::Int,
@@ -2257,54 +2272,56 @@ impl TypeEnv {
                 else_branch,
                 ..
             } => {
-                let condition = self.check_expr(condition);
-                self.require_compatible(&Type::Bool, &condition);
+                let condition_type = self.check_expr(condition);
+                self.require_compatible(&Type::Bool, &condition_type);
+                let literal_condition = match condition.as_ref() {
+                    Expr::Bool { value, .. } => Some(*value),
+                    _ => None,
+                };
                 let candidate_count = self.return_candidates.last().map(Vec::len);
                 let loop_broke = self.loop_breaks.last().copied();
-                let a = self.check_block(then_branch);
+                let then_type = self.check_block(then_branch);
+                let then_candidate_count = self.return_candidates.last().map(Vec::len);
+                let then_loop_broke = self.loop_breaks.last().copied();
+
+                // The then branch is unreachable when the condition cannot
+                // finish or is literally false. Keep its diagnostics, but do
+                // not let impossible returns or breaks escape the branch.
+                if condition_type == Type::Never || literal_condition == Some(false) {
+                    self.restore_control_flow(candidate_count, loop_broke);
+                }
+
                 if let Some(other) = else_branch {
-                    let b = self.check_block(other);
-                    if condition == Type::Never {
-                        if let (Some(candidates), Some(count)) =
-                            (self.return_candidates.last_mut(), candidate_count)
-                        {
-                            candidates.truncate(count);
-                        }
-                        if let (Some(current), Some(previous)) =
-                            (self.loop_breaks.last_mut(), loop_broke)
-                        {
-                            *current = previous;
-                        }
-                    }
-                    // A condition that never completes prevents either branch
-                    // from running. Otherwise a branch which cannot continue
-                    // does not contribute a value to the expression.
-                    if condition == Type::Never {
+                    let else_type = self.check_block(other);
+                    if condition_type == Type::Never {
+                        self.restore_control_flow(candidate_count, loop_broke);
                         Type::Never
-                    } else if a == Type::Never {
-                        b
-                    } else if b == Type::Never {
-                        a
-                    } else if compatible(&self.resolve_alias(&a), &self.resolve_alias(&b)) {
-                        a
+                    } else if literal_condition == Some(true) {
+                        // The else branch is statically unreachable. Restore
+                        // the effects produced by the reachable then branch.
+                        self.restore_control_flow(then_candidate_count, then_loop_broke);
+                        then_type
+                    } else if literal_condition == Some(false) {
+                        else_type
+                    } else if then_type == Type::Never {
+                        else_type
+                    } else if else_type == Type::Never {
+                        then_type
+                    } else if compatible(
+                        &self.resolve_alias(&then_type),
+                        &self.resolve_alias(&else_type),
+                    ) {
+                        then_type
                     } else {
                         self.errors.push(TypeError::Mismatch {
-                            expected: a,
-                            found: b,
+                            expected: then_type,
+                            found: else_type,
                         });
                         Type::Unknown
                     }
-                } else if condition == Type::Never {
-                    if let (Some(candidates), Some(count)) =
-                        (self.return_candidates.last_mut(), candidate_count)
-                    {
-                        candidates.truncate(count);
-                    }
-                    if let (Some(current), Some(previous)) =
-                        (self.loop_breaks.last_mut(), loop_broke)
-                    {
-                        *current = previous;
-                    }
+                } else if condition_type == Type::Never {
+                    Type::Never
+                } else if literal_condition == Some(true) && then_type == Type::Never {
                     Type::Never
                 } else {
                     Type::Unit
@@ -2448,16 +2465,20 @@ impl TypeEnv {
                 self.check_block(body);
                 let body_may_break = self.loop_breaks.pop().unwrap_or(false);
                 self.loop_depth -= 1;
-                if c == Type::Never {
+                let literal_condition = match condition.as_ref() {
+                    Expr::Bool { value, .. } => Some(*value),
+                    _ => None,
+                };
+                if c == Type::Never || literal_condition == Some(false) {
                     if let (Some(candidates), Some(count)) =
                         (self.return_candidates.last_mut(), candidate_count)
                     {
                         candidates.truncate(count);
                     }
+                }
+                if c == Type::Never {
                     Type::Never
-                } else if matches!(condition.as_ref(), Expr::Bool { value: true, .. })
-                    && !body_may_break
-                {
+                } else if literal_condition == Some(true) && !body_may_break {
                     Type::Never
                 } else {
                     Type::Unit
@@ -5013,10 +5034,18 @@ fn expr_may_break_current_loop(expression: &Expr) -> bool {
             ..
         } => {
             expr_may_break_current_loop(condition)
-                || block_may_break_current_loop(then_branch)
-                || else_branch
-                    .as_ref()
-                    .is_some_and(block_may_break_current_loop)
+                || match condition.as_ref() {
+                    Expr::Bool { value: true, .. } => block_may_break_current_loop(then_branch),
+                    Expr::Bool { value: false, .. } => else_branch
+                        .as_ref()
+                        .is_some_and(block_may_break_current_loop),
+                    _ => {
+                        block_may_break_current_loop(then_branch)
+                            || else_branch
+                                .as_ref()
+                                .is_some_and(block_may_break_current_loop)
+                    }
+                }
         }
         Expr::Match {
             scrutinee, arms, ..
@@ -5113,7 +5142,24 @@ fn expr_definitely_returns(expr: &Expr) -> bool {
             ..
         } => {
             expr_definitely_returns(condition)
-                || (block_definitely_returns(then_branch) && block_definitely_returns(else_branch))
+                || match condition.as_ref() {
+                    Expr::Bool { value: true, .. } => block_definitely_returns(then_branch),
+                    Expr::Bool { value: false, .. } => block_definitely_returns(else_branch),
+                    _ => {
+                        block_definitely_returns(then_branch)
+                            && block_definitely_returns(else_branch)
+                    }
+                }
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch: None,
+            ..
+        } => {
+            expr_definitely_returns(condition)
+                || (matches!(condition.as_ref(), Expr::Bool { value: true, .. })
+                    && block_definitely_returns(then_branch))
         }
         // Match checking rejects every non-exhaustive expression before this
         // control-flow pass runs, including guarded catch-alls. Therefore a
@@ -5146,9 +5192,6 @@ fn expr_definitely_returns(expr: &Expr) -> bool {
         | Expr::Bool { .. }
         | Expr::Nil { .. }
         | Expr::Ident { .. }
-        | Expr::If {
-            else_branch: None, ..
-        }
         | Expr::Break { .. }
         | Expr::Continue { .. }
         | Expr::Closure { .. } => false,
@@ -5812,6 +5855,10 @@ mod tests {
         assert!(check("fn missing(flag: bool) -> int { if flag { return 1 } }").is_err());
         assert!(check("fn complete(flag: bool) -> int { if flag { return 1 } return 2 }").is_ok());
         assert!(check("fn branch(flag: bool) -> int { if flag { return 1 } else { 2 } }").is_ok());
+        assert!(check("fn literal() -> int { if true { return 1 } }").is_ok());
+        assert!(check("fn literal() -> int { if true { 1 } else { \"unreachable\" } }").is_ok());
+        assert!(check("fn literal() -> int { if false { \"unreachable\" } else { 1 } }").is_ok());
+        assert!(check("fn literal() -> int { if false { true + 1 } else { 1 } }").is_err());
         assert!(check("fn mixed(flag: bool) -> int { if flag { 1 } else { \"bad\" } }").is_err());
         assert!(check("fn bad_unit() -> () { 42 }").is_err());
         assert!(check("fn empty_unit() -> () {}").is_ok());
@@ -5931,6 +5978,22 @@ mod tests {
             "fn inferred() { true || return 1 false } fn main() { let result: bool = inferred() }"
         )
         .is_ok());
+        assert!(check(
+            "fn inferred() { if false { return \"unreachable\" } 1 } fn main() { let result: int = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { while false { return \"unreachable\" } 1 } fn main() { let result: int = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { if true { loop {} } else { 1 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { if false { 1 } else { loop {} } } fn main() {}"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -5949,7 +6012,16 @@ mod tests {
             "fn halt_and() -> ! { loop { false && { break } } } fn halt_or() -> ! { loop { true || { break } } } fn main() {}"
         )
         .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop { if false { break } } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop { if true { loop {} } else { break } } } fn main() {}"
+        )
+        .is_ok());
         assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
+        assert!(check("fn completes() -> ! { loop { if true { break } } } fn main() {}").is_err());
         assert!(check("fn completes() -> ! { loop { true && { break } } } fn main() {}").is_err());
         assert!(check("fn completes() -> ! { loop { false || { break } } } fn main() {}").is_err());
     }
