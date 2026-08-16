@@ -3431,6 +3431,7 @@ impl TypeEnv {
                 let mut reachable = true;
                 for (argument, expected) in args.iter().zip(signature.params) {
                     let found = self.check_evaluated_expr(argument, None, &mut reachable);
+                    let found = self.resolve_alias(&found);
                     let expected = native_type(*expected);
                     if !native_compatible(&expected, &found) {
                         self.errors.push(TypeError::Mismatch { expected, found });
@@ -4981,6 +4982,10 @@ fn native_compatible(expected: &Type, found: &Type) -> bool {
         return true;
     }
     match (expected, found) {
+        // VM native byte readers intentionally accept strings by encoding
+        // their UTF-8 bytes. Keep this directional: a native requiring a
+        // string must not receive arbitrary bytes.
+        (Type::Named(name), Type::String) if name == "bytes" => true,
         (Type::Array(expected), Type::Array(found)) => native_compatible(expected, found),
         (Type::Array(expected), Type::Tuple(found)) => {
             found.iter().all(|item| native_compatible(expected, item))
@@ -5195,6 +5200,24 @@ mod tests {
     fn checks_registered_native_signatures() {
         assert!(check("fn main() { std::text::reverse(\"Titan\") }").is_ok());
         assert!(check("fn main() { std::text::reverse(42) }").is_err());
+        assert!(check("fn main() { std::encoding::hex_encode(\"Titan\") }").is_ok());
+        assert!(check("fn main() { std::encoding::hex_encode(42) }").is_err());
+    }
+
+    #[test]
+    fn resolves_aliases_at_native_call_boundaries() {
+        assert!(check(
+            "type Text = string fn main() { let value: Text = \"Titan\" std::text::reverse(value) }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Payload = string fn main() { let value: Payload = \"Titan\" std::encoding::hex_encode(value) }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Numbers = [int] fn main() { let values: Numbers = [1, 2, 3] std::stats::mean(values) }"
+        )
+        .is_ok());
     }
     #[test]
     fn generic_native_arrays_accept_concrete_elements() {

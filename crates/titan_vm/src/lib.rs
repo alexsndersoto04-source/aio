@@ -4681,6 +4681,14 @@ mod tests {
     }
 
     #[test]
+    fn native_byte_arguments_accept_utf8_strings() {
+        assert_eq!(
+            run("fn main() { std::encoding::utf8_decode(\"Titan\") }").unwrap(),
+            Value::Str("Titan".into())
+        );
+    }
+
+    #[test]
     fn atomic_identifiers_and_stats_fail_closed_at_u64_max() {
         let identifiers = AtomicU64::new(u64::MAX - 1);
         assert_eq!(
