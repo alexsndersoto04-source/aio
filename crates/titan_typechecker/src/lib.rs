@@ -369,7 +369,10 @@ impl TypeEnv {
         functions.insert(
             "select".into(),
             FunctionSig {
-                params: vec![Type::Unknown, Type::Int],
+                params: vec![
+                    Type::Array(Box::new(Type::Named("Receiver".into()))),
+                    Type::Int,
+                ],
                 result: Type::Named("Option".into()),
             },
         );
@@ -1738,11 +1741,24 @@ impl TypeEnv {
         if !locally_bound && self.constant_declarations.contains_key(name) {
             return self.check_constant(name);
         }
-        self.lookup(name)
-            .or_else(|| {
-                self.functions.get(name).map(|signature| {
-                    Type::Function(signature.params.clone(), Box::new(signature.result.clone()))
-                })
+        if let Some(ty) = self.lookup(name) {
+            return ty;
+        }
+        // Dedicated built-ins only exist as direct-call bytecode operations;
+        // codegen cannot materialize them as closure values. Rejecting such a
+        // reference here prevents the checker from accepting code that later
+        // fails with UnknownVariable during lowering. Direct calls bypass this
+        // value path in check_call and retain their normal signatures.
+        if self.base_functions.contains_key(name) {
+            self.errors.push(TypeError::UnsupportedFeature {
+                feature: format!("built-in function values ('{name}')"),
+            });
+            return Type::Unknown;
+        }
+        self.functions
+            .get(name)
+            .map(|signature| {
+                Type::Function(signature.params.clone(), Box::new(signature.result.clone()))
             })
             .or_else(|| {
                 self.enum_variants.get(name).and_then(|payload| {
@@ -3507,7 +3523,18 @@ impl TypeEnv {
             }
         }
         let mut reachable = true;
-        let ty = self.check_evaluated_expr(callee, None, &mut reachable);
+        // VM-dedicated built-ins are callable by their static name, but they
+        // are not first-class closure values in codegen. Use the registered
+        // signature directly for this call position; check_identifier rejects
+        // the same name when it appears as an ordinary value expression.
+        let builtin_signature = static_name
+            .and_then(|name| self.base_functions.get(name.as_str()))
+            .cloned();
+        let ty = if let Some(signature) = builtin_signature {
+            Type::Function(signature.params, Box::new(signature.result))
+        } else {
+            self.check_evaluated_expr(callee, None, &mut reachable)
+        };
         // Phase 32 fix: expand type aliases so `Named("Callback")`
         // (where `type Callback = fn(int) -> int`) resolves to the
         // real Function(...) shape before the callable check.
@@ -5280,7 +5307,21 @@ mod tests {
             "fn main() { let endpoints = channel(1) let task = spawn || 42 join(task) endpoints }"
         )
         .is_ok());
+        assert!(check(
+            "fn main() { let first = channel(1) let second = channel(1) select([first[1], second[1]], 10) }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Inboxes = [Receiver] fn choose(inboxes: Inboxes) { select(inboxes, 10) } fn main() {}"
+        )
+        .is_ok());
         assert!(check("fn main() { spawn 42 }").is_err());
+        assert!(check("fn main() { select(42, 10) }").is_err());
+        assert!(
+            check("fn main() { let endpoints = channel(1) select([endpoints[0]], 10) }")
+                .is_err()
+        );
+        assert!(check("fn main() { select([\"not a receiver\"], 10) }").is_err());
     }
     #[test]
     fn checks_tcp_handle_and_byte_signatures() {
@@ -5739,6 +5780,12 @@ mod tests {
         assert!(check("fn main() { loop { break 1 } }").is_err());
         assert!(check("fn main() { fn nested() {} }").is_err());
         assert!(check("fn main() { for _ in [1, 2] {} }").is_err());
+        assert!(check("fn main() { let operation = len operation([1, 2]) }").is_err());
+        assert!(check("fn main() { let operation = std::net::tcp_read operation }").is_err());
+        assert!(check(
+            "fn identity(value: int) -> int { value } fn main() { let operation = identity operation(1) }"
+        )
+        .is_ok());
         assert!(check(
             "fn read(value: bool) -> int { match value { true | false => 1 } } fn main() {}"
         )
