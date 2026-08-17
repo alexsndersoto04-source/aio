@@ -6052,11 +6052,11 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "fn halt() -> ! { loop { match true { true => { loop {} }, false => break } } } fn main() {}"
+            "fn halt() -> ! { loop { match true { true => { loop {} }, false => { break } } } } fn main() {}"
         )
         .is_ok());
         assert!(check(
-            "fn halt() -> ! { loop { match true { true if false => break, true => { loop {} }, false => break } } } fn main() {}"
+            "fn halt() -> ! { loop { match true { true if false => { break }, true => { loop {} }, false => { break } } } } fn main() {}"
         )
         .is_ok());
         assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
