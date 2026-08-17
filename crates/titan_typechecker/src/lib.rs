@@ -2333,13 +2333,11 @@ impl TypeEnv {
                 let subject = self.check_expr(scrutinee);
                 self.check_match_coverage(&subject, arms);
                 let subject_never = self.resolve_alias(&subject) == Type::Never;
-                let literal_bool = match scrutinee.as_ref() {
-                    Expr::Bool { value, .. } => Some(*value),
-                    _ => None,
-                };
+                let domain = self.match_domain(&subject);
+                let known_subject = self.known_match_atom(scrutinee, &domain);
                 let candidate_count = self.return_candidates.last().map(Vec::len);
                 let loop_broke = self.loop_breaks.last().copied();
-                let mut literal_path_open = literal_bool.is_some();
+                let mut known_path_open = known_subject.is_some();
                 let mut result: Option<Type> = None;
                 for arm in arms {
                     if !match_pattern_is_lowerable(&arm.pattern) {
@@ -2350,8 +2348,13 @@ impl TypeEnv {
                     let arm_candidate_count = self.return_candidates.last().map(Vec::len);
                     let arm_loop_broke = self.loop_breaks.last().copied();
                     let arm_reachable = !subject_never
-                        && literal_bool.map_or(true, |value| {
-                            literal_path_open && bool_pattern_matches(&arm.pattern, value)
+                        && known_subject.as_ref().map_or(true, |atom| {
+                            known_path_open
+                                && self
+                                    .pattern_coverage(&arm.pattern, &domain)
+                                    .is_some_and(|pattern| {
+                                        pattern.all || pattern.atoms.contains(atom)
+                                    })
                         });
 
                     self.push_scope();
@@ -2411,9 +2414,9 @@ impl TypeEnv {
                         });
                     }
 
-                    if literal_bool.is_some() && arm_reachable {
+                    if known_subject.is_some() && arm_reachable {
                         if guard_never || arm.guard.is_none() || guard_literal == Some(true) {
-                            literal_path_open = false;
+                            known_path_open = false;
                         }
                     }
                     self.pop_scope();
@@ -3889,6 +3892,54 @@ impl TypeEnv {
         }
     }
 
+    /// Returns the exact runtime atom produced by a syntactically known match
+    /// subject. Codegen evaluates arms in order, so later non-matching arms (or
+    /// arms after an unguarded match) cannot contribute values, returns, or
+    /// breaks. Keep this deliberately limited to expressions whose constructor
+    /// is unambiguous without executing user code.
+    fn known_match_atom(&self, expression: &Expr, domain: &MatchDomain) -> Option<MatchAtom> {
+        match (domain, expression) {
+            (MatchDomain::Bool, Expr::Bool { value, .. }) => Some(MatchAtom::Bool(*value)),
+            (MatchDomain::Open, Expr::Int { value, .. }) => Some(MatchAtom::Int(*value)),
+            (MatchDomain::Open, Expr::String { value, .. }) => {
+                Some(MatchAtom::String(value.clone()))
+            }
+            (MatchDomain::Open, Expr::Char { value, .. }) => Some(MatchAtom::Char(*value)),
+            (MatchDomain::Open, Expr::Nil { .. }) => Some(MatchAtom::Nil),
+            (
+                MatchDomain::Enum {
+                    name: enumeration,
+                    variants,
+                },
+                Expr::Ident { name, .. },
+            ) => {
+                let (found_enumeration, variant) = name.split_once("::")?;
+                (found_enumeration == enumeration
+                    && variants.contains(variant)
+                    && self.enum_variants.get(name).is_some_and(Option::is_none))
+                .then(|| MatchAtom::EnumVariant(variant.into()))
+            }
+            (
+                MatchDomain::Enum {
+                    name: enumeration,
+                    variants,
+                },
+                Expr::Call { callee, args, .. },
+            ) => {
+                let Expr::Ident { name, .. } = callee.as_ref() else {
+                    return None;
+                };
+                let (found_enumeration, variant) = name.split_once("::")?;
+                let payload = self.enum_variants.get(name)?;
+                (found_enumeration == enumeration
+                    && variants.contains(variant)
+                    && args.len() == usize::from(payload.is_some()))
+                .then(|| MatchAtom::EnumVariant(variant.into()))
+            }
+            _ => None,
+        }
+    }
+
     fn pattern_coverage(&self, pattern: &Pattern, domain: &MatchDomain) -> Option<PatternCoverage> {
         match pattern {
             Pattern::Wildcard { .. } | Pattern::Ident { .. } => Some(PatternCoverage {
@@ -4901,19 +4952,6 @@ fn pattern_binding_names(pattern: &Pattern) -> HashSet<String> {
         Pattern::Wildcard { .. } | Pattern::Literal { .. } | Pattern::Enum { inner: None, .. } => {}
     }
     names
-}
-
-fn bool_pattern_matches(pattern: &Pattern, subject: bool) -> bool {
-    match pattern {
-        Pattern::Wildcard { .. } | Pattern::Ident { .. } => true,
-        Pattern::Literal { value, .. } => {
-            matches!(value.as_ref(), Expr::Bool { value, .. } if *value == subject)
-        }
-        Pattern::Or { left, right, .. } => {
-            bool_pattern_matches(left, subject) || bool_pattern_matches(right, subject)
-        }
-        Pattern::Enum { .. } | Pattern::Tuple { .. } | Pattern::Struct { .. } => false,
-    }
 }
 
 fn match_pattern_is_lowerable(pattern: &Pattern) -> bool {
@@ -6059,6 +6097,14 @@ mod tests {
             "fn halt() -> ! { loop { match true { true if false => { break }, true => { loop {} }, false => { break } } } } fn main() {}"
         )
         .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop { match 1 { 0 => { break }, _ => { loop {} } } } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "enum Choice { Stop, Continue } fn halt() -> ! { loop { match Choice::Continue { Choice::Stop => { break }, Choice::Continue => { loop {} } } } } fn main() {}"
+        )
+        .is_ok());
         assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
         assert!(check("fn completes() -> ! { loop { if true { break } } } fn main() {}").is_err());
         assert!(check("fn completes() -> ! { loop { true && { break } } } fn main() {}").is_err());
@@ -6329,6 +6375,38 @@ mod tests {
         .is_ok());
         assert!(check(
             "fn read() -> int { match true { true => 1, false => true + 1 } } fn main() {}"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn known_match_values_track_only_executable_arms() {
+        assert!(check(
+            "fn read() -> int { match 1 { 1 => 42, _ => \"unreachable\" } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn read() -> string { match \"Titan\" { \"Titan\" => \"ok\", _ => 0 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { match 1 { 1 => 42, _ => return \"unreachable\" } } fn main() { let value: int = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "enum Choice { First, Second } fn read() -> int { match Choice::First { Choice::First => 1, Choice::Second => \"unreachable\" } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "enum Choice { Number(int), Empty } fn read() -> int { match Choice::Number(7) { Choice::Number(value) => value, Choice::Empty => \"unreachable\" } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "enum Choice { First, Second } fn read() -> int { match Choice::First { Choice::First if false => \"unreachable\", Choice::First => 1, Choice::Second => 0 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn read() -> int { match 1 { 1 => 42, _ => true + 1 } } fn main() {}"
         )
         .is_err());
     }
