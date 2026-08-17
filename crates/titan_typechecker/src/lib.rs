@@ -6102,7 +6102,7 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "enum Choice { Stop, Continue } fn halt() -> ! { loop { match Choice::Continue { Choice::Stop => { break }, Choice::Continue => { loop {} } } } } fn main() {}"
+            "enum Choice { Stop, Continue } fn halt() -> ! { loop { match (Choice::Continue) { Choice::Stop => { break }, Choice::Continue => { loop {} } } } } fn main() {}"
         )
         .is_ok());
         assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
@@ -6394,7 +6394,7 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "enum Choice { First, Second } fn read() -> int { match Choice::First { Choice::First => 1, Choice::Second => \"unreachable\" } } fn main() {}"
+            "enum Choice { First, Second } fn read() -> int { match (Choice::First) { Choice::First => 1, Choice::Second => \"unreachable\" } } fn main() {}"
         )
         .is_ok());
         assert!(check(
@@ -6402,7 +6402,7 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "enum Choice { First, Second } fn read() -> int { match Choice::First { Choice::First if false => \"unreachable\", Choice::First => 1, Choice::Second => 0 } } fn main() {}"
+            "enum Choice { First, Second } fn read() -> int { match (Choice::First) { Choice::First if false => \"unreachable\", Choice::First => 1, Choice::Second => 0 } } fn main() {}"
         )
         .is_ok());
         assert!(check(
