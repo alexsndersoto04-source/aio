@@ -2333,8 +2333,13 @@ impl TypeEnv {
                 let subject = self.check_expr(scrutinee);
                 self.check_match_coverage(&subject, arms);
                 let subject_never = self.resolve_alias(&subject) == Type::Never;
+                let literal_bool = match scrutinee.as_ref() {
+                    Expr::Bool { value, .. } => Some(*value),
+                    _ => None,
+                };
                 let candidate_count = self.return_candidates.last().map(Vec::len);
                 let loop_broke = self.loop_breaks.last().copied();
+                let mut literal_path_open = literal_bool.is_some();
                 let mut result: Option<Type> = None;
                 for arm in arms {
                     if !match_pattern_is_lowerable(&arm.pattern) {
@@ -2342,66 +2347,79 @@ impl TypeEnv {
                             feature: "or-patterns and nested destructuring in match".into(),
                         });
                     }
+                    let arm_candidate_count = self.return_candidates.last().map(Vec::len);
+                    let arm_loop_broke = self.loop_breaks.last().copied();
+                    let arm_reachable = !subject_never
+                        && literal_bool.map_or(true, |value| {
+                            literal_path_open && bool_pattern_matches(&arm.pattern, value)
+                        });
+
                     self.push_scope();
                     self.bind_pattern(&arm.pattern, &subject);
-                    let guard_never = if let Some(guard) = &arm.guard {
+                    let (guard_never, guard_literal) = if let Some(guard) = &arm.guard {
                         let guard_type = self.check_expr(guard);
                         self.require_compatible(&Type::Bool, &guard_type);
-                        guard_type == Type::Never
+                        let literal = match guard.as_ref() {
+                            Expr::Bool { value, .. } => Some(*value),
+                            _ => None,
+                        };
+                        (guard_type == Type::Never, literal)
                     } else {
-                        false
+                        (false, None)
                     };
                     let body_candidate_count = self.return_candidates.last().map(Vec::len);
                     let body_loop_broke = self.loop_breaks.last().copied();
                     let body_type = self.check_block(&arm.body);
-                    let found = if guard_never {
-                        if let (Some(candidates), Some(count)) =
-                            (self.return_candidates.last_mut(), body_candidate_count)
-                        {
-                            candidates.truncate(count);
-                        }
-                        if let (Some(current), Some(previous)) =
-                            (self.loop_breaks.last_mut(), body_loop_broke)
-                        {
-                            *current = previous;
-                        }
-                        Type::Never
+                    let body_reachable = arm_reachable
+                        && !guard_never
+                        && guard_literal != Some(false);
+                    if !arm_reachable {
+                        self.restore_control_flow(arm_candidate_count, arm_loop_broke);
+                    } else if !body_reachable {
+                        // The guard is evaluated on this path, but a false or
+                        // diverging guard prevents its body from running.
+                        self.restore_control_flow(body_candidate_count, body_loop_broke);
+                    }
+
+                    let found = if !arm_reachable || guard_literal == Some(false) {
+                        None
+                    } else if guard_never {
+                        Some(Type::Never)
                     } else {
-                        body_type
+                        Some(body_type)
                     };
-                    result = Some(match result {
-                        None => found,
-                        Some(current) if current == Type::Never => found,
-                        Some(current) if found == Type::Never => current,
-                        Some(current)
-                            if compatible(
-                                &self.resolve_alias(&current),
-                                &self.resolve_alias(&found),
-                            ) =>
-                        {
-                            current
+                    if let Some(found) = found {
+                        result = Some(match result {
+                            None => found,
+                            Some(current) if current == Type::Never => found,
+                            Some(current) if found == Type::Never => current,
+                            Some(current)
+                                if compatible(
+                                    &self.resolve_alias(&current),
+                                    &self.resolve_alias(&found),
+                                ) =>
+                            {
+                                current
+                            }
+                            Some(current) => {
+                                self.errors.push(TypeError::Mismatch {
+                                    expected: current,
+                                    found,
+                                });
+                                Type::Unknown
+                            }
+                        });
+                    }
+
+                    if literal_bool.is_some() && arm_reachable {
+                        if guard_never || arm.guard.is_none() || guard_literal == Some(true) {
+                            literal_path_open = false;
                         }
-                        Some(current) => {
-                            self.errors.push(TypeError::Mismatch {
-                                expected: current,
-                                found,
-                            });
-                            Type::Unknown
-                        }
-                    });
+                    }
                     self.pop_scope();
                 }
                 if subject_never {
-                    if let (Some(candidates), Some(count)) =
-                        (self.return_candidates.last_mut(), candidate_count)
-                    {
-                        candidates.truncate(count);
-                    }
-                    if let (Some(current), Some(previous)) =
-                        (self.loop_breaks.last_mut(), loop_broke)
-                    {
-                        *current = previous;
-                    }
+                    self.restore_control_flow(candidate_count, loop_broke);
                     Type::Never
                 } else {
                     result.unwrap_or(Type::Unknown)
@@ -4885,6 +4903,19 @@ fn pattern_binding_names(pattern: &Pattern) -> HashSet<String> {
     names
 }
 
+fn bool_pattern_matches(pattern: &Pattern, subject: bool) -> bool {
+    match pattern {
+        Pattern::Wildcard { .. } | Pattern::Ident { .. } => true,
+        Pattern::Literal { value, .. } => {
+            matches!(value.as_ref(), Expr::Bool { value, .. } if *value == subject)
+        }
+        Pattern::Or { left, right, .. } => {
+            bool_pattern_matches(left, subject) || bool_pattern_matches(right, subject)
+        }
+        Pattern::Enum { .. } | Pattern::Tuple { .. } | Pattern::Struct { .. } => false,
+    }
+}
+
 fn match_pattern_is_lowerable(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Wildcard { .. } | Pattern::Ident { .. } | Pattern::Literal { .. } => true,
@@ -6020,6 +6051,14 @@ mod tests {
             "fn halt() -> ! { loop { if true { loop {} } else { break } } } fn main() {}"
         )
         .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop { match true { true => loop {}, false => break } } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { loop { match true { true if false => break, true => loop {}, false => break } } } fn main() {}"
+        )
+        .is_ok());
         assert!(check("fn completes() -> ! { loop { break } } fn main() {}").is_err());
         assert!(check("fn completes() -> ! { loop { if true { break } } } fn main() {}").is_err());
         assert!(check("fn completes() -> ! { loop { true && { break } } } fn main() {}").is_err());
@@ -6270,6 +6309,26 @@ mod tests {
         .is_ok());
         assert!(check(
             "fn read(flag: bool) -> int { match flag { true => 1, false => \"bad\" } } fn main() {}"
+        )
+        .is_err());
+        assert!(check(
+            "fn read() -> int { match true { true => 1, false => \"unreachable\" } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn halt() -> ! { match true { true => loop {}, false => 1 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn inferred() { match true { true => 1, false => return \"unreachable\" } } fn main() { let value: int = inferred() }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn read() -> int { match true { true if false => \"unreachable\", true => 1, false => 0 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn read() -> int { match true { true => 1, false => true + 1 } } fn main() {}"
         )
         .is_err());
     }
