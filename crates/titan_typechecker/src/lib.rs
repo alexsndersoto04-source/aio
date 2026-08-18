@@ -5778,7 +5778,7 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "type Pair = (int, int) fn keep_pair(pair: (int, int), value: int) -> (int, int) { pair } fn main() { let initial: Pair = (0, 0) let result: Pair = [1, 2].fold(initial, keep_pair) result }"
+            "type Counts = [int] fn keep_counts(counts: [int], value: int) -> [int] { counts } fn main() { let initial: Counts = [0] let result: Counts = [1, 2].fold(initial, keep_counts) result }"
         )
         .is_ok());
         assert!(check(
