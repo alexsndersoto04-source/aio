@@ -694,6 +694,264 @@ impl Vm {
         result.map(Some)
     }
 
+    fn execute_builtin_collection_method(
+        &mut self,
+        method: &str,
+        receiver: Value,
+        args: Vec<Value>,
+        depth: usize,
+        debugger: &mut Option<&mut dyn DebugHook>,
+    ) -> Result<Value, VmError> {
+        match (method, args.len()) {
+            ("len", 0) => Ok(Value::Int(value_length(receiver)?)),
+            ("map", 1) => {
+                let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
+                    function: "map".into(),
+                    expected: 1,
+                    found: 0,
+                })?;
+                let values = array_value(receiver)?;
+                let Value::Closure {
+                    function: closure_function,
+                    captures,
+                } = callable
+                else {
+                    return Err(VmError::Type("map requires a function".into()));
+                };
+                let mut output = Vec::with_capacity(values.len());
+                for value in values {
+                    output.push(self.execute(
+                        closure_function,
+                        vec![value],
+                        captures.clone(),
+                        depth + 1,
+                        debugger,
+                    )?);
+                }
+                Ok(Value::Array(output))
+            }
+            ("filter", 1) => {
+                let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
+                    function: "filter".into(),
+                    expected: 1,
+                    found: 0,
+                })?;
+                let values = array_value(receiver)?;
+                let Value::Closure {
+                    function: closure_function,
+                    captures,
+                } = callable
+                else {
+                    return Err(VmError::Type("filter requires a function".into()));
+                };
+                let mut output = Vec::new();
+                for value in values {
+                    let keep = self.execute(
+                        closure_function,
+                        vec![value.clone()],
+                        captures.clone(),
+                        depth + 1,
+                        debugger,
+                    )?;
+                    if keep == Value::Bool(true) {
+                        output.push(value);
+                    } else if keep != Value::Bool(false) {
+                        return Err(VmError::Type("filter predicate must return bool".into()));
+                    }
+                }
+                Ok(Value::Array(output))
+            }
+            ("fold", 2) => {
+                let mut args = args.into_iter();
+                let mut accumulator = args.next().ok_or_else(|| VmError::Arity {
+                    function: "fold".into(),
+                    expected: 2,
+                    found: 0,
+                })?;
+                let callable = args.next().ok_or_else(|| VmError::Arity {
+                    function: "fold".into(),
+                    expected: 2,
+                    found: 1,
+                })?;
+                let values = array_value(receiver)?;
+                let Value::Closure {
+                    function: closure_function,
+                    captures,
+                } = callable
+                else {
+                    return Err(VmError::Type("fold requires a function".into()));
+                };
+                for value in values {
+                    accumulator = self.execute(
+                        closure_function,
+                        vec![accumulator, value],
+                        captures.clone(),
+                        depth + 1,
+                        debugger,
+                    )?;
+                }
+                Ok(accumulator)
+            }
+            ("sort_by", 1) => {
+                let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
+                    function: "sort_by".into(),
+                    expected: 1,
+                    found: 0,
+                })?;
+                let mut values = array_value(receiver)?;
+                let Value::Closure {
+                    function: closure_function,
+                    captures,
+                } = callable
+                else {
+                    return Err(VmError::Type("sort_by requires a function".into()));
+                };
+                let n = values.len();
+                let mut order_err: Option<VmError> = None;
+                'outer: for i in 0..n {
+                    if order_err.is_some() {
+                        break;
+                    }
+                    let mut min_idx = i;
+                    for j in (i + 1)..n {
+                        let a = values[min_idx].clone();
+                        let b = values[j].clone();
+                        let cmp = self.execute(
+                            closure_function,
+                            vec![b, a],
+                            captures.clone(),
+                            depth + 1,
+                            debugger,
+                        );
+                        match cmp {
+                            Ok(Value::Int(c)) if c < 0 => min_idx = j,
+                            Ok(Value::Float(c)) if c < 0.0 => min_idx = j,
+                            Ok(Value::Int(_)) | Ok(Value::Float(_)) => {}
+                            Ok(_) => {
+                                order_err = Some(VmError::Type(
+                                    "sort_by comparator must return int or float".into(),
+                                ));
+                                break 'outer;
+                            }
+                            Err(error) => {
+                                order_err = Some(error);
+                                break 'outer;
+                            }
+                        }
+                    }
+                    if min_idx != i {
+                        values.swap(i, min_idx);
+                    }
+                }
+                if let Some(error) = order_err {
+                    return Err(error);
+                }
+                Ok(Value::Array(values))
+            }
+            ("find", 1) => {
+                let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
+                    function: "find".into(),
+                    expected: 1,
+                    found: 0,
+                })?;
+                let values = array_value(receiver)?;
+                let Value::Closure {
+                    function: closure_function,
+                    captures,
+                } = callable
+                else {
+                    return Err(VmError::Type("find requires a function".into()));
+                };
+                for value in values {
+                    let matches = self.execute(
+                        closure_function,
+                        vec![value.clone()],
+                        captures.clone(),
+                        depth + 1,
+                        debugger,
+                    )?;
+                    match matches {
+                        Value::Bool(true) => return Ok(value),
+                        Value::Bool(false) => {}
+                        _ => {
+                            return Err(VmError::Type("find predicate must return bool".into()));
+                        }
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            ("any", 1) => {
+                let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
+                    function: "any".into(),
+                    expected: 1,
+                    found: 0,
+                })?;
+                let values = array_value(receiver)?;
+                let Value::Closure {
+                    function: closure_function,
+                    captures,
+                } = callable
+                else {
+                    return Err(VmError::Type("any requires a function".into()));
+                };
+                for value in values {
+                    let matches = self.execute(
+                        closure_function,
+                        vec![value],
+                        captures.clone(),
+                        depth + 1,
+                        debugger,
+                    )?;
+                    match matches {
+                        Value::Bool(true) => return Ok(Value::Bool(true)),
+                        Value::Bool(false) => {}
+                        _ => {
+                            return Err(VmError::Type("any predicate must return bool".into()));
+                        }
+                    }
+                }
+                Ok(Value::Bool(false))
+            }
+            ("all", 1) => {
+                let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
+                    function: "all".into(),
+                    expected: 1,
+                    found: 0,
+                })?;
+                let values = array_value(receiver)?;
+                let Value::Closure {
+                    function: closure_function,
+                    captures,
+                } = callable
+                else {
+                    return Err(VmError::Type("all requires a function".into()));
+                };
+                for value in values {
+                    let matches = self.execute(
+                        closure_function,
+                        vec![value],
+                        captures.clone(),
+                        depth + 1,
+                        debugger,
+                    )?;
+                    match matches {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) => return Ok(Value::Bool(false)),
+                        _ => {
+                            return Err(VmError::Type("all predicate must return bool".into()));
+                        }
+                    }
+                }
+                Ok(Value::Bool(true))
+            }
+            _ => Err(VmError::Type(format!(
+                "no method '{}' for value {}",
+                method,
+                val_to_string(&receiver)
+            ))),
+        }
+    }
+
     fn execute(
         &mut self,
         function_id: usize,
@@ -1011,12 +1269,9 @@ impl Vm {
                     stack.push(wrapped);
                 }
                 Op::CallMethod { method, argc } => {
-                    // Dynamic method dispatch. Struct receivers use their
-                    // registered implementation. `.len()` additionally falls
-                    // back to the intrinsic operation for arrays, tuples,
-                    // strings, bytes, and maps, allowing a struct to declare a
-                    // real method with the same name without breaking built-in
-                    // receivers elsewhere in the same program.
+                    // Struct receivers use their registered implementation.
+                    // Non-struct receivers use the real collection intrinsic
+                    // with the same name and arity, if one exists.
                     let args = take_args(&mut stack, argc, &function.name)?;
                     let receiver = pop(&mut stack, &function.name)?;
                     if let Value::Struct { name, .. } = &receiver {
@@ -1034,243 +1289,60 @@ impl Vm {
                             depth + 1,
                             debugger,
                         )?);
-                    } else if method == "len" && argc == 0 {
-                        stack.push(Value::Int(value_length(receiver)?));
                     } else {
-                        return Err(VmError::Type(format!(
-                            "no method '{}' for value {}",
-                            method,
-                            val_to_string(&receiver)
-                        )));
+                        stack.push(self.execute_builtin_collection_method(
+                            &method, receiver, args, depth, debugger,
+                        )?);
                     }
                 }
                 Op::ArrayMap => {
-                    let callable = pop(&mut stack, &function.name)?;
-                    let values = array_value(pop(&mut stack, &function.name)?)?;
-                    let Value::Closure {
-                        function: closure_function,
-                        captures,
-                    } = callable
-                    else {
-                        return Err(VmError::Type("map requires a function".into()));
-                    };
-                    let mut output = Vec::with_capacity(values.len());
-                    for value in values {
-                        output.push(self.execute(
-                            closure_function,
-                            vec![value],
-                            captures.clone(),
-                            depth + 1,
-                            debugger,
-                        )?);
-                    }
-                    stack.push(Value::Array(output));
+                    let args = take_args(&mut stack, 1, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    stack.push(self.execute_builtin_collection_method(
+                        "map", receiver, args, depth, debugger,
+                    )?);
                 }
                 Op::ArrayFilter => {
-                    let callable = pop(&mut stack, &function.name)?;
-                    let values = array_value(pop(&mut stack, &function.name)?)?;
-                    let Value::Closure {
-                        function: closure_function,
-                        captures,
-                    } = callable
-                    else {
-                        return Err(VmError::Type("filter requires a function".into()));
-                    };
-                    let mut output = Vec::new();
-                    for value in values {
-                        let keep = self.execute(
-                            closure_function,
-                            vec![value.clone()],
-                            captures.clone(),
-                            depth + 1,
-                            debugger,
-                        )?;
-                        if keep == Value::Bool(true) {
-                            output.push(value);
-                        } else if keep != Value::Bool(false) {
-                            return Err(VmError::Type("filter predicate must return bool".into()));
-                        }
-                    }
-                    stack.push(Value::Array(output));
+                    let args = take_args(&mut stack, 1, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    stack.push(self.execute_builtin_collection_method(
+                        "filter", receiver, args, depth, debugger,
+                    )?);
                 }
                 Op::ArrayFold => {
-                    let callable = pop(&mut stack, &function.name)?;
-                    let mut accumulator = pop(&mut stack, &function.name)?;
-                    let values = array_value(pop(&mut stack, &function.name)?)?;
-                    let Value::Closure {
-                        function: closure_function,
-                        captures,
-                    } = callable
-                    else {
-                        return Err(VmError::Type("fold requires a function".into()));
-                    };
-                    for value in values {
-                        accumulator = self.execute(
-                            closure_function,
-                            vec![accumulator, value],
-                            captures.clone(),
-                            depth + 1,
-                            debugger,
-                        )?;
-                    }
-                    stack.push(accumulator);
+                    let args = take_args(&mut stack, 2, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    stack.push(self.execute_builtin_collection_method(
+                        "fold", receiver, args, depth, debugger,
+                    )?);
                 }
-                // Phase 19: closure-based array operations.
                 Op::ArraySortBy => {
-                    let callable = pop(&mut stack, &function.name)?;
-                    let mut values = array_value(pop(&mut stack, &function.name)?)?;
-                    let Value::Closure {
-                        function: closure_function,
-                        captures,
-                    } = callable
-                    else {
-                        return Err(VmError::Type("sort_by requires a function".into()));
-                    };
-                    // Collect (index, cmp_result) pairs to avoid re-invoking the
-                    // closure inside sort's comparator (which can't fail cleanly).
-                    // We do a plain insertion of each element against a mutable
-                    // Vec, computing the comparator on demand. For clarity and
-                    // for correctness with fallible closures we accumulate any
-                    // error and abort. Not O(n log n) worst-case but simple.
-                    let n = values.len();
-                    let mut order_err: Option<VmError> = None;
-                    // Selection-sort — fine for small arrays; if a closure error
-                    // occurs we stop and propagate.
-                    'outer: for i in 0..n {
-                        if order_err.is_some() {
-                            break;
-                        }
-                        let mut min_idx = i;
-                        for j in (i + 1)..n {
-                            let a = values[min_idx].clone();
-                            let b = values[j].clone();
-                            let cmp = self.execute(
-                                closure_function,
-                                vec![b, a],
-                                captures.clone(),
-                                depth + 1,
-                                debugger,
-                            );
-                            match cmp {
-                                Ok(Value::Int(c)) if c < 0 => min_idx = j,
-                                Ok(Value::Float(c)) if c < 0.0 => min_idx = j,
-                                Ok(Value::Int(_)) | Ok(Value::Float(_)) => {}
-                                Ok(_) => {
-                                    order_err = Some(VmError::Type(
-                                        "sort_by comparator must return int or float".into(),
-                                    ));
-                                    break 'outer;
-                                }
-                                Err(e) => {
-                                    order_err = Some(e);
-                                    break 'outer;
-                                }
-                            }
-                        }
-                        if min_idx != i {
-                            values.swap(i, min_idx);
-                        }
-                    }
-                    if let Some(e) = order_err {
-                        return Err(e);
-                    }
-                    stack.push(Value::Array(values));
+                    let args = take_args(&mut stack, 1, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    stack.push(self.execute_builtin_collection_method(
+                        "sort_by", receiver, args, depth, debugger,
+                    )?);
                 }
                 Op::ArrayFind => {
-                    let callable = pop(&mut stack, &function.name)?;
-                    let values = array_value(pop(&mut stack, &function.name)?)?;
-                    let Value::Closure {
-                        function: closure_function,
-                        captures,
-                    } = callable
-                    else {
-                        return Err(VmError::Type("find requires a function".into()));
-                    };
-                    let mut found = Value::Nil;
-                    for value in values {
-                        let ok = self.execute(
-                            closure_function,
-                            vec![value.clone()],
-                            captures.clone(),
-                            depth + 1,
-                            debugger,
-                        )?;
-                        match ok {
-                            Value::Bool(true) => {
-                                found = value;
-                                break;
-                            }
-                            Value::Bool(false) => {}
-                            _ => {
-                                return Err(VmError::Type("find predicate must return bool".into()))
-                            }
-                        }
-                    }
-                    stack.push(found);
+                    let args = take_args(&mut stack, 1, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    stack.push(self.execute_builtin_collection_method(
+                        "find", receiver, args, depth, debugger,
+                    )?);
                 }
                 Op::ArrayAny => {
-                    let callable = pop(&mut stack, &function.name)?;
-                    let values = array_value(pop(&mut stack, &function.name)?)?;
-                    let Value::Closure {
-                        function: closure_function,
-                        captures,
-                    } = callable
-                    else {
-                        return Err(VmError::Type("any requires a function".into()));
-                    };
-                    let mut result = false;
-                    for value in values {
-                        let ok = self.execute(
-                            closure_function,
-                            vec![value],
-                            captures.clone(),
-                            depth + 1,
-                            debugger,
-                        )?;
-                        match ok {
-                            Value::Bool(true) => {
-                                result = true;
-                                break;
-                            }
-                            Value::Bool(false) => {}
-                            _ => {
-                                return Err(VmError::Type("any predicate must return bool".into()))
-                            }
-                        }
-                    }
-                    stack.push(Value::Bool(result));
+                    let args = take_args(&mut stack, 1, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    stack.push(self.execute_builtin_collection_method(
+                        "any", receiver, args, depth, debugger,
+                    )?);
                 }
                 Op::ArrayAll => {
-                    let callable = pop(&mut stack, &function.name)?;
-                    let values = array_value(pop(&mut stack, &function.name)?)?;
-                    let Value::Closure {
-                        function: closure_function,
-                        captures,
-                    } = callable
-                    else {
-                        return Err(VmError::Type("all requires a function".into()));
-                    };
-                    let mut result = true;
-                    for value in values {
-                        let ok = self.execute(
-                            closure_function,
-                            vec![value],
-                            captures.clone(),
-                            depth + 1,
-                            debugger,
-                        )?;
-                        match ok {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => {
-                                result = false;
-                                break;
-                            }
-                            _ => {
-                                return Err(VmError::Type("all predicate must return bool".into()))
-                            }
-                        }
-                    }
-                    stack.push(Value::Bool(result));
+                    let args = take_args(&mut stack, 1, &function.name)?;
+                    let receiver = pop(&mut stack, &function.name)?;
+                    stack.push(self.execute_builtin_collection_method(
+                        "all", receiver, args, depth, debugger,
+                    )?);
                 }
                 Op::Spawn => {
                     let callable = pop(&mut stack, &function.name)?;
@@ -4692,6 +4764,15 @@ mod tests {
             run("struct Counter { value: int } impl Counter { fn len(self) -> int { self.value } } fn main() { let counter = Counter { value: 42 } counter.len() * 10 + [1, 2, 3].len() }")
                 .unwrap(),
             Value::Int(423)
+        );
+    }
+
+    #[test]
+    fn struct_collection_method_names_coexist_with_intrinsics() {
+        assert_eq!(
+            run("struct Toolkit { value: int } impl Toolkit { fn map(self, amount: int) -> int { self.value + amount } fn filter(self, amount: int) -> int { self.value + amount } fn fold(self, left: int, right: int) -> int { self.value + left + right } fn sort_by(self, amount: int) -> int { self.value + amount } fn find(self, amount: int) -> int { self.value + amount } fn any(self, amount: int) -> int { self.value + amount } fn all(self, amount: int) -> int { self.value + amount } } fn main() { let toolkit = Toolkit { value: 1 } let user_methods = toolkit.map(1) + toolkit.filter(2) + toolkit.fold(3, 4) + toolkit.sort_by(5) + toolkit.find(6) + toolkit.any(7) + toolkit.all(8) let mapped = [1, 2].map(|value| value + 1).fold(0, |total, value| total + value) let filtered = [1, 2, 3].filter(|value| value > 1).len() let sorted = [2, 1].sort_by(|left, right| left - right).len() let found = [1, 2].find(|value| value == 2) let flags = if [1, 2].any(|value| value == 2) && [1, 2].all(|value| value > 0) { 1 } else { 0 } user_methods + mapped + filtered + sorted + found + flags }")
+                .unwrap(),
+            Value::Int(55)
         );
     }
 

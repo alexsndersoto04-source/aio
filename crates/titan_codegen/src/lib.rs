@@ -91,10 +91,10 @@ pub enum Op {
     ArrayAll,
     // Phase 20: dynamic method dispatch for `impl` on structs.
     // Stack layout when executed: [..., receiver, arg1, arg2, ..., argN].
-    // The VM pops N args, pops the receiver, reads its Value::Struct name,
-    // then looks up "<StructName>::<method>" in module.method_table and
-    // invokes it with (receiver, arg1..argN) prepended. For `.len()`, the VM
-    // falls back to intrinsic length when the receiver is not a struct.
+    // The VM pops N args and the receiver. Struct values resolve
+    // "<StructName>::<method>" in module.method_table and invoke it with
+    // (receiver, arg1..argN). Non-struct values fall back to a matching
+    // built-in collection operation.
     // Static-associated calls like `Point::origin()` don't use this opcode
     // — they go through the regular Op::Call because the parser folds
     // `Point::origin` into a single qualified identifier at parse time.
@@ -635,32 +635,15 @@ impl AstCompiler {
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
-                match (method.as_str(), args.len()) {
-                    // `.len()` may be a user-defined struct method. The VM
-                    // dispatches structs through the method table and falls
-                    // back to intrinsic length for built-in runtime values.
-                    ("len", 0) => self.emit(Op::CallMethod {
-                        method: method.clone(),
-                        argc: 0,
-                    }),
-                    ("map", 1) => self.emit(Op::ArrayMap),
-                    ("filter", 1) => self.emit(Op::ArrayFilter),
-                    ("fold", 2) => self.emit(Op::ArrayFold),
-                    // Phase 19: higher-order methods.
-                    ("sort_by", 1) => self.emit(Op::ArraySortBy),
-                    ("find", 1) => self.emit(Op::ArrayFind),
-                    ("any", 1) => self.emit(Op::ArrayAny),
-                    ("all", 1) => self.emit(Op::ArrayAll),
-                    // Phase 20: dynamic method dispatch on structs. Any
-                    // unknown `.method(args)` becomes a CallMethod opcode
-                    // that resolves at runtime from the receiver's struct
-                    // name (e.g. Value::Struct { name: "Point", .. } ->
-                    // look up "Point::method" in module.method_table).
-                    _ => self.emit(Op::CallMethod {
-                        method: method.clone(),
-                        argc: args.len(),
-                    }),
-                }
+                // Every method-syntax call is dispatched from the runtime
+                // receiver. Struct implementations take priority; built-in
+                // collection methods are the non-struct fallback. Keeping a
+                // single lowering path prevents names such as `map` or `fold`
+                // from bypassing a real method declared by the struct.
+                self.emit(Op::CallMethod {
+                    method: method.clone(),
+                    argc: args.len(),
+                });
             }
             Expr::Index { target, index, .. } => {
                 self.compile_expr(target)?;

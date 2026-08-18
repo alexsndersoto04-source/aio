@@ -2951,23 +2951,18 @@ impl TypeEnv {
             return Type::Never;
         }
 
-        // `.len()` is dispatched dynamically by the VM: declared struct
-        // methods take priority, while built-in runtime values retain their
-        // intrinsic length operation. Resolve the user method first so the
-        // checker follows that same order.
-        if method == "len" && args.is_empty() {
-            if let Some(result) =
-                self.check_user_method_call(&receiver_type, method, args, &mut reachable)
-            {
-                return result;
-            }
+        // Method syntax is dispatched dynamically by the VM: a declared
+        // struct method takes priority, while built-in collection receivers
+        // retain their intrinsic operations. Resolve the user method first so
+        // the checker follows that same order for every colliding name.
+        if let Some(result) =
+            self.check_user_method_call(&receiver_type, method, args, &mut reachable)
+        {
+            return result;
         }
 
-        // Collection method shapes other than `.len()` are still lowered to
-        // dedicated bytecode before user-defined dispatch. Validate those same
-        // contracts here so accepted code cannot reach an incompatible
-        // intrinsic. `.len()` already checked for a declared struct method and
-        // falls through here only for its built-in runtime shapes.
+        // No declared struct method matched. Validate the intrinsic collection
+        // contracts used by arrays, tuples, strings, bytes, and maps.
         match (method, args.len()) {
             ("len", 0) => {
                 if is_length_supported(&receiver_type) {
@@ -3118,12 +3113,6 @@ impl TypeEnv {
                 };
             }
             _ => {}
-        }
-
-        if let Some(result) =
-            self.check_user_method_call(&receiver_type, method, args, &mut reachable)
-        {
-            return result;
         }
 
         for arg in args {
@@ -5866,6 +5855,14 @@ mod tests {
         .is_ok());
         assert!(check(
             "struct Counter { value: int } impl Counter { fn len(self) -> int { self.value } } fn main() { let counter = Counter { value: 42 } let result: string = counter.len() }"
+        )
+        .is_err());
+        assert!(check(
+            "struct Toolkit { value: int } impl Toolkit { fn map(self, amount: int) -> int { self.value + amount } fn filter(self, amount: int) -> int { self.value + amount } fn fold(self, left: int, right: int) -> int { self.value + left + right } fn sort_by(self, amount: int) -> int { self.value + amount } fn find(self, amount: int) -> int { self.value + amount } fn any(self, amount: int) -> int { self.value + amount } fn all(self, amount: int) -> int { self.value + amount } } fn main() { let toolkit = Toolkit { value: 1 } let mapped: int = toolkit.map(1) let filtered: int = toolkit.filter(2) let folded: int = toolkit.fold(3, 4) let sorted: int = toolkit.sort_by(5) let found: int = toolkit.find(6) let some: int = toolkit.any(7) let every: int = toolkit.all(8) let builtin: [int] = [1, 2].map(|value| value + 1) }"
+        )
+        .is_ok());
+        assert!(check(
+            "struct Toolkit { value: int } impl Toolkit { fn map(self, amount: int) -> int { self.value + amount } } fn main() { let toolkit = Toolkit { value: 1 } let result: string = toolkit.map(1) }"
         )
         .is_err());
     }
