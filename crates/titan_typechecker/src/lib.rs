@@ -3250,10 +3250,12 @@ impl TypeEnv {
         }
         let value_type = if let Some(operator) = op {
             let value_type = self.check_expr(value);
-            let result = if value_type == Type::Never {
+            let result = if self.resolve_alias(&value_type) == Type::Never {
                 Type::Never
             } else {
-                self.check_binary(operator, target_type.clone(), value_type.clone())
+                let target_resolved = self.resolve_alias(&target_type);
+                let value_resolved = self.resolve_alias(&value_type);
+                self.check_binary(operator, target_resolved, value_resolved)
             };
             self.require_compatible(&target_type, &result);
             value_type
@@ -5929,6 +5931,18 @@ mod tests {
         assert!(check("fn main() { let value = 1 value = 2 }").is_err());
         assert!(check("fn main() { let mut value = \"text\" value -= 1 }").is_err());
         assert!(check("fn main() { let mut value = 1 value += 2 }").is_ok());
+        assert!(check(
+            "type Count = int fn main() { let mut value: Count = 1; value += 2; let result: Count = value }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Text = string fn main() { let mut value: Text = \"count: \"; value += 2; let result: Text = value }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Text = string fn main() { let mut value: Text = \"text\"; value -= 1 }"
+        )
+        .is_err());
         assert!(check("fn bump(mut value: int) -> int { value += 1 value } fn main() {}").is_ok());
         assert!(check("fn bump(value: int) -> int { value += 1 value } fn main() {}").is_err());
         assert!(
