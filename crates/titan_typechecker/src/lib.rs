@@ -3175,7 +3175,9 @@ impl TypeEnv {
                     });
                 }
                 for (parameter, argument) in params.iter().zip(arguments) {
-                    if !function_parameter_accepts(parameter, argument) {
+                    let parameter_resolved = self.resolve_alias(parameter);
+                    let argument_resolved = self.resolve_alias(argument);
+                    if !function_parameter_accepts(&parameter_resolved, &argument_resolved) {
                         self.errors.push(TypeError::Mismatch {
                             expected: argument.clone(),
                             found: parameter.clone(),
@@ -3183,7 +3185,8 @@ impl TypeEnv {
                     }
                 }
                 if let Some(expected) = result {
-                    if !function_result_compatible(expected, &found_result) {
+                    let expected_resolved = self.resolve_alias(expected);
+                    if !function_result_compatible(&expected_resolved, &found_result) {
                         self.errors.push(TypeError::Mismatch {
                             expected: expected.clone(),
                             found: *found_result.clone(),
@@ -5770,6 +5773,18 @@ mod tests {
         assert!(
             check("fn main() { let values: [int] = (1, 2).map(|value: int| value + 1) }").is_ok()
         );
+        assert!(check(
+            "type Count = int fn combine(total: int, value: int) -> int { total + value } fn main() { let initial: Count = 0 let result: Count = [1, 2].fold(initial, combine) result }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Pair = (int, int) fn keep_pair(pair: (int, int), value: int) -> (int, int) { pair } fn main() { let initial: Pair = (0, 0) let result: Pair = [1, 2].fold(initial, keep_pair) result }"
+        )
+        .is_ok());
+        assert!(check(
+            "type Text = string fn combine(total: int, value: int) -> int { total + value } fn main() { let initial: Text = \"zero\" [1, 2].fold(initial, combine) }"
+        )
+        .is_err());
     }
 
     #[test]
@@ -5784,6 +5799,10 @@ mod tests {
         assert!(
             check("fn main() { let values: [string] = map((1, 2), |value: int| \"ok\") }").is_ok()
         );
+        assert!(check(
+            "type Count = int fn combine(total: int, value: int) -> int { total + value } fn main() { let initial: Count = 0 let result: Count = fold([1, 2], initial, combine) result }"
+        )
+        .is_ok());
     }
 
     #[test]
