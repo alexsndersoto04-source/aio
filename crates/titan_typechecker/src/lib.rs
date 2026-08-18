@@ -2626,14 +2626,11 @@ impl TypeEnv {
             } else {
                 (false, None)
             };
-            let body_reachable =
-                arm_reachable && !guard_never && guard_literal != Some(false);
+            let body_reachable = arm_reachable && !guard_never && guard_literal != Some(false);
             let body_candidate_count = self.return_candidates.last().map(Vec::len);
             let body_loop_broke = self.loop_breaks.last().copied();
-            let body_type = self.check_block_expected(
-                &arm.body,
-                expected.filter(|_| body_reachable),
-            );
+            let body_type =
+                self.check_block_expected(&arm.body, expected.filter(|_| body_reachable));
             if !arm_reachable {
                 self.restore_control_flow(arm_candidate_count, arm_loop_broke);
             } else if !body_reachable {
@@ -2781,9 +2778,12 @@ impl TypeEnv {
     fn check_expr_expected(&mut self, expression: &Expr, expected: &Type) -> Type {
         let expected_resolved = self.resolve_alias(expected);
         let found = match (expression, &expected_resolved) {
-            (Expr::Match { scrutinee, arms, .. }, _) => {
-                self.check_match_expr(scrutinee, arms, Some(&expected_resolved))
-            }
+            (
+                Expr::Match {
+                    scrutinee, arms, ..
+                },
+                _,
+            ) => self.check_match_expr(scrutinee, arms, Some(&expected_resolved)),
             (
                 Expr::If {
                     condition,
