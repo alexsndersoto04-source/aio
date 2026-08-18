@@ -3501,10 +3501,16 @@ impl TypeEnv {
         };
 
         let mut reachable = true;
-        // Inline closures need the argument types as context, but constructing
-        // the closure itself cannot diverge. Other callable expressions are
-        // evaluated before the invocation arguments, matching codegen.
+        // Inline closures need the invocation argument types as context, but
+        // they are constructed before those arguments are evaluated. Preserve
+        // that lexical order: infer the argument types once, temporarily hide
+        // bindings introduced by those later expressions while checking the
+        // closure body, then restore the post-argument scope for following
+        // expressions. Otherwise `catch(|x| later + x, let later = 1)` passes
+        // the checker even though codegen correctly cannot capture `later`.
         let inline_closure = matches!(callable_expression, Expr::Closure { .. });
+        let pre_argument_state =
+            inline_closure.then(|| (self.scopes.clone(), self.bindings.clone()));
         let callable = if inline_closure {
             None
         } else {
@@ -3514,6 +3520,11 @@ impl TypeEnv {
             .iter()
             .map(|argument| self.check_evaluated_expr(argument, None, &mut reachable))
             .collect();
+        let post_argument_state = pre_argument_state.map(|(scopes, bindings)| {
+            let post_scopes = std::mem::replace(&mut self.scopes, scopes);
+            let post_bindings = std::mem::replace(&mut self.bindings, bindings);
+            (post_scopes, post_bindings)
+        });
         let callable = if let Expr::Closure {
             params,
             return_type,
@@ -3531,6 +3542,10 @@ impl TypeEnv {
         } else {
             callable.unwrap_or(Type::Unknown)
         };
+        if let Some((scopes, bindings)) = post_argument_state {
+            self.scopes = scopes;
+            self.bindings = bindings;
+        }
 
         match self.resolve_alias(&callable) {
             Type::Never => return Type::Never,
@@ -6305,6 +6320,14 @@ mod tests {
             "fn main() { let result = std::try::catch(|value| value + 1, 2) print(result) }"
         )
         .is_ok());
+        assert!(check(
+            "fn main() { let earlier = 1 std::try::catch(|value| earlier + value, let later = 2) let result: int = later }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { std::try::catch(|value| later + value, let later = 1) }"
+        )
+        .is_err());
         assert!(check("fn main() { std::try::catch() }").is_err());
         assert!(check("fn main() { std::try::catch(42) }").is_err());
         assert!(check("fn main() { std::try::catch(|| 1, 2) }").is_err());

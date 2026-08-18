@@ -1751,6 +1751,17 @@ mod tests {
     }
 
     #[test]
+    fn closures_cannot_capture_bindings_from_later_call_arguments() {
+        let program = parse(
+            "fn main() { std::try::catch(|value| later + value, let later = 1) }",
+        );
+        assert!(matches!(
+            AstCompiler::new().compile_program(&program),
+            Err(CodegenError::UnknownVariable(name)) if name == "later"
+        ));
+    }
+
+    #[test]
     fn rejects_function_features_without_runtime_semantics() {
         for source in [
             "fn declared() -> int; fn main() { declared() }",
