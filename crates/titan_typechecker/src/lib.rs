@@ -2642,9 +2642,8 @@ impl TypeEnv {
         }
 
         if let Some(other) = else_branch {
-            let else_expected = expected.filter(|_| {
-                !condition_never && literal_condition != Some(true)
-            });
+            let else_expected =
+                expected.filter(|_| !condition_never && literal_condition != Some(true));
             let else_type = self.check_block_expected(other, else_expected);
             if condition_never {
                 self.restore_control_flow(candidate_count, loop_broke);
@@ -2789,9 +2788,7 @@ impl TypeEnv {
                 else_branch.as_ref(),
                 Some(&expected_resolved),
             ),
-            (Expr::Block(block), _) => {
-                self.check_block_expected(block, Some(&expected_resolved))
-            }
+            (Expr::Block(block), _) => self.check_block_expected(block, Some(&expected_resolved)),
             (
                 Expr::Closure {
                     params,
