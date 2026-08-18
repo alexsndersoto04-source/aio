@@ -809,6 +809,18 @@ impl AstCompiler {
                 self.emit(Op::CallValue(args.len()));
                 return Ok(());
             }
+            // Constants are expression aliases, so a callable constant must
+            // be materialized before its arguments just like any other
+            // first-class callee. Falling through to the named-function path
+            // would instead report UnknownFunction during lowering.
+            if self.constants.contains_key(name) {
+                self.compile_expr(callee)?;
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                self.emit(Op::CallValue(args.len()));
+                return Ok(());
+            }
             // Phase 18: std::try::catch(fn, args...) is compiled specially
             // because its argument is a closure that must be executed inside
             // a try boundary. Emit the closure and its args then TryCall.
@@ -1760,6 +1772,18 @@ mod tests {
                 Err(CodegenError::Unsupported(_))
             ));
         }
+    }
+
+    #[test]
+    fn lowers_direct_calls_to_callable_constants() {
+        let program = parse(
+            "const INCREMENT: fn(int) -> int = |value| value + 1 fn main() { INCREMENT(41) }",
+        );
+        let module = AstCompiler::new().compile_program(&program).unwrap();
+        assert!(module.functions[module.entry]
+            .code
+            .iter()
+            .any(|operation| matches!(operation, Op::CallValue(1))));
     }
 
     #[test]

@@ -1717,12 +1717,13 @@ impl TypeEnv {
             return Type::Unknown;
         };
         self.constant_stack.push(name.into());
-        let found = self.check_expr(&constant.value);
-        self.constant_stack.pop();
         let declared = constant.type_ann.as_ref().map(type_from_ast);
-        if let Some(expected) = &declared {
-            self.require_compatible(expected, &found);
-        }
+        let found = if let Some(expected) = &declared {
+            self.check_expr_expected(&constant.value, expected)
+        } else {
+            self.check_expr(&constant.value)
+        };
+        self.constant_stack.pop();
         let inferred = declared.unwrap_or(found);
         self.constant_types.insert(name.into(), inferred.clone());
         self.scopes[0].insert(name.into(), inferred.clone());
@@ -5695,6 +5696,14 @@ mod tests {
     fn annotated_constants_keep_the_declared_type() {
         assert!(check("const FLEXIBLE: any = 1 fn main() { FLEXIBLE[0] }").is_ok());
         assert!(check("const INVALID: int = true fn main() {}").is_err());
+        assert!(check(
+            "const INCREMENT: fn(int) -> int = |value| value + 1 fn main() { let result: int = INCREMENT(41) }"
+        )
+        .is_ok());
+        assert!(check(
+            "const INVALID_CALLBACK: fn(string) -> int = |value| value + 1 fn main() {}"
+        )
+        .is_err());
     }
 
     #[test]

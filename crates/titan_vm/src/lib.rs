@@ -4997,6 +4997,14 @@ mod tests {
         assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let operation = double operation(21) }").unwrap(), Value::Int(42));
     }
     #[test]
+    fn callable_constants_are_first_class() {
+        assert_eq!(
+            run("const INCREMENT: fn(int) -> int = |value| value + 1 fn main() { INCREMENT(41) }")
+                .unwrap(),
+            Value::Int(42)
+        );
+    }
+    #[test]
     fn functional_array_pipeline_works() {
         assert_eq!(run("fn main() { [1, 2, 3, 4].map(|x: int| x * 2).filter(|x: int| x > 4).fold(0, |sum: int, x: int| sum + x) }").unwrap(), Value::Int(14));
     }
