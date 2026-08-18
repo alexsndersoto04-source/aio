@@ -207,9 +207,9 @@ pub enum TypeError {
     UnsupportedFeature { feature: String },
 }
 
-/// A semantic error paired with the most precise source expression currently
-/// available. Declaration-wide errors may intentionally have no span until a
-/// unique declaration location can be associated without guessing.
+/// A semantic error paired with the most precise source construct currently
+/// available. The optional form remains defensive for synthetic ASTs that do
+/// not provide an originating declaration or expression.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDiagnostic {
     pub error: TypeError,
@@ -1224,7 +1224,7 @@ impl TypeEnv {
         self.function_depth = 0;
         self.validate_declarations(&program.items);
         self.collect_declarations(&program.items);
-        self.validate_type_aliases();
+        self.validate_type_aliases(&program.items);
         self.validate_declared_types(&program.items);
         self.synchronize_error_spans();
         let mut validation_errors = std::mem::take(&mut self.errors);
@@ -1315,6 +1315,12 @@ impl TypeEnv {
         }
     }
 
+    fn push_error_at(&mut self, error: TypeError, span: Span) {
+        self.synchronize_error_spans();
+        self.errors.push(error);
+        self.error_spans.push(Some(span));
+    }
+
     fn reset_analysis_state(&mut self) {
         self.scopes = vec![self.constant_types.clone()];
         self.bindings = vec![self
@@ -1354,16 +1360,28 @@ impl TypeEnv {
     }
 
     fn validate_declarations(&mut self, items: &[Item]) {
-        self.errors
-            .extend(declaration_errors(&self.base_functions, items));
+        for (error, span) in declaration_errors(&self.base_functions, items) {
+            self.push_error_at(error, span);
+        }
     }
 
-    fn validate_type_aliases(&mut self) {
-        for (name, target) in &self.type_aliases {
-            let mut visited = HashSet::new();
-            if alias_reaches(name, target, &self.type_aliases, &mut visited) {
-                self.errors
-                    .push(TypeError::RecursiveTypeAlias { name: name.clone() });
+    fn validate_type_aliases(&mut self, items: &[Item]) {
+        let mut spans = HashMap::new();
+        collect_type_alias_spans(items, &mut spans);
+        let recursive: Vec<_> = self
+            .type_aliases
+            .iter()
+            .filter_map(|(name, target)| {
+                let mut visited = HashSet::new();
+                alias_reaches(name, target, &self.type_aliases, &mut visited)
+                    .then(|| (name.clone(), spans.get(name).copied()))
+            })
+            .collect();
+        for (name, span) in recursive {
+            if let Some(span) = span {
+                self.push_error_at(TypeError::RecursiveTypeAlias { name }, span);
+            } else {
+                self.errors.push(TypeError::RecursiveTypeAlias { name });
             }
         }
     }
@@ -1371,7 +1389,9 @@ impl TypeEnv {
     fn validate_declared_types(&mut self, items: &[Item]) {
         let mut known = builtin_type_names(&self.base_functions);
         collect_declared_type_names(items, &mut known);
-        self.errors.extend(declared_type_errors(items, &known));
+        for (error, span) in declared_type_errors(items, &known) {
+            self.push_error_at(error, span);
+        }
     }
 
     fn validate_impl_contracts(&mut self, items: &[Item]) {
@@ -1384,15 +1404,21 @@ impl TypeEnv {
             match item {
                 Item::Impl(block) => {
                     let Some(target) = direct_named_type(&block.target_type) else {
-                        self.errors.push(TypeError::InvalidImplTarget {
-                            name: format!("{:?}", block.target_type),
-                        });
+                        self.push_error_at(
+                            TypeError::InvalidImplTarget {
+                                name: format!("{:?}", block.target_type),
+                            },
+                            block.span,
+                        );
                         continue;
                     };
                     if !self.structs.contains_key(target) {
-                        self.errors.push(TypeError::InvalidImplTarget {
-                            name: target.into(),
-                        });
+                        self.push_error_at(
+                            TypeError::InvalidImplTarget {
+                                name: target.into(),
+                            },
+                            block.span,
+                        );
                     }
                     let provided: HashMap<_, _> = block
                         .methods
@@ -1402,10 +1428,13 @@ impl TypeEnv {
                     for method in &block.methods {
                         let qualified = format!("{}::{}", target, method.name);
                         if !methods.insert(qualified.clone()) {
-                            self.errors.push(TypeError::DuplicateDeclaration {
-                                kind: "method".into(),
-                                name: qualified,
-                            });
+                            self.push_error_at(
+                                TypeError::DuplicateDeclaration {
+                                    kind: "method".into(),
+                                    name: qualified,
+                                },
+                                method.span,
+                            );
                         }
                     }
                     let Some(trait_name) = &block.trait_name else {
@@ -1421,10 +1450,13 @@ impl TypeEnv {
                         .collect();
                     for method in &block.methods {
                         let Some(contract) = trait_methods.get(method.name.as_str()) else {
-                            self.errors.push(TypeError::UnknownTraitMethod {
-                                trait_name: trait_name.clone(),
-                                method: method.name.clone(),
-                            });
+                            self.push_error_at(
+                                TypeError::UnknownTraitMethod {
+                                    trait_name: trait_name.clone(),
+                                    method: method.name.clone(),
+                                },
+                                method.span,
+                            );
                             continue;
                         };
                         let expected = trait_method_signature(contract, target);
@@ -1435,11 +1467,14 @@ impl TypeEnv {
                             .cloned()
                             .unwrap_or_else(|| function_signature(method, Some(target)));
                         if !self.signatures_equal(&expected, &found) {
-                            self.errors.push(TypeError::TraitMethodMismatch {
-                                trait_name: trait_name.clone(),
-                                target: target.into(),
-                                method: method.name.clone(),
-                            });
+                            self.push_error_at(
+                                TypeError::TraitMethodMismatch {
+                                    trait_name: trait_name.clone(),
+                                    target: target.into(),
+                                    method: method.name.clone(),
+                                },
+                                method.span,
+                            );
                         }
                     }
                     for method in &trait_decl.methods {
@@ -1448,10 +1483,13 @@ impl TypeEnv {
                         }
                         let qualified = format!("{}::{}", target, method.name);
                         if !methods.insert(qualified.clone()) {
-                            self.errors.push(TypeError::DuplicateDeclaration {
-                                kind: "method".into(),
-                                name: qualified,
-                            });
+                            self.push_error_at(
+                                TypeError::DuplicateDeclaration {
+                                    kind: "method".into(),
+                                    name: qualified,
+                                },
+                                block.span,
+                            );
                         }
                     }
                 }
@@ -1650,18 +1688,24 @@ impl TypeEnv {
                                     );
                                 } else {
                                     // Required method missing.
-                                    self.errors.push(TypeError::UnknownVariable {
-                                        name: format!(
-                                            "impl {} for {}: missing required method '{}'",
-                                            trait_name, type_name, tm.name
-                                        ),
-                                    });
+                                    self.push_error_at(
+                                        TypeError::UnknownVariable {
+                                            name: format!(
+                                                "impl {} for {}: missing required method '{}'",
+                                                trait_name, type_name, tm.name
+                                            ),
+                                        },
+                                        block.span,
+                                    );
                                 }
                             }
                         } else {
-                            self.errors.push(TypeError::UnknownVariable {
-                                name: format!("trait '{}'", trait_name),
-                            });
+                            self.push_error_at(
+                                TypeError::UnknownVariable {
+                                    name: format!("trait '{}'", trait_name),
+                                },
+                                block.span,
+                            );
                         }
                     }
                 }
@@ -4462,25 +4506,34 @@ fn count_inference_targets(items: &[Item]) -> usize {
 fn declaration_errors(
     base_functions: &HashMap<String, FunctionSig>,
     items: &[Item],
-) -> Vec<TypeError> {
+) -> Vec<(TypeError, Span)> {
     struct State {
         values: HashSet<String>,
         types: HashSet<String>,
         impls: HashSet<String>,
-        errors: Vec<TypeError>,
+        errors: Vec<(TypeError, Span)>,
     }
 
-    fn insert(state: &mut State, namespace: &str, kind: &str, name: &str) {
+    fn insert(
+        state: &mut State,
+        namespace: &str,
+        kind: &str,
+        name: &str,
+        span: Span,
+    ) {
         let names = if namespace == "value" {
             &mut state.values
         } else {
             &mut state.types
         };
         if !names.insert(name.into()) {
-            state.errors.push(TypeError::DuplicateDeclaration {
-                kind: kind.into(),
-                name: name.into(),
-            });
+            state.errors.push((
+                TypeError::DuplicateDeclaration {
+                    kind: kind.into(),
+                    name: name.into(),
+                },
+                span,
+            ));
         }
     }
 
@@ -4488,28 +4541,40 @@ fn declaration_errors(
         let mut names = HashSet::new();
         for param in params {
             if !names.insert(param.name.as_str()) {
-                state.errors.push(TypeError::DuplicateDeclaration {
-                    kind: "parameter".into(),
-                    name: format!("{}::{}", owner, param.name),
-                });
+                state.errors.push((
+                    TypeError::DuplicateDeclaration {
+                        kind: "parameter".into(),
+                        name: format!("{}::{}", owner, param.name),
+                    },
+                    param.span,
+                ));
             }
             if param.default.is_some() {
-                state.errors.push(TypeError::UnsupportedFeature {
-                    feature: format!("default parameter '{}::{}'", owner, param.name),
-                });
+                state.errors.push((
+                    TypeError::UnsupportedFeature {
+                        feature: format!("default parameter '{}::{}'", owner, param.name),
+                    },
+                    param.span,
+                ));
             }
         }
     }
 
     fn reject_unimplemented_function(state: &mut State, owner: &str, function: &FunctionDecl) {
         if function.is_extern {
-            state.errors.push(TypeError::UnsupportedFeature {
-                feature: format!("extern function '{}' without runtime linkage", owner),
-            });
+            state.errors.push((
+                TypeError::UnsupportedFeature {
+                    feature: format!("extern function '{}' without runtime linkage", owner),
+                },
+                function.span,
+            ));
         } else if function.body.is_none() {
-            state.errors.push(TypeError::UnsupportedFeature {
-                feature: format!("bodyless function '{}' outside a trait declaration", owner),
-            });
+            state.errors.push((
+                TypeError::UnsupportedFeature {
+                    feature: format!("bodyless function '{}' outside a trait declaration", owner),
+                },
+                function.span,
+            ));
         }
     }
 
@@ -4517,76 +4582,98 @@ fn declaration_errors(
         for item in items {
             match item {
                 Item::Function(function) => {
-                    insert(state, "value", "function", &function.name);
+                    insert(state, "value", "function", &function.name, function.span);
                     parameters(state, &function.name, &function.params);
                     reject_unimplemented_function(state, &function.name, function);
                 }
-                Item::Const(constant) => insert(state, "value", "constant", &constant.name),
+                Item::Const(constant) => {
+                    insert(state, "value", "constant", &constant.name, constant.span)
+                }
                 Item::Struct(structure) => {
-                    insert(state, "type", "type", &structure.name);
+                    insert(state, "type", "type", &structure.name, structure.span);
                     let mut fields = HashSet::new();
                     for field in &structure.fields {
                         if !fields.insert(field.name.as_str()) {
-                            state.errors.push(TypeError::DuplicateDeclaration {
-                                kind: "field".into(),
-                                name: format!("{}::{}", structure.name, field.name),
-                            });
+                            state.errors.push((
+                                TypeError::DuplicateDeclaration {
+                                    kind: "field".into(),
+                                    name: format!("{}::{}", structure.name, field.name),
+                                },
+                                field.span,
+                            ));
                         }
                     }
                 }
                 Item::Enum(enumeration) => {
-                    insert(state, "type", "type", &enumeration.name);
+                    insert(state, "type", "type", &enumeration.name, enumeration.span);
                     let mut variants = HashSet::new();
                     for variant in &enumeration.variants {
                         if !variants.insert(variant.name.as_str()) {
-                            state.errors.push(TypeError::DuplicateDeclaration {
-                                kind: "enum variant".into(),
-                                name: format!("{}::{}", enumeration.name, variant.name),
-                            });
+                            state.errors.push((
+                                TypeError::DuplicateDeclaration {
+                                    kind: "enum variant".into(),
+                                    name: format!("{}::{}", enumeration.name, variant.name),
+                                },
+                                variant.span,
+                            ));
                         }
                     }
                 }
                 Item::Trait(trait_decl) => {
-                    insert(state, "type", "trait", &trait_decl.name);
+                    insert(state, "type", "trait", &trait_decl.name, trait_decl.span);
                     let mut methods = HashSet::new();
                     for method in &trait_decl.methods {
                         if !methods.insert(method.name.as_str()) {
-                            state.errors.push(TypeError::DuplicateDeclaration {
-                                kind: "trait method".into(),
-                                name: format!("{}::{}", trait_decl.name, method.name),
-                            });
+                            state.errors.push((
+                                TypeError::DuplicateDeclaration {
+                                    kind: "trait method".into(),
+                                    name: format!("{}::{}", trait_decl.name, method.name),
+                                },
+                                method.span,
+                            ));
                         }
                         let qualified = format!("{}::{}", trait_decl.name, method.name);
                         parameters(state, &qualified, &method.params);
                         if method.body.is_some() && method.return_type.is_none() {
-                            state.errors.push(TypeError::UnsupportedFeature {
-                                feature: format!(
-                                    "trait default method '{}' without an explicit return type",
-                                    qualified
-                                ),
-                            });
+                            state.errors.push((
+                                TypeError::UnsupportedFeature {
+                                    feature: format!(
+                                        "trait default method '{}' without an explicit return type",
+                                        qualified
+                                    ),
+                                },
+                                method.span,
+                            ));
                         }
                     }
                 }
-                Item::TypeAlias(alias) => insert(state, "type", "type", &alias.name),
+                Item::TypeAlias(alias) => {
+                    insert(state, "type", "type", &alias.name, alias.span)
+                }
                 Item::Impl(block) => {
                     let target = direct_named_type(&block.target_type).unwrap_or("<invalid>");
                     if let Some(trait_name) = &block.trait_name {
                         let implementation = format!("{} for {}", trait_name, target);
                         if !state.impls.insert(implementation.clone()) {
-                            state.errors.push(TypeError::DuplicateDeclaration {
-                                kind: "impl".into(),
-                                name: implementation,
-                            });
+                            state.errors.push((
+                                TypeError::DuplicateDeclaration {
+                                    kind: "impl".into(),
+                                    name: implementation,
+                                },
+                                block.span,
+                            ));
                         }
                     }
                     let mut methods = HashSet::new();
                     for method in &block.methods {
                         if !methods.insert(method.name.as_str()) {
-                            state.errors.push(TypeError::DuplicateDeclaration {
-                                kind: "method".into(),
-                                name: format!("{}::{}", target, method.name),
-                            });
+                            state.errors.push((
+                                TypeError::DuplicateDeclaration {
+                                    kind: "method".into(),
+                                    name: format!("{}::{}", target, method.name),
+                                },
+                                method.span,
+                            ));
                         }
                         let qualified = format!("{}::{}", target, method.name);
                         parameters(state, &qualified, &method.params);
@@ -4652,6 +4739,18 @@ fn builtin_type_names(base_functions: &HashMap<String, FunctionSig>) -> HashSet<
     names
 }
 
+fn collect_type_alias_spans(items: &[Item], spans: &mut HashMap<String, Span>) {
+    for item in items {
+        match item {
+            Item::TypeAlias(alias) => {
+                spans.insert(alias.name.clone(), alias.span);
+            }
+            Item::Module(module) => collect_type_alias_spans(&module.items, spans),
+            _ => {}
+        }
+    }
+}
+
 fn collect_declared_type_names(items: &[Item], names: &mut HashSet<String>) {
     for item in items {
         match item {
@@ -4670,15 +4769,15 @@ fn collect_declared_type_names(items: &[Item], names: &mut HashSet<String>) {
     }
 }
 
-fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeError> {
+fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<(TypeError, Span)> {
     #[derive(Default)]
     struct Issues {
-        unknown: HashSet<String>,
-        invalid_arguments: HashSet<(String, usize, usize)>,
-        unsupported: HashSet<String>,
+        unknown: HashMap<String, Span>,
+        invalid_arguments: HashMap<(String, usize, usize), Span>,
+        unsupported: HashMap<String, Span>,
     }
 
-    fn type_expr(ty: &TypeExpr, known: &HashSet<String>, issues: &mut Issues) {
+    fn type_expr(ty: &TypeExpr, known: &HashSet<String>, issues: &mut Issues, span: Span) {
         match ty {
             TypeExpr::Named { name, generics } => {
                 if known.contains(name) {
@@ -4691,28 +4790,35 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
                     if generics.len() != expected {
                         issues
                             .invalid_arguments
-                            .insert((name.clone(), expected, generics.len()));
+                            .entry((name.clone(), expected, generics.len()))
+                            .or_insert(span);
                     }
                 } else {
-                    issues.unknown.insert(name.clone());
+                    issues.unknown.entry(name.clone()).or_insert(span);
                 }
                 for generic in generics {
-                    type_expr(generic, known, issues);
+                    type_expr(generic, known, issues, span);
                 }
             }
             TypeExpr::Reference { inner, .. } => {
-                issues.unsupported.insert("reference types".into());
-                type_expr(inner, known, issues);
+                issues
+                    .unsupported
+                    .entry("reference types".into())
+                    .or_insert(span);
+                type_expr(inner, known, issues, span);
             }
-            TypeExpr::Slice { inner } => type_expr(inner, known, issues),
+            TypeExpr::Slice { inner } => type_expr(inner, known, issues, span),
             TypeExpr::Array { inner, size } => {
-                issues.unsupported.insert("fixed-size array types".into());
-                type_expr(inner, known, issues);
+                issues
+                    .unsupported
+                    .entry("fixed-size array types".into())
+                    .or_insert(span);
+                type_expr(inner, known, issues, span);
                 expr(size, known, issues);
             }
             TypeExpr::Tuple { elements } => {
                 for element in elements {
-                    type_expr(element, known, issues);
+                    type_expr(element, known, issues, span);
                 }
             }
             TypeExpr::Function {
@@ -4720,9 +4826,9 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
                 return_type,
             } => {
                 for param in params {
-                    type_expr(param, known, issues);
+                    type_expr(param, known, issues, span);
                 }
-                type_expr(return_type, known, issues);
+                type_expr(return_type, known, issues, span);
             }
             TypeExpr::Unit | TypeExpr::Never | TypeExpr::Infer(_) => {}
         }
@@ -4731,7 +4837,7 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
     fn params(params: &[Param], known: &HashSet<String>, issues: &mut Issues) {
         for param in params {
             if let Some(annotation) = &param.type_ann {
-                type_expr(annotation, known, issues);
+                type_expr(annotation, known, issues, param.span);
             }
             if let Some(default) = &param.default {
                 expr(default, known, issues);
@@ -4770,10 +4876,13 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
             match statement {
                 Stmt::Expr(expression) => expr(expression, known, issues),
                 Stmt::Let {
-                    type_ann, value, ..
+                    type_ann,
+                    value,
+                    span,
+                    ..
                 } => {
                     if let Some(annotation) = type_ann {
-                        type_expr(annotation, known, issues);
+                        type_expr(annotation, known, issues, *span);
                     }
                     expr(value, known, issues);
                 }
@@ -4892,10 +5001,13 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
                 }
             }
             Expr::Let {
-                type_ann, value, ..
+                type_ann,
+                value,
+                span,
+                ..
             } => {
                 if let Some(annotation) = type_ann {
-                    type_expr(annotation, known, issues);
+                    type_expr(annotation, known, issues, *span);
                 }
                 expr(value, known, issues);
             }
@@ -4903,11 +5015,11 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
                 params: closure_params,
                 return_type,
                 body,
-                ..
+                span,
             } => {
                 params(closure_params, known, issues);
                 if let Some(result) = return_type {
-                    type_expr(result, known, issues);
+                    type_expr(result, known, issues, *span);
                 }
                 expr(body, known, issues);
             }
@@ -4928,7 +5040,7 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
             Item::Function(function) => {
                 params(&function.params, known, issues);
                 if let Some(result) = &function.return_type {
-                    type_expr(result, known, issues);
+                    type_expr(result, known, issues, function.span);
                 }
                 if let Some(body) = &function.body {
                     block(body, known, issues);
@@ -4936,13 +5048,13 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
             }
             Item::Struct(structure) => {
                 for field in &structure.fields {
-                    type_expr(&field.type_ann, known, issues);
+                    type_expr(&field.type_ann, known, issues, field.span);
                 }
             }
             Item::Enum(enumeration) => {
                 for variant in &enumeration.variants {
                     if let Some(payload) = &variant.payload {
-                        type_expr(payload, known, issues);
+                        type_expr(payload, known, issues, variant.span);
                     }
                 }
             }
@@ -4950,7 +5062,7 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
                 for method in &trait_decl.methods {
                     params(&method.params, known, issues);
                     if let Some(result) = &method.return_type {
-                        type_expr(result, known, issues);
+                        type_expr(result, known, issues, method.span);
                     }
                     if let Some(body) = &method.body {
                         block(body, known, issues);
@@ -4958,11 +5070,16 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
                 }
             }
             Item::Impl(implementation) => {
-                type_expr(&implementation.target_type, known, issues);
+                type_expr(
+                    &implementation.target_type,
+                    known,
+                    issues,
+                    implementation.span,
+                );
                 for method in &implementation.methods {
                     params(&method.params, known, issues);
                     if let Some(result) = &method.return_type {
-                        type_expr(result, known, issues);
+                        type_expr(result, known, issues, method.span);
                     }
                     if let Some(body) = &method.body {
                         block(body, known, issues);
@@ -4971,11 +5088,11 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
             }
             Item::Const(constant) => {
                 if let Some(annotation) = &constant.type_ann {
-                    type_expr(annotation, known, issues);
+                    type_expr(annotation, known, issues, constant.span);
                 }
                 expr(&constant.value, known, issues);
             }
-            Item::TypeAlias(alias) => type_expr(&alias.target, known, issues),
+            Item::TypeAlias(alias) => type_expr(&alias.target, known, issues, alias.span),
             Item::Module(module) => {
                 for item in &module.items {
                     visit_item(item, known, issues);
@@ -4991,28 +5108,31 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<TypeErro
     }
 
     let mut unknown: Vec<_> = issues.unknown.into_iter().collect();
-    unknown.sort();
+    unknown.sort_by(|left, right| left.0.cmp(&right.0));
     let mut invalid_arguments: Vec<_> = issues.invalid_arguments.into_iter().collect();
-    invalid_arguments.sort();
+    invalid_arguments.sort_by(|left, right| left.0.cmp(&right.0));
     let mut unsupported: Vec<_> = issues.unsupported.into_iter().collect();
-    unsupported.sort();
+    unsupported.sort_by(|left, right| left.0.cmp(&right.0));
 
     unknown
         .into_iter()
-        .map(|name| TypeError::UnknownType { name })
-        .chain(
-            invalid_arguments
-                .into_iter()
-                .map(|(name, expected, found)| TypeError::InvalidTypeArguments {
-                    name,
-                    expected,
-                    found,
-                }),
-        )
+        .map(|(name, span)| (TypeError::UnknownType { name }, span))
+        .chain(invalid_arguments.into_iter().map(
+            |((name, expected, found), span)| {
+                (
+                    TypeError::InvalidTypeArguments {
+                        name,
+                        expected,
+                        found,
+                    },
+                    span,
+                )
+            },
+        ))
         .chain(
             unsupported
                 .into_iter()
-                .map(|feature| TypeError::UnsupportedFeature { feature }),
+                .map(|(feature, span)| (TypeError::UnsupportedFeature { feature }, span)),
         )
         .collect()
 }
@@ -5732,6 +5852,29 @@ mod tests {
         let span = invalid.span.expect("expression diagnostic must be spanned");
         assert_eq!(span.line, 2);
         assert!(span.column > 1);
+
+        let declarations = parse(
+            "fn main() {}\nfn duplicate() {}\nfn duplicate() {}",
+        );
+        let diagnostics = TypeEnv::new()
+            .check_program_diagnostics(&declarations)
+            .unwrap_err();
+        let duplicate = diagnostics
+            .iter()
+            .find(|diagnostic| {
+                matches!(
+                    &diagnostic.error,
+                    TypeError::DuplicateDeclaration { name, .. } if name == "duplicate"
+                )
+            })
+            .expect("expected duplicate declaration diagnostic");
+        assert_eq!(
+            duplicate
+                .span
+                .expect("declaration diagnostic must be spanned")
+                .line,
+            3
+        );
     }
 
     #[test]

@@ -653,5 +653,18 @@ mod tests {
         assert_eq!(diagnostic.range.start.line, 1);
         assert!(diagnostic.range.start.character > 0);
         assert!(diagnostic.range.end.character > diagnostic.range.start.character);
+
+        lsp.open_document(
+            "file:///declarations.titan",
+            "fn main() {}\nfn duplicate() {}\nfn duplicate() {}",
+            1,
+        );
+        let duplicate = lsp
+            .diagnostics("file:///declarations.titan")
+            .into_iter()
+            .find(|diagnostic| diagnostic.message.contains("duplicate function"))
+            .expect("expected duplicate declaration diagnostic");
+        assert_eq!(duplicate.range.start.line, 2);
+        assert!(duplicate.range.end.character > duplicate.range.start.character);
     }
 }

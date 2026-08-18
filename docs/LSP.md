@@ -25,4 +25,4 @@ cargo run -p titan_lsp --bin titan-lsp
 
 Editor configuration must launch `titan-lsp` as a subprocess and communicate over stdin/stdout. The server advertises its capabilities during `initialize`.
 
-Semantic diagnostics produced while checking expressions now carry their real AST spans and are converted from compiler byte offsets to LSP UTF-16 ranges. Declaration-wide errors that cannot yet be associated with one unique expression remain explicitly unspanned and fall back to the document origin; the server does not fabricate locations.
+Semantic diagnostics for expressions, functions, declarations, members, parameters, type annotations, aliases, and trait implementations carry their real AST spans and are converted from compiler byte offsets to LSP UTF-16 ranges. The diagnostic API keeps spans optional only for synthetic ASTs that provide no originating source construct; in that defensive case the server falls back to the document origin rather than fabricating a location.
