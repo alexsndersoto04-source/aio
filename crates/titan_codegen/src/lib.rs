@@ -1752,9 +1752,30 @@ mod tests {
 
     #[test]
     fn closures_cannot_capture_bindings_from_later_call_arguments() {
-        let program = parse(
-            "fn main() { std::try::catch(|value| later + value, let later = 1) }",
+        let mut program = parse(
+            "fn main() { std::try::catch(|value| later + value, 1) }",
         );
+        let Item::Function(function) = &mut program.items[0] else {
+            panic!("expected main function");
+        };
+        let Expr::Call { args, .. } = function
+            .body
+            .as_mut()
+            .and_then(|body| body.final_expr.as_deref_mut())
+            .expect("expected final call")
+        else {
+            panic!("expected final call");
+        };
+        args[1] = Expr::Let {
+            name: "later".into(),
+            mutable: false,
+            type_ann: None,
+            value: Box::new(Expr::Int {
+                value: 1,
+                span: Default::default(),
+            }),
+            span: Default::default(),
+        };
         assert!(matches!(
             AstCompiler::new().compile_program(&program),
             Err(CodegenError::UnknownVariable(name)) if name == "later"

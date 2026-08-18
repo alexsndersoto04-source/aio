@@ -4761,9 +4761,9 @@ mod tests {
     #[test]
     fn try_catch_closures_observe_argument_evaluation_order() {
         assert_eq!(
-            run("fn main() { let earlier = 40 let ignored = std::try::catch(|value| earlier + value, let later = 2) earlier + later }")
+            run("fn main() { let mut current = 1 let caught = std::try::catch(|| current, current = 2) match caught { Result::Ok(captured) => captured * 10 + current, Result::Err(_) => 0 } }")
                 .unwrap(),
-            Value::Int(42)
+            Value::Int(12)
         );
     }
 
