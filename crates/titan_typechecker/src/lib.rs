@@ -2293,105 +2293,7 @@ impl TypeEnv {
             } => self.check_if_expr(condition, then_branch, else_branch.as_ref(), None),
             Expr::Match {
                 scrutinee, arms, ..
-            } => {
-                let subject = self.check_expr(scrutinee);
-                self.check_match_coverage(&subject, arms);
-                let subject_never = self.resolve_alias(&subject) == Type::Never;
-                let domain = self.match_domain(&subject);
-                let known_subject = self.known_match_atom(scrutinee, &domain);
-                let candidate_count = self.return_candidates.last().map(Vec::len);
-                let loop_broke = self.loop_breaks.last().copied();
-                let mut known_path_open = known_subject.is_some();
-                let mut result: Option<Type> = None;
-                for arm in arms {
-                    if !match_pattern_is_lowerable(&arm.pattern) {
-                        self.errors.push(TypeError::UnsupportedFeature {
-                            feature: "or-patterns and nested destructuring in match".into(),
-                        });
-                    }
-                    let arm_candidate_count = self.return_candidates.last().map(Vec::len);
-                    let arm_loop_broke = self.loop_breaks.last().copied();
-                    let arm_reachable = !subject_never
-                        && known_subject.as_ref().map_or(true, |atom| {
-                            known_path_open
-                                && self
-                                    .pattern_coverage(&arm.pattern, &domain)
-                                    .is_some_and(|pattern| {
-                                        pattern.all || pattern.atoms.contains(atom)
-                                    })
-                        });
-
-                    self.push_scope();
-                    self.bind_pattern(&arm.pattern, &subject);
-                    let (guard_never, guard_literal) = if let Some(guard) = &arm.guard {
-                        let guard_type = self.check_expr(guard);
-                        self.require_compatible(&Type::Bool, &guard_type);
-                        let literal = match guard.as_ref() {
-                            Expr::Bool { value, .. } => Some(*value),
-                            _ => None,
-                        };
-                        (guard_type == Type::Never, literal)
-                    } else {
-                        (false, None)
-                    };
-                    let body_candidate_count = self.return_candidates.last().map(Vec::len);
-                    let body_loop_broke = self.loop_breaks.last().copied();
-                    let body_type = self.check_block(&arm.body);
-                    let body_reachable = arm_reachable
-                        && !guard_never
-                        && guard_literal != Some(false);
-                    if !arm_reachable {
-                        self.restore_control_flow(arm_candidate_count, arm_loop_broke);
-                    } else if !body_reachable {
-                        // The guard is evaluated on this path, but a false or
-                        // diverging guard prevents its body from running.
-                        self.restore_control_flow(body_candidate_count, body_loop_broke);
-                    }
-
-                    let found = if !arm_reachable || guard_literal == Some(false) {
-                        None
-                    } else if guard_never {
-                        Some(Type::Never)
-                    } else {
-                        Some(body_type)
-                    };
-                    if let Some(found) = found {
-                        result = Some(match result {
-                            None => found,
-                            Some(current) if current == Type::Never => found,
-                            Some(current) if found == Type::Never => current,
-                            Some(current)
-                                if compatible(
-                                    &self.resolve_alias(&current),
-                                    &self.resolve_alias(&found),
-                                ) =>
-                            {
-                                current
-                            }
-                            Some(current) => {
-                                self.errors.push(TypeError::Mismatch {
-                                    expected: current,
-                                    found,
-                                });
-                                Type::Unknown
-                            }
-                        });
-                    }
-
-                    if known_subject.is_some() && arm_reachable {
-                        if guard_never || arm.guard.is_none() || guard_literal == Some(true) {
-                            known_path_open = false;
-                        }
-                    }
-                    self.pop_scope();
-                }
-                if subject_never {
-                    self.restore_control_flow(candidate_count, loop_broke);
-                    Type::Never
-                } else {
-                    result.unwrap_or(Type::Unknown)
-                }
-            }
+            } => self.check_match_expr(scrutinee, arms, None),
             Expr::For {
                 pattern,
                 iterator,
@@ -2680,6 +2582,111 @@ impl TypeEnv {
         }
     }
 
+    fn check_match_expr(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        expected: Option<&Type>,
+    ) -> Type {
+        let subject = self.check_expr(scrutinee);
+        self.check_match_coverage(&subject, arms);
+        let subject_never = self.resolve_alias(&subject) == Type::Never;
+        let domain = self.match_domain(&subject);
+        let known_subject = self.known_match_atom(scrutinee, &domain);
+        let candidate_count = self.return_candidates.last().map(Vec::len);
+        let loop_broke = self.loop_breaks.last().copied();
+        let mut known_path_open = known_subject.is_some();
+        let mut result: Option<Type> = None;
+        for arm in arms {
+            if !match_pattern_is_lowerable(&arm.pattern) {
+                self.errors.push(TypeError::UnsupportedFeature {
+                    feature: "or-patterns and nested destructuring in match".into(),
+                });
+            }
+            let arm_candidate_count = self.return_candidates.last().map(Vec::len);
+            let arm_loop_broke = self.loop_breaks.last().copied();
+            let arm_reachable = !subject_never
+                && known_subject.as_ref().map_or(true, |atom| {
+                    known_path_open
+                        && self
+                            .pattern_coverage(&arm.pattern, &domain)
+                            .is_some_and(|pattern| pattern.all || pattern.atoms.contains(atom))
+                });
+
+            self.push_scope();
+            self.bind_pattern(&arm.pattern, &subject);
+            let (guard_never, guard_literal) = if let Some(guard) = &arm.guard {
+                let guard_type = self.check_expr(guard);
+                self.require_compatible(&Type::Bool, &guard_type);
+                let literal = match guard.as_ref() {
+                    Expr::Bool { value, .. } => Some(*value),
+                    _ => None,
+                };
+                (self.resolve_alias(&guard_type) == Type::Never, literal)
+            } else {
+                (false, None)
+            };
+            let body_reachable =
+                arm_reachable && !guard_never && guard_literal != Some(false);
+            let body_candidate_count = self.return_candidates.last().map(Vec::len);
+            let body_loop_broke = self.loop_breaks.last().copied();
+            let body_type = self.check_block_expected(
+                &arm.body,
+                expected.filter(|_| body_reachable),
+            );
+            if !arm_reachable {
+                self.restore_control_flow(arm_candidate_count, arm_loop_broke);
+            } else if !body_reachable {
+                // The guard is evaluated on this path, but a false or
+                // diverging guard prevents its body from running.
+                self.restore_control_flow(body_candidate_count, body_loop_broke);
+            }
+
+            let found = if !arm_reachable || guard_literal == Some(false) {
+                None
+            } else if guard_never {
+                Some(Type::Never)
+            } else {
+                Some(body_type)
+            };
+            if let Some(found) = found {
+                result = Some(match result {
+                    None => found,
+                    Some(current) if current == Type::Never => found,
+                    Some(current) if found == Type::Never => current,
+                    Some(current)
+                        if compatible(
+                            &self.resolve_alias(&current),
+                            &self.resolve_alias(&found),
+                        ) =>
+                    {
+                        current
+                    }
+                    Some(current) => {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: current,
+                            found,
+                        });
+                        Type::Unknown
+                    }
+                });
+            }
+
+            if known_subject.is_some() && arm_reachable {
+                if guard_never || arm.guard.is_none() || guard_literal == Some(true) {
+                    known_path_open = false;
+                }
+            }
+            self.pop_scope();
+        }
+        if subject_never {
+            self.restore_control_flow(candidate_count, loop_broke);
+            Type::Never
+        } else {
+            result.unwrap_or(Type::Unknown)
+        }
+    }
+
     /// Checks a closure with optional parameter/return context supplied by a
     /// function contract or a collection callback. Unannotated parameters must
     /// inherit that context before the body is checked; treating them as
@@ -2774,6 +2781,9 @@ impl TypeEnv {
     fn check_expr_expected(&mut self, expression: &Expr, expected: &Type) -> Type {
         let expected_resolved = self.resolve_alias(expected);
         let found = match (expression, &expected_resolved) {
+            (Expr::Match { scrutinee, arms, .. }, _) => {
+                self.check_match_expr(scrutinee, arms, Some(&expected_resolved))
+            }
             (
                 Expr::If {
                     condition,
@@ -5933,6 +5943,18 @@ mod tests {
         .is_ok());
         assert!(check(
             "fn choose(flag: bool) -> fn(int) -> int { if flag { |value| value + 1 } else { |value| \"invalid\" } } fn main() {}"
+        )
+        .is_err());
+        assert!(check(
+            "enum Choice { Up, Down } fn choose(choice: Choice) -> fn(int) -> int { match choice { Choice::Up => |value| value + 1, Choice::Down => |value| value - 1 } } fn main() { let callback = choose(Choice::Up) let result: int = callback(41) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn choose() -> fn(int) -> int { match true { true => |value| value + 1, false => 42 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "enum Choice { Good, Bad } fn choose(choice: Choice) -> fn(int) -> int { match choice { Choice::Good => |value| value + 1, Choice::Bad => |value| \"invalid\" } } fn main() {}"
         )
         .is_err());
     }

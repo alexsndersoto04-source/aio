@@ -5013,6 +5013,14 @@ mod tests {
         );
     }
     #[test]
+    fn match_expressions_return_callable_values() {
+        assert_eq!(
+            run("enum Choice { Up, Down } fn choose(choice: Choice) -> fn(int) -> int { match choice { Choice::Up => |value| value + 1, Choice::Down => |value| value - 1 } } fn main() { let callback = choose(Choice::Up) callback(41) }")
+                .unwrap(),
+            Value::Int(42)
+        );
+    }
+    #[test]
     fn functional_array_pipeline_works() {
         assert_eq!(run("fn main() { [1, 2, 3, 4].map(|x: int| x * 2).filter(|x: int| x > 4).fold(0, |sum: int, x: int| sum + x) }").unwrap(), Value::Int(14));
     }
