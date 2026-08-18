@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use titan_ast::*;
+use titan_lexer::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -206,6 +207,23 @@ pub enum TypeError {
     UnsupportedFeature { feature: String },
 }
 
+/// A semantic error paired with the most precise source expression currently
+/// available. Declaration-wide errors may intentionally have no span until a
+/// unique declaration location can be associated without guessing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeDiagnostic {
+    pub error: TypeError,
+    pub span: Option<Span>,
+}
+
+impl std::fmt::Display for TypeDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, formatter)
+    }
+}
+
+impl std::error::Error for TypeDiagnostic {}
+
 #[derive(Clone)]
 struct FunctionSig {
     params: Vec<Type>,
@@ -233,6 +251,8 @@ pub struct TypeEnv {
     /// doesn't match any built-in or user-declared struct/enum.
     type_aliases: HashMap<String, Type>,
     errors: Vec<TypeError>,
+    error_spans: Vec<Option<Span>>,
+    last_error_spans: Vec<Option<Span>>,
     return_type: Type,
     return_candidates: Vec<Vec<Type>>,
     loop_depth: usize,
@@ -1168,6 +1188,8 @@ impl TypeEnv {
             traits: HashMap::new(),
             type_aliases: HashMap::new(),
             errors: Vec::new(),
+            error_spans: Vec::new(),
+            last_error_spans: Vec::new(),
             return_type: Type::Unknown,
             return_candidates: Vec::new(),
             loop_depth: 0,
@@ -1193,6 +1215,8 @@ impl TypeEnv {
         self.traits.clear();
         self.type_aliases.clear();
         self.errors.clear();
+        self.error_spans.clear();
+        self.last_error_spans.clear();
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
@@ -1202,7 +1226,9 @@ impl TypeEnv {
         self.collect_declarations(&program.items);
         self.validate_type_aliases();
         self.validate_declared_types(&program.items);
+        self.synchronize_error_spans();
         let mut validation_errors = std::mem::take(&mut self.errors);
+        let mut validation_spans = std::mem::take(&mut self.error_spans);
 
         // Unannotated function returns and global constants are inferred
         // together to a fixed point before the diagnostic pass. Both are
@@ -1233,19 +1259,59 @@ impl TypeEnv {
         // Trait contracts must use the inferred method results, not the
         // initial Unknown placeholders collected from unannotated methods.
         self.errors.clear();
+        self.error_spans.clear();
         self.validate_impl_contracts(&program.items);
+        self.synchronize_error_spans();
         validation_errors.append(&mut self.errors);
+        validation_spans.append(&mut self.error_spans);
 
         self.reset_analysis_state();
         self.errors = validation_errors;
+        self.error_spans = validation_spans;
         self.check_constants_in(&program.items);
         for item in &program.items {
             self.check_item(item);
         }
+        self.synchronize_error_spans();
         if self.errors.is_empty() {
+            self.last_error_spans.clear();
             Ok(())
         } else {
+            self.last_error_spans = std::mem::take(&mut self.error_spans);
             Err(std::mem::take(&mut self.errors))
+        }
+    }
+
+    /// Runs semantic analysis while preserving source locations for consumers
+    /// such as the language server. The legacy `check_program` API remains
+    /// available for embedders that only need the error values.
+    pub fn check_program_diagnostics(
+        &mut self,
+        program: &Program,
+    ) -> Result<(), Vec<TypeDiagnostic>> {
+        self.check_program(program).map_err(|errors| {
+            let spans = std::mem::take(&mut self.last_error_spans);
+            errors
+                .into_iter()
+                .enumerate()
+                .map(|(index, error)| TypeDiagnostic {
+                    error,
+                    span: spans.get(index).copied().flatten(),
+                })
+                .collect()
+        })
+    }
+
+    fn synchronize_error_spans(&mut self) {
+        self.error_spans.resize(self.errors.len(), None);
+    }
+
+    fn assign_error_span(&mut self, start: usize, span: Span) {
+        self.synchronize_error_spans();
+        for error_span in self.error_spans.iter_mut().skip(start) {
+            if error_span.is_none() {
+                *error_span = Some(span);
+            }
         }
     }
 
@@ -1260,6 +1326,7 @@ impl TypeEnv {
         self.constant_stack.clear();
         self.checked_constants.clear();
         self.errors.clear();
+        self.error_spans.clear();
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
@@ -1797,6 +1864,12 @@ impl TypeEnv {
     }
 
     fn check_function(&mut self, function: &FunctionDecl) {
+        let error_start = self.errors.len();
+        self.check_function_inner(function);
+        self.assign_error_span(error_start, function.span);
+    }
+
+    fn check_function_inner(&mut self, function: &FunctionDecl) {
         self.push_scope();
         for param in &function.params {
             let param_type = param
@@ -1889,6 +1962,13 @@ impl TypeEnv {
     }
 
     fn check_block_expected(&mut self, block: &Block, expected: Option<&Type>) -> Type {
+        let error_start = self.errors.len();
+        let result = self.check_block_expected_inner(block, expected);
+        self.assign_error_span(error_start, block.span);
+        result
+    }
+
+    fn check_block_expected_inner(&mut self, block: &Block, expected: Option<&Type>) -> Type {
         self.push_scope();
         let mut diverges = false;
         for stmt in &block.stmts {
@@ -1985,6 +2065,13 @@ impl TypeEnv {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Type {
+        let error_start = self.errors.len();
+        let result = self.check_expr_inner(expr);
+        self.assign_error_span(error_start, expr.span());
+        result
+    }
+
+    fn check_expr_inner(&mut self, expr: &Expr) -> Type {
         match expr {
             Expr::Int { .. } => Type::Int,
             Expr::Float { .. } => Type::Float,
@@ -5632,6 +5719,21 @@ mod tests {
     fn rejects_unknown_names() {
         assert!(check("fn main() { missing + 1 }").is_err());
     }
+    #[test]
+    fn reports_expression_diagnostic_spans() {
+        let program = parse("fn main() {\n    1 + true\n}");
+        let diagnostics = TypeEnv::new()
+            .check_program_diagnostics(&program)
+            .unwrap_err();
+        let invalid = diagnostics
+            .iter()
+            .find(|diagnostic| matches!(&diagnostic.error, TypeError::InvalidOperands { .. }))
+            .expect("expected invalid operands diagnostic");
+        let span = invalid.span.expect("expression diagnostic must be spanned");
+        assert_eq!(span.line, 2);
+        assert!(span.column > 1);
+    }
+
     #[test]
     fn rejects_wrong_return() {
         assert!(check("fn bad() -> int { return true }").is_err());

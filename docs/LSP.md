@@ -25,4 +25,4 @@ cargo run -p titan_lsp --bin titan-lsp
 
 Editor configuration must launch `titan-lsp` as a subprocess and communicate over stdin/stdout. The server advertises its capabilities during `initialize`.
 
-Current semantic limitation: type errors that do not yet carry AST spans are published at the document origin; lexer/parser diagnostics and indexed symbols carry positions. Improving span propagation in the type checker is part of this phase, not hidden by fabricated locations.
+Semantic diagnostics produced while checking expressions now carry their real AST spans and are converted from compiler byte offsets to LSP UTF-16 ranges. Declaration-wide errors that cannot yet be associated with one unique expression remain explicitly unspanned and fall back to the document origin; the server does not fabricate locations.

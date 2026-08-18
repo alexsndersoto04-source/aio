@@ -131,12 +131,15 @@ impl TitanLsp {
             match parser.parse_program() {
                 Ok(program) => {
                     let mut types = titan_typechecker::TypeEnv::new();
-                    if let Err(errors) = types.check_program(&program) {
-                        output.extend(errors.into_iter().map(|error| Diagnostic {
-                            range: Range::default(),
+                    if let Err(errors) = types.check_program_diagnostics(&program) {
+                        output.extend(errors.into_iter().map(|diagnostic| Diagnostic {
+                            range: diagnostic
+                                .span
+                                .map(|span| span_range(source, span))
+                                .unwrap_or_default(),
                             severity: 1,
                             source: "titan".into(),
-                            message: error.to_string(),
+                            message: diagnostic.error.to_string(),
                         }));
                     }
                 }
@@ -632,5 +635,23 @@ mod tests {
         let mut lsp = TitanLsp::new();
         lsp.open_document("file:///x.titan", "fn main( {", 1);
         assert!(!lsp.diagnostics("file:///x.titan").is_empty());
+    }
+
+    #[test]
+    fn publishes_type_errors_at_their_expression_range() {
+        let mut lsp = TitanLsp::new();
+        lsp.open_document(
+            "file:///x.titan",
+            "fn main() {\n    1 + true\n}",
+            1,
+        );
+        let diagnostic = lsp
+            .diagnostics("file:///x.titan")
+            .into_iter()
+            .find(|diagnostic| diagnostic.message.contains("invalid operands"))
+            .expect("expected semantic diagnostic");
+        assert_eq!(diagnostic.range.start.line, 1);
+        assert!(diagnostic.range.start.character > 0);
+        assert!(diagnostic.range.end.character > diagnostic.range.start.character);
     }
 }
