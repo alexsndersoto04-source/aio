@@ -5778,11 +5778,11 @@ mod tests {
         )
         .is_ok());
         assert!(check(
-            "type Counts = [int] fn keep_counts(counts: [int], value: int) -> [int] { counts } fn main() { let initial: Counts = [0] let result: Counts = [1, 2].fold(initial, keep_counts) result }"
+            "type Pair = (int, int) fn keep_pair(pair: (int, int), value: int) -> (int, int) { pair } fn main() { let initial: Pair = (0, 0) let result: Pair = [1, 2].fold(initial, keep_pair) result }"
         )
         .is_ok());
         assert!(check(
-            "type Text = string fn combine(total: int, value: int) -> int { total + value } fn main() { let initial: Text = \"zero\" [1, 2].fold(initial, combine) }"
+            "type Text = string fn combine(total: int, value: int) -> int { total + value } fn main() { let initial: Text = \"zero\"; [1, 2].fold(initial, combine) }"
         )
         .is_err());
     }
