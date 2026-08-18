@@ -6324,6 +6324,53 @@ mod tests {
         assert!(check("fn main() { std::try::catch(42) }").is_err());
         assert!(check("fn main() { std::try::catch(|| 1, 2) }").is_err());
         assert!(check("fn main() { std::try::catch(|value: string| value, 2) }").is_err());
+
+        // Expr::Let is part of the public AST even though source `let` is
+        // normally parsed as a statement. A later invocation argument may
+        // introduce that binding for following expressions, but the closure
+        // constructed before the argument must not capture it.
+        let span = Default::default();
+        let expression = Expr::Call {
+            callee: Box::new(Expr::Ident {
+                name: "std::try::catch".into(),
+                span,
+            }),
+            args: vec![
+                Expr::Closure {
+                    params: vec![Param {
+                        name: "value".into(),
+                        mutable: false,
+                        type_ann: None,
+                        default: None,
+                        span,
+                    }],
+                    return_type: None,
+                    body: Box::new(Expr::Ident {
+                        name: "later".into(),
+                        span,
+                    }),
+                    span,
+                },
+                Expr::Let {
+                    name: "later".into(),
+                    mutable: false,
+                    type_ann: None,
+                    value: Box::new(Expr::Int { value: 1, span }),
+                    span,
+                },
+            ],
+            span,
+        };
+        let mut environment = TypeEnv::new();
+        environment.push_scope();
+        assert_eq!(
+            environment.check_expr(&expression),
+            Type::Named("Result".into())
+        );
+        assert_eq!(environment.lookup("later"), Some(Type::Int));
+        assert!(environment.errors.iter().any(
+            |error| matches!(error, TypeError::UnknownVariable { name } if name == "later")
+        ));
     }
 
     #[test]
