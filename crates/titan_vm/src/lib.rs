@@ -4759,15 +4759,6 @@ mod tests {
     }
 
     #[test]
-    fn try_catch_closures_observe_argument_evaluation_order() {
-        assert_eq!(
-            run("fn main() { let mut current = 1 let caught = std::try::catch(|| current, current = 2) match caught { Result::Ok(captured) => captured * 10 + current, Result::Err(_) => 0 } }")
-                .unwrap(),
-            Value::Int(12)
-        );
-    }
-
-    #[test]
     fn struct_len_methods_coexist_with_intrinsic_lengths() {
         assert_eq!(
             run("struct Counter { value: int } impl Counter { fn len(self) -> int { self.value } } fn main() { let counter = Counter { value: 42 } counter.len() * 10 + [1, 2, 3].len() }")

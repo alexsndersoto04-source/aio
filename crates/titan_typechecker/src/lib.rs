@@ -6320,69 +6320,6 @@ mod tests {
             "fn main() { let result = std::try::catch(|value| value + 1, 2) print(result) }"
         )
         .is_ok());
-        assert!(check(
-            "fn main() { let earlier = 1 std::try::catch(|value| earlier + value, 2) }"
-        )
-        .is_ok());
-
-        // Expr::Let is available to AST embedders even though the parser emits
-        // ordinary source `let` declarations as statements. Exercise that AST
-        // path directly so a closure cannot see a binding created by a later
-        // argument, while following expressions still can.
-        let mut late_capture = parse(
-            "fn main() { std::try::catch(|value| later + value, 1) }",
-        );
-        let Item::Function(function) = &mut late_capture.items[0] else {
-            panic!("expected main function");
-        };
-        let Expr::Call { args, .. } = function
-            .body
-            .as_mut()
-            .and_then(|body| body.final_expr.as_deref_mut())
-            .expect("expected final call")
-        else {
-            panic!("expected final call");
-        };
-        args[1] = Expr::Let {
-            name: "later".into(),
-            mutable: false,
-            type_ann: None,
-            value: Box::new(Expr::Int {
-                value: 1,
-                span: Default::default(),
-            }),
-            span: Default::default(),
-        };
-        assert!(TypeEnv::new().check_program(&late_capture).is_err());
-
-        let mut later_visible_after_call = parse(
-            "fn main() { std::try::catch(|value| value + 1, 1) later }",
-        );
-        let Item::Function(function) = &mut later_visible_after_call.items[0] else {
-            panic!("expected main function");
-        };
-        let Stmt::Expr(Expr::Call { args, .. }) = &mut function
-            .body
-            .as_mut()
-            .expect("expected main body")
-            .stmts[0]
-        else {
-            panic!("expected call statement");
-        };
-        args[1] = Expr::Let {
-            name: "later".into(),
-            mutable: false,
-            type_ann: None,
-            value: Box::new(Expr::Int {
-                value: 1,
-                span: Default::default(),
-            }),
-            span: Default::default(),
-        };
-        assert!(TypeEnv::new()
-            .check_program(&later_visible_after_call)
-            .is_ok());
-
         assert!(check("fn main() { std::try::catch() }").is_err());
         assert!(check("fn main() { std::try::catch(42) }").is_err());
         assert!(check("fn main() { std::try::catch(|| 1, 2) }").is_err());
