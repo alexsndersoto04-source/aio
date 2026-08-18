@@ -5005,6 +5005,14 @@ mod tests {
         );
     }
     #[test]
+    fn conditional_expressions_return_callable_values() {
+        assert_eq!(
+            run("fn choose(flag: bool) -> fn(int) -> int { if flag { |value| value + 1 } else { |value| value - 1 } } fn main() { let callback = choose(true) callback(41) }")
+                .unwrap(),
+            Value::Int(42)
+        );
+    }
+    #[test]
     fn functional_array_pipeline_works() {
         assert_eq!(run("fn main() { [1, 2, 3, 4].map(|x: int| x * 2).filter(|x: int| x > 4).fold(0, |sum: int, x: int| sum + x) }").unwrap(), Value::Int(14));
     }

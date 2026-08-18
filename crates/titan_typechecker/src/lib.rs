@@ -2290,62 +2290,7 @@ impl TypeEnv {
                 then_branch,
                 else_branch,
                 ..
-            } => {
-                let condition_type = self.check_expr(condition);
-                self.require_compatible(&Type::Bool, &condition_type);
-                let literal_condition = match condition.as_ref() {
-                    Expr::Bool { value, .. } => Some(*value),
-                    _ => None,
-                };
-                let candidate_count = self.return_candidates.last().map(Vec::len);
-                let loop_broke = self.loop_breaks.last().copied();
-                let then_type = self.check_block(then_branch);
-                let then_candidate_count = self.return_candidates.last().map(Vec::len);
-                let then_loop_broke = self.loop_breaks.last().copied();
-
-                // The then branch is unreachable when the condition cannot
-                // finish or is literally false. Keep its diagnostics, but do
-                // not let impossible returns or breaks escape the branch.
-                if condition_type == Type::Never || literal_condition == Some(false) {
-                    self.restore_control_flow(candidate_count, loop_broke);
-                }
-
-                if let Some(other) = else_branch {
-                    let else_type = self.check_block(other);
-                    if condition_type == Type::Never {
-                        self.restore_control_flow(candidate_count, loop_broke);
-                        Type::Never
-                    } else if literal_condition == Some(true) {
-                        // The else branch is statically unreachable. Restore
-                        // the effects produced by the reachable then branch.
-                        self.restore_control_flow(then_candidate_count, then_loop_broke);
-                        then_type
-                    } else if literal_condition == Some(false) {
-                        else_type
-                    } else if then_type == Type::Never {
-                        else_type
-                    } else if else_type == Type::Never {
-                        then_type
-                    } else if compatible(
-                        &self.resolve_alias(&then_type),
-                        &self.resolve_alias(&else_type),
-                    ) {
-                        then_type
-                    } else {
-                        self.errors.push(TypeError::Mismatch {
-                            expected: then_type,
-                            found: else_type,
-                        });
-                        Type::Unknown
-                    }
-                } else if condition_type == Type::Never {
-                    Type::Never
-                } else if literal_condition == Some(true) && then_type == Type::Never {
-                    Type::Never
-                } else {
-                    Type::Unit
-                }
-            }
+            } => self.check_if_expr(condition, then_branch, else_branch.as_ref(), None),
             Expr::Match {
                 scrutinee, arms, ..
             } => {
@@ -2662,6 +2607,80 @@ impl TypeEnv {
         }
     }
 
+    fn check_if_expr(
+        &mut self,
+        condition: &Expr,
+        then_branch: &Block,
+        else_branch: Option<&Block>,
+        expected: Option<&Type>,
+    ) -> Type {
+        let condition_type = self.check_expr(condition);
+        self.require_compatible(&Type::Bool, &condition_type);
+        let condition_never = self.resolve_alias(&condition_type) == Type::Never;
+        let literal_condition = match condition {
+            Expr::Bool { value, .. } => Some(*value),
+            _ => None,
+        };
+        let candidate_count = self.return_candidates.last().map(Vec::len);
+        let loop_broke = self.loop_breaks.last().copied();
+        // Contextual typing only applies to branches that can determine this
+        // if-expression's value. Unreachable literal branches are still
+        // checked for their own diagnostics, but must not reject an otherwise
+        // valid expression merely because they have a different value type.
+        let then_expected = expected.filter(|_| {
+            else_branch.is_some() && !condition_never && literal_condition != Some(false)
+        });
+        let then_type = self.check_block_expected(then_branch, then_expected);
+        let then_candidate_count = self.return_candidates.last().map(Vec::len);
+        let then_loop_broke = self.loop_breaks.last().copied();
+
+        // The then branch is unreachable when the condition cannot finish or
+        // is literally false. Keep its diagnostics, but do not let impossible
+        // returns or breaks escape the branch.
+        if condition_never || literal_condition == Some(false) {
+            self.restore_control_flow(candidate_count, loop_broke);
+        }
+
+        if let Some(other) = else_branch {
+            let else_expected = expected.filter(|_| {
+                !condition_never && literal_condition != Some(true)
+            });
+            let else_type = self.check_block_expected(other, else_expected);
+            if condition_never {
+                self.restore_control_flow(candidate_count, loop_broke);
+                Type::Never
+            } else if literal_condition == Some(true) {
+                // The else branch is statically unreachable. Restore the
+                // effects produced by the reachable then branch.
+                self.restore_control_flow(then_candidate_count, then_loop_broke);
+                then_type
+            } else if literal_condition == Some(false) {
+                else_type
+            } else if then_type == Type::Never {
+                else_type
+            } else if else_type == Type::Never {
+                then_type
+            } else if compatible(
+                &self.resolve_alias(&then_type),
+                &self.resolve_alias(&else_type),
+            ) {
+                then_type
+            } else {
+                self.errors.push(TypeError::Mismatch {
+                    expected: then_type,
+                    found: else_type,
+                });
+                Type::Unknown
+            }
+        } else if condition_never {
+            Type::Never
+        } else if literal_condition == Some(true) && then_type == Type::Never {
+            Type::Never
+        } else {
+            Type::Unit
+        }
+    }
+
     /// Checks a closure with optional parameter/return context supplied by a
     /// function contract or a collection callback. Unannotated parameters must
     /// inherit that context before the body is checked; treating them as
@@ -2756,6 +2775,23 @@ impl TypeEnv {
     fn check_expr_expected(&mut self, expression: &Expr, expected: &Type) -> Type {
         let expected_resolved = self.resolve_alias(expected);
         let found = match (expression, &expected_resolved) {
+            (
+                Expr::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                    ..
+                },
+                _,
+            ) => self.check_if_expr(
+                condition,
+                then_branch,
+                else_branch.as_ref(),
+                Some(&expected_resolved),
+            ),
+            (Expr::Block(block), _) => {
+                self.check_block_expected(block, Some(&expected_resolved))
+            }
             (
                 Expr::Closure {
                     params,
@@ -5880,6 +5916,26 @@ mod tests {
         .is_err());
         assert!(check(
             "fn apply(callback: fn(int) -> int) -> int { callback(1) } fn main() { let loose = |value| value * 2 apply(loose) }"
+        )
+        .is_err());
+        assert!(check(
+            "fn choose(flag: bool) -> fn(int) -> int { if flag { |value| value + 1 } else { |value| value - 1 } } fn main() { let callback = choose(true) let result: int = callback(41) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let flag = true let callback: fn(int) -> int = if flag { |value| value + 1 } else { |value| value - 1 } callback(41) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn choose() -> fn(int) -> int { if true { |value| value + 1 } else { 42 } } fn main() {}"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let callback: fn(int) -> int = { |value| value + 1 } callback(41) }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn choose(flag: bool) -> fn(int) -> int { if flag { |value| value + 1 } else { |value| \"invalid\" } } fn main() {}"
         )
         .is_err());
     }
