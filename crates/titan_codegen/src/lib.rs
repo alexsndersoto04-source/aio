@@ -93,7 +93,8 @@ pub enum Op {
     // Stack layout when executed: [..., receiver, arg1, arg2, ..., argN].
     // The VM pops N args, pops the receiver, reads its Value::Struct name,
     // then looks up "<StructName>::<method>" in module.method_table and
-    // invokes it with (receiver, arg1..argN) prepended. Result is pushed.
+    // invokes it with (receiver, arg1..argN) prepended. For `.len()`, the VM
+    // falls back to intrinsic length when the receiver is not a struct.
     // Static-associated calls like `Point::origin()` don't use this opcode
     // — they go through the regular Op::Call because the parser folds
     // `Point::origin` into a single qualified identifier at parse time.
@@ -635,7 +636,13 @@ impl AstCompiler {
                     self.compile_expr(arg)?;
                 }
                 match (method.as_str(), args.len()) {
-                    ("len", 0) => self.emit(Op::Len),
+                    // `.len()` may be a user-defined struct method. The VM
+                    // dispatches structs through the method table and falls
+                    // back to intrinsic length for built-in runtime values.
+                    ("len", 0) => self.emit(Op::CallMethod {
+                        method: method.clone(),
+                        argc: 0,
+                    }),
                     ("map", 1) => self.emit(Op::ArrayMap),
                     ("filter", 1) => self.emit(Op::ArrayFilter),
                     ("fold", 2) => self.emit(Op::ArrayFold),

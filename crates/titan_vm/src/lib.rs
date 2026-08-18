@@ -1011,36 +1011,38 @@ impl Vm {
                     stack.push(wrapped);
                 }
                 Op::CallMethod { method, argc } => {
-                    // Phase 20: dynamic method dispatch. The stack holds
-                    // [..., receiver, arg1, ..., argN]. We pop the args
-                    // first, then the receiver, look at its runtime type
-                    // (Value::Struct { name, .. }), and invoke the
-                    // pre-registered function "<name>::<method>" with
-                    // (receiver, arg1..argN). All other receiver kinds
-                    // raise a type error — arrays, strings, numbers etc.
-                    // already have their builtin methods handled by the
-                    // matching arms above (len/map/filter/... etc.), so
-                    // reaching this point means an unknown call target.
+                    // Dynamic method dispatch. Struct receivers use their
+                    // registered implementation. `.len()` additionally falls
+                    // back to the intrinsic operation for arrays, tuples,
+                    // strings, bytes, and maps, allowing a struct to declare a
+                    // real method with the same name without breaking built-in
+                    // receivers elsewhere in the same program.
                     let args = take_args(&mut stack, argc, &function.name)?;
                     let receiver = pop(&mut stack, &function.name)?;
-                    let type_name = match &receiver {
-                        Value::Struct { name, .. } => name.clone(),
-                        other => {
-                            return Err(VmError::Type(format!(
-                                "no method '{}' for value {}",
-                                method,
-                                val_to_string(other)
-                            )))
-                        }
-                    };
-                    let qualified = format!("{}::{}", type_name, method);
-                    let callee = *self.module.method_table.get(&qualified).ok_or_else(|| {
-                        VmError::Type(format!("undefined method '{}'", qualified))
-                    })?;
-                    let mut full_args = Vec::with_capacity(args.len() + 1);
-                    full_args.push(receiver);
-                    full_args.extend(args);
-                    stack.push(self.execute(callee, full_args, Vec::new(), depth + 1, debugger)?);
+                    if let Value::Struct { name, .. } = &receiver {
+                        let qualified = format!("{}::{}", name, method);
+                        let callee = *self.module.method_table.get(&qualified).ok_or_else(|| {
+                            VmError::Type(format!("undefined method '{}'", qualified))
+                        })?;
+                        let mut full_args = Vec::with_capacity(args.len() + 1);
+                        full_args.push(receiver);
+                        full_args.extend(args);
+                        stack.push(self.execute(
+                            callee,
+                            full_args,
+                            Vec::new(),
+                            depth + 1,
+                            debugger,
+                        )?);
+                    } else if method == "len" && argc == 0 {
+                        stack.push(Value::Int(value_length(receiver)?));
+                    } else {
+                        return Err(VmError::Type(format!(
+                            "no method '{}' for value {}",
+                            method,
+                            val_to_string(&receiver)
+                        )));
+                    }
                 }
                 Op::ArrayMap => {
                     let callable = pop(&mut stack, &function.name)?;
@@ -3379,18 +3381,7 @@ impl Vm {
                 }
                 Op::Len => {
                     let value = pop(&mut stack, &function.name)?;
-                    let length = match value {
-                        Value::Array(v) | Value::Tuple(v) => v.len(),
-                        Value::Str(v) => v.chars().count(),
-                        Value::Bytes(v) => v.len(),
-                        Value::Map(v) => v.len(),
-                        _ => {
-                            return Err(VmError::Type(
-                                "len requires an array, tuple, string, bytes, or map".into(),
-                            ))
-                        }
-                    };
-                    stack.push(Value::Int(length as i64));
+                    stack.push(Value::Int(value_length(value)?));
                 }
                 Op::ToString => {
                     let value = pop(&mut stack, &function.name)?;
@@ -4486,6 +4477,21 @@ fn timeout_value(value: Value) -> Result<Duration, VmError> {
         Err(VmError::InvalidTimeout)
     }
 }
+fn value_length(value: Value) -> Result<i64, VmError> {
+    let length = match value {
+        Value::Array(values) | Value::Tuple(values) => values.len(),
+        Value::Str(value) => value.chars().count(),
+        Value::Bytes(value) => value.len(),
+        Value::Map(values) => values.len(),
+        _ => {
+            return Err(VmError::Type(
+                "len requires an array, tuple, string, bytes, or map".into(),
+            ))
+        }
+    };
+    i64::try_from(length).map_err(|_| VmError::Overflow)
+}
+
 fn array_value(value: Value) -> Result<Vec<Value>, VmError> {
     match value {
         Value::Array(values) | Value::Tuple(values) => Ok(values),
@@ -4677,6 +4683,15 @@ mod tests {
         assert_eq!(
             run("fn main() { let print = |value: int| value + 1 print(41) }").unwrap(),
             Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn struct_len_methods_coexist_with_intrinsic_lengths() {
+        assert_eq!(
+            run("struct Counter { value: int } impl Counter { fn len(self) -> int { self.value } } fn main() { let counter = Counter { value: 42 } counter.len() * 10 + [1, 2, 3].len() }")
+                .unwrap(),
+            Value::Int(423)
         );
     }
 

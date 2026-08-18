@@ -2951,10 +2951,23 @@ impl TypeEnv {
             return Type::Never;
         }
 
-        // These exact method shapes are lowered to dedicated bytecode by
-        // codegen, before user-defined method dispatch. Validate the same
-        // contracts here so code accepted by the checker cannot fail merely
-        // because the intrinsic receives the wrong kind of value.
+        // `.len()` is dispatched dynamically by the VM: declared struct
+        // methods take priority, while built-in runtime values retain their
+        // intrinsic length operation. Resolve the user method first so the
+        // checker follows that same order.
+        if method == "len" && args.is_empty() {
+            if let Some(result) =
+                self.check_user_method_call(&receiver_type, method, args, &mut reachable)
+            {
+                return result;
+            }
+        }
+
+        // Collection method shapes other than `.len()` are still lowered to
+        // dedicated bytecode before user-defined dispatch. Validate those same
+        // contracts here so accepted code cannot reach an incompatible
+        // intrinsic. `.len()` already checked for a declared struct method and
+        // falls through here only for its built-in runtime shapes.
         match (method, args.len()) {
             ("len", 0) => {
                 if is_length_supported(&receiver_type) {
@@ -3107,42 +3120,10 @@ impl TypeEnv {
             _ => {}
         }
 
-        if let Type::Named(name) = &receiver_type {
-            let qualified = format!("{}::{}", name, method);
-            if let Some(signature) = self.functions.get(&qualified).cloned() {
-                let Some((self_type, params)) = signature.params.split_first() else {
-                    for arg in args {
-                        self.check_evaluated_expr(arg, None, &mut reachable);
-                    }
-                    self.errors.push(TypeError::Arity {
-                        expected: 0,
-                        found: args.len() + 1,
-                    });
-                    return if reachable {
-                        signature.result
-                    } else {
-                        Type::Never
-                    };
-                };
-                self.require_compatible(self_type, &receiver_type);
-                if params.len() != args.len() {
-                    self.errors.push(TypeError::Arity {
-                        expected: params.len(),
-                        found: args.len(),
-                    });
-                }
-                for (argument, expected) in args.iter().zip(params) {
-                    self.check_evaluated_expr(argument, Some(expected), &mut reachable);
-                }
-                for argument in args.iter().skip(params.len()) {
-                    self.check_evaluated_expr(argument, None, &mut reachable);
-                }
-                return if reachable {
-                    signature.result
-                } else {
-                    Type::Never
-                };
-            }
+        if let Some(result) =
+            self.check_user_method_call(&receiver_type, method, args, &mut reachable)
+        {
+            return result;
         }
 
         for arg in args {
@@ -3166,6 +3147,52 @@ impl TypeEnv {
         } else {
             Type::Never
         }
+    }
+
+    fn check_user_method_call(
+        &mut self,
+        receiver_type: &Type,
+        method: &str,
+        args: &[Expr],
+        reachable: &mut bool,
+    ) -> Option<Type> {
+        let Type::Named(name) = receiver_type else {
+            return None;
+        };
+        let qualified = format!("{}::{}", name, method);
+        let signature = self.functions.get(&qualified).cloned()?;
+        let Some((self_type, params)) = signature.params.split_first() else {
+            for argument in args {
+                self.check_evaluated_expr(argument, None, reachable);
+            }
+            self.errors.push(TypeError::Arity {
+                expected: 0,
+                found: args.len() + 1,
+            });
+            return Some(if *reachable {
+                signature.result
+            } else {
+                Type::Never
+            });
+        };
+        self.require_compatible(self_type, receiver_type);
+        if params.len() != args.len() {
+            self.errors.push(TypeError::Arity {
+                expected: params.len(),
+                found: args.len(),
+            });
+        }
+        for (argument, expected) in args.iter().zip(params) {
+            self.check_evaluated_expr(argument, Some(expected), reachable);
+        }
+        for argument in args.iter().skip(params.len()) {
+            self.check_evaluated_expr(argument, None, reachable);
+        }
+        Some(if *reachable {
+            signature.result
+        } else {
+            Type::Never
+        })
     }
 
     fn check_evaluated_callback(
@@ -5832,6 +5859,14 @@ mod tests {
         assert!(check(&format!(
             "{declarations} fn main() {{ let point = Point {{ x: 1 }} point.missing() }}"
         ))
+        .is_err());
+        assert!(check(
+            "struct Counter { value: int } impl Counter { fn len(self) -> int { self.value } } fn main() { let counter = Counter { value: 42 } let result: int = counter.len() let builtin: int = [1, 2, 3].len() }"
+        )
+        .is_ok());
+        assert!(check(
+            "struct Counter { value: int } impl Counter { fn len(self) -> int { self.value } } fn main() { let counter = Counter { value: 42 } let result: string = counter.len() }"
+        )
         .is_err());
     }
 
