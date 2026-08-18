@@ -3058,7 +3058,14 @@ impl TypeEnv {
                     }
                 }
             } else if is_template_path(source) {
-                if self.is_local_binding(source) {
+                // Plain interpolation identifiers use the same value lookup as
+                // ordinary expressions, but remain limited to runtime locals
+                // and declared constants. Constants are expression aliases in
+                // codegen, so accepting them here keeps the documented
+                // `"limit={LIMIT}"` form executable rather than checker-only.
+                if self.is_local_binding(source)
+                    || self.constant_declarations.contains_key(source)
+                {
                     let result = self.check_expr(&Expr::Ident {
                         name: source.into(),
                         span,
@@ -6307,6 +6314,9 @@ mod tests {
     #[test]
     fn validates_string_template_references_and_calls() {
         assert!(check("fn main() { print(\"value={missing}\") }").is_err());
+        assert!(
+            check("const LIMIT: int = 20 fn main() { print(\"limit={LIMIT}\") }").is_ok()
+        );
         assert!(check("fn id(value: int) -> int { value } fn main() { let value = 1 print(\"value={id(value)}\") }").is_ok());
         assert!(check("fn id(value: int) -> int { value } fn main() { let bad = \"x\" print(\"value={id(bad)}\") }").is_err());
         assert!(

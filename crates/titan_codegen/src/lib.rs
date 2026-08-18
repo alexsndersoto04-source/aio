@@ -1317,11 +1317,18 @@ impl AstCompiler {
                 },
                 &args,
             )?;
-        } else {
-            let local = self
-                .find_local(source)
-                .ok_or_else(|| CodegenError::UnknownVariable(source.into()))?;
+        } else if let Some(local) = self.find_local(source) {
             self.emit(Op::PushLocal(local));
+        } else if self.constants.contains_key(source) {
+            // Constants are expression aliases. Materialize them through the
+            // ordinary identifier path so plain interpolation agrees with
+            // normal value lookup and retains recursive-expansion defenses.
+            self.compile_expr(&Expr::Ident {
+                name: source.into(),
+                span: Default::default(),
+            })?;
+        } else {
+            return Err(CodegenError::UnknownVariable(source.into()));
         }
         Ok(())
     }
@@ -1777,6 +1784,19 @@ mod tests {
             .code
             .iter()
             .any(|operation| matches!(operation, Op::CallValue(1))));
+    }
+
+    #[test]
+    fn lowers_plain_constants_in_interpolation() {
+        let program = parse("const LIMIT: int = 20 fn main() { \"limit={LIMIT}\" }");
+        let module = AstCompiler::new().compile_program(&program).unwrap();
+        let code = &module.functions[module.entry].code;
+        assert!(code
+            .iter()
+            .any(|operation| matches!(operation, Op::PushInt(20))));
+        assert!(code
+            .iter()
+            .any(|operation| matches!(operation, Op::ToString)));
     }
 
     #[test]

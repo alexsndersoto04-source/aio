@@ -5074,7 +5074,11 @@ mod tests {
         assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let i = 3 \"value({i}) = {double(i)}!\" }").unwrap(), Value::Str("value(3) = 6!".into()));
     }
     #[test]
-    fn interpolation_uses_local_and_constant_callables() {
+    fn interpolation_uses_local_and_constant_values() {
+        assert_eq!(
+            run("const LIMIT: int = 20 fn main() { \"limit={LIMIT}\" }").unwrap(),
+            Value::Str("limit=20".into())
+        );
         assert_eq!(
             run("fn render(value: int) -> int { 0 } fn main() { let render = |value: int| value + 1 \"{render(41)}\" }").unwrap(),
             Value::Str("42".into())

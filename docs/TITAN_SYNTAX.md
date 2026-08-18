@@ -228,22 +228,27 @@ match tag {
 
 ## Interpolación de strings
 
-La gramática de interpolación es deliberadamente pequeña: admite un identificador local o una llamada nombrada cuyos argumentos sean identificadores locales o enteros literales. Las llamadas usan la misma resolución que fuera del string, por lo que una closure local o una constante invocable puede ser el destino.
+La gramática de interpolación es deliberadamente pequeña: admite un identificador local, una constante global declarada o una llamada nombrada cuyos argumentos sean identificadores locales o enteros literales. Las llamadas usan la misma resolución que fuera del string, por lo que una closure local o una constante invocable puede ser el destino.
 
 ```titan
-let x = 42
-let arr = [1, 2, 3]
-let siguiente = |value: int| value + 1
-print("x = {x}")                       // "x = 42"
-print("arr = {arr}")                   // "arr = [1, 2, 3]"
-print("siguiente = {siguiente(x)}")     // "siguiente = 43"
-print("home: {std::dirs::home()}")     // llamadas también
+const LIMIT: int = 20
+
+fn main() {
+    let x = 42
+    let arr = [1, 2, 3]
+    let siguiente = |value: int| value + 1
+    print("x = {x}")                       // "x = 42"
+    print("límite = {LIMIT}")               // "límite = 20"
+    print("arr = {arr}")                   // "arr = [1, 2, 3]"
+    print("siguiente = {siguiente(x)}")     // "siguiente = 43"
+    print("home: {std::dirs::home()}")     // llamadas también
+}
 ```
 
 Una expresión como `{x + 10}` todavía no pertenece a esa gramática. Debe calcularse primero en un local y luego interpolarse.
 
 Contenidos válidos entre `{...}`:
-- Identificadores locales (`x`, `foo`)
+- Identificadores locales (`x`, `foo`) y constantes globales declaradas (`LIMIT`)
 - Llamadas simples (`fn()`, `fn(arg)`, `std::dirs::home()`), con argumentos locales o enteros
 
 Contenidos NO válidos:
