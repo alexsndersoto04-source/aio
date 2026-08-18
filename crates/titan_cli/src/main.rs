@@ -624,13 +624,15 @@ fn compile_source(source: &str) -> Result<titan_codegen::CompiledModule, String>
 
 fn compile_program(program: &titan_ast::Program) -> Result<titan_codegen::CompiledModule, String> {
     let mut types = titan_typechecker::TypeEnv::new();
-    types.check_program(program).map_err(|errors| {
-        errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
+    types
+        .check_program_diagnostics(program)
+        .map_err(|diagnostics| {
+            diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
     titan_codegen::AstCompiler::new()
         .compile_program(program)
         .map_err(|error| error.to_string())
@@ -685,4 +687,15 @@ fn fatal(label: &str, error: impl std::fmt::Display) -> ! {
 fn fatal_message(label: &str, message: &str) -> ! {
     eprintln!("{label}:\n{message}");
     std::process::exit(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_errors_include_source_coordinates() {
+        let error = compile_source("fn main() {\n    1 + true\n}").unwrap_err();
+        assert!(error.starts_with("2:5: invalid operands"), "{error}");
+    }
 }

@@ -222,13 +222,15 @@ fn load_program(program: &str) -> Result<CompiledModule, String> {
     let entry = titan_pkg::default_entry(path);
     let project = titan_pkg::SourceProject::load(entry).map_err(|error| error.to_string())?;
     let mut types = titan_typechecker::TypeEnv::new();
-    types.check_program(&project.program).map_err(|errors| {
-        errors
-            .into_iter()
-            .map(|error| error.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
+    types
+        .check_program_diagnostics(&project.program)
+        .map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
     titan_codegen::AstCompiler::new()
         .compile_program(&project.program)
         .map_err(|error| error.to_string())
@@ -496,6 +498,21 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn source_errors_include_semantic_coordinates() {
+        let root = std::env::temp_dir().join(format!("titan-dap-errors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        titan_pkg::create_project(&root, "dap_errors").unwrap();
+        std::fs::write(
+            root.join("src/main.titan"),
+            "fn main() {\n    1 + true\n}",
+        )
+        .unwrap();
+        let error = load_program(root.to_str().unwrap()).unwrap_err();
+        assert!(error.starts_with("2:5: invalid operands"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn serves_initialize_and_disconnect() {
         let (tx, rx) = mpsc::channel();

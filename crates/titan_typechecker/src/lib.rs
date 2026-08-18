@@ -218,7 +218,11 @@ pub struct TypeDiagnostic {
 
 impl std::fmt::Display for TypeDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.error, formatter)
+        if let Some(span) = self.span.filter(|span| span.line > 0 && span.column > 0) {
+            write!(formatter, "{}:{}: {}", span.line, span.column, self.error)
+        } else {
+            std::fmt::Display::fmt(&self.error, formatter)
+        }
     }
 }
 
@@ -5852,6 +5856,9 @@ mod tests {
         let span = invalid.span.expect("expression diagnostic must be spanned");
         assert_eq!(span.line, 2);
         assert!(span.column > 1);
+        assert!(invalid
+            .to_string()
+            .starts_with(&format!("{}:{}: ", span.line, span.column)));
 
         let declarations = parse(
             "fn main() {}\nfn duplicate() {}\nfn duplicate() {}",
