@@ -1216,6 +1216,7 @@ impl TypeEnv {
                 .collect();
             let previous_constants = self.constant_types.clone();
             self.reset_analysis_state();
+            self.check_constants_in(&program.items);
             for item in &program.items {
                 self.check_item(item);
             }
@@ -1237,6 +1238,7 @@ impl TypeEnv {
 
         self.reset_analysis_state();
         self.errors = validation_errors;
+        self.check_constants_in(&program.items);
         for item in &program.items {
             self.check_item(item);
         }
@@ -1690,6 +1692,22 @@ impl TypeEnv {
                 self.check_constant(&constant.name);
             }
             _ => {}
+        }
+    }
+
+    /// Validate global constants before entering any function or loop. A
+    /// constant may be referenced before its declaration, but its initializer
+    /// must never inherit the caller's locals or control-flow context merely
+    /// because that caller triggered lazy resolution first.
+    fn check_constants_in(&mut self, items: &[Item]) {
+        for item in items {
+            match item {
+                Item::Const(constant) => {
+                    self.check_constant(&constant.name);
+                }
+                Item::Module(module) => self.check_constants_in(&module.items),
+                _ => {}
+            }
         }
     }
 
@@ -5727,6 +5745,9 @@ mod tests {
                 .any(|error| matches!(error, TypeError::RecursiveConstant { .. })));
         }
         assert!(check("const VALUE = (|VALUE| VALUE)(42) fn main() { VALUE }").is_ok());
+        assert!(check("fn main() { INVALID } const INVALID = return 1").is_err());
+        assert!(check("fn main() { let local = 1 VALUE } const VALUE = local").is_err());
+        assert!(check("fn main() { loop { STOP } } const STOP = break").is_err());
     }
 
     #[test]
