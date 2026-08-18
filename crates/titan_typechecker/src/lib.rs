@@ -3030,9 +3030,17 @@ impl TypeEnv {
                             }
                         }
                         if valid {
-                            let is_user_function = self.functions.contains_key(name)
-                                && !self.base_functions.contains_key(name);
-                            if is_user_function || titan_stdlib::native::contains(name) {
+                            // Interpolation call syntax follows ordinary call
+                            // resolution. In particular, a local closure or a
+                            // callable constant must take priority over a
+                            // statically named function/native with the same
+                            // name, just as it does outside a string template.
+                            let callable_exists = self.is_local_binding(name)
+                                || self.constant_declarations.contains_key(name)
+                                || self.functions.contains_key(name)
+                                || self.enum_variants.contains_key(name)
+                                || titan_stdlib::native::contains(name);
+                            if callable_exists {
                                 let result = self.check_call(
                                     &Expr::Ident {
                                         name: name.into(),
@@ -6315,6 +6323,18 @@ mod tests {
             "fn render(value: any) -> any { value } fn main() { let callback = || 1 print(\"value={render(callback)}\") }"
         )
         .is_ok());
+        assert!(check(
+            "fn main() { let render = |value: int| value + 1 print(\"value={render(41)}\") }"
+        )
+        .is_ok());
+        assert!(check(
+            "const RENDER: fn(int) -> int = |value| value + 1 fn main() { print(\"value={RENDER(41)}\") }"
+        )
+        .is_ok());
+        assert!(check(
+            "fn main() { let render = 1 print(\"value={render(41)}\") }"
+        )
+        .is_err());
         assert!(check(
             "fn halt() -> ! { loop {} } fn render() -> ! { \"value={halt()}\" } fn main() {}"
         )

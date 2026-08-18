@@ -101,7 +101,7 @@ Strings interpolate variables and simple named calls:
 print("fib({i}) = {fib(i)}")
 ```
 
-Interpolation expressions intentionally use a restricted grammar in version 0.2: an identifier, or a named function call whose arguments are local identifiers or integer literals.
+Interpolation expressions intentionally use a restricted grammar in version 0.2: a local identifier, or a named callable whose arguments are local identifiers or integer literals. Call resolution is identical to an ordinary call, including local-closure and callable-constant priority over static functions and natives.
 
 ## 9. Modules, traits and imports
 

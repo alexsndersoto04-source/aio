@@ -1283,37 +1283,40 @@ impl AstCompiler {
             if !source.ends_with(')') {
                 return Err(CodegenError::InvalidInterpolation(source.into()));
             }
+            let span = Default::default();
             let name = source[..open].trim();
             let args_source = &source[open + 1..source.len() - 1];
-            let mut argc = 0;
+            let mut args = Vec::new();
             for arg in args_source
                 .split(',')
                 .map(str::trim)
                 .filter(|x| !x.is_empty())
             {
                 if let Ok(value) = arg.parse::<i64>() {
-                    self.emit(Op::PushInt(value));
+                    args.push(Expr::Int { value, span });
                 } else {
-                    let local = self
-                        .find_local(arg)
+                    // Template arguments deliberately remain limited to
+                    // locals and integer literals. Validate that boundary here
+                    // before routing the call through ordinary call lowering.
+                    self.find_local(arg)
                         .ok_or_else(|| CodegenError::UnknownVariable(arg.into()))?;
-                    self.emit(Op::PushLocal(local));
+                    args.push(Expr::Ident {
+                        name: arg.into(),
+                        span,
+                    });
                 }
-                argc += 1;
             }
-            // Prefer a user-defined function; fall back to a registered native (e.g.
-            // `std::dirs::temp()`, `std::datetime::now()`) so interpolation covers
-            // the full standard-library surface, not just plain identifiers.
-            if let Some(function) = self.function_ids.get(name).copied() {
-                self.emit(Op::Call { function, argc });
-            } else if titan_stdlib::native::contains(name) {
-                self.emit(Op::CallNative {
+            // Reuse normal call lowering so local closures and callable
+            // constants have the same priority over named functions, native
+            // calls, intrinsics, and enum constructors inside and outside a
+            // string template.
+            self.compile_call(
+                &Expr::Ident {
                     name: name.into(),
-                    argc,
-                });
-            } else {
-                return Err(CodegenError::UnknownFunction(name.into()));
-            }
+                    span,
+                },
+                &args,
+            )?;
         } else {
             let local = self
                 .find_local(source)
@@ -1774,6 +1777,20 @@ mod tests {
             .code
             .iter()
             .any(|operation| matches!(operation, Op::CallValue(1))));
+    }
+
+    #[test]
+    fn lowers_interpolation_calls_through_ordinary_callable_resolution() {
+        for source in [
+            "fn render(value: int) -> int { 0 } fn main() { let render = |value: int| value + 1 \"{render(41)}\" }",
+            "const RENDER: fn(int) -> int = |value| value + 1 fn main() { \"{RENDER(41)}\" }",
+        ] {
+            let module = AstCompiler::new().compile_program(&parse(source)).unwrap();
+            assert!(module.functions[module.entry]
+                .code
+                .iter()
+                .any(|operation| matches!(operation, Op::CallValue(1))));
+        }
     }
 
     #[test]

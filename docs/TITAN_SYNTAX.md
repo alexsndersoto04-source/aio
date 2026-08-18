@@ -228,25 +228,27 @@ match tag {
 
 ## Interpolación de strings
 
-Escribí `{expresion}` dentro de un string literal:
+La gramática de interpolación es deliberadamente pequeña: admite un identificador local o una llamada nombrada cuyos argumentos sean identificadores locales o enteros literales. Las llamadas usan la misma resolución que fuera del string, por lo que una closure local o una constante invocable puede ser el destino.
 
 ```titan
 let x = 42
 let arr = [1, 2, 3]
-print("x = {x}")              // "x = 42"
-print("arr = {arr}")          // "arr = [1, 2, 3]"
-print("suma = {x + 10}")      // "suma = 52" (expresión adentro)
-print("home: {std::dirs::home()}")  // llamadas también
+let siguiente = |value: int| value + 1
+print("x = {x}")                       // "x = 42"
+print("arr = {arr}")                   // "arr = [1, 2, 3]"
+print("siguiente = {siguiente(x)}")     // "siguiente = 43"
+print("home: {std::dirs::home()}")     // llamadas también
 ```
 
+Una expresión como `{x + 10}` todavía no pertenece a esa gramática. Debe calcularse primero en un local y luego interpolarse.
+
 Contenidos válidos entre `{...}`:
-- Identificadores (`x`, `foo`)
-- Accesos `a.b.c` o `a::b::c`
-- Llamadas simples `fn()` o `fn(arg)`
+- Identificadores locales (`x`, `foo`)
+- Llamadas simples (`fn()`, `fn(arg)`, `std::dirs::home()`), con argumentos locales o enteros
 
 Contenidos NO válidos:
-- Arithmetic complejo: `{a + b * c}` → puede fallar según parser
-- Access con `[...]`: `{arr[0]}` → **NO soportado**
+- Aritmética: `{a + b * c}` → **NO soportada**
+- Acceso a campos o índices: `{user.name}`, `{arr[0]}` → **NO soportado**
 
 Si necesitás algo complejo, extraelo a una variable primero:
 

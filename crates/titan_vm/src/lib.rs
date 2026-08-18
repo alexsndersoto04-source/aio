@@ -5074,6 +5074,17 @@ mod tests {
         assert_eq!(run("fn double(x: int) -> int { x * 2 } fn main() { let i = 3 \"value({i}) = {double(i)}!\" }").unwrap(), Value::Str("value(3) = 6!".into()));
     }
     #[test]
+    fn interpolation_uses_local_and_constant_callables() {
+        assert_eq!(
+            run("fn render(value: int) -> int { 0 } fn main() { let render = |value: int| value + 1 \"{render(41)}\" }").unwrap(),
+            Value::Str("42".into())
+        );
+        assert_eq!(
+            run("const RENDER: fn(int) -> int = |value| value + 1 fn main() { \"{RENDER(41)}\" }").unwrap(),
+            Value::Str("42".into())
+        );
+    }
+    #[test]
     fn native_generic_arrays_accept_concrete_elements() {
         assert_eq!(
             run("fn main() { std::stats::mean([10, 20, 30, 40]) }").unwrap(),
