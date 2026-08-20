@@ -63,7 +63,7 @@ pub fn sync(
             signature: package.signature.clone(),
             dependencies: package.dependencies.clone(),
         };
-        let archive_path = client.download(&package.name, &release, !offline)?;
+        let archive_path = client.download(&package.name, &release)?;
         let destination = titan
             .join("packages")
             .join(&package.name)
