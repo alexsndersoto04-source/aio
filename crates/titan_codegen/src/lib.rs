@@ -1097,12 +1097,18 @@ impl AstCompiler {
         iterator: &Expr,
         body: &Block,
     ) -> Result<(), CodegenError> {
-        let Pattern::Ident { name, .. } = pattern else {
-            return Err(CodegenError::Unsupported(
-                "for currently requires an identifier pattern".into(),
-            ));
-        };
         // General arrays use an index and len; ranges are optimized but share the same representation.
+        // A wildcard `_` pattern discards each element: the loop still iterates
+        // (index/len), but no item is loaded or bound.
+        let binds_item: Option<&str> = match pattern {
+            Pattern::Ident { name, .. } => Some(name.as_str()),
+            Pattern::Wildcard { .. } => None,
+            _ => {
+                return Err(CodegenError::Unsupported(
+                    "for currently requires an identifier or wildcard pattern".into(),
+                ))
+            }
+        };
         self.compile_expr(iterator)?;
         let array = self.add_temp("$iter");
         self.emit(Op::StoreLocal(array));
@@ -1110,17 +1116,22 @@ impl AstCompiler {
         let index = self.add_temp("$index");
         self.emit(Op::StoreLocal(index));
         self.push_scope();
-        let item = self.add_local(name);
+        let item = match binds_item {
+            Some(name) => Some(self.add_local(name)),
+            None => None,
+        };
         let start = self.position();
         self.emit(Op::PushLocal(index));
         self.emit(Op::PushLocal(array));
         self.emit(Op::Len);
         self.emit(Op::Lt);
         let exit = self.jump_if_false();
-        self.emit(Op::PushLocal(array));
-        self.emit(Op::PushLocal(index));
-        self.emit(Op::Index);
-        self.emit(Op::StoreLocal(item));
+        if let Some(item) = item {
+            self.emit(Op::PushLocal(array));
+            self.emit(Op::PushLocal(index));
+            self.emit(Op::Index);
+            self.emit(Op::StoreLocal(item));
+        }
         self.loops.push(LoopContext {
             continue_target: 0,
             ..Default::default()
@@ -1874,5 +1885,17 @@ mod tests {
         assert!(AstCompiler::new()
             .compile_program(&parse("fn main() { 42 }"))
             .is_ok());
+    }
+
+    #[test]
+    fn lowers_wildcard_for_loops_without_loading_an_element() {
+        // A wildcard `_` loop iterates (Len/Lt) but never loads or binds an
+        // element, so no Op::Index is emitted for the discarded item.
+        let module = AstCompiler::new()
+            .compile_program(&parse("fn main() { for _ in [1, 2, 3] { print(\"x\") } }"))
+            .unwrap();
+        let code = &module.functions[module.entry].code;
+        assert!(code.iter().any(|op| matches!(op, Op::Len)));
+        assert!(!code.iter().any(|op| matches!(op, Op::Index)));
     }
 }

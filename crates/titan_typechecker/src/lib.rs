@@ -2440,7 +2440,10 @@ impl TypeEnv {
                 body,
                 ..
             } => {
-                if !matches!(pattern.as_ref(), Pattern::Ident { .. }) {
+                if !matches!(
+                    pattern.as_ref(),
+                    Pattern::Ident { .. } | Pattern::Wildcard { .. }
+                ) {
                     self.errors.push(TypeError::UnsupportedFeature {
                         feature: "destructuring patterns in for loops".into(),
                     });
@@ -6682,7 +6685,6 @@ mod tests {
         assert!(check("fn main() { let value = 1; &value }").is_err());
         assert!(check("fn main() { loop { break 1 } }").is_err());
         assert!(check("fn main() { fn nested() {} }").is_err());
-        assert!(check("fn main() { for _ in [1, 2] {} }").is_err());
         assert!(check("fn main() { let operation = len operation([1, 2]) }").is_err());
         assert!(check("fn main() { let operation = std::net::tcp_read operation }").is_err());
         assert!(check(
@@ -6697,6 +6699,18 @@ mod tests {
             "enum Inner { Yes } enum Outer { Wrap(Inner) } fn read(value: Outer) -> int { match value { Outer::Wrap(Inner::Yes) => 1, _ => 0 } } fn main() {}"
         )
         .is_err());
+    }
+
+    #[test]
+    fn accepts_wildcard_for_loops() {
+        // A wildcard `_` discards each element; it is not destructuring, so the
+        // loop typechecks as long as the iterable is valid.
+        assert!(check("fn main() { for _ in [1, 2, 3] { print(\"x\") } }").is_ok());
+        assert!(check("fn main() { for _ in 0..10 { print(\"x\") } }").is_ok());
+        assert!(check("fn main() { for _ in \"abc\" { print(\"x\") } }").is_ok());
+
+        // Non-identifier, non-wildcard for-patterns are still rejected honestly.
+        assert!(check("fn main() { for 1 in [1, 2] { print(\"x\") } }").is_err());
     }
 
     #[test]

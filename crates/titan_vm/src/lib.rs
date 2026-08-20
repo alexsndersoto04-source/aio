@@ -5024,6 +5024,18 @@ mod tests {
         );
     }
     #[test]
+    fn wildcard_for_loops_iterate_without_binding() {
+        assert_eq!(
+            run("fn main() { let mut count = 0 for _ in 0..5 { count += 1 } count }").unwrap(),
+            Value::Int(5)
+        );
+        assert_eq!(
+            run("fn main() { let mut count = 0 for _ in [10, 20, 30] { count += 1 } count }")
+                .unwrap(),
+            Value::Int(3)
+        );
+    }
+    #[test]
     fn structs_work() {
         assert_eq!(run("struct Point { x: int, y: int } fn main() { let p = Point { x: 2, y: 3 } p.x + p.y }").unwrap(), Value::Int(5));
     }
