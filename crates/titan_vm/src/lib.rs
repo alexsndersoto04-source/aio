@@ -5044,6 +5044,36 @@ mod tests {
         assert_eq!(run("enum Maybe { None, Some(int) } fn main() { let x = Maybe::Some(7) match x { Maybe::Some(n) => n, Maybe::None => 0 } }").unwrap(), Value::Int(7));
     }
     #[test]
+    fn try_operator_unwraps_and_returns_the_wrapper_early() {
+        // `?` unwraps Ok/Some to their payload.
+        assert_eq!(
+            run("fn main() { ok() } fn ok() -> int { let value = Result::Ok(41)? value + 1 }").unwrap(),
+            Value::Int(42)
+        );
+        assert_eq!(
+            run("fn main() { some() } fn some() -> int { let value = Option::Some(41)? value + 1 }").unwrap(),
+            Value::Int(42)
+        );
+        // `?` on Err/None returns the wrapper from the function immediately,
+        // skipping the rest of the body.
+        assert_eq!(
+            run("fn main() { err() } fn err() -> Result { Result::Err(\"boom\")? Result::Ok(99) }").unwrap(),
+            Value::Enum {
+                name: "Result".into(),
+                variant: "Err".into(),
+                payload: Some(Box::new(Value::Str("boom".into()))),
+            }
+        );
+        assert_eq!(
+            run("fn main() { none() } fn none() -> Option { Option::None? Option::Some(99) }").unwrap(),
+            Value::Enum {
+                name: "Option".into(),
+                variant: "None".into(),
+                payload: None,
+            }
+        );
+    }
+    #[test]
     fn native_text_and_encoding_work() {
         assert_eq!(
             run("fn main() { std::text::reverse(\"Titan\") }").unwrap(),
