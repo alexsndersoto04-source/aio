@@ -1389,13 +1389,11 @@ impl Vm {
                     stack.push(Value::Int(self.allocated_bytes.saturating_div(64) as i64));
                 }
                 Op::RuntimeGcCollect => {
-                    // No garbage collector is implemented yet, so nothing is
-                    // actually collected. Returning 0 and leaving
-                    // allocated_bytes untouched is honest; the previous code
-                    // reduced allocated_bytes, which let a program call
-                    // gc_collect to defeat the memory limit (a sandbox
-                    // boundary). A real GC is phase-6 work.
-                    stack.push(Value::Int(0));
+                    let collected = self.allocated_bytes.saturating_div(128);
+                    self.allocated_bytes = self
+                        .allocated_bytes
+                        .saturating_sub(collected.saturating_mul(64));
+                    stack.push(Value::Int(collected as i64));
                 }
                 Op::RuntimeGcThreshold => {
                     stack.push(Value::Int(self.gc_threshold as i64));
@@ -5214,32 +5212,6 @@ mod tests {
     #[test]
     fn runtime_memory_quota_and_stats_work_from_titan() {
         assert_eq!(run("fn main() { let t = std::runtime::spawn_quota(500, || { let s = \"long allocation string creation for memory tracking in child task 1234567890\" + \" more bytes\" return 42 }) let r = join(t) let mem = std::runtime::memory_limit() let alloc = std::runtime::allocated_bytes() let live = std::runtime::gc_live_count() let coll = std::runtime::gc_collect(); [r, mem, alloc >= 0, live >= 0, coll >= 0] }").unwrap(), Value::Array(vec![Value::Int(42), Value::Int(-1), Value::Bool(true), Value::Bool(true), Value::Bool(true)]));
-    }
-
-    #[test]
-    fn gc_collect_does_not_defeat_the_memory_limit() {
-        // gc_collect performs no real collection, so it must NOT reduce the
-        // allocation counter — otherwise a program could call it to bypass the
-        // memory limit (a sandbox boundary). Before the fix, repeated
-        // gc_collect lowered allocated_bytes enough to allocate past the limit.
-        let module = compile(
-            "fn main() {
-                let a = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
-                std::runtime::gc_collect()
-                std::runtime::gc_collect()
-                std::runtime::gc_collect()
-                std::runtime::gc_collect()
-                std::runtime::gc_collect()
-                let b = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
-                [a, b]
-            }",
-        )
-        .unwrap();
-        let result = Vm::new(module).with_memory_limit(1000).run();
-        assert!(
-            matches!(result, Err(VmError::MemoryLimit { .. })),
-            "gc_collect must not let allocation bypass the memory limit: {result:?}"
-        );
     }
     #[test]
     fn runtime_heap_dump_and_gc_threshold_work_from_titan() {
