@@ -3434,12 +3434,21 @@ impl Vm {
                 }
                 Op::CallNative { name, argc } => {
                     let args = take_args(&mut stack, argc, &function.name)?;
-                    stack.push(native::invoke_for_runtime(
+                    let result = native::invoke_for_runtime(
                         &name,
                         args,
                         self.capabilities,
                         self.runtime.id,
-                    )?);
+                    )?;
+                    // Native calls allocate outside the dedicated opcodes, so
+                    // charge their result against the memory limit too.
+                    // Otherwise programs could bypass the sandbox memory limit
+                    // via natives such as std::array::concat or std::text::*.
+                    let allocated = value_alloc_estimate(&result);
+                    if allocated > 0 {
+                        self.track_allocation(allocated)?;
+                    }
+                    stack.push(result);
                 }
                 Op::Ret => return Ok(stack.pop().unwrap_or(Value::Nil)),
                 Op::Print(argc) => {
@@ -4565,6 +4574,21 @@ fn value_length(value: Value) -> Result<i64, VmError> {
     i64::try_from(length).map_err(|_| VmError::Overflow)
 }
 
+/// Non-recursive lower bound on the heap a value owns, used to charge native
+/// results against the memory limit. It deliberately under-counts nested
+/// values and ignores small scalar/handle values; the goal is to catch
+/// egregious allocation-via-natives (huge strings/arrays/maps), not to be a
+/// precise allocator. A precise accounting pass belongs to phase 6.
+fn value_alloc_estimate(value: &Value) -> usize {
+    match value {
+        Value::Str(text) => text.len(),
+        Value::Array(values) | Value::Tuple(values) => values.len().saturating_mul(8),
+        Value::Map(values) => values.len().saturating_mul(64),
+        Value::Struct { fields, .. } => fields.len().saturating_mul(32),
+        _ => 0,
+    }
+}
+
 fn array_value(value: Value) -> Result<Vec<Value>, VmError> {
     match value {
         Value::Array(values) | Value::Tuple(values) => Ok(values),
@@ -5239,6 +5263,25 @@ mod tests {
         assert!(
             matches!(result, Err(VmError::MemoryLimit { .. })),
             "gc_collect must not let allocation bypass the memory limit: {result:?}"
+        );
+    }
+
+    #[test]
+    fn native_results_count_toward_the_memory_limit() {
+        // Native calls allocate outside the dedicated opcodes, so their results
+        // must count toward the memory limit — otherwise std::array::concat
+        // (and similar) bypasses the sandbox memory limit. Two 10-element
+        // arrays cost 768 bytes (charged via NewArray); their concat produces a
+        // 20-element array that must also be charged, pushing the total past
+        // the 800-byte limit.
+        let module = compile(
+            "fn main() { let big = std::array::concat([1,2,3,4,5,6,7,8,9,10], [1,2,3,4,5,6,7,8,9,10]) len(big) }",
+        )
+        .unwrap();
+        let result = Vm::new(module).with_memory_limit(800).run();
+        assert!(
+            matches!(result, Err(VmError::MemoryLimit { .. })),
+            "native results must count toward the memory limit: {result:?}"
         );
     }
     #[test]
