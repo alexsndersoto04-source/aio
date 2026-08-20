@@ -30,6 +30,8 @@ pub enum RegistryError {
     Signature,
     #[error("package exceeds configured download limit")]
     TooLarge,
+    #[error("package '{package}' is not in the offline cache")]
+    OfflineCacheMiss { package: String },
     #[error("cache I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -97,7 +99,12 @@ impl RegistryClient {
             .map(|(_, release)| release)
             .ok_or_else(|| RegistryError::NoVersion(index.name.clone()))
     }
-    pub fn download(&self, name: &str, release: &PackageVersion) -> Result<PathBuf, RegistryError> {
+    pub fn download(
+        &self,
+        name: &str,
+        release: &PackageVersion,
+        allow_network: bool,
+    ) -> Result<PathBuf, RegistryError> {
         validate_name(name)?;
         semver::Version::parse(&release.version)
             .map_err(|error| RegistryError::Semver(error.to_string()))?;
@@ -112,6 +119,14 @@ impl RegistryClient {
             let bytes = std::fs::read(&destination)?;
             verify(&bytes, &release.sha256)?;
             return Ok(destination);
+        }
+        // Offline mode (allow_network == false) must never fall back to the
+        // network: a cache miss is an explicit error so `titan fetch
+        // --offline` cannot leak requests for uncached packages.
+        if !allow_network {
+            return Err(RegistryError::OfflineCacheMiss {
+                package: name.to_string(),
+            });
         }
         let bytes = self.get(&release.archive, self.max_archive)?;
         verify(&bytes, &release.sha256)?;
@@ -237,6 +252,32 @@ mod tests {
         let hash = format!("{:x}", Sha256::digest(b"titan"));
         assert!(verify(b"titan", &hash).is_ok());
         assert!(verify(b"changed", &hash).is_err());
+    }
+    #[test]
+    fn offline_download_never_hits_the_network_on_cache_miss() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let cache = std::env::temp_dir().join(format!("titan-offline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let client = RegistryClient::new("https://registry.example", cache.clone()).unwrap();
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let digest = Sha256::digest(b"archive");
+        let signature = signing.sign(&digest);
+        let release = PackageVersion {
+            version: "1.0.0".into(),
+            archive: "https://registry.example/pkg.tpkg".into(),
+            sha256: format!("{:x}", digest),
+            signing_key: titan_stdlib::encoding::base64_encode(&signing.verifying_key().to_bytes()),
+            signature: titan_stdlib::encoding::base64_encode(&signature.to_bytes()),
+            dependencies: BTreeMap::new(),
+        };
+        // Cache is empty and network is disallowed (offline): must fail with
+        // OfflineCacheMiss WITHOUT attempting any network request.
+        let result = client.download("pkg", &release, false);
+        let _ = std::fs::remove_dir_all(&cache);
+        assert!(
+            matches!(result, Err(RegistryError::OfflineCacheMiss { package }) if package == "pkg"),
+            "offline download must not hit the network: {result:?}"
+        );
     }
     #[test]
     fn verifies_ed25519_release_signature() {
