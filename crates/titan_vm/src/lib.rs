@@ -728,6 +728,9 @@ impl Vm {
                         debugger,
                     )?);
                 }
+                self.track_allocation(
+                    output.len().saturating_mul(32).saturating_add(64),
+                )?;
                 Ok(Value::Array(output))
             }
             ("filter", 1) => {
@@ -759,6 +762,9 @@ impl Vm {
                         return Err(VmError::Type("filter predicate must return bool".into()));
                     }
                 }
+                self.track_allocation(
+                    output.len().saturating_mul(32).saturating_add(64),
+                )?;
                 Ok(Value::Array(output))
             }
             ("fold", 2) => {
@@ -845,6 +851,9 @@ impl Vm {
                 if let Some(error) = order_err {
                     return Err(error);
                 }
+                self.track_allocation(
+                    output.len().saturating_mul(32).saturating_add(64),
+                )?;
                 Ok(Value::Array(output))
             }
             ("find", 1) => {
@@ -5095,6 +5104,20 @@ mod tests {
         assert!(
             matches!(result, Err(VmError::MemoryLimit { .. })),
             "native results must count toward the memory limit: {result:?}"
+        );
+    }
+
+    #[test]
+    fn collection_method_outputs_count_toward_the_memory_limit() {
+        // map/filter/sort_by build a new output array; it must count toward
+        // the memory limit, otherwise collection methods bypass the sandbox
+        // memory limit. [1,2,3,4,5] costs 224 bytes; its map output (another
+        // 5-element array) must also be charged, pushing past 300.
+        let module = compile("fn main() { [1,2,3,4,5].map(|x| x) }").unwrap();
+        let result = Vm::new(module).with_memory_limit(300).run();
+        assert!(
+            matches!(result, Err(VmError::MemoryLimit { .. })),
+            "collection method output must count toward the memory limit: {result:?}"
         );
     }
 
