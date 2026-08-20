@@ -722,4 +722,30 @@ mod tests {
         let value = run_module(decoded, false).unwrap().unwrap();
         assert_eq!(value, titan_vm::Value::Int(10));
     }
+
+    #[test]
+    fn built_artifact_round_trips_a_full_program() {
+        // Exercises the whole language through the distribution path
+        // (compile -> .tbc -> exec): constants, structs, impl methods,
+        // recursion, ranges, and compound assignment. If any construct's
+        // bytecode failed encode/decode, publishing via Zett would break.
+        let source = "\
+const BASE: int = 10
+struct Box { value: int }
+impl Box { fn double(self) -> int { self.value * 2 } }
+fn fact(n: int) -> int { if n <= 1 { return 1 } n * fact(n - 1) }
+fn main() {
+    let mut sum = 0
+    for i in 1..4 { sum += i }
+    let b = Box { value: BASE }
+    b.double() + sum + fact(3)
+}
+";
+        let module = compile_source(source).unwrap();
+        let artifact = titan_codegen::BytecodeArtifact::encode(&module).unwrap();
+        let decoded = titan_codegen::BytecodeArtifact::decode(&artifact).unwrap();
+        // BASE.double()=20, range 1..4 sums to 6, fact(3)=6 -> 32
+        let value = run_module(decoded, false).unwrap().unwrap();
+        assert_eq!(value, titan_vm::Value::Int(32));
+    }
 }
