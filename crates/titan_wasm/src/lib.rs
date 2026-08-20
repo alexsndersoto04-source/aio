@@ -2188,6 +2188,19 @@ fn validate_operation(
             function: callee,
             argc,
         } => {
+            if *callee == usize::MAX {
+                // Range intrinsic sentinel (`start..end` / `start..=end`). The
+                // Titan VM turns it into a range value, but the WASM backend
+                // cannot lower it yet, so reject it with an explicit, honest
+                // diagnostic instead of the generic "invalid function" error
+                // that cited a huge sentinel index.
+                return Err(WasmError::Unsupported {
+                    function: function.name.clone(),
+                    operation: "range expressions (start..end / start..=end) are not yet \
+                                supported when compiling to WebAssembly"
+                        .into(),
+                });
+            }
             let target =
                 module
                     .functions
@@ -4565,6 +4578,31 @@ mod tests {
             compile(&module),
             Err(WasmError::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_range_expressions_with_a_clear_diagnostic() {
+        // `start..end` lowers to the range intrinsic sentinel
+        // Op::Call { function: usize::MAX, argc: 3 }. The WASM backend cannot
+        // lower it yet, so it must fail with an explicit diagnostic instead of
+        // a confusing "invalid function" error that cited the sentinel index.
+        let module = module_with(
+            vec![
+                Op::PushInt(0),
+                Op::PushInt(5),
+                Op::PushBool(false),
+                Op::Call {
+                    function: usize::MAX,
+                    argc: 3,
+                },
+                Op::Pop,
+                Op::Ret,
+            ],
+            0,
+        );
+        let error = compile(&module).unwrap_err();
+        assert!(matches!(error, WasmError::Unsupported { .. }));
+        assert!(error.to_string().contains("range expressions"), "{error}");
     }
 
     #[test]
