@@ -1196,7 +1196,12 @@ impl Vm {
                 } => {
                     let args = take_args(&mut stack, argc, &function.name)?;
                     if callee == usize::MAX {
-                        stack.push(make_range(args)?);
+                        let range = make_range(args)?;
+                        let allocated = value_alloc_estimate(&range);
+                        if allocated > 0 {
+                            self.track_allocation(allocated)?;
+                        }
+                        stack.push(range);
                     } else {
                         stack.push(self.execute(callee, args, Vec::new(), depth + 1, debugger)?);
                     }
@@ -5118,6 +5123,19 @@ mod tests {
         assert!(
             matches!(result, Err(VmError::MemoryLimit { .. })),
             "collection method output must count toward the memory limit: {result:?}"
+        );
+    }
+
+    #[test]
+    fn range_results_count_toward_the_memory_limit() {
+        // A range literal (a..b) creates an array via make_range; it must
+        // count toward the memory limit, otherwise ranges bypass the sandbox
+        // memory limit. 0..100 produces a 100-element array.
+        let module = compile("fn main() { 0..100 }").unwrap();
+        let result = Vm::new(module).with_memory_limit(500).run();
+        assert!(
+            matches!(result, Err(VmError::MemoryLimit { .. })),
+            "range results must count toward the memory limit: {result:?}"
         );
     }
 
