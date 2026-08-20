@@ -412,6 +412,16 @@ impl AstCompiler {
         let Some(entry) = self.function_ids.get("main").copied() else {
             return Err(CodegenError::UnknownFunction("main".into()));
         };
+        // Defensive: the VM always invokes the entry point with zero arguments,
+        // so a `main` declared with parameters would only fail later at runtime
+        // with a VmError::Arity. Reject it during lowering even when an embedder
+        // compiles a raw AST that bypassed the typechecker.
+        let entry_arity = functions[entry].params.len();
+        if entry_arity != 0 {
+            return Err(CodegenError::Unsupported(format!(
+                "entry point 'main' must take no arguments but {entry_arity} were declared"
+            )));
+        }
         self.module.entry = entry;
         self.module.functions = vec![empty_function(); functions.len()];
         for (index, function) in functions.iter().enumerate() {
@@ -1845,5 +1855,24 @@ mod tests {
 
         let mutable = parse("fn main() { let mut value = 1 value += 2 value }");
         assert!(AstCompiler::new().compile_program(&mutable).is_ok());
+    }
+
+    #[test]
+    fn rejects_entry_point_with_parameters_without_typechecker() {
+        // The VM always invokes the entry point with no arguments, so a `main`
+        // with parameters must be rejected during lowering even when an embedder
+        // compiles a raw AST that bypassed the typechecker (otherwise it would
+        // only fail later at runtime with a VmError::Arity).
+        let program = parse("fn main(value: int) {}");
+        assert!(matches!(
+            AstCompiler::new().compile_program(&program),
+            Err(CodegenError::Unsupported(message))
+                if message.contains("entry point 'main'")
+        ));
+
+        // A zero-parameter `main` still lowers normally.
+        assert!(AstCompiler::new()
+            .compile_program(&parse("fn main() { 42 }"))
+            .is_ok());
     }
 }

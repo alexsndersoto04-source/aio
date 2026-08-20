@@ -698,4 +698,13 @@ mod tests {
         let error = compile_source("fn main() {\n    1 + true\n}").unwrap_err();
         assert!(error.starts_with("2:5: invalid operands"), "{error}");
     }
+
+    #[test]
+    fn entry_point_with_parameters_is_rejected_before_running() {
+        // The entry point must be rejected at compile time (before any artifact
+        // is produced or the VM runs), surfaced as a spanned diagnostic.
+        let error = compile_source("fn main(value: int) {}").unwrap_err();
+        assert!(error.starts_with("1:1: "), "{error}");
+        assert!(error.contains("entry point 'main'"), "{error}");
+    }
 }

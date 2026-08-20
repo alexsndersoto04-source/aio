@@ -205,6 +205,11 @@ pub enum TypeError {
     InvalidTry,
     #[error("unsupported language feature: {feature}")]
     UnsupportedFeature { feature: String },
+    /// The entry point `main` is invoked by the runtime with no arguments, so
+    /// any declared parameter would only surface later as a runtime arity
+    /// error. Reject it at semantic time and point at the `main` declaration.
+    #[error("entry point 'main' must take no parameters, but {found} were declared")]
+    EntryPointParameters { found: usize },
 }
 
 /// A semantic error paired with the most precise source construct currently
@@ -4597,6 +4602,22 @@ fn declaration_errors(
         }
     }
 
+    fn reject_main_parameters(state: &mut State, function: &FunctionDecl) {
+        // `main` is the entry point and the VM always invokes it with no
+        // arguments. A parameter would only fail later with a runtime arity
+        // error, so flag it here at the real declaration span. The absence of
+        // `main` is intentionally not an error: the typechecker is reused by
+        // the LSP and embedders to analyze modules without an entry point.
+        if function.name == "main" && !function.params.is_empty() {
+            state.errors.push((
+                TypeError::EntryPointParameters {
+                    found: function.params.len(),
+                },
+                function.span,
+            ));
+        }
+    }
+
     fn visit(state: &mut State, items: &[Item]) {
         for item in items {
             match item {
@@ -4604,6 +4625,7 @@ fn declaration_errors(
                     insert(state, "value", "function", &function.name, function.span);
                     parameters(state, &function.name, &function.params);
                     reject_unimplemented_function(state, &function.name, function);
+                    reject_main_parameters(state, function);
                 }
                 Item::Const(constant) => {
                     insert(state, "value", "constant", &constant.name, constant.span)
@@ -6988,5 +7010,48 @@ mod tests {
     fn or_patterns_must_bind_the_same_names() {
         let source = "enum Choice { Number(int), Empty } fn read(choice: Choice) -> int { match choice { Choice::Number(value) | Choice::Empty => value, _ => 0 } } fn main() {}";
         assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn rejects_entry_point_with_parameters() {
+        // `main` is the entry point and the VM invokes it with no arguments,
+        // so declared parameters would only fail later with a runtime arity
+        // error.
+        assert!(check("fn main(value: int) {}").is_err());
+        assert!(check("fn main(first: int, second: int) {}").is_err());
+
+        // Zero-parameter `main` is the only valid entry shape.
+        assert!(check("fn main() {}").is_ok());
+        assert!(check("fn main() -> int { 42 }").is_ok());
+    }
+
+    #[test]
+    fn entry_point_absence_is_not_a_typechecker_error() {
+        // The typechecker is reused by the LSP and embedders to analyze modules
+        // without an entry point; only an existing `main` may be rejected.
+        assert!(check("fn helper() -> int { 1 }").is_ok());
+        assert!(check("const VALUE = 1").is_ok());
+    }
+
+    #[test]
+    fn entry_point_diagnostic_points_at_main_declaration() {
+        let program = parse("fn main(value: int) {}");
+        let diagnostics = TypeEnv::new()
+            .check_program_diagnostics(&program)
+            .unwrap_err();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| {
+                matches!(&diagnostic.error, TypeError::EntryPointParameters { .. })
+            })
+            .expect("expected entry point diagnostic");
+        let span = diagnostic
+            .span
+            .expect("entry point diagnostic must carry a real source span");
+        assert_eq!(span.line, 1);
+        assert!(span.column > 0);
+        assert!(diagnostic
+            .to_string()
+            .starts_with(&format!("{}:{}: ", span.line, span.column)));
     }
 }
