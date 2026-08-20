@@ -30,6 +30,8 @@ pub enum RegistryError {
     Signature,
     #[error("package exceeds configured download limit")]
     TooLarge,
+    #[error("package '{package}' is not in the offline cache")]
+    OfflineCacheMiss { package: String },
     #[error("cache I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -97,7 +99,12 @@ impl RegistryClient {
             .map(|(_, release)| release)
             .ok_or_else(|| RegistryError::NoVersion(index.name.clone()))
     }
-    pub fn download(&self, name: &str, release: &PackageVersion) -> Result<PathBuf, RegistryError> {
+    pub fn download(
+        &self,
+        name: &str,
+        release: &PackageVersion,
+        allow_network: bool,
+    ) -> Result<PathBuf, RegistryError> {
         validate_name(name)?;
         semver::Version::parse(&release.version)
             .map_err(|error| RegistryError::Semver(error.to_string()))?;
@@ -112,6 +119,11 @@ impl RegistryClient {
             let bytes = std::fs::read(&destination)?;
             verify(&bytes, &release.sha256)?;
             return Ok(destination);
+        }
+        if !allow_network {
+            return Err(RegistryError::OfflineCacheMiss {
+                package: name.to_string(),
+            });
         }
         let bytes = self.get(&release.archive, self.max_archive)?;
         verify(&bytes, &release.sha256)?;
