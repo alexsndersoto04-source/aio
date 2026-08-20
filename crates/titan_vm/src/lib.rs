@@ -4596,6 +4596,7 @@ fn value_length(value: Value) -> Result<i64, VmError> {
 fn value_alloc_estimate(value: &Value) -> usize {
     match value {
         Value::Str(text) => text.len(),
+        Value::Bytes(bytes) => bytes.len(),
         Value::Array(values) | Value::Tuple(values) => values.len().saturating_mul(8),
         Value::Map(values) => values.len().saturating_mul(64),
         Value::Struct { fields, .. } => fields.len().saturating_mul(32),
