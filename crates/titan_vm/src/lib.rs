@@ -806,14 +806,15 @@ impl Vm {
                 else {
                     return Err(VmError::Type("sort_by requires a function".into()));
                 };
-                let n = values.len();
+                // Stable selection sort: repeatedly remove the leftmost minimum
+                // (ties keep the earlier index) so equal-keyed elements retain
+                // their relative order, matching the documented "stable" sort
+                // contract. The previous swap-based selection sort was unstable.
+                let mut output = Vec::with_capacity(values.len());
                 let mut order_err: Option<VmError> = None;
-                'outer: for i in 0..n {
-                    if order_err.is_some() {
-                        break;
-                    }
-                    let mut min_idx = i;
-                    for j in (i + 1)..n {
+                'outer: while !values.is_empty() {
+                    let mut min_idx = 0;
+                    for j in 1..values.len() {
                         let a = values[min_idx].clone();
                         let b = values[j].clone();
                         let cmp = self.execute(
@@ -839,14 +840,12 @@ impl Vm {
                             }
                         }
                     }
-                    if min_idx != i {
-                        values.swap(i, min_idx);
-                    }
+                    output.push(values.remove(min_idx));
                 }
                 if let Some(error) = order_err {
                     return Err(error);
                 }
-                Ok(Value::Array(values))
+                Ok(Value::Array(output))
             }
             ("find", 1) => {
                 let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
@@ -5042,6 +5041,19 @@ mod tests {
     #[test]
     fn enum_matching_works() {
         assert_eq!(run("enum Maybe { None, Some(int) } fn main() { let x = Maybe::Some(7) match x { Maybe::Some(n) => n, Maybe::None => 0 } }").unwrap(), Value::Int(7));
+    }
+
+    #[test]
+    fn sort_by_preserves_relative_order_of_equal_keys() {
+        // sort_by is documented as stable; equal-keyed elements must keep
+        // their original relative order. Sorting [(5,"a"),(5,"b"),(3,"c")] by
+        // the first element yields [(3,"c"),(5,"a"),(5,"b")] only when stable;
+        // the previous swap-based selection sort reversed the two key-5 pairs.
+        let result = run(
+            "fn main() { let s = [(5,\"a\"),(5,\"b\"),(3,\"c\")].sort_by(|p,q| p.0 - q.0) s[1].1 + s[2].1 }",
+        )
+        .unwrap();
+        assert_eq!(result, Value::Str("ab".into()));
     }
     #[test]
     fn try_operator_unwraps_and_returns_the_wrapper_early() {
