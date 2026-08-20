@@ -160,25 +160,40 @@ fn validate(module: &CompiledModule) -> Result<(), ArtifactError> {
                     function: target,
                     argc,
                 } => {
-                    let target_function = module.functions.get(*target).ok_or_else(|| {
-                        ArtifactError::Invalid(format!(
-                            "{} calls missing function {target}",
-                            location()
-                        ))
-                    })?;
-                    if *argc != target_function.arity {
-                        return invalid(&format!(
-                            "{} calls '{}' with wrong arity",
-                            location(),
-                            target_function.name
-                        ));
-                    }
-                    if target_function.captures != 0 {
-                        return invalid(&format!(
-                            "{} directly calls closure body '{}'",
-                            location(),
-                            target_function.name
-                        ));
+                    if *target == usize::MAX {
+                        // `compile_range` emits this sentinel for `start..end` /
+                        // `start..=end`; the VM turns it into a range value. It
+                        // is never a real function call, so only its operand
+                        // count is checkable here. Treating the sentinel as a
+                        // missing function would reject every artifact that
+                        // uses a range, breaking `titan build`/`exec`.
+                        if *argc != 3 {
+                            return invalid(&format!(
+                                "{} has a malformed range intrinsic",
+                                location()
+                            ));
+                        }
+                    } else {
+                        let target_function = module.functions.get(*target).ok_or_else(|| {
+                            ArtifactError::Invalid(format!(
+                                "{} calls missing function {target}",
+                                location()
+                            ))
+                        })?;
+                        if *argc != target_function.arity {
+                            return invalid(&format!(
+                                "{} calls '{}' with wrong arity",
+                                location(),
+                                target_function.name
+                            ));
+                        }
+                        if target_function.captures != 0 {
+                            return invalid(&format!(
+                                "{} directly calls closure body '{}'",
+                                location(),
+                                target_function.name
+                            ));
+                        }
                     }
                 }
                 Op::CallNative { name, argc } => {
@@ -287,5 +302,32 @@ mod tests {
             .code
             .insert(0, Op::PushLocal(99));
         assert!(BytecodeArtifact::encode(&invalid_module).is_err());
+    }
+
+    #[test]
+    fn round_trips_the_range_intrinsic_sentinel() {
+        // `start..end` lowers to Op::Call { function: usize::MAX, argc: 3 },
+        // which the VM turns into a range. validate() must accept this sentinel
+        // instead of rejecting it as a call to a missing function (which broke
+        // `titan build`/`exec` for any program that uses a range).
+        let mut module = module();
+        let code = vec![
+            Op::PushInt(0),
+            Op::PushInt(5),
+            Op::PushBool(false),
+            Op::Call {
+                function: usize::MAX,
+                argc: 3,
+            },
+            Op::Pop,
+            Op::Ret,
+        ];
+        module.functions[0].code = code.clone();
+        module.functions[0].debug_locations = std::iter::repeat_with(|| None)
+            .take(code.len())
+            .collect();
+        let encoded = BytecodeArtifact::encode(&module).expect("range sentinel must encode");
+        let decoded = BytecodeArtifact::decode(&encoded).expect("range sentinel must decode");
+        assert_eq!(decoded.functions[0].code, code);
     }
 }
