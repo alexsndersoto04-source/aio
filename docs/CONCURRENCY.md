@@ -37,11 +37,11 @@ To prevent rogue or unconstrained background tasks from exhausting process heap 
 
 - `std::runtime::spawn_quota(max_bytes, || { ... })` spawns a child task with an isolated VM whose heap allocation is strictly capped at `max_bytes`. If the child task exceeds this quota, it terminates cleanly with a typed `VmError::MemoryLimit`, which can be caught via `std::try::catch` without impacting other running tasks.
 - `std::runtime::memory_limit()` returns the active memory quota for the current task (`-1` if unlimited).
-- `std::runtime::allocated_bytes()` reports live bytes allocated by the current VM stack and heap.
-- `std::runtime::gc_live_count()` estimates the number of live objects managed by the deterministic Garbage Collector.
-- `std::runtime::gc_collect()` triggers an explicit Garbage Collection sweep and returns the number of objects reclaimed.
-- `std::runtime::gc_threshold()` reports the configured GC collection threshold in bytes.
-- `std::runtime::gc_set_threshold(bytes)` dynamically adjusts the GC threshold to tune frequency and latency for high-throughput or memory-constrained workers.
+- `std::runtime::allocated_bytes()` reports the cumulative bytes accounted against the current VM's memory quota. Every allocation path is charged (arrays, tuples, structs, enums, string concatenation, native-call results, collection-method outputs, range literals, and bytes), and this same counter enforces the memory limit.
+- `std::runtime::gc_live_count()` returns an approximate live-object estimate derived from accounted allocation pressure (allocated bytes / 64). TITAN does not yet have a tracing garbage collector, so this is an allocation-pressure proxy rather than a precise live-object count.
+- `std::runtime::gc_collect()` is currently an honest no-op that returns `0`: there is no garbage collector yet, so there is nothing to sweep. Heap memory is reclaimed automatically by Rust's ownership when values go out of scope; a tracing GC is planned future work. It deliberately does not reduce the allocation counter, since that would let a program defeat the memory limit.
+- `std::runtime::gc_threshold()` reports the retained GC threshold value in bytes.
+- `std::runtime::gc_set_threshold(bytes)` stores a GC threshold value for forward compatibility. Because no automatic collector exists yet, the threshold does not currently trigger any sweep; it is reserved for the future tracing GC.
 - `std::runtime::active_tasks()` reports the number of concurrent tasks currently active in the VM process.
 - `std::runtime::heap_dump(path)` exports an instantaneous JSON heap and diagnostic snapshot (`timestamp_unix_ms`, `allocated_bytes`, `memory_limit`, `gc_threshold`, `gc_live_count`, `active_tasks`, `status`) to the specified path without interrupting server execution.
 - `std::runtime::optimize_level()` reports the active VM optimization level (`2` for release/fast-path mode).
