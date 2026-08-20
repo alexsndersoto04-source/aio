@@ -775,7 +775,7 @@ let n = std::collections::length(xs)
 ```
 
 Consultar `crates/titan_stdlib/src/native.rs` para el registro
-completo (~410 funciones al momento de v0.16.0).
+completo (758 funciones nativas al momento actual).
 
 ---
 
@@ -808,24 +808,38 @@ std::pdf::page_count(doc)     // → runtime ERROR: unknown handle
 
 **Workaround:** consultar antes de cerrar.
 
-### Errores runtime son fatales
+### Errores runtime y `std::try::catch`
 
-Titan **no tiene try/catch**. Un error de un native (archivo no
-existe, conexión rechazada, etc.) mata todo el programa.
+Por defecto, un error de un native (archivo inexistente, conexión
+rechazada, desbordamiento, etc.) **propaga y termina el programa**.
+Pero Titan **sí** permite atraparlo con `std::try::catch`:
 
-**Workaround:** verificar precondiciones antes:
+```titan
+let result = std::try::catch(|path| std::fs::read_bytes(path), "data.bin")
+match result {
+    Result::Ok(bytes) => print("leí bytes"),
+    Result::Err(msg)  => print("falló: " + msg),
+}
+```
+
+`std::try::catch(fn, args...)` ejecuta `fn(args...)` dentro de un
+límite seguro: si la llamada (o cualquier native que invoque) falla,
+captura el error y devuelve `Result::Err(String)` con el mensaje; si
+no, devuelve `Result::Ok(valor)`. Así podés recuperar el control en
+vez de morir.
+
+El operador `?` complementa: propaga un `Option`/`Result` hacia afuera
+de la función actual (retornando temprano el wrapper `None`/`Err`).
+
+Verificar precondiciones antes de llamar sigue siendo útil para evitar
+el error por completo:
 
 ```titan
 if std::fs::exists(path) {
     let bytes = std::fs::read_bytes(path)
     ...
-} else {
-    print("Archivo no existe")
 }
 ```
-
-En una futura Fase 17 pt.5 podría agregarse `try?` para expresiones
-que devuelvan nil ante fallo.
 
 ---
 
