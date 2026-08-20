@@ -5046,6 +5046,17 @@ mod tests {
     }
 
     #[test]
+    fn gc_collect_is_an_honest_noop_until_a_real_gc_exists() {
+        // No garbage collector is implemented yet, so gc_collect collects
+        // nothing (returns 0) and, importantly, must not reduce the allocation
+        // counter (which previously let a program defeat the memory limit).
+        assert_eq!(
+            run("fn main() { std::runtime::gc_collect() }").unwrap(),
+            Value::Int(0)
+        );
+    }
+
+    #[test]
     fn sort_by_preserves_relative_order_of_equal_keys() {
         // sort_by is documented as stable; equal-keyed elements must keep
         // their original relative order. Sorting [(5,"a"),(5,"b"),(3,"c")] by
