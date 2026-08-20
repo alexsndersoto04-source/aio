@@ -1389,11 +1389,13 @@ impl Vm {
                     stack.push(Value::Int(self.allocated_bytes.saturating_div(64) as i64));
                 }
                 Op::RuntimeGcCollect => {
-                    let collected = self.allocated_bytes.saturating_div(128);
-                    self.allocated_bytes = self
-                        .allocated_bytes
-                        .saturating_sub(collected.saturating_mul(64));
-                    stack.push(Value::Int(collected as i64));
+                    // No garbage collector is implemented yet, so nothing is
+                    // actually collected. Returning 0 and leaving
+                    // allocated_bytes untouched is honest; the previous code
+                    // reduced allocated_bytes, which let a program call
+                    // gc_collect to defeat the memory limit. (Bisect: op fix
+                    // only, no new test, to isolate the earlier break.)
+                    stack.push(Value::Int(0));
                 }
                 Op::RuntimeGcThreshold => {
                     stack.push(Value::Int(self.gc_threshold as i64));
