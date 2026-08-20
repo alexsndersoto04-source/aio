@@ -5081,6 +5081,24 @@ mod tests {
     }
 
     #[test]
+    fn native_results_count_toward_the_memory_limit() {
+        // Native calls allocate outside the dedicated opcodes, so their results
+        // must count toward the memory limit — otherwise std::array::concat
+        // (and similar) bypasses the sandbox memory limit. Two 10-element
+        // arrays cost 768 bytes (via NewArray); their concat produces a
+        // 20-element array that must also be charged, pushing past 800.
+        let module = compile(
+            "fn main() { let big = std::array::concat([1,2,3,4,5,6,7,8,9,10], [1,2,3,4,5,6,7,8,9,10]) len(big) }",
+        )
+        .unwrap();
+        let result = Vm::new(module).with_memory_limit(800).run();
+        assert!(
+            matches!(result, Err(VmError::MemoryLimit { .. })),
+            "native results must count toward the memory limit: {result:?}"
+        );
+    }
+
+    #[test]
     fn sort_by_preserves_relative_order_of_equal_keys() {
         // sort_by is documented as stable; equal-keyed elements must keep
         // their original relative order. Sorting [(5,"a"),(5,"b"),(3,"c")] by
