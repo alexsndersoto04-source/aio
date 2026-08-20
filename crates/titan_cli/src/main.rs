@@ -707,4 +707,19 @@ mod tests {
         assert!(error.starts_with("1:1: "), "{error}");
         assert!(error.contains("entry point 'main'"), "{error}");
     }
+
+    #[test]
+    fn built_artifact_runs_after_round_trip() {
+        // The distribution path (titan build -> .tbc -> titan exec) must
+        // round-trip and execute, including constructs that lower to special
+        // bytecode such as ranges (0..5). This guards the encode/decode/run
+        // coherence that publishing and installing via Zett depends on.
+        let module =
+            compile_source("fn main() { let mut total = 0 for i in 0..5 { total += i } total }")
+                .unwrap();
+        let artifact = titan_codegen::BytecodeArtifact::encode(&module).unwrap();
+        let decoded = titan_codegen::BytecodeArtifact::decode(&artifact).unwrap();
+        let value = run_module(decoded, false).unwrap().unwrap();
+        assert_eq!(value, titan_vm::Value::Int(10));
+    }
 }
