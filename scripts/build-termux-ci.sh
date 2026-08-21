@@ -136,7 +136,7 @@ fi
 run_number="${GITHUB_RUN_NUMBER:-0}"
 run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
 package_revision="${TERMUX_PACKAGE_REVISION:-2}"
-package_version="${workspace_version}-${package_revision}~ci${run_number}.${run_attempt}"
+package_version="${workspace_version}-${package_revision}.ci${run_number}.${run_attempt}"
 
 cp "$binary" "$DIST_DIR/zett"
 chmod 0755 "$DIST_DIR/zett"
