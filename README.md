@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/alexsndersoto04-source/aio/actions/workflows/ci.yml/badge.svg)](https://github.com/alexsndersoto04-source/aio/actions/workflows/ci.yml)
 [![cross-platform CI](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml)
+[![Release](https://img.shields.io/github/v/release/alexsndersoto04-source/aio?label=release\&color=brightgreen)](https://github.com/alexsndersoto04-source/aio/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **TITAN** es un lenguaje de programación compilado y verificado estáticamente, implementado en Rust. Los programas usan la extensión **`.titan`**, se compilan a bytecode portable y se ejecutan en una máquina virtual de pila segura. **Zett** es el nombre de distribución del compilador, especialmente en Android/Termux; ambos nombres se refieren al mismo ecosistema.
 
-> **Estado del código fuente:** Fase 40. El núcleo conecta lexer, parser, AST, comprobación de tipos, generación de bytecode, VM, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro contiene **758 funciones nativas únicas en 72 namespaces `std::*`**, además de primitivas especializadas del runtime. Los binarios publicados están disponibles en el release **v1.0.0**, compilados por GitHub Actions para Linux, macOS, Windows y Android/Termux.
+> **TITAN/Zett 1.0.0 — release estable.** Lenguaje compilado y verificado estáticamente: lexer, parser, typechecker, codegen, VM segura, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro reúne **758 funciones nativas únicas en 72 namespaces `std::*`** además de primitivas del runtime. Binarios oficiales en el release **[v1.0.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.0.0)** (Linux, macOS, Windows) y, en Android/Termux, instalación directa con `pkg install zett`.
 
 ```text
 TITAN source (.titan)
