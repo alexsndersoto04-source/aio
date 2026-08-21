@@ -6,7 +6,7 @@
 
 **TITAN** es un lenguaje de programación compilado y verificado estáticamente, implementado en Rust. Los programas usan la extensión **`.titan`**, se compilan a bytecode portable y se ejecutan en una máquina virtual de pila segura. **Zett** es el nombre de distribución del compilador, especialmente en Android/Termux; ambos nombres se refieren al mismo ecosistema.
 
-> **Estado del código fuente:** Fase 40. El núcleo conecta lexer, parser, AST, comprobación de tipos, generación de bytecode, VM, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro contiene **758 funciones nativas únicas en 72 namespaces `std::*`**, además de primitivas especializadas del runtime. Los binarios publicados actualmente están disponibles en la serie **v0.35.0**; la metadata de la próxima distribución se alineará con las fases posteriores.
+> **Estado del código fuente:** Fase 40. El núcleo conecta lexer, parser, AST, comprobación de tipos, generación de bytecode, VM, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro contiene **758 funciones nativas únicas en 72 namespaces `std::*`**, además de primitivas especializadas del runtime. Los binarios publicados están disponibles en el release **v1.0.0**, compilados por GitHub Actions para Linux, macOS, Windows y Android/Termux.
 
 ```text
 TITAN source (.titan)
@@ -40,7 +40,7 @@ Los binarios precompilados se publican en [**Releases**](https://github.com/alex
 ### Linux x86-64
 
 ```bash
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-x86_64.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-x86_64.tar.gz | tar xz
 ./zett version
 ```
 
@@ -48,10 +48,10 @@ curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/
 
 ```bash
 # ARM de 64 bits
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-aarch64.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-aarch64.tar.gz | tar xz
 
 # ARM de 32 bits hard-float; útil, por ejemplo, en proot Debian armhf + Termux:X11
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-linux-armv7hf.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-armv7hf.tar.gz | tar xz
 
 ./zett version
 ```
@@ -59,7 +59,7 @@ curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/
 ### macOS Apple Silicon
 
 ```bash
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v0.35.0/zett-macos-arm64.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-macos-arm64.tar.gz | tar xz
 xattr -d com.apple.quarantine zett 2>/dev/null || true
 ./zett version
 ```
