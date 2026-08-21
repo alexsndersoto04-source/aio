@@ -1710,6 +1710,22 @@ Description: TITAN compiler: HTTPS, crypto, Android, TUI, images, QR, system, au
  parameters, JSON/HTML/bytes responses and RFC 6455 WebSocket upgrades.
 
 Package: zett
+Version: 1.0.0-2.ci193.1
+Architecture: arm
+Maintainer: Alex Sanders Soto
+Installed-Size: 40412
+Filename: ./zett_1.0.0-2.ci193.1_arm.deb
+Size: 12079604
+MD5sum: d66202ed489069316eb1cd6685fd2b4d
+SHA1: 26835c2dc0b438ee22f47c88a7905b5257894b62
+SHA256: 280683d43706caa3caf2db022a81527df15331c80b6fcbb7a6463a9612c72866
+Section: devel
+Priority: optional
+Description: TITAN language compiler and integrated runtime
+ Zett is the single-binary TITAN compiler, bytecode VM, package tooling,
+ WebAssembly backend, and standard library distribution for Termux.
+
+Package: zett
 Version: 1.0.0-2~ci191.1
 Architecture: arm
 Maintainer: Alex Sanders Soto
