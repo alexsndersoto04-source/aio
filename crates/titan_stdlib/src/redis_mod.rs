@@ -1682,6 +1682,10 @@ mod tests {
         });
     }
 
+    // Timing-sensitive integration test. Under cfg(test)
+    // OPERATION_TIMEOUT is 500ms; that is too tight for GitHub's
+    // macOS runners, so run it on Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn slow_connection_does_not_hold_the_global_registry_lock() {
         in_test_runtime(|runtime_id| {
