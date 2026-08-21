@@ -1,0 +1,76 @@
+# ============================================================================
+# TEMPLATE — Workflow de CI para compilar el binario Zett para Termux AArch64.
+#
+# Tu Redmi 9C (MediaTek Helio G22) es aarch64 (64-bit). El workflow
+# termux-arm.yml existente compila armv7 (32-bit), que NO se ejecuta en tu
+# teléfono. Este workflow compila aarch64 y sube un .deb instalable.
+#
+# CÓMO ACTIVARLO (desde Termux, porque Arena no tiene permiso de workflows):
+#
+#   cd aio
+#   git pull origin arena/01a01dfc-aio
+#   cp docs/TERMUX_AARCH64_WORKFLOW.yml .github/workflows/termux-aarch64.yml
+#   git add .github/workflows/termux-aarch64.yml
+#   git commit -m "Add Termux AArch64 build workflow for 64-bit devices"
+#   git push origin arena/01a01dfc-aio
+#
+# Una vez pusheado, cada push a arena/** dispara este workflow y deja un
+# artifact `zett-termux-aarch64-<run>` descargable. El .deb dentro se instala
+# en Termux con:  dpkg -i zett_*.deb
+# ============================================================================
+
+name: Termux AArch64 (64-bit)
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: termux-aarch64-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  TERMUX_ARCH: aarch64
+  ANDROID_API: "24"
+  NDK_VERSION: 27.2.12479018
+
+jobs:
+  build-termux-aarch64:
+    name: Build and package native Termux AArch64 binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable and AArch64 Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+
+      - name: Install Android command-line tools
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Rust AArch64 build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: termux-aarch64-android
+
+      - name: Build, verify, and package Termux AArch64 release candidate
+        run: bash scripts/build-termux-ci.sh
+
+      - name: Upload native Termux AArch64 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zett-termux-aarch64-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
