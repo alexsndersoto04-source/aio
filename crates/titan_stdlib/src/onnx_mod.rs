@@ -201,11 +201,14 @@ fn inspect_source(path: &str) -> Result<(std::fs::File, usize), OnnxError> {
     }
     let (active, runtime_bytes) = current_capacity();
     validate_capacity(active, runtime_bytes, 0)?;
-    let file = std::fs::File::open(path)?;
-    let metadata = file.metadata()?;
+    // Detect non-regular files (e.g. directories) BEFORE opening. On Windows,
+    // File::open on a directory fails with an IO error instead of yielding a
+    // usable metadata handle, so check the type up front for cross-OS parity.
+    let metadata = std::fs::metadata(path)?;
     if !metadata.file_type().is_file() {
         return Err(OnnxError::InvalidSource("model path is not a regular file"));
     }
+    let file = std::fs::File::open(path)?;
     let source_bytes = usize::try_from(metadata.len()).map_err(|_| OnnxError::ResourceLimit {
         resource: "ONNX model file bytes",
         limit: MAX_MODEL_FILE_BYTES,

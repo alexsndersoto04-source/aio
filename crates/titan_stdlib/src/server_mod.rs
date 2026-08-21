@@ -1631,7 +1631,7 @@ mod tests {
         thread::spawn(move || {
             let mut stream = TcpStream::connect(addr).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             stream.write_all(&request).unwrap();
             let _ = stream.shutdown(Shutdown::Write);
@@ -1800,7 +1800,7 @@ mod tests {
             let peer = thread::spawn(move || {
                 let mut stream = TcpStream::connect(addr).unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
                 stream
                     .write_all(

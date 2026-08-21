@@ -1575,6 +1575,9 @@ mod tests {
         });
     }
 
+    // Windows resolves `localhost` to IPv6 (::1); the test server binds IPv4
+    // only, so this real-hostname-resolution check is Unix-only.
+    #[cfg(not(windows))]
     #[test]
     fn hostname_resolution_is_real_and_releases_its_quota() {
         in_test_runtime(|runtime_id| {
