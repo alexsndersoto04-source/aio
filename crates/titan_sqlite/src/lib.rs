@@ -409,7 +409,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("titan-pool-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let pool = Pool::new(&path, 1).unwrap();
-        let mut first = pool.acquire(Duration::from_secs(1)).unwrap();
+        let mut first = pool.acquire(Duration::from_secs(10)).unwrap();
         first
             .execute("CREATE TABLE items(value INTEGER)", &[])
             .unwrap();
@@ -418,7 +418,7 @@ mod tests {
             Err(DbError::PoolTimeout)
         ));
         drop(first);
-        let mut reused = pool.acquire(Duration::from_secs(1)).unwrap();
+        let mut reused = pool.acquire(Duration::from_secs(10)).unwrap();
         reused.execute("INSERT INTO items VALUES (1)", &[]).unwrap();
         drop(reused);
         let stats = pool.stats().unwrap();

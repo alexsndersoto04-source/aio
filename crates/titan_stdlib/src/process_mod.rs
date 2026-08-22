@@ -818,7 +818,12 @@ mod tests {
             spawn_bg("sh -c 'head -c 131072 /dev/zero; echo done >&2'").unwrap()
         });
         let mut exited = false;
-        for _ in 0..200 {
+        // Wait against a wall-clock deadline instead of a fixed number of
+        // retries: a hosted runner can take far longer than the 1s that 200
+        // five-millisecond naps allowed, and a slow machine must cost time,
+        // never a false failure.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
             exited = crate::native::with_runtime_context(runtime_id, || spawn_poll(handle))
                 .unwrap()
                 .is_some();

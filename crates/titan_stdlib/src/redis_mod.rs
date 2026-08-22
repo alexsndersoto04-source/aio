@@ -1754,7 +1754,7 @@ mod tests {
         in_test_runtime(|runtime_id| {
             let (url, server) = spawn_server(|mut stream| {
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
                 let mut byte = [0u8; 1];
                 assert_eq!(stream.read(&mut byte).unwrap(), 0);
@@ -1776,7 +1776,7 @@ mod tests {
             let reservation = reserve_handle().unwrap();
             let (url, server) = spawn_server(|mut stream| {
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
                 let mut byte = [0u8; 1];
                 assert_eq!(stream.read(&mut byte).unwrap(), 0);

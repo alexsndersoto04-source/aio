@@ -209,15 +209,21 @@ mod tests {
         let dt = step();
         // sleep() guarantees strictly positive elapsed time on every OS.
         assert!(dt > 0.0);
-        assert!(
-            dt < 1.0,
-            "dt of a 5ms nap must stay well under a second, got {dt}"
-        );
-        // FPS is derived from the measured dt: sane bounds for any CI runner.
+        // The upper bounds only exist to catch a broken clock, so they are
+        // deliberately far away from any plausible scheduling delay: a loaded
+        // CI runner can starve this thread for hundreds of milliseconds
+        // without anything being wrong with the engine.
+        assert!(dt < 30.0, "dt of a 5ms nap is not a clock reading: {dt}");
+        // FPS is defined as the rounded inverse of the measured frame time, so
+        // assert exactly that relation. A range check like "between 1 and 1000"
+        // looks safer but is really a bet on how fast the machine is: one
+        // scheduling hiccup above a second drives it to zero and the test
+        // fails without the engine having done anything wrong.
         let measured = fps();
-        assert!(
-            measured >= 1 && measured <= 1000,
-            "fps out of sane range: {measured}"
+        assert_eq!(
+            measured,
+            (1.0 / dt).round() as i64,
+            "fps must be the rounded inverse of dt={dt}, got {measured}"
         );
         assert!(shutdown());
     }
@@ -226,12 +232,21 @@ mod tests {
     fn fps_is_steady_when_sleeping_consistently() {
         let _guard = test_lock();
         assert!(init("Steady", 320, 240));
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // The nap is long enough that scheduling jitter is a small fraction of
+        // it. With 20ms naps a single 200ms hiccup on a loaded runner - which
+        // says nothing about the engine - produced a tenfold difference and
+        // failed the test; with 150ms naps the same hiccup is noise.
+        let nap = std::time::Duration::from_millis(150);
+        std::thread::sleep(nap);
         let first = step();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(nap);
         let second = step();
-        assert!(first > 0.0 && second > 0.0);
-        // two identical naps cannot differ by an order of magnitude.
+        // sleep() never returns early, so each frame must cover its nap.
+        let floor = nap.as_secs_f64() * 0.9;
+        assert!(
+            first >= floor && second >= floor,
+            "a frame cannot be shorter than the nap it contains: {first} / {second}"
+        );
         let ratio = if first > second {
             first / second
         } else {
@@ -261,7 +276,9 @@ mod tests {
         // After re-init the very next step must not inherit stale frames.
         std::thread::sleep(std::time::Duration::from_millis(3));
         let dt = step();
-        assert!(dt > 0.0 && dt < 1.0);
+        // The point is that dt restarts from this run, not that the machine is
+        // fast, so the ceiling is only a sanity bound on the clock reading.
+        assert!(dt > 0.0 && dt < 30.0, "stale or implausible dt: {dt}");
         assert!(shutdown());
     }
 

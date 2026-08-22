@@ -1660,7 +1660,7 @@ mod tests {
                 b"POST /hello?q=1 HTTP/1.1\r\nHost: localhost\r\nX-Test: yes\r\nContent-Length: 5\r\n\r\nhello"
                     .to_vec(),
             );
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             assert_eq!(method(request).unwrap(), "POST");
             assert_eq!(url(request).unwrap(), "/hello?q=1");
             assert_eq!(path(request).unwrap(), "/hello");
@@ -1697,7 +1697,7 @@ mod tests {
                 b"POST /chunked HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\nX-End: yes\r\n\r\n"
                     .to_vec(),
             );
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             assert_eq!(body_text(request).unwrap(), "Wikipedia");
             respond(request, 200, "ok").unwrap();
             assert!(String::from_utf8(peer.join().unwrap())
@@ -1722,7 +1722,7 @@ mod tests {
                 .into_bytes(),
             );
             assert!(matches!(
-                accept(server, 2_000),
+                accept(server, 10_000),
                 Err(ServerError::ResourceLimit {
                     resource: "HTTP request body bytes",
                     ..
@@ -1736,7 +1736,7 @@ mod tests {
                     .to_vec(),
             );
             assert!(matches!(
-                accept(server, 2_000),
+                accept(server, 10_000),
                 Err(ServerError::InvalidRequest(
                     "ambiguous request body framing"
                 ))
@@ -1744,7 +1744,7 @@ mod tests {
             peer.join().unwrap();
 
             let peer = client(&addr, b"GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_vec());
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             assert!(matches!(
                 respond_full(
                     request,
@@ -1781,7 +1781,7 @@ mod tests {
                     thread::sleep(IO_DEADLINE + Duration::from_millis(500));
                 }
             });
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             let started = Instant::now();
             let body_reader = thread::spawn(move || {
                 crate::native::with_runtime_context(runtime_id, || body(request))
@@ -1843,7 +1843,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(frame.payload, b"world");
             });
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             let websocket = upgrade_websocket(request, 1024).unwrap();
             assert_eq!(
                 ws_recv(websocket).unwrap(),

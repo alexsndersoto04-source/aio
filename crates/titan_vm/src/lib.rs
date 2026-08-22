@@ -5040,7 +5040,11 @@ mod tests {
         assert_eq!(vm.run().unwrap(), Some(Value::Int(1)));
         drop(vm);
 
-        for _ in 0..200 {
+        // Deadline instead of a fixed retry count: 200 naps of 5ms give the
+        // cancelled task exactly one second to unwind, which is plenty on a
+        // developer machine and occasionally not enough on a loaded CI runner.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
             if runtime.upgrade().is_none() {
                 return;
             }
