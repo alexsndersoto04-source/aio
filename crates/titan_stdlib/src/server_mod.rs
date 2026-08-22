@@ -43,8 +43,17 @@ const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 #[cfg(not(test))]
 const IO_DEADLINE: Duration = Duration::from_secs(5);
+// The test deadline stays below the production one so the timeout tests do
+// not stall the suite, but it must still be generous enough for the slowest
+// hosted CI runner. It used to be 300ms, which is ample on Linux and on a
+// developer machine yet too tight on GitHub's macOS runners: `accept` parses
+// the request head under this deadline regardless of the caller's own accept
+// timeout, so a client thread that is simply slow to be scheduled turned a
+// healthy round-trip test into an intermittent `ServerError::Timeout`.
+// Tests that deliberately wait for the deadline derive their sleeps from this
+// constant instead of hardcoding a matching literal.
 #[cfg(test)]
-const IO_DEADLINE: Duration = Duration::from_millis(300);
+const IO_DEADLINE: Duration = Duration::from_secs(2);
 
 const WS_OP_TEXT: u8 = 0x1;
 const WS_OP_BINARY: u8 = 0x2;
@@ -1767,7 +1776,9 @@ mod tests {
                             b"POST /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nx",
                         )
                         .unwrap();
-                    thread::sleep(Duration::from_millis(600));
+                    // Outlive the server deadline so the read fails as a
+                    // timeout rather than as an early end of stream.
+                    thread::sleep(IO_DEADLINE + Duration::from_millis(500));
                 }
             });
             let request = accept(server, 2_000).unwrap();
@@ -1784,7 +1795,7 @@ mod tests {
                     operation: "read HTTP request body"
                 })
             ));
-            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(started.elapsed() < IO_DEADLINE + Duration::from_millis(750));
             stop(other_server);
             stop(server);
             stalled.join().unwrap();
@@ -1792,10 +1803,11 @@ mod tests {
         });
     }
 
-    // Real-network round-trip integration test. Under cfg(test) the
-    // server IO_DEADLINE is 300ms to keep the suite snappy locally; that
-    // margin is too tight for GitHub's macOS/Windows runners, so this
-    // test runs on Linux only where the timing is reliable.
+    // Real-network round-trip integration test, kept on Linux only.
+    // The original reason was the 300ms cfg(test) IO_DEADLINE, which is now
+    // 2s, so the margin that made this red on macOS/Windows is gone. The gate
+    // stays until a green macOS/Windows run confirms it; re-enabling it is a
+    // deliberate follow-up, not something to assume.
     #[cfg(target_os = "linux")]
     #[test]
     fn real_websocket_upgrade_and_masked_frame_round_trip() {

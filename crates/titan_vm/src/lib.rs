@@ -5595,7 +5595,7 @@ mod tests {
     }
     #[test]
     fn advanced_http_client_is_callable_from_titan() {
-        assert_eq!(run("fn main(){let listener=std::net::tcp_listen(\"127.0.0.1:0\") let address=std::net::tcp_local_addr(listener) let server=spawn || {let accepted=std::net::tcp_accept(listener) let stream=accepted[0] std::net::tcp_read(stream,4096) std::net::tcp_write(stream,\"HTTP/1.1 200 OK\\r\\nContent-Length: 5\\r\\nConnection: close\\r\\n\\r\\nhello\") std::net::tcp_close(stream)} let response=std::http::request(\"GET\",\"http://\"+address+\"/\",std::json::parse(\"{}\"),std::encoding::utf8_encode(\"\"),1024,2,2000) join(server) std::net::tcp_close(listener) std::encoding::utf8_decode(response.body)}").unwrap(),Value::Str("hello".into()));
+        assert_eq!(run("fn main(){let listener=std::net::tcp_listen(\"127.0.0.1:0\") let address=std::net::tcp_local_addr(listener) let server=spawn || {let accepted=std::net::tcp_accept(listener) let stream=accepted[0] std::net::tcp_read(stream,4096) std::net::tcp_write(stream,\"HTTP/1.1 200 OK\\r\\nContent-Length: 5\\r\\nConnection: close\\r\\n\\r\\nhello\") std::net::tcp_close(stream)} let response=std::http::request(\"GET\",\"http://\"+address+\"/\",std::json::parse(\"{}\"),std::encoding::utf8_encode(\"\"),1024,2,5000) join(server) std::net::tcp_close(listener) std::encoding::utf8_decode(response.body)}").unwrap(),Value::Str("hello".into()));
     }
     #[test]
     fn multipart_uploads_are_callable_from_titan() {
