@@ -39,11 +39,17 @@ const MAX_SCAN_ROUNDS: usize = 256;
 #[cfg(not(test))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(test)]
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(not(test))]
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+// Same reasoning as `server_mod::IO_DEADLINE`: the test timeouts were 500ms,
+// which is comfortable on Linux but marginal on hosted macOS/Windows runners
+// under parallel load, where a healthy local round-trip occasionally exceeded
+// it and failed as `RedisError::Timeout`. Two seconds keeps the timeout tests
+// fast while removing the false negatives; tests that wait for the deadline
+// derive their sleeps from these constants.
 #[cfg(test)]
-const OPERATION_TIMEOUT: Duration = Duration::from_millis(500);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Error)]
 pub enum RedisError {
@@ -1682,9 +1688,11 @@ mod tests {
         });
     }
 
-    // Timing-sensitive integration test. Under cfg(test)
-    // OPERATION_TIMEOUT is 500ms; that is too tight for GitHub's
-    // macOS runners, so run it on Linux only.
+    // Kept on Linux only, and not because of OPERATION_TIMEOUT: the
+    // assertion below requires an unrelated command to complete in under
+    // 250ms while another connection is stalled, which measures host speed
+    // rather than the property under test. Hosted macOS/Windows runners
+    // cannot honour that budget reliably.
     #[cfg(target_os = "linux")]
     #[test]
     fn slow_connection_does_not_hold_the_global_registry_lock() {
@@ -1746,7 +1754,7 @@ mod tests {
         in_test_runtime(|runtime_id| {
             let (url, server) = spawn_server(|mut stream| {
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
                 let mut byte = [0u8; 1];
                 assert_eq!(stream.read(&mut byte).unwrap(), 0);
@@ -1768,7 +1776,7 @@ mod tests {
             let reservation = reserve_handle().unwrap();
             let (url, server) = spawn_server(|mut stream| {
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
                 let mut byte = [0u8; 1];
                 assert_eq!(stream.read(&mut byte).unwrap(), 0);

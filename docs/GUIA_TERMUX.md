@@ -102,7 +102,42 @@ cargo test --workspace -j1 --exclude titan_sqlite
 cargo test -p titan_sqlite -j1
 ```
 
-## 6. Compilar el binario `zett`
+## 6. Cazar tests intermitentes desde el teléfono
+
+Algunos tests dependen del reloj: abren sockets locales, esperan a que salte
+un deadline o coordinan hilos. Esos tests pasan siempre en una máquina rápida
+y descansada, y fallan **de vez en cuando** en un runner de CI lento y
+cargado. Es el fallo más difícil de diagnosticar, porque el código está bien:
+lo que falla es el margen de tiempo.
+
+Aquí el Redmi 9C deja de ser una limitación y pasa a ser la mejor herramienta
+del proyecto. Un runner de macOS en GitHub es lento; **un Helio G22 con 2 GB
+de RAM lo es mucho más**. Si un test sobrevive treinta repeticiones seguidas
+en el teléfono, sus márgenes aguantan cualquier cosa que GitHub le eche
+encima.
+
+```sh
+# 10 repeticiones del grupo sensible al tiempo
+scripts/flaky-check.sh
+
+# 30 repeticiones, compilando con un solo job (menos RAM)
+scripts/flaky-check.sh -n 30 -j 1
+
+# la suite completa, 5 veces (tarda mucho en el teléfono)
+scripts/flaky-check.sh -a -n 5
+```
+
+El script compila los binarios de test una sola vez y luego repite solo la
+ejecución, así que la segunda repetición y las siguientes son rápidas. Si
+algo falla te imprime **el nombre exacto del test** y guarda el log completo
+en `flaky-check-failure-*.log`, que es justo lo que hace falta para
+arreglarlo sin adivinar.
+
+Para forzar aún más la situación, corre el script con el teléfono ocupado:
+otra app pesada abierta, o una segunda sesión de Termux compilando. Esa es la
+condición que reproduce el CI cargado.
+
+## 7. Compilar el binario `zett`
 
 El CLI se llama `zett`:
 
@@ -113,21 +148,25 @@ cargo build -p titan_cli --release -j2
 El binario queda en `target/release/zett` (o `target/release/titan` según
 el nombre del binario en `crates/titan_cli/Cargo.toml`).
 
-## 7. Qué estamos validando y por qué
+## 8. Qué estamos validando y por qué
 
-| Objetivo                       | Comando                         | Estado                 |
-|--------------------------------|---------------------------------|------------------------|
-| Fix offline-fetch compila      | `cargo test -p titan_pkg`       | ✅ fix re-aplicado     |
-| Workspace arma en aarch64      | `cargo build --workspace`       | ⏳ a validar en Termux |
-| Tests pasan en Android real    | `cargo test --workspace`        | ⏳ a validar en Termux |
-| Binario `zett` funcional       | `cargo build -p titan_cli`      | ⏳ a validar en Termux |
+| Objetivo                          | Comando                          | Estado                 |
+|-----------------------------------|----------------------------------|------------------------|
+| Fix offline-fetch compila         | `cargo test -p titan_pkg`        | ✅ fix re-aplicado     |
+| Workspace arma en aarch64         | `cargo build --workspace`        | ⏳ a validar en Termux |
+| Tests pasan en Android real       | `cargo test --workspace`         | ⏳ a validar en Termux |
+| Binario `zett` funcional          | `cargo build -p titan_cli`       | ⏳ a validar en Termux |
+| Márgenes de tiempo sin flakes     | `scripts/flaky-check.sh -n 30`   | ⏳ a validar en Termux |
 
-> **Nota sobre cross-platform (Windows/macOS):** Termux es Linux, así que
-> NO reproduce el fallo de Windows/macOS. Ese issue se diagnostica con los
-> **logs de CI de GitHub** (Actions → el run que falla → copiar el error),
-> que tú sí puedes ver desde el navegador.
+> **Nota sobre cross-platform (Windows/macOS):** Termux es Linux, así que no
+> reproduce un fallo *específico* de Windows o macOS (rutas, resolución de
+> `localhost` a IPv6, APIs del sistema). Para esos casos hacen falta los
+> **logs de CI de GitHub** (Actions → el run que falla → copiar el error).
+> Pero sí sirve, y muy bien, para la otra familia de fallos de esa matriz:
+> los **intermitentes por tiempo**. Ahí el teléfono es más exigente que
+> cualquier runner de GitHub; ver la sección 6.
 
-## 8. Si algo falla: qué pegarme
+## 9. Si algo falla: qué pegarme
 
 Cuando un comando falle, copiame **desde la primera línea de error** hasta
 el final. Concretamente:

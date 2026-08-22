@@ -383,7 +383,7 @@ mod tests {
             body: Vec::new(),
             maximum_body: 1024,
             redirects: 3,
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(10),
         })
         .unwrap();
         assert_eq!(response.body, b"hello titan");

@@ -4,7 +4,7 @@
 //
 //   for (x, y) in coordenadas { ... }
 //   for Point { x, y } in puntos { ... }
-//   for (nombre, edad) in std::map::pairs(m) { ... }
+//   for (nombre, edad) in personas { ... }        // array de tuplas
 //   for Producto { titulo, precio } in inventario { ... }
 //
 // Es puramente sintactico — el parser desazucara a un `for __item in xs`

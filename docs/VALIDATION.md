@@ -5,6 +5,43 @@ validado solamente porque el código parezca correcto: debe tener pruebas y una
 ejecución externa en GitHub Actions. Las pruebas físicas en el Redmi se anotan
 por separado porque CI no puede sustituir un teléfono real.
 
+## Reglas para tests que dependen del reloj
+
+Esta sección existe porque la matriz `cross-platform` se puso en rojo varias
+veces sin que hubiera ninguna regresión: el código estaba bien y el margen de
+tiempo no. Un test intermitente no es un test débil, es un test que miente, y
+enseña al equipo a ignorar el rojo. Las reglas son cuatro:
+
+1. **Si el test comprueba que algo *sucede*, el plazo debe ser generoso.**
+   Segundos, no milisegundos. Una máquina lenta solo puede costar tiempo, nunca
+   provocar un fallo falso. Los plazos cortos no hacen la suite más rápida en el
+   camino feliz: solo se agotan cuando algo va mal.
+
+2. **Si el test comprueba que algo *expira*, el sueño se deriva de la constante
+   que se está probando**, nunca de un número escrito a mano. Ejemplo real:
+   `server_mod::stalled_request_body_...` duerme `IO_DEADLINE + 500ms`. Así, si
+   mañana cambia la constante, el test se ajusta solo y no se desincroniza.
+
+3. **No se afirma nada sobre el tiempo de reloj** salvo que la propiedad bajo
+   prueba *sea* la duración. Un `assert!(elapsed < 250ms)` mide qué tan rápida
+   es la máquina, no si el código es correcto. Cuando esa afirmación es
+   imprescindible, el test se restringe a Linux y el comentario dice por qué.
+
+4. **Se prefiere una relación exacta a un rango plausible.** `fps` es el inverso
+   redondeado de `dt`: afirmar `fps == (1.0/dt).round()` es determinista y
+   comprueba la lógica real; afirmar `1 <= fps <= 1000` es una apuesta sobre la
+   velocidad del host.
+
+Para esperas hay que usar una fecha límite de reloj (`Instant::now() + 15s`) en
+lugar de un número fijo de reintentos: `for _ in 0..200 { sleep(5ms) }` parece
+un bucle de espera, pero en realidad es un presupuesto de un segundo escrito de
+forma que nadie lo nota al leerlo.
+
+Antes de dar por bueno un cambio en esta zona: `scripts/flaky-check.sh -n 30`
+repite los grupos sensibles al tiempo y reporta el nombre exacto de lo que
+falle. Ejecutado en un teléfono con Termux es más exigente que cualquier runner
+de GitHub, incluido macOS.
+
 ## Estado actual
 
 - Rama de trabajo: `arena/019ff232-aio`

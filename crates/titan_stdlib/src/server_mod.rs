@@ -43,8 +43,17 @@ const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 #[cfg(not(test))]
 const IO_DEADLINE: Duration = Duration::from_secs(5);
+// The test deadline stays below the production one so the timeout tests do
+// not stall the suite, but it must still be generous enough for the slowest
+// hosted CI runner. It used to be 300ms, which is ample on Linux and on a
+// developer machine yet too tight on GitHub's macOS runners: `accept` parses
+// the request head under this deadline regardless of the caller's own accept
+// timeout, so a client thread that is simply slow to be scheduled turned a
+// healthy round-trip test into an intermittent `ServerError::Timeout`.
+// Tests that deliberately wait for the deadline derive their sleeps from this
+// constant instead of hardcoding a matching literal.
 #[cfg(test)]
-const IO_DEADLINE: Duration = Duration::from_millis(300);
+const IO_DEADLINE: Duration = Duration::from_secs(2);
 
 const WS_OP_TEXT: u8 = 0x1;
 const WS_OP_BINARY: u8 = 0x2;
@@ -1651,7 +1660,7 @@ mod tests {
                 b"POST /hello?q=1 HTTP/1.1\r\nHost: localhost\r\nX-Test: yes\r\nContent-Length: 5\r\n\r\nhello"
                     .to_vec(),
             );
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             assert_eq!(method(request).unwrap(), "POST");
             assert_eq!(url(request).unwrap(), "/hello?q=1");
             assert_eq!(path(request).unwrap(), "/hello");
@@ -1688,7 +1697,7 @@ mod tests {
                 b"POST /chunked HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\nX-End: yes\r\n\r\n"
                     .to_vec(),
             );
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             assert_eq!(body_text(request).unwrap(), "Wikipedia");
             respond(request, 200, "ok").unwrap();
             assert!(String::from_utf8(peer.join().unwrap())
@@ -1713,7 +1722,7 @@ mod tests {
                 .into_bytes(),
             );
             assert!(matches!(
-                accept(server, 2_000),
+                accept(server, 10_000),
                 Err(ServerError::ResourceLimit {
                     resource: "HTTP request body bytes",
                     ..
@@ -1727,7 +1736,7 @@ mod tests {
                     .to_vec(),
             );
             assert!(matches!(
-                accept(server, 2_000),
+                accept(server, 10_000),
                 Err(ServerError::InvalidRequest(
                     "ambiguous request body framing"
                 ))
@@ -1735,7 +1744,7 @@ mod tests {
             peer.join().unwrap();
 
             let peer = client(&addr, b"GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_vec());
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             assert!(matches!(
                 respond_full(
                     request,
@@ -1767,10 +1776,12 @@ mod tests {
                             b"POST /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nx",
                         )
                         .unwrap();
-                    thread::sleep(Duration::from_millis(600));
+                    // Outlive the server deadline so the read fails as a
+                    // timeout rather than as an early end of stream.
+                    thread::sleep(IO_DEADLINE + Duration::from_millis(500));
                 }
             });
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             let started = Instant::now();
             let body_reader = thread::spawn(move || {
                 crate::native::with_runtime_context(runtime_id, || body(request))
@@ -1784,7 +1795,7 @@ mod tests {
                     operation: "read HTTP request body"
                 })
             ));
-            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(started.elapsed() < IO_DEADLINE + Duration::from_millis(750));
             stop(other_server);
             stop(server);
             stalled.join().unwrap();
@@ -1792,10 +1803,11 @@ mod tests {
         });
     }
 
-    // Real-network round-trip integration test. Under cfg(test) the
-    // server IO_DEADLINE is 300ms to keep the suite snappy locally; that
-    // margin is too tight for GitHub's macOS/Windows runners, so this
-    // test runs on Linux only where the timing is reliable.
+    // Real-network round-trip integration test, kept on Linux only.
+    // The original reason was the 300ms cfg(test) IO_DEADLINE, which is now
+    // 2s, so the margin that made this red on macOS/Windows is gone. The gate
+    // stays until a green macOS/Windows run confirms it; re-enabling it is a
+    // deliberate follow-up, not something to assume.
     #[cfg(target_os = "linux")]
     #[test]
     fn real_websocket_upgrade_and_masked_frame_round_trip() {
@@ -1831,7 +1843,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(frame.payload, b"world");
             });
-            let request = accept(server, 2_000).unwrap();
+            let request = accept(server, 10_000).unwrap();
             let websocket = upgrade_websocket(request, 1024).unwrap();
             assert_eq!(
                 ws_recv(websocket).unwrap(),
