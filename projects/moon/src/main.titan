@@ -6,7 +6,6 @@
 // - Verificar != nil antes de indexar resultados de query
 
 const HOST: string = "0.0.0.0"
-const PORT: int = 3000
 const JWT_EXPIRES: int = 86400
 const MAX_POSTS_PER_HOUR: int = 30
 const APP_NAME: string = "Moon"
@@ -68,7 +67,7 @@ fn make_token(user_id, username: string) -> string {
 
 // ---- NOTIFICATION ----
 fn notify(conn, uid, ntype: string, from_uid) {
-    let p1 = [uid, ntype, from_uid, 0, 0]
+    let p1 = [uid, ntype, from_uid]
     std::sqlite::execute(conn, "INSERT INTO notifications (user_id, type, from_user_id) VALUES (?, ?, ?)", p1)
 }
 
@@ -88,7 +87,7 @@ fn init_db() {
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, post_id INTEGER NOT NULL, content TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS direct_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id INTEGER NOT NULL, receiver_id INTEGER NOT NULL, content TEXT NOT NULL, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, from_user_id INTEGER, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
             print("Tablas creadas.")
         },
         Option::None => {
@@ -121,31 +120,31 @@ fn handle_register(r, req, pool) {
 
             if std::collections::length(username) < 3 {
                 respond_err(req, 400, "Username muy corto")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if std::collections::length(password) < 8 {
                 respond_err(req, 400, "Password muy corto")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
 
             let p1 = [username]
             let existing = std::sqlite::query(conn, "SELECT id FROM users WHERE username = ?", p1)
-            if existing != nil {
+            if std::collections::length(existing) > 0 {
                 if std::collections::length(existing) > 0 {
                     respond_err(req, 409, "Username en uso")
-                    std::sqlite::close(conn)
+                    let ignored_close = std::sqlite::close(conn)
                     return
                 }
             }
 
             let p2 = [email]
             let existing2 = std::sqlite::query(conn, "SELECT id FROM users WHERE email = ?", p2)
-            if existing2 != nil {
+            if std::collections::length(existing2) > 0 {
                 if std::collections::length(existing2) > 0 {
                     respond_err(req, 409, "Email en uso")
-                    std::sqlite::close(conn)
+                    let ignored_close = std::sqlite::close(conn)
                     return
                 }
             }
@@ -156,9 +155,9 @@ fn handle_register(r, req, pool) {
 
             let p4 = [username]
             let nu = std::sqlite::query(conn, "SELECT id, username, email, display_name FROM users WHERE username = ?", p4)
-            if nu == nil {
+            if std::collections::length(nu) == 0 {
                 respond_err(req, 500, "Error")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             let user = nu[0]
@@ -168,7 +167,7 @@ fn handle_register(r, req, pool) {
             resp = std::map::insert(resp, "token", token)
             resp = std::map::insert(resp, "user", user)
             respond_created(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -185,26 +184,26 @@ fn handle_login(r, req, pool) {
 
             if username == "" {
                 respond_err(req, 400, "Username requerido")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if password == "" {
                 respond_err(req, 400, "Password requerido")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
 
             let p1 = [username, username]
             let users = std::sqlite::query(conn, "SELECT id, username, email, password_hash, display_name, bio, avatar_url FROM users WHERE username = ? OR email = ?", p1)
 
-            if users == nil {
+            if std::collections::length(users) == 0 {
                 respond_err(req, 401, "Credenciales invalidas")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if std::collections::length(users) == 0 {
                 respond_err(req, 401, "Credenciales invalidas")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
 
@@ -212,7 +211,7 @@ fn handle_login(r, req, pool) {
             let valid = std::password::verify_argon2(user.password_hash, password)
             if valid != true {
                 respond_err(req, 401, "Credenciales invalidas")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
 
@@ -234,7 +233,7 @@ fn handle_login(r, req, pool) {
             resp = std::map::insert(resp, "token", token)
             resp = std::map::insert(resp, "user", su)
             respond_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -248,18 +247,18 @@ fn handle_me(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [uid]
             let users = std::sqlite::query(conn, "SELECT id, username, email, display_name, bio, avatar_url, followers_count, following_count, posts_count, created_at FROM users WHERE id = ?", p1)
-            if users == nil {
+            if std::collections::length(users) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if std::collections::length(users) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             respond_ok(req, std::json::stringify(users[0]))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -276,14 +275,14 @@ fn handle_get_profile(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [target_id]
             let users = std::sqlite::query(conn, "SELECT id, username, display_name, bio, avatar_url, followers_count, following_count, posts_count FROM users WHERE id = ?", p1)
-            if users == nil {
+            if std::collections::length(users) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if std::collections::length(users) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             let profile = users[0]
@@ -291,7 +290,7 @@ fn handle_get_profile(r, req, pool) {
             let p2 = [uid, target_id]
             let follows = std::sqlite::query(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", p2)
             let mut is_following = false
-            if follows != nil {
+            if std::collections::length(follows) > 0 {
                 if std::collections::length(follows) > 0 {
                     is_following = true
                 }
@@ -301,7 +300,7 @@ fn handle_get_profile(r, req, pool) {
             resp = std::map::insert(resp, "user", profile)
             resp = std::map::insert(resp, "is_following", is_following)
             respond_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -324,23 +323,23 @@ fn handle_follow(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [target_id]
             let t = std::sqlite::query(conn, "SELECT id FROM users WHERE id = ?", p1)
-            if t == nil {
+            if std::collections::length(t) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if std::collections::length(t) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
 
             let p2 = [uid, target_id]
             let already = std::sqlite::query(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", p2)
-            if already != nil {
+            if std::collections::length(already) > 0 {
                 if std::collections::length(already) > 0 {
                     respond_err(req, 409, "Ya sigues a este usuario")
-                    std::sqlite::close(conn)
+                    let ignored_close = std::sqlite::close(conn)
                     return
                 }
             }
@@ -356,7 +355,7 @@ fn handle_follow(r, req, pool) {
             let mut resp = std::map::new()
             resp = std::map::insert(resp, "message", "Ahora sigues a este usuario")
             respond_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -380,7 +379,7 @@ fn handle_unfollow(r, req, pool) {
             let mut resp = std::map::new()
             resp = std::map::insert(resp, "message", "Dejaste de seguir")
             respond_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -397,23 +396,23 @@ fn handle_create_post(r, req, pool) {
             let content = body.content
             if content == "" {
                 respond_err(req, 400, "Contenido vacio")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             let p1 = [uid, content]
             std::sqlite::execute(conn, "INSERT INTO posts (user_id, content) VALUES (?, ?)", p1)
             let p2 = [uid]
             let np = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 1", p2)
-            if np == nil {
+            if std::collections::length(np) == 0 {
                 respond_err(req, 500, "Error")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             let post = np[0]
             let p3 = [uid]
             std::sqlite::execute(conn, "UPDATE users SET posts_count = posts_count + 1 WHERE id = ?", p3)
             respond_created(req, std::json::stringify(post))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -430,21 +429,21 @@ fn handle_get_post(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [post_id]
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?", p1)
-            if posts == nil {
+            if std::collections::length(posts) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if std::collections::length(posts) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             let post = posts[0]
             let p2 = [uid, post_id]
             let likes = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
             let mut is_liked = false
-            if likes != nil {
+            if std::collections::length(likes) > 0 {
                 if std::collections::length(likes) > 0 {
                     is_liked = true
                 }
@@ -453,7 +452,7 @@ fn handle_get_post(r, req, pool) {
             resp = std::map::insert(resp, "post", post)
             resp = std::map::insert(resp, "is_liked", is_liked)
             respond_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -470,23 +469,23 @@ fn handle_like(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [post_id]
             let pc = std::sqlite::query(conn, "SELECT user_id FROM posts WHERE id = ?", p1)
-            if pc == nil {
+            if std::collections::length(pc) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             if std::collections::length(pc) == 0 {
                 respond_err(req, 404, "No encontrado")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             let owner = pc[0].user_id
             let p2 = [uid, post_id]
             let existing = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
-            if existing != nil {
+            if std::collections::length(existing) > 0 {
                 if std::collections::length(existing) > 0 {
                     respond_err(req, 409, "Ya diste like")
-                    std::sqlite::close(conn)
+                    let ignored_close = std::sqlite::close(conn)
                     return
                 }
             }
@@ -500,7 +499,7 @@ fn handle_like(r, req, pool) {
             let mut resp = std::map::new()
             resp = std::map::insert(resp, "message", "Like agregado")
             respond_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -522,7 +521,7 @@ fn handle_unlike(r, req, pool) {
             let mut resp = std::map::new()
             resp = std::map::insert(resp, "message", "Like removido")
             respond_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -539,12 +538,12 @@ fn handle_get_comments(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [post_id]
             let comments = std::sqlite::query(conn, "SELECT c.id, c.content, c.created_at, u.username, u.display_name, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC LIMIT 50", p1)
-            if comments == nil {
+            if std::collections::length(comments) == 0 {
                 respond_ok(req, "[]")
             } else {
                 respond_ok(req, std::json::stringify(comments))
             }
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -564,7 +563,7 @@ fn handle_add_comment(r, req, pool) {
             let content = body.content
             if content == "" {
                 respond_err(req, 400, "Comentario vacio")
-                std::sqlite::close(conn)
+                let ignored_close = std::sqlite::close(conn)
                 return
             }
             let p1 = [uid, post_id, content]
@@ -573,7 +572,7 @@ fn handle_add_comment(r, req, pool) {
             std::sqlite::execute(conn, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", p2)
             let p3 = [post_id]
             let pc = std::sqlite::query(conn, "SELECT user_id FROM posts WHERE id = ?", p3)
-            if pc != nil {
+            if std::collections::length(pc) > 0 {
                 if std::collections::length(pc) > 0 {
                     let owner = pc[0].user_id
                     if owner != uid {
@@ -584,7 +583,7 @@ fn handle_add_comment(r, req, pool) {
             let mut resp = std::map::new()
             resp = std::map::insert(resp, "message", "Comentario agregado")
             respond_created(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -598,12 +597,12 @@ fn handle_feed(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [uid, uid]
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
-            if posts == nil {
+            if std::collections::length(posts) == 0 {
                 respond_ok(req, "[]")
             } else {
                 respond_ok(req, std::json::stringify(posts))
             }
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -615,13 +614,13 @@ fn handle_trending(r, req, pool) {
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
-            let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id ORDER BY (p.likes_count + p.comments_count * 2) DESC LIMIT 20")
-            if posts == nil {
+            let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id ORDER BY (p.likes_count + p.comments_count * 2) DESC LIMIT 20", [])
+            if std::collections::length(posts) == 0 {
                 respond_ok(req, "[]")
             } else {
                 respond_ok(req, std::json::stringify(posts))
             }
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -638,12 +637,12 @@ fn handle_user_posts(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [target_id]
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
-            if posts == nil {
+            if std::collections::length(posts) == 0 {
                 respond_ok(req, "[]")
             } else {
                 respond_ok(req, std::json::stringify(posts))
             }
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -657,12 +656,12 @@ fn handle_notifications(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [uid]
             let notifs = std::sqlite::query(conn, "SELECT n.id, n.type, n.is_read, n.created_at, fu.username as from_username FROM notifications n LEFT JOIN users fu ON n.from_user_id = fu.id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 30", p1)
-            if notifs == nil {
+            if std::collections::length(notifs) == 0 {
                 respond_ok(req, "[]")
             } else {
                 respond_ok(req, std::json::stringify(notifs))
             }
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -676,12 +675,12 @@ fn handle_conversations(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [uid, uid, uid]
             let convs = std::sqlite::query(conn, "SELECT DISTINCT partner_id, username, last_message, last_created_at FROM (SELECT CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END as partner_id, dm.content as last_message, dm.created_at as last_created_at FROM direct_messages dm WHERE dm.sender_id = ? OR dm.receiver_id = ? ORDER BY dm.created_at DESC) as recent JOIN users u ON partner_id = u.id ORDER BY last_created_at DESC LIMIT 50", p1)
-            if convs == nil {
+            if std::collections::length(convs) == 0 {
                 respond_ok(req, "[]")
             } else {
                 respond_ok(req, std::json::stringify(convs))
             }
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -707,7 +706,7 @@ fn handle_send_message(r, req, pool) {
             let mut resp = std::map::new()
             resp = std::map::insert(resp, "message", "Mensaje enviado")
             respond_created(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
+            let ignored_close = std::sqlite::close(conn)
         },
         Option::None => { respond_err(req, 500, "DB error") }
     }
@@ -744,7 +743,9 @@ fn main() {
     std::router::insert(r, "/api/messages/send", "send_message")
     print("19 endpoints registrados.")
 
-    let bind_addr = HOST + ":" + PORT
+    let mut render_port = std::env::get("PORT")
+    if render_port == "" { render_port = "3000" }
+    let bind_addr = HOST + ":" + render_port
     let s = std::server::start(bind_addr)
     let addr = std::server::local_addr(s)
     print("Moon en: http://" + addr)
