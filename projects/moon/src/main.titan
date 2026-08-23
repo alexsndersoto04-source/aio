@@ -743,42 +743,59 @@ fn main() {
     std::router::insert(r, "/api/messages/send", "send_message")
     print("19 endpoints registrados.")
 
-    let mut render_port = std::env::get("PORT")
-    if render_port == "" { render_port = "3000" }
+    // Render inyecta el puerto en PORT. std::env::get devuelve nil cuando
+    // la variable no existe (no ""), por eso el tipo any permite la
+    // comprobacion doble y la caida a 3000 cubre ambos casos.
+    let mut render_port: any = std::env::get("PORT")
+    if render_port == nil || render_port == "" { render_port = "3000" }
     let bind_addr = HOST + ":" + render_port
     let s = std::server::start(bind_addr)
     let addr = std::server::local_addr(s)
     print("Moon en: http://" + addr)
 
     loop {
-        let req = std::server::accept(s, 30000)
-        if req < 0 {
-        } else {
-            let path = std::server::path(req)
-            let hit = std::router::at(r, path)
-            if hit == nil {
-                respond_err(req, 404, "Not found")
-            } else {
-                let tag = hit.pattern
-                if tag == "health" { handle_health(req) }
-                if tag == "register" { handle_register(r, req, pool) }
-                if tag == "login" { handle_login(r, req, pool) }
-                if tag == "me" { handle_me(r, req, pool) }
-                if tag == "profile" { handle_get_profile(r, req, pool) }
-                if tag == "follow" { handle_follow(r, req, pool) }
-                if tag == "unfollow" { handle_unfollow(r, req, pool) }
-                if tag == "create_post" { handle_create_post(r, req, pool) }
-                if tag == "get_post" { handle_get_post(r, req, pool) }
-                if tag == "like" { handle_like(r, req, pool) }
-                if tag == "unlike" { handle_unlike(r, req, pool) }
-                if tag == "get_comments" { handle_get_comments(r, req, pool) }
-                if tag == "add_comment" { handle_add_comment(r, req, pool) }
-                if tag == "feed" { handle_feed(r, req, pool) }
-                if tag == "trending" { handle_trending(r, req, pool) }
-                if tag == "user_posts" { handle_user_posts(r, req, pool) }
-                if tag == "notifications" { handle_notifications(r, req, pool) }
-                if tag == "conversations" { handle_conversations(r, req, pool) }
-                if tag == "send_message" { handle_send_message(r, req, pool) }
+        // std::try::catch: los health checks de Render (y los scanners) a
+        // veces abren la conexion TCP y la cierran antes de mandar
+        // cabeceras HTTP. En ese caso el accept nativo lanza el error
+        // "connection closed before request headers completed". Sin esta
+        // captura el error mata el proceso y Render marca el servicio
+        // caido; ahora la conexion incompleta se ignora y se sigue
+        // escuchando.
+        let attempt = std::try::catch(|| std::server::accept(s, 30000))
+        match attempt {
+            Result::Ok(req) => {
+                if req < 0 {
+                } else {
+                    let path = std::server::path(req)
+                    let hit = std::router::at(r, path)
+                    if hit == nil {
+                        respond_err(req, 404, "Not found")
+                    } else {
+                        let tag = hit.pattern
+                        if tag == "health" { handle_health(req) }
+                        if tag == "register" { handle_register(r, req, pool) }
+                        if tag == "login" { handle_login(r, req, pool) }
+                        if tag == "me" { handle_me(r, req, pool) }
+                        if tag == "profile" { handle_get_profile(r, req, pool) }
+                        if tag == "follow" { handle_follow(r, req, pool) }
+                        if tag == "unfollow" { handle_unfollow(r, req, pool) }
+                        if tag == "create_post" { handle_create_post(r, req, pool) }
+                        if tag == "get_post" { handle_get_post(r, req, pool) }
+                        if tag == "like" { handle_like(r, req, pool) }
+                        if tag == "unlike" { handle_unlike(r, req, pool) }
+                        if tag == "get_comments" { handle_get_comments(r, req, pool) }
+                        if tag == "add_comment" { handle_add_comment(r, req, pool) }
+                        if tag == "feed" { handle_feed(r, req, pool) }
+                        if tag == "trending" { handle_trending(r, req, pool) }
+                        if tag == "user_posts" { handle_user_posts(r, req, pool) }
+                        if tag == "notifications" { handle_notifications(r, req, pool) }
+                        if tag == "conversations" { handle_conversations(r, req, pool) }
+                        if tag == "send_message" { handle_send_message(r, req, pool) }
+                    }
+                }
+            },
+            Result::Err(msg) => {
+                print("conexion incompleta ignorada: " + msg)
             }
         }
     }
