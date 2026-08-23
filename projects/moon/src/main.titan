@@ -751,7 +751,7 @@ fn main() {
     print("Moon en: http://" + addr)
 
     loop {
-        let req = std::server::accept(s, 60000)
+        let req = std::server::accept(s, 30000)
         if req < 0 {
         } else {
             let path = std::server::path(req)
