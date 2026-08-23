@@ -341,6 +341,14 @@ CARGO_INCREMENTAL=0 cargo test --workspace --all-targets -j 1
 
 ## Documentación
 
+**Para empezar:**
+
+- [Empezar con TITAN](docs/EMPEZAR_CON_TITAN.md) — guía práctica: modelo mental, gotchas reales y patrones que funcionan
+- [Referencia de la API](docs/REFERENCIA_API.md) — las 758 nativas y las 122 firmas del compilador, generada desde el código fuente
+- [20 ideas para construir](docs/IDEAS_CON_TITAN.md) — proyectos con los módulos y ejemplos concretos de cada uno
+
+**Referencia:**
+
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [Especificación del lenguaje](docs/SPEC.md)
 - [Referencia de sintaxis](docs/TITAN_SYNTAX.md)
