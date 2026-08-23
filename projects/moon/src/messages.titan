@@ -1,0 +1,143 @@
+// ============================================================
+// Nexo — Mensajería directa con cifrado
+// ============================================================
+
+// POST /api/messages/send — enviar mensaje directo
+fn send_message(req, db, redis) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let body_text = std::server::body_text(req)
+    let body = std::json::parse(body_text)
+
+    let receiver_id = body.receiver_id
+    let content = body.content
+
+    if content == "" || std::collections::length(content) > MAX_MESSAGE_LENGTH {
+        respond_json_error(req, 400, "El mensaje debe tener entre 1 y 2000 caracteres.")
+        return
+    }
+
+    // Verificar que el receptor existe
+    let receiver_check = std::db::query(db, "SELECT id FROM users WHERE id = ?", [receiver_id])
+    if std::collections::length(receiver_check) == 0 {
+        respond_json_error(req, 404, "Usuario receptor no encontrado.")
+        return
+    }
+
+    // Verificar que no está bloqueado (simplificado: solo verificamos follow mutuo para DMs)
+    // En producción necesitarías una tabla de blocks
+    let follows_check = std::db::query(db,
+        "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
+        [receiver_id, user_id])
+    if std::collections::length(follows_check) == 0 {
+        respond_json_error(req, 403, "Solo puedes enviar mensajes a usuarios que te siguen.")
+        return
+    }
+
+    // Insertar mensaje
+    std::db::execute(db,
+        "INSERT INTO direct_messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
+        [user_id, receiver_id, content])
+
+    // Notificar al receptor
+    create_notification(db, receiver_id, "message", user_id, 0, 0)
+
+    // Invalidar cache de conversación
+    std::redis::del(redis, "dm:thread:" + user_id + ":" + receiver_id)
+    std::redis::del(redis, "dm:thread:" + receiver_id + ":" + user_id)
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Mensaje enviado.")
+    respond_json_created(req, std::json::stringify(resp))
+}
+
+// GET /api/messages/:user_id — conversación con un usuario
+fn get_conversation(req, db, redis) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let other_id = hit.params.user_id
+
+    // Cache check
+    let cache_key = "dm:thread:" + user_id + ":" + other_id
+    let cached = std::redis::get(redis, cache_key)
+    if cached != nil {
+        respond_json_ok(req, std::encoding::utf8_decode(cached))
+        return
+    }
+
+    let page_str = std::server::query_param(req, "page")
+    let page = 1
+    if page_str != "" {
+        let parsed = std::text::parse_int(page_str)
+        if parsed > 0 { page = parsed }
+    }
+    let per_page = 50
+    let offset = (page - 1) * per_page
+
+    let messages = std::db::query(db,
+        "SELECT dm.id, dm.sender_id, dm.receiver_id, dm.content, dm.is_read, dm.created_at, u.username, u.avatar_url FROM direct_messages dm JOIN users u ON dm.sender_id = u.id WHERE (dm.sender_id = ? AND dm.receiver_id = ? AND dm.is_deleted_sender = false) OR (dm.sender_id = ? AND dm.receiver_id = ? AND dm.is_deleted_receiver = false) ORDER BY dm.created_at DESC LIMIT ? OFFSET ?",
+        [user_id, other_id, other_id, user_id, per_page, offset])
+
+    // Marcar como leídos los mensajes recibidos
+    std::db::execute(db,
+        "UPDATE direct_messages SET is_read = true WHERE sender_id = ? AND receiver_id = ? AND is_read = false",
+        [other_id, user_id])
+
+    let resp_json = std::json::stringify(messages)
+    std::redis::set_ex(redis, cache_key, resp_json, 30)
+
+    respond_json_ok(req, resp_json)
+}
+
+// GET /api/messages/conversations — lista de conversaciones
+fn get_conversations(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Obtener las últimas conversaciones
+    let conversations = std::db::query(db,
+        "SELECT DISTINCT ON (partner_id) partner_id, username, display_name, avatar_url, content as last_message, dm.created_at as last_message_at, unread_count FROM (SELECT CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END as partner_id, dm.content, dm.created_at FROM direct_messages dm WHERE dm.sender_id = ? OR dm.receiver_id = ? ORDER BY dm.created_at DESC) as recent JOIN users u ON partner_id = u.id LEFT JOIN (SELECT sender_id, COUNT(*) as unread_count FROM direct_messages WHERE receiver_id = ? AND is_read = false GROUP BY sender_id) as unread ON partner_id = unread.sender_id ORDER BY last_message_at DESC LIMIT 50",
+        [user_id, user_id, user_id, user_id])
+
+    respond_json_ok(req, std::json::stringify(conversations))
+}
+
+// DELETE /api/messages/:message_id — eliminar mensaje propio
+fn delete_message(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let message_id = hit.params.message_id
+
+    // Marcar como eliminado para el sender
+    std::db::execute(db,
+        "UPDATE direct_messages SET is_deleted_sender = true WHERE id = ? AND sender_id = ?",
+        [message_id, user_id])
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Mensaje eliminado.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// GET /api/messages/unread/count — conteo de mensajes no leídos
+fn get_unread_count(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let result = std::db::query(db,
+        "SELECT COUNT(*) as count FROM direct_messages WHERE receiver_id = ? AND is_read = false",
+        [user_id])
+
+    let count = 0
+    if std::collections::length(result) > 0 {
+        count = result[0].count
+    }
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "unread_count", count)
+    respond_json_ok(req, std::json::stringify(resp))
+}

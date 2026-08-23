@@ -1,0 +1,229 @@
+// ============================================================
+// Nexo — Usuarios: perfiles, follow/unfollow, búsqueda
+// ============================================================
+
+// GET /api/users/:id — obtener perfil público
+fn get_profile(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let target_id = hit.params.id
+
+    let users = std::db::query(db,
+        "SELECT id, username, display_name, bio, avatar_url, banner_url, is_verified, is_private, followers_count, following_count, posts_count, created_at FROM users WHERE id = ?",
+        [target_id])
+
+    if std::collections::length(users) == 0 {
+        respond_json_error(req, 404, "Usuario no encontrado.")
+        return
+    }
+
+    let profile = users[0]
+
+    // Verificar si el usuario actual sigue a este perfil
+    let follows = std::db::query(db,
+        "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
+        [user_id, target_id])
+    let is_following = std::collections::length(follows) > 0
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "user", profile)
+    let resp = std::map::insert(resp, "is_following", is_following)
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// GET /api/users/:username — obtener perfil por username
+fn get_profile_by_username(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let username = hit.params.username
+
+    let users = std::db::query(db,
+        "SELECT id, username, display_name, bio, avatar_url, banner_url, is_verified, is_private, followers_count, following_count, posts_count, created_at FROM users WHERE username = ?",
+        [username])
+
+    if std::collections::length(users) == 0 {
+        respond_json_error(req, 404, "Usuario no encontrado.")
+        return
+    }
+
+    let profile = users[0]
+    let target_id = profile.id
+
+    let follows = std::db::query(db,
+        "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
+        [user_id, target_id])
+    let is_following = std::collections::length(follows) > 0
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "user", profile)
+    let resp = std::map::insert(resp, "is_following", is_following)
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// PUT /api/users/me — actualizar perfil propio
+fn update_profile(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let body_text = std::server::body_text(req)
+    let body = std::json::parse(body_text)
+
+    let display_name = body.display_name
+    let bio = body.bio
+    let is_private = body.is_private
+
+    // Actualizar solo los campos proporcionados
+    if display_name != nil {
+        if !validate_string(display_name, 1, 100) {
+            respond_json_error(req, 400, "El nombre debe tener entre 1 y 100 caracteres.")
+            return
+        }
+        std::db::execute(db, "UPDATE users SET display_name = ?, updated_at = NOW() WHERE id = ?",
+            [display_name, user_id])
+    }
+
+    if bio != nil {
+        std::db::execute(db, "UPDATE users SET bio = ?, updated_at = NOW() WHERE id = ?",
+            [bio, user_id])
+    }
+
+    if is_private != nil {
+        std::db::execute(db, "UPDATE users SET is_private = ?, updated_at = NOW() WHERE id = ?",
+            [is_private, user_id])
+    }
+
+    // Retornar perfil actualizado
+    let users = std::db::query(db,
+        "SELECT id, username, display_name, bio, avatar_url, banner_url, is_verified, is_private FROM users WHERE id = ?",
+        [user_id])
+
+    respond_json_ok(req, std::json::stringify(users[0]))
+}
+
+// POST /api/follow/:user_id — seguir a alguien
+fn follow_user(req, db, redis) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let target_id = hit.params.user_id
+
+    if user_id == target_id {
+        respond_json_error(req, 400, "No puedes seguirte a ti mismo.")
+        return
+    }
+
+    // Rate limit: máximo 100 follows por día
+    let can_follow = rate_limit_check(redis, "follow:" + user_id, MAX_FOLLOW_PER_DAY, 86400)
+    if !can_follow {
+        respond_json_error(req, 429, "Has alcanzado el límite de follows por día (100).")
+        return
+    }
+
+    // Verificar que el usuario objetivo existe
+    let target_exists = std::db::query(db, "SELECT id FROM users WHERE id = ?", [target_id])
+    if std::collections::length(target_exists) == 0 {
+        respond_json_error(req, 404, "Usuario no encontrado.")
+        return
+    }
+
+    // Verificar que no lo sigue ya
+    let already_follows = std::db::query(db,
+        "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
+        [user_id, target_id])
+    if std::collections::length(already_follows) > 0 {
+        respond_json_error(req, 409, "Ya sigues a este usuario.")
+        return
+    }
+
+    // Insertar follow
+    std::db::execute(db,
+        "INSERT INTO follows (follower_id, following_id) VALUES (?, ?)",
+        [user_id, target_id])
+
+    // Actualizar contadores
+    std::db::execute(db, "UPDATE users SET following_count = following_count + 1 WHERE id = ?", [user_id])
+    std::db::execute(db, "UPDATE users SET followers_count = followers_count + 1 WHERE id = ?", [target_id])
+
+    // Crear notificación
+    create_notification(db, target_id, "follow", user_id, 0, 0)
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Ahora sigues a este usuario.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// POST /api/unfollow/:user_id — dejar de seguir
+fn unfollow_user(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let target_id = hit.params.user_id
+
+    // Eliminar follow
+    std::db::execute(db,
+        "DELETE FROM follows WHERE follower_id = ? AND following_id = ?",
+        [user_id, target_id])
+
+    // Actualizar contadores
+    std::db::execute(db, "UPDATE users SET following_count = following_count - 1 WHERE id = ?", [user_id])
+    std::db::execute(db, "UPDATE users SET followers_count = followers_count - 1 WHERE id = ?", [target_id])
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Dejaste de seguir a este usuario.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// GET /api/users/:id/followers — lista de seguidores
+fn get_followers(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let target_id = hit.params.user_id
+
+    let followers = std::db::query(db,
+        "SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified FROM users u JOIN follows f ON u.id = f.follower_id WHERE f.following_id = ? ORDER BY f.created_at DESC LIMIT 50",
+        [target_id])
+
+    respond_json_ok(req, std::json::stringify(followers))
+}
+
+// GET /api/users/:id/following — lista de a quién sigue
+fn get_following(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let target_id = hit.params.user_id
+
+    let following = std::db::query(db,
+        "SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified FROM users u JOIN follows f ON u.id = f.following_id WHERE f.follower_id = ? ORDER BY f.created_at DESC LIMIT 50",
+        [target_id])
+
+    respond_json_ok(req, std::json::stringify(following))
+}
+
+// GET /api/users/search?q= — buscar usuarios
+fn search_users(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let query = std::server::query_param(req, "q")
+    if query == "" || std::collections::length(query) < 2 {
+        respond_json_error(req, 400, "La búsqueda debe tener al menos 2 caracteres.")
+        return
+    }
+
+    let search_pattern = "%" + query + "%"
+    let users = std::db::query(db,
+        "SELECT id, username, display_name, avatar_url, is_verified, followers_count FROM users WHERE username ILIKE ? OR display_name ILIKE ? ORDER BY followers_count DESC LIMIT 20",
+        [search_pattern, search_pattern])
+
+    respond_json_ok(req, std::json::stringify(users))
+}

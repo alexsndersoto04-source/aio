@@ -1,0 +1,206 @@
+// ============================================================
+// Nexo — Autenticación: registro, login, refresh, logout
+// ============================================================
+
+// POST /api/auth/register
+fn register(req, db, redis) {
+    let body_text = std::server::body_text(req)
+    let body = std::json::parse(body_text)
+
+    let username = body.username
+    let email    = body.email
+    let password = body.password
+
+    // Validaciones
+    if !validate_string(username, 3, 30) {
+        respond_json_error(req, 400, "El username debe tener entre 3 y 30 caracteres.")
+        return
+    }
+    if !validate_string(email, 5, 255) {
+        respond_json_error(req, 400, "Email inválido.")
+        return
+    }
+    if !validate_string(password, 8, 128) {
+        respond_json_error(req, 400, "La contraseña debe tener al menos 8 caracteres.")
+        return
+    }
+
+    // Verificar que username no existe
+    let existing_user = std::db::query(db,
+        "SELECT id FROM users WHERE username = ?", [username])
+    if std::collections::length(existing_user) > 0 {
+        respond_json_error(req, 409, "Ese username ya está en uso.")
+        return
+    }
+
+    // Verificar que email no existe
+    let existing_email = std::db::query(db,
+        "SELECT id FROM users WHERE email = ?", [email])
+    if std::collections::length(existing_email) > 0 {
+        respond_json_error(req, 409, "Ese email ya está registrado.")
+        return
+    }
+
+    // Hashear password con Argon2id
+    let password_hash = std::password::hash_argon2(password)
+
+    // Insertar usuario
+    std::db::execute(db,
+        "INSERT INTO users (username, email, password_hash, display_name) VALUES (?, ?, ?, ?)",
+        [username, email, password_hash, username])
+
+    let new_user = std::db::query(db,
+        "SELECT id, username, email, display_name, created_at FROM users WHERE username = ?",
+        [username])
+
+    let user = new_user[0]
+    let user_id = user.id
+
+    // Generar JWT
+    let token = generate_token(user_id, username)
+
+    // Guardar sesión en Redis (cache)
+    let session_key = "session:" + user_id
+    std::redis::set_ex(redis, session_key, token, JWT_EXPIRES)
+
+    // Respuesta
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "token", token)
+    let resp = std::map::insert(resp, "user", user)
+    respond_json_created(req, std::json::stringify(resp))
+
+    print("Usuario registrado: " + username)
+}
+
+// POST /api/auth/login
+fn login(req, db, redis) {
+    let body_text = std::server::body_text(req)
+    let body = std::json::parse(body_text)
+
+    let username = body.username
+    let password = body.password
+
+    if username == "" || password == "" {
+        respond_json_error(req, 400, "Username y password son obligatorios.")
+        return
+    }
+
+    // Buscar usuario
+    let users = std::db::query(db,
+        "SELECT id, username, email, password_hash, display_name, bio, avatar_url FROM users WHERE username = ? OR email = ?",
+        [username, username])
+
+    if std::collections::length(users) == 0 {
+        respond_json_error(req, 401, "Credenciales inválidas.")
+        return
+    }
+
+    let user = users[0]
+
+    // Verificar contraseña
+    let valid = std::password::verify_argon2(user.password_hash, password)
+    if !valid {
+        // Rate limit de login fallido
+        let ip = std::server::peer(req)
+        std::redis::incr(redis, "login_fail:" + ip)
+        respond_json_error(req, 401, "Credenciales inválidas.")
+        return
+    }
+
+    // Actualizar last_login
+    std::db::execute(db,
+        "UPDATE users SET last_login_at = NOW() WHERE id = ?",
+        [user.id])
+
+    // Generar token
+    let token = generate_token(user.id, user.username)
+
+    // Cache de sesión
+    std::redis::set_ex(redis, "session:" + user.id, token, JWT_EXPIRES)
+
+    // Respuesta (sin password_hash)
+    let safe_user = std::map::new()
+    let safe_user = std::map::insert(safe_user, "id", user.id)
+    let safe_user = std::map::insert(safe_user, "username", user.username)
+    let safe_user = std::map::insert(safe_user, "email", user.email)
+    let safe_user = std::map::insert(safe_user, "display_name", user.display_name)
+    let safe_user = std::map::insert(safe_user, "bio", user.bio)
+    let safe_user = std::map::insert(safe_user, "avatar_url", user.avatar_url)
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "token", token)
+    let resp = std::map::insert(resp, "user", safe_user)
+    respond_json_ok(req, std::json::stringify(resp))
+
+    print("Login exitoso: " + user.username)
+}
+
+// POST /api/auth/refresh
+fn refresh_token(req, db, redis) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Buscar usuario
+    let users = std::db::query(db,
+        "SELECT id, username FROM users WHERE id = ?", [user_id])
+
+    if std::collections::length(users) == 0 {
+        respond_json_error(req, 401, "Usuario no encontrado.")
+        return
+    }
+
+    let user = users[0]
+    let token = generate_token(user.id, user.username)
+
+    // Actualizar cache
+    std::redis::set_ex(redis, "session:" + user.id, token, JWT_EXPIRES)
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "token", token)
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// POST /api/auth/logout
+fn logout(req, db, redis) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Eliminar sesión de cache
+    std::redis::del(redis, "session:" + user_id)
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Sesión cerrada correctamente.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// GET /api/auth/me — obtener el usuario autenticado
+fn get_me(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let users = std::db::query(db,
+        "SELECT id, username, email, display_name, bio, avatar_url, banner_url, is_verified, is_private, followers_count, following_count, posts_count, created_at FROM users WHERE id = ?",
+        [user_id])
+
+    if std::collections::length(users) == 0 {
+        respond_json_error(req, 404, "Usuario no encontrado.")
+        return
+    }
+
+    respond_json_ok(req, std::json::stringify(users[0]))
+}
+
+// Helper: genera un JWT con claims estándar.
+fn generate_token(user_id, username: string) -> string {
+    let secret = std::encoding::utf8_encode(JWT_SECRET)
+    let ahora = std::datetime::now()
+    let expira = std::datetime::add_seconds(ahora, JWT_EXPIRES)
+
+    let claims = std::map::new()
+    let claims = std::map::insert(claims, "user_id", user_id)
+    let claims = std::map::insert(claims, "username", username)
+    let claims = std::map::insert(claims, "iat", ahora)
+    let claims = std::map::insert(claims, "exp", expira)
+
+    std::jwt::sign_hs256(claims, secret)
+}

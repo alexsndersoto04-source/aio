@@ -1,0 +1,32 @@
+// ============================================================
+// Nexo — Configuración central
+// ============================================================
+
+// URLs de servicios
+const DB_URL: string = "postgresql://nexo:nexo_password@localhost:5432/nexo"
+const REDIS_URL: string = "redis://localhost:6379"
+
+// Server
+const HOST: string = "0.0.0.0"
+const PORT: int = 3000
+
+// JWT
+const JWT_SECRET: string = "cambia-esto-por-un-secreto-seguro-de-al-menos-32-bytes"
+const JWT_EXPIRES: int = 86400  // 24 horas en segundos
+
+// Uploads
+const UPLOAD_DIR: string = "uploads"
+const MAX_UPLOAD_SIZE: int = 10_000_000  // 10 MB
+
+// Rate limits
+const MAX_FOLLOW_PER_DAY: int = 100
+const MAX_POSTS_PER_HOUR: int = 30
+const MAX_MESSAGE_LENGTH: int = 2000
+const MAX_POST_LENGTH: int = 5000
+
+// Database pools
+const DB_POOL_SIZE: int = 20
+
+// Application info
+const APP_NAME: string = "Moon"
+const APP_VERSION: string = "1.0.0"

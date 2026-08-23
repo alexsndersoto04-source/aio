@@ -1,0 +1,33 @@
+[package]
+name = "moon"
+version = "1.0.0"
+description = "Moon — Red social moderna y minimalista. Backend API en Titan."
+authors = ["Alex Soto"]
+
+[dependencies]
+
+[server]
+host = "0.0.0.0"
+port = 3000
+
+[database]
+url = "postgresql://nexo:nexo_password@localhost:5432/nexo"
+pool_size = 20
+
+[redis]
+url = "redis://localhost:6379"
+
+[jwt]
+# Generar con: titan run scripts/generate_secret.titan
+secret_env = "NEXO_JWT_SECRET"
+expires_in = 86400  # 24 horas
+
+[upload]
+max_size = 10_000_000  # 10 MB
+directory = "uploads"
+
+[limits]
+max_follows_per_day = 100
+max_posts_per_hour = 30
+max_message_length = 2000
+max_post_length = 5000

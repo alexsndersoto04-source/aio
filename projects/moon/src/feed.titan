@@ -1,0 +1,103 @@
+// ============================================================
+// Nexo — Feed: timeline cronológico y trending
+// ============================================================
+
+// GET /api/feed — feed cronológico de usuarios seguidos
+fn get_feed(req, db, redis) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Cache check
+    let cache_key = "feed:user:" + user_id
+    let cached = std::redis::get(redis, cache_key)
+    if cached != nil {
+        let cached_str = std::encoding::utf8_decode(cached)
+        respond_json_ok(req, cached_str)
+        return
+    }
+
+    // Paginación
+    let page_str = std::server::query_param(req, "page")
+    let page = 1
+    if page_str != "" {
+        let parsed = std::text::parse_int(page_str)
+        if parsed > 0 { page = parsed }
+    }
+    let per_page = 20
+    let offset = (page - 1) * per_page
+
+    // Obtener posts de usuarios seguidos + propios
+    let posts = std::db::query(db,
+        "SELECT p.id, p.user_id, p.content, p.media_urls, p.media_types, p.likes_count, p.comments_count, p.reposts_count, p.is_reply, p.reply_to_id, p.created_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ? ORDER BY p.created_at DESC LIMIT ? OFFSET ?",
+        [user_id, user_id, per_page, offset])
+
+    // Enriquecer con is_liked para cada post
+    let mut enriched = []
+    for i in 0..std::collections::length(posts) {
+        let post = posts[i]
+        let likes = std::db::query(db,
+            "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?",
+            [user_id, post.id])
+        let is_liked = std::collections::length(likes) > 0
+        let post_map = std::map::insert(post, "is_liked", is_liked)
+        enriched = std::array::push(enriched, post_map)
+    }
+
+    let resp_json = std::json::stringify(enriched)
+
+    // Cachear por 60 segundos
+    std::redis::set_ex(redis, cache_key, resp_json, 60)
+
+    respond_json_ok(req, resp_json)
+}
+
+// GET /api/feed/trending — posts con más engagement reciente
+fn get_trending(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Posts de las últimas 24h con más likes + comments
+    let posts = std::db::query(db,
+        "SELECT p.id, p.user_id, p.content, p.media_urls, p.media_types, p.likes_count, p.comments_count, p.reposts_count, p.created_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM posts p JOIN users u ON p.user_id = u.id WHERE p.created_at > NOW() - INTERVAL '24 hours' ORDER BY (p.likes_count + p.comments_count * 2 + p.reposts_count * 3) DESC LIMIT 20")
+
+    respond_json_ok(req, std::json::stringify(posts))
+}
+
+// GET /api/users/:id/posts — posts de un usuario específico
+fn get_user_posts(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let target_id = hit.params.id
+
+    let page_str = std::server::query_param(req, "page")
+    let page = 1
+    if page_str != "" {
+        let parsed = std::text::parse_int(page_str)
+        if parsed > 0 { page = parsed }
+    }
+    let per_page = 20
+    let offset = (page - 1) * per_page
+
+    let posts = std::db::query(db,
+        "SELECT p.id, p.user_id, p.content, p.media_urls, p.media_types, p.likes_count, p.comments_count, p.is_reply, p.reply_to_id, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT ? OFFSET ?",
+        [target_id, per_page, offset])
+
+    respond_json_ok(req, std::json::stringify(posts))
+}
+
+// GET /api/users/:id/likes — posts que le gustaron a un usuario
+fn get_user_likes(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let target_id = hit.params.id
+
+    let posts = std::db::query(db,
+        "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id JOIN likes l ON p.id = l.post_id WHERE l.user_id = ? ORDER BY l.created_at DESC LIMIT 20",
+        [target_id])
+
+    respond_json_ok(req, std::json::stringify(posts))
+}

@@ -1,0 +1,81 @@
+// ============================================================
+// Nexo — Sistema de notificaciones
+// ============================================================
+
+// GET /api/notifications — obtener notificaciones del usuario
+fn get_notifications(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let page_str = std::server::query_param(req, "page")
+    let page = 1
+    if page_str != "" {
+        let parsed = std::text::parse_int(page_str)
+        if parsed > 0 { page = parsed }
+    }
+    let per_page = 30
+    let offset = (page - 1) * per_page
+
+    let notifications = std::db::query(db,
+        "SELECT n.id, n.type, n.is_read, n.created_at, n.post_id, n.comment_id, fu.username as from_username, fu.display_name as from_display_name, fu.avatar_url as from_avatar FROM notifications n LEFT JOIN users fu ON n.from_user_id = fu.id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT ? OFFSET ?",
+        [user_id, per_page, offset])
+
+    respond_json_ok(req, std::json::stringify(notifications))
+}
+
+// GET /api/notifications/unread/count — conteo de notificaciones no leídas
+fn get_unread_notifications_count(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let result = std::db::query(db,
+        "SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = false",
+        [user_id])
+
+    let count = 0
+    if std::collections::length(result) > 0 {
+        count = result[0].count
+    }
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "unread_count", count)
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// POST /api/notifications/read-all — marcar todas como leídas
+fn mark_all_read(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    std::db::execute(db,
+        "UPDATE notifications SET is_read = true WHERE user_id = ? AND is_read = false",
+        [user_id])
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Todas las notificaciones marcadas como leídas.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// POST /api/notifications/:id/read — marcar una como leída
+fn mark_notification_read(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let notif_id = hit.params.id
+
+    std::db::execute(db,
+        "UPDATE notifications SET is_read = true WHERE id = ? AND user_id = ?",
+        [notif_id, user_id])
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Notificación marcada como leída.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// Helper: crear una notificación (usado por otros módulos)
+fn create_notification(db, user_id, notif_type: string, from_user_id, post_id, comment_id) {
+    std::db::execute(db,
+        "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id) VALUES (?, ?, ?, ?, ?)",
+        [user_id, notif_type, from_user_id, post_id, comment_id])
+}

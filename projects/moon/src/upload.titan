@@ -1,0 +1,122 @@
+// ============================================================
+// Nexo — Upload de imágenes con procesamiento
+// ============================================================
+
+// POST /api/upload/image — subir una imagen
+fn upload_image(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Parsear multipart (máximo 10MB)
+    let parts = std::multipart::parse(req, MAX_UPLOAD_SIZE)
+    let n_parts = std::collections::length(parts)
+
+    if n_parts == 0 {
+        respond_json_error(req, 400, "No se recibió ningún archivo.")
+        return
+    }
+
+    let mut uploaded_urls = []
+
+    for i in 0..n_parts {
+        let part = parts[i]
+        let filename = part.filename
+        let data = part.data
+
+        // Validar tipo de archivo
+        let ext = get_extension(filename)
+        if !is_valid_image_ext(ext) {
+            respond_json_error(req, 400, "Solo se permiten imágenes: jpg, jpeg, png, gif, webp.")
+            return
+        }
+
+        // Generar nombre único
+        let unique_id = std::uuid::v7()
+        let safe_name = unique_id + "." + ext
+        let save_path = UPLOAD_DIR + "/" + safe_name
+
+        // Guardar archivo original
+        std::fs::write_bytes(save_path, data)
+
+        // Procesar: generar thumbnail (200x200)
+        let img = std::image::load(save_path)
+        let thumb = std::image::thumbnail(img, 200, 200)
+        let thumb_name = "thumb_" + safe_name
+        std::image::save(thumb, UPLOAD_DIR + "/" + thumb_name)
+
+        // Procesar: generar versión para feed (800px max)
+        let resized = std::image::resize(img, 800, 800, "lanczos3")
+        let resized_name = "feed_" + safe_name
+        std::image::save(resized, UPLOAD_DIR + "/" + resized_name)
+
+        let url_original = "/uploads/" + safe_name
+        let url_thumb = "/uploads/" + thumb_name
+        let url_feed = "/uploads/" + resized_name
+
+        let media = std::map::new()
+        let media = std::map::insert(media, "original", url_original)
+        let media = std::map::insert(media, "thumbnail", url_thumb)
+        let media = std::map::insert(media, "feed", url_feed)
+        let media = std::map::insert(media, "type", ext)
+
+        uploaded_urls = std::array::push(uploaded_urls, media)
+    }
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "uploaded", uploaded_urls)
+    respond_json_created(req, std::json::stringify(resp))
+}
+
+// POST /api/upload/avatar — cambiar avatar de perfil
+fn upload_avatar(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let parts = std::multipart::parse(req, 5_000_000)  // 5MB max para avatar
+    if std::collections::length(parts) == 0 {
+        respond_json_error(req, 400, "No se recibió ningún archivo.")
+        return
+    }
+
+    let part = parts[0]
+    let ext = get_extension(part.filename)
+    if !is_valid_image_ext(ext) {
+        respond_json_error(req, 400, "Solo se permiten imágenes.")
+        return
+    }
+
+    let unique_id = std::uuid::v7()
+    let safe_name = "avatar_" + user_id + "_" + unique_id + "." + ext
+    let save_path = UPLOAD_DIR + "/" + safe_name
+
+    std::fs::write_bytes(save_path, part.data)
+
+    // Generar avatar cuadrado 200x200
+    let img = std::image::load(save_path)
+    let avatar = std::image::resize_exact(img, 200, 200, "lanczos3")
+    std::image::save(avatar, save_path)
+
+    // Actualizar perfil
+    let avatar_url = "/uploads/" + safe_name
+    std::db::execute(db, "UPDATE users SET avatar_url = ?, updated_at = NOW() WHERE id = ?",
+        [avatar_url, user_id])
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "avatar_url", avatar_url)
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// Helper: extrae la extensión de un filename
+fn get_extension(filename: string) -> string {
+    let parts = std::text::split(filename, ".")
+    let n = std::collections::length(parts)
+    if n > 1 {
+        return parts[n - 1]
+    }
+    ""
+}
+
+// Helper: verifica si la extensión es una imagen válida
+fn is_valid_image_ext(ext: string) -> bool {
+    ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "gif" || ext == "webp"
+}

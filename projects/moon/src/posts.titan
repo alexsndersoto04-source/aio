@@ -1,0 +1,279 @@
+// ============================================================
+// Nexo — Posts: crear, like, comment, delete
+// ============================================================
+
+// POST /api/posts — crear un post
+fn create_post(req, db, redis) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Rate limit: máximo 30 posts por hora
+    let can_post = rate_limit_check(redis, "post:" + user_id, MAX_POSTS_PER_HOUR, 3600)
+    if !can_post {
+        respond_json_error(req, 429, "Has alcanzado el límite de posts por hora (30).")
+        return
+    }
+
+    let body_text = std::server::body_text(req)
+    let body = std::json::parse(body_text)
+
+    let content = body.content
+    let media_urls = body.media_urls
+    let media_types = body.media_types
+    let reply_to_id = body.reply_to_id
+
+    // Validar contenido
+    if content == "" || std::collections::length(content) > MAX_POST_LENGTH {
+        respond_json_error(req, 400, "El contenido debe tener entre 1 y 5000 caracteres.")
+        return
+    }
+
+    // Si es reply, verificar que el post padre existe
+    let is_reply = false
+    if reply_to_id != nil && reply_to_id > 0 {
+        let parent = std::db::query(db, "SELECT id FROM posts WHERE id = ?", [reply_to_id])
+        if std::collections::length(parent) == 0 {
+            respond_json_error(req, 404, "El post al que respondes no existe.")
+            return
+        }
+        is_reply = true
+    }
+
+    // Insertar post
+    std::db::execute(db,
+        "INSERT INTO posts (user_id, content, media_urls, media_types, is_reply, reply_to_id) VALUES (?, ?, ?, ?, ?, ?)",
+        [user_id, content, media_urls, media_types, is_reply, reply_to_id])
+
+    // Obtener el post recién creado
+    let new_posts = std::db::query(db,
+        "SELECT p.id, p.user_id, p.content, p.media_urls, p.media_types, p.likes_count, p.comments_count, p.is_reply, p.reply_to_id, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 1",
+        [user_id])
+
+    let post = new_posts[0]
+    let post_id = post.id
+
+    // Actualizar contador de posts del usuario
+    std::db::execute(db, "UPDATE users SET posts_count = posts_count + 1 WHERE id = ?", [user_id])
+
+    // Si es reply, notificar al autor del post original
+    if is_reply {
+        let parent_post = std::db::query(db, "SELECT user_id FROM posts WHERE id = ?", [reply_to_id])
+        if std::collections::length(parent_post) > 0 {
+            let original_author = parent_post[0].user_id
+            if original_author != user_id {
+                create_notification(db, original_author, "reply", user_id, reply_to_id, post_id)
+                // Incrementar contador de comentarios del post original
+                std::db::execute(db, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", [reply_to_id])
+            }
+        }
+    }
+
+    // Mencionar usuarios si hay @mentions en el contenido
+    process_mentions(db, content, user_id, post_id)
+
+    respond_json_created(req, std::json::stringify(post))
+}
+
+// GET /api/posts/:id — obtener un post específico
+fn get_post(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let post_id = hit.params.id
+
+    let posts = std::db::query(db,
+        "SELECT p.id, p.user_id, p.content, p.media_urls, p.media_types, p.likes_count, p.comments_count, p.reposts_count, p.is_reply, p.reply_to_id, p.created_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?",
+        [post_id])
+
+    if std::collections::length(posts) == 0 {
+        respond_json_error(req, 404, "Post no encontrado.")
+        return
+    }
+
+    let post = posts[0]
+
+    // Verificar si el usuario actual le dio like
+    let likes = std::db::query(db,
+        "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?",
+        [user_id, post_id])
+    let is_liked = std::collections::length(likes) > 0
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "post", post)
+    let resp = std::map::insert(resp, "is_liked", is_liked)
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// POST /api/posts/:id/like — dar like a un post
+fn like_post(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let post_id = hit.params.id
+
+    // Verificar que el post existe
+    let post_check = std::db::query(db, "SELECT id, user_id FROM posts WHERE id = ?", [post_id])
+    if std::collections::length(post_check) == 0 {
+        respond_json_error(req, 404, "Post no encontrado.")
+        return
+    }
+
+    let post_owner = post_check[0].user_id
+
+    // Verificar si ya le dio like
+    let existing_like = std::db::query(db,
+        "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?",
+        [user_id, post_id])
+
+    if std::collections::length(existing_like) > 0 {
+        respond_json_error(req, 409, "Ya le diste like a este post.")
+        return
+    }
+
+    // Insertar like
+    std::db::execute(db,
+        "INSERT INTO likes (user_id, post_id) VALUES (?, ?)",
+        [user_id, post_id])
+
+    // Incrementar contador
+    std::db::execute(db, "UPDATE posts SET likes_count = likes_count + 1 WHERE id = ?", [post_id])
+
+    // Notificar al autor del post
+    if post_owner != user_id {
+        create_notification(db, post_owner, "like", user_id, post_id, 0)
+    }
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Like agregado.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// POST /api/posts/:id/unlike — quitar like
+fn unlike_post(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let post_id = hit.params.id
+
+    std::db::execute(db,
+        "DELETE FROM likes WHERE user_id = ? AND post_id = ?",
+        [user_id, post_id])
+
+    std::db::execute(db, "UPDATE posts SET likes_count = likes_count - 1 WHERE id = ?", [post_id])
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Like removido.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// GET /api/posts/:id/comments — obtener comentarios de un post
+fn get_comments(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let post_id = hit.params.id
+
+    let comments = std::db::query(db,
+        "SELECT c.id, c.user_id, c.post_id, c.content, c.likes_count, c.created_at, u.username, u.display_name, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC LIMIT 50",
+        [post_id])
+
+    respond_json_ok(req, std::json::stringify(comments))
+}
+
+// POST /api/posts/:id/comment — agregar comentario
+fn add_comment(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let post_id = hit.params.id
+
+    let body_text = std::server::body_text(req)
+    let body = std::json::parse(body_text)
+    let content = body.content
+
+    if content == "" || std::collections::length(content) > MAX_MESSAGE_LENGTH {
+        respond_json_error(req, 400, "El comentario debe tener entre 1 y 2000 caracteres.")
+        return
+    }
+
+    // Verificar que el post existe
+    let post_check = std::db::query(db, "SELECT id, user_id FROM posts WHERE id = ?", [post_id])
+    if std::collections::length(post_check) == 0 {
+        respond_json_error(req, 404, "Post no encontrado.")
+        return
+    }
+
+    let post_owner = post_check[0].user_id
+
+    // Insertar comentario
+    std::db::execute(db,
+        "INSERT INTO comments (user_id, post_id, content) VALUES (?, ?, ?)",
+        [user_id, post_id, content])
+
+    // Incrementar contador de comentarios
+    std::db::execute(db, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", [post_id])
+
+    // Notificar al autor del post
+    if post_owner != user_id {
+        let new_comment = std::db::query(db, "SELECT id FROM comments WHERE user_id = ? AND post_id = ? ORDER BY created_at DESC LIMIT 1", [user_id, post_id])
+        let comment_id = new_comment[0].id
+        create_notification(db, post_owner, "comment", user_id, post_id, comment_id)
+    }
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Comentario agregado.")
+    respond_json_created(req, std::json::stringify(resp))
+}
+
+// DELETE /api/posts/:id — eliminar post propio
+fn delete_post(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let post_id = hit.params.id
+
+    // Verificar que el post existe y pertenece al usuario
+    let post_check = std::db::query(db, "SELECT id, user_id FROM posts WHERE id = ?", [post_id])
+    if std::collections::length(post_check) == 0 {
+        respond_json_error(req, 404, "Post no encontrado.")
+        return
+    }
+
+    if post_check[0].user_id != user_id {
+        respond_json_error(req, 403, "No puedes eliminar un post que no es tuyo.")
+        return
+    }
+
+    std::db::execute(db, "DELETE FROM posts WHERE id = ?", [post_id])
+    std::db::execute(db, "UPDATE users SET posts_count = posts_count - 1 WHERE id = ?", [user_id])
+
+    let resp = std::map::new()
+    let resp = std::map::insert(resp, "message", "Post eliminado.")
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// Helper: procesa @mentions en el contenido de un post
+fn process_mentions(db, content: string, author_id, post_id) {
+    // Buscar @username en el contenido
+    let mentions = std::regex::find_all("@[a-zA-Z0-9_]+", content)
+    let n = std::collections::length(mentions)
+
+    for i in 0..n {
+        let mention = mentions[i]
+        let username = std::text::substring(mention, 1, std::collections::length(mention))
+        
+        let mentioned_user = std::db::query(db, "SELECT id FROM users WHERE username = ?", [username])
+        if std::collections::length(mentioned_user) > 0 {
+            let target_id = mentioned_user[0].id
+            if target_id != author_id {
+                create_notification(db, target_id, "mention", author_id, post_id, 0)
+            }
+        }
+    }
+}

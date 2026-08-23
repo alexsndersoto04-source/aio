@@ -1,0 +1,399 @@
+// ============================================================
+// Nexo — Backend de Red Social
+// Entry point principal
+// ============================================================
+//
+// Ejecutar:
+//   titan run projects/nexo/src/main.titan
+//
+// Requiere:
+//   - PostgreSQL corriendo en localhost:5432
+//   - Redis corriendo en localhost:6379
+//
+// Endpoints:
+//   POST   /api/auth/register        — Registro
+//   POST   /api/auth/login           — Login
+//   POST   /api/auth/refresh         — Refresh token
+//   POST   /api/auth/logout          — Logout
+//   GET    /api/auth/me              — Perfil propio
+//
+//   GET    /api/users/:id            — Perfil por ID
+//   GET    /api/users/name/:username — Perfil por username
+//   PUT    /api/users/me             — Actualizar perfil
+//   POST   /api/follow/:user_id      — Seguir
+//   POST   /api/unfollow/:user_id    — Dejar de seguir
+//   GET    /api/users/:id/followers  — Seguidores
+//   GET    /api/users/:id/following  — Siguiendo
+//   GET    /api/users/search         — Buscar usuarios
+//
+//   POST   /api/posts                — Crear post
+//   GET    /api/posts/:id            — Ver post
+//   DELETE /api/posts/:id            — Eliminar post
+//   POST   /api/posts/:id/like       — Like
+//   POST   /api/posts/:id/unlike     — Unlike
+//   GET    /api/posts/:id/comments   — Comentarios
+//   POST   /api/posts/:id/comment    — Agregar comentario
+//
+//   GET    /api/feed                 — Feed cronológico
+//   GET    /api/feed/trending        — Trending
+//   GET    /api/users/:id/posts      — Posts de usuario
+//   GET    /api/users/:id/likes      — Likes de usuario
+//
+//   GET    /api/messages/conversations     — Lista de conversaciones
+//   GET    /api/messages/:user_id          — Conversación
+//   POST   /api/messages/send              — Enviar mensaje
+//   DELETE /api/messages/:message_id       — Eliminar mensaje
+//   GET    /api/messages/unread/count      — No leídos
+//
+//   GET    /api/notifications              — Notificaciones
+//   GET    /api/notifications/unread/count — No leídas
+//   POST   /api/notifications/read-all     — Marcar todas leídas
+//   POST   /api/notifications/:id/read     — Marcar una leída
+//
+//   POST   /api/upload/image         — Subir imagen
+//   POST   /api/upload/avatar        — Subir avatar
+//
+//   GET    /api/search               — Búsqueda global
+//   GET    /api/search/trending      — Trending hashtags
+//
+//   GET    /api/health               — Health check
+//
+
+import config
+import database
+import middleware
+import auth
+import users
+import posts
+import feed
+import messages
+import notifications
+import upload
+import search
+
+fn main() {
+    print("=================================")
+    print("  Moon — Red Social Backend")
+    print("  v1.0.0")
+    print("=================================")
+    print("")
+
+    // 1. Crear directorio de uploads
+    std::fs::create_dir_all(UPLOAD_DIR)
+
+    // 2. Inicializar base de datos
+    let db = init_db()
+
+    // 3. Conectar a Redis
+    print("Conectando a Redis...")
+    let redis = std::redis::connect(REDIS_URL)
+    std::redis::ping(redis)
+    print("Redis conectado.")
+
+    // 4. Configurar router
+    let r = std::router::new()
+
+    // Health check (sin auth)
+    std::router::insert(r, "/api/health", "health")
+
+    // Auth
+    std::router::insert(r, "/api/auth/register",  "register")
+    std::router::insert(r, "/api/auth/login",     "login")
+    std::router::insert(r, "/api/auth/refresh",   "refresh")
+    std::router::insert(r, "/api/auth/logout",    "logout")
+    std::router::insert(r, "/api/auth/me",        "me")
+
+    // Usuarios
+    std::router::insert(r, "/api/users/search",        "search_users")
+    std::router::insert(r, "/api/users/me",            "update_me")
+    std::router::insert(r, "/api/users/name/:username","profile_by_username")
+    std::router::insert(r, "/api/users/:id",           "profile")
+    std::router::insert(r, "/api/users/:id/followers", "followers")
+    std::router::insert(r, "/api/users/:id/following", "following")
+    std::router::insert(r, "/api/users/:id/posts",     "user_posts")
+    std::router::insert(r, "/api/users/:id/likes",     "user_likes")
+
+    // Follow/Unfollow
+    std::router::insert(r, "/api/follow/:user_id",   "follow")
+    std::router::insert(r, "/api/unfollow/:user_id",  "unfollow")
+
+    // Posts
+    std::router::insert(r, "/api/posts",                 "create_post")
+    std::router::insert(r, "/api/posts/:id",             "get_post")
+    std::router::insert(r, "/api/posts/:id/like",        "like_post")
+    std::router::insert(r, "/api/posts/:id/unlike",      "unlike_post")
+    std::router::insert(r, "/api/posts/:id/comments",    "get_comments")
+    std::router::insert(r, "/api/posts/:id/comment",     "add_comment")
+
+    // Feed
+    std::router::insert(r, "/api/feed",           "feed")
+    std::router::insert(r, "/api/feed/trending",  "trending")
+
+    // Mensajes
+    std::router::insert(r, "/api/messages/conversations",  "conversations")
+    std::router::insert(r, "/api/messages/unread/count",   "unread_count")
+    std::router::insert(r, "/api/messages/send",           "send_message")
+    std::router::insert(r, "/api/messages/:user_id",       "conversation")
+    std::router::insert(r, "/api/messages/del/:message_id","delete_message")
+
+    // Notificaciones
+    std::router::insert(r, "/api/notifications",               "notifications")
+    std::router::insert(r, "/api/notifications/unread/count",  "notif_unread")
+    std::router::insert(r, "/api/notifications/read-all",      "notif_read_all")
+    std::router::insert(r, "/api/notifications/:id/read",      "notif_read_one")
+
+    // Upload
+    std::router::insert(r, "/api/upload/image",  "upload_image")
+    std::router::insert(r, "/api/upload/avatar", "upload_avatar")
+
+    // Búsqueda
+    std::router::insert(r, "/api/search",          "search_global")
+    std::router::insert(r, "/api/search/trending", "search_trending")
+
+    print("")
+    print("Router configurado con 40+ endpoints.")
+
+    // 5. Iniciar servidor
+    let bind_addr = HOST + ":" + PORT
+    let s = std::server::start(bind_addr)
+    let addr = std::server::local_addr(s)
+
+    print("")
+    print("=================================")
+    print("  Servidor Moon escuchando en:")
+    print("  http://" + addr)
+    print("=================================")
+    print("")
+    print("Endpoints disponibles:")
+    print("  POST   /api/auth/register")
+    print("  POST   /api/auth/login")
+    print("  GET    /api/feed")
+    print("  POST   /api/posts")
+    print("  GET    /api/health")
+    print("  ... y 35 más")
+    print("")
+    print("Presiona Ctrl+C para detener.")
+    print("")
+
+    // 6. Loop principal de requests
+    let mut request_count = 0
+
+    loop {
+        let req = std::server::accept(s, 60000)
+        if req < 0 {
+            // Timeout, seguimos esperando
+        } else {
+            request_count += 1
+            // Manejar cada request en su propio thread
+            spawn || handle(r, req, db, redis)
+        }
+    }
+
+    // Cleanup (no se alcanza normalmente)
+    std::server::stop(s)
+    std::router::drop(r)
+    std::redis::close(redis)
+    close_db(db)
+    print("Moon detenido.")
+}
+
+// Dispatcher principal de requests
+fn handle(r, req, db, redis) {
+    let path = std::server::path(req)
+    let method = std::server::method(req)
+
+    // Log
+    log_request(req)
+
+    // CORS preflight
+    if method == "OPTIONS" {
+        add_cors(req)
+        std::server::respond(req, 204, "")
+        return
+    }
+
+    // Routing
+    let hit = std::router::at(r, path)
+
+    if hit == nil {
+        respond_json_error(req, 404, "Endpoint no encontrado: " + method + " " + path)
+        return
+    }
+
+    let tag = hit.pattern
+
+    // ---- Health (sin auth) ----
+    if tag == "health" {
+        let resp = std::map::new()
+        let resp = std::map::insert(resp, "status", "ok")
+        let resp = std::map::insert(resp, "app", APP_NAME)
+        let resp = std::map::insert(resp, "version", APP_VERSION)
+        respond_json_ok(req, std::json::stringify(resp))
+        return
+    }
+
+    // ---- Auth (sin auth required) ----
+    if tag == "register" {
+        register(req, db, redis)
+        return
+    }
+    if tag == "login" {
+        login(req, db, redis)
+        return
+    }
+
+    // ---- Auth (con auth required) ----
+    if tag == "refresh" {
+        refresh_token(req, db, redis)
+        return
+    }
+    if tag == "logout" {
+        logout(req, db, redis)
+        return
+    }
+    if tag == "me" {
+        get_me(req, db)
+        return
+    }
+
+    // ---- Usuarios ----
+    if tag == "profile" {
+        get_profile(req, db)
+        return
+    }
+    if tag == "profile_by_username" {
+        get_profile_by_username(req, db)
+        return
+    }
+    if tag == "update_me" {
+        update_profile(req, db)
+        return
+    }
+    if tag == "follow" {
+        follow_user(req, db, redis)
+        return
+    }
+    if tag == "unfollow" {
+        unfollow_user(req, db)
+        return
+    }
+    if tag == "followers" {
+        get_followers(req, db)
+        return
+    }
+    if tag == "following" {
+        get_following(req, db)
+        return
+    }
+    if tag == "search_users" {
+        search_users(req, db)
+        return
+    }
+    if tag == "user_posts" {
+        get_user_posts(req, db)
+        return
+    }
+    if tag == "user_likes" {
+        get_user_likes(req, db)
+        return
+    }
+
+    // ---- Posts ----
+    if tag == "create_post" {
+        create_post(req, db, redis)
+        return
+    }
+    if tag == "get_post" {
+        get_post(req, db)
+        return
+    }
+    if tag == "like_post" {
+        like_post(req, db)
+        return
+    }
+    if tag == "unlike_post" {
+        unlike_post(req, db)
+        return
+    }
+    if tag == "get_comments" {
+        get_comments(req, db)
+        return
+    }
+    if tag == "add_comment" {
+        add_comment(req, db)
+        return
+    }
+
+    // ---- Feed ----
+    if tag == "feed" {
+        get_feed(req, db, redis)
+        return
+    }
+    if tag == "trending" {
+        get_trending(req, db)
+        return
+    }
+
+    // ---- Mensajes ----
+    if tag == "conversations" {
+        get_conversations(req, db, redis)
+        return
+    }
+    if tag == "conversation" {
+        get_conversation(req, db, redis)
+        return
+    }
+    if tag == "send_message" {
+        send_message(req, db, redis)
+        return
+    }
+    if tag == "delete_message" {
+        delete_message(req, db)
+        return
+    }
+    if tag == "unread_count" {
+        get_unread_count(req, db)
+        return
+    }
+
+    // ---- Notificaciones ----
+    if tag == "notifications" {
+        get_notifications(req, db)
+        return
+    }
+    if tag == "notif_unread" {
+        get_unread_notifications_count(req, db)
+        return
+    }
+    if tag == "notif_read_all" {
+        mark_all_read(req, db)
+        return
+    }
+    if tag == "notif_read_one" {
+        mark_notification_read(req, db)
+        return
+    }
+
+    // ---- Upload ----
+    if tag == "upload_image" {
+        upload_image(req, db)
+        return
+    }
+    if tag == "upload_avatar" {
+        upload_avatar(req, db)
+        return
+    }
+
+    // ---- Búsqueda ----
+    if tag == "search_global" {
+        search(req, db)
+        return
+    }
+    if tag == "search_trending" {
+        trending_hashtags(req, db)
+        return
+    }
+
+    // Fallback
+    respond_json_error(req, 404, "Endpoint no implementado: " + tag)
+}

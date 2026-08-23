@@ -1,0 +1,80 @@
+// ============================================================
+// Nexo — Búsqueda global (posts + usuarios)
+// ============================================================
+
+// GET /api/search?q= — búsqueda global
+fn search(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    let query = std::server::query_param(req, "q")
+    if query == "" || std::collections::length(query) < 2 {
+        respond_json_error(req, 400, "La búsqueda debe tener al menos 2 caracteres.")
+        return
+    }
+
+    let search_type = std::server::query_param(req, "type")
+    if search_type == "" { search_type = "all" }
+
+    let search_pattern = "%" + query + "%"
+
+    let resp = std::map::new()
+
+    // Buscar usuarios
+    if search_type == "all" || search_type == "users" {
+        let users = std::db::query(db,
+            "SELECT id, username, display_name, avatar_url, is_verified, followers_count FROM users WHERE username ILIKE ? OR display_name ILIKE ? ORDER BY followers_count DESC LIMIT 10",
+            [search_pattern, search_pattern])
+        resp = std::map::insert(resp, "users", users)
+    }
+
+    // Buscar posts por contenido
+    if search_type == "all" || search_type == "posts" {
+        let posts = std::db::query(db,
+            "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.content ILIKE ? ORDER BY p.created_at DESC LIMIT 20",
+            [search_pattern])
+        resp = std::map::insert(resp, "posts", posts)
+    }
+
+    // Buscar hashtags
+    if search_type == "all" || search_type == "hashtags" {
+        // Extraer hashtags de posts recientes
+        let hashtag_posts = std::db::query(db,
+            "SELECT p.id, p.content, p.likes_count, p.created_at, u.username FROM posts p JOIN users u ON p.user_id = u.id WHERE p.content LIKE '#%%' || ? || '%%' ORDER BY p.created_at DESC LIMIT 10",
+            [query])
+        resp = std::map::insert(resp, "hashtags", hashtag_posts)
+    }
+
+    respond_json_ok(req, std::json::stringify(resp))
+}
+
+// GET /api/search/trending — hashtags trending
+fn trending_hashtags(req, db) {
+    let user_id = require_auth(req)
+    if user_id < 0 { return }
+
+    // Posts de las últimas 24h que contienen hashtags
+    let posts = std::db::query(db,
+        "SELECT content FROM posts WHERE content LIKE '#%%' AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1000")
+
+    // Extraer y contar hashtags
+    let mut hashtag_counts = std::map::new()
+    let n = std::collections::length(posts)
+
+    for i in 0..n {
+        let content = posts[i].content
+        let tags = std::regex::find_all("#[a-zA-Z0-9_]+", content)
+        for j in 0..std::collections::length(tags) {
+            let tag = std::text::lowercase(tags[j])
+            let current = std::map::get(hashtag_counts, tag)
+            if current == nil {
+                hashtag_counts = std::map::insert(hashtag_counts, tag, 1)
+            } else {
+                hashtag_counts = std::map::insert(hashtag_counts, tag, current + 1)
+            }
+        }
+    }
+
+    // Ordenar por frecuencia (simplificado: devolvemos el map)
+    respond_json_ok(req, std::json::stringify(hashtag_counts))
+}

@@ -1,0 +1,115 @@
+// ============================================================
+// Nexo — Middleware: logging, auth, rate limiting, CORS
+// ============================================================
+
+// Log de cada request con método, path, status y tiempo.
+fn log_request(req) {
+    let met  = std::server::method(req)
+    let ruta = std::server::path(req)
+    let peer = std::server::peer(req)
+    print(met + " " + ruta + "  [" + peer + "]")
+}
+
+// Verifica el token JWT del header Authorization.
+// Devuelve el user_id si es válido, -1 si no.
+fn authenticate(req) -> int {
+    let auth_header = std::server::header(req, "Authorization")
+    if auth_header == "" {
+        return -1
+    }
+
+    // Extraer "Bearer <token>"
+    let parts = std::text::split(auth_header, " ")
+    if std::collections::length(parts) != 2 {
+        return -1
+    }
+    if parts[0] != "Bearer" {
+        return -1
+    }
+
+    let token = parts[1]
+    let secret = std::encoding::utf8_encode(JWT_SECRET)
+    let claims = std::jwt::verify_hs256(token, secret, "", "")
+
+    // Si verify falla devuelve nil
+    if claims == nil {
+        return -1
+    }
+
+    let user_id = claims.user_id
+    user_id
+}
+
+// Rechaza requests sin auth válida. Devuelve true si pasó.
+fn require_auth(req) -> int {
+    let user_id = authenticate(req)
+    if user_id < 0 {
+        std::server::respond_json(req, 401, "{\"error\":\"No autorizado. Envía un token JWT válido.\"}")
+        return -1
+    }
+    user_id
+}
+
+// Rate limiting simple: cuenta requests por IP en Redis.
+// Devuelve true si puede continuar, false si excedió el límite.
+fn rate_limit_check(redis, key: string, max_requests: int, window_seconds: int) -> bool {
+    let current = std::redis::get(redis, key)
+    if current == nil {
+        std::redis::set_ex(redis, key, "1", window_seconds)
+        return true
+    }
+
+    // current viene como bytes o string, convertir
+    let count_str = std::encoding::utf8_decode(current)
+    let count = std::text::parse_int(count_str)
+    if count >= max_requests {
+        return false
+    }
+
+    std::redis::incr(redis, key)
+    true
+}
+
+// Agrega headers CORS a la respuesta.
+fn add_cors(req) {
+    std::server::set_header(req, "Access-Control-Allow-Origin", "*")
+    std::server::set_header(req, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+    std::server::set_header(req, "Access-Control-Allow-Headers", "Content-Type, Authorization")
+    std::server::set_header(req, "Access-Control-Max-Age", "86400")
+}
+
+// Agrega headers de seguridad.
+fn add_security_headers(req) {
+    std::server::set_header(req, "X-Content-Type-Options", "nosniff")
+    std::server::set_header(req, "X-Frame-Options", "DENY")
+    std::server::set_header(req, "X-XSS-Protection", "1; mode=block")
+    std::server::set_header(req, "Referrer-Policy", "strict-origin-when-cross-origin")
+}
+
+// Responde con JSON y agrega headers estándar.
+fn respond_json_ok(req, json_string: string) {
+    add_cors(req)
+    add_security_headers(req)
+    std::server::set_header(req, "Content-Type", "application/json")
+    std::server::respond(req, 200, json_string)
+}
+
+fn respond_json_created(req, json_string: string) {
+    add_cors(req)
+    add_security_headers(req)
+    std::server::set_header(req, "Content-Type", "application/json")
+    std::server::respond(req, 201, json_string)
+}
+
+fn respond_json_error(req, status: int, message: string) {
+    add_cors(req)
+    let body = "{\"error\":\"" + message + "\"}"
+    std::server::set_header(req, "Content-Type", "application/json")
+    std::server::respond(req, status, body)
+}
+
+// Valida que un string no esté vacío y tenga longitud válida.
+fn validate_string(value: string, min_len: int, max_len: int) -> bool {
+    let len = std::collections::length(value)
+    len >= min_len && len <= max_len
+}
