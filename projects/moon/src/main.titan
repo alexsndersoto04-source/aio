@@ -1,11 +1,10 @@
 // ============================================================
-// Moon — Red Social Backend
-// Basado estrictamente en ejemplos que funcionan:
-//   enterprise_pool.titan (SQLite pool pattern)
-//   webserver.titan (router pattern)
-//   security.titan (JWT + password)
+// Moon — Red Social Backend v1.0
+// Cada funcion nativa verificada contra crates/titan_stdlib/src/native.rs
+// y ejemplos: webserver.titan, enterprise_pool.titan, security.titan
 // ============================================================
 
+// ---- CONFIG CONSTANTS ----
 const HOST: string = "0.0.0.0"
 const PORT: int = 3000
 const JWT_EXPIRES: int = 86400
@@ -14,29 +13,33 @@ const MAX_MESSAGE_LENGTH: int = 2000
 const MAX_POST_LENGTH: int = 5000
 const APP_NAME: string = "Moon"
 
-// ---- Helpers de respuesta ----
+// ---- RESPONSE HELPERS ----
+// std::server::respond_json(req, status, json_string) existe y es nativo
 fn respond_json_ok(req, json_string: string) {
-    std::server::respond(req, 200, json_string)
+    std::server::respond_json(req, 200, json_string)
 }
 fn respond_json_created(req, json_string: string) {
-    std::server::respond(req, 201, json_string)
+    std::server::respond_json(req, 201, json_string)
 }
 fn respond_json_error(req, status: int, message: string) {
     let body = "{\"error\":\"" + message + "\"}"
-    std::server::respond(req, status, body)
+    std::server::respond_json(req, status, body)
 }
 
-// ---- Config ----
+// ---- JWT SECRET ----
 fn jwt_secret_val() -> string {
     let val = std::env::get("JWT_SECRET")
     if val == "" { return "moon-default-secret-change-in-production" }
     val
 }
 
-// ---- Auth ----
+// ---- AUTHENTICATION ----
+// std::server::header(req, name) -> Any
+// std::text::words(string) -> Array
+// std::jwt::verify_hs256(token, bytes_secret, aud, iss) -> Any
 fn authenticate(req) -> int {
     let auth_header = std::server::header(req, "Authorization")
-    if auth_header == "" { return -1 }
+    if auth_header == nil { return -1 }
     let words = std::text::words(auth_header)
     if std::collections::length(words) != 2 { return -1 }
     if words[0] != "Bearer" { return -1 }
@@ -57,25 +60,31 @@ fn require_auth(req) -> int {
     uid
 }
 
-// ---- Rate limit ----
-fn rate_limit_check(redis, key: string, max_req: int, window: int) -> bool {
-    let cur = std::redis::get(redis, key)
+// ---- RATE LIMITER (map en memoria, sin Redis para evitar problemas de tipos) ----
+fn make_rate_limiter() -> int {
+    std::map::new()
+}
+
+fn rate_limit_check(limiter, key: string, max_req: int, window: int) -> bool {
+    let cur = std::map::get(limiter, key)
     if cur == nil {
-        std::redis::set_ex(redis, key, "1", window)
+        let limiter = std::map::insert(limiter, key, 1)
         return true
     }
-    let count_str = std::encoding::utf8_decode(cur)
+    // cur es Any, lo usamos directamente
     let count = 0
-    match std::text::parse_int(count_str) {
+    match std::text::parse_int(cur) {
         Option::Some(n) => count = n,
         Option::None => count = 0,
     }
     if count >= max_req { return false }
-    std::redis::incr(redis, key)
+    let new_val = count + 1
+    let limiter = std::map::insert(limiter, key, new_val)
     true
 }
 
-// ---- Token generation ----
+// ---- TOKEN GENERATION ----
+// std::jwt::sign_hs256(claims_map, secret_bytes) -> String
 fn generate_token(user_id, username: string) -> string {
     let secret = std::encoding::utf8_encode(jwt_secret_val())
     let ahora = std::datetime::now()
@@ -88,13 +97,13 @@ fn generate_token(user_id, username: string) -> string {
     std::jwt::sign_hs256(claims, secret)
 }
 
-// ---- Notification helper ----
+// ---- NOTIFICATION HELPER ----
 fn create_notification(conn, user_id, ntype: string, from_uid, post_id, comment_id) {
     let p1 = [user_id, ntype, from_uid, post_id, comment_id]
     std::sqlite::execute(conn, "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id) VALUES (?, ?, ?, ?, ?)", p1)
 }
 
-// ---- DB Init ----
+// ---- DB INIT ----
 fn init_db() {
     print("Iniciando SQLite...")
     let path = "moon.db"
@@ -105,19 +114,15 @@ fn init_db() {
     match conn_opt {
         Option::Some(conn) => {
             print("Conexión adquirida, creando tablas...")
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT, bio TEXT DEFAULT '', avatar_url TEXT DEFAULT '', banner_url TEXT DEFAULT '', is_verified INTEGER DEFAULT 0, is_private INTEGER DEFAULT 0, followers_count INTEGER DEFAULT 0, following_count INTEGER DEFAULT 0, posts_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', media_types TEXT DEFAULT '[]', likes_count INTEGER DEFAULT 0, comments_count INTEGER DEFAULT 0, reposts_count INTEGER DEFAULT 0, is_reply INTEGER DEFAULT 0, reply_to_id INTEGER REFERENCES posts(id) ON DELETE CASCADE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
+            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT, bio TEXT DEFAULT '', avatar_url TEXT DEFAULT '', is_verified INTEGER DEFAULT 0, is_private INTEGER DEFAULT 0, followers_count INTEGER DEFAULT 0, following_count INTEGER DEFAULT 0, posts_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)", [])
+            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, likes_count INTEGER DEFAULT 0, comments_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS follows (follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, following_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (follower_id, following_id))", [])
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS likes (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, post_id))", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE, content TEXT NOT NULL, likes_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
+            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, content TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS direct_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, receiver_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, from_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE, comment_id INTEGER REFERENCES comments(id) ON DELETE CASCADE, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
-            std::sqlite::execute(conn, "CREATE INDEX IF NOT EXISTS idx_posts_uid ON posts(user_id)", [])
-            std::sqlite::execute(conn, "CREATE INDEX IF NOT EXISTS idx_follows_f ON follows(follower_id)", [])
-            std::sqlite::execute(conn, "CREATE INDEX IF NOT EXISTS idx_likes_p ON likes(post_id)", [])
-            std::sqlite::execute(conn, "CREATE INDEX IF NOT EXISTS idx_notif_u ON notifications(user_id)", [])
+            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, from_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
             std::sqlite::close(conn)
-            print("Tablas creadas correctamente.")
+            print("Tablas creadas.")
         },
         Option::None => {
             print("ERROR: No se pudo adquirir conexión SQLite")
@@ -126,9 +131,11 @@ fn init_db() {
     pool
 }
 
-// ---- HANDLERS ----
-// Cada handler recibe (r, req, pool, redis) o la combinación que necesite.
-// El router handle 'r' se usa para std::router::at(r, path).
+// ============================================================
+// HANDLERS — cada uno recibe (r, req, pool) o (r, req, pool, redis/limiter)
+// std::router::at(r, path) -> Any
+// hit.params es un map con los path params
+// ============================================================
 
 fn handle_health(req) {
     let resp = std::map::new()
@@ -137,7 +144,7 @@ fn handle_health(req) {
     respond_json_ok(req, std::json::stringify(resp))
 }
 
-fn handle_register(r, req, pool, redis) {
+fn handle_register(r, req, pool, limiter) {
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -160,18 +167,22 @@ fn handle_register(r, req, pool, redis) {
 
             let p1 = [username]
             let existing = std::sqlite::query(conn, "SELECT id FROM users WHERE username = ?", p1)
-            if std::collections::length(existing) > 0 {
-                respond_json_error(req, 409, "Username en uso")
-                std::sqlite::close(conn)
-                return
+            if existing != nil {
+                if std::collections::length(existing) > 0 {
+                    respond_json_error(req, 409, "Username en uso")
+                    std::sqlite::close(conn)
+                    return
+                }
             }
 
             let p2 = [email]
             let existing2 = std::sqlite::query(conn, "SELECT id FROM users WHERE email = ?", p2)
-            if std::collections::length(existing2) > 0 {
-                respond_json_error(req, 409, "Email en uso")
-                std::sqlite::close(conn)
-                return
+            if existing2 != nil {
+                if std::collections::length(existing2) > 0 {
+                    respond_json_error(req, 409, "Email en uso")
+                    std::sqlite::close(conn)
+                    return
+                }
             }
 
             let pw_hash = std::password::hash_argon2(password)
@@ -182,8 +193,6 @@ fn handle_register(r, req, pool, redis) {
             let nu = std::sqlite::query(conn, "SELECT id, username, email, display_name FROM users WHERE username = ?", p4)
             let user = nu[0]
             let token = generate_token(user.id, username)
-            let sk = "session:" + user.id
-            std::redis::set_ex(redis, sk, token, JWT_EXPIRES)
 
             let resp = std::map::new()
             let resp = std::map::insert(resp, "token", token)
@@ -195,7 +204,7 @@ fn handle_register(r, req, pool, redis) {
     }
 }
 
-fn handle_login(r, req, pool, redis) {
+fn handle_login(r, req, pool, limiter) {
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -218,6 +227,11 @@ fn handle_login(r, req, pool, redis) {
             let p1 = [username, username]
             let users = std::sqlite::query(conn, "SELECT id, username, email, password_hash, display_name, bio, avatar_url FROM users WHERE username = ? OR email = ?", p1)
 
+            if users == nil {
+                respond_json_error(req, 401, "Credenciales invalidas")
+                std::sqlite::close(conn)
+                return
+            }
             if std::collections::length(users) == 0 {
                 respond_json_error(req, 401, "Credenciales invalidas")
                 std::sqlite::close(conn)
@@ -237,8 +251,6 @@ fn handle_login(r, req, pool, redis) {
             std::sqlite::execute(conn, "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?", p2)
 
             let token = generate_token(user.id, user.username)
-            let sk = "session:" + user.id
-            std::redis::set_ex(redis, sk, token, JWT_EXPIRES)
 
             let su = std::map::new()
             let su = std::map::insert(su, "id", user.id)
@@ -265,13 +277,16 @@ fn handle_me(r, req, pool) {
     match conn_opt {
         Option::Some(conn) => {
             let p1 = [user_id]
-            let users = std::sqlite::query(conn, "SELECT id, username, email, display_name, bio, avatar_url, banner_url, is_verified, is_private, followers_count, following_count, posts_count, created_at FROM users WHERE id = ?", p1)
-            if std::collections::length(users) == 0 {
+            let users = std::sqlite::query(conn, "SELECT id, username, email, display_name, bio, avatar_url, followers_count, following_count, posts_count, created_at FROM users WHERE id = ?", p1)
+            if users != nil {
+                if std::collections::length(users) > 0 {
+                    respond_json_ok(req, std::json::stringify(users[0]))
+                } else {
+                    respond_json_error(req, 404, "Usuario no encontrado")
+                }
+            } else {
                 respond_json_error(req, 404, "Usuario no encontrado")
-                std::sqlite::close(conn)
-                return
             }
-            respond_json_ok(req, std::json::stringify(users[0]))
             std::sqlite::close(conn)
         },
         Option::None => { respond_json_error(req, 500, "DB error") }
@@ -288,7 +303,12 @@ fn handle_get_profile(r, req, pool) {
     match conn_opt {
         Option::Some(conn) => {
             let p1 = [target_id]
-            let users = std::sqlite::query(conn, "SELECT id, username, display_name, bio, avatar_url, is_verified, followers_count, following_count, posts_count FROM users WHERE id = ?", p1)
+            let users = std::sqlite::query(conn, "SELECT id, username, display_name, bio, avatar_url, followers_count, following_count, posts_count FROM users WHERE id = ?", p1)
+            if users == nil {
+                respond_json_error(req, 404, "Usuario no encontrado")
+                std::sqlite::close(conn)
+                return
+            }
             if std::collections::length(users) == 0 {
                 respond_json_error(req, 404, "Usuario no encontrado")
                 std::sqlite::close(conn)
@@ -297,7 +317,10 @@ fn handle_get_profile(r, req, pool) {
             let profile = users[0]
             let p2 = [user_id, target_id]
             let follows = std::sqlite::query(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", p2)
-            let is_following = std::collections::length(follows) > 0
+            let is_following = false
+            if follows != nil {
+                if std::collections::length(follows) > 0 { is_following = true }
+            }
             let resp = std::map::new()
             let resp = std::map::insert(resp, "user", profile)
             let resp = std::map::insert(resp, "is_following", is_following)
@@ -325,17 +348,19 @@ fn handle_follow(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [target_id]
             let t = std::sqlite::query(conn, "SELECT id FROM users WHERE id = ?", p1)
-            if std::collections::length(t) == 0 {
+            if t == nil {
                 respond_json_error(req, 404, "Usuario no encontrado")
                 std::sqlite::close(conn)
                 return
             }
             let p2 = [user_id, target_id]
             let already = std::sqlite::query(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", p2)
-            if std::collections::length(already) > 0 {
-                respond_json_error(req, 409, "Ya sigues a este usuario")
-                std::sqlite::close(conn)
-                return
+            if already != nil {
+                if std::collections::length(already) > 0 {
+                    respond_json_error(req, 409, "Ya sigues a este usuario")
+                    std::sqlite::close(conn)
+                    return
+                }
             }
             let p3 = [user_id, target_id]
             std::sqlite::execute(conn, "INSERT INTO follows (follower_id, following_id) VALUES (?, ?)", p3)
@@ -377,11 +402,10 @@ fn handle_unfollow(r, req, pool) {
     }
 }
 
-fn handle_create_post(r, req, pool, redis) {
+fn handle_create_post(r, req, pool, limiter) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let rk = "post:" + user_id
-    let ok = rate_limit_check(redis, rk, MAX_POSTS_PER_HOUR, 3600)
+    let ok = rate_limit_check(limiter, user_id, MAX_POSTS_PER_HOUR, 3600)
     if ok == false {
         respond_json_error(req, 429, "Limite de posts por hora")
         return
@@ -401,6 +425,11 @@ fn handle_create_post(r, req, pool, redis) {
             std::sqlite::execute(conn, "INSERT INTO posts (user_id, content) VALUES (?, ?)", p1)
             let p2 = [user_id]
             let np = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 1", p2)
+            if np == nil {
+                respond_json_error(req, 500, "Error creando post")
+                std::sqlite::close(conn)
+                return
+            }
             let post = np[0]
             let p3 = [user_id]
             std::sqlite::execute(conn, "UPDATE users SET posts_count = posts_count + 1 WHERE id = ?", p3)
@@ -422,6 +451,11 @@ fn handle_get_post(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [post_id]
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?", p1)
+            if posts == nil {
+                respond_json_error(req, 404, "Post no encontrado")
+                std::sqlite::close(conn)
+                return
+            }
             if std::collections::length(posts) == 0 {
                 respond_json_error(req, 404, "Post no encontrado")
                 std::sqlite::close(conn)
@@ -430,7 +464,10 @@ fn handle_get_post(r, req, pool) {
             let post = posts[0]
             let p2 = [user_id, post_id]
             let likes = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
-            let is_liked = std::collections::length(likes) > 0
+            let is_liked = false
+            if likes != nil {
+                if std::collections::length(likes) > 0 { is_liked = true }
+            }
             let resp = std::map::new()
             let resp = std::map::insert(resp, "post", post)
             let resp = std::map::insert(resp, "is_liked", is_liked)
@@ -452,6 +489,11 @@ fn handle_like(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [post_id]
             let pc = std::sqlite::query(conn, "SELECT user_id FROM posts WHERE id = ?", p1)
+            if pc == nil {
+                respond_json_error(req, 404, "Post no encontrado")
+                std::sqlite::close(conn)
+                return
+            }
             if std::collections::length(pc) == 0 {
                 respond_json_error(req, 404, "Post no encontrado")
                 std::sqlite::close(conn)
@@ -460,10 +502,12 @@ fn handle_like(r, req, pool) {
             let owner = pc[0].user_id
             let p2 = [user_id, post_id]
             let existing = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
-            if std::collections::length(existing) > 0 {
-                respond_json_error(req, 409, "Ya diste like")
-                std::sqlite::close(conn)
-                return
+            if existing != nil {
+                if std::collections::length(existing) > 0 {
+                    respond_json_error(req, 409, "Ya diste like")
+                    std::sqlite::close(conn)
+                    return
+                }
             }
             let p3 = [user_id, post_id]
             std::sqlite::execute(conn, "INSERT INTO likes (user_id, post_id) VALUES (?, ?)", p3)
@@ -514,7 +558,11 @@ fn handle_get_comments(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [post_id]
             let comments = std::sqlite::query(conn, "SELECT c.id, c.content, c.likes_count, c.created_at, u.username, u.display_name, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC LIMIT 50", p1)
-            respond_json_ok(req, std::json::stringify(comments))
+            if comments == nil {
+                respond_json_ok(req, "[]")
+            } else {
+                respond_json_ok(req, std::json::stringify(comments))
+            }
             std::sqlite::close(conn)
         },
         Option::None => { respond_json_error(req, 500, "DB error") }
@@ -544,10 +592,12 @@ fn handle_add_comment(r, req, pool) {
             std::sqlite::execute(conn, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", p2)
             let p3 = [post_id]
             let pc = std::sqlite::query(conn, "SELECT user_id FROM posts WHERE id = ?", p3)
-            if std::collections::length(pc) > 0 {
-                let owner = pc[0].user_id
-                if owner != user_id {
-                    create_notification(conn, owner, "comment", user_id, post_id, 0)
+            if pc != nil {
+                if std::collections::length(pc) > 0 {
+                    let owner = pc[0].user_id
+                    if owner != user_id {
+                        create_notification(conn, owner, "comment", user_id, post_id, 0)
+                    }
                 }
             }
             let resp = std::map::new()
@@ -567,7 +617,11 @@ fn handle_feed(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [user_id, user_id]
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
-            respond_json_ok(req, std::json::stringify(posts))
+            if posts == nil {
+                respond_json_ok(req, "[]")
+            } else {
+                respond_json_ok(req, std::json::stringify(posts))
+            }
             std::sqlite::close(conn)
         },
         Option::None => { respond_json_error(req, 500, "DB error") }
@@ -581,7 +635,11 @@ fn handle_trending(r, req, pool) {
     match conn_opt {
         Option::Some(conn) => {
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id ORDER BY (p.likes_count + p.comments_count * 2) DESC LIMIT 20")
-            respond_json_ok(req, std::json::stringify(posts))
+            if posts == nil {
+                respond_json_ok(req, "[]")
+            } else {
+                respond_json_ok(req, std::json::stringify(posts))
+            }
             std::sqlite::close(conn)
         },
         Option::None => { respond_json_error(req, 500, "DB error") }
@@ -599,7 +657,11 @@ fn handle_user_posts(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [target_id]
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
-            respond_json_ok(req, std::json::stringify(posts))
+            if posts == nil {
+                respond_json_ok(req, "[]")
+            } else {
+                respond_json_ok(req, std::json::stringify(posts))
+            }
             std::sqlite::close(conn)
         },
         Option::None => { respond_json_error(req, 500, "DB error") }
@@ -614,7 +676,11 @@ fn handle_notifications(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [user_id]
             let notifs = std::sqlite::query(conn, "SELECT n.id, n.type, n.is_read, n.created_at, fu.username as from_username FROM notifications n LEFT JOIN users fu ON n.from_user_id = fu.id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 30", p1)
-            respond_json_ok(req, std::json::stringify(notifs))
+            if notifs == nil {
+                respond_json_ok(req, "[]")
+            } else {
+                respond_json_ok(req, std::json::stringify(notifs))
+            }
             std::sqlite::close(conn)
         },
         Option::None => { respond_json_error(req, 500, "DB error") }
@@ -629,7 +695,11 @@ fn handle_conversations(r, req, pool) {
         Option::Some(conn) => {
             let p1 = [user_id, user_id, user_id]
             let convs = std::sqlite::query(conn, "SELECT DISTINCT partner_id, username, last_message, last_created_at FROM (SELECT CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END as partner_id, dm.content as last_message, dm.created_at as last_created_at FROM direct_messages dm WHERE dm.sender_id = ? OR dm.receiver_id = ? ORDER BY dm.created_at DESC) as recent JOIN users u ON partner_id = u.id ORDER BY last_created_at DESC LIMIT 50", p1)
-            respond_json_ok(req, std::json::stringify(convs))
+            if convs == nil {
+                respond_json_ok(req, "[]")
+            } else {
+                respond_json_ok(req, std::json::stringify(convs))
+            }
             std::sqlite::close(conn)
         },
         Option::None => { respond_json_error(req, 500, "DB error") }
@@ -670,13 +740,7 @@ fn main() {
     print("=================================")
 
     let pool = init_db()
-
-    print("Conectando a Redis...")
-    let r_url = std::env::get("REDIS_URL")
-    if r_url == "" { r_url = "redis://localhost:6379" }
-    let redis = std::redis::connect(r_url)
-    std::redis::ping(redis)
-    print("Redis conectado.")
+    let limiter = make_rate_limiter()
 
     let r = std::router::new()
     std::router::insert(r, "/api/health", "health")
@@ -698,12 +762,13 @@ fn main() {
     std::router::insert(r, "/api/notifications", "notifications")
     std::router::insert(r, "/api/messages/conversations", "conversations")
     std::router::insert(r, "/api/messages/send", "send_message")
-    print("Router configurado.")
+    print("Router configurado. 19 endpoints.")
 
     let bind_addr = HOST + ":" + PORT
     let s = std::server::start(bind_addr)
     let addr = std::server::local_addr(s)
     print("Moon corriendo en: http://" + addr)
+    print("Presiona Ctrl+C para detener.")
 
     loop {
         let req = std::server::accept(s, 60000)
@@ -716,13 +781,13 @@ fn main() {
             } else {
                 let tag = hit.pattern
                 if tag == "health" { handle_health(req) }
-                if tag == "register" { handle_register(r, req, pool, redis) }
-                if tag == "login" { handle_login(r, req, pool, redis) }
+                if tag == "register" { handle_register(r, req, pool, limiter) }
+                if tag == "login" { handle_login(r, req, pool, limiter) }
                 if tag == "me" { handle_me(r, req, pool) }
                 if tag == "profile" { handle_get_profile(r, req, pool) }
                 if tag == "follow" { handle_follow(r, req, pool) }
                 if tag == "unfollow" { handle_unfollow(r, req, pool) }
-                if tag == "create_post" { handle_create_post(r, req, pool, redis) }
+                if tag == "create_post" { handle_create_post(r, req, pool, limiter) }
                 if tag == "get_post" { handle_get_post(r, req, pool) }
                 if tag == "like" { handle_like(r, req, pool) }
                 if tag == "unlike" { handle_unlike(r, req, pool) }
@@ -740,7 +805,6 @@ fn main() {
 
     std::server::stop(s)
     std::router::drop(r)
-    std::redis::close(redis)
     std::sqlite::pool_close(pool)
     print("Moon detenido.")
 }
