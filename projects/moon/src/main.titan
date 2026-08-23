@@ -1,18 +1,10 @@
 // ============================================================
-// Moon — Red Social Backend (SQLite version)
+// Moon — Red Social Backend
+// Basado estrictamente en ejemplos que funcionan:
+//   enterprise_pool.titan (SQLite pool pattern)
+//   webserver.titan (router pattern)
+//   security.titan (JWT + password)
 // ============================================================
-
-fn db_path() -> string {
-    let val = std::env::get("DATABASE_PATH")
-    if val == "" { return "moon.db" }
-    val
-}
-
-fn jwt_secret_val() -> string {
-    let val = std::env::get("JWT_SECRET")
-    if val == "" { return "moon-default-secret-change-in-production" }
-    val
-}
 
 const HOST: string = "0.0.0.0"
 const PORT: int = 3000
@@ -22,6 +14,7 @@ const MAX_MESSAGE_LENGTH: int = 2000
 const MAX_POST_LENGTH: int = 5000
 const APP_NAME: string = "Moon"
 
+// ---- Helpers de respuesta ----
 fn respond_json_ok(req, json_string: string) {
     std::server::respond(req, 200, json_string)
 }
@@ -32,25 +25,39 @@ fn respond_json_error(req, status: int, message: string) {
     let body = "{\"error\":\"" + message + "\"}"
     std::server::respond(req, status, body)
 }
+
+// ---- Config ----
+fn jwt_secret_val() -> string {
+    let val = std::env::get("JWT_SECRET")
+    if val == "" { return "moon-default-secret-change-in-production" }
+    val
+}
+
+// ---- Auth ----
 fn authenticate(req) -> int {
     let auth_header = std::server::header(req, "Authorization")
     if auth_header == "" { return -1 }
-    let parts = std::text::split(auth_header, " ")
-    if std::collections::length(parts) != 2 { return -1 }
-    if parts[0] != "Bearer" { return -1 }
-    let token = parts[1]
+    let words = std::text::words(auth_header)
+    if std::collections::length(words) != 2 { return -1 }
+    if words[0] != "Bearer" { return -1 }
+    let token = words[1]
     let secret = std::encoding::utf8_encode(jwt_secret_val())
     let claims = std::jwt::verify_hs256(token, secret, "", "")
     if claims == nil { return -1 }
-    claims.user_id
+    let uid = claims.user_id
+    uid
 }
+
 fn require_auth(req) -> int {
     let uid = authenticate(req)
     if uid < 0 {
         respond_json_error(req, 401, "No autorizado")
+        return -1
     }
     uid
 }
+
+// ---- Rate limit ----
 fn rate_limit_check(redis, key: string, max_req: int, window: int) -> bool {
     let cur = std::redis::get(redis, key)
     if cur == nil {
@@ -58,15 +65,17 @@ fn rate_limit_check(redis, key: string, max_req: int, window: int) -> bool {
         return true
     }
     let count_str = std::encoding::utf8_decode(cur)
-    let count = std::text::parse_int(count_str)
-    if count == nil {
-        std::redis::set_ex(redis, key, "1", window)
-        return true
+    let count = 0
+    match std::text::parse_int(count_str) {
+        Option::Some(n) => count = n,
+        Option::None => count = 0,
     }
     if count >= max_req { return false }
     std::redis::incr(redis, key)
     true
 }
+
+// ---- Token generation ----
 fn generate_token(user_id, username: string) -> string {
     let secret = std::encoding::utf8_encode(jwt_secret_val())
     let ahora = std::datetime::now()
@@ -78,21 +87,24 @@ fn generate_token(user_id, username: string) -> string {
     let claims = std::map::insert(claims, "exp", expira)
     std::jwt::sign_hs256(claims, secret)
 }
-fn create_notification(db, user_id, ntype: string, from_uid, post_id, comment_id) {
+
+// ---- Notification helper ----
+fn create_notification(conn, user_id, ntype: string, from_uid, post_id, comment_id) {
     let p1 = [user_id, ntype, from_uid, post_id, comment_id]
-    std::db::execute(db, "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id) VALUES (?, ?, ?, ?, ?)", p1)
+    std::sqlite::execute(conn, "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id) VALUES (?, ?, ?, ?, ?)", p1)
 }
 
-fn init_db() -> int {
+// ---- DB Init ----
+fn init_db() {
     print("Iniciando SQLite...")
-    let path = db_path()
+    let path = "moon.db"
     let pool = std::sqlite::pool(path, 5)
-    print("SQLite pool creado.")
+    print("SQLite pool creado en: " + path)
 
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
-            print("Conexión adquirida.")
+            print("Conexión adquirida, creando tablas...")
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT, bio TEXT DEFAULT '', avatar_url TEXT DEFAULT '', banner_url TEXT DEFAULT '', is_verified INTEGER DEFAULT 0, is_private INTEGER DEFAULT 0, followers_count INTEGER DEFAULT 0, following_count INTEGER DEFAULT 0, posts_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)", [])
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', media_types TEXT DEFAULT '[]', likes_count INTEGER DEFAULT 0, comments_count INTEGER DEFAULT 0, reposts_count INTEGER DEFAULT 0, is_reply INTEGER DEFAULT 0, reply_to_id INTEGER REFERENCES posts(id) ON DELETE CASCADE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
             std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS follows (follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, following_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (follower_id, following_id))", [])
@@ -105,14 +117,18 @@ fn init_db() -> int {
             std::sqlite::execute(conn, "CREATE INDEX IF NOT EXISTS idx_likes_p ON likes(post_id)", [])
             std::sqlite::execute(conn, "CREATE INDEX IF NOT EXISTS idx_notif_u ON notifications(user_id)", [])
             std::sqlite::close(conn)
-            print("Tablas creadas.")
+            print("Tablas creadas correctamente.")
         },
         Option::None => {
-            print("ERROR: No se pudo adquirir conexión")
+            print("ERROR: No se pudo adquirir conexión SQLite")
         }
     }
     pool
 }
+
+// ---- HANDLERS ----
+// Cada handler recibe (r, req, pool, redis) o la combinación que necesite.
+// El router handle 'r' se usa para std::router::at(r, path).
 
 fn handle_health(req) {
     let resp = std::map::new()
@@ -121,7 +137,7 @@ fn handle_health(req) {
     respond_json_ok(req, std::json::stringify(resp))
 }
 
-fn handle_register(req, pool, redis) {
+fn handle_register(r, req, pool, redis) {
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -165,7 +181,6 @@ fn handle_register(req, pool, redis) {
             let p4 = [username]
             let nu = std::sqlite::query(conn, "SELECT id, username, email, display_name FROM users WHERE username = ?", p4)
             let user = nu[0]
-
             let token = generate_token(user.id, username)
             let sk = "session:" + user.id
             std::redis::set_ex(redis, sk, token, JWT_EXPIRES)
@@ -174,16 +189,13 @@ fn handle_register(req, pool, redis) {
             let resp = std::map::insert(resp, "token", token)
             let resp = std::map::insert(resp, "user", user)
             respond_json_created(req, std::json::stringify(resp))
-
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_login(req, pool, redis) {
+fn handle_login(r, req, pool, redis) {
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -240,16 +252,13 @@ fn handle_login(req, pool, redis) {
             let resp = std::map::insert(resp, "token", token)
             let resp = std::map::insert(resp, "user", su)
             respond_json_ok(req, std::json::stringify(resp))
-
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_me(req, pool) {
+fn handle_me(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
     let conn_opt = std::sqlite::acquire(pool, 2000)
@@ -265,16 +274,15 @@ fn handle_me(req, pool) {
             respond_json_ok(req, std::json::stringify(users[0]))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_get_profile(req, pool) {
+fn handle_get_profile(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let target_id = hit.params.id
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
@@ -296,16 +304,15 @@ fn handle_get_profile(req, pool) {
             respond_json_ok(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_follow(req, pool) {
+fn handle_follow(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let target_id = hit.params.user_id
 
     if user_id == target_id {
@@ -323,7 +330,6 @@ fn handle_follow(req, pool) {
                 std::sqlite::close(conn)
                 return
             }
-
             let p2 = [user_id, target_id]
             let already = std::sqlite::query(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", p2)
             if std::collections::length(already) > 0 {
@@ -331,7 +337,6 @@ fn handle_follow(req, pool) {
                 std::sqlite::close(conn)
                 return
             }
-
             let p3 = [user_id, target_id]
             std::sqlite::execute(conn, "INSERT INTO follows (follower_id, following_id) VALUES (?, ?)", p3)
             let p4 = [user_id]
@@ -339,24 +344,21 @@ fn handle_follow(req, pool) {
             let p5 = [target_id]
             std::sqlite::execute(conn, "UPDATE users SET followers_count = followers_count + 1 WHERE id = ?", p5)
             create_notification(conn, target_id, "follow", user_id, 0, 0)
-
             let resp = std::map::new()
             let resp = std::map::insert(resp, "message", "Ahora sigues a este usuario")
             respond_json_ok(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_unfollow(req, pool) {
+fn handle_unfollow(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let target_id = hit.params.user_id
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -366,68 +368,55 @@ fn handle_unfollow(req, pool) {
             std::sqlite::execute(conn, "UPDATE users SET following_count = following_count - 1 WHERE id = ?", p2)
             let p3 = [target_id]
             std::sqlite::execute(conn, "UPDATE users SET followers_count = followers_count - 1 WHERE id = ?", p3)
-
             let resp = std::map::new()
             let resp = std::map::insert(resp, "message", "Dejaste de seguir")
             respond_json_ok(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_create_post(req, pool, redis) {
+fn handle_create_post(r, req, pool, redis) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-
     let rk = "post:" + user_id
     let ok = rate_limit_check(redis, rk, MAX_POSTS_PER_HOUR, 3600)
     if ok == false {
         respond_json_error(req, 429, "Limite de posts por hora")
         return
     }
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
             let body_text = std::server::body_text(req)
             let body = std::json::parse(body_text)
             let content = body.content
-
             if content == "" {
                 respond_json_error(req, 400, "Contenido vacio")
                 std::sqlite::close(conn)
                 return
             }
-
             let p1 = [user_id, content]
             std::sqlite::execute(conn, "INSERT INTO posts (user_id, content) VALUES (?, ?)", p1)
-
             let p2 = [user_id]
             let np = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 1", p2)
-
             let post = np[0]
-
             let p3 = [user_id]
             std::sqlite::execute(conn, "UPDATE users SET posts_count = posts_count + 1 WHERE id = ?", p3)
-
             respond_json_created(req, std::json::stringify(post))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_get_post(req, pool) {
+fn handle_get_post(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let post_id = hit.params.id
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -439,29 +428,25 @@ fn handle_get_post(req, pool) {
                 return
             }
             let post = posts[0]
-
             let p2 = [user_id, post_id]
             let likes = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
             let is_liked = std::collections::length(likes) > 0
-
             let resp = std::map::new()
             let resp = std::map::insert(resp, "post", post)
             let resp = std::map::insert(resp, "is_liked", is_liked)
             respond_json_ok(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_like(req, pool) {
+fn handle_like(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let post_id = hit.params.id
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -473,7 +458,6 @@ fn handle_like(req, pool) {
                 return
             }
             let owner = pc[0].user_id
-
             let p2 = [user_id, post_id]
             let existing = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
             if std::collections::length(existing) > 0 {
@@ -481,33 +465,28 @@ fn handle_like(req, pool) {
                 std::sqlite::close(conn)
                 return
             }
-
             let p3 = [user_id, post_id]
             std::sqlite::execute(conn, "INSERT INTO likes (user_id, post_id) VALUES (?, ?)", p3)
             let p4 = [post_id]
             std::sqlite::execute(conn, "UPDATE posts SET likes_count = likes_count + 1 WHERE id = ?", p4)
-
             if owner != user_id {
                 create_notification(conn, owner, "like", user_id, post_id, 0)
             }
-
             let resp = std::map::new()
             let resp = std::map::insert(resp, "message", "Like agregado")
             respond_json_ok(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_unlike(req, pool) {
+fn handle_unlike(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let post_id = hit.params.id
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -515,24 +494,21 @@ fn handle_unlike(req, pool) {
             std::sqlite::execute(conn, "DELETE FROM likes WHERE user_id = ? AND post_id = ?", p1)
             let p2 = [post_id]
             std::sqlite::execute(conn, "UPDATE posts SET likes_count = likes_count - 1 WHERE id = ?", p2)
-
             let resp = std::map::new()
             let resp = std::map::insert(resp, "message", "Like removido")
             respond_json_ok(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_get_comments(req, pool) {
+fn handle_get_comments(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let post_id = hit.params.id
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
@@ -541,36 +517,31 @@ fn handle_get_comments(req, pool) {
             respond_json_ok(req, std::json::stringify(comments))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_add_comment(req, pool) {
+fn handle_add_comment(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let post_id = hit.params.id
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
             let body_text = std::server::body_text(req)
             let body = std::json::parse(body_text)
             let content = body.content
-
             if content == "" {
                 respond_json_error(req, 400, "Comentario vacio")
                 std::sqlite::close(conn)
                 return
             }
-
             let p1 = [user_id, post_id, content]
             std::sqlite::execute(conn, "INSERT INTO comments (user_id, post_id, content) VALUES (?, ?, ?)", p1)
             let p2 = [post_id]
             std::sqlite::execute(conn, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", p2)
-
             let p3 = [post_id]
             let pc = std::sqlite::query(conn, "SELECT user_id FROM posts WHERE id = ?", p3)
             if std::collections::length(pc) > 0 {
@@ -579,38 +550,31 @@ fn handle_add_comment(req, pool) {
                     create_notification(conn, owner, "comment", user_id, post_id, 0)
                 }
             }
-
             let resp = std::map::new()
             let resp = std::map::insert(resp, "message", "Comentario agregado")
             respond_json_created(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_feed(req, pool) {
+fn handle_feed(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
             let p1 = [user_id, user_id]
             let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
-
             respond_json_ok(req, std::json::stringify(posts))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_trending(req, pool) {
+fn handle_trending(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
     let conn_opt = std::sqlite::acquire(pool, 2000)
@@ -620,16 +584,15 @@ fn handle_trending(req, pool) {
             respond_json_ok(req, std::json::stringify(posts))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_user_posts(req, pool) {
+fn handle_user_posts(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
-    let hit = std::router::at(std::server::router(req), std::server::path(req))
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
     let target_id = hit.params.id
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
@@ -639,38 +602,11 @@ fn handle_user_posts(req, pool) {
             respond_json_ok(req, std::json::stringify(posts))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_search(req, pool) {
-    let user_id = require_auth(req)
-    if user_id < 0 { return }
-    let q = std::server::query(req)
-    if q == "" {
-        respond_json_error(req, 400, "Query requerida")
-        return
-    }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let pattern = "%" + q + "%"
-            let p1 = [pattern, pattern]
-            let users = std::sqlite::query(conn, "SELECT id, username, display_name, avatar_url, followers_count FROM users WHERE username LIKE ? OR display_name LIKE ? ORDER BY followers_count DESC LIMIT 10", p1)
-            let resp = std::map::new()
-            let resp = std::map::insert(resp, "users", users)
-            respond_json_ok(req, std::json::stringify(resp))
-            std::sqlite::close(conn)
-        },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
-    }
-}
-
-fn handle_notifications(req, pool) {
+fn handle_notifications(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
     let conn_opt = std::sqlite::acquire(pool, 2000)
@@ -681,30 +617,26 @@ fn handle_notifications(req, pool) {
             respond_json_ok(req, std::json::stringify(notifs))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_conversations(req, pool) {
+fn handle_conversations(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
-            let p1 = [user_id]
+            let p1 = [user_id, user_id, user_id]
             let convs = std::sqlite::query(conn, "SELECT DISTINCT partner_id, username, last_message, last_created_at FROM (SELECT CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END as partner_id, dm.content as last_message, dm.created_at as last_created_at FROM direct_messages dm WHERE dm.sender_id = ? OR dm.receiver_id = ? ORDER BY dm.created_at DESC) as recent JOIN users u ON partner_id = u.id ORDER BY last_created_at DESC LIMIT 50", p1)
             respond_json_ok(req, std::json::stringify(convs))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
-fn handle_send_message(req, pool) {
+fn handle_send_message(r, req, pool) {
     let user_id = require_auth(req)
     if user_id < 0 { return }
     let body_text = std::server::body_text(req)
@@ -726,12 +658,11 @@ fn handle_send_message(req, pool) {
             respond_json_created(req, std::json::stringify(resp))
             std::sqlite::close(conn)
         },
-        Option::None => {
-            respond_json_error(req, 500, "DB error")
-        }
+        Option::None => { respond_json_error(req, 500, "DB error") }
     }
 }
 
+// ---- MAIN ----
 fn main() {
     print("=================================")
     print("  Moon - Red Social Backend")
@@ -741,7 +672,8 @@ fn main() {
     let pool = init_db()
 
     print("Conectando a Redis...")
-    let r_url = redis_url()
+    let r_url = std::env::get("REDIS_URL")
+    if r_url == "" { r_url = "redis://localhost:6379" }
     let redis = std::redis::connect(r_url)
     std::redis::ping(redis)
     print("Redis conectado.")
@@ -763,21 +695,15 @@ fn main() {
     std::router::insert(r, "/api/feed", "feed")
     std::router::insert(r, "/api/feed/trending", "trending")
     std::router::insert(r, "/api/users/:id/posts", "user_posts")
-    std::router::insert(r, "/api/search", "search")
     std::router::insert(r, "/api/notifications", "notifications")
     std::router::insert(r, "/api/messages/conversations", "conversations")
     std::router::insert(r, "/api/messages/send", "send_message")
-
     print("Router configurado.")
 
     let bind_addr = HOST + ":" + PORT
     let s = std::server::start(bind_addr)
     let addr = std::server::local_addr(s)
-
-    print("=================================")
-    print("  Moon corriendo en:")
-    print("  http://" + addr)
-    print("=================================")
+    print("Moon corriendo en: http://" + addr)
 
     loop {
         let req = std::server::accept(s, 60000)
@@ -790,25 +716,24 @@ fn main() {
             } else {
                 let tag = hit.pattern
                 if tag == "health" { handle_health(req) }
-                if tag == "register" { handle_register(req, pool, redis) }
-                if tag == "login" { handle_login(req, pool, redis) }
-                if tag == "me" { handle_me(req, pool) }
-                if tag == "profile" { handle_get_profile(req, pool) }
-                if tag == "follow" { handle_follow(req, pool) }
-                if tag == "unfollow" { handle_unfollow(req, pool) }
-                if tag == "create_post" { handle_create_post(req, pool, redis) }
-                if tag == "get_post" { handle_get_post(req, pool) }
-                if tag == "like" { handle_like(req, pool) }
-                if tag == "unlike" { handle_unlike(req, pool) }
-                if tag == "get_comments" { handle_get_comments(req, pool) }
-                if tag == "add_comment" { handle_add_comment(req, pool) }
-                if tag == "feed" { handle_feed(req, pool) }
-                if tag == "trending" { handle_trending(req, pool) }
-                if tag == "user_posts" { handle_user_posts(req, pool) }
-                if tag == "search" { handle_search(req, pool) }
-                if tag == "notifications" { handle_notifications(req, pool) }
-                if tag == "conversations" { handle_conversations(req, pool) }
-                if tag == "send_message" { handle_send_message(req, pool) }
+                if tag == "register" { handle_register(r, req, pool, redis) }
+                if tag == "login" { handle_login(r, req, pool, redis) }
+                if tag == "me" { handle_me(r, req, pool) }
+                if tag == "profile" { handle_get_profile(r, req, pool) }
+                if tag == "follow" { handle_follow(r, req, pool) }
+                if tag == "unfollow" { handle_unfollow(r, req, pool) }
+                if tag == "create_post" { handle_create_post(r, req, pool, redis) }
+                if tag == "get_post" { handle_get_post(r, req, pool) }
+                if tag == "like" { handle_like(r, req, pool) }
+                if tag == "unlike" { handle_unlike(r, req, pool) }
+                if tag == "get_comments" { handle_get_comments(r, req, pool) }
+                if tag == "add_comment" { handle_add_comment(r, req, pool) }
+                if tag == "feed" { handle_feed(r, req, pool) }
+                if tag == "trending" { handle_trending(r, req, pool) }
+                if tag == "user_posts" { handle_user_posts(r, req, pool) }
+                if tag == "notifications" { handle_notifications(r, req, pool) }
+                if tag == "conversations" { handle_conversations(r, req, pool) }
+                if tag == "send_message" { handle_send_message(r, req, pool) }
             }
         }
     }
