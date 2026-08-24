@@ -1,0 +1,13 @@
+services:
+  - type: web
+    runtime: node
+    name: moon-web
+    plan: free
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_URL
+        value: https://TU-SERVICIO-DE-API.onrender.com
