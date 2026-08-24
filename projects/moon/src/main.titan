@@ -770,26 +770,32 @@ fn main() {
     let pool = init_db()
 
     let r = std::router::new()
+    // Los patrones de std::router (matchit) necesitan {param} literal,
+    // pero en Titan los strings interpretan {nombre} como interpolacion
+    // de variables. Por eso los patrones con parametro se arman por
+    // concatenacion: las llaves sueltas no activan la interpolacion.
+    let ob = "{"
+    let cb = "}"
     std::router::insert(r, "/api/health", "health")
     std::router::insert(r, "/api/auth/register", "register")
     std::router::insert(r, "/api/auth/login", "login")
     std::router::insert(r, "/api/auth/me", "me")
-    std::router::insert(r, "/api/users/{id}", "profile")
-    std::router::insert(r, "/api/follow/{user_id}", "follow")
-    std::router::insert(r, "/api/unfollow/{user_id}", "unfollow")
+    std::router::insert(r, "/api/users/" + ob + "id" + cb, "profile")
+    std::router::insert(r, "/api/follow/" + ob + "user_id" + cb, "follow")
+    std::router::insert(r, "/api/unfollow/" + ob + "user_id" + cb, "unfollow")
     std::router::insert(r, "/api/posts", "create_post")
-    std::router::insert(r, "/api/posts/{id}", "get_post")
-    std::router::insert(r, "/api/posts/{id}/like", "like")
-    std::router::insert(r, "/api/posts/{id}/unlike", "unlike")
-    std::router::insert(r, "/api/posts/{id}/comments", "get_comments")
-    std::router::insert(r, "/api/posts/{id}/comment", "add_comment")
+    std::router::insert(r, "/api/posts/" + ob + "id" + cb, "get_post")
+    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/like", "like")
+    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/unlike", "unlike")
+    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/comments", "get_comments")
+    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/comment", "add_comment")
     std::router::insert(r, "/api/feed", "feed")
     std::router::insert(r, "/api/feed/trending", "trending")
-    std::router::insert(r, "/api/users/{id}/posts", "user_posts")
+    std::router::insert(r, "/api/users/" + ob + "id" + cb + "/posts", "user_posts")
     std::router::insert(r, "/api/notifications", "notifications")
     std::router::insert(r, "/api/messages/conversations", "conversations")
     std::router::insert(r, "/api/messages/send", "send_message")
-    std::router::insert(r, "/api/messages/{partner_id}", "get_messages")
+    std::router::insert(r, "/api/messages/" + ob + "partner_id" + cb, "get_messages")
     print("20 endpoints registrados.")
 
     // Render inyecta el puerto en PORT. std::env::get devuelve nil cuando
