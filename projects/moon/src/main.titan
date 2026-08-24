@@ -10,16 +10,35 @@ const JWT_EXPIRES: int = 86400
 const MAX_POSTS_PER_HOUR: int = 30
 const APP_NAME: string = "Moon"
 
+// ---- CORS ----
+// El frontend React (frontend/) corre en Render como un servicio web
+// separado y habla con esta API desde otro origen.
+const CORS_ALLOW_ORIGIN: string = "*"
+const CORS_ALLOW_HEADERS: string = "content-type, authorization"
+const CORS_ALLOW_METHODS: string = "GET, POST, OPTIONS"
+
+fn cors_headers() -> map {
+    let mut h = std::map::new()
+    h = std::map::insert(h, "Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN)
+    h = std::map::insert(h, "Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+    h = std::map::insert(h, "Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+    h
+}
+
 // ---- RESPONSES ----
 fn respond_ok(req, json_string: string) {
-    std::server::respond_json(req, 200, json_string)
+    std::server::respond_full(req, 200, "application/json; charset=utf-8", cors_headers(), std::encoding::utf8_encode(json_string))
 }
 fn respond_created(req, json_string: string) {
-    std::server::respond_json(req, 201, json_string)
+    std::server::respond_full(req, 201, "application/json; charset=utf-8", cors_headers(), std::encoding::utf8_encode(json_string))
 }
 fn respond_err(req, status: int, message: string) {
     let body = "{\"error\":\"" + message + "\"}"
-    std::server::respond_json(req, status, body)
+    std::server::respond_full(req, status, "application/json; charset=utf-8", cors_headers(), std::encoding::utf8_encode(body))
+}
+// Preflight de CORS: el navegador envia OPTIONS antes del request real.
+fn respond_preflight(req) {
+    std::server::respond_full(req, 204, "", cors_headers(), "")
 }
 
 // ---- AUTH ----
@@ -596,7 +615,7 @@ fn handle_feed(r, req, pool) {
     match conn_opt {
         Option::Some(conn) => {
             let p1 = [uid, uid]
-            let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
+            let posts = std::sqlite::query(conn, "SELECT p.id, u.id as user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
             if std::collections::length(posts) == 0 {
                 respond_ok(req, "[]")
             } else {
@@ -614,7 +633,7 @@ fn handle_trending(r, req, pool) {
     let conn_opt = std::sqlite::acquire(pool, 2000)
     match conn_opt {
         Option::Some(conn) => {
-            let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id ORDER BY (p.likes_count + p.comments_count * 2) DESC LIMIT 20", [])
+            let posts = std::sqlite::query(conn, "SELECT p.id, u.id as user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id ORDER BY (p.likes_count + p.comments_count * 2) DESC LIMIT 20", [])
             if std::collections::length(posts) == 0 {
                 respond_ok(req, "[]")
             } else {
@@ -636,7 +655,7 @@ fn handle_user_posts(r, req, pool) {
     match conn_opt {
         Option::Some(conn) => {
             let p1 = [target_id]
-            let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
+            let posts = std::sqlite::query(conn, "SELECT p.id, u.id as user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
             if std::collections::length(posts) == 0 {
                 respond_ok(req, "[]")
             } else {
@@ -712,6 +731,35 @@ fn handle_send_message(r, req, pool) {
     }
 }
 
+fn handle_get_messages(r, req, pool) {
+    let uid = require_auth(req)
+    if uid < 0 { return }
+    let path = std::server::path(req)
+    let hit = std::router::at(r, path)
+    let partner_id = hit.params.partner_id
+    let conn_opt = std::sqlite::acquire(pool, 2000)
+    match conn_opt {
+        Option::Some(conn) => {
+            let p1 = [partner_id]
+            let partners = std::sqlite::query(conn, "SELECT id, username, display_name, avatar_url FROM users WHERE id = ?", p1)
+            if std::collections::length(partners) == 0 {
+                respond_err(req, 404, "No encontrado")
+                let ignored_close = std::sqlite::close(conn)
+                return
+            }
+            let partner = partners[0]
+            let p2 = [uid, partner_id, uid, partner_id]
+            let msgs = std::sqlite::query(conn, "SELECT id, sender_id, content, is_read, created_at FROM direct_messages WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) ORDER BY created_at ASC LIMIT 100", p2)
+            let mut resp = std::map::new()
+            resp = std::map::insert(resp, "partner", partner)
+            resp = std::map::insert(resp, "messages", msgs)
+            respond_ok(req, std::json::stringify(resp))
+            let ignored_close = std::sqlite::close(conn)
+        },
+        Option::None => { respond_err(req, 500, "DB error") }
+    }
+}
+
 // ---- MAIN ----
 fn main() {
     print("=================================")
@@ -726,22 +774,23 @@ fn main() {
     std::router::insert(r, "/api/auth/register", "register")
     std::router::insert(r, "/api/auth/login", "login")
     std::router::insert(r, "/api/auth/me", "me")
-    std::router::insert(r, "/api/users/:id", "profile")
-    std::router::insert(r, "/api/follow/:user_id", "follow")
-    std::router::insert(r, "/api/unfollow/:user_id", "unfollow")
+    std::router::insert(r, "/api/users/{id}", "profile")
+    std::router::insert(r, "/api/follow/{user_id}", "follow")
+    std::router::insert(r, "/api/unfollow/{user_id}", "unfollow")
     std::router::insert(r, "/api/posts", "create_post")
-    std::router::insert(r, "/api/posts/:id", "get_post")
-    std::router::insert(r, "/api/posts/:id/like", "like")
-    std::router::insert(r, "/api/posts/:id/unlike", "unlike")
-    std::router::insert(r, "/api/posts/:id/comments", "get_comments")
-    std::router::insert(r, "/api/posts/:id/comment", "add_comment")
+    std::router::insert(r, "/api/posts/{id}", "get_post")
+    std::router::insert(r, "/api/posts/{id}/like", "like")
+    std::router::insert(r, "/api/posts/{id}/unlike", "unlike")
+    std::router::insert(r, "/api/posts/{id}/comments", "get_comments")
+    std::router::insert(r, "/api/posts/{id}/comment", "add_comment")
     std::router::insert(r, "/api/feed", "feed")
     std::router::insert(r, "/api/feed/trending", "trending")
-    std::router::insert(r, "/api/users/:id/posts", "user_posts")
+    std::router::insert(r, "/api/users/{id}/posts", "user_posts")
     std::router::insert(r, "/api/notifications", "notifications")
     std::router::insert(r, "/api/messages/conversations", "conversations")
     std::router::insert(r, "/api/messages/send", "send_message")
-    print("19 endpoints registrados.")
+    std::router::insert(r, "/api/messages/{partner_id}", "get_messages")
+    print("20 endpoints registrados.")
 
     // Render inyecta el puerto en PORT. std::env::get devuelve nil cuando
     // la variable no existe (no ""), por eso el tipo any permite la
@@ -766,31 +815,37 @@ fn main() {
             Result::Ok(req) => {
                 if req < 0 {
                 } else {
-                    let path = std::server::path(req)
-                    let hit = std::router::at(r, path)
-                    if hit == nil {
-                        respond_err(req, 404, "Not found")
+                    let method = std::server::method(req)
+                    if method == "OPTIONS" {
+                        respond_preflight(req)
                     } else {
-                        let tag = hit.pattern
-                        if tag == "health" { handle_health(req) }
-                        if tag == "register" { handle_register(r, req, pool) }
-                        if tag == "login" { handle_login(r, req, pool) }
-                        if tag == "me" { handle_me(r, req, pool) }
-                        if tag == "profile" { handle_get_profile(r, req, pool) }
-                        if tag == "follow" { handle_follow(r, req, pool) }
-                        if tag == "unfollow" { handle_unfollow(r, req, pool) }
-                        if tag == "create_post" { handle_create_post(r, req, pool) }
-                        if tag == "get_post" { handle_get_post(r, req, pool) }
-                        if tag == "like" { handle_like(r, req, pool) }
-                        if tag == "unlike" { handle_unlike(r, req, pool) }
-                        if tag == "get_comments" { handle_get_comments(r, req, pool) }
-                        if tag == "add_comment" { handle_add_comment(r, req, pool) }
-                        if tag == "feed" { handle_feed(r, req, pool) }
-                        if tag == "trending" { handle_trending(r, req, pool) }
-                        if tag == "user_posts" { handle_user_posts(r, req, pool) }
-                        if tag == "notifications" { handle_notifications(r, req, pool) }
-                        if tag == "conversations" { handle_conversations(r, req, pool) }
-                        if tag == "send_message" { handle_send_message(r, req, pool) }
+                        let path = std::server::path(req)
+                        let hit = std::router::at(r, path)
+                        if hit == nil {
+                            respond_err(req, 404, "Not found")
+                        } else {
+                            let tag = hit.pattern
+                            if tag == "health" { handle_health(req) }
+                            if tag == "register" { handle_register(r, req, pool) }
+                            if tag == "login" { handle_login(r, req, pool) }
+                            if tag == "me" { handle_me(r, req, pool) }
+                            if tag == "profile" { handle_get_profile(r, req, pool) }
+                            if tag == "follow" { handle_follow(r, req, pool) }
+                            if tag == "unfollow" { handle_unfollow(r, req, pool) }
+                            if tag == "create_post" { handle_create_post(r, req, pool) }
+                            if tag == "get_post" { handle_get_post(r, req, pool) }
+                            if tag == "like" { handle_like(r, req, pool) }
+                            if tag == "unlike" { handle_unlike(r, req, pool) }
+                            if tag == "get_comments" { handle_get_comments(r, req, pool) }
+                            if tag == "add_comment" { handle_add_comment(r, req, pool) }
+                            if tag == "feed" { handle_feed(r, req, pool) }
+                            if tag == "trending" { handle_trending(r, req, pool) }
+                            if tag == "user_posts" { handle_user_posts(r, req, pool) }
+                            if tag == "notifications" { handle_notifications(r, req, pool) }
+                            if tag == "conversations" { handle_conversations(r, req, pool) }
+                            if tag == "send_message" { handle_send_message(r, req, pool) }
+                            if tag == "get_messages" { handle_get_messages(r, req, pool) }
+                        }
                     }
                 }
             },
