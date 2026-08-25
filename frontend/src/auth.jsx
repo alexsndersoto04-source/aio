@@ -26,7 +26,13 @@ export function AuthProvider({ children }) {
       body: JSON.stringify({ username, password }),
     });
     localStorage.setItem('moon_token', data.token);
-    setUser(data.user);
+    // /me devuelve el perfil completo (contadores incluidos); si falla,
+    // usamos lo que trajo el login.
+    try {
+      setUser(await api('/api/auth/me'));
+    } catch {
+      setUser(data.user);
+    }
   }
 
   async function register(username, email, password) {
@@ -35,7 +41,11 @@ export function AuthProvider({ children }) {
       body: JSON.stringify({ username, email, password }),
     });
     localStorage.setItem('moon_token', data.token);
-    setUser(data.user);
+    try {
+      setUser(await api('/api/auth/me'));
+    } catch {
+      setUser(data.user);
+    }
   }
 
   function logout() {

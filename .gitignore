@@ -23,3 +23,7 @@ zett_*.deb
 .DS_Store
 .idea/
 .vscode/
+
+# Frontend
+node_modules/
+*.db
