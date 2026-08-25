@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from './auth.jsx';
-import Sidebar from './Sidebar.jsx';
-import AuthView from './AuthView.jsx';
-import FeedView from './FeedView.jsx';
-import TrendingView from './TrendingView.jsx';
-import ProfileView from './ProfileView.jsx';
-import NotificationsView from './NotificationsView.jsx';
-import MessagesView from './MessagesView.jsx';
+import LeftNav from './components/LeftNav.jsx';
+import RightRail from './components/RightRail.jsx';
+import TopBar from './components/TopBar.jsx';
+import BottomNav from './components/BottomNav.jsx';
+import AuthView from './views/AuthView.jsx';
+import FeedView from './views/FeedView.jsx';
+import ExploreView from './views/ExploreView.jsx';
+import NotificationsView from './views/NotificationsView.jsx';
+import MessagesView from './views/MessagesView.jsx';
+import ProfileView from './views/ProfileView.jsx';
+import SavedView from './views/SavedView.jsx';
+import SettingsView from './views/SettingsView.jsx';
 
 function useHash() {
   const [hash, setHash] = useState(window.location.hash || '#/feed');
@@ -18,11 +23,28 @@ function useHash() {
   return hash;
 }
 
+const TITLES = {
+  feed: 'Inicio',
+  explore: 'Explorar',
+  notifications: 'Notificaciones',
+  messages: 'Mensajes',
+  profile: 'Perfil',
+  saved: 'Guardados',
+  settings: 'Ajustes',
+};
+
 export default function App() {
   const { user, loading } = useAuth();
   const hash = useHash();
 
-  if (loading) return <div className="loading">Cargando...</div>;
+  if (loading) {
+    return (
+      <div className="boot-screen">
+        <p>Cargando Moon…</p>
+      </div>
+    );
+  }
+
   if (!user) return <AuthView />;
 
   const parts = hash.replace('#/', '').split('/');
@@ -34,8 +56,8 @@ export default function App() {
     case 'feed':
       view = <FeedView />;
       break;
-    case 'trending':
-      view = <TrendingView />;
+    case 'explore':
+      view = <ExploreView />;
       break;
     case 'notifications':
       view = <NotificationsView />;
@@ -46,16 +68,25 @@ export default function App() {
     case 'profile':
       view = <ProfileView userId={param || user.id} />;
       break;
+    case 'saved':
+      view = <SavedView />;
+      break;
+    case 'settings':
+      view = <SettingsView />;
+      break;
     default:
       view = <FeedView />;
   }
 
   return (
-    <div className="app-layout">
-      <Sidebar />
-      <main className="main-content">
-        {view}
-      </main>
+    <div className="shell">
+      <LeftNav />
+      <div className="shell-main">
+        <TopBar title={TITLES[route] || 'Moon'} />
+        <main className="shell-content">{view}</main>
+      </div>
+      <RightRail />
+      <BottomNav />
     </div>
   );
 }
