@@ -33,9 +33,9 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: CORS_ORIGIN
-        sync: false            # URL del servicio web: https://moon-web.onrender.com
+        sync: false            # URL del frontend (moon-web): https://moon-web.onrender.com
       - key: PUBLIC_BASE_URL
-        sync: false            # https://moon-api.onrender.com
+        sync: false            # La MISMA URL del frontend (se usa para enlaces en emails): https://moon-web.onrender.com
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
