@@ -1,0 +1,18 @@
+# Reduce el contexto de build de Docker (solo se copia projects/moon/)
+.git
+.github
+crates
+examples
+docs
+stdlib
+scripts
+projects/moon/DEPLOY.md
+projects/moon/SPEC.md
+projects/moon/STATUS.md
+frontend/node_modules
+frontend/dist
+target
+*.log
+CHANGELOG.md
+make-zett-package.sh
+verify_phase34.py

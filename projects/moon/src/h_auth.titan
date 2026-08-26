@@ -72,7 +72,16 @@ fn h_auth_register(req: int, ctx: map) {
         return
     }
     let uid = std::map::get(new_user, "id")
-    let role = std::map::get(new_user, "role")
+    let mut role = std::map::get(new_user, "role")
+    // Bootstrap: la PRIMERA cuenta registrada se convierte en admin
+    // (si no, el panel /admin sería inaccesible para siempre). En tu
+    // red personal, ese primer usuario eres tú.
+    let total_users = db_count(conn, "SELECT COUNT(*) AS count FROM users", [])
+    if total_users <= 1 {
+        let _ = db_exec(conn, "UPDATE users SET role = 'admin' WHERE id = ?", [uid])
+        role = "admin"
+        print("Primer usuario registrado: rol admin asignado.")
+    }
     n_ensure_prefs(conn, uid)
     r_bump_stats(conn, "new_users")
     r_audit(conn, uid, "register", "Nuevo registro", req)

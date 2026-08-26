@@ -204,6 +204,13 @@ fn h_media_upload(req: int, ctx: map) {
             let h = std::map::get(processed, "height")
             let bytes_stored = std::map::get(processed, "bytes")
             let _ = db_exec(conn, "INSERT INTO media (user_id, kind, original_path, thumb_path, url, width, height, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [uid, kind, url, thumb, url, w, h, bytes_stored])
+            // Actualizar el perfil si es avatar o portada (antes no se
+            // aplicaba y la foto nunca aparecía en el perfil).
+            if kind == "avatar" {
+                let _ = db_exec(conn, "UPDATE users SET avatar_url = ? WHERE id = ?", [url, uid])
+            } else if kind == "cover" {
+                let _ = db_exec(conn, "UPDATE users SET cover_url = ? WHERE id = ?", [url, uid])
+            }
             let row = db_one(conn, "SELECT id, url, thumb_path AS thumb_url, width, height, bytes, created_at::text AS created_at FROM media WHERE user_id = ? ORDER BY id DESC LIMIT 1", [uid])
             let _ = db_exec(conn, "UPDATE users SET images_count = images_count + 1, images_bytes = images_bytes + ? WHERE id = ?", [bytes_stored, uid])
             let _c = std::postgres::close(conn)

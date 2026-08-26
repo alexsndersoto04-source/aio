@@ -46,10 +46,15 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
     api.get('/api/hashtags').then(setTrendingTags).catch(() => {});
   }, []);
 
+  // Sincroniza cuando la URL cambia (p. ej. clic en #hashtag de un post).
   useEffect(() => {
-    if (initialQ) runSearch(initialQ, type);
+    if (!initialQ) return;
+    const t = initialType === 'posts' ? 'posts' : 'users';
+    setQ(initialQ);
+    setType(t);
+    runSearch(initialQ, t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initialQ, initialType]);
 
   function onType(t) {
     setType(t);
