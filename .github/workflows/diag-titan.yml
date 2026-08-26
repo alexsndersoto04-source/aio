@@ -1,0 +1,23 @@
+name: Diag titan
+on:
+  push:
+    branches: [main]
+jobs:
+  titan-diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: zett check con error en anotación
+        run: |
+          set +e
+          OUT=$(cargo run --quiet -p titan_cli -- check projects/moon/src/main.titan 2>&1)
+          CODE=$?
+          printf '%s\n' "$OUT"
+          if [ "$CODE" -ne 0 ]; then
+            TAIL=$(printf '%s' "$OUT" | tail -70)
+            ENC=$(printf '%s' "$TAIL" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+            echo "::error title=ZETT_CHECK_FAILED::$ENC"
+          fi
+          exit $CODE
