@@ -1,0 +1,508 @@
+// Moon — Handlers de contenido (h_posts.titan)
+// ============================================================
+// create_post (texto + N fotos) · edit_post · delete_post · get_post ·
+// like · unlike · add_comment · reply · delete_comment · get_comments ·
+// posts_by_hashtag · save · unsave · report (SPEC §3 "Posts" + §7)
+
+fn hp_find_post(conn: Postgres, post_id: int) -> any {
+    db_one(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.status, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified, u.is_private FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ?", [post_id])
+}
+
+fn hp_process_hashtags(conn: Postgres, post_id: int, content: string) {
+    let tags = v_hashtags(content)
+    for tag in tags {
+        let _ = db_exec(conn, "INSERT INTO hashtags (tag) VALUES (?) ON CONFLICT (tag) DO UPDATE SET posts_count = hashtags.posts_count + 1, last_used_at = NOW()", [tag])
+        let ht = db_one(conn, "SELECT id FROM hashtags WHERE tag = ?", [tag])
+        if ht != nil {
+            let hid = std::map::get(ht, "id")
+            let _ = db_exec(conn, "INSERT INTO post_hashtags (post_id, hashtag_id) VALUES (?, ?) ON CONFLICT DO NOTHING", [post_id, hid])
+        }
+    }
+}
+
+fn hp_process_mentions(conn: Postgres, hub: int, post_id: int, content: string, from_uid: int) {
+    let mentions = v_mentions(content)
+    for name in mentions {
+        let user = q_user_by_username(conn, name)
+        if user != nil {
+            let uid = std::map::get(user, "id")
+            if uid != from_uid {
+                n_notify(conn, hub, uid, "mention", from_uid, post_id, 0, "te mencionó")
+            }
+        }
+    }
+}
+
+fn h_posts_create(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    if !rl_by_uid(uid, req, "posts", 30, 3600000) { return }
+    let body = r_body(req)
+    if body == nil { return }
+    let content = v_body_str(body, "content", 1, CFG_POST_MAX_CHARS)
+    if content == nil {
+        r_err(req, 400, "El post debe tener entre 1 y " + CFG_POST_MAX_CHARS + " caracteres")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let clean = v_clean_text(content, CFG_POST_MAX_CHARS)
+    // Moderación automática real (SPEC §7)
+    let bad = v_blocked_word(conn, clean)
+    if bad != "" {
+        let _c = std::postgres::close(conn)
+        r_err(req, 400, "El contenido contiene una palabra bloqueada")
+        return
+    }
+    if v_is_duplicate(conn, uid, clean) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 429, "duplicate_content", "Contenido repetido detectado. Espera unos minutos.")
+        return
+    }
+    let _ = db_exec(conn, "INSERT INTO posts (user_id, content) VALUES (?, ?)", [uid, clean])
+    let row = db_one(conn, "SELECT id FROM posts WHERE user_id = ? ORDER BY id DESC LIMIT 1", [uid])
+    if row == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 500, "No se pudo crear el post")
+        return
+    }
+    let post_id = std::map::get(row, "id")
+    // Imágenes opcionales (ids de /api/upload)
+    let images = std::map::get(body, "images")
+    if images != nil {
+        let mut pos = 0
+        for img_id in images {
+            let media = db_one(conn, "SELECT url, thumb_path, original_path FROM media WHERE id = ? AND user_id = ?", [img_id, uid])
+            if media != nil {
+                let url = std::map::get(media, "url")
+                let thumb = std::map::get(media, "thumb_path")
+                let _ = db_exec(conn, "INSERT INTO post_images (post_id, position, original_url, thumb_url) VALUES (?, ?, ?, ?)", [post_id, pos, url, thumb])
+                pos = pos + 1
+            }
+        }
+    }
+    hp_process_hashtags(conn, post_id, clean)
+    let hub = std::map::get(ctx, "hub")
+    hp_process_mentions(conn, hub, post_id, clean, uid)
+    let _ = db_exec(conn, "UPDATE users SET posts_count = posts_count + 1 WHERE id = ?", [uid])
+    r_bump_stats(conn, "new_posts")
+    let post = q_decorate_post(conn, db_one(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ?", [post_id]), uid)
+    let _c = std::postgres::close(conn)
+    r_created(req, post)
+}
+
+fn h_posts_get(req: int, ctx: map, post_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let post = hp_find_post(conn, post_id)
+    if post == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    let status = std::map::get(post, "status")
+    if status != "active" {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    let author_id = std::map::get(post, "user_id")
+    let is_private = std::map::get(post, "is_private")
+    if !q_can_view_author_posts(conn, viewer, author_id, is_private) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "private_account", "Esta cuenta es privada")
+        return
+    }
+    let out = q_decorate_post(conn, post, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok(req, out)
+}
+
+fn h_posts_edit(req: int, ctx: map, post_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let content = v_body_str(body, "content", 1, CFG_POST_MAX_CHARS)
+    if content == nil {
+        r_err(req, 400, "El post debe tener entre 1 y " + CFG_POST_MAX_CHARS + " caracteres")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let post = hp_find_post(conn, post_id)
+    if post == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    let owner = std::map::get(post, "user_id")
+    if owner != uid {
+        let _c = std::postgres::close(conn)
+        r_err(req, 403, "Solo el autor puede editar este post")
+        return
+    }
+    let clean = v_clean_text(content, CFG_POST_MAX_CHARS)
+    let bad = v_blocked_word(conn, clean)
+    if bad != "" {
+        let _c = std::postgres::close(conn)
+        r_err(req, 400, "El contenido contiene una palabra bloqueada")
+        return
+    }
+    let _ = db_exec(conn, "UPDATE posts SET content = ?, edited_at = NOW() WHERE id = ?", [clean, post_id])
+    // Los hashtags se re-procesan (los viejos quedan, no se borran: simple)
+    hp_process_hashtags(conn, post_id, clean)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_posts_delete(req: int, ctx: map, post_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let role = a_role(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let post = hp_find_post(conn, post_id)
+    if post == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    let owner = std::map::get(post, "user_id")
+    if owner != uid && !a_is_admin_role(role) {
+        let _c = std::postgres::close(conn)
+        r_err(req, 403, "No tienes permiso para eliminar este post")
+        return
+    }
+    let _ = db_exec(conn, "UPDATE posts SET status = 'deleted' WHERE id = ?", [post_id])
+    let _ = db_exec(conn, "UPDATE users SET posts_count = GREATEST(0, posts_count - 1) WHERE id = ?", [owner])
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_posts_like(req: int, ctx: map, post_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    if !rl_by_uid(uid, req, "like", 300, 3600000) { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let post = hp_find_post(conn, post_id)
+    if post == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    if q_is_blocked(conn, uid, std::map::get(post, "user_id")) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "blocked", "No puedes interactuar")
+        return
+    }
+    let exists = db_one(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", [uid, post_id])
+    if exists != nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 409, "Ya diste like")
+        return
+    }
+    let _ = db_exec(conn, "INSERT INTO likes (user_id, post_id) VALUES (?, ?)", [uid, post_id])
+    let _ = db_exec(conn, "UPDATE posts SET likes_count = likes_count + 1 WHERE id = ?", [post_id])
+    r_bump_stats(conn, "new_likes")
+    let owner = std::map::get(post, "user_id")
+    if owner != uid {
+        let hub = std::map::get(ctx, "hub")
+        n_notify(conn, hub, owner, "like", uid, post_id, 0, "le gusta tu publicación")
+    }
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "liked", true)
+    m = std::map::insert(m, "likes_count", std::map::get(post, "likes_count") + 1)
+    r_ok(req, m)
+}
+
+fn h_posts_unlike(req: int, ctx: map, post_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let exists = db_one(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", [uid, post_id])
+    if exists == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 409, "No habías dado like")
+        return
+    }
+    let _ = db_exec(conn, "DELETE FROM likes WHERE user_id = ? AND post_id = ?", [uid, post_id])
+    let _ = db_exec(conn, "UPDATE posts SET likes_count = GREATEST(0, likes_count - 1) WHERE id = ?", [post_id])
+    let fresh = db_one(conn, "SELECT likes_count FROM posts WHERE id = ?", [post_id])
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "liked", false)
+    if fresh != nil {
+        m = std::map::insert(m, "likes_count", std::map::get(fresh, "likes_count"))
+    } else {
+        m = std::map::insert(m, "likes_count", 0)
+    }
+    r_ok(req, m)
+}
+
+fn h_posts_save(req: int, ctx: map, post_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let post = hp_find_post(conn, post_id)
+    if post == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    let exists = db_one(conn, "SELECT 1 FROM saves WHERE user_id = ? AND post_id = ?", [uid, post_id])
+    if exists != nil {
+        let _ = db_exec(conn, "DELETE FROM saves WHERE user_id = ? AND post_id = ?", [uid, post_id])
+        let _ = db_exec(conn, "UPDATE posts SET saves_count = GREATEST(0, saves_count - 1) WHERE id = ?", [post_id])
+        let _c = std::postgres::close(conn)
+        let mut m = std::map::new()
+        m = std::map::insert(m, "saved", false)
+        r_ok(req, m)
+        return
+    }
+    let _ = db_exec(conn, "INSERT INTO saves (user_id, post_id) VALUES (?, ?)", [uid, post_id])
+    let _ = db_exec(conn, "UPDATE posts SET saves_count = saves_count + 1 WHERE id = ?", [post_id])
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "saved", true)
+    r_ok(req, m)
+}
+
+fn h_posts_comments(req: int, ctx: map, post_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let post = hp_find_post(conn, post_id)
+    if post == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    let rows = db_rows(conn, "SELECT c.id, c.post_id, c.parent_id, c.content, c.created_at::text AS created_at, u.id AS user_id, u.username, u.display_name, u.avatar_url, u.is_verified FROM comments c JOIN users u ON u.id = c.user_id WHERE c.post_id = ? AND c.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = c.user_id) OR (b.blocker_id = c.user_id AND b.blocked_id = ?)) ORDER BY c.created_at ASC LIMIT 100", [post_id, viewer, viewer])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok(req, [])
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok(req, rows)
+}
+
+fn h_posts_comment(req: int, ctx: map, post_id: int, parent_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    if !rl_by_uid(uid, req, "comments", 120, 3600000) { return }
+    let body = r_body(req)
+    if body == nil { return }
+    let content = v_body_str(body, "content", 1, CFG_COMMENT_MAX_CHARS)
+    if content == nil {
+        r_err(req, 400, "El comentario debe tener entre 1 y " + CFG_COMMENT_MAX_CHARS + " caracteres")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let post = hp_find_post(conn, post_id)
+    if post == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Post no encontrado")
+        return
+    }
+    if q_is_blocked(conn, uid, std::map::get(post, "user_id")) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "blocked", "No puedes interactuar")
+        return
+    }
+    let clean = v_clean_text(content, CFG_COMMENT_MAX_CHARS)
+    let bad = v_blocked_word(conn, clean)
+    if bad != "" {
+        let _c = std::postgres::close(conn)
+        r_err(req, 400, "El comentario contiene una palabra bloqueada")
+        return
+    }
+    let mut parent_final = 0
+    if parent_id > 0 {
+        // Validar que el comentario padre exista en el mismo post
+        let parent = db_one(conn, "SELECT 1 FROM comments WHERE id = ? AND post_id = ? AND status = 'active'", [parent_id, post_id])
+        if parent == nil {
+            let _c = std::postgres::close(conn)
+            r_err(req, 400, "Comentario padre no encontrado")
+            return
+        }
+        parent_final = parent_id
+    }
+    let _ = db_exec(conn, "INSERT INTO comments (post_id, user_id, parent_id, content) VALUES (?, ?, ?, ?)", [post_id, uid, parent_final, clean])
+    let _ = db_exec(conn, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", [post_id])
+    r_bump_stats(conn, "new_comments")
+    let hub = std::map::get(ctx, "hub")
+    let owner = std::map::get(post, "user_id")
+    if owner != uid {
+        let ntype = if parent_final > 0 { "reply" } else { "comment" }
+        n_notify(conn, hub, owner, ntype, uid, post_id, 0, "comentó tu publicación")
+    }
+    let row = db_one(conn, "SELECT c.id, c.post_id, c.parent_id, c.content, c.created_at::text AS created_at, u.id AS user_id, u.username, u.display_name, u.avatar_url, u.is_verified FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = (SELECT MAX(id) FROM comments WHERE post_id = ? AND user_id = ?)", [post_id, uid])
+    let _c = std::postgres::close(conn)
+    r_created(req, row)
+}
+
+fn h_posts_delete_comment(req: int, ctx: map, comment_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let role = a_role(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let comment = db_one(conn, "SELECT id, post_id, user_id FROM comments WHERE id = ?", [comment_id])
+    if comment == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Comentario no encontrado")
+        return
+    }
+    let owner = std::map::get(comment, "user_id")
+    let post_id = std::map::get(comment, "post_id")
+    let post = hp_find_post(conn, post_id)
+    let post_owner = std::map::get(post, "user_id")
+    if owner != uid && post_owner != uid && !a_is_admin_role(role) {
+        let _c = std::postgres::close(conn)
+        r_err(req, 403, "No tienes permiso para eliminar este comentario")
+        return
+    }
+    let _ = db_exec(conn, "UPDATE comments SET status = 'deleted' WHERE id = ?", [comment_id])
+    let _ = db_exec(conn, "UPDATE posts SET comments_count = GREATEST(0, comments_count - 1) WHERE id = ?", [post_id])
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_hashtag_page(req: int, ctx: map, tag: string) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let ht = db_one(conn, "SELECT id, tag, posts_count, last_used_at::text AS last_used_at FROM hashtags WHERE tag = LOWER(?)", [tag])
+    if ht == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Hashtag no encontrado")
+        return
+    }
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM post_hashtags ph JOIN posts p ON p.id = ph.post_id JOIN users u ON u.id = p.user_id WHERE ph.hashtag_id = ? AND p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY p.created_at DESC LIMIT ? OFFSET ?", [std::map::get(ht, "id"), viewer, viewer, limit, offset])
+    let out = q_decorate_batch(conn, rows, viewer)
+    let total = std::map::get(ht, "posts_count")
+    let _c = std::postgres::close(conn)
+    let mut resp = std::map::new()
+    resp = std::map::insert(resp, "tag", std::map::get(ht, "tag"))
+    resp = std::map::insert(resp, "posts_count", total)
+    resp = std::map::insert(resp, "last_used_at", std::map::get(ht, "last_used_at"))
+    resp = std::map::insert(resp, "posts", out)
+    resp = std::map::insert(resp, "page", page)
+    resp = std::map::insert(resp, "limit", limit)
+    r_ok(req, resp)
+}
+
+fn h_report_create(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    if !rl_by_uid(uid, req, "reports", 20, 3600000) { return }
+    let body = r_body(req)
+    if body == nil { return }
+    let target_type = v_body_str(body, "target_type", 3, 20)
+    let target_id = v_body_int(body, "target_id", 0)
+    let reason = v_body_str(body, "reason", 3, 60)
+    let detail = v_body_str(body, "detail", 0, 500)
+    if target_type == nil || target_id <= 0 || reason == nil {
+        r_err(req, 400, "target_type, target_id y reason son requeridos")
+        return
+    }
+    let valid_types = ["user", "post", "comment"]
+    let mut type_ok = false
+    for t in valid_types {
+        if t == target_type { type_ok = true }
+    }
+    if !type_ok {
+        r_err(req, 400, "target_type debe ser user, post o comment")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    // Verificar que el objetivo exista
+    if target_type == "post" {
+        let exists = db_one(conn, "SELECT 1 FROM posts WHERE id = ?", [target_id])
+        if exists == nil {
+            let _c = std::postgres::close(conn)
+            r_err(req, 404, "Post no encontrado")
+            return
+        }
+    } else if target_type == "comment" {
+        let exists = db_one(conn, "SELECT 1 FROM comments WHERE id = ?", [target_id])
+        if exists == nil {
+            let _c = std::postgres::close(conn)
+            r_err(req, 404, "Comentario no encontrado")
+            return
+        }
+    } else {
+        let exists = db_one(conn, "SELECT 1 FROM users WHERE id = ?", [target_id])
+        if exists == nil {
+            let _c = std::postgres::close(conn)
+            r_err(req, 404, "Usuario no encontrado")
+            return
+        }
+    }
+    let clean_detail = v_clean_text(detail, 500)
+    let _ = db_exec(conn, "INSERT INTO reports (reporter_id, target_type, target_id, reason, detail) VALUES (?, ?, ?, ?, ?)", [uid, target_type, target_id, reason, clean_detail])
+    let row = db_one(conn, "SELECT id, status FROM reports WHERE reporter_id = ? ORDER BY id DESC LIMIT 1", [uid])
+    let _c = std::postgres::close(conn)
+    r_created(req, row)
+}
+
+fn h_report_status(req: int, ctx: map, report_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let role = a_role(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let row = db_one(conn, "SELECT id, reporter_id, target_type, target_id, reason, status, resolution, created_at::text AS created_at, resolved_at::text AS resolved_at FROM reports WHERE id = ?", [report_id])
+    let _c = std::postgres::close(conn)
+    if row == nil {
+        r_err(req, 404, "Reporte no encontrado")
+        return
+    }
+    if std::map::get(row, "reporter_id") != uid && !a_is_admin_role(role) {
+        r_err(req, 403, "No puedes ver este reporte")
+        return
+    }
+    r_ok(req, row)
+}

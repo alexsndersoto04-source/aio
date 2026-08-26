@@ -27,3 +27,8 @@ zett_*.deb
 # Frontend
 node_modules/
 *.db
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+

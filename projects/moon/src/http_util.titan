@@ -1,0 +1,181 @@
+// Moon — Utilidades HTTP (http_util.titan)
+// ============================================================
+// Respuestas JSON consistentes, CORS estricto, headers de seguridad,
+// rate limiting aplicado y parseo de paginación.
+
+fn r_headers() -> map {
+    let mut h = std::map::new()
+    h = std::map::insert(h, "Access-Control-Allow-Origin", cfg_cors_origin())
+    h = std::map::insert(h, "Access-Control-Allow-Headers", "content-type, authorization, x-refresh-token")
+    h = std::map::insert(h, "Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+    h = std::map::insert(h, "Access-Control-Expose-Headers", "x-ratelimit-limit, x-ratelimit-remaining")
+    h = std::map::insert(h, "Access-Control-Max-Age", "86400")
+    h = std::map::insert(h, "X-Content-Type-Options", "nosniff")
+    h = std::map::insert(h, "X-Frame-Options", "DENY")
+    h = std::map::insert(h, "Referrer-Policy", "strict-origin-when-cross-origin")
+    h = std::map::insert(h, "Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    h = std::map::insert(h, "Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; script-src 'self'")
+    h = std::map::insert(h, "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    h = std::map::insert(h, "Cache-Control", "no-store")
+    h
+}
+
+fn r_headers_media() -> map {
+    let mut h = std::map::new()
+    h = std::map::insert(h, "X-Content-Type-Options", "nosniff")
+    h = std::map::insert(h, "Cache-Control", "public, max-age=31536000, immutable")
+    h
+}
+
+fn r_send(req: int, status: int, content_type: string, headers: map, body: string) {
+    let bytes = std::encoding::utf8_encode(body)
+    let _ = std::try::catch(|| std::server::respond_full(req, status, content_type, headers, bytes))
+}
+
+fn r_send_bytes(req: int, status: int, content_type: string, headers: map, body: bytes) {
+    let _ = std::try::catch(|| std::server::respond_full(req, status, content_type, headers, body))
+}
+
+fn r_ok(req: int, value: any) {
+    r_send(req, 200, "application/json; charset=utf-8", r_headers(), std::json::stringify(value))
+}
+
+fn r_created(req: int, value: any) {
+    r_send(req, 201, "application/json; charset=utf-8", r_headers(), std::json::stringify(value))
+}
+
+fn r_no_content(req: int) {
+    r_send(req, 204, "", r_headers(), "")
+}
+
+fn r_err(req: int, status: int, msg: string) {
+    let mut e = std::map::new()
+    e = std::map::insert(e, "error", msg)
+    e = std::map::insert(e, "status", status)
+    r_send(req, status, "application/json; charset=utf-8", r_headers(), std::json::stringify(e))
+}
+
+fn r_err_code(req: int, status: int, code: string, msg: string) {
+    let mut e = std::map::new()
+    e = std::map::insert(e, "error", msg)
+    e = std::map::insert(e, "code", code)
+    e = std::map::insert(e, "status", status)
+    r_send(req, status, "application/json; charset=utf-8", r_headers(), std::json::stringify(e))
+}
+
+fn r_ok_list(req: int, items: array, total: int, page: int, limit: int) {
+    let mut out = std::map::new()
+    out = std::map::insert(out, "items", items)
+    out = std::map::insert(out, "total", total)
+    out = std::map::insert(out, "page", page)
+    out = std::map::insert(out, "limit", limit)
+    r_ok(req, out)
+}
+
+fn r_preflight(req: int) {
+    r_send(req, 204, "", r_headers(), "")
+}
+
+// Verifica el método HTTP esperado; responde 405 si no coincide.
+fn r_expect_method(req: int, expected: string) -> bool {
+    let actual = std::server::method(req)
+    if actual != expected {
+        r_err(req, 405, "Método no permitido")
+        return false
+    }
+    true
+}
+
+// ---- Rate limiting REAL (ventana fija por clave, estado compartido) ----
+// Retorna true si la petición puede continuar; si no, responde 429.
+fn rl_check(req: int, key: string, max: int, window_ms: int) -> bool {
+    let ok = std::http::rate_limit(key, max, window_ms)
+    if !ok {
+        r_err_code(req, 429, "rate_limited", "Demasiadas solicitudes. Inténtalo más tarde.")
+        return false
+    }
+    true
+}
+
+fn rl_by_ip(req: int, prefix: string, max: int, window_ms: int) -> bool {
+    let ip = std::server::remote_addr(req)
+    let key = prefix + ":" + ip
+    rl_check(req, key, max, window_ms)
+}
+
+fn rl_by_uid(uid: int, req: int, prefix: string, max: int, window_ms: int) -> bool {
+    let key = prefix + ":" + uid
+    rl_check(req, key, max, window_ms)
+}
+
+// ---- Parseo de query string (paginación y parámetros) ----
+fn qs_map(req: int) -> map {
+    let raw = std::server::query(req)
+    if raw == "" { return std::map::new() }
+    let intento = std::try::catch(|| std::http::parse_query(raw, 12))
+    match intento {
+        Result::Ok(q) => q,
+        Result::Err(_) => std::map::new(),
+    }
+}
+
+// Lee un entero del query string (valores repetidos se ignoran).
+fn qs_int(req: int, name: string, dflt: int) -> int {
+    let q = qs_map(req)
+    let val = std::map::get(q, name)
+    if val == nil { return dflt }
+    v_to_int(val, dflt)
+}
+
+fn qs_str(req: int, name: string, dflt: string) -> string {
+    let q = qs_map(req)
+    let val = std::map::get(q, name)
+    if val == nil { return dflt }
+    let check = std::try::catch(|| std::text::length(val))
+    match check {
+        Result::Ok(_) => val,
+        Result::Err(_) => dflt,
+    }
+}
+
+// Devuelve [page, limit] normalizados (page >= 1, 1 <= limit <= 50).
+fn qs_page(req: int) -> array {
+    let mut page = qs_int(req, "page", 1)
+    let mut limit = qs_int(req, "limit", 20)
+    if page < 1 { page = 1 }
+    if limit < 1 { limit = 1 }
+    if limit > CFG_PAGE_LIMIT_MAX { limit = CFG_PAGE_LIMIT_MAX }
+    [page, limit]
+}
+
+// ---- Body JSON ----
+// Devuelve el mapa parseado o nil (ya respondió 400).
+fn r_body(req: int) -> any {
+    let raw = std::server::body_text(req)
+    if raw == "" {
+        r_err(req, 400, "Cuerpo JSON requerido")
+        return nil
+    }
+    let intento = std::try::catch(|| std::json::parse(raw))
+    match intento {
+        Result::Ok(v) => v,
+        Result::Err(_) => {
+            r_err(req, 400, "JSON inválido")
+            nil
+        }
+    }
+}
+
+fn r_body_bytes(req: int) -> bytes {
+    std::server::body(req)
+}
+
+fn r_audit(conn: Postgres, user_id: int, action: string, detail: string, req: int) {
+    let ip = std::server::remote_addr(req)
+    let _ = db_exec(conn, "INSERT INTO activity_log (user_id, action, detail, ip) VALUES (?, ?, ?, ?)", [user_id, action, detail, ip])
+}
+
+fn r_bump_stats(conn: Postgres, column: string) {
+    let sql = "INSERT INTO app_stats (stat_date, " + column + ") VALUES (CURRENT_DATE, 1) ON CONFLICT (stat_date) DO UPDATE SET " + column + " = app_stats." + column + " + 1"
+    let _ = db_exec(conn, sql, [])
+}

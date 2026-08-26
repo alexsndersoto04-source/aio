@@ -1,0 +1,278 @@
+// Moon — Tiempo real (realtime.titan)
+// ============================================================
+// Hub de WebSockets estilo actor: UNA tarea central posee el registro
+// de conexiones (user_id -> [ws handles]) y todo pasa por su canal,
+// así el estado compartido queda serializado y sin carreras.
+//
+// Protocolo interno del canal:
+//   ["register",   user_id, ws_handle]
+//   ["unregister", user_id, ws_handle]
+//   ["emit",       user_id, payload_json]
+//   ["broadcast",           payload_json]
+//
+// Eventos salientes al cliente: message, notification, typing, read,
+// presence, pong, sync, error. (SPEC §5)
+
+fn rt_start() -> int {
+    let endpoints = channel(2048)
+    let tx = endpoints[0]
+    let rx = endpoints[1]
+    spawn || {
+        let mut conns = std::map::new()
+        let mut online_count = std::map::new()
+        loop {
+            let msg = recv(rx)
+            let kind = msg[0]
+            if kind == "register" {
+                let uid = msg[1]
+                let ws = msg[2]
+                let key = "" + uid
+                let current = std::map::get(conns, key)
+                if current == nil {
+                    let mut arr: array = []
+                    arr = std::array::push(arr, ws)
+                    conns = std::map::insert(conns, key, arr)
+                    online_count = std::map::insert(online_count, key, 1)
+                    rt_hub_broadcast(conns, "{\"type\":\"presence\",\"user_id\":" + uid + ",\"online\":true}")
+                } else {
+                    let mut arr = current
+                    arr = std::array::push(arr, ws)
+                    conns = std::map::insert(conns, key, arr)
+                    let prev = std::map::get(online_count, key)
+                    let mut n = 0
+                    if prev != nil { n = prev }
+                    online_count = std::map::insert(online_count, key, n + 1)
+                }
+            } else if kind == "unregister" {
+                let uid = msg[1]
+                let ws = msg[2]
+                let key = "" + uid
+                let current = std::map::get(conns, key)
+                if current != nil {
+                    let mut arr: array = []
+                    for h in current {
+                        if h != ws {
+                            arr = std::array::push(arr, h)
+                        }
+                    }
+                    if std::collections::length(arr) == 0 {
+                        conns = std::map::remove(conns, key)
+                        online_count = std::map::remove(online_count, key)
+                        rt_hub_broadcast(conns, "{\"type\":\"presence\",\"user_id\":" + uid + ",\"online\":false}")
+                    } else {
+                        conns = std::map::insert(conns, key, arr)
+                        let prev = std::map::get(online_count, key)
+                        let mut n = 0
+                        if prev != nil { n = prev }
+                        online_count = std::map::insert(online_count, key, n - 1)
+                    }
+                }
+            } else if kind == "emit" {
+                let uid = msg[1]
+                let payload = msg[2]
+                let key = "" + uid
+                let current = std::map::get(conns, key)
+                if current != nil {
+                    let mut keep: array = []
+                    for ws in current {
+                        let ok = rt_try_send(ws, payload)
+                        if ok {
+                            keep = std::array::push(keep, ws)
+                        }
+                    }
+                    if std::collections::length(keep) != std::collections::length(current) {
+                        if std::collections::length(keep) == 0 {
+                            conns = std::map::remove(conns, key)
+                            online_count = std::map::remove(online_count, key)
+                        } else {
+                            conns = std::map::insert(conns, key, keep)
+                        }
+                    }
+                }
+            } else if kind == "broadcast" {
+                let payload = msg[1]
+                let keys = std::map::keys(conns)
+                for key in keys {
+                    let handles = std::map::get(conns, key)
+                    let mut keep: array = []
+                    for ws in handles {
+                        let ok = rt_try_send(ws, payload)
+                        if ok {
+                            keep = std::array::push(keep, ws)
+                        }
+                    }
+                    if std::collections::length(keep) == 0 {
+                        conns = std::map::remove(conns, key)
+                    } else if std::collections::length(keep) != std::collections::length(handles) {
+                        conns = std::map::insert(conns, key, keep)
+                    }
+                }
+            }
+        }
+    }
+    tx
+}
+
+// Envía por el hub sin bloquear al emisor: si el canal está lleno se
+// pierde el evento (trade-off documentado para plan free) pero jamás
+// bloquea un request HTTP.
+fn rt_emit(hub: int, uid: int, payload: string) {
+    let _ = std::try::catch(|| send(hub, ["emit", uid, payload]))
+}
+
+fn rt_broadcast(hub: int, payload: string) {
+    let _ = std::try::catch(|| send(hub, ["broadcast", payload]))
+}
+
+// Envía a todas las conexiones del registro (usado por el propio hub,
+// que no puede reenviarse mensajes a sí mismo).
+fn rt_hub_broadcast(conns: map, payload: string) {
+    let keys = std::map::keys(conns)
+    for key in keys {
+        let handles = std::map::get(conns, key)
+        let mut keep: array = []
+        for ws in handles {
+            let ok = rt_try_send(ws, payload)
+            if ok {
+                keep = std::array::push(keep, ws)
+            }
+        }
+        if std::collections::length(keep) == 0 {
+            let _ = std::map::remove(conns, key)
+        }
+    }
+}
+
+fn rt_try_send(ws: int, payload: string) -> bool {
+    let intento = std::try::catch(|| std::server::ws_send_text(ws, payload))
+    match intento {
+        Result::Ok(_) => true,
+        Result::Err(_) => false,
+    }
+}
+
+// ---- Conexión WebSocket de un cliente ----
+// Se ejecuta en su propia tarea. Registra, atiende mensajes y hace
+// cleanup al desconectar.
+fn rt_handle_ws(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let hub = std::map::get(ctx, "hub")
+    let ws_opt = std::try::catch(|| std::server::upgrade_websocket(req, 262144))
+    match ws_opt {
+        Result::Err(_) => {
+            let _ = std::try::catch(|| r_err(req, 400, "Upgrade de WebSocket fallido"))
+            return
+        },
+        Result::Ok(ws) => {
+            let q = qs_map(req)
+            let token = std::map::get(q, "token")
+            if token == nil {
+                rt_try_send(ws, "{\"type\":\"error\",\"message\":\"token requerido\"}")
+                let _ = std::try::catch(|| std::server::ws_close(ws, 4401, "no token"))
+                return
+            }
+            let claims = a_verify(token)
+            if claims == nil {
+                rt_try_send(ws, "{\"type\":\"error\",\"message\":\"token inválido\"}")
+                let _ = std::try::catch(|| std::server::ws_close(ws, 4401, "bad token"))
+                return
+            }
+            let uid = a_uid(claims)
+            if uid <= 0 {
+                rt_try_send(ws, "{\"type\":\"error\",\"message\":\"token inválido\"}")
+                let _ = std::try::catch(|| std::server::ws_close(ws, 4401, "bad token"))
+                return
+            }
+            let _ = std::try::catch(|| send(hub, ["register", uid, ws]))
+            let welcome = "{\"type\":\"connected\",\"user_id\":" + uid + "}"
+            let _ = std::try::catch(|| std::server::ws_send_text(ws, welcome))
+            let mut alive = true
+            while alive {
+                let intento = std::try::catch(|| std::server::ws_recv(ws))
+                match intento {
+                    Result::Err(_) => {
+                        alive = false
+                    },
+                    Result::Ok(frame) => {
+                        let kind = frame[0]
+                        if kind == "text" {
+                            let text = frame[1]
+                            rt_handle_message(pool, hub, uid, ws, text)
+                        } else if kind == "close" {
+                            alive = false
+                        }
+                    }
+                }
+            }
+            let _ = std::try::catch(|| send(hub, ["unregister", uid, ws]))
+            let _ = std::try::catch(|| std::server::ws_close(ws, 1000, "bye"))
+        }
+    }
+}
+
+// Procesa un mensaje JSON entrante del cliente.
+fn rt_handle_message(pool: PostgresPool, hub: int, uid: int, ws: int, text: string) {
+    let parsed = std::try::catch(|| std::json::parse(text))
+    match parsed {
+        Result::Err(_) => {
+            rt_try_send(ws, "{\"type\":\"error\",\"message\":\"json inválido\"}")
+        },
+        Result::Ok(body) => {
+            let mtype = std::map::get(body, "type")
+            if mtype == "ping" {
+                let pong = "{\"type\":\"pong\",\"t\":" + std::datetime::now() + "}"
+                rt_try_send(ws, pong)
+            } else if mtype == "typing" {
+                let conv_id = v_body_int(body, "conversation_id", 0)
+                let conn = db_acquire(pool)
+                if conn != nil {
+                    let partner = m_partner_id(conn, conv_id, uid)
+                    let _c = std::postgres::close(conn)
+                    if partner > 0 {
+                        let payload = "{\"type\":\"typing\",\"conversation_id\":" + conv_id + ",\"user_id\":" + uid + "}"
+                        rt_emit(hub, partner, payload)
+                    }
+                }
+            } else if mtype == "read" {
+                let conv_id = v_body_int(body, "conversation_id", 0)
+                let conn = db_acquire(pool)
+                if conn != nil {
+                    let partner = m_partner_id(conn, conv_id, uid)
+                    let _ = db_exec(conn, "UPDATE messages SET status = 'read', read_at = NOW() WHERE conversation_id = ? AND sender_id = ? AND status != 'read'", [conv_id, partner])
+                    let _c = std::postgres::close(conn)
+                    if partner > 0 {
+                        let payload = "{\"type\":\"read\",\"conversation_id\":" + conv_id + ",\"user_id\":" + uid + "}"
+                        rt_emit(hub, partner, payload)
+                    }
+                }
+            } else if mtype == "sync" {
+                rt_send_sync(pool, ws, uid)
+            }
+        }
+    }
+}
+
+// Sync de estado al reconectar (SPEC §5): no se pierde nada si la red
+// se corta. Devuelve no-leídos + últimas notificaciones.
+fn rt_send_sync(pool: PostgresPool, ws: int, uid: int) {
+    let conn = db_acquire(pool)
+    if conn == nil { return }
+    let unread = n_unread_count(conn, uid)
+    let unread_messages = m_unread_total(conn, uid)
+    let rows = db_rows(conn, "SELECT n.id, n.type, n.is_read, n.content, n.created_at::text AS created_at, n.from_user_id, n.post_id, n.comment_id, fu.username AS from_username, fu.display_name AS from_display_name, fu.avatar_url AS from_avatar_url FROM notifications n LEFT JOIN users fu ON fu.id = n.from_user_id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 20", [uid])
+    let mut notifs: array = []
+    if rows != nil {
+        for r in rows {
+            notifs = std::array::push(notifs, n_row_to_map(r))
+        }
+    }
+    let mut data = std::map::new()
+    data = std::map::insert(data, "unread_notifications", unread)
+    data = std::map::insert(data, "unread_messages", unread_messages)
+    data = std::map::insert(data, "notifications", notifs)
+    let mut out = std::map::new()
+    out = std::map::insert(out, "type", "sync")
+    out = std::map::insert(out, "data", data)
+    let _ = std::try::catch(|| std::server::ws_send_text(ws, std::json::stringify(out)))
+    let _c = std::postgres::close(conn)
+}

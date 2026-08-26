@@ -1,125 +1,95 @@
-function I({ size = 20, filled = false, children, ...rest }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill={filled ? 'currentColor' : 'none'}
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...rest}
-    >
-      {children}
-    </svg>
-  );
-}
+// Moon — Iconos (SVG trazo fino, 1.8px, estilo único)
+// ============================================================
 
-export const MoonLogo = p => (
-  <I {...p} filled>
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-  </I>
+const S = (props) => ({
+  xmlns: 'http://www.w3.org/2000/svg',
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.8,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  ...props,
+});
+
+export const IconHome = (p) => (
+  <svg {...S(p)}><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V21h14V9.5" /></svg>
 );
-
-export const HomeIcon = p => (
-  <I {...p}>
-    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    <polyline points="9 22 9 12 15 12 15 22" />
-  </I>
+export const IconExplore = (p) => (
+  <svg {...S(p)}><circle cx="11" cy="11" r="7" /><path d="m20 20-3.8-3.8" /></svg>
 );
-
-export const CompassIcon = p => (
-  <I {...p}>
-    <circle cx="12" cy="12" r="10" />
-    <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88" />
-  </I>
+export const IconBell = (p) => (
+  <svg {...S(p)}><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6" /><path d="M10 20a2.2 2.2 0 0 0 4 0" /></svg>
 );
-
-export const BellIcon = p => (
-  <I {...p}>
-    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-  </I>
+export const IconMail = (p) => (
+  <svg {...S(p)}><rect x="3" y="5" width="18" height="14" rx="3" /><path d="m3 7 9 6 9-6" /></svg>
 );
-
-export const ChatIcon = p => (
-  <I {...p}>
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </I>
+export const IconUser = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="8" r="4" /><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
 );
-
-export const BookmarkIcon = p => (
-  <I {...p}>
-    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-  </I>
+export const IconUsers = (p) => (
+  <svg {...S(p)}><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c1.2-3.4 3.6-5 6.5-5s5.3 1.6 6.5 5" /><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8" /><path d="M18.5 15.4c1.3 1 2.2 2.4 2.7 4.1" /></svg>
 );
-
-export const SettingsIcon = p => (
-  <I {...p}>
-    <circle cx="12" cy="12" r="3" />
-    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-  </I>
+export const IconHeart = ({ filled, ...p }) => (
+  <svg {...S(p)} fill={filled ? 'currentColor' : 'none'} strokeWidth={filled ? 0 : 1.8}>
+    <path d="M12 20.5C6.5 16.5 3 13.2 3 9.6 3 7 5 5 7.4 5c1.8 0 3.4 1 4.6 2.7C13.2 6 14.8 5 16.6 5 19 5 21 7 21 9.6c0 3.6-3.5 6.9-9 10.9Z" />
+  </svg>
 );
-
-export const UserIcon = p => (
-  <I {...p}>
-    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-    <circle cx="12" cy="7" r="4" />
-  </I>
+export const IconBookmark = ({ filled, ...p }) => (
+  <svg {...S(p)} fill={filled ? 'currentColor' : 'none'} strokeWidth={filled ? 0 : 1.8}>
+    <path d="M6 3h12v18l-6-4.5L6 21V3Z" />
+  </svg>
 );
-
-export const HeartIcon = p => (
-  <I {...p}>
-    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-  </I>
+export const IconComment = (p) => (
+  <svg {...S(p)}><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.5 0-3-.4-4.2-1L3 20l1.1-4.8A8.5 8.5 0 1 1 21 11.5Z" /></svg>
 );
-
-export const CommentIcon = p => (
-  <I {...p}>
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </I>
+export const IconSearch = (p) => (
+  <svg {...S(p)}><circle cx="11" cy="11" r="7" /><path d="m20 20-3.8-3.8" /></svg>
 );
-
-export const SendIcon = p => (
-  <I {...p}>
-    <line x1="22" y1="2" x2="11" y2="13" />
-    <polygon points="22 2 15 22 11 13 2 9 22 2" />
-  </I>
+export const IconSettings = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.15-1.4l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.4-1.4L13.8 2h-3.6l-.4 2.7a7 7 0 0 0-2.4 1.4l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .48.05.95.15 1.4l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.4 1.4l.4 2.7h3.6l.4-2.7a7 7 0 0 0 2.4-1.4l2.3 1 2-3.4-2-1.5c.1-.45.15-.92.15-1.4Z" /></svg>
 );
-
-export const BackIcon = p => (
-  <I {...p}>
-    <line x1="19" y1="12" x2="5" y2="12" />
-    <polyline points="12 19 5 12 12 5" />
-  </I>
+export const IconSend = (p) => (
+  <svg {...S(p)}><path d="m22 2-7 20-4-9-9-4 20-7Z" /></svg>
 );
-
-export const SunIcon = p => (
-  <I {...p}>
-    <circle cx="12" cy="12" r="5" />
-    <line x1="12" y1="1" x2="12" y2="3" />
-    <line x1="12" y1="21" x2="12" y2="23" />
-    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-    <line x1="1" y1="12" x2="3" y2="12" />
-    <line x1="21" y1="12" x2="23" y2="12" />
-    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-  </I>
+export const IconLogout = (p) => (
+  <svg {...S(p)}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
 );
-
-export const MoonIcon = p => (
-  <I {...p}>
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-  </I>
+export const IconVerified = (p) => (
+  <svg {...S(p)} fill="currentColor" stroke="none">
+    <path d="M12 2.5 14.6 5l3.4-.4.9 3.3 2.9 1.9-1.3 3.2 1.3 3.2-2.9 1.9-.9 3.3-3.4-.4L12 23.5 9.4 21l-3.4.4-.9-3.3-2.9-1.9 1.3-3.2L2.2 9.8l2.9-1.9.9-3.3 3.4.4L12 2.5Zm-1.2 13.6 5.4-5.5-1.4-1.4-4 4.1-1.9-1.9-1.4 1.4 3.3 3.3Z" />
+  </svg>
 );
-
-export const LogoutIcon = p => (
-  <I {...p}>
-    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-    <polyline points="16 17 21 12 16 7" />
-    <line x1="21" y1="12" x2="9" y2="12" />
-  </I>
+export const IconShield = (p) => (
+  <svg {...S(p)}><path d="M12 2 4 5.5V11c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5.5L12 2Z" /><path d="m8.8 11.8 2.2 2.2 4.2-4.4" /></svg>
+);
+export const IconMore = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="5.5" r="1.4" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" /><circle cx="12" cy="18.5" r="1.4" fill="currentColor" stroke="none" /></svg>
+);
+export const IconEdit = (p) => (
+  <svg {...S(p)}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z" /></svg>
+);
+export const IconTrash = (p) => (
+  <svg {...S(p)}><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6 18 21H6L5 6" /><path d="M10 10v7M14 10v7" /></svg>
+);
+export const IconPlus = (p) => (
+  <svg {...S(p)}><path d="M12 5v14M5 12h14" /></svg>
+);
+export const IconImage = (p) => (
+  <svg {...S(p)}><rect x="3" y="4" width="18" height="16" rx="3" /><circle cx="8.5" cy="9.5" r="1.5" /><path d="m21 16-4.5-4.5L6 21" /></svg>
+);
+export const IconMoon = (p) => (
+  <svg {...S(p)}><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z" /></svg>
+);
+export const IconArrow = (p) => (
+  <svg {...S(p)}><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+);
+export const IconX = (p) => (
+  <svg {...S(p)}><path d="m6 6 12 12M18 6 6 18" /></svg>
+);
+export const IconReport = (p) => (
+  <svg {...S(p)}><path d="M12 3 2.5 20h19L12 3Z" /><path d="M12 10v4" /><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none" /></svg>
+);
+export const IconLock = (p) => (
+  <svg {...S(p)}><rect x="5" y="10.5" width="14" height="10" rx="2.5" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></svg>
 );

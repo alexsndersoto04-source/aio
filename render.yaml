@@ -1,7 +1,56 @@
+# Moon — Despliegue en Render (backend Titan + PostgreSQL + frontend React)
+# Uso: crear un Blueprint nuevo en Render apuntando a este repo,
+# o conectar el repo ya conectado y aplicar este archivo.
+#
+# Servicios:
+#   moon-api    API en Titan (Docker) — servidor HTTP + WebSocket + imágenes
+#   moon-db     PostgreSQL 16 (free)   — fuente de verdad única
+#   moon-web    Frontend React (Node)  — SPA + servidor estático
+
+databases:
+  - name: moon-db
+    plan: free
+    databaseName: moon
+    user: moon
+
 services:
+  # ---------------- API (Titan) ----------------
   - type: web
-    runtime: node
+    name: moon-api
+    runtime: docker
+    plan: free
+    rootDir: .
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: moon-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        sync: false            # URL del frontend (moon-web): https://moon-web.onrender.com
+      - key: PUBLIC_BASE_URL
+        sync: false            # La MISMA URL del frontend (se usa para enlaces en emails): https://moon-web.onrender.com
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+
+  # ---------------- Frontend (React) ----------------
+  - type: web
     name: moon-web
+    runtime: node
     plan: free
     rootDir: frontend
     buildCommand: npm ci && npm run build
@@ -10,4 +59,6 @@ services:
     autoDeploy: true
     envVars:
       - key: VITE_API_URL
-        value: https://TU-SERVICIO-DE-API.onrender.com
+        sync: false            # https://moon-api.onrender.com
+      - key: API_PROXY_TARGET
+        sync: false            # https://moon-api.onrender.com (solo dev)

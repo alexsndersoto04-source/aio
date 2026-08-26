@@ -1,868 +1,615 @@
-// Moon - Red Social Backend v1.0
-// Reglas aplicadas:
-// - let mut para toda variable reasignada
-// - Tipos de retorno correctos (map, no int)
-// - No comparar Bool con Nil
-// - Verificar != nil antes de indexar resultados de query
-
-const HOST: string = "0.0.0.0"
-const JWT_EXPIRES: int = 86400
-const MAX_POSTS_PER_HOUR: int = 30
-const APP_NAME: string = "Moon"
-
-// ---- CORS ----
-// El frontend React (frontend/) corre en Render como un servicio web
-// separado y habla con esta API desde otro origen.
-const CORS_ALLOW_ORIGIN: string = "*"
-const CORS_ALLOW_HEADERS: string = "content-type, authorization"
-const CORS_ALLOW_METHODS: string = "GET, POST, OPTIONS"
-
-fn cors_headers() -> map {
-    let mut h = std::map::new()
-    h = std::map::insert(h, "Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN)
-    h = std::map::insert(h, "Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
-    h = std::map::insert(h, "Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
-    h
-}
-
-// ---- RESPONSES ----
-fn respond_ok(req, json_string: string) {
-    std::server::respond_full(req, 200, "application/json; charset=utf-8", cors_headers(), std::encoding::utf8_encode(json_string))
-}
-fn respond_created(req, json_string: string) {
-    std::server::respond_full(req, 201, "application/json; charset=utf-8", cors_headers(), std::encoding::utf8_encode(json_string))
-}
-fn respond_err(req, status: int, message: string) {
-    let body = "{\"error\":\"" + message + "\"}"
-    std::server::respond_full(req, status, "application/json; charset=utf-8", cors_headers(), std::encoding::utf8_encode(body))
-}
-// Preflight de CORS: el navegador envia OPTIONS antes del request real.
-fn respond_preflight(req) {
-    std::server::respond_full(req, 204, "", cors_headers(), "")
-}
-
-// ---- AUTH ----
-fn get_secret() -> string {
-    let val = std::env::get("JWT_SECRET")
-    if val == "" { return "moon-default-secret-change-in-production" }
-    val
-}
-
-fn authenticate(req) -> int {
-    let auth_header = std::server::header(req, "Authorization")
-    if auth_header == nil { return -1 }
-    let words = std::text::words(auth_header)
-    if std::collections::length(words) != 2 { return -1 }
-    if words[0] != "Bearer" { return -1 }
-    let token = words[1]
-    let secret_bytes = std::encoding::utf8_encode(get_secret())
-    let claims = std::jwt::verify_hs256(token, secret_bytes, "", "")
-    if claims == nil { return -1 }
-    let uid = claims.user_id
-    uid
-}
-
-fn require_auth(req) -> int {
-    let uid = authenticate(req)
-    if uid < 0 {
-        respond_err(req, 401, "No autorizado")
-        return -1
-    }
-    uid
-}
-
-// ---- TOKEN ----
-fn make_token(user_id, username: string) -> string {
-    let secret_bytes = std::encoding::utf8_encode(get_secret())
-    let now = std::datetime::now()
-    let exp = std::datetime::add_seconds(now, JWT_EXPIRES)
-    let mut claims = std::map::new()
-    claims = std::map::insert(claims, "user_id", user_id)
-    claims = std::map::insert(claims, "username", username)
-    claims = std::map::insert(claims, "iat", now)
-    claims = std::map::insert(claims, "exp", exp)
-    std::jwt::sign_hs256(claims, secret_bytes)
-}
-
-// ---- NOTIFICATION ----
-fn notify(conn, uid, ntype: string, from_uid) {
-    let p1 = [uid, ntype, from_uid]
-    std::sqlite::execute(conn, "INSERT INTO notifications (user_id, type, from_user_id) VALUES (?, ?, ?)", p1)
-}
-
-// ---- DB INIT ----
-fn init_db() {
-    print("Iniciando SQLite...")
-    let pool = std::sqlite::pool("moon.db", 5)
-    print("SQLite pool creado.")
-
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT DEFAULT '', bio TEXT DEFAULT '', avatar_url TEXT DEFAULT '', followers_count INTEGER DEFAULT 0, following_count INTEGER DEFAULT 0, posts_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, content TEXT NOT NULL, likes_count INTEGER DEFAULT 0, comments_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS follows (follower_id INTEGER NOT NULL, following_id INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (follower_id, following_id))", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS likes (user_id INTEGER NOT NULL, post_id INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, post_id))", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, post_id INTEGER NOT NULL, content TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS direct_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id INTEGER NOT NULL, receiver_id INTEGER NOT NULL, content TEXT NOT NULL, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
-            std::sqlite::execute(conn, "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, from_user_id INTEGER, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [])
-            let ignored_close = std::sqlite::close(conn)
-            print("Tablas creadas.")
-        },
-        Option::None => {
-            print("ERROR: No se pudo conectar a SQLite")
-        }
-    }
-    pool
-}
-
+// Moon — Red Social Profesional — Backend (main.titan)
 // ============================================================
-// HANDLERS
-// ============================================================
+// Stack: Titan (concurrencia real: 1 tarea por conexión) ·
+// PostgreSQL (migraciones versionadas) · WebSocket (tiempo real) ·
+// imágenes con re-encode obligatorio.
+//
+// Principio rector: CERO SIMULACIÓN. Todo contra base de datos real.
 
-fn handle_health(req) {
-    let mut resp = std::map::new()
-    resp = std::map::insert(resp, "status", "ok")
-    resp = std::map::insert(resp, "app", APP_NAME)
-    respond_ok(req, std::json::stringify(resp))
+import config
+import db
+import http_util
+import validate
+import auth
+import notify
+import realtime
+import query
+import h_auth
+import h_users
+import h_posts
+import h_messages
+import h_explore
+import h_notifications
+import h_admin
+import h_media
+
+fn brace_open() -> string { "{" }
+fn brace_close() -> string { "}" }
+
+fn pat_users_id() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close()
+}
+fn pat_users_id_posts() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close() + "/posts"
+}
+fn pat_users_id_followers() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close() + "/followers"
+}
+fn pat_users_id_following() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close() + "/following"
+}
+fn pat_users_id_liked() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close() + "/liked"
+}
+fn pat_users_id_follow() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close() + "/follow"
+}
+fn pat_users_id_block() -> string {
+    "/api/users/" + brace_open() + "id" + brace_close() + "/block"
+}
+fn pat_posts_id() -> string {
+    "/api/posts/" + brace_open() + "id" + brace_close()
+}
+fn pat_posts_id_like() -> string {
+    "/api/posts/" + brace_open() + "id" + brace_close() + "/like"
+}
+fn pat_posts_id_save() -> string {
+    "/api/posts/" + brace_open() + "id" + brace_close() + "/save"
+}
+fn pat_posts_id_comments() -> string {
+    "/api/posts/" + brace_open() + "id" + brace_close() + "/comments"
+}
+fn pat_comments_id() -> string {
+    "/api/comments/" + brace_open() + "id" + brace_close()
+}
+fn pat_hashtag() -> string {
+    "/api/hashtags/" + brace_open() + "tag" + brace_close()
+}
+fn pat_conversations_id() -> string {
+    "/api/messages/conversations/" + brace_open() + "id" + brace_close()
+}
+fn pat_conversations_id_messages() -> string {
+    "/api/messages/conversations/" + brace_open() + "id" + brace_close() + "/messages"
+}
+fn pat_conversations_id_read() -> string {
+    "/api/messages/conversations/" + brace_open() + "id" + brace_close() + "/read"
+}
+fn pat_messages_id() -> string {
+    "/api/messages/" + brace_open() + "id" + brace_close()
+}
+fn pat_messages_id_react() -> string {
+    "/api/messages/" + brace_open() + "id" + brace_close() + "/react"
+}
+fn pat_notifications_id_read() -> string {
+    "/api/notifications/" + brace_open() + "id" + brace_close() + "/read"
+}
+fn pat_reports_id() -> string {
+    "/api/reports/" + brace_open() + "id" + brace_close()
+}
+fn pat_admin_users_id_suspend() -> string {
+    "/api/admin/users/" + brace_open() + "id" + brace_close() + "/suspend"
+}
+fn pat_admin_users_id_activate() -> string {
+    "/api/admin/users/" + brace_open() + "id" + brace_close() + "/activate"
+}
+fn pat_admin_users_id_verify() -> string {
+    "/api/admin/users/" + brace_open() + "id" + brace_close() + "/verify"
+}
+fn pat_admin_reports_id_resolve() -> string {
+    "/api/admin/reports/" + brace_open() + "id" + brace_close() + "/resolve"
+}
+fn pat_admin_words_id() -> string {
+    "/api/admin/words/" + brace_open() + "id" + brace_close()
+}
+fn pat_media() -> string {
+    "/api/media/" + brace_open() + "name" + brace_close()
+}
+fn pat_sessions_id() -> string {
+    "/api/auth/sessions/" + brace_open() + "id" + brace_close()
 }
 
-fn handle_register(r, req, pool) {
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let body_text = std::server::body_text(req)
-            let body = std::json::parse(body_text)
-            let username = body.username
-            let email = body.email
-            let password = body.password
-
-            if std::collections::length(username) < 3 {
-                respond_err(req, 400, "Username muy corto")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if std::collections::length(password) < 8 {
-                respond_err(req, 400, "Password muy corto")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-
-            let p1 = [username]
-            let existing = std::sqlite::query(conn, "SELECT id FROM users WHERE username = ?", p1)
-            if std::collections::length(existing) > 0 {
-                if std::collections::length(existing) > 0 {
-                    respond_err(req, 409, "Username en uso")
-                    let ignored_close = std::sqlite::close(conn)
-                    return
-                }
-            }
-
-            let p2 = [email]
-            let existing2 = std::sqlite::query(conn, "SELECT id FROM users WHERE email = ?", p2)
-            if std::collections::length(existing2) > 0 {
-                if std::collections::length(existing2) > 0 {
-                    respond_err(req, 409, "Email en uso")
-                    let ignored_close = std::sqlite::close(conn)
-                    return
-                }
-            }
-
-            let pw_hash = std::password::hash_argon2(password)
-            let p3 = [username, email, pw_hash, username]
-            std::sqlite::execute(conn, "INSERT INTO users (username, email, password_hash, display_name) VALUES (?, ?, ?, ?)", p3)
-
-            let p4 = [username]
-            let nu = std::sqlite::query(conn, "SELECT id, username, email, display_name FROM users WHERE username = ?", p4)
-            if std::collections::length(nu) == 0 {
-                respond_err(req, 500, "Error")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let user = nu[0]
-            let token = make_token(user.id, username)
-
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "token", token)
-            resp = std::map::insert(resp, "user", user)
-            respond_created(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_login(r, req, pool) {
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let body_text = std::server::body_text(req)
-            let body = std::json::parse(body_text)
-            let username = body.username
-            let password = body.password
-
-            if username == "" {
-                respond_err(req, 400, "Username requerido")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if password == "" {
-                respond_err(req, 400, "Password requerido")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-
-            let p1 = [username, username]
-            let users = std::sqlite::query(conn, "SELECT id, username, email, password_hash, display_name, bio, avatar_url FROM users WHERE username = ? OR email = ?", p1)
-
-            if std::collections::length(users) == 0 {
-                respond_err(req, 401, "Credenciales invalidas")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if std::collections::length(users) == 0 {
-                respond_err(req, 401, "Credenciales invalidas")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-
-            let user = users[0]
-            let valid = std::password::verify_argon2(user.password_hash, password)
-            if valid != true {
-                respond_err(req, 401, "Credenciales invalidas")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-
-            let uid = user.id
-            let p2 = [uid]
-            std::sqlite::execute(conn, "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?", p2)
-
-            let token = make_token(user.id, user.username)
-
-            let mut su = std::map::new()
-            su = std::map::insert(su, "id", user.id)
-            su = std::map::insert(su, "username", user.username)
-            su = std::map::insert(su, "email", user.email)
-            su = std::map::insert(su, "display_name", user.display_name)
-            su = std::map::insert(su, "bio", user.bio)
-            su = std::map::insert(su, "avatar_url", user.avatar_url)
-
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "token", token)
-            resp = std::map::insert(resp, "user", su)
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_me(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [uid]
-            let users = std::sqlite::query(conn, "SELECT id, username, email, display_name, bio, avatar_url, followers_count, following_count, posts_count, created_at FROM users WHERE id = ?", p1)
-            if std::collections::length(users) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if std::collections::length(users) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            respond_ok(req, std::json::stringify(users[0]))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_get_profile(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let target_id = hit.params.id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [target_id]
-            let users = std::sqlite::query(conn, "SELECT id, username, display_name, bio, avatar_url, followers_count, following_count, posts_count FROM users WHERE id = ?", p1)
-            if std::collections::length(users) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if std::collections::length(users) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let profile = users[0]
-
-            let p2 = [uid, target_id]
-            let follows = std::sqlite::query(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", p2)
-            let mut is_following = false
-            if std::collections::length(follows) > 0 {
-                if std::collections::length(follows) > 0 {
-                    is_following = true
-                }
-            }
-
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "user", profile)
-            resp = std::map::insert(resp, "is_following", is_following)
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_follow(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let target_id = hit.params.user_id
-
-    if uid == target_id {
-        respond_err(req, 400, "No puedes seguirte a ti mismo")
-        return
-    }
-
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [target_id]
-            let t = std::sqlite::query(conn, "SELECT id FROM users WHERE id = ?", p1)
-            if std::collections::length(t) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if std::collections::length(t) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-
-            let p2 = [uid, target_id]
-            let already = std::sqlite::query(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", p2)
-            if std::collections::length(already) > 0 {
-                if std::collections::length(already) > 0 {
-                    respond_err(req, 409, "Ya sigues a este usuario")
-                    let ignored_close = std::sqlite::close(conn)
-                    return
-                }
-            }
-
-            let p3 = [uid, target_id]
-            std::sqlite::execute(conn, "INSERT INTO follows (follower_id, following_id) VALUES (?, ?)", p3)
-            let p4 = [uid]
-            std::sqlite::execute(conn, "UPDATE users SET following_count = following_count + 1 WHERE id = ?", p4)
-            let p5 = [target_id]
-            std::sqlite::execute(conn, "UPDATE users SET followers_count = followers_count + 1 WHERE id = ?", p5)
-            notify(conn, target_id, "follow", uid)
-
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "message", "Ahora sigues a este usuario")
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_unfollow(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let target_id = hit.params.user_id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [uid, target_id]
-            std::sqlite::execute(conn, "DELETE FROM follows WHERE follower_id = ? AND following_id = ?", p1)
-            let p2 = [uid]
-            std::sqlite::execute(conn, "UPDATE users SET following_count = following_count - 1 WHERE id = ?", p2)
-            let p3 = [target_id]
-            std::sqlite::execute(conn, "UPDATE users SET followers_count = followers_count - 1 WHERE id = ?", p3)
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "message", "Dejaste de seguir")
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_create_post(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let body_text = std::server::body_text(req)
-            let body = std::json::parse(body_text)
-            let content = body.content
-            if content == "" {
-                respond_err(req, 400, "Contenido vacio")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let p1 = [uid, content]
-            std::sqlite::execute(conn, "INSERT INTO posts (user_id, content) VALUES (?, ?)", p1)
-            let p2 = [uid]
-            let np = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 1", p2)
-            if std::collections::length(np) == 0 {
-                respond_err(req, 500, "Error")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let post = np[0]
-            let p3 = [uid]
-            std::sqlite::execute(conn, "UPDATE users SET posts_count = posts_count + 1 WHERE id = ?", p3)
-            respond_created(req, std::json::stringify(post))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_get_post(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let post_id = hit.params.id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [post_id]
-            let posts = std::sqlite::query(conn, "SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?", p1)
-            if std::collections::length(posts) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if std::collections::length(posts) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let post = posts[0]
-            let p2 = [uid, post_id]
-            let likes = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
-            let mut is_liked = false
-            if std::collections::length(likes) > 0 {
-                if std::collections::length(likes) > 0 {
-                    is_liked = true
-                }
-            }
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "post", post)
-            resp = std::map::insert(resp, "is_liked", is_liked)
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_like(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let post_id = hit.params.id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [post_id]
-            let pc = std::sqlite::query(conn, "SELECT user_id FROM posts WHERE id = ?", p1)
-            if std::collections::length(pc) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            if std::collections::length(pc) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let owner = pc[0].user_id
-            let p2 = [uid, post_id]
-            let existing = std::sqlite::query(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", p2)
-            if std::collections::length(existing) > 0 {
-                if std::collections::length(existing) > 0 {
-                    respond_err(req, 409, "Ya diste like")
-                    let ignored_close = std::sqlite::close(conn)
-                    return
-                }
-            }
-            let p3 = [uid, post_id]
-            std::sqlite::execute(conn, "INSERT INTO likes (user_id, post_id) VALUES (?, ?)", p3)
-            let p4 = [post_id]
-            std::sqlite::execute(conn, "UPDATE posts SET likes_count = likes_count + 1 WHERE id = ?", p4)
-            if owner != uid {
-                notify(conn, owner, "like", uid)
-            }
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "message", "Like agregado")
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_unlike(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let post_id = hit.params.id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [uid, post_id]
-            std::sqlite::execute(conn, "DELETE FROM likes WHERE user_id = ? AND post_id = ?", p1)
-            let p2 = [post_id]
-            std::sqlite::execute(conn, "UPDATE posts SET likes_count = likes_count - 1 WHERE id = ?", p2)
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "message", "Like removido")
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_get_comments(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let post_id = hit.params.id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [post_id]
-            let comments = std::sqlite::query(conn, "SELECT c.id, c.content, c.created_at, u.username, u.display_name, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC LIMIT 50", p1)
-            if std::collections::length(comments) == 0 {
-                respond_ok(req, "[]")
-            } else {
-                respond_ok(req, std::json::stringify(comments))
-            }
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_add_comment(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let post_id = hit.params.id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let body_text = std::server::body_text(req)
-            let body = std::json::parse(body_text)
-            let content = body.content
-            if content == "" {
-                respond_err(req, 400, "Comentario vacio")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let p1 = [uid, post_id, content]
-            std::sqlite::execute(conn, "INSERT INTO comments (user_id, post_id, content) VALUES (?, ?, ?)", p1)
-            let p2 = [post_id]
-            std::sqlite::execute(conn, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", p2)
-            let p3 = [post_id]
-            let pc = std::sqlite::query(conn, "SELECT user_id FROM posts WHERE id = ?", p3)
-            if std::collections::length(pc) > 0 {
-                if std::collections::length(pc) > 0 {
-                    let owner = pc[0].user_id
-                    if owner != uid {
-                        notify(conn, owner, "comment", uid)
-                    }
-                }
-            }
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "message", "Comentario agregado")
-            respond_created(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_feed(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [uid, uid]
-            let posts = std::sqlite::query(conn, "SELECT p.id, u.id as user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name, u.avatar_url FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
-            if std::collections::length(posts) == 0 {
-                respond_ok(req, "[]")
-            } else {
-                respond_ok(req, std::json::stringify(posts))
-            }
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_trending(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let posts = std::sqlite::query(conn, "SELECT p.id, u.id as user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id ORDER BY (p.likes_count + p.comments_count * 2) DESC LIMIT 20", [])
-            if std::collections::length(posts) == 0 {
-                respond_ok(req, "[]")
-            } else {
-                respond_ok(req, std::json::stringify(posts))
-            }
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_user_posts(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let target_id = hit.params.id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [target_id]
-            let posts = std::sqlite::query(conn, "SELECT p.id, u.id as user_id, p.content, p.likes_count, p.comments_count, p.created_at, u.username, u.display_name FROM posts p JOIN users u ON p.user_id = u.id WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 20", p1)
-            if std::collections::length(posts) == 0 {
-                respond_ok(req, "[]")
-            } else {
-                respond_ok(req, std::json::stringify(posts))
-            }
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_notifications(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [uid]
-            let notifs = std::sqlite::query(conn, "SELECT n.id, n.type, n.is_read, n.created_at, fu.username as from_username FROM notifications n LEFT JOIN users fu ON n.from_user_id = fu.id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 30", p1)
-            if std::collections::length(notifs) == 0 {
-                respond_ok(req, "[]")
-            } else {
-                respond_ok(req, std::json::stringify(notifs))
-            }
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_conversations(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [uid, uid, uid]
-            let convs = std::sqlite::query(conn, "SELECT DISTINCT partner_id, username, last_message, last_created_at FROM (SELECT CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END as partner_id, dm.content as last_message, dm.created_at as last_created_at FROM direct_messages dm WHERE dm.sender_id = ? OR dm.receiver_id = ? ORDER BY dm.created_at DESC) as recent JOIN users u ON partner_id = u.id ORDER BY last_created_at DESC LIMIT 50", p1)
-            if std::collections::length(convs) == 0 {
-                respond_ok(req, "[]")
-            } else {
-                respond_ok(req, std::json::stringify(convs))
-            }
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_send_message(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let body_text = std::server::body_text(req)
-    let body = std::json::parse(body_text)
-    let receiver_id = body.receiver_id
-    let content = body.content
-    if content == "" {
-        respond_err(req, 400, "Mensaje vacio")
-        return
-    }
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [uid, receiver_id, content]
-            std::sqlite::execute(conn, "INSERT INTO direct_messages (sender_id, receiver_id, content) VALUES (?, ?, ?)", p1)
-            notify(conn, receiver_id, "message", uid)
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "message", "Mensaje enviado")
-            respond_created(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-fn handle_get_messages(r, req, pool) {
-    let uid = require_auth(req)
-    if uid < 0 { return }
-    let path = std::server::path(req)
-    let hit = std::router::at(r, path)
-    let partner_id = hit.params.partner_id
-    let conn_opt = std::sqlite::acquire(pool, 2000)
-    match conn_opt {
-        Option::Some(conn) => {
-            let p1 = [partner_id]
-            let partners = std::sqlite::query(conn, "SELECT id, username, display_name, avatar_url FROM users WHERE id = ?", p1)
-            if std::collections::length(partners) == 0 {
-                respond_err(req, 404, "No encontrado")
-                let ignored_close = std::sqlite::close(conn)
-                return
-            }
-            let partner = partners[0]
-            let p2 = [uid, partner_id, uid, partner_id]
-            let msgs = std::sqlite::query(conn, "SELECT id, sender_id, content, is_read, created_at FROM direct_messages WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) ORDER BY created_at ASC LIMIT 100", p2)
-            let mut resp = std::map::new()
-            resp = std::map::insert(resp, "partner", partner)
-            resp = std::map::insert(resp, "messages", msgs)
-            respond_ok(req, std::json::stringify(resp))
-            let ignored_close = std::sqlite::close(conn)
-        },
-        Option::None => { respond_err(req, 500, "DB error") }
-    }
-}
-
-// ---- MAIN ----
-fn main() {
-    print("=================================")
-    print("  Moon - Red Social Backend")
-    print("  v1.0.0 (SQLite)")
-    print("=================================")
-
-    let pool = init_db()
-
+fn main_router() -> int {
     let r = std::router::new()
-    // Los patrones de std::router (matchit) necesitan {param} literal,
-    // pero en Titan los strings interpretan {nombre} como interpolacion
-    // de variables. Por eso los patrones con parametro se arman por
-    // concatenacion: las llaves sueltas no activan la interpolacion.
-    let ob = "{"
-    let cb = "}"
     std::router::insert(r, "/api/health", "health")
-    std::router::insert(r, "/api/auth/register", "register")
-    std::router::insert(r, "/api/auth/login", "login")
-    std::router::insert(r, "/api/auth/me", "me")
-    std::router::insert(r, "/api/users/" + ob + "id" + cb, "profile")
-    std::router::insert(r, "/api/follow/" + ob + "user_id" + cb, "follow")
-    std::router::insert(r, "/api/unfollow/" + ob + "user_id" + cb, "unfollow")
-    std::router::insert(r, "/api/posts", "create_post")
-    std::router::insert(r, "/api/posts/" + ob + "id" + cb, "get_post")
-    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/like", "like")
-    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/unlike", "unlike")
-    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/comments", "get_comments")
-    std::router::insert(r, "/api/posts/" + ob + "id" + cb + "/comment", "add_comment")
+    std::router::insert(r, "/api/metrics", "metrics")
+    // Cuenta y seguridad
+    std::router::insert(r, "/api/auth/register", "auth_register")
+    std::router::insert(r, "/api/auth/login", "auth_login")
+    std::router::insert(r, "/api/auth/logout", "auth_logout")
+    std::router::insert(r, "/api/auth/refresh", "auth_refresh")
+    std::router::insert(r, "/api/auth/me", "auth_me")
+    std::router::insert(r, "/api/auth/update", "auth_update_me")
+    std::router::insert(r, "/api/auth/privacy", "auth_privacy")
+    std::router::insert(r, "/api/auth/change-password", "auth_change_password")
+    std::router::insert(r, "/api/auth/recovery/request", "auth_recovery_request")
+    std::router::insert(r, "/api/auth/recovery/verify", "auth_recovery_verify")
+    std::router::insert(r, "/api/auth/2fa/verify", "auth_2fa_verify")
+    std::router::insert(r, "/api/auth/2fa/enable", "auth_2fa_enable")
+    std::router::insert(r, "/api/auth/2fa/confirm", "auth_2fa_confirm")
+    std::router::insert(r, "/api/auth/2fa/disable", "auth_2fa_disable")
+    std::router::insert(r, "/api/auth/sessions", "auth_sessions")
+    std::router::insert(r, pat_sessions_id(), "auth_revoke_session")
+    std::router::insert(r, "/api/auth/sessions-all", "auth_revoke_all")
+    std::router::insert(r, "/api/auth/account", "auth_delete")
+    std::router::insert(r, "/api/auth/export", "auth_export")
+    // Perfiles y grafo
+    std::router::insert(r, pat_users_id(), "users_profile")
+    std::router::insert(r, pat_users_id_posts(), "users_posts")
+    std::router::insert(r, pat_users_id_followers(), "users_followers")
+    std::router::insert(r, pat_users_id_following(), "users_following")
+    std::router::insert(r, pat_users_id_liked(), "users_liked")
+    std::router::insert(r, "/api/me/saved", "users_saved")
+    std::router::insert(r, "/api/search", "search")
+    std::router::insert(r, pat_users_id_follow(), "users_follow")
+    std::router::insert(r, pat_users_id_block(), "users_block")
+    std::router::insert(r, "/api/users/suggestions", "users_suggestions")
+    // Contenido
+    std::router::insert(r, "/api/posts", "posts_create")
+    std::router::insert(r, pat_posts_id(), "posts_get")
+    std::router::insert(r, pat_posts_id_like(), "posts_like")
+    std::router::insert(r, pat_posts_id_save(), "posts_save")
+    std::router::insert(r, pat_posts_id_comments(), "posts_comments")
+    std::router::insert(r, pat_comments_id(), "comments_delete")
+    std::router::insert(r, "/api/hashtags", "hashtags_trending")
+    std::router::insert(r, pat_hashtag(), "hashtag_page")
+    // Explorar
     std::router::insert(r, "/api/feed", "feed")
     std::router::insert(r, "/api/feed/trending", "trending")
-    std::router::insert(r, "/api/users/" + ob + "id" + cb + "/posts", "user_posts")
+    std::router::insert(r, "/api/feed/for-you", "for_you")
+    std::router::insert(r, "/api/feed/latest", "latest")
+    // Mensajería
+    std::router::insert(r, "/api/messages/conversations", "messages_conversations")
+    std::router::insert(r, pat_conversations_id(), "messages_thread")
+    std::router::insert(r, pat_conversations_id_messages(), "messages_send")
+    std::router::insert(r, pat_conversations_id_read(), "messages_read")
+    std::router::insert(r, pat_messages_id(), "messages_delete")
+    std::router::insert(r, pat_messages_id_react(), "messages_react")
+    // Notificaciones
     std::router::insert(r, "/api/notifications", "notifications")
-    std::router::insert(r, "/api/messages/conversations", "conversations")
-    std::router::insert(r, "/api/messages/send", "send_message")
-    std::router::insert(r, "/api/messages/" + ob + "partner_id" + cb, "get_messages")
-    print("20 endpoints registrados.")
+    std::router::insert(r, pat_notifications_id_read(), "notifications_read")
+    std::router::insert(r, "/api/notifications/read-all", "notifications_read_all")
+    std::router::insert(r, "/api/notifications/prefs", "notifications_prefs")
+    // Reportes
+    std::router::insert(r, "/api/reports", "report_create")
+    std::router::insert(r, pat_reports_id(), "report_status")
+    // Admin
+    std::router::insert(r, "/api/admin/dashboard", "admin_dashboard")
+    std::router::insert(r, "/api/admin/users", "admin_users")
+    std::router::insert(r, pat_admin_users_id_suspend(), "admin_suspend")
+    std::router::insert(r, pat_admin_users_id_activate(), "admin_activate")
+    std::router::insert(r, pat_admin_users_id_verify(), "admin_verify")
+    std::router::insert(r, "/api/admin/reports", "admin_reports")
+    std::router::insert(r, pat_admin_reports_id_resolve(), "admin_resolve_report")
+    std::router::insert(r, "/api/admin/export", "admin_backup")
+    std::router::insert(r, "/api/admin/stats", "admin_stats")
+    std::router::insert(r, "/api/admin/words", "admin_words")
+    std::router::insert(r, "/api/admin/activity", "admin_activity")
+    std::router::insert(r, pat_admin_words_id(), "admin_remove_word")
+    // Media
+    std::router::insert(r, "/api/upload", "upload")
+    std::router::insert(r, pat_media(), "media")
+    print("Rutas registradas: 68")
+    r
+}
 
-    // Render inyecta el puerto en PORT. std::env::get devuelve nil cuando
-    // la variable no existe (no ""), por eso el tipo any permite la
-    // comprobacion doble y la caida a 3000 cubre ambos casos.
-    let mut render_port: any = std::env::get("PORT")
-    if render_port == nil || render_port == "" { render_port = "3000" }
-    let bind_addr = HOST + ":" + render_port
-    let s = std::server::start(bind_addr)
+// Lee el id del path param como int.
+fn main_param_id(params: any, name: string) -> int {
+    let raw = std::map::get(params, name)
+    v_path_id(raw, -1)
+}
+
+fn main_dispatch(r: int, req: int, ctx: map) {
+    let method = std::server::method(req)
+    let path = std::server::path(req)
+
+    // WebSocket de tiempo real
+    if path == "/ws" {
+        rt_handle_ws(req, ctx)
+        return
+    }
+
+    if method == "OPTIONS" {
+        r_preflight(req)
+        return
+    }
+
+    let hit = std::router::at(r, path)
+    if hit == nil {
+        r_err(req, 404, "Not found")
+        return
+    }
+    let tag = hit.pattern
+    let params = hit.params
+
+    // ---- Sistema ----
+    if tag == "health" { if r_expect_method(req, "GET") { h_health(req, ctx) } return }
+    if tag == "metrics" { if r_expect_method(req, "GET") { h_metrics(req, ctx) } return }
+
+    // ---- Cuenta y seguridad ----
+    if tag == "auth_register" { if r_expect_method(req, "POST") { h_auth_register(req, ctx) } return }
+    if tag == "auth_login" { if r_expect_method(req, "POST") { h_auth_login(req, ctx) } return }
+    if tag == "auth_logout" { if r_expect_method(req, "POST") { h_auth_logout(req, ctx) } return }
+    if tag == "auth_refresh" { if r_expect_method(req, "POST") { h_auth_refresh(req, ctx) } return }
+    if tag == "auth_me" { if r_expect_method(req, "GET") { h_auth_me(req, ctx) } return }
+    if tag == "auth_update_me" { if r_expect_method(req, "PATCH") { h_auth_update_me(req, ctx) } return }
+    if tag == "auth_privacy" { if r_expect_method(req, "PATCH") { h_auth_set_privacy(req, ctx) } return }
+    if tag == "auth_change_password" { if r_expect_method(req, "POST") { h_auth_change_password(req, ctx) } return }
+    if tag == "auth_recovery_request" { if r_expect_method(req, "POST") { h_auth_recovery_request(req, ctx) } return }
+    if tag == "auth_recovery_verify" { if r_expect_method(req, "POST") { h_auth_recovery_verify(req, ctx) } return }
+    if tag == "auth_2fa_verify" { if r_expect_method(req, "POST") { h_auth_2fa_verify(req, ctx) } return }
+    if tag == "auth_2fa_enable" { if r_expect_method(req, "POST") { h_auth_2fa_enable(req, ctx) } return }
+    if tag == "auth_2fa_confirm" { if r_expect_method(req, "POST") { h_auth_2fa_confirm_enable(req, ctx) } return }
+    if tag == "auth_2fa_disable" { if r_expect_method(req, "POST") { h_auth_2fa_disable(req, ctx) } return }
+    if tag == "auth_sessions" { if r_expect_method(req, "GET") { h_auth_sessions(req, ctx) } return }
+    if tag == "auth_revoke_session" {
+        if r_expect_method(req, "DELETE") {
+            let sid = main_param_id(params, "id")
+            if sid > 0 { h_auth_revoke_session(req, ctx, sid) }
+        }
+        return
+    }
+    if tag == "auth_revoke_all" { if r_expect_method(req, "POST") { h_auth_revoke_all(req, ctx) } return }
+    if tag == "auth_delete" { if r_expect_method(req, "DELETE") { h_auth_delete_account(req, ctx) } return }
+    if tag == "auth_export" { if r_expect_method(req, "GET") { h_auth_export(req, ctx) } return }
+
+    // ---- Perfiles y grafo ----
+    if tag == "users_profile" {
+        if r_expect_method(req, "GET") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_profile(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "users_posts" {
+        if r_expect_method(req, "GET") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_posts(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "users_followers" {
+        if r_expect_method(req, "GET") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_followers(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "users_following" {
+        if r_expect_method(req, "GET") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_following(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "users_liked" {
+        if r_expect_method(req, "GET") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_liked(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "users_saved" { if r_expect_method(req, "GET") { h_users_saved(req, ctx) } return }
+    if tag == "search" { if r_expect_method(req, "GET") { h_users_search(req, ctx) } return }
+    if tag == "users_follow" {
+        if method == "POST" {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_follow(req, ctx, tid) }
+        } else if method == "DELETE" {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_unfollow(req, ctx, tid) }
+        } else {
+            r_err(req, 405, "Método no permitido")
+        }
+        return
+    }
+    if tag == "users_block" {
+        if method == "POST" {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_block(req, ctx, tid) }
+        } else if method == "DELETE" {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_users_unblock(req, ctx, tid) }
+        } else {
+            r_err(req, 405, "Método no permitido")
+        }
+        return
+    }
+    if tag == "users_suggestions" { if r_expect_method(req, "GET") { h_users_suggestions(req, ctx) } return }
+
+    // ---- Contenido ----
+    if tag == "posts_create" { if r_expect_method(req, "POST") { h_posts_create(req, ctx) } return }
+    if tag == "posts_get" {
+        if r_expect_method(req, "GET") {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_get(req, ctx, pid) }
+        } else if method == "PATCH" {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_edit(req, ctx, pid) }
+        } else if method == "DELETE" {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_delete(req, ctx, pid) }
+        } else {
+            r_err(req, 405, "Método no permitido")
+        }
+        return
+    }
+    if tag == "posts_like" {
+        if method == "POST" {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_like(req, ctx, pid) }
+        } else if method == "DELETE" {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_unlike(req, ctx, pid) }
+        } else {
+            r_err(req, 405, "Método no permitido")
+        }
+        return
+    }
+    if tag == "posts_save" {
+        if r_expect_method(req, "POST") {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_save(req, ctx, pid) }
+        }
+        return
+    }
+    if tag == "posts_comments" {
+        if method == "GET" {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_comments(req, ctx, pid) }
+        } else if method == "POST" {
+            let pid = main_param_id(params, "id")
+            if pid > 0 { h_posts_comment(req, ctx, pid, 0) }
+        } else {
+            r_err(req, 405, "Método no permitido")
+        }
+        return
+    }
+    if tag == "comments_delete" {
+        if r_expect_method(req, "DELETE") {
+            let cid = main_param_id(params, "id")
+            if cid > 0 { h_posts_delete_comment(req, ctx, cid) }
+        }
+        return
+    }
+    if tag == "hashtags_trending" { if r_expect_method(req, "GET") { h_trending_hashtags(req, ctx) } return }
+    if tag == "hashtag_page" {
+        if r_expect_method(req, "GET") {
+            let tag_name = std::map::get(params, "tag")
+            if tag_name != nil { h_hashtag_page(req, ctx, tag_name) }
+        }
+        return
+    }
+
+    // ---- Explorar ----
+    if tag == "feed" { if r_expect_method(req, "GET") { h_feed(req, ctx) } return }
+    if tag == "trending" { if r_expect_method(req, "GET") { h_trending(req, ctx) } return }
+    if tag == "for_you" { if r_expect_method(req, "GET") { h_for_you(req, ctx) } return }
+    if tag == "latest" { if r_expect_method(req, "GET") { h_latest(req, ctx) } return }
+
+    // ---- Mensajería ----
+    if tag == "messages_conversations" {
+        if method == "GET" { h_messages_conversations(req, ctx) }
+        else if method == "POST" { h_messages_start(req, ctx) }
+        else { r_err(req, 405, "Método no permitido") }
+        return
+    }
+    if tag == "messages_thread" {
+        if r_expect_method(req, "GET") {
+            let cid = main_param_id(params, "id")
+            if cid > 0 { h_messages_thread(req, ctx, cid) }
+        }
+        return
+    }
+    if tag == "messages_send" {
+        if r_expect_method(req, "POST") {
+            let cid = main_param_id(params, "id")
+            if cid > 0 { h_messages_send(req, ctx, cid) }
+        }
+        return
+    }
+    if tag == "messages_read" {
+        if r_expect_method(req, "POST") {
+            let cid = main_param_id(params, "id")
+            if cid > 0 { h_messages_mark_read(req, ctx, cid) }
+        }
+        return
+    }
+    if tag == "messages_delete" {
+        if r_expect_method(req, "DELETE") {
+            let mid = main_param_id(params, "id")
+            if mid > 0 { h_messages_delete(req, ctx, mid) }
+        }
+        return
+    }
+    if tag == "messages_react" {
+        if r_expect_method(req, "POST") {
+            let mid = main_param_id(params, "id")
+            if mid > 0 { h_messages_react(req, ctx, mid) }
+        }
+        return
+    }
+
+    // ---- Notificaciones ----
+    if tag == "notifications" { if r_expect_method(req, "GET") { h_notifications_list(req, ctx) } return }
+    if tag == "notifications_read" {
+        if r_expect_method(req, "POST") {
+            let nid = main_param_id(params, "id")
+            if nid > 0 { h_notifications_read(req, ctx, nid) }
+        }
+        return
+    }
+    if tag == "notifications_read_all" { if r_expect_method(req, "POST") { h_notifications_read_all(req, ctx) } return }
+    if tag == "notifications_prefs" {
+        if method == "GET" { h_notifications_prefs(req, ctx) }
+        else if method == "PATCH" { h_notifications_prefs_update(req, ctx) }
+        else { r_err(req, 405, "Método no permitido") }
+        return
+    }
+
+    // ---- Reportes ----
+    if tag == "report_create" { if r_expect_method(req, "POST") { h_report_create(req, ctx) } return }
+    if tag == "report_status" {
+        if r_expect_method(req, "GET") {
+            let rid = main_param_id(params, "id")
+            if rid > 0 { h_report_status(req, ctx, rid) }
+        }
+        return
+    }
+
+    // ---- Admin ----
+    if tag == "admin_dashboard" { if r_expect_method(req, "GET") { h_admin_dashboard(req, ctx) } return }
+    if tag == "admin_users" { if r_expect_method(req, "GET") { h_admin_list_users(req, ctx) } return }
+    if tag == "admin_suspend" {
+        if r_expect_method(req, "POST") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_admin_suspend(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "admin_activate" {
+        if r_expect_method(req, "POST") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_admin_activate(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "admin_verify" {
+        if r_expect_method(req, "POST") {
+            let tid = main_param_id(params, "id")
+            if tid > 0 { h_admin_verify(req, ctx, tid) }
+        }
+        return
+    }
+    if tag == "admin_reports" { if r_expect_method(req, "GET") { h_admin_list_reports(req, ctx) } return }
+    if tag == "admin_resolve_report" {
+        if r_expect_method(req, "POST") {
+            let rid = main_param_id(params, "id")
+            if rid > 0 { h_admin_resolve_report(req, ctx, rid) }
+        }
+        return
+    }
+    if tag == "admin_backup" { if r_expect_method(req, "GET") { h_admin_backup(req, ctx) } return }
+    if tag == "admin_stats" { if r_expect_method(req, "GET") { h_admin_stats(req, ctx) } return }
+    if tag == "admin_words" {
+        if method == "GET" { h_admin_blocked_words(req, ctx) }
+        else if method == "POST" { h_admin_add_word(req, ctx) }
+        else { r_err(req, 405, "Método no permitido") }
+        return
+    }
+    if tag == "admin_remove_word" {
+        if r_expect_method(req, "DELETE") {
+            let wid = main_param_id(params, "id")
+            if wid > 0 { h_admin_remove_word(req, ctx, wid) }
+        }
+        return
+    }
+    if tag == "admin_activity" { if r_expect_method(req, "GET") { h_admin_activity(req, ctx) } return }
+
+    // ---- Media ----
+    if tag == "upload" { if r_expect_method(req, "POST") { h_media_upload(req, ctx) } return }
+    if tag == "media" {
+        if r_expect_method(req, "GET") {
+            let name = std::map::get(params, "name")
+            if name != nil { h_media_serve(req, ctx, name) }
+        }
+        return
+    }
+
+    r_err(req, 404, "Ruta no encontrada")
+}
+
+// Acepta y despacha UNA conexión dentro de su propia tarea; al terminar
+// se libera el slot del control de backpressure.
+fn main_accept_once(s: int, control: ServerControl, r: int, ctx: map, req: int) {
+    let acquired = std::try::catch(|| std::server::try_acquire(control))
+    let allowed = match acquired {
+        Result::Ok(ok) => ok,
+        Result::Err(_) => false,
+    }
+    if allowed {
+        // 1 tarea por conexión: concurrencia real (SPEC §1)
+        spawn || {
+            main_handle_connection(r, req, ctx, control)
+        }
+    } else {
+        let body = std::encoding::utf8_encode("{\"error\":\"Servidor ocupado\"}")
+        let _ = std::try::catch(|| std::server::respond_full(req, 503, "application/json; charset=utf-8", r_headers(), body))
+    }
+}
+
+// Una conexión completa se atiende en su propia tarea; al terminar se
+// libera el slot del control de backpressure.
+fn main_handle_connection(r: int, req: int, ctx: map, control: ServerControl) {
+    let attempt = std::try::catch(|| main_dispatch(r, req, ctx))
+    match attempt {
+        Result::Err(msg) => {
+            let _ = std::try::catch(|| r_err(req, 500, "Error interno del servidor"))
+            print("ERROR manejando request: " + msg)
+        },
+        Result::Ok(_) => {}
+    }
+    let _ = std::try::catch(|| std::server::release(control))
+}
+
+fn main() {
+    print("===========================================")
+    print("  Moon — Red Social Profesional")
+    print("  Backend Titan + PostgreSQL + WebSocket")
+    print("===========================================")
+
+    // Configuración (falla duro si faltan secretos)
+    cfg_jwt_secret()
+    let url = cfg_database_url()
+    let _ = url
+
+    // Base de datos con migraciones
+    let pool = db_init()
+    db_ensure_dirs()
+
+    // Hub de tiempo real
+    let hub = rt_start()
+
+    // Contexto compartido
+    let mut ctx = std::map::new()
+    ctx = std::map::insert(ctx, "pool", pool)
+    ctx = std::map::insert(ctx, "hub", hub)
+
+    // Router
+    let r = main_router()
+
+    // Servidor
+    let port = cfg_port()
+    let bind = "0.0.0.0:" + port
+    let s = std::server::start(bind)
     let addr = std::server::local_addr(s)
-    print("Moon en: http://" + addr)
+    print("Moon escuchando en http://" + addr)
+    print("CORS origen: " + cfg_cors_origin())
+
+    // Backpressure real: máximo de conexiones concurrentes
+    let control = std::server::control(CFG_MAX_CONNECTIONS)
 
     loop {
-        // std::try::catch: los health checks de Render (y los scanners) a
-        // veces abren la conexion TCP y la cierran antes de mandar
-        // cabeceras HTTP. En ese caso el accept nativo lanza el error
-        // "connection closed before request headers completed". Sin esta
-        // captura el error mata el proceso y Render marca el servicio
-        // caido; ahora la conexion incompleta se ignora y se sigue
-        // escuchando.
         let attempt = std::try::catch(|| std::server::accept(s, 30000))
         match attempt {
+            Result::Err(_) => {
+                // Conexiones incompletas (health checks/scanners): ignorar
+            },
             Result::Ok(req) => {
-                if req < 0 {
-                } else {
-                    let method = std::server::method(req)
-                    if method == "OPTIONS" {
-                        respond_preflight(req)
-                    } else {
-                        let path = std::server::path(req)
-                        let hit = std::router::at(r, path)
-                        if hit == nil {
-                            respond_err(req, 404, "Not found")
-                        } else {
-                            let tag = hit.pattern
-                            if tag == "health" { handle_health(req) }
-                            if tag == "register" { handle_register(r, req, pool) }
-                            if tag == "login" { handle_login(r, req, pool) }
-                            if tag == "me" { handle_me(r, req, pool) }
-                            if tag == "profile" { handle_get_profile(r, req, pool) }
-                            if tag == "follow" { handle_follow(r, req, pool) }
-                            if tag == "unfollow" { handle_unfollow(r, req, pool) }
-                            if tag == "create_post" { handle_create_post(r, req, pool) }
-                            if tag == "get_post" { handle_get_post(r, req, pool) }
-                            if tag == "like" { handle_like(r, req, pool) }
-                            if tag == "unlike" { handle_unlike(r, req, pool) }
-                            if tag == "get_comments" { handle_get_comments(r, req, pool) }
-                            if tag == "add_comment" { handle_add_comment(r, req, pool) }
-                            if tag == "feed" { handle_feed(r, req, pool) }
-                            if tag == "trending" { handle_trending(r, req, pool) }
-                            if tag == "user_posts" { handle_user_posts(r, req, pool) }
-                            if tag == "notifications" { handle_notifications(r, req, pool) }
-                            if tag == "conversations" { handle_conversations(r, req, pool) }
-                            if tag == "send_message" { handle_send_message(r, req, pool) }
-                            if tag == "get_messages" { handle_get_messages(r, req, pool) }
+                if req >= 0 {
+                    let iter = std::try::catch(|| main_accept_once(s, control, r, ctx, req))
+                    match iter {
+                        Result::Ok(_) => {},
+                        Result::Err(msg) => {
+                            print("error en bucle de aceptación: " + msg)
                         }
                     }
                 }
-            },
-            Result::Err(msg) => {
-                print("conexion incompleta ignorada: " + msg)
             }
         }
     }
 
     std::server::stop(s)
     std::router::drop(r)
-    std::sqlite::pool_close(pool)
+    std::postgres::pool_close(pool)
     print("Moon detenido.")
 }

@@ -1,0 +1,235 @@
+// Moon — Autenticación y seguridad (auth.titan)
+// ============================================================
+// SPEC §4: Argon2id, JWT corto (15 min) + refresh token opaco en BD
+// (7 días, rotación, revocable), 2FA por email, auditoría real.
+
+fn a_now() -> int {
+    std::datetime::now()
+}
+
+// ---- Access token (JWT HS256, corto) ----
+fn a_issue_access(uid: int, username: string, role: string) -> string {
+    let mut claims = std::map::new()
+    claims = std::map::insert(claims, "uid", uid)
+    claims = std::map::insert(claims, "username", username)
+    claims = std::map::insert(claims, "role", role)
+    claims = std::map::insert(claims, "type", "access")
+    claims = std::map::insert(claims, "iss", "moon")
+    claims = std::map::insert(claims, "iat", a_now())
+    claims = std::map::insert(claims, "exp", std::datetime::add_seconds(a_now(), CFG_ACCESS_TOKEN_TTL_SECONDS))
+    std::jwt::sign_hs256(claims, cfg_jwt_secret_bytes())
+}
+
+// Token corto de un solo propósito (verificación 2FA / reset).
+fn a_issue_temp(uid: int, purpose: string, ttl_seconds: int) -> string {
+    let mut claims = std::map::new()
+    claims = std::map::insert(claims, "uid", uid)
+    claims = std::map::insert(claims, "type", "temp")
+    claims = std::map::insert(claims, "purpose", purpose)
+    claims = std::map::insert(claims, "iss", "moon")
+    claims = std::map::insert(claims, "iat", a_now())
+    claims = std::map::insert(claims, "exp", std::datetime::add_seconds(a_now(), ttl_seconds))
+    std::jwt::sign_hs256(claims, cfg_jwt_secret_bytes())
+}
+
+fn a_verify(token: string) -> any {
+    let intento = std::try::catch(|| std::jwt::verify_hs256(token, cfg_jwt_secret_bytes(), "", "moon"))
+    match intento {
+        Result::Ok(claims) => claims,
+        Result::Err(_) => nil,
+    }
+}
+
+// Valida el header Authorization y devuelve claims o nil (ya respondió 401).
+fn a_require(req: int) -> any {
+    let auth = std::server::header(req, "authorization")
+    if auth == nil {
+        r_err(req, 401, "No autorizado")
+        return nil
+    }
+    let token = a_bearer(auth)
+    if token == "" {
+        r_err(req, 401, "No autorizado")
+        return nil
+    }
+    let claims = a_verify(token)
+    if claims == nil {
+        r_err(req, 401, "Sesión inválida o expirada")
+        return nil
+    }
+    let type_of = std::map::get(claims, "type")
+    if type_of != "access" {
+        r_err(req, 401, "Token no válido para esta operación")
+        return nil
+    }
+    claims
+}
+
+fn a_bearer(auth: string) -> string {
+    let words = std::text::words(auth)
+    if std::collections::length(words) != 2 { return "" }
+    if words[0] != "Bearer" && words[0] != "bearer" { return "" }
+    words[1]
+}
+
+fn a_uid(claims: any) -> int {
+    let val = std::map::get(claims, "uid")
+    v_to_int(val, -1)
+}
+
+fn a_username(claims: any) -> string {
+    let val = std::map::get(claims, "username")
+    if val == nil { return "" }
+    val
+}
+
+fn a_role(claims: any) -> string {
+    let val = std::map::get(claims, "role")
+    if val == nil { return "user" }
+    val
+}
+
+fn a_is_admin_role(role: string) -> bool {
+    role == "admin"
+}
+
+// ---- Refresh tokens opacos (sesiones reales) ----
+fn a_new_secret_token() -> string {
+    let raw = std::random::bytes(32)
+    std::encoding::hex_encode(raw)
+}
+
+fn a_hash_token(raw: string) -> string {
+    std::encoding::hex_encode(std::hash::sha256_bytes(std::encoding::utf8_encode(raw)))
+}
+
+// Crea la sesión (fila en refresh_tokens) y devuelve el token crudo.
+fn a_create_session(conn: Postgres, uid: int, device: string, user_agent: string, ip: string) -> string {
+    let raw = a_new_secret_token()
+    let hashed = a_hash_token(raw)
+    let _ = db_exec(conn, "INSERT INTO refresh_tokens (user_id, token_hash, device, user_agent, ip, expires_at) VALUES (?, ?, ?, ?, ?, NOW() + INTERVAL '" + CFG_REFRESH_TOKEN_TTL_DAYS + " days')", [uid, hashed, device, user_agent, ip])
+    raw
+}
+
+// Rotación: valida el refresh token, revoca la sesión actual y crea
+// una nueva. Devuelve map {access, refresh, user} o nil (ya respondió).
+fn a_rotate(req: int, conn: Postgres, raw: string, device: string, ua: string, ip: string) -> any {
+    if raw == "" {
+        r_err(req, 401, "Refresh token requerido")
+        return nil
+    }
+    let hashed = a_hash_token(raw)
+    let row = db_one(conn, "SELECT id, user_id, revoked_at::text AS revoked_at, expires_at::text AS expires_at FROM refresh_tokens WHERE token_hash = ?", [hashed])
+    if row == nil {
+        r_err(req, 401, "Sesión no encontrada")
+        return nil
+    }
+    let revoked = std::map::get(row, "revoked_at")
+    if revoked != nil {
+        r_err(req, 401, "Sesión revocada")
+        return nil
+    }
+    let session_id = std::map::get(row, "id")
+    let user_id = std::map::get(row, "user_id")
+    // Revocar la sesión usada (rotación real)
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = ?", [session_id])
+    // Nueva sesión
+    let new_raw = a_create_session(conn, user_id, device, ua, ip)
+    let user = q_user_public_by_id(conn, user_id)
+    if user == nil {
+        r_err(req, 401, "Usuario no encontrado")
+        return nil
+    }
+    let username = std::map::get(user, "username")
+    let role = std::map::get(user, "role")
+    let access = a_issue_access(user_id, username, role)
+    let mut out = std::map::new()
+    out = std::map::insert(out, "access_token", access)
+    out = std::map::insert(out, "refresh_token", new_raw)
+    out = std::map::insert(out, "token_type", "bearer")
+    out = std::map::insert(out, "expires_in", CFG_ACCESS_TOKEN_TTL_SECONDS)
+    out = std::map::insert(out, "user", user)
+    out
+}
+
+fn a_revoke_session(conn: Postgres, raw: string) -> int {
+    if raw == "" { return 0 }
+    let hashed = a_hash_token(raw)
+    db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = ? AND revoked_at IS NULL", [hashed])
+}
+
+fn a_revoke_all_sessions(conn: Postgres, uid: int, except_session_id: int) {
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND id != ? AND revoked_at IS NULL", [uid, except_session_id])
+}
+
+fn a_update_last_used(conn: Postgres, raw: string) {
+    let hashed = a_hash_token(raw)
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET last_used_at = NOW() WHERE token_hash = ?", [hashed])
+}
+
+// ---- Códigos 2FA / recuperación (hash en BD, expiración real) ----
+fn a_new_code() -> string {
+    let n = std::random::range(100000, 999999)
+    let s = "" + n
+    s
+}
+
+fn a_store_code(conn: Postgres, uid: int, kind: string, raw_code: string, ttl_minutes: int) -> int {
+    let hashed = std::encoding::hex_encode(std::hash::sha256_bytes(std::encoding::utf8_encode(raw_code)))
+    let _ = db_exec(conn, "INSERT INTO recovery_tokens (user_id, kind, code_hash, expires_at) VALUES (?, ?, ?, NOW() + INTERVAL '" + ttl_minutes + " minutes')", [uid, kind, hashed])
+    // Retorna id de la fila para revocar usos
+    let row = db_one(conn, "SELECT id FROM recovery_tokens WHERE user_id = ? AND kind = ? AND code_hash = ? ORDER BY id DESC LIMIT 1", [uid, kind, hashed])
+    if row == nil { return 0 }
+    std::map::get(row, "id")
+}
+
+fn a_verify_code(conn: Postgres, uid: int, kind: string, raw_code: string) -> bool {
+    let hashed = std::encoding::hex_encode(std::hash::sha256_bytes(std::encoding::utf8_encode(raw_code)))
+    let row = db_one(conn, "SELECT id FROM recovery_tokens WHERE user_id = ? AND kind = ? AND code_hash = ? AND expires_at > NOW() AND used_at IS NULL ORDER BY id DESC LIMIT 1", [uid, kind, hashed])
+    if row == nil { return false }
+    let token_id = std::map::get(row, "id")
+    let _ = db_exec(conn, "UPDATE recovery_tokens SET used_at = NOW() WHERE id = ?", [token_id])
+    true
+}
+
+// Token de recuperación por email (link con hash en BD, 15 min).
+fn a_store_recovery_token(conn: Postgres, uid: int) -> string {
+    let raw = a_new_secret_token()
+    let hashed = a_hash_token(raw)
+    let _ = db_exec(conn, "INSERT INTO recovery_tokens (user_id, kind, code_hash, expires_at) VALUES (?, 'recovery', ?, NOW() + INTERVAL '15 minutes')", [uid, hashed])
+    raw
+}
+
+fn a_verify_recovery_token(conn: Postgres, raw: string) -> int {
+    let hashed = a_hash_token(raw)
+    let row = db_one(conn, "SELECT user_id FROM recovery_tokens WHERE code_hash = ? AND kind = 'recovery' AND expires_at > NOW() AND used_at IS NULL ORDER BY id DESC LIMIT 1", [hashed])
+    if row == nil { return -1 }
+    let uid = std::map::get(row, "user_id")
+    let _ = db_exec(conn, "UPDATE recovery_tokens SET used_at = NOW() WHERE code_hash = ? AND kind = 'recovery' AND used_at IS NULL", [hashed])
+    uid
+}
+
+fn a_send_email(to: string, subject: string, text_body: string) {
+    if !cfg_smtp_configured() {
+        print("EMAIL (SMTP no configurado, imprimiendo en consola): " + subject + " -> " + to)
+        print(text_body)
+        return
+    }
+    let host = cfg_get("SMTP_HOST")
+    let mut port = cfg_get("SMTP_PORT")
+    let user = cfg_get("SMTP_USER")
+    let pass = cfg_get("SMTP_PASS")
+    let from = cfg_get("SMTP_FROM")
+    if port == "" { port = "587" }
+    let port_int = v_to_int(port, 587)
+    let intento = std::try::catch(|| std::email::send_simple(host, port_int, user, pass, from, to, subject, text_body))
+    match intento {
+        Result::Ok(_) => { print("Email enviado a " + to) },
+        Result::Err(msg) => { print("Error enviando email a " + to + ": " + msg) },
+    }
+}
+
+fn a_audit_login(conn: Postgres, uid: int, ok: bool, req: int) {
+    let action = if ok { "login_ok" } else { "login_failed" }
+    r_audit(conn, uid, action, "", req)
+}

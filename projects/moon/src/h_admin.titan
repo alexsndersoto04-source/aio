@@ -1,0 +1,287 @@
+// Moon — Handlers de administración y moderación (h_admin.titan)
+// ============================================================
+// dashboard · list_users · suspend_user · activate_user ·
+// list_reports · resolve_report · backup_export · app_stats_range ·
+// gestionar palabras bloqueadas (SPEC §9 y §7)
+
+fn hadmin_require(req: int) -> any {
+    let claims = a_require(req)
+    if claims == nil { return nil }
+    let role = a_role(claims)
+    if !a_is_admin_role(role) {
+        r_err(req, 403, "Se requiere rol de administrador")
+        return nil
+    }
+    claims
+}
+
+fn h_admin_dashboard(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let mut d = std::map::new()
+    d = std::map::insert(d, "users_total", db_count(conn, "SELECT COUNT(*) AS count FROM users WHERE status = 'active'", []))
+    d = std::map::insert(d, "users_new_today", db_count(conn, "SELECT COUNT(*) AS count FROM users WHERE status = 'active' AND created_at::date = CURRENT_DATE", []))
+    d = std::map::insert(d, "users_new_7d", db_count(conn, "SELECT COUNT(*) AS count FROM users WHERE status = 'active' AND created_at > NOW() - INTERVAL '7 days'", []))
+    d = std::map::insert(d, "posts_total", db_count(conn, "SELECT COUNT(*) AS count FROM posts WHERE status = 'active'", []))
+    d = std::map::insert(d, "posts_today", db_count(conn, "SELECT COUNT(*) AS count FROM posts WHERE status = 'active' AND created_at::date = CURRENT_DATE", []))
+    d = std::map::insert(d, "comments_total", db_count(conn, "SELECT COUNT(*) AS count FROM comments WHERE status = 'active'", []))
+    d = std::map::insert(d, "messages_total", db_count(conn, "SELECT COUNT(*) AS count FROM messages WHERE status != 'deleted'", []))
+    d = std::map::insert(d, "follows_total", db_count(conn, "SELECT COUNT(*) AS count FROM follows", []))
+    d = std::map::insert(d, "reports_open", db_count(conn, "SELECT COUNT(*) AS count FROM reports WHERE status = 'open'", []))
+    d = std::map::insert(d, "suspended_users", db_count(conn, "SELECT COUNT(*) AS count FROM users WHERE status = 'suspended'", []))
+    let _c = std::postgres::close(conn)
+    r_ok(req, d)
+}
+
+fn h_admin_list_users(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let q = qs_str(req, "q", "")
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let mut rows: array = []
+    let mut total = 0
+    if q == "" {
+        rows = db_rows(conn, "SELECT id, username, email, display_name, role, status, is_verified, followers_count, following_count, posts_count, created_at::text AS created_at, last_login_at::text AS last_login_at FROM users ORDER BY id DESC LIMIT ? OFFSET ?", [limit, offset])
+        total = db_count(conn, "SELECT COUNT(*) AS count FROM users", [])
+    } else {
+        let like = "%" + q + "%"
+        rows = db_rows(conn, "SELECT id, username, email, display_name, role, status, is_verified, followers_count, following_count, posts_count, created_at::text AS created_at, last_login_at::text AS last_login_at FROM users WHERE LOWER(username) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?) OR LOWER(display_name) LIKE LOWER(?) ORDER BY id DESC LIMIT ? OFFSET ?", [like, like, like, limit, offset])
+        total = db_count(conn, "SELECT COUNT(*) AS count FROM users WHERE LOWER(username) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?) OR LOWER(display_name) LIKE LOWER(?)", [like, like, like])
+    }
+    if rows == nil { rows = [] }
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, rows, total, page, limit)
+}
+
+fn h_admin_suspend(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let admin_uid = a_uid(claims)
+    if admin_uid == target_id {
+        r_err(req, 400, "No puedes suspender tu propia cuenta")
+        return
+    }
+    let body = r_body(req)
+    if body == nil { return }
+    let reason = v_body_str(body, "reason", 3, 200)
+    if reason == nil { r_err(req, 400, "Motivo requerido"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE users SET status = 'suspended', suspend_reason = ? WHERE id = ?", [reason, target_id])
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL", [target_id])
+    r_audit(conn, admin_uid, "admin_suspend", "suspendió a " + target_id + " (" + reason + ")", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_admin_activate(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let admin_uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE users SET status = 'active', suspend_reason = '' WHERE id = ?", [target_id])
+    r_audit(conn, admin_uid, "admin_activate", "activó a " + target_id, req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_admin_verify(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let admin_uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let verified = v_body_bool(body, "verified", true)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE users SET is_verified = ? WHERE id = ?", [verified, target_id])
+    r_audit(conn, admin_uid, "admin_verify", "verificación de " + target_id + " = " + verified, req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_admin_list_reports(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let status = qs_str(req, "status", "open")
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT r.id, r.target_type, r.target_id, r.reason, r.detail, r.status, r.resolution, r.created_at::text AS created_at, r.resolved_at::text AS resolved_at, u.username AS reporter_username, ru.username AS resolved_by_username FROM reports r JOIN users u ON u.id = r.reporter_id LEFT JOIN users ru ON ru.id = r.resolved_by WHERE r.status = ? ORDER BY r.created_at DESC LIMIT ? OFFSET ?", [status, limit, offset])
+    let total = db_count(conn, "SELECT COUNT(*) AS count FROM reports WHERE status = ?", [status])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok_list(req, [], total, page, limit)
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, rows, total, page, limit)
+}
+
+fn h_admin_resolve_report(req: int, ctx: map, report_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let admin_uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let action = v_body_str(body, "action", 3, 20)
+    let note = v_body_str(body, "note", 0, 300)
+    if action == nil { r_err(req, 400, "acción requerida (resolve | dismiss)"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let report = db_one(conn, "SELECT id, reporter_id, target_type, target_id FROM reports WHERE id = ?", [report_id])
+    if report == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Reporte no encontrado")
+        return
+    }
+    let mut new_status = "resolved"
+    if action == "dismiss" { new_status = "dismissed" }
+    let clean_note = v_clean_text(note, 300)
+    let _ = db_exec(conn, "UPDATE reports SET status = ?, resolution = ?, resolved_by = ?, resolved_at = NOW() WHERE id = ?", [new_status, clean_note, admin_uid, report_id])
+    // Notificar al reportero del resultado (moderación real)
+    let reporter = std::map::get(report, "reporter_id")
+    let hub = std::map::get(ctx, "hub")
+    let target_type = std::map::get(report, "target_type")
+    let target_id = std::map::get(report, "target_id")
+    let mut content = "Tu reporte fue resuelto"
+    if action == "dismiss" { content = "Tu reporte fue revisado y no procede" }
+    n_notify(conn, hub, reporter, "system", admin_uid, 0, 0, content)
+    // Si se resuelve a favor, se elimina el contenido reportado
+    if action == "resolve" {
+        if target_type == "post" {
+            let _ = db_exec(conn, "UPDATE posts SET status = 'deleted' WHERE id = ?", [target_id])
+        } else if target_type == "comment" {
+            let _ = db_exec(conn, "UPDATE comments SET status = 'deleted' WHERE id = ?", [target_id])
+        } else if target_type == "user" {
+            let _ = db_exec(conn, "UPDATE users SET status = 'suspended', suspend_reason = 'Contenido reportado' WHERE id = ?", [target_id])
+        }
+    }
+    r_audit(conn, admin_uid, "admin_report", "reporte " + report_id + " -> " + new_status, req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_admin_backup(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let tables = ["users", "posts", "comments", "likes", "follows", "saves", "messages", "conversations", "notifications", "reports", "hashtags", "app_stats", "activity_log"]
+    let mut backup = std::map::new()
+    for t in tables {
+        let rows = db_rows(conn, "SELECT * FROM " + t, [])
+        if rows == nil {
+            backup = std::map::insert(backup, t, [])
+        } else {
+            backup = std::map::insert(backup, t, rows)
+        }
+    }
+    backup = std::map::insert(backup, "exported_at", std::datetime::now())
+    let _c = std::postgres::close(conn)
+    let mut headers = r_headers()
+    headers = std::map::insert(headers, "Content-Disposition", "attachment; filename=\"moon-backup.json\"")
+    r_send(req, 200, "application/json; charset=utf-8", headers, std::json::stringify(backup))
+}
+
+fn h_admin_stats(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT stat_date::text AS stat_date, new_users, new_posts, new_messages, new_likes, new_comments, new_follows FROM app_stats WHERE stat_date >= CURRENT_DATE - INTERVAL '30 days' ORDER BY stat_date ASC", [])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok(req, [])
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok(req, rows)
+}
+
+fn h_admin_blocked_words(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT id, word, created_at::text AS created_at FROM blocked_words ORDER BY id DESC", [])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok(req, [])
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok(req, rows)
+}
+
+fn h_admin_add_word(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let body = r_body(req)
+    if body == nil { return }
+    let word = v_body_str(body, "word", 1, 60)
+    if word == nil { r_err(req, 400, "Palabra requerida"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let clean = v_clean_text(word, 60)
+    let lower = std::text::lowercase(clean)
+    let _ = db_exec(conn, "INSERT INTO blocked_words (word) VALUES (?) ON CONFLICT (word) DO NOTHING", [lower])
+    r_audit(conn, a_uid(claims), "admin_add_word", lower, req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_admin_remove_word(req: int, ctx: map, word_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "DELETE FROM blocked_words WHERE id = ?", [word_id])
+    r_audit(conn, a_uid(claims), "admin_remove_word", "id " + word_id, req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_admin_activity(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = hadmin_require(req)
+    if claims == nil { return }
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT id, user_id, action, detail, ip, created_at::text AS created_at FROM activity_log ORDER BY id DESC LIMIT ? OFFSET ?", [limit, offset])
+    let total = db_count(conn, "SELECT COUNT(*) AS count FROM activity_log", [])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok_list(req, [], total, page, limit)
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, rows, total, page, limit)
+}

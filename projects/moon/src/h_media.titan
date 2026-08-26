@@ -1,0 +1,225 @@
+// Moon — Pipeline de imágenes (h_media.titan)
+// ============================================================
+// Subida multipart REAL: validación por MIME real + re-encode
+// obligatorio (ningún archivo ejecutable disfrazado, SPEC §4.5),
+// variaciones generadas en servidor (avatar/post), cuotas por
+// usuario en BD (SPEC §6). Cloudinary queda descartado porque la
+// firma requiere HMAC-SHA1 que el stdlib de Titan no expone;
+// almacenamiento local + CDN del hosting cubre v1.
+//
+// Nota: se documenta aquí según el compromiso §13 de la SPEC.
+
+fn hm_content_type_allowed(ct: string) -> bool {
+    let lower = std::text::lowercase(ct)
+    if std::text::contains(lower, "image/jpeg") { return true }
+    if std::text::contains(lower, "image/png") { return true }
+    if std::text::contains(lower, "image/webp") { return true }
+    false
+}
+
+fn hm_random_filename() -> string {
+    let raw = std::random::bytes(16)
+    std::encoding::hex_encode(raw)
+}
+
+fn hm_write_image(handle: int, dir: string, format: string) -> string {
+    // Devuelve el nombre de archivo público (uuid.ext)
+    let name = hm_random_filename() + "." + format
+    let encoded = std::try::catch(|| std::image::encode(handle, format))
+    match encoded {
+        Result::Ok(bytes) => {
+            let path = dir + "/" + name
+            let _ = std::try::catch(|| std::fs::write_bytes(path, bytes))
+            name
+        },
+        Result::Err(_) => "",
+    }
+}
+
+fn hm_process(kind: string, data: bytes) -> any {
+    // Devuelve map {url, thumb, width, height, bytes} o nil en error.
+    let loaded = std::try::catch(|| std::image::load_bytes(data))
+    match loaded {
+        Result::Err(_) => nil,
+        Result::Ok(img) => {
+            let w_opt = std::try::catch(|| std::image::width(img))
+            let h_opt = std::try::catch(|| std::image::height(img))
+            let w = match w_opt {
+                Result::Ok(v) => v,
+                Result::Err(_) => 0,
+            }
+            let h = match h_opt {
+                Result::Ok(v) => v,
+                Result::Err(_) => 0,
+            }
+            if w <= 0 || h <= 0 || w > CFG_MAX_IMAGE_DIMENSION || h > CFG_MAX_IMAGE_DIMENSION {
+                let _ = std::image::close(img)
+                return nil
+            }
+            let mut main_handle = img
+            let mut main_name = ""
+            if kind == "avatar" {
+                let t = std::try::catch(|| std::image::thumbnail(img, 400, 400))
+                match t {
+                    Result::Ok(h2) => { main_handle = h2 },
+                    Result::Err(_) => { let _ = std::image::close(img); return nil }
+                }
+            } else if kind == "cover" {
+                let t = std::try::catch(|| std::image::thumbnail(img, 1600, 400))
+                match t {
+                    Result::Ok(h2) => { main_handle = h2 },
+                    Result::Err(_) => { let _ = std::image::close(img); return nil }
+                }
+            } else {
+                let t = std::try::catch(|| std::image::thumbnail(img, 1080, 1080))
+                match t {
+                    Result::Ok(h2) => { main_handle = h2 },
+                    Result::Err(_) => { let _ = std::image::close(img); return nil }
+                }
+            }
+            let dir = if kind == "avatar" { CFG_AVATARS_DIR } else if kind == "cover" { CFG_COVERS_DIR } else { CFG_POSTS_DIR }
+            main_name = hm_write_image(main_handle, dir, "jpeg")
+            let _ = std::image::close(main_handle)
+            if main_name == "" {
+                let _ = std::image::close(img)
+                return nil
+            }
+            // Miniatura (a partir del original, antes de cerrarlo)
+            let thumb_handle = std::try::catch(|| std::image::thumbnail(img, 320, 320))
+            let _ = std::image::close(img)
+            let mut thumb_name = ""
+            match thumb_handle {
+                Result::Ok(h2) => {
+                    thumb_name = hm_write_image(h2, dir, "jpeg")
+                    let _ = std::image::close(h2)
+                },
+                Result::Err(_) => {}
+            }
+            let file_path = dir + "/" + main_name
+            let mut size = 0
+            let size_opt = std::try::catch(|| std::fs::file_size(file_path))
+            match size_opt {
+                Result::Ok(s) => { size = s },
+                Result::Err(_) => {}
+            }
+            let mut out = std::map::new()
+            out = std::map::insert(out, "url", "/api/media/" + main_name)
+            out = std::map::insert(out, "thumb_url", "/api/media/" + thumb_name)
+            out = std::map::insert(out, "width", w)
+            out = std::map::insert(out, "height", h)
+            out = std::map::insert(out, "bytes", size)
+            out
+        }
+    }
+}
+
+fn h_media_upload(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    if !rl_by_uid(uid, req, "uploads", 10, 3600000) { return }
+    let ct = std::server::header(req, "content-type")
+    if ct == nil {
+        r_err(req, 400, "Content-Type multipart requerido")
+        return
+    }
+    let body_bytes = r_body_bytes(req)
+    let parts = std::try::catch(|| std::http::parse_multipart(ct, body_bytes, 8, CFG_MAX_UPLOAD_BYTES))
+    match parts {
+        Result::Err(_) => {
+            r_err(req, 400, "Multipart inválido o archivo demasiado grande")
+        },
+        Result::Ok(parsed) => {
+            if std::collections::length(parsed) == 0 {
+                r_err(req, 400, "No se recibieron partes")
+                return
+            }
+            let part = parsed[0]
+            let part_ct = std::map::get(part, "content_type")
+            let data = std::map::get(part, "data")
+            let kind = std::map::get(part, "name")
+            if data == nil {
+                r_err(req, 400, "Archivo no encontrado en el multipart")
+                return
+            }
+            if !hm_content_type_allowed(part_ct) {
+                r_err(req, 415, "Tipo de imagen no permitido (jpeg, png, webp)")
+                return
+            }
+            if kind != "avatar" && kind != "cover" && kind != "post" {
+                r_err(req, 400, "El campo name debe ser avatar, cover o post")
+                return
+            }
+            let size = std::bytes::length(data)
+            if size <= 0 || size > CFG_MAX_UPLOAD_BYTES {
+                r_err(req, 400, "Tamaño de imagen no válido (máx 8 MB)")
+                return
+            }
+            let conn = db_acquire(pool)
+            if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+            // Cuotas por usuario contadas en BD (SPEC §6)
+            let quota = db_one(conn, "SELECT images_count, images_bytes FROM users WHERE id = ?", [uid])
+            let used_bytes = std::map::get(quota, "images_bytes")
+            let used_count = std::map::get(quota, "images_count")
+            if used_count >= 100 {
+                let _c = std::postgres::close(conn)
+                r_err_code(req, 429, "quota_images", "Llegaste al límite de imágenes (100)")
+                return
+            }
+            if used_bytes + size > 268435456 {
+                let _c = std::postgres::close(conn)
+                r_err_code(req, 429, "quota_bytes", "Llegaste al límite de almacenamiento")
+                return
+            }
+            let mut processed: any = std::try::catch(|| hm_process(kind, data))
+            processed = match processed {
+                Result::Ok(p) => p,
+                Result::Err(_) => nil,
+            }
+            if processed == nil {
+                let _c = std::postgres::close(conn)
+                r_err(req, 400, "La imagen no pudo procesarse (¿es un archivo real?)")
+                return
+            }
+            let url = std::map::get(processed, "url")
+            let thumb = std::map::get(processed, "thumb_url")
+            let w = std::map::get(processed, "width")
+            let h = std::map::get(processed, "height")
+            let bytes_stored = std::map::get(processed, "bytes")
+            let _ = db_exec(conn, "INSERT INTO media (user_id, kind, original_path, thumb_path, url, width, height, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [uid, kind, url, thumb, url, w, h, bytes_stored])
+            let row = db_one(conn, "SELECT id, url, thumb_path AS thumb_url, width, height, bytes, created_at::text AS created_at FROM media WHERE user_id = ? ORDER BY id DESC LIMIT 1", [uid])
+            let _ = db_exec(conn, "UPDATE users SET images_count = images_count + 1, images_bytes = images_bytes + ? WHERE id = ?", [bytes_stored, uid])
+            let _c = std::postgres::close(conn)
+            if row == nil {
+                r_err(req, 500, "No se pudo registrar la imagen")
+                return
+            }
+            r_created(req, row)
+        }
+    }
+}
+
+fn h_media_serve(req: int, ctx: map, name: string) {
+    if !v_safe_filename(name) {
+        r_err(req, 404, "No encontrado")
+        return
+    }
+    let path = CFG_UPLOADS_DIR + "/" + name
+    let exists = std::fs::exists(path)
+    if !exists {
+        r_err(req, 404, "No encontrado")
+        return
+    }
+    let bytes = std::try::catch(|| std::fs::read_bytes(path))
+    match bytes {
+        Result::Err(_) => {
+            r_err(req, 500, "Error leyendo archivo")
+        },
+        Result::Ok(data) => {
+            let ext = v_media_ext(name)
+            let ct = v_media_content_type(ext)
+            r_send_bytes(req, 200, ct, r_headers_media(), data)
+        }
+    }
+}
