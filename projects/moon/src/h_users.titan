@@ -1,0 +1,299 @@
+// Moon — Handlers de perfil y grafo social (h_users.titan)
+// ============================================================
+// user_profile · user_posts · user_liked · user_saved ·
+// user_followers · user_following · search · follow · unfollow ·
+// block · unblock · suggested_users (SPEC §3)
+
+fn hu_get_target(req: int, conn: Postgres, target_id: int) -> any {
+    let user = q_user_public_by_id(conn, target_id)
+    if user == nil {
+        r_err(req, 404, "Usuario no encontrado")
+        return nil
+    }
+    user
+}
+
+fn h_users_profile(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let target = hu_get_target(req, conn, target_id)
+    if target == nil {
+        let _c = std::postgres::close(conn)
+        return
+    }
+    let out = q_user_profile_map(conn, viewer, target)
+    let _c = std::postgres::close(conn)
+    r_ok(req, out)
+}
+
+fn h_users_posts(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let target = hu_get_target(req, conn, target_id)
+    if target == nil {
+        let _c = std::postgres::close(conn)
+        return
+    }
+    let is_private = std::map::get(target, "is_private")
+    if !q_can_view_author_posts(conn, viewer, target_id, is_private) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "private_account", "Esta cuenta es privada")
+        return
+    }
+    let rows = q_posts_visible(conn, viewer, target_id, page, limit)
+    let total = q_count_posts_visible(conn, viewer, target_id)
+    let out = q_decorate_batch(conn, rows, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, total, page, limit)
+}
+
+fn h_users_followers(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let target = hu_get_target(req, conn, target_id)
+    if target == nil {
+        let _c = std::postgres::close(conn)
+        return
+    }
+    let rows = db_rows(conn, "SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified, u.followers_count FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.following_id = ? AND u.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = ?)) ORDER BY f.created_at DESC LIMIT ? OFFSET ?", [target_id, viewer, viewer, limit, offset])
+    let total = db_count(conn, "SELECT COUNT(*) AS count FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.following_id = ? AND u.status = 'active'", [target_id])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok_list(req, [], total, page, limit)
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, rows, total, page, limit)
+}
+
+fn h_users_following(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let target = hu_get_target(req, conn, target_id)
+    if target == nil {
+        let _c = std::postgres::close(conn)
+        return
+    }
+    let rows = db_rows(conn, "SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified, u.followers_count FROM follows f JOIN users u ON u.id = f.following_id WHERE f.follower_id = ? AND u.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = ?)) ORDER BY f.created_at DESC LIMIT ? OFFSET ?", [target_id, viewer, viewer, limit, offset])
+    let total = db_count(conn, "SELECT COUNT(*) AS count FROM follows f JOIN users u ON u.id = f.following_id WHERE f.follower_id = ? AND u.status = 'active'", [target_id])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok_list(req, [], total, page, limit)
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, rows, total, page, limit)
+}
+
+fn h_users_liked(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM likes l JOIN posts p ON p.id = l.post_id JOIN users u ON u.id = p.user_id WHERE l.user_id = ? AND p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY l.created_at DESC LIMIT ? OFFSET ?", [target_id, viewer, viewer, limit, offset])
+    let out = q_decorate_batch(conn, rows, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, std::collections::length(out), page, limit)
+}
+
+fn h_users_saved(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM saves s JOIN posts p ON p.id = s.post_id JOIN users u ON u.id = p.user_id WHERE s.user_id = ? AND p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY s.created_at DESC LIMIT ? OFFSET ?", [viewer, viewer, viewer, limit, offset])
+    let out = q_decorate_batch(conn, rows, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, std::collections::length(out), page, limit)
+}
+
+fn h_users_search(req: int, ctx: map) {
+    if !rl_by_ip(req, "search", 60, 60000) { return }
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let q = qs_str(req, "q", "")
+    if q == "" {
+        r_err(req, 400, "Parámetro q requerido")
+        return
+    }
+    let type_of = qs_str(req, "type", "users")
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    if type_of == "posts" {
+        let posts = q_search_posts(conn, q, viewer, 30)
+        let out = q_decorate_batch(conn, posts, viewer)
+        let _c = std::postgres::close(conn)
+        r_ok(req, out)
+        return
+    }
+    let users = q_search_users(conn, q, viewer, 30)
+    let _c = std::postgres::close(conn)
+    r_ok(req, users)
+}
+
+fn h_users_follow(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    if viewer == target_id {
+        r_err(req, 400, "No puedes seguirte a ti mismo")
+        return
+    }
+    if !rl_by_uid(viewer, req, "follow", 200, 3600000) { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let target = hu_get_target(req, conn, target_id)
+    if target == nil {
+        let _c = std::postgres::close(conn)
+        return
+    }
+    if q_is_blocked(conn, viewer, target_id) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "blocked", "No puedes seguir a este usuario")
+        return
+    }
+    let exists = db_one(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", [viewer, target_id])
+    if exists != nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 409, "Ya sigues a este usuario")
+        return
+    }
+    let _ = db_exec(conn, "INSERT INTO follows (follower_id, following_id) VALUES (?, ?)", [viewer, target_id])
+    let _ = db_exec(conn, "UPDATE users SET following_count = following_count + 1 WHERE id = ?", [viewer])
+    let _ = db_exec(conn, "UPDATE users SET followers_count = followers_count + 1 WHERE id = ?", [target_id])
+    r_bump_stats(conn, "new_follows")
+    let hub = std::map::get(ctx, "hub")
+    n_notify(conn, hub, target_id, "follow", viewer, 0, 0, "")
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "message", "Ahora sigues a este usuario")
+    r_ok(req, m)
+}
+
+fn h_users_unfollow(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let exists = db_one(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", [viewer, target_id])
+    if exists == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 409, "No sigues a este usuario")
+        return
+    }
+    let _ = db_exec(conn, "DELETE FROM follows WHERE follower_id = ? AND following_id = ?", [viewer, target_id])
+    let _ = db_exec(conn, "UPDATE users SET following_count = GREATEST(0, following_count - 1) WHERE id = ?", [viewer])
+    let _ = db_exec(conn, "UPDATE users SET followers_count = GREATEST(0, followers_count - 1) WHERE id = ?", [target_id])
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "message", "Dejaste de seguir")
+    r_ok(req, m)
+}
+
+fn h_users_block(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    if viewer == target_id {
+        r_err(req, 400, "No puedes bloquearte a ti mismo")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let target = hu_get_target(req, conn, target_id)
+    if target == nil {
+        let _c = std::postgres::close(conn)
+        return
+    }
+    let exists = db_one(conn, "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?", [viewer, target_id])
+    if exists != nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 409, "Ya bloqueaste a este usuario")
+        return
+    }
+    let _ = db_exec(conn, "INSERT INTO blocks (blocker_id, blocked_id) VALUES (?, ?)", [viewer, target_id])
+    // Ajuste de contadores ANTES de borrar follows (ambos usuarios, ambas direcciones)
+    let _ = db_exec(conn, "UPDATE users SET following_count = GREATEST(0, following_count - 1) WHERE id = ? AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.following_id = ?)", [viewer, viewer, target_id])
+    let _ = db_exec(conn, "UPDATE users SET followers_count = GREATEST(0, followers_count - 1) WHERE id = ? AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.following_id = ?)", [target_id, viewer, target_id])
+    let _ = db_exec(conn, "UPDATE users SET following_count = GREATEST(0, following_count - 1) WHERE id = ? AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.following_id = ?)", [target_id, target_id, viewer])
+    let _ = db_exec(conn, "UPDATE users SET followers_count = GREATEST(0, followers_count - 1) WHERE id = ? AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.following_id = ?)", [viewer, target_id, viewer])
+    // Al bloquear también se deja de seguir en ambas direcciones
+    let _ = db_exec(conn, "DELETE FROM follows WHERE (follower_id = ? AND following_id = ?) OR (follower_id = ? AND following_id = ?)", [viewer, target_id, target_id, viewer])
+    r_audit(conn, viewer, "block", "bloqueó a " + target_id, req)
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "message", "Usuario bloqueado")
+    r_ok(req, m)
+}
+
+fn h_users_unblock(req: int, ctx: map, target_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?", [viewer, target_id])
+    r_audit(conn, viewer, "unblock", "desbloqueó a " + target_id, req)
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "message", "Usuario desbloqueado")
+    r_ok(req, m)
+}
+
+fn h_users_suggestions(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = q_suggestions(conn, viewer, 10)
+    let _c = std::postgres::close(conn)
+    r_ok(req, rows)
+}

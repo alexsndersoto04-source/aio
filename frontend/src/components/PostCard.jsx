@@ -1,169 +1,169 @@
-import React, { useState, useEffect } from 'react';
+// Moon — Tarjeta de publicación (feed, perfil, búsqueda)
+// ============================================================
+// Like / save / comentar / menú (editar, eliminar, reportar) — todo
+// contra el backend real, con optimismo controlado.
+
+import React, { useState } from 'react';
+import { api, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { api } from '../api.js';
-import Avatar from './Avatar.jsx';
-import { HeartIcon, CommentIcon, BookmarkIcon, SendIcon } from './Icons.jsx';
-import { timeAgo, toggleSaved, isSaved } from '../utils.js';
+import { timeAgo, linkify } from '../utils.js';
+import Avatar, { VerifiedBadge } from './Avatar.jsx';
+import {
+  IconHeart, IconBookmark, IconComment, IconMore, IconTrash, IconEdit, IconReport,
+} from './Icons.jsx';
 
-export default function PostCard({ post, onRefresh, showSave = true }) {
+function PostMenu({ post, onDelete, onEdit, onReport }) {
   const { user } = useAuth();
-  const [liked, setLiked] = useState(null);
-  const [likesCount, setLikesCount] = useState(post.likes_count ?? 0);
-  const [saved, setSaved] = useState(() => isSaved(post));
   const [open, setOpen] = useState(false);
-  const [comments, setComments] = useState([]);
-  const [loadingComments, setLoadingComments] = useState(false);
-  const [text, setText] = useState('');
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState('');
+  const isMine = user && post.is_mine;
+  return (
+    <div style={{ position: 'relative' }}>
+      <button className="btn-ghost btn-sm" onClick={() => setOpen(!open)} aria-label="Más opciones">
+        <IconMore />
+      </button>
+      {open ? (
+        <div className="card" style={{ position: 'absolute', right: 0, top: 34, zIndex: 20, minWidth: 170, padding: 6 }}>
+          {isMine ? (
+            <>
+              <button className="btn-ghost btn-sm" style={{ width: '100%', justifyContent: 'flex-start' }}
+                onClick={() => { setOpen(false); onEdit(); }}>
+                <IconEdit /> Editar
+              </button>
+              <button className="btn-ghost btn-sm" style={{ width: '100%', justifyContent: 'flex-start', color: 'var(--danger)' }}
+                onClick={() => { setOpen(false); onDelete(); }}>
+                <IconTrash /> Eliminar
+              </button>
+            </>
+          ) : (
+            <button className="btn-ghost btn-sm" style={{ width: '100%', justifyContent: 'flex-start' }}
+              onClick={() => { setOpen(false); onReport(); }}>
+              <IconReport /> Reportar
+            </button>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
-  useEffect(() => {
-    api(`/api/posts/${post.id}`)
-      .then(d => setLiked(!!d.is_liked))
-      .catch(() => {});
-  }, [post.id]);
+export default function PostCard({ post, onChanged, compact = false }) {
+  const { user, refreshMe } = useAuth();
+  const [p, setP] = useState(post);
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(p.content || '');
 
-  async function toggleLike() {
-    if (liked === null) return;
-    setError('');
+  const apply = (next) => { setP(next); if (onChanged) onChanged(next); };
+
+  async function toggle(kind) {
+    if (busy) return;
+    setBusy(true);
     try {
-      if (liked) {
-        await api(`/api/posts/${post.id}/unlike`, { method: 'POST' });
-        setLiked(false);
-        setLikesCount(c => Math.max(0, c - 1));
-      } else {
-        await api(`/api/posts/${post.id}/like`, { method: 'POST' });
-        setLiked(true);
-        setLikesCount(c => c + 1);
+      if (kind === 'like') {
+        const res = await api.post(`/api/posts/${p.id}/like`, {});
+        apply({ ...p, is_liked: true, likes_count: p.likes_count + 1 });
+      } else if (kind === 'unlike') {
+        await api.del(`/api/posts/${p.id}/like`);
+        apply({ ...p, is_liked: false, likes_count: Math.max(0, p.likes_count - 1) });
+      } else if (kind === 'save') {
+        const res = await api.post(`/api/posts/${p.id}/save`, {});
+        apply({ ...p, is_saved: res.saved, saves_count: res.saved ? p.saves_count + 1 : Math.max(0, p.saves_count - 1) });
       }
-      if (onRefresh) onRefresh();
-    } catch (err) {
-      if (err.message.includes('409')) setLiked(true);
-      else setError(err.message);
-    }
-  }
-
-  function onToggleSave() {
-    setError('');
-    setSaved(toggleSaved(post));
-  }
-
-  async function loadComments() {
-    setLoadingComments(true);
-    try {
-      setComments(await api(`/api/posts/${post.id}/comments`));
-    } catch (err) {
-      setError(err.message);
+    } catch (e) {
+      alert(e.message);
     } finally {
-      setLoadingComments(false);
+      setBusy(false);
     }
   }
 
-  function toggleComments() {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    setOpen(true);
-    if (comments.length === 0 && !loadingComments) loadComments();
-  }
-
-  async function submitComment(e) {
-    e.preventDefault();
-    if (!text.trim() || sending) return;
-    setSending(true);
-    setError('');
+  async function del() {
+    if (!window.confirm('¿Eliminar esta publicación?')) return;
     try {
-      await api(`/api/posts/${post.id}/comment`, {
-        method: 'POST',
-        body: JSON.stringify({ content: text.trim() }),
-      });
-      setText('');
-      await loadComments();
-      if (onRefresh) onRefresh();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSending(false);
+      await api.del(`/api/posts/${p.id}`);
+      apply({ ...p, deleted: true });
+      refreshMe();
+    } catch (e) {
+      alert(e.message);
     }
   }
+
+  async function saveEdit() {
+    if (!draft.trim()) return;
+    try {
+      await api.patch(`/api/posts/${p.id}`, { content: draft.trim() });
+      apply({ ...p, content: draft.trim() });
+      setEditing(false);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  function report() {
+    const reason = window.prompt('Motivo del reporte (ej. spam, acoso, contenido inapropiado):', '');
+    if (!reason) return;
+    api.post('/api/reports', { target_type: 'post', target_id: p.id, reason, detail: '' })
+      .then(() => alert('Reporte enviado. Gracias por ayudar a mantener Moon seguro.'))
+      .catch((e) => alert(e.message));
+  }
+
+  if (p.deleted) return null;
+
+  const likeClass = p.is_liked ? 'liked' : '';
+  const saveClass = p.is_saved ? 'saved' : '';
 
   return (
-    <article className="card post-card">
+    <article className="post">
       <div className="post-head">
-        <a href={`#/profile/${post.user_id}`}>
-          <Avatar src={post.avatar_url} name={post.display_name || post.username} size="md" />
-        </a>
-        <div className="post-who">
-          <a className="post-name" href={`#/profile/${post.user_id}`}>
-            {post.display_name || post.username}
-          </a>
-          <span className="post-sub">
-            @{post.username} · {timeAgo(post.created_at)}
-          </span>
+        <a href={`#/user/${p.author_username}`}><Avatar user={{ username: p.author_username, display_name: p.author_display_name, avatar_url: p.author_avatar_url }} /></a>
+        <div className="who">
+          <div className="name">
+            <a href={`#/user/${p.author_username}`}>{p.author_display_name || p.author_username}</a>
+            <VerifiedBadge show={p.author_is_verified} />
+            <span className="at">@{p.author_username} · {timeAgo(p.created_at)}</span>
+          </div>
         </div>
+        <PostMenu post={p} onDelete={del} onEdit={() => setEditing(true)} onReport={report} />
       </div>
-      <p className="post-text">{post.content}</p>
-      <div className="post-actions">
-        <button
-          className={`action-btn ${liked ? 'is-liked' : ''}`}
-          onClick={toggleLike}
-          disabled={liked === null}
-          title="Me gusta"
-        >
-          <HeartIcon size={17} filled={!!liked} /> {likesCount}
-        </button>
-        <button className="action-btn" onClick={toggleComments} title="Comentarios">
-          <CommentIcon size={17} /> {post.comments_count ?? 0}
-        </button>
-        {showSave && (
-          <button
-            className={`action-btn post-save ${saved ? 'is-saved' : ''}`}
-            onClick={onToggleSave}
-            title={saved ? 'Quitar de guardados' : 'Guardar'}
-          >
-            <BookmarkIcon size={17} filled={saved} />
-          </button>
-        )}
-      </div>
-      {error && <p className="form-error">{error}</p>}
-      {open && (
-        <div className="comments">
-          {loadingComments ? (
-            <p className="muted sm">Cargando comentarios…</p>
-          ) : comments.length === 0 ? (
-            <p className="muted sm">Sé la primera persona en comentar.</p>
-          ) : (
-            comments.map(c => (
-              <div key={c.id} className="comment">
-                <Avatar src={c.avatar_url} name={c.display_name || c.username} size="xs" />
-                <div className="comment-body">
-                  <span className="comment-name">{c.display_name || c.username}</span>
-                  <span className="comment-text">{c.content}</span>
-                </div>
-                <span className="muted xs">{timeAgo(c.created_at)}</span>
-              </div>
-            ))
-          )}
-          <form className="comment-form" onSubmit={submitComment}>
-            <Avatar src={user.avatar_url} name={user.display_name || user.username} size="xs" />
-            <input
-              className="input sm"
-              placeholder="Escribe un comentario…"
-              value={text}
-              onChange={e => setText(e.target.value)}
-            />
-            <button
-              className="icon-btn icon-btn-primary"
-              type="submit"
-              disabled={sending || !text.trim()}
-              title="Comentar"
-            >
-              <SendIcon size={15} />
-            </button>
-          </form>
+
+      {editing ? (
+        <div className="mb">
+          <textarea className="textarea" value={draft} maxLength={2000}
+            onChange={(e) => setDraft(e.target.value)} rows={3} />
+          <div className="row mt" style={{ justifyContent: 'flex-end' }}>
+            <button className="btn-ghost btn-sm" onClick={() => { setEditing(false); setDraft(p.content); }}>Cancelar</button>
+            <button className="btn btn-sm" onClick={saveEdit}>Guardar</button>
+          </div>
         </div>
+      ) : (
+        <p className="post-body" dangerouslySetInnerHTML={{ __html: linkify(p.content) }} />
       )}
+
+      {p.images && p.images.length > 0 ? (
+        <div className="post-images" style={{ gridTemplateColumns: p.images.length > 1 ? '1fr 1fr' : '1fr' }}>
+          {p.images.map((img, i) => (
+            <img key={i} src={img.original_url} alt="" loading="lazy"
+              style={p.images.length > 1 ? { maxHeight: 240 } : undefined} />
+          ))}
+        </div>
+      ) : null}
+
+      <div className="post-actions">
+        <button className={likeClass} onClick={() => toggle(p.is_liked ? 'unlike' : 'like')}>
+          <IconHeart filled={p.is_liked} />
+          <span className="count">{p.likes_count || 0}</span>
+        </button>
+        <a className="row" style={{ textDecoration: 'none', color: 'var(--ink-2)' }} href={`#/post/${p.id}`}
+          onClick={(e) => e.stopPropagation()}>
+          <span className="row">
+            <IconComment />
+            <span className="count">{p.comments_count || 0}</span>
+          </span>
+        </a>
+        <button className={saveClass} style={{ marginLeft: 'auto' }} onClick={() => toggle('save')}>
+          <IconBookmark filled={p.is_saved} />
+          <span>{p.is_saved ? 'Guardado' : 'Guardar'}</span>
+        </button>
+      </div>
     </article>
   );
 }

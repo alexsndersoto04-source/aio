@@ -1,17 +1,19 @@
-const SIZES = { xs: 28, sm: 36, md: 44, lg: 64, xl: 96 };
+import React from 'react';
+import { IconVerified } from './Icons.jsx';
 
-export default function Avatar({ src, name = '?', size = 'md', ...rest }) {
-  const s = SIZES[size] || 40;
-  if (src) {
-    return <img className="avatar" src={src} alt={name} style={{ width: s, height: s }} {...rest} />;
-  }
+export default function Avatar({ user, size = '', verified = false, className = '' }) {
+  const initials = (user?.display_name || user?.username || '?').slice(0, 2).toUpperCase();
+  const cls = `avatar ${size} ${className}`.trim();
   return (
-    <div
-      className="avatar avatar-fallback"
-      style={{ width: s, height: s, fontSize: Math.round(s * 0.42) }}
-      {...rest}
-    >
-      {(name || '?')[0].toUpperCase()}
+    <div className={cls} title={user?.username || ''}>
+      {user?.avatar_url
+        ? <img src={user.avatar_url} alt={user.username} loading="lazy" />
+        : <span>{initials}</span>}
     </div>
   );
+}
+
+export function VerifiedBadge({ show }) {
+  if (!show) return null;
+  return <span className="verified"><IconVerified /></span>;
 }

@@ -1,0 +1,247 @@
+// Moon — Consultas compartidas (query.titan)
+// ============================================================
+// Queries reutilizadas por los handlers. El filtro de bloqueos se
+// aplica en TODAS las consultas de contenido (SPEC §4.9), no solo en
+// la UI.
+
+fn q_user_by_id(conn: Postgres, uid: int) -> any {
+    db_one(conn, "SELECT id, username, email, password_hash, display_name, bio, link, location, avatar_url, cover_url, is_private, is_verified, twofa_enabled, status, suspend_reason, role, followers_count, following_count, posts_count, dm_privacy, created_at::text AS created_at, last_login_at::text AS last_login_at FROM users WHERE id = ?", [uid])
+}
+
+fn q_user_public_by_id(conn: Postgres, uid: int) -> any {
+    db_one(conn, "SELECT id, username, display_name, bio, link, location, avatar_url, cover_url, is_private, is_verified, status, role, followers_count, following_count, posts_count, created_at::text AS created_at FROM users WHERE id = ?", [uid])
+}
+
+fn q_user_by_username(conn: Postgres, username: string) -> any {
+    db_one(conn, "SELECT id, username, display_name, bio, link, location, avatar_url, cover_url, is_private, is_verified, status, role, followers_count, following_count, posts_count, created_at::text AS created_at FROM users WHERE LOWER(username) = LOWER(?)", [username])
+}
+
+fn q_user_by_username_or_email(conn: Postgres, login: string) -> any {
+    db_one(conn, "SELECT id, username, email, password_hash, display_name, bio, avatar_url, is_private, is_verified, twofa_enabled, status, suspend_reason, role FROM users WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)", [login, login])
+}
+
+// ¿Existe bloqueo en cualquiera de las dos direcciones?
+fn q_is_blocked(conn: Postgres, a: int, b: int) -> bool {
+    let row = db_one(conn, "SELECT 1 FROM blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?) LIMIT 1", [a, b, b, a])
+    row != nil
+}
+
+fn q_is_following(conn: Postgres, follower: int, following: int) -> bool {
+    let row = db_one(conn, "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ? LIMIT 1", [follower, following])
+    row != nil
+}
+
+// ¿El viewer puede ver el perfil de target? (bloqueos + privacidad)
+fn q_can_view_user(conn: Postgres, viewer: int, target: any) -> bool {
+    if target == nil { return false }
+    let target_id = std::map::get(target, "id")
+    if viewer == target_id { return true }
+    if q_is_blocked(conn, viewer, target_id) { return false }
+    let is_private = std::map::get(target, "is_private")
+    if is_private == true {
+        return q_is_following(conn, viewer, target_id)
+    }
+    true
+}
+
+// ¿El viewer puede ver un post del autor author_id? (privacidad autor)
+fn q_can_view_author_posts(conn: Postgres, viewer: int, author_id: int, author_is_private: bool) -> bool {
+    if viewer == author_id { return true }
+    if q_is_blocked(conn, viewer, author_id) { return false }
+    if author_is_private {
+        return q_is_following(conn, viewer, author_id)
+    }
+    true
+}
+
+// Decora una fila de post con imágenes, is_liked, is_saved y autor.
+fn q_decorate_post(conn: Postgres, row: any, viewer: int) -> any {
+    let post_id = std::map::get(row, "id")
+    let mut out = std::map::new()
+    out = std::map::insert(out, "id", post_id)
+    out = std::map::insert(out, "user_id", std::map::get(row, "user_id"))
+    out = std::map::insert(out, "content", std::map::get(row, "content"))
+    out = std::map::insert(out, "likes_count", std::map::get(row, "likes_count"))
+    out = std::map::insert(out, "comments_count", std::map::get(row, "comments_count"))
+    out = std::map::insert(out, "saves_count", std::map::get(row, "saves_count"))
+    out = std::map::insert(out, "created_at", std::map::get(row, "created_at"))
+    out = std::map::insert(out, "edited_at", std::map::get(row, "edited_at"))
+    out = std::map::insert(out, "author_username", std::map::get(row, "username"))
+    out = std::map::insert(out, "author_display_name", std::map::get(row, "display_name"))
+    out = std::map::insert(out, "author_avatar_url", std::map::get(row, "avatar_url"))
+    out = std::map::insert(out, "author_is_verified", std::map::get(row, "is_verified"))
+    out = std::map::insert(out, "is_mine", std::map::get(row, "user_id") == viewer)
+    // Imágenes del post
+    let imgs = db_rows(conn, "SELECT original_url, thumb_url, position FROM post_images WHERE post_id = ? ORDER BY position ASC", [post_id])
+    let mut images: array = []
+    if imgs != nil {
+        for img in imgs {
+            images = std::array::push(images, img)
+        }
+    }
+    out = std::map::insert(out, "images", images)
+    // Estado del viewer
+    let liked = db_one(conn, "SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?", [viewer, post_id])
+    let saved = db_one(conn, "SELECT 1 FROM saves WHERE user_id = ? AND post_id = ?", [viewer, post_id])
+    out = std::map::insert(out, "is_liked", liked != nil)
+    out = std::map::insert(out, "is_saved", saved != nil)
+    out
+}
+
+// Genera la cláusula IN (?,?,...) para n valores; n <= 0 -> "NULL".
+fn q_in_clause(n: int) -> string {
+    if n <= 0 { return "NULL" }
+    let mut out = ""
+    let mut i = 1
+    while i <= n {
+        if i > 1 { out = out + "," }
+        out = out + "?"
+        i = i + 1
+    }
+    out
+}
+
+// Combina viewer + ids en un solo array de parámetros.
+fn q_prepend_ids(prefix: int, ids: array) -> array {
+    let mut out: array = []
+    out = std::array::push(out, prefix)
+    for id in ids {
+        out = std::array::push(out, id)
+    }
+    out
+}
+
+// Decora un LOTE de posts con 3 consultas totales (en vez de 3 por post):
+// imágenes, likes del viewer y saves del viewer. Escala real del feed.
+fn q_decorate_batch(conn: Postgres, rows: any, viewer: int) -> array {
+    let mut out: array = []
+    if rows == nil { return out }
+    let n = std::collections::length(rows)
+    if n == 0 { return out }
+    let mut ids: array = []
+    for r in rows {
+        ids = std::array::push(ids, std::map::get(r, "id"))
+    }
+    let in_sql = q_in_clause(n)
+    // Imágenes de todos los posts del lote
+    let imgs = db_rows(conn, "SELECT post_id, original_url, thumb_url, position FROM post_images WHERE post_id IN (" + in_sql + ") ORDER BY position ASC", ids)
+    let mut img_map = std::map::new()
+    if imgs != nil {
+        for i in imgs {
+            let pid = std::map::get(i, "post_id")
+            let key = "" + pid
+            let cur = std::map::get(img_map, key)
+            if cur == nil {
+                let mut arr: array = []
+                arr = std::array::push(arr, i)
+                img_map = std::map::insert(img_map, key, arr)
+            } else {
+                let mut arr: array = cur
+                arr = std::array::push(arr, i)
+                img_map = std::map::insert(img_map, key, arr)
+            }
+        }
+    }
+    // Likes del viewer en el lote
+    let like_params = q_prepend_ids(viewer, ids)
+    let likes = db_rows(conn, "SELECT post_id FROM likes WHERE user_id = ? AND post_id IN (" + in_sql + ")", like_params)
+    let mut liked = std::map::new()
+    if likes != nil {
+        for l in likes {
+            liked = std::map::insert(liked, "" + std::map::get(l, "post_id"), true)
+        }
+    }
+    // Saves del viewer en el lote
+    let save_params = q_prepend_ids(viewer, ids)
+    let saves = db_rows(conn, "SELECT post_id FROM saves WHERE user_id = ? AND post_id IN (" + in_sql + ")", save_params)
+    let mut saved = std::map::new()
+    if saves != nil {
+        for s in saves {
+            saved = std::map::insert(saved, "" + std::map::get(s, "post_id"), true)
+        }
+    }
+    // Ensamblar cada post decorado
+    for r in rows {
+        let mut m = std::map::new()
+        m = std::map::insert(m, "id", std::map::get(r, "id"))
+        m = std::map::insert(m, "user_id", std::map::get(r, "user_id"))
+        m = std::map::insert(m, "content", std::map::get(r, "content"))
+        m = std::map::insert(m, "likes_count", std::map::get(r, "likes_count"))
+        m = std::map::insert(m, "comments_count", std::map::get(r, "comments_count"))
+        m = std::map::insert(m, "saves_count", std::map::get(r, "saves_count"))
+        m = std::map::insert(m, "created_at", std::map::get(r, "created_at"))
+        m = std::map::insert(m, "edited_at", std::map::get(r, "edited_at"))
+        m = std::map::insert(m, "author_username", std::map::get(r, "username"))
+        m = std::map::insert(m, "author_display_name", std::map::get(r, "display_name"))
+        m = std::map::insert(m, "author_avatar_url", std::map::get(r, "avatar_url"))
+        m = std::map::insert(m, "author_is_verified", std::map::get(r, "is_verified"))
+        m = std::map::insert(m, "is_mine", std::map::get(r, "user_id") == viewer)
+        let pid = std::map::get(r, "id")
+        let key = "" + pid
+        let imgs_for = std::map::get(img_map, key)
+        if imgs_for == nil {
+            m = std::map::insert(m, "images", [])
+        } else {
+            m = std::map::insert(m, "images", imgs_for)
+        }
+        m = std::map::insert(m, "is_liked", std::map::get(liked, key) == true)
+        m = std::map::insert(m, "is_saved", std::map::get(saved, key) == true)
+        out = std::array::push(out, m)
+    }
+    out
+}
+
+// Posts visibles para `viewer` con bloqueos aplicados (SPEC §4.9).
+fn q_posts_visible(conn: Postgres, viewer: int, author_id: int, page: int, limit: int) -> any {
+    let offset = (page - 1) * limit
+    db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM posts p JOIN users u ON u.id = p.user_id WHERE p.status = 'active' AND p.user_id = ? AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY p.created_at DESC LIMIT ? OFFSET ?", [author_id, viewer, viewer, limit, offset])
+}
+
+fn q_count_posts_visible(conn: Postgres, viewer: int, author_id: int) -> int {
+    db_count(conn, "SELECT COUNT(*) AS count FROM posts p WHERE p.status = 'active' AND p.user_id = ? AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?))", [author_id, viewer, viewer])
+}
+
+fn q_user_profile_map(conn: Postgres, viewer: int, target: any) -> any {
+    let target_id = std::map::get(target, "id")
+    let mut out = std::map::new()
+    out = std::map::insert(out, "id", target_id)
+    out = std::map::insert(out, "username", std::map::get(target, "username"))
+    out = std::map::insert(out, "display_name", std::map::get(target, "display_name"))
+    out = std::map::insert(out, "bio", std::map::get(target, "bio"))
+    out = std::map::insert(out, "link", std::map::get(target, "link"))
+    out = std::map::insert(out, "location", std::map::get(target, "location"))
+    out = std::map::insert(out, "avatar_url", std::map::get(target, "avatar_url"))
+    out = std::map::insert(out, "cover_url", std::map::get(target, "cover_url"))
+    out = std::map::insert(out, "is_verified", std::map::get(target, "is_verified"))
+    out = std::map::insert(out, "followers_count", std::map::get(target, "followers_count"))
+    out = std::map::insert(out, "following_count", std::map::get(target, "following_count"))
+    out = std::map::insert(out, "posts_count", std::map::get(target, "posts_count"))
+    out = std::map::insert(out, "created_at", std::map::get(target, "created_at"))
+    out = std::map::insert(out, "is_private", std::map::get(target, "is_private"))
+    out = std::map::insert(out, "is_following", q_is_following(conn, viewer, target_id))
+    out = std::map::insert(out, "is_blocked", q_is_blocked(conn, viewer, target_id))
+    out = std::map::insert(out, "is_me", viewer == target_id)
+    out
+}
+
+// Sugerencias reales por grafo: gente que sigo no sigue aún, ordenada
+// por relevancia (seguidores), excluyendo bloqueos (SPEC §P4).
+fn q_suggestions(conn: Postgres, viewer: int, limit: int) -> array {
+    let rows = db_rows(conn, "SELECT id, username, display_name, avatar_url, is_verified, followers_count FROM users WHERE id != ? AND status = 'active' AND id NOT IN (SELECT following_id FROM follows WHERE follower_id = ?) AND id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?) AND id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = ?) ORDER BY followers_count DESC LIMIT ?", [viewer, viewer, viewer, viewer, limit])
+    if rows == nil { return [] }
+    rows
+}
+
+fn q_search_users(conn: Postgres, q: string, viewer: int, limit: int) -> array {
+    let like = "%" + q + "%"
+    let rows = db_rows(conn, "SELECT id, username, display_name, avatar_url, is_verified, followers_count FROM users WHERE status = 'active' AND (LOWER(username) LIKE LOWER(?) OR LOWER(display_name) LIKE LOWER(?)) AND id != ? AND id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?) AND id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = ?) ORDER BY followers_count DESC LIMIT ?", [like, like, viewer, viewer, viewer, limit])
+    if rows == nil { return [] }
+    rows
+}
+
+fn q_search_posts(conn: Postgres, q: string, viewer: int, limit: int) -> array {
+    let like = "%" + q + "%"
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified FROM posts p JOIN users u ON u.id = p.user_id WHERE p.status = 'active' AND p.content ILIKE ? AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY p.created_at DESC LIMIT ?", [like, viewer, viewer, limit])
+    if rows == nil { return [] }
+    rows
+}

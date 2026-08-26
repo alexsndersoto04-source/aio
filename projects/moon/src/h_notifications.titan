@@ -1,0 +1,134 @@
+// Moon — Handlers de notificaciones (h_notifications.titan)
+// ============================================================
+// list · mark_read · mark_all_read · get_prefs · set_prefs
+// (SPEC §3 "Notificaciones (tiempo real)")
+
+fn h_notifications_list(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT n.id, n.type, n.is_read, n.content, n.created_at::text AS created_at, n.from_user_id, n.post_id, n.comment_id, fu.username AS from_username, fu.display_name AS from_display_name, fu.avatar_url AS from_avatar_url FROM notifications n LEFT JOIN users fu ON fu.id = n.from_user_id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT ? OFFSET ?", [uid, limit, offset])
+    let mut out: array = []
+    if rows != nil {
+        for r in rows {
+            out = std::array::push(out, n_row_to_map(r))
+        }
+    }
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, std::collections::length(out), page, limit)
+}
+
+fn h_notifications_read(req: int, ctx: map, notification_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?", [notification_id, uid])
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_notifications_read_all(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE notifications SET is_read = TRUE WHERE user_id = ? AND is_read = FALSE", [uid])
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_notifications_prefs(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let row = db_one(conn, "SELECT follow, like, comment, reply, mention, message, system FROM notification_prefs WHERE user_id = ?", [uid])
+    let _c = std::postgres::close(conn)
+    if row == nil {
+        let mut dflt = std::map::new()
+        dflt = std::map::insert(dflt, "follow", true)
+        dflt = std::map::insert(dflt, "like", true)
+        dflt = std::map::insert(dflt, "comment", true)
+        dflt = std::map::insert(dflt, "reply", true)
+        dflt = std::map::insert(dflt, "mention", true)
+        dflt = std::map::insert(dflt, "message", true)
+        dflt = std::map::insert(dflt, "system", true)
+        r_ok(req, dflt)
+        return
+    }
+    r_ok(req, row)
+}
+
+fn h_notifications_prefs_update(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let follow = v_body_bool(body, "follow", true)
+    let like = v_body_bool(body, "like", true)
+    let comment = v_body_bool(body, "comment", true)
+    let reply = v_body_bool(body, "reply", true)
+    let mention = v_body_bool(body, "mention", true)
+    let message = v_body_bool(body, "message", true)
+    let system = v_body_bool(body, "system", true)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "INSERT INTO notification_prefs (user_id, follow, like, comment, reply, mention, message, system) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET follow = EXCLUDED.follow, like = EXCLUDED.like, comment = EXCLUDED.comment, reply = EXCLUDED.reply, mention = EXCLUDED.mention, message = EXCLUDED.message, system = EXCLUDED.system", [uid, follow, like, comment, reply, mention, message, system])
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_metrics(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let conn = db_acquire(pool)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "service", "moon-api")
+    m = std::map::insert(m, "time", std::datetime::now())
+    m = std::map::insert(m, "active_tasks", std::runtime::active_tasks())
+    m = std::map::insert(m, "allocated_bytes", std::runtime::allocated_bytes())
+    m = std::map::insert(m, "fast_path", std::runtime::fast_path_enabled())
+    let vm = std::metrics::snapshot()
+    m = std::map::insert(m, "metrics", vm)
+    if conn != nil {
+        let ok = std::postgres::ping(conn)
+        m = std::map::insert(m, "db", ok)
+        let _c = std::postgres::close(conn)
+    } else {
+        m = std::map::insert(m, "db", false)
+    }
+    r_ok(req, m)
+}
+
+fn h_health(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let mut m = std::map::new()
+    m = std::map::insert(m, "status", "ok")
+    m = std::map::insert(m, "app", "moon")
+    m = std::map::insert(m, "time", std::datetime::now())
+    let conn = db_acquire(pool)
+    if conn != nil {
+        let ok = std::postgres::ping(conn)
+        m = std::map::insert(m, "db", ok)
+        let _c = std::postgres::close(conn)
+    } else {
+        m = std::map::insert(m, "db", false)
+        m = std::map::insert(m, "status", "degraded")
+    }
+    r_ok(req, m)
+}

@@ -1,0 +1,286 @@
+// Moon — Handlers de mensajería (h_messages.titan)
+// ============================================================
+// conversations · start_conversation · thread · send_message ·
+// mark_read · delete_message · react_message (SPEC §3 "Mensajería")
+
+// Id del otro usuario en una conversación.
+fn m_partner_id(conn: Postgres, conversation_id: int, uid: int) -> int {
+    let row = db_one(conn, "SELECT user_a, user_b FROM conversations WHERE id = ?", [conversation_id])
+    if row == nil { return -1 }
+    let a = std::map::get(row, "user_a")
+    let b = std::map::get(row, "user_b")
+    if a == uid { return b }
+    if b == uid { return a }
+    -1
+}
+
+fn m_unread_total(conn: Postgres, uid: int) -> int {
+    db_count(conn, "SELECT COUNT(*) AS count FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.sender_id != ? AND m.status != 'read' AND (c.user_a = ? OR c.user_b = ?)", [uid, uid, uid])
+}
+
+// Privacidad de DM (SPEC §8): all | followers | nobody
+fn m_can_message(conn: Postgres, from_uid: int, to_uid: int) -> bool {
+    let row = db_one(conn, "SELECT dm_privacy FROM users WHERE id = ?", [to_uid])
+    if row == nil { return false }
+    let privacy = std::map::get(row, "dm_privacy")
+    if privacy == "nobody" { return false }
+    if privacy == "followers" {
+        return q_is_following(conn, from_uid, to_uid)
+    }
+    true
+}
+
+// Obtiene (o crea) la conversación entre dos usuarios.
+fn m_get_or_create(conn: Postgres, a: int, b: int) -> int {
+    let row = db_one(conn, "SELECT id FROM conversations WHERE (user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?)", [a, b, b, a])
+    if row != nil { return std::map::get(row, "id") }
+    let _ = db_exec(conn, "INSERT INTO conversations (user_a, user_b) VALUES (?, ?)", [a, b])
+    let row2 = db_one(conn, "SELECT id FROM conversations WHERE (user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?)", [a, b, b, a])
+    if row2 == nil { return -1 }
+    std::map::get(row2, "id")
+}
+
+fn h_messages_conversations(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT c.id, c.last_message, c.last_message_at::text AS last_message_at, c.last_sender_id, u.id AS partner_id, u.username, u.display_name, u.avatar_url, u.is_verified, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.sender_id != ? AND m.status != 'read') AS unread FROM conversations c JOIN users u ON u.id = CASE WHEN c.user_a = ? THEN c.user_b ELSE c.user_a END WHERE (c.user_a = ? OR c.user_b = ?) AND u.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = ?)) ORDER BY c.last_message_at DESC NULLS LAST LIMIT 50", [uid, uid, uid, uid, uid, uid])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok(req, [])
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok(req, rows)
+}
+
+fn h_messages_thread(req: int, ctx: map, conversation_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let partner = m_partner_id(conn, conversation_id, uid)
+    if partner <= 0 {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Conversación no encontrada")
+        return
+    }
+    if q_is_blocked(conn, uid, partner) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "blocked", "No puedes ver esta conversación")
+        return
+    }
+    let partner_row = q_user_public_by_id(conn, partner)
+    // Últimos N mensajes (paginación invertida: los más recientes al final)
+    let offset = (page - 1) * limit
+    let rows = db_rows(conn, "SELECT id, sender_id, content, image_url, status, reaction, created_at::text AS created_at, read_at::text AS read_at FROM messages WHERE conversation_id = ? AND status != 'deleted' ORDER BY created_at DESC LIMIT ? OFFSET ?", [conversation_id, limit, offset])
+    let mut msgs: array = []
+    if rows != nil {
+        // Invertir para orden cronológico ascendente
+        let n = std::collections::length(rows)
+        let mut i = n - 1
+        while i >= 0 {
+            msgs = std::array::push(msgs, rows[i])
+            if i == 0 { break }
+            i = i - 1
+        }
+    }
+    // Marcar como leídos los recibidos (estado real en DB)
+    let _ = db_exec(conn, "UPDATE messages SET status = 'read', read_at = NOW() WHERE conversation_id = ? AND sender_id = ? AND status != 'read'", [conversation_id, partner])
+    let hub = std::map::get(ctx, "hub")
+    let read_ev = "{\"type\":\"read\",\"conversation_id\":" + conversation_id + ",\"user_id\":" + uid + "}"
+    rt_emit(hub, partner, read_ev)
+    let mut out = std::map::new()
+    out = std::map::insert(out, "conversation_id", conversation_id)
+    out = std::map::insert(out, "partner", partner_row)
+    out = std::map::insert(out, "messages", msgs)
+    out = std::map::insert(out, "page", page)
+    out = std::map::insert(out, "limit", limit)
+    let _c = std::postgres::close(conn)
+    r_ok(req, out)
+}
+
+fn h_messages_start(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let user_id = v_body_int(body, "user_id", 0)
+    if user_id <= 0 || user_id == uid {
+        r_err(req, 400, "Destinatario inválido")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let target = q_user_public_by_id(conn, user_id)
+    if target == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Usuario no encontrado")
+        return
+    }
+    if q_is_blocked(conn, uid, user_id) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "blocked", "No puedes iniciar conversación con este usuario")
+        return
+    }
+    if !m_can_message(conn, uid, user_id) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "dm_privacy", "Este usuario no acepta mensajes de ti")
+        return
+    }
+    let conv_id = m_get_or_create(conn, uid, user_id)
+    if conv_id <= 0 {
+        let _c = std::postgres::close(conn)
+        r_err(req, 500, "No se pudo crear la conversación")
+        return
+    }
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "conversation_id", conv_id)
+    r_created(req, m)
+}
+
+fn h_messages_send(req: int, ctx: map, conversation_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    if !rl_by_uid(uid, req, "messages", 60, 60000) { return }
+    let body = r_body(req)
+    if body == nil { return }
+    let content = v_body_str(body, "content", 1, CFG_MESSAGE_MAX_CHARS)
+    if content == nil {
+        r_err(req, 400, "El mensaje debe tener entre 1 y " + CFG_MESSAGE_MAX_CHARS + " caracteres")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let partner = m_partner_id(conn, conversation_id, uid)
+    if partner <= 0 {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Conversación no encontrada")
+        return
+    }
+    if q_is_blocked(conn, uid, partner) {
+        let _c = std::postgres::close(conn)
+        r_err_code(req, 403, "blocked", "No puedes enviar mensajes a este usuario")
+        return
+    }
+    let clean = v_clean_text(content, CFG_MESSAGE_MAX_CHARS)
+    let bad = v_blocked_word(conn, clean)
+    if bad != "" {
+        let _c = std::postgres::close(conn)
+        r_err(req, 400, "El mensaje contiene una palabra bloqueada")
+        return
+    }
+    let _ = db_exec(conn, "INSERT INTO messages (conversation_id, sender_id, content) VALUES (?, ?, ?)", [conversation_id, uid, clean])
+    let row = db_one(conn, "SELECT id, sender_id, content, image_url, status, reaction, created_at::text AS created_at, read_at::text AS read_at FROM messages WHERE conversation_id = ? AND sender_id = ? ORDER BY id DESC LIMIT 1", [conversation_id, uid])
+    let _ = db_exec(conn, "UPDATE conversations SET last_message = ?, last_sender_id = ?, last_message_at = NOW() WHERE id = ?", [clean, uid, conversation_id])
+    r_bump_stats(conn, "new_messages")
+    let hub = std::map::get(ctx, "hub")
+    // Entrega en vivo al receptor (SPEC §P5)
+    let mut ev = std::map::new()
+    ev = std::map::insert(ev, "type", "message")
+    ev = std::map::insert(ev, "conversation_id", conversation_id)
+    ev = std::map::insert(ev, "message", row)
+    rt_emit(hub, partner, std::json::stringify(ev))
+    n_notify(conn, hub, partner, "message", uid, 0, 0, clean)
+    let _c = std::postgres::close(conn)
+    r_created(req, row)
+}
+
+fn h_messages_mark_read(req: int, ctx: map, conversation_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let partner = m_partner_id(conn, conversation_id, uid)
+    if partner <= 0 {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Conversación no encontrada")
+        return
+    }
+    let _ = db_exec(conn, "UPDATE messages SET status = 'read', read_at = NOW() WHERE conversation_id = ? AND sender_id = ? AND status != 'read'", [conversation_id, partner])
+    let hub = std::map::get(ctx, "hub")
+    let ev = "{\"type\":\"read\",\"conversation_id\":" + conversation_id + ",\"user_id\":" + uid + "}"
+    rt_emit(hub, partner, ev)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_messages_delete(req: int, ctx: map, message_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let msg = db_one(conn, "SELECT id, conversation_id, sender_id FROM messages WHERE id = ?", [message_id])
+    if msg == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Mensaje no encontrado")
+        return
+    }
+    let sender = std::map::get(msg, "sender_id")
+    if sender != uid {
+        let _c = std::postgres::close(conn)
+        r_err(req, 403, "Solo puedes eliminar tus mensajes")
+        return
+    }
+    let conv_id = std::map::get(msg, "conversation_id")
+    let _ = db_exec(conn, "UPDATE messages SET status = 'deleted', content = '' WHERE id = ?", [message_id])
+    let hub = std::map::get(ctx, "hub")
+    let partner = m_partner_id(conn, conv_id, uid)
+    let ev = "{\"type\":\"message_deleted\",\"message_id\":" + message_id + ",\"conversation_id\":" + conv_id + "}"
+    rt_emit(hub, partner, ev)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_messages_react(req: int, ctx: map, message_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let reaction = v_body_str(body, "reaction", 1, 16)
+    if reaction == nil {
+        r_err(req, 400, "Reacción requerida")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let msg = db_one(conn, "SELECT id, conversation_id, sender_id FROM messages WHERE id = ? AND status != 'deleted'", [message_id])
+    if msg == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 404, "Mensaje no encontrado")
+        return
+    }
+    let conv_id = std::map::get(msg, "conversation_id")
+    let partner = m_partner_id(conn, conv_id, uid)
+    if partner <= 0 {
+        let _c = std::postgres::close(conn)
+        r_err(req, 403, "No participas en esta conversación")
+        return
+    }
+    let clean = v_clean_text(reaction, 16)
+    let _ = db_exec(conn, "UPDATE messages SET reaction = ? WHERE id = ?", [clean, message_id])
+    let hub = std::map::get(ctx, "hub")
+    let ev = "{\"type\":\"message_reacted\",\"message_id\":" + message_id + ",\"conversation_id\":" + conv_id + ",\"user_id\":" + uid + ",\"reaction\":\"" + clean + "\"}"
+    rt_emit(hub, partner, ev)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}

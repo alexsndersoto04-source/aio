@@ -1,0 +1,119 @@
+// Moon — Handlers de feed y exploración (h_explore.titan)
+// ============================================================
+// feed (seguidos) · trending · for_you · latest · hashtag_page
+// Algoritmo REAL por actividad y grafo social (SPEC §3 "Explorar").
+
+fn hx_feed_rows(conn: Postgres, viewer: int, page: int, limit: int) -> array {
+    let offset = (page - 1) * limit
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified, u.is_private FROM posts p JOIN users u ON u.id = p.user_id WHERE p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) AND (p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ?) ORDER BY p.created_at DESC LIMIT ? OFFSET ?", [viewer, viewer, viewer, viewer, limit, offset])
+    if rows == nil { return [] }
+    rows
+}
+
+fn hx_feed_total(conn: Postgres, viewer: int) -> int {
+    db_count(conn, "SELECT COUNT(*) AS count FROM posts p WHERE p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) AND (p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?) OR p.user_id = ?)", [viewer, viewer, viewer, viewer])
+}
+
+fn hx_trending_total(conn: Postgres, viewer: int) -> int {
+    db_count(conn, "SELECT COUNT(*) AS count FROM posts p WHERE p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?))", [viewer, viewer])
+}
+
+fn hx_for_you_total(conn: Postgres, viewer: int) -> int {
+    db_count(conn, "SELECT COUNT(*) AS count FROM posts p WHERE p.status = 'active' AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ? UNION SELECT following_id FROM follows WHERE follower_id IN (SELECT following_id FROM follows WHERE follower_id = ?) UNION SELECT ?) AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?))", [viewer, viewer, viewer, viewer, viewer])
+}
+
+fn hx_decorate_all(conn: Postgres, rows: array, viewer: int) -> array {
+    q_decorate_batch(conn, rows, viewer)
+}
+
+fn h_feed(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = hx_feed_rows(conn, viewer, page, limit)
+    let total = hx_feed_total(conn, viewer)
+    let out = hx_decorate_all(conn, rows, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, total, page, limit)
+}
+
+// Trending: actividad real con decaimiento temporal.
+// score = (likes*2 + comentarios*3) / (1 + horas desde publicación)
+fn h_trending(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified, u.is_private FROM posts p JOIN users u ON u.id = p.user_id WHERE p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY ((p.likes_count * 2 + p.comments_count * 3)::float8 / (1 + (EXTRACT(EPOCH FROM (NOW() - p.created_at)) / 3600)::float8)) DESC LIMIT ? OFFSET ?", [viewer, viewer, limit, offset])
+    let total = hx_trending_total(conn, viewer)
+    let out = hx_decorate_all(conn, rows, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, total, page, limit)
+}
+
+// Para ti: seguidos + segundos grados (a quién sigue la gente que sigo),
+// ordenado por actividad con decaimiento.
+fn h_for_you(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified, u.is_private FROM posts p JOIN users u ON u.id = p.user_id WHERE p.status = 'active' AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ? UNION SELECT following_id FROM follows WHERE follower_id IN (SELECT following_id FROM follows WHERE follower_id = ?) UNION SELECT ?) AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY ((p.likes_count * 2 + p.comments_count * 3)::float8 / (1 + (EXTRACT(EPOCH FROM (NOW() - p.created_at)) / 3600)::float8)) DESC LIMIT ? OFFSET ?", [viewer, viewer, viewer, viewer, viewer, limit, offset])
+    let total = hx_for_you_total(conn, viewer)
+    let out = hx_decorate_all(conn, rows, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, total, page, limit)
+}
+
+// Latest: lo más reciente de todo el grafo.
+fn h_latest(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let viewer = a_uid(claims)
+    let pag = qs_page(req)
+    let page = pag[0]
+    let limit = pag[1]
+    let offset = (page - 1) * limit
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT p.id, p.user_id, p.content, p.likes_count, p.comments_count, p.saves_count, p.created_at::text AS created_at, p.edited_at::text AS edited_at, u.username, u.display_name, u.avatar_url, u.is_verified, u.is_private FROM posts p JOIN users u ON u.id = p.user_id WHERE p.status = 'active' AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = ? AND b.blocked_id = p.user_id) OR (b.blocker_id = p.user_id AND b.blocked_id = ?)) ORDER BY p.created_at DESC LIMIT ? OFFSET ?", [viewer, viewer, limit, offset])
+    let out = hx_decorate_all(conn, rows, viewer)
+    let _c = std::postgres::close(conn)
+    r_ok_list(req, out, std::collections::length(out), page, limit)
+}
+
+// Hashtags trending: los más usados recientemente.
+fn h_trending_hashtags(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT tag, posts_count, last_used_at::text AS last_used_at FROM hashtags ORDER BY posts_count DESC LIMIT 20", [])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok(req, [])
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok(req, rows)
+}

@@ -1,0 +1,219 @@
+// Moon — Validación y saneamiento (validate.titan)
+// ============================================================
+// Cada endpoint valida tipo, longitud y contenido (SPEC §3 y §4.4).
+// Ninguna entrada del usuario llega a SQL o al HTML sin pasar por acá.
+
+fn v_len(s: string) -> int {
+    std::text::length(s)
+}
+
+// Sanea texto libre: neutraliza etiquetas HTML (anti-XSS) y limita
+// longitud. El texto se guarda escapado y el frontend lo muestra
+// como texto plano.
+fn v_sanitize(s: string, max: int) -> string {
+    let mut out = ""
+    let chars = std::text::length(s)
+    let mut i = 0
+    while i < chars {
+        let ch = std::text::substring(s, i, i + 1)
+        if ch == "<" {
+            out = out + "&lt;"
+        } else if ch == ">" {
+            out = out + "&gt;"
+        } else if ch == "&" {
+            out = out + "&amp;"
+        } else if ch == "\"" {
+            out = out + "&quot;"
+        } else {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    if std::text::length(out) > max {
+        out = std::text::substring(out, 0, max)
+    }
+    out
+}
+
+fn v_clean_text(s: string, max: int) -> string {
+    let mut t = std::text::trim(s)
+    t = v_sanitize(t, max)
+    t
+}
+
+// Lee un string del body validado. Devuelve nil si falta o no cumple
+// el tipo/longitud. Nunca lanza: errores de tipo se tratan como nil.
+fn v_body_str(body: any, key: string, min: int, max: int) -> any {
+    if body == nil { return nil }
+    let val = std::map::get(body, key)
+    if val == nil { return nil }
+    let len_check = std::try::catch(|| std::text::length(val))
+    match len_check {
+        Result::Ok(n) => {
+            if n < min { return nil }
+            if n > max { return nil }
+            val
+        },
+        Result::Err(_) => nil,
+    }
+}
+
+// Convierte a int de forma segura: acepta int, string numérico o bool.
+fn v_to_int(val: any, dflt: int) -> int {
+    if val == nil { return dflt }
+    let parsed = std::try::catch(|| std::text::parse_int(val))
+    match parsed {
+        Result::Ok(opt) => {
+            match opt {
+                Option::Some(n) => { if n < 0 { dflt } else { n } },
+                Option::None => dflt,
+            }
+        },
+        Result::Err(_) => {
+            // No era string: si es número, lo usamos.
+            let n = std::try::catch(|| val + 0)
+            match n {
+                Result::Ok(nn) => { if nn < 0 { dflt } else { nn } },
+                Result::Err(_) => dflt,
+            }
+        }
+    }
+}
+
+fn v_body_int(body: any, key: string, dflt: int) -> int {
+    if body == nil { return dflt }
+    let val = std::map::get(body, key)
+    if val == nil { return dflt }
+    v_to_int(val, dflt)
+}
+
+fn v_body_bool(body: any, key: string, dflt: bool) -> bool {
+    if body == nil { return dflt }
+    let val = std::map::get(body, key)
+    if val == nil { return dflt }
+    let check = std::try::catch(|| if val == true { true } else { false })
+    match check {
+        Result::Ok(b) => b,
+        Result::Err(_) => dflt,
+    }
+}
+
+fn v_is_valid_username(s: string) -> bool {
+    let len = std::text::length(s)
+    if len < 3 || len > 24 { return false }
+    let ok = std::regex::is_match("^[a-zA-Z0-9_.-]+$", s)
+    ok
+}
+
+fn v_is_valid_email(s: string) -> bool {
+    let len = std::text::length(s)
+    if len < 5 || len > 254 { return false }
+    let ok = std::regex::is_match("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", s)
+    ok
+}
+
+fn v_is_valid_password(s: string) -> bool {
+    let len = std::text::length(s)
+    if len < 8 || len > 128 { return false }
+    let mut has_letter = false
+    let mut has_digit = false
+    let mut i = 0
+    while i < len {
+        let ch = std::text::substring(s, i, i + 1)
+        if std::regex::is_match("[a-zA-Z]", ch) { has_letter = true }
+        if std::regex::is_match("[0-9]", ch) { has_digit = true }
+        i = i + 1
+    }
+    has_letter && has_digit
+}
+
+fn v_status_active(status: string) -> bool {
+    status == "active"
+}
+
+// Detecta palabras bloqueadas (moderación automática real, §7).
+// Devuelve la primera palabra bloqueada encontrada o "".
+fn v_blocked_word(conn: Postgres, text: string) -> string {
+    let words = db_rows(conn, "SELECT word FROM blocked_words", [])
+    if words == nil { return "" }
+    let lower = std::text::lowercase(text)
+    for w in words {
+        let word = std::map::get(w, "word")
+        if word == nil { continue }
+        let lower_word = std::text::lowercase(word)
+        if std::text::contains(lower, lower_word) {
+            return word
+        }
+    }
+    ""
+}
+
+// Anti-spam (§7): el mismo autor publicando contenido idéntico en los
+// últimos 5 minutos.
+fn v_is_duplicate(conn: Postgres, user_id: int, text: string) -> bool {
+    let row = db_one(conn, "SELECT id FROM posts WHERE user_id = ? AND content = ? AND created_at > NOW() - INTERVAL '5 minutes' LIMIT 1", [user_id, text])
+    row != nil
+}
+
+// Wrapper defensivo: find_all puede lanzar con patrones inválidos.
+fn v_regex_all(pattern: string, text: string) -> any {
+    let intento = std::try::catch(|| std::regex::find_all(pattern, text))
+    match intento {
+        Result::Ok(arr) => arr,
+        Result::Err(_) => nil,
+    }
+}
+
+// Extrae hashtags (#tag) del texto: array de tags únicos sin '#'.
+fn v_hashtags(text: string) -> array {
+    let matches = v_regex_all("#[A-Za-z0-9_]+", text)
+    if matches == nil { return [] }
+    let mut out: array = []
+    for m in matches {
+        let tag = std::text::lowercase(std::text::replace(m, "#", ""))
+        if std::text::length(tag) > 40 { continue }
+        let mut dup = false
+        for existing in out {
+            if existing == tag { dup = true }
+        }
+        if !dup {
+            out = std::array::push(out, tag)
+        }
+    }
+    out
+}
+
+// Extrae menciones (@usuario) del texto.
+fn v_mentions(text: string) -> array {
+    let matches = v_regex_all("@[A-Za-z0-9_]+", text)
+    if matches == nil { return [] }
+    let mut out: array = []
+    for m in matches {
+        out = std::array::push(out, std::text::replace(m, "@", ""))
+    }
+    out
+}
+
+// Nombre de archivo seguro para imágenes servidas (uuid.ext).
+fn v_safe_filename(name: string) -> bool {
+    let ok = std::regex::is_match("^[a-f0-9-]{8,64}\\.(jpg|jpeg|png|webp)$", name)
+    ok
+}
+
+fn v_media_ext(name: string) -> string {
+    let mut ext = "jpg"
+    if std::text::ends_with(name, ".png") { ext = "png" }
+    if std::text::ends_with(name, ".webp") { ext = "webp" }
+    ext
+}
+
+fn v_media_content_type(ext: string) -> string {
+    if ext == "png" { return "image/png" }
+    if ext == "webp" { return "image/webp" }
+    "image/jpeg"
+}
+
+// Limita y valida un id numérico de path param (string del router).
+fn v_path_id(raw: any, dflt: int) -> int {
+    v_to_int(raw, dflt)
+}

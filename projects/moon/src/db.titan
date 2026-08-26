@@ -1,0 +1,146 @@
+// Moon — Base de datos (db.titan)
+// ============================================================
+// Pool PostgreSQL real con migraciones versionadas (SPEC §1, §P0).
+// Regla crítica del runtime Titan: las columnas TIMESTAMPTZ/DATE
+// NO se pueden leer en filas (tipo no soportado por el driver), así
+// que TODA consulta que las devuelva debe castear con ::text.
+// Las fechas SIEMPRE se comparan/escriben desde SQL (NOW(), INTERVAL).
+
+fn mx_build(version: int, name: string, sql: string) -> map {
+    let mut m = std::map::new()
+    m = std::map::insert(m, "version", version)
+    m = std::map::insert(m, "name", name)
+    m = std::map::insert(m, "sql", sql)
+    m
+}
+
+fn db_migrations() -> array {
+    let mut list: array = []
+    let m1 = mx_build(1, "create_users", "CREATE TABLE users (id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', is_private BOOLEAN NOT NULL DEFAULT FALSE, is_verified BOOLEAN NOT NULL DEFAULT FALSE, twofa_enabled BOOLEAN NOT NULL DEFAULT FALSE, status TEXT NOT NULL DEFAULT 'active', suspend_reason TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'user', followers_count INT NOT NULL DEFAULT 0, following_count INT NOT NULL DEFAULT 0, posts_count INT NOT NULL DEFAULT 0, images_count INT NOT NULL DEFAULT 0, images_bytes BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_login_at TIMESTAMPTZ)")
+    list = std::array::push(list, m1)
+    let m2 = mx_build(2, "create_users_indexes", "CREATE UNIQUE INDEX uq_users_username_lower ON users (LOWER(username)); CREATE UNIQUE INDEX uq_users_email_lower ON users (LOWER(email)); CREATE INDEX ix_users_status ON users (status)")
+    list = std::array::push(list, m2)
+    let m3 = mx_build(3, "create_refresh_tokens", "CREATE TABLE refresh_tokens (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, device TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_used_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ); CREATE INDEX ix_refresh_tokens_user ON refresh_tokens (user_id)")
+    list = std::array::push(list, m3)
+    let m4 = mx_build(4, "create_recovery_tokens", "CREATE TABLE recovery_tokens (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'recovery', code_hash TEXT NOT NULL DEFAULT '', expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ); CREATE INDEX ix_recovery_tokens_user ON recovery_tokens (user_id)")
+    list = std::array::push(list, m4)
+    let m5 = mx_build(5, "create_follows_blocks", "CREATE TABLE follows (follower_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, following_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (follower_id, following_id)); CREATE INDEX ix_follows_following ON follows (following_id); CREATE TABLE blocks (blocker_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, blocked_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (blocker_id, blocked_id)); CREATE INDEX ix_blocks_blocked ON blocks (blocked_id)")
+    list = std::array::push(list, m5)
+    let m6 = mx_build(6, "create_posts", "CREATE TABLE posts (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, edited_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active', likes_count INT NOT NULL DEFAULT 0, comments_count INT NOT NULL DEFAULT 0, saves_count INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_posts_user ON posts (user_id, created_at DESC); CREATE INDEX ix_posts_created ON posts (created_at DESC)")
+    list = std::array::push(list, m6)
+    let m7 = mx_build(7, "create_post_images", "CREATE TABLE post_images (id BIGSERIAL PRIMARY KEY, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, position INT NOT NULL DEFAULT 0, original_url TEXT NOT NULL, thumb_url TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_post_images_post ON post_images (post_id)")
+    list = std::array::push(list, m7)
+    let m8 = mx_build(8, "create_likes_comments", "CREATE TABLE likes (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id)); CREATE INDEX ix_likes_post ON likes (post_id); CREATE TABLE comments (id BIGSERIAL PRIMARY KEY, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id BIGINT REFERENCES comments(id) ON DELETE CASCADE, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_comments_post ON comments (post_id, created_at)")
+    list = std::array::push(list, m8)
+    let m9 = mx_build(9, "create_saves_hashtags", "CREATE TABLE saves (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id)); CREATE INDEX ix_saves_user ON saves (user_id, created_at DESC); CREATE TABLE hashtags (id BIGSERIAL PRIMARY KEY, tag TEXT NOT NULL UNIQUE, posts_count INT NOT NULL DEFAULT 0, last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE TABLE post_hashtags (post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, hashtag_id BIGINT NOT NULL REFERENCES hashtags(id) ON DELETE CASCADE, PRIMARY KEY (post_id, hashtag_id)); CREATE INDEX ix_post_hashtags_tag ON post_hashtags (hashtag_id)")
+    list = std::array::push(list, m9)
+    let m10 = mx_build(10, "create_messages", "CREATE TABLE conversations (id BIGSERIAL PRIMARY KEY, user_a BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, user_b BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, last_message TEXT NOT NULL DEFAULT '', last_sender_id BIGINT, last_message_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (user_a, user_b)); CREATE INDEX ix_conversations_user_a ON conversations (user_a, last_message_at DESC); CREATE INDEX ix_conversations_user_b ON conversations (user_b, last_message_at DESC); CREATE TABLE messages (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'sent', reaction TEXT NOT NULL DEFAULT '', read_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_messages_conversation ON messages (conversation_id, created_at)")
+    list = std::array::push(list, m10)
+    let m11 = mx_build(11, "create_notifications", "CREATE TABLE notifications (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, from_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT REFERENCES posts(id) ON DELETE CASCADE, comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE, content TEXT NOT NULL DEFAULT '', is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_notifications_user ON notifications (user_id, created_at DESC); CREATE TABLE notification_prefs (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, follow BOOLEAN NOT NULL DEFAULT TRUE, like BOOLEAN NOT NULL DEFAULT TRUE, comment BOOLEAN NOT NULL DEFAULT TRUE, reply BOOLEAN NOT NULL DEFAULT TRUE, mention BOOLEAN NOT NULL DEFAULT TRUE, message BOOLEAN NOT NULL DEFAULT TRUE, system BOOLEAN NOT NULL DEFAULT TRUE)")
+    list = std::array::push(list, m11)
+    let m12 = mx_build(12, "create_reports_moderation", "CREATE TABLE reports (id BIGSERIAL PRIMARY KEY, reporter_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id BIGINT NOT NULL, reason TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', resolution TEXT NOT NULL DEFAULT '', resolved_by BIGINT REFERENCES users(id), resolved_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_reports_status ON reports (status, created_at); CREATE TABLE blocked_words (id BIGSERIAL PRIMARY KEY, word TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+    list = std::array::push(list, m12)
+    let m13 = mx_build(13, "create_activity_stats_media", "CREATE TABLE activity_log (id BIGSERIAL PRIMARY KEY, user_id BIGINT, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_activity_log_user ON activity_log (user_id, created_at DESC); CREATE INDEX ix_activity_log_action ON activity_log (action, created_at DESC); CREATE TABLE app_stats (stat_date DATE PRIMARY KEY, new_users INT NOT NULL DEFAULT 0, new_posts INT NOT NULL DEFAULT 0, new_messages INT NOT NULL DEFAULT 0, new_likes INT NOT NULL DEFAULT 0, new_comments INT NOT NULL DEFAULT 0, new_follows INT NOT NULL DEFAULT 0); CREATE TABLE media (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, original_path TEXT NOT NULL, thumb_path TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, width INT NOT NULL DEFAULT 0, height INT NOT NULL DEFAULT 0, bytes BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_media_user ON media (user_id, created_at DESC)")
+    list = std::array::push(list, m13)
+    let m14 = mx_build(14, "add_dm_privacy", "ALTER TABLE users ADD COLUMN IF NOT EXISTS dm_privacy TEXT NOT NULL DEFAULT 'all'")
+    list = std::array::push(list, m14)
+    list
+}
+
+// Crea el pool y aplica las migraciones. Falla con error claro si no
+// puede conectar. Retorna el pool o termina el proceso.
+fn db_init() -> PostgresPool {
+    let url = cfg_database_url()
+    print("Conectando a PostgreSQL...")
+    let pool_opt = std::try::catch(|| std::postgres::pool(url, 10, true))
+    match pool_opt {
+        Result::Ok(p) => {
+            print("Pool PostgreSQL creado (10 conexiones, TLS).")
+            let migraciones = db_migrations()
+            let conn_opt = std::postgres::acquire(p, 8000)
+            match conn_opt {
+                Option::Some(conn) => {
+                    let applied = std::try::catch(|| std::postgres::migrate(conn, migraciones))
+                    match applied {
+                        Result::Ok(count) => {
+                            print("Migraciones aplicadas: " + count)
+                        },
+                        Result::Err(msg) => {
+                            print("FATAL: error aplicando migraciones: " + msg)
+                            std::process::exit(1)
+                        }
+                    }
+                    let _c = std::postgres::close(conn)
+                },
+                Option::None => {
+                    print("FATAL: no se pudo adquirir conexión para migrar.")
+                    std::process::exit(1)
+                }
+            }
+            p
+        },
+        Result::Err(msg) => {
+            print("FATAL: no se pudo conectar a PostgreSQL: " + msg)
+            std::process::exit(1)
+        }
+    }
+}
+
+// ---- Helpers de acceso a BD con manejo de errores real ----
+// El driver lanza error en SQL inválido / conexión caída; estos
+// helpers lo convierten en nil/-1 y lo registran en consola para
+// que un error puntual nunca tumbe el proceso.
+
+fn db_rows(conn: Postgres, sql: string, params: array) -> any {
+    let intento = std::try::catch(|| std::postgres::query(conn, sql, params))
+    match intento {
+        Result::Ok(rows) => rows,
+        Result::Err(msg) => {
+            print("DB query error: " + msg)
+            nil
+        }
+    }
+}
+
+fn db_exec(conn: Postgres, sql: string, params: array) -> int {
+    let intento = std::try::catch(|| std::postgres::execute(conn, sql, params))
+    match intento {
+        Result::Ok(n) => n,
+        Result::Err(msg) => {
+            print("DB exec error: " + msg)
+            -1
+        }
+    }
+}
+
+fn db_one(conn: Postgres, sql: string, params: array) -> any {
+    let rows = db_rows(conn, sql, params)
+    if rows == nil { return nil }
+    if std::collections::length(rows) == 0 { return nil }
+    rows[0]
+}
+
+fn db_acquire(pool: PostgresPool) -> any {
+    let opt = std::postgres::acquire(pool, 5000)
+    match opt {
+        Option::Some(conn) => conn,
+        Option::None => nil,
+    }
+}
+
+fn db_count(conn: Postgres, sql: string, params: array) -> int {
+    let row = db_one(conn, sql, params)
+    if row == nil { return 0 }
+    let mut c = std::map::get(row, "count")
+    if c == nil { return 0 }
+    if c < 0 { return 0 }
+    c
+}
+
+// ---- Utilidades de directorios ----
+fn db_ensure_dirs() {
+    let dirs = [CFG_UPLOADS_DIR, CFG_AVATARS_DIR, CFG_COVERS_DIR, CFG_POSTS_DIR]
+    for d in dirs {
+        let _ = std::try::catch(|| std::fs::create_dir(d))
+    }
+}

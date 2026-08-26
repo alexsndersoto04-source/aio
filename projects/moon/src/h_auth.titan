@@ -1,0 +1,603 @@
+// Moon — Handlers de cuenta y seguridad (h_auth.titan)
+// ============================================================
+// register · login · 2FA · refresh · logout · me · update_me ·
+// change_password · recovery · delete_account · export · sessions
+// (SPEC §3 "Cuenta y seguridad" + SPEC §4 + SPEC §8)
+
+fn ha_device(req: int) -> string {
+    let ua = std::server::header(req, "user-agent")
+    if ua == nil { return "desconocido" }
+    let ua_s = ua
+    if std::text::length(ua_s) > 120 { return std::text::substring(ua_s, 0, 120) }
+    ua_s
+}
+
+fn ha_refresh_from(req: int) -> string {
+    let h = std::server::header(req, "x-refresh-token")
+    if h != nil { return h }
+    let body = std::try::catch(|| std::json::parse(std::server::body_text(req)))
+    match body {
+        Result::Ok(b) => {
+            let val = std::map::get(b, "refresh_token")
+            if val == nil { return "" }
+            val
+        },
+        Result::Err(_) => "",
+    }
+}
+
+fn ha_login_response(conn: Postgres, req: int, uid: int, username: string, role: string, device: string, ua: string, ip: string) -> map {
+    let raw = a_create_session(conn, uid, device, ua, ip)
+    let access = a_issue_access(uid, username, role)
+    let user = q_user_public_by_id(conn, uid)
+    let mut out = std::map::new()
+    out = std::map::insert(out, "access_token", access)
+    out = std::map::insert(out, "refresh_token", raw)
+    out = std::map::insert(out, "token_type", "bearer")
+    out = std::map::insert(out, "expires_in", CFG_ACCESS_TOKEN_TTL_SECONDS)
+    if user != nil {
+        out = std::map::insert(out, "user", user)
+    }
+    out
+}
+
+fn h_auth_register(req: int, ctx: map) {
+    if !rl_by_ip(req, "register", 3, 86400000) { return }
+    let pool = std::map::get(ctx, "pool")
+    let body = r_body(req)
+    if body == nil { return }
+    let username = v_body_str(body, "username", 3, 24)
+    let email = v_body_str(body, "email", 5, 254)
+    let password = v_body_str(body, "password", 8, 128)
+    if username == nil { r_err(req, 400, "Username inválido (3-24 caracteres)"); return }
+    if email == nil { r_err(req, 400, "Email inválido"); return }
+    if password == nil { r_err(req, 400, "Contraseña inválida (8-128 caracteres)"); return }
+    if !v_is_valid_username(username) { r_err(req, 400, "Username solo puede contener letras, números, _, . y -"); return }
+    if !v_is_valid_email(email) { r_err(req, 400, "Email con formato inválido"); return }
+    if !v_is_valid_password(password) { r_err(req, 400, "La contraseña debe tener al menos 8 caracteres, con letras y números"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let existing = db_one(conn, "SELECT id FROM users WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)", [username, email])
+    if existing != nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 409, "El username o el email ya están en uso")
+        return
+    }
+    let pw_hash = std::password::hash_argon2(password)
+    let _ = db_exec(conn, "INSERT INTO users (username, email, password_hash, display_name) VALUES (?, ?, ?, ?)", [username, email, pw_hash, username])
+    let new_user = db_one(conn, "SELECT id, role FROM users WHERE LOWER(username) = LOWER(?)", [username])
+    if new_user == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 500, "No se pudo crear la cuenta")
+        return
+    }
+    let uid = std::map::get(new_user, "id")
+    let role = std::map::get(new_user, "role")
+    n_ensure_prefs(conn, uid)
+    r_bump_stats(conn, "new_users")
+    r_audit(conn, uid, "register", "Nuevo registro", req)
+    let ip = std::server::remote_addr(req)
+    let ua = ha_device(req)
+    let resp = ha_login_response(conn, req, uid, username, role, "web", ua, ip)
+    let _c = std::postgres::close(conn)
+    r_created(req, resp)
+}
+
+fn h_auth_login(req: int, ctx: map) {
+    if !rl_by_ip(req, "login", 10, 900000) { return }
+    let pool = std::map::get(ctx, "pool")
+    let body = r_body(req)
+    if body == nil { return }
+    let login_id = v_body_str(body, "username", 1, 254)
+    let password = v_body_str(body, "password", 1, 128)
+    if login_id == nil || password == nil {
+        r_err(req, 400, "Credenciales incompletas")
+        return
+    }
+    // Lockout progresivo por usuario (SPEC §4.3)
+    let lock_key = "login_user:" + login_id
+    if !rl_check(req, lock_key, 5, 900000) { return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let user = q_user_by_username_or_email(conn, login_id)
+    if user == nil {
+        r_audit(conn, -1, "login_failed", "usuario inexistente: " + login_id, req)
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Credenciales inválidas")
+        return
+    }
+    let uid = std::map::get(user, "id")
+    let hash = std::map::get(user, "password_hash")
+    let valid = std::password::verify_argon2(hash, password)
+    if !valid {
+        r_audit(conn, uid, "login_failed", "contraseña incorrecta", req)
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Credenciales inválidas")
+        return
+    }
+    let status = std::map::get(user, "status")
+    if status == "suspended" {
+        let reason = std::map::get(user, "suspend_reason")
+        let _c = std::postgres::close(conn)
+        let mut m = std::map::new()
+        m = std::map::insert(m, "error", "Tu cuenta está suspendida")
+        m = std::map::insert(m, "code", "account_suspended")
+        m = std::map::insert(m, "reason", reason)
+        r_send(req, 403, "application/json; charset=utf-8", r_headers(), std::json::stringify(m))
+        return
+    }
+    if status == "deleted" {
+        let _c = std::postgres::close(conn)
+        r_err(req, 403, "Esta cuenta fue eliminada")
+        return
+    }
+    let username = std::map::get(user, "username")
+    let role = std::map::get(user, "role")
+    let twofa = std::map::get(user, "twofa_enabled")
+    let ip = std::server::remote_addr(req)
+    let ua = ha_device(req)
+    if twofa == true {
+        // Paso 2: exigir código por email
+        let code = a_new_code()
+        let _ = a_store_code(conn, uid, "2fa", code, 5)
+        a_send_email(username + " <" + std::map::get(user, "email") + ">", "Tu código Moon", "Tu código de verificación es: " + code + "\nCaduca en 5 minutos.")
+        let temp = a_issue_temp(uid, "2fa", 300)
+        let _c = std::postgres::close(conn)
+        let mut m = std::map::new()
+        m = std::map::insert(m, "twofa_required", true)
+        m = std::map::insert(m, "temp_token", temp)
+        m = std::map::insert(m, "message", "Código enviado a tu correo")
+        r_ok(req, m)
+        return
+    }
+    let _ = db_exec(conn, "UPDATE users SET last_login_at = NOW() WHERE id = ?", [uid])
+    r_audit(conn, uid, "login_ok", "", req)
+    let resp = ha_login_response(conn, req, uid, username, role, "web", ua, ip)
+    let _c = std::postgres::close(conn)
+    r_ok(req, resp)
+}
+
+fn h_auth_2fa_verify(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let body = r_body(req)
+    if body == nil { return }
+    let temp = v_body_str(body, "temp_token", 1, 4096)
+    let code = v_body_str(body, "code", 6, 6)
+    if temp == nil || code == nil {
+        r_err(req, 400, "token temporal y código requeridos")
+        return
+    }
+    let claims = a_verify(temp)
+    if claims == nil {
+        r_err(req, 401, "Token temporal inválido o expirado")
+        return
+    }
+    let purpose = std::map::get(claims, "purpose")
+    if purpose != "2fa" {
+        r_err(req, 401, "Token no válido para esta operación")
+        return
+    }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let ok = a_verify_code(conn, uid, "2fa", code)
+    if !ok {
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Código inválido o expirado")
+        return
+    }
+    let user = q_user_by_id(conn, uid)
+    let username = std::map::get(user, "username")
+    let role = std::map::get(user, "role")
+    let _ = db_exec(conn, "UPDATE users SET last_login_at = NOW() WHERE id = ?", [uid])
+    r_audit(conn, uid, "login_2fa", "verificación 2FA exitosa", req)
+    let ip = std::server::remote_addr(req)
+    let ua = ha_device(req)
+    let resp = ha_login_response(conn, req, uid, username, role, "web", ua, ip)
+    let _c = std::postgres::close(conn)
+    r_ok(req, resp)
+}
+
+fn h_auth_refresh(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let raw = ha_refresh_from(req)
+    if raw == "" {
+        r_err(req, 401, "Refresh token requerido (header x-refresh-token)")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let device = ha_device(req)
+    let ip = std::server::remote_addr(req)
+    let out = a_rotate(req, conn, raw, device, device, ip)
+    if out == nil {
+        let _c = std::postgres::close(conn)
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok(req, out)
+}
+
+fn h_auth_logout(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let raw = ha_refresh_from(req)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = a_revoke_session(conn, raw)
+    r_audit(conn, uid, "logout", "", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+// Convierte una fila de users (que incluye password_hash) en el mapa
+// público de "mi cuenta". NUNCA exponer el hash ni datos sensibles.
+fn ha_me_map(user: any) -> any {
+    let mut out = std::map::new()
+    out = std::map::insert(out, "id", std::map::get(user, "id"))
+    out = std::map::insert(out, "username", std::map::get(user, "username"))
+    out = std::map::insert(out, "email", std::map::get(user, "email"))
+    out = std::map::insert(out, "display_name", std::map::get(user, "display_name"))
+    out = std::map::insert(out, "bio", std::map::get(user, "bio"))
+    out = std::map::insert(out, "link", std::map::get(user, "link"))
+    out = std::map::insert(out, "location", std::map::get(user, "location"))
+    out = std::map::insert(out, "avatar_url", std::map::get(user, "avatar_url"))
+    out = std::map::insert(out, "cover_url", std::map::get(user, "cover_url"))
+    out = std::map::insert(out, "is_private", std::map::get(user, "is_private"))
+    out = std::map::insert(out, "is_verified", std::map::get(user, "is_verified"))
+    out = std::map::insert(out, "twofa_enabled", std::map::get(user, "twofa_enabled"))
+    out = std::map::insert(out, "dm_privacy", std::map::get(user, "dm_privacy"))
+    out = std::map::insert(out, "role", std::map::get(user, "role"))
+    out = std::map::insert(out, "status", std::map::get(user, "status"))
+    out = std::map::insert(out, "followers_count", std::map::get(user, "followers_count"))
+    out = std::map::insert(out, "following_count", std::map::get(user, "following_count"))
+    out = std::map::insert(out, "posts_count", std::map::get(user, "posts_count"))
+    out = std::map::insert(out, "created_at", std::map::get(user, "created_at"))
+    out
+}
+
+fn h_auth_me(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let user = q_user_by_id(conn, uid)
+    let _c = std::postgres::close(conn)
+    if user == nil {
+        r_err(req, 404, "Usuario no encontrado")
+        return
+    }
+    r_ok(req, ha_me_map(user))
+}
+
+fn h_auth_update_me(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let display_name = v_body_str(body, "display_name", 0, 40)
+    let bio = v_body_str(body, "bio", 0, 300)
+    let link = v_body_str(body, "link", 0, 300)
+    let location = v_body_str(body, "location", 0, 80)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    if display_name != nil {
+        let clean = v_clean_text(display_name, 40)
+        let _ = db_exec(conn, "UPDATE users SET display_name = ? WHERE id = ?", [clean, uid])
+    }
+    if bio != nil {
+        let clean = v_clean_text(bio, 300)
+        let _ = db_exec(conn, "UPDATE users SET bio = ? WHERE id = ?", [clean, uid])
+    }
+    if link != nil {
+        let clean = v_clean_text(link, 300)
+        let _ = db_exec(conn, "UPDATE users SET link = ? WHERE id = ?", [clean, uid])
+    }
+    if location != nil {
+        let clean = v_clean_text(location, 80)
+        let _ = db_exec(conn, "UPDATE users SET location = ? WHERE id = ?", [clean, uid])
+    }
+    let user = q_user_by_id(conn, uid)
+    let _c = std::postgres::close(conn)
+    if user == nil {
+        r_err(req, 404, "Usuario no encontrado")
+        return
+    }
+    r_ok(req, ha_me_map(user))
+}
+
+fn h_auth_change_password(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let old_pw = v_body_str(body, "current_password", 1, 128)
+    let new_pw = v_body_str(body, "new_password", 8, 128)
+    if old_pw == nil || new_pw == nil {
+        r_err(req, 400, "Contraseña actual y nueva requeridas")
+        return
+    }
+    if !v_is_valid_password(new_pw) {
+        r_err(req, 400, "La nueva contraseña debe tener al menos 8 caracteres, con letras y números")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let user = q_user_by_id(conn, uid)
+    let hash = std::map::get(user, "password_hash")
+    let valid = std::password::verify_argon2(hash, old_pw)
+    if !valid {
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "La contraseña actual es incorrecta")
+        return
+    }
+    let new_hash = std::password::hash_argon2(new_pw)
+    let _ = db_exec(conn, "UPDATE users SET password_hash = ? WHERE id = ?", [new_hash, uid])
+    // Revocar TODAS las demás sesiones (seguridad real)
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL", [uid])
+    r_audit(conn, uid, "change_password", "", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_auth_recovery_request(req: int, ctx: map) {
+    if !rl_by_ip(req, "recovery", 5, 3600000) { return }
+    let pool = std::map::get(ctx, "pool")
+    let body = r_body(req)
+    if body == nil { return }
+    let email = v_body_str(body, "email", 5, 254)
+    if email == nil { r_err(req, 400, "Email requerido"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let user = db_one(conn, "SELECT id, username FROM users WHERE LOWER(email) = LOWER(?)", [email])
+    if user != nil {
+        let uid = std::map::get(user, "id")
+        let username = std::map::get(user, "username")
+        let token = a_store_recovery_token(conn, uid)
+        let link = cfg_api_base() + "/#/reset?token=" + token
+        a_send_email(email, "Recupera tu contraseña Moon", "Hola " + username + ",\n\nUsa este enlace para restablecer tu contraseña (válido 15 minutos):\n" + link + "\n\nSi no lo solicitaste, ignora este correo.")
+        r_audit(conn, uid, "recovery_requested", "", req)
+    }
+    let _c = std::postgres::close(conn)
+    // Respuesta genérica: no revelar si el email existe (anti-enumeración)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "message", "Si el correo existe, recibirás un enlace de recuperación.")
+    r_ok(req, m)
+}
+
+fn h_auth_recovery_verify(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let body = r_body(req)
+    if body == nil { return }
+    let token = v_body_str(body, "token", 10, 512)
+    let new_pw = v_body_str(body, "new_password", 8, 128)
+    if token == nil || new_pw == nil {
+        r_err(req, 400, "Token y nueva contraseña requeridos")
+        return
+    }
+    if !v_is_valid_password(new_pw) {
+        r_err(req, 400, "La contraseña debe tener al menos 8 caracteres, con letras y números")
+        return
+    }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let uid = a_verify_recovery_token(conn, token)
+    if uid <= 0 {
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Enlace inválido o expirado")
+        return
+    }
+    let new_hash = std::password::hash_argon2(new_pw)
+    let _ = db_exec(conn, "UPDATE users SET password_hash = ? WHERE id = ?", [new_hash, uid])
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL", [uid])
+    r_audit(conn, uid, "password_reset", "", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_auth_sessions(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let rows = db_rows(conn, "SELECT id, device, user_agent, ip, created_at::text AS created_at, last_used_at::text AS last_used_at, expires_at::text AS expires_at, revoked_at::text AS revoked_at FROM refresh_tokens WHERE user_id = ? ORDER BY created_at DESC", [uid])
+    if rows == nil {
+        let _c = std::postgres::close(conn)
+        r_ok(req, [])
+        return
+    }
+    let _c = std::postgres::close(conn)
+    r_ok(req, rows)
+}
+
+fn h_auth_revoke_session(req: int, ctx: map, session_id: int) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = ? AND user_id = ?", [session_id, uid])
+    r_audit(conn, uid, "revoke_session", "sesión " + session_id, req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_auth_revoke_all(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL", [uid])
+    r_audit(conn, uid, "logout_all", "", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_auth_delete_account(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let password = v_body_str(body, "password", 1, 128)
+    if password == nil { r_err(req, 400, "Contraseña requerida"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let user = q_user_by_id(conn, uid)
+    let hash = std::map::get(user, "password_hash")
+    let valid = std::password::verify_argon2(hash, password)
+    if !valid {
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Contraseña incorrecta")
+        return
+    }
+    // Borrado real: las claves foráneas en cascada limpian posts,
+    // comentarios, likes, sesiones, notificaciones, etc.
+    let _ = db_exec(conn, "DELETE FROM users WHERE id = ?", [uid])
+    r_audit(conn, uid, "delete_account", "", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_auth_export(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let mut data = std::map::new()
+    let user_row = q_user_by_id(conn, uid)
+    let user_export = if user_row == nil { nil } else { ha_me_map(user_row) }
+    data = std::map::insert(data, "user", user_export)
+    data = std::map::insert(data, "posts", db_rows(conn, "SELECT id, content, created_at::text AS created_at, likes_count, comments_count FROM posts WHERE user_id = ?", [uid]))
+    data = std::map::insert(data, "comments", db_rows(conn, "SELECT id, post_id, content, created_at::text AS created_at FROM comments WHERE user_id = ?", [uid]))
+    data = std::map::insert(data, "likes", db_rows(conn, "SELECT post_id, created_at::text AS created_at FROM likes WHERE user_id = ?", [uid]))
+    data = std::map::insert(data, "saves", db_rows(conn, "SELECT post_id, created_at::text AS created_at FROM saves WHERE user_id = ?", [uid]))
+    data = std::map::insert(data, "follows", db_rows(conn, "SELECT following_id, created_at::text AS created_at FROM follows WHERE follower_id = ?", [uid]))
+    data = std::map::insert(data, "messages", db_rows(conn, "SELECT conversation_id, content, created_at::text AS created_at FROM messages WHERE sender_id = ?", [uid]))
+    data = std::map::insert(data, "exported_at", std::datetime::now())
+    let _c = std::postgres::close(conn)
+    // Descarga como archivo JSON (SPEC §8)
+    let mut headers = r_headers()
+    headers = std::map::insert(headers, "Content-Disposition", "attachment; filename=\"moon-export.json\"")
+    r_send(req, 200, "application/json; charset=utf-8", headers, std::json::stringify(data))
+}
+
+// ---- 2FA (activar/desactivar) ----
+fn h_auth_set_privacy(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let is_private = v_body_bool(body, "is_private", false)
+    let dm_privacy = v_body_str(body, "dm_privacy", 3, 12)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let _ = db_exec(conn, "UPDATE users SET is_private = ? WHERE id = ?", [is_private, uid])
+    if dm_privacy != nil {
+        let p = dm_privacy
+        if p == "all" || p == "followers" || p == "nobody" {
+            let _ = db_exec(conn, "UPDATE users SET dm_privacy = ? WHERE id = ?", [p, uid])
+        }
+    }
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_auth_2fa_enable(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let password = v_body_str(body, "password", 1, 128)
+    if password == nil { r_err(req, 400, "Contraseña requerida"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let user = q_user_by_id(conn, uid)
+    let hash = std::map::get(user, "password_hash")
+    let valid = std::password::verify_argon2(hash, password)
+    if !valid {
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Contraseña incorrecta")
+        return
+    }
+    let code = a_new_code()
+    let _ = a_store_code(conn, uid, "2fa_enable", code, 5)
+    a_send_email(std::map::get(user, "email"), "Activa la verificación en dos pasos Moon", "Tu código para activar 2FA es: " + code + "\nCaduca en 5 minutos.")
+    let temp = a_issue_temp(uid, "2fa_enable", 300)
+    let _c = std::postgres::close(conn)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "temp_token", temp)
+    m = std::map::insert(m, "message", "Código enviado a tu correo")
+    r_ok(req, m)
+}
+
+fn h_auth_2fa_confirm_enable(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let body = r_body(req)
+    if body == nil { return }
+    let temp = v_body_str(body, "temp_token", 1, 4096)
+    let code = v_body_str(body, "code", 6, 6)
+    if temp == nil || code == nil { r_err(req, 400, "Token y código requeridos"); return }
+    let claims = a_verify(temp)
+    if claims == nil { r_err(req, 401, "Token temporal inválido"); return }
+    let purpose = std::map::get(claims, "purpose")
+    if purpose != "2fa_enable" { r_err(req, 401, "Token no válido"); return }
+    let uid = a_uid(claims)
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let ok = a_verify_code(conn, uid, "2fa_enable", code)
+    if !ok {
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Código inválido o expirado")
+        return
+    }
+    let _ = db_exec(conn, "UPDATE users SET twofa_enabled = TRUE WHERE id = ?", [uid])
+    r_audit(conn, uid, "2fa_enabled", "", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}
+
+fn h_auth_2fa_disable(req: int, ctx: map) {
+    let pool = std::map::get(ctx, "pool")
+    let claims = a_require(req)
+    if claims == nil { return }
+    let uid = a_uid(claims)
+    let body = r_body(req)
+    if body == nil { return }
+    let password = v_body_str(body, "password", 1, 128)
+    if password == nil { r_err(req, 400, "Contraseña requerida"); return }
+    let conn = db_acquire(pool)
+    if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
+    let user = q_user_by_id(conn, uid)
+    let hash = std::map::get(user, "password_hash")
+    let valid = std::password::verify_argon2(hash, password)
+    if !valid {
+        let _c = std::postgres::close(conn)
+        r_err(req, 401, "Contraseña incorrecta")
+        return
+    }
+    let _ = db_exec(conn, "UPDATE users SET twofa_enabled = FALSE WHERE id = ?", [uid])
+    r_audit(conn, uid, "2fa_disabled", "", req)
+    let _c = std::postgres::close(conn)
+    r_no_content(req)
+}

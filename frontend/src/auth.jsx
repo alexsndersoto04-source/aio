@@ -1,61 +1,96 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { api } from './api.js';
+// Moon — Contexto de autenticación
+// ============================================================
+// Estado global de sesión con persistencia, login (incluye 2FA),
+// registro, cierre de sesión y conexión del WebSocket real.
 
-const AuthCtx = createContext(null);
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import {
+  api, authApi, saveTokens, clearTokens, saveUser, getUser,
+  getAccessToken, getRefreshToken,
+} from './api.js';
+import { realtime } from './realtime.js';
 
-export function useAuth() {
-  return useContext(AuthCtx);
-}
+const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => getUser());
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const token = localStorage.getItem('moon_token');
-    if (!token) { setLoading(false); return; }
-    api('/api/auth/me')
-      .then(u => setUser(u))
-      .catch(() => { localStorage.removeItem('moon_token'); })
-      .finally(() => setLoading(false));
+  const applySession = useCallback((resp) => {
+    saveTokens(resp.access_token, resp.refresh_token);
+    if (resp.user) {
+      saveUser(resp.user);
+      setUser(resp.user);
+    }
+    realtime.start();
   }, []);
 
-  async function login(username, password) {
-    const data = await api('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
-    localStorage.setItem('moon_token', data.token);
-    // /me devuelve el perfil completo (contadores incluidos); si falla,
-    // usamos lo que trajo el login.
-    try {
-      setUser(await api('/api/auth/me'));
-    } catch {
-      setUser(data.user);
+  const login = useCallback(async (username, password) => {
+    const resp = await authApi.login(username, password);
+    if (resp.twofa_required) {
+      // Necesita código por email: devuelve el paso intermedio.
+      return { twofa: true, temp_token: resp.temp_token };
     }
-  }
+    applySession(resp);
+    return { twofa: false };
+  }, [applySession]);
 
-  async function register(username, email, password) {
-    const data = await api('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ username, email, password }),
-    });
-    localStorage.setItem('moon_token', data.token);
-    try {
-      setUser(await api('/api/auth/me'));
-    } catch {
-      setUser(data.user);
-    }
-  }
+  const verify2fa = useCallback(async (temp_token, code) => {
+    const resp = await authApi.verify2fa(temp_token, code);
+    applySession(resp);
+  }, [applySession]);
 
-  function logout() {
-    localStorage.removeItem('moon_token');
+  const register = useCallback(async (username, email, password) => {
+    const resp = await authApi.register(username, email, password);
+    applySession(resp);
+  }, [applySession]);
+
+  const logout = useCallback(async () => {
+    try { await authApi.logout(); } catch { /* revocar ya es best-effort */ }
+    clearTokens();
     setUser(null);
-  }
+    realtime.stop();
+  }, []);
 
-  return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout }}>
-      {children}
-    </AuthCtx.Provider>
-  );
+  const refreshMe = useCallback(async () => {
+    try {
+      const me = await api.get('/api/auth/me');
+      saveUser(me);
+      setUser(me);
+    } catch { /* sesión inválida la maneja api.js */ }
+  }, []);
+
+  // Al arrancar: si hay refresh token, intenta restaurar sesión.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!getRefreshToken()) { setLoading(false); return; }
+      if (getAccessToken()) {
+        try {
+          const me = await api.get('/api/auth/me');
+          if (!alive) return;
+          saveUser(me);
+          setUser(me);
+          realtime.start();
+        } catch {
+          if (!alive) return;
+          clearTokens();
+          setUser(null);
+        }
+      }
+      if (alive) setLoading(false);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const value = {
+    user, setUser, loading, login, register, logout, verify2fa, refreshMe,
+    isAdmin: !!(user && user.role === 'admin'),
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  return useContext(AuthContext);
 }

@@ -1,78 +1,68 @@
-import React, { useEffect, useState } from 'react';
+// Moon — Navegación izquierda (escritorio)
+
+import React from 'react';
 import { useAuth } from '../auth.jsx';
-import { api } from '../api.js';
+import { useUnread } from '../unread.js';
 import Avatar from './Avatar.jsx';
 import {
-  HomeIcon,
-  CompassIcon,
-  BellIcon,
-  ChatIcon,
-  BookmarkIcon,
-  SettingsIcon,
-  LogoutIcon,
-  MoonLogo,
+  IconHome, IconExplore, IconBell, IconMail, IconUser, IconSettings, IconShield, IconLogout,
 } from './Icons.jsx';
 
-const NAV = [
-  { route: 'feed', label: 'Inicio', Icon: HomeIcon },
-  { route: 'explore', label: 'Explorar', Icon: CompassIcon },
-  { route: 'notifications', label: 'Notificaciones', Icon: BellIcon, badge: true },
-  { route: 'messages', label: 'Mensajes', Icon: ChatIcon },
-  { route: 'saved', label: 'Guardados', Icon: BookmarkIcon },
-  { route: 'settings', label: 'Ajustes', Icon: SettingsIcon },
-];
+function useActive() {
+  const [hash, setHash] = React.useState(window.location.hash);
+  React.useEffect(() => {
+    const h = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', h);
+    return () => window.removeEventListener('hashchange', h);
+  }, []);
+  return hash.replace(/^#/, '').split('/')[1] || 'feed';
+}
 
 export default function LeftNav() {
-  const { user, logout } = useAuth();
-  const [hash, setHash] = useState(window.location.hash || '#/feed');
-  const [unread, setUnread] = useState(0);
+  const { user, logout, isAdmin } = useAuth();
+  const active = useActive();
+  const unread = useUnread();
+  if (!user) return null;
 
-  useEffect(() => {
-    const f = () => setHash(window.location.hash || '#/feed');
-    window.addEventListener('hashchange', f);
-    return () => window.removeEventListener('hashchange', f);
-  }, []);
-
-  useEffect(() => {
-    api('/api/notifications')
-      .then(list => setUnread(list.filter(n => n.is_read == 0).length))
-      .catch(() => {});
-  }, [hash]);
-
-  const active = r => hash.startsWith(`#/${r}`);
+  const item = (to, label, icon, badge) => {
+    const cls = active === to ? 'active' : '';
+    return (
+      <a key={to} href={`#/${to}`} className={cls}>
+        {icon}
+        <span>{label}</span>
+        {badge ? <span className="badge">{badge}</span> : null}
+      </a>
+    );
+  };
 
   return (
-    <aside className="leftnav">
+    <aside className="sidebar">
       <a className="brand" href="#/feed">
-        <MoonLogo size={26} />
-        <span>Moon</span>
+        <span className="dot" />
+        Moon
       </a>
-      <nav className="leftnav-items">
-        {NAV.map(({ route, label, Icon, badge }) => (
-          <a
-            key={route}
-            href={`#/${route}`}
-            className={`nav-item ${active(route) ? 'nav-item-active' : ''}`}
-          >
-            <Icon size={20} />
-            <span>{label}</span>
-            {badge && unread > 0 && (
-              <span className="nav-badge">{unread > 99 ? '99+' : unread}</span>
-            )}
-          </a>
-        ))}
+      <nav className="nav">
+        {item('feed', 'Inicio', <IconHome />)}
+        {item('explore', 'Explorar', <IconExplore />)}
+        {item('notifications', 'Notificaciones', <IconBell />, unread.notifications || null)}
+        {item('messages', 'Mensajes', <IconMail />, unread.messages || null)}
+        {item('profile', 'Perfil', <IconUser />)}
+        {item('settings', 'Ajustes', <IconSettings />)}
+        {isAdmin ? item('admin', 'Admin', <IconShield />) : null}
       </nav>
-      <div className="leftnav-footer">
-        <a className="user-chip" href={`#/profile/${user.id}`}>
-          <Avatar src={user.avatar_url} name={user.display_name || user.username} size="sm" />
-          <div className="user-chip-text">
-            <strong>{user.display_name || user.username}</strong>
-            <span>@{user.username}</span>
-          </div>
-          <button className="icon-btn" title="Cerrar sesión" onClick={logout}>
-            <LogoutIcon size={17} />
+      <div className="nav-foot">
+        <div className="row" style={{ marginBottom: 10 }}>
+          <a href="#/profile" className="row" style={{ flex: 1, minWidth: 0 }}>
+            <Avatar user={user} size="sm" />
+            <span className="grow ellipsis" style={{ fontWeight: 600 }}>
+              {user.display_name || user.username}
+            </span>
+          </a>
+          <button className="btn-ghost btn-sm" onClick={() => logout()} title="Cerrar sesión">
+            <IconLogout />
           </button>
-        </a>
+        </div>
+        <div>© {new Date().getFullYear()} Moon</div>
       </div>
     </aside>
   );

@@ -1,28 +1,37 @@
+// Moon — Login / Registro / 2FA
+
 import React, { useState } from 'react';
 import { useAuth } from '../auth.jsx';
-import { MoonLogo } from '../components/Icons.jsx';
 
-export default function AuthView() {
-  const { login, register } = useAuth();
-  const [mode, setMode] = useState('login');
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+function Field({ label, ...props }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input className="input" {...props} />
+    </div>
+  );
+}
+
+export default function AuthView({ mode }) {
+  const { login, register, verify2fa } = useAuth();
+  const [form, setForm] = useState({ username: '', email: '', password: '', code: '' });
+  const [twofa, setTwofa] = useState(null); // {temp_token}
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  function switchMode(m) {
-    setMode(m);
-    setError('');
-  }
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   async function submit(e) {
     e.preventDefault();
     setError('');
     setBusy(true);
     try {
-      if (mode === 'login') await login(username, password);
-      else await register(username, email, password);
+      if (mode === 'login') {
+        const res = await login(form.username.trim(), form.password);
+        if (res.twofa) setTwofa(res);
+      } else {
+        await register(form.username.trim(), form.email.trim(), form.password);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -30,84 +39,72 @@ export default function AuthView() {
     }
   }
 
+  async function submit2fa(e) {
+    e.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      await verify2fa(twofa.temp_token, form.code.trim());
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  const isLogin = mode === 'login';
+
   return (
-    <div className="auth">
-      <div className="auth-brand">
-        <MoonLogo size={46} />
-        <h1>Moon</h1>
-        <p>
-          Tu comunidad, a la altura.
-          <br />
-          Publica, conecta y sigue lo que importa.
+    <div className="auth-shell">
+      <div className="auth-card">
+        <div className="brand"><span className="dot" />Moon</div>
+        <h2>{twofa ? 'Verificación en dos pasos' : (isLogin ? 'Bienvenido de vuelta' : 'Crea tu cuenta')}</h2>
+        <p className="sub">
+          {twofa
+            ? 'Te enviamos un código por correo. Caduca en 5 minutos.'
+            : isLogin
+              ? 'Inicia sesión para continuar'
+              : 'Únete a la conversación'}
         </p>
-        <ul>
-          <li>Publicaciones con me gusta y comentarios</li>
-          <li>Mensajes directos entre usuarios</li>
-          <li>Notificaciones de tu red</li>
-          <li>Perfiles y tendencias</li>
-        </ul>
-      </div>
-      <div className="auth-panel">
-        <div className="auth-card">
-          <div className="auth-tabs">
-            <button
-              className={`tab ${mode === 'login' ? 'tab-active' : ''}`}
-              onClick={() => switchMode('login')}
-              type="button"
-            >
-              Entrar
-            </button>
-            <button
-              className={`tab ${mode === 'register' ? 'tab-active' : ''}`}
-              onClick={() => switchMode('register')}
-              type="button"
-            >
-              Crear cuenta
-            </button>
-          </div>
-          <form onSubmit={submit}>
-            <label className="field">
-              <span>Usuario</span>
-              <input
-                className="input"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                required
-                minLength={3}
-                autoComplete="username"
-              />
-            </label>
-            {mode === 'register' && (
-              <label className="field">
-                <span>Correo</span>
-                <input
-                  className="input"
-                  type="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  required
-                  autoComplete="email"
-                />
-              </label>
-            )}
-            <label className="field">
-              <span>Contraseña</span>
-              <input
-                className="input"
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                minLength={8}
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-              />
-            </label>
-            {mode === 'register' && <p className="muted xs field-hint">Mínimo 8 caracteres.</p>}
-            {error && <p className="form-error">{error}</p>}
-            <button className="btn btn-primary btn-block" type="submit" disabled={busy}>
-              {busy ? 'Un momento…' : mode === 'login' ? 'Entrar' : 'Crear cuenta'}
+
+        {error ? <div className="alert err">{error}</div> : null}
+
+        {twofa ? (
+          <form onSubmit={submit2fa}>
+            <Field label="Código de 6 dígitos" value={form.code} onChange={set('code')}
+              className="input code-input" maxLength={6} autoFocus inputMode="numeric" required />
+            <button className="btn btn-block btn-lg" disabled={busy}>
+              {busy ? 'Verificando…' : 'Verificar'}
             </button>
           </form>
+        ) : (
+          <form onSubmit={submit}>
+            <Field label="Usuario" value={form.username} onChange={set('username')}
+              autoComplete="username" autoFocus={isLogin} required
+              minLength={3} maxLength={24} />
+            {!isLogin ? (
+              <Field label="Correo electrónico" type="email" value={form.email} onChange={set('email')}
+                autoComplete="email" required />
+            ) : null}
+            <Field label="Contraseña" type="password" value={form.password} onChange={set('password')}
+              autoComplete={isLogin ? 'current-password' : 'new-password'} required
+              minLength={8} maxLength={128} />
+            {isLogin ? (
+              <div style={{ textAlign: 'right', marginBottom: 14 }}>
+                <a href="#/reset" style={{ fontSize: 13.5, fontWeight: 600 }}>¿Olvidaste tu contraseña?</a>
+              </div>
+            ) : null}
+            <button className="btn btn-block btn-lg" disabled={busy}>
+              {busy ? 'Procesando…' : (isLogin ? 'Entrar' : 'Crear cuenta')}
+            </button>
+          </form>
+        )}
+
+        <div className="switch">
+          {isLogin ? (
+            <>¿No tienes cuenta? <a href="#/register">Regístrate</a></>
+          ) : (
+            <>¿Ya tienes cuenta? <a href="#/login">Inicia sesión</a></>
+          )}
         </div>
       </div>
     </div>

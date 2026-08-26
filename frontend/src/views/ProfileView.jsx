@@ -1,127 +1,100 @@
-import React, { useState, useEffect } from 'react';
+// Moon — Mi perfil (posts / guardados)
+
+import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import Avatar from '../components/Avatar.jsx';
 import PostCard from '../components/PostCard.jsx';
-import EmptyState from '../components/EmptyState.jsx';
-import { ChatIcon } from '../components/Icons.jsx';
+import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
+import { timeAgo } from '../utils.js';
+import { IconBookmark } from '../components/Icons.jsx';
 
-export default function ProfileView({ userId }) {
-  const { user: me } = useAuth();
-  const [profile, setProfile] = useState(null);
-  const [isFollowing, setIsFollowing] = useState(false);
+export default function ProfileView({ tab }) {
+  const { user, refreshMe } = useAuth();
+  const [me, setMe] = useState(user);
   const [posts, setPosts] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  async function refresh() {
-    try {
-      const d = await api(`/api/users/${userId}`);
-      setProfile(d.user);
-      setIsFollowing(!!d.is_following);
-      setPosts(await api(`/api/users/${userId}/posts`));
-      setError('');
-    } catch (err) {
-      setProfile(null);
-      setError(err.message);
-    }
-  }
+  const [saved, setSaved] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [section, setSection] = useState(tab === 'saved' ? 'saved' : 'posts');
 
   useEffect(() => {
-    setProfile(null);
-    refresh();
+    api.get('/api/auth/me').then(setMe).catch(() => {});
+    refreshMe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, []);
 
-  async function toggleFollow() {
-    if (busy) return;
-    setBusy(true);
-    setError('');
-    try {
-      await api(isFollowing ? `/api/unfollow/${userId}` : `/api/follow/${userId}`, {
-        method: 'POST',
-      });
-      await refresh();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
+  useEffect(() => {
+    setLoading(true);
+    if (section === 'posts') {
+      api.get(`/api/users/${me?.id}/posts?page=1&limit=20`)
+        .then((res) => setPosts(res.items || []))
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    } else {
+      api.get('/api/me/saved?page=1&limit=20')
+        .then((res) => setSaved(res.items || []))
+        .catch(() => {})
+        .finally(() => setLoading(false));
     }
-  }
+  }, [section, me?.id]);
 
-  if (error && !profile) {
-    return <EmptyState title="No se pudo cargar el perfil" sub={error} />;
-  }
-  if (!profile) {
-    return (
-      <div className="skeleton-list">
-        <div className="card sk" style={{ height: 220 }} />
-        <div className="card sk" />
-      </div>
-    );
-  }
-
-  const isMe = String(me.id) === String(userId);
+  if (!me) return <div className="spinner" />;
 
   return (
     <>
-      <div className="card profile-card">
-        <div className="profile-cover" />
-        <div className="profile-body">
-          <Avatar
-            src={profile.avatar_url}
-            name={profile.display_name || profile.username}
-            size="xl"
-            className="profile-avatar"
-          />
-          <div className="profile-head">
-            <h2>{profile.display_name || profile.username}</h2>
-            <span className="muted">@{profile.username}</span>
-            <div className="profile-actions">
-              {isMe ? (
-                <a className="btn btn-ghost" href="#/settings">
-                  Ajustes
-                </a>
-              ) : (
-                <>
-                  <button
-                    className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`}
-                    onClick={toggleFollow}
-                    disabled={busy}
-                  >
-                    {isFollowing ? 'Siguiendo' : 'Seguir'}
-                  </button>
-                  <a className="btn btn-ghost" href={`#/messages/${userId}`}>
-                    <ChatIcon size={15} /> Mensaje
-                  </a>
-                </>
-              )}
-            </div>
+      <div className="card profile-head" style={{ overflow: 'hidden' }}>
+        {me.cover_url ? (
+          <div className="profile-cover"><img src={me.cover_url} alt="" /></div>
+        ) : <div className="profile-cover" />}
+        <div className="profile-row">
+          <Avatar user={me} size="xl" className="ring" />
+          <div style={{ paddingBottom: 10 }}>
+            <h2 style={{ margin: 0, fontSize: 21, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {me.display_name || me.username} <VerifiedBadge show={me.is_verified} />
+            </h2>
+            <div className="muted">@{me.username}{me.is_private ? ' · 🔒 privada' : ''}</div>
           </div>
-          {profile.bio && <p className="profile-bio">{profile.bio}</p>}
+          <a className="btn btn-outline btn-sm" style={{ marginLeft: 'auto', marginBottom: 10 }} href="#/settings">
+            Editar perfil
+          </a>
+        </div>
+        <div className="profile-info">
+          {me.bio ? <p className="profile-bio">{me.bio}</p> : null}
+          <div className="profile-meta">
+            {me.location ? <>📍 {me.location} · </> : null}
+            Se unió {me.created_at ? timeAgo(me.created_at) : ''} · {me.link ? <a href={me.link.startsWith('http') ? me.link : `https://${me.link}`} target="_blank" rel="noopener noreferrer">{me.link}</a> : null}
+          </div>
           <div className="profile-stats">
-            <span>
-              <strong>{profile.posts_count ?? 0}</strong> Publicaciones
-            </span>
-            <span>
-              <strong>{profile.following_count ?? 0}</strong> Siguiendo
-            </span>
-            <span>
-              <strong>{profile.followers_count ?? 0}</strong> Seguidores
-            </span>
+            <span><b>{me.posts_count}</b><span>publicaciones</span></span>
+            <span><b>{me.followers_count}</b><span>seguidores</span></span>
+            <span><b>{me.following_count}</b><span>siguiendo</span></span>
           </div>
         </div>
       </div>
-      {error && <p className="form-error">{error}</p>}
-      <h3 className="section-title">Publicaciones</h3>
-      {posts.length === 0 ? (
-        <EmptyState
-          title="Sin publicaciones"
-          sub={isMe ? 'Tu contenido aparecerá aquí.' : 'Este usuario aún no ha publicado.'}
-        />
-      ) : (
-        posts.map(p => <PostCard key={p.id} post={p} onRefresh={refresh} />)
-      )}
+
+      <div className="tabs">
+        <button className={section === 'posts' ? 'active' : ''} onClick={() => setSection('posts')}>
+          Publicaciones
+        </button>
+        <button className={section === 'saved' ? 'active' : ''} onClick={() => setSection('saved')}>
+          <IconBookmark /> Guardados
+        </button>
+      </div>
+
+      {loading ? <div className="spinner" /> : null}
+      {!loading && section === 'posts' && posts.length === 0 ? (
+        <div className="card empty">
+          <div className="moon-emoji">🌙</div>
+          <h3>Aún no publicaste nada</h3>
+          <p>Tu primera publicación aparecerá aquí.</p>
+        </div>
+      ) : null}
+      {!loading && section === 'saved' && saved.length === 0 ? (
+        <div className="card empty"><h3>Sin guardados</h3><p>Toca el icono de guardar en cualquier publicación.</p></div>
+      ) : null}
+
+      {(section === 'posts' ? posts : saved).map((post) => (
+        <PostCard key={post.id} post={post} />
+      ))}
     </>
   );
 }

@@ -1,0 +1,54 @@
+// Moon — Notificaciones (notify.titan)
+// ============================================================
+// Todas las notificaciones se insertan en BD (fuente de verdad) y se
+// entregan en vivo vía hub cuando el destinatario está conectado.
+// Las preferencias del usuario se respetan (SPEC §P6).
+
+fn n_prefs_allowed(conn: Postgres, uid: int, ntype: string) -> bool {
+    let row = db_one(conn, "SELECT follow, like, comment, reply, mention, message, system FROM notification_prefs WHERE user_id = ?", [uid])
+    if row == nil { return true }
+    let val = std::map::get(row, ntype)
+    if val == nil { return true }
+    val == true
+}
+
+fn n_ensure_prefs(conn: Postgres, uid: int) {
+    let _ = db_exec(conn, "INSERT INTO notification_prefs (user_id) VALUES (?) ON CONFLICT (user_id) DO NOTHING", [uid])
+}
+
+// Crea la notificación (respetando preferencias) y la emite en vivo.
+fn n_notify(conn: Postgres, hub: int, uid: int, ntype: string, from_uid: int, post_id: int, comment_id: int, content: string) {
+    if uid <= 0 { return }
+    if !n_prefs_allowed(conn, uid, ntype) { return }
+    let _ = db_exec(conn, "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id, content) VALUES (?, ?, ?, ?, ?, ?)", [uid, ntype, from_uid, post_id, comment_id, content])
+    let mut ev = std::map::new()
+    ev = std::map::insert(ev, "type", "notification")
+    ev = std::map::insert(ev, "kind", ntype)
+    ev = std::map::insert(ev, "from_user_id", from_uid)
+    ev = std::map::insert(ev, "post_id", post_id)
+    ev = std::map::insert(ev, "comment_id", comment_id)
+    ev = std::map::insert(ev, "content", content)
+    ev = std::map::insert(ev, "at", std::datetime::now())
+    rt_emit(hub, uid, std::json::stringify(ev))
+}
+
+// Convierte una fila de BD a map público de notificación.
+fn n_row_to_map(row: any) -> any {
+    let mut m = std::map::new()
+    m = std::map::insert(m, "id", std::map::get(row, "id"))
+    m = std::map::insert(m, "type", std::map::get(row, "type"))
+    m = std::map::insert(m, "is_read", std::map::get(row, "is_read"))
+    m = std::map::insert(m, "created_at", std::map::get(row, "created_at"))
+    m = std::map::insert(m, "content", std::map::get(row, "content"))
+    m = std::map::insert(m, "from_user_id", std::map::get(row, "from_user_id"))
+    m = std::map::insert(m, "from_username", std::map::get(row, "from_username"))
+    m = std::map::insert(m, "from_display_name", std::map::get(row, "from_display_name"))
+    m = std::map::insert(m, "from_avatar_url", std::map::get(row, "from_avatar_url"))
+    m = std::map::insert(m, "post_id", std::map::get(row, "post_id"))
+    m = std::map::insert(m, "comment_id", std::map::get(row, "comment_id"))
+    m
+}
+
+fn n_unread_count(conn: Postgres, uid: int) -> int {
+    db_count(conn, "SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND is_read = FALSE", [uid])
+}

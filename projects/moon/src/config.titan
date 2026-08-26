@@ -1,0 +1,96 @@
+// Moon — Configuración (config.titan)
+// ============================================================
+// Toda la configuración viene del entorno. Si faltan las variables
+// críticas el servicio NO arranca (cero valores por defecto, SPEC §4.8).
+//
+// Variables:
+//   DATABASE_URL   (requerida)  postgres://user:pass@host:5432/db
+//   JWT_SECRET     (requerida)  secreto para firmar tokens (>= 32 chars)
+//   PORT           (opcional)   puerto HTTP, por defecto 3000
+//   CORS_ORIGIN    (opcional)   origen permitido; por defecto "*" (dev)
+//   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM (opcionales)
+//   PUBLIC_BASE_URL (opcional)  URL pública de la API para enlaces en emails
+
+fn cfg_get(name: string) -> string {
+    // std::env::get devuelve nil si la variable no existe (no ""),
+    // por eso la variable se anota any y se comprueban ambos casos.
+    let val: any = std::env::get(name)
+    if val == nil { return "" }
+    val
+}
+
+fn cfg_database_url() -> string {
+    let url = cfg_get("DATABASE_URL")
+    if url == "" {
+        print("FATAL: falta la variable DATABASE_URL (PostgreSQL). El servicio no arranca.")
+        std::process::exit(1)
+    }
+    url
+}
+
+fn cfg_jwt_secret() -> string {
+    let secret = cfg_get("JWT_SECRET")
+    if secret == "" {
+        print("FATAL: falta la variable JWT_SECRET. El servicio no arranca.")
+        std::process::exit(1)
+    }
+    if std::text::length(secret) < 32 {
+        print("FATAL: JWT_SECRET debe tener al menos 32 caracteres.")
+        std::process::exit(1)
+    }
+    secret
+}
+
+fn cfg_jwt_secret_bytes() -> bytes {
+    std::encoding::utf8_encode(cfg_jwt_secret())
+}
+
+fn cfg_port() -> string {
+    let port = cfg_get("PORT")
+    if port == "" { return "3000" }
+    port
+}
+
+fn cfg_cors_origin() -> string {
+    let origin = cfg_get("CORS_ORIGIN")
+    if origin == "" {
+        print("AVISO: CORS_ORIGIN no definido; usando '*' (solo desarrollo).")
+        return "*"
+    }
+    origin
+}
+
+fn cfg_public_base_url() -> string {
+    let url = cfg_get("PUBLIC_BASE_URL")
+    if url == "" { return "http://localhost:3000" }
+    url
+}
+
+fn cfg_smtp_configured() -> bool {
+    let host = cfg_get("SMTP_HOST")
+    let user = cfg_get("SMTP_USER")
+    if host == "" || user == "" { return false }
+    true
+}
+
+// Devuelve la URL base de la API para construir enlaces (recuperación,
+// verificación 2FA). En Render se setea PUBLIC_BASE_URL.
+fn cfg_api_base() -> string {
+    cfg_public_base_url()
+}
+
+// Límites globales (constantes del servicio)
+const CFG_MAX_BODY_BYTES: int = 10485760       // 10 MB máx por body HTTP
+const CFG_MAX_UPLOAD_BYTES: int = 8388608      // 8 MB máx por imagen
+const CFG_MAX_IMAGE_DIMENSION: int = 4096      // lado máx en px (re-encode)
+const CFG_POST_MAX_CHARS: int = 2000
+const CFG_COMMENT_MAX_CHARS: int = 600
+const CFG_MESSAGE_MAX_CHARS: int = 2000
+const CFG_MAX_CONNECTIONS: int = 150
+const CFG_ACCESS_TOKEN_TTL_SECONDS: int = 900       // 15 min
+const CFG_REFRESH_TOKEN_TTL_DAYS: int = 7
+const CFG_PAGE_LIMIT_MAX: int = 50
+const CFG_UPLOADS_DIR: string = "uploads"
+const CFG_AVATARS_DIR: string = "uploads/avatars"
+const CFG_COVERS_DIR: string = "uploads/covers"
+const CFG_POSTS_DIR: string = "uploads/posts"
