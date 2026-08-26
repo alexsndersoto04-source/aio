@@ -2,7 +2,7 @@
 // ============================================================
 
 import React, { useRef, useState } from 'react';
-import { api, uploadMedia } from '../api.js';
+import { api, uploadMedia, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import Avatar from './Avatar.jsx';
 import { IconImage, IconX } from './Icons.jsx';
@@ -72,7 +72,7 @@ export default function Composer({ onCreated }) {
         <div className="composer-preview">
           {images.map((img) => (
             <div key={img.id} style={{ position: 'relative' }}>
-              <img src={img.url} alt="" />
+              <img src={imgUrl(img.url)} alt="" />
               <button
                 onClick={() => setImages(images.filter((i) => i.id !== img.id))}
                 style={{ position: 'absolute', top: 4, right: 4, background: 'rgba(23,23,28,.7)', border: 'none', borderRadius: '50%', color: '#fff', width: 24, height: 24, display: 'grid', placeItems: 'center' }}

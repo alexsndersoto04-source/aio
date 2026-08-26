@@ -1,7 +1,7 @@
 // Moon — Perfil de otro usuario (seguir / bloquear / mensaje)
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
@@ -89,7 +89,7 @@ export default function UserView({ id }) {
   return (
     <>
       <div className="card profile-head" style={{ overflow: 'hidden' }}>
-        {profile.cover_url ? <div className="profile-cover"><img src={profile.cover_url} alt="" /></div> : <div className="profile-cover" />}
+        {profile.cover_url ? <div className="profile-cover"><img src={imgUrl(profile.cover_url)} alt="" /></div> : <div className="profile-cover" />}
         <div className="profile-row">
           <Avatar user={profile} size="xl" className="ring" />
           <div style={{ paddingBottom: 10 }}>

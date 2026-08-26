@@ -4,7 +4,7 @@
 // contra el backend real, con optimismo controlado.
 
 import React, { useState } from 'react';
-import { api, ApiError } from '../api.js';
+import { api, ApiError, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { timeAgo, linkify } from '../utils.js';
 import Avatar, { VerifiedBadge } from './Avatar.jsx';
@@ -141,7 +141,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
       {p.images && p.images.length > 0 ? (
         <div className="post-images" style={{ gridTemplateColumns: p.images.length > 1 ? '1fr 1fr' : '1fr' }}>
           {p.images.map((img, i) => (
-            <img key={i} src={img.original_url} alt="" loading="lazy"
+            <img key={i} src={imgUrl(img.original_url)} alt="" loading="lazy"
               style={p.images.length > 1 ? { maxHeight: 240 } : undefined} />
           ))}
         </div>

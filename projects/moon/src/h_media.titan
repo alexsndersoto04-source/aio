@@ -23,12 +23,14 @@ fn hm_random_filename() -> string {
 }
 
 fn hm_write_image(handle: int, dir: string, format: string) -> string {
-    // Devuelve el nombre de archivo público (uuid.ext)
+    // Devuelve el nombre de archivo público (uuid.ext).
+    // OJO: SIEMPRE se escribe plano en uploads/ (el servidor estático
+    // sirve uploads/<nombre>), aunque `dir` se conserva por compatibilidad.
     let name = hm_random_filename() + "." + format
     let encoded = std::try::catch(|| std::image::encode(handle, format))
     match encoded {
         Result::Ok(bytes) => {
-            let path = dir + "/" + name
+            let path = CFG_UPLOADS_DIR + "/" + name
             let _ = std::try::catch(|| std::fs::write_bytes(path, bytes))
             name
         },
@@ -36,7 +38,20 @@ fn hm_write_image(handle: int, dir: string, format: string) -> string {
     }
 }
 
-fn hm_process(kind: string, data: bytes) -> any {
+// URL absoluta de la API (esquema + host), para que las imágenes
+// funcionen aunque el frontend viva en OTRO dominio (Render: moon-web).
+fn hm_media_base(req: int) -> string {
+    let proto: any = std::server::header(req, "x-forwarded-proto")
+    let host: any = std::server::header(req, "host")
+    if host == nil { return "" }
+    let mut scheme = "http"
+    if proto != nil {
+        if proto == "https" { scheme = "https" }
+    }
+    scheme + "://" + host
+}
+
+fn hm_process(kind: string, data: bytes, req: int) -> any {
     // Devuelve map {url, thumb, width, height, bytes} o nil en error.
     let loaded = std::try::catch(|| std::image::load_bytes(data))
     match loaded {
@@ -102,9 +117,10 @@ fn hm_process(kind: string, data: bytes) -> any {
                 Result::Ok(s) => { size = s },
                 Result::Err(_) => {}
             }
+            let base = hm_media_base(req)
             let mut out = std::map::new()
-            out = std::map::insert(out, "url", "/api/media/" + main_name)
-            out = std::map::insert(out, "thumb_url", "/api/media/" + thumb_name)
+            out = std::map::insert(out, "url", base + "/api/media/" + main_name)
+            out = std::map::insert(out, "thumb_url", base + "/api/media/" + thumb_name)
             out = std::map::insert(out, "width", w)
             out = std::map::insert(out, "height", h)
             out = std::map::insert(out, "bytes", size)
@@ -172,7 +188,7 @@ fn h_media_upload(req: int, ctx: map) {
                 r_err_code(req, 429, "quota_bytes", "Llegaste al límite de almacenamiento")
                 return
             }
-            let mut processed: any = std::try::catch(|| hm_process(kind, data))
+            let mut processed: any = std::try::catch(|| hm_process(kind, data, req))
             processed = match processed {
                 Result::Ok(p) => p,
                 Result::Err(_) => nil,

@@ -41,14 +41,21 @@ fn h_posts_create(req: int, ctx: map) {
     if !rl_by_uid(uid, req, "posts", 30, 3600000) { return }
     let body = r_body(req)
     if body == nil { return }
-    let content = v_body_str(body, "content", 1, CFG_POST_MAX_CHARS)
-    if content == nil {
-        r_err(req, 400, "El post debe tener entre 1 y " + CFG_POST_MAX_CHARS + " caracteres")
+    // Se permite texto, imágenes o ambos (el frontend publica con fotos
+    // aunque el texto esté vacío).
+    let content_input = v_body_str(body, "content", 0, CFG_POST_MAX_CHARS)
+    let images = std::map::get(body, "images")
+    if content_input == nil {
+        r_err(req, 400, "Contenido inválido")
+        return
+    }
+    if content_input == "" && images == nil {
+        r_err(req, 400, "El post debe tener contenido o al menos una imagen")
         return
     }
     let conn = db_acquire(pool)
     if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
-    let clean = v_clean_text(content, CFG_POST_MAX_CHARS)
+    let clean = v_clean_text(content_input, CFG_POST_MAX_CHARS)
     // Moderación automática real (SPEC §7)
     let bad = v_blocked_word(conn, clean)
     if bad != "" {
@@ -70,7 +77,6 @@ fn h_posts_create(req: int, ctx: map) {
     }
     let post_id = std::map::get(row, "id")
     // Imágenes opcionales (ids de /api/upload)
-    let images = std::map::get(body, "images")
     if images != nil {
         let mut pos = 0
         for img_id in images {

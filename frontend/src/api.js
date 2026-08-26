@@ -7,6 +7,14 @@
 
 export const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '') || '';
 
+// Convierte URLs relativas de assets de la API (p. ej. /api/media/x.jpg)
+// en absolutas. En dev (API_URL vacío) se queda relativa (proxy de Vite).
+export function imgUrl(u) {
+  if (!u) return u;
+  if (/^(https?:)?\/\//.test(u) || u.startsWith('data:')) return u;
+  return `${API_URL}${u}`;
+}
+
 // URL base para WebSocket (deriva del API_URL)
 export function wsUrl() {
   const base = API_URL || window.location.origin;
@@ -54,7 +62,7 @@ export function getUser() {
 }
 
 // Refresca el token (rotación). Una sola petición concurrente.
-async function refreshAccess() {
+export async function refreshAccess() {
   if (!refreshPromise) {
     refreshPromise = (async () => {
       const refresh = getRefreshToken();

@@ -1,7 +1,7 @@
 // Moon — Aplicación (shell + routing por hash)
 // ============================================================
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './auth.jsx';
 import { parseHash } from './utils.js';
 import LeftNav from './components/LeftNav.jsx';

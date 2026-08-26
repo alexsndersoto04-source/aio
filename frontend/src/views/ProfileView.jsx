@@ -1,7 +1,7 @@
 // Moon — Mi perfil (posts / guardados)
 
 import React, { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
@@ -43,7 +43,7 @@ export default function ProfileView({ tab }) {
     <>
       <div className="card profile-head" style={{ overflow: 'hidden' }}>
         {me.cover_url ? (
-          <div className="profile-cover"><img src={me.cover_url} alt="" /></div>
+          <div className="profile-cover"><img src={imgUrl(me.cover_url)} alt="" /></div>
         ) : <div className="profile-cover" />}
         <div className="profile-row">
           <Avatar user={me} size="xl" className="ring" />

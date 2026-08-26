@@ -1,4 +1,5 @@
 import React from 'react';
+import { imgUrl } from '../api.js';
 import { IconVerified } from './Icons.jsx';
 
 export default function Avatar({ user, size = '', verified = false, className = '' }) {
@@ -7,7 +8,7 @@ export default function Avatar({ user, size = '', verified = false, className = 
   return (
     <div className={cls} title={user?.username || ''}>
       {user?.avatar_url
-        ? <img src={user.avatar_url} alt={user.username} loading="lazy" />
+        ? <img src={imgUrl(user.avatar_url)} alt={user.username} loading="lazy" />
         : <span>{initials}</span>}
     </div>
   );

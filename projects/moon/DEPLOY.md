@@ -136,3 +136,34 @@ Cuando lo hayas probado, dime si quieres que ajustemos algo. Ideas que podemos h
 - Convertir tu cuenta en **admin** (para usar el panel `/admin`).
 - CI en GitHub Actions (build del frontend + checks).
 - Cambios de diseño.
+
+---
+
+## 7. Verificar el proyecto ANTES de desplegar (recomendado)
+
+Si alguna vez vuelves a tener un error de Render, corre estos dos checks
+en tu máquina (necesitas Rust instalado y Node):
+
+```bash
+# 1) Backend Titan: compila de verdad (parsea + tipa + genera código)
+#    (en el root del repo)
+cargo run -q -p titan_cli -- check projects/moon/src/main.titan
+
+# 2) Frontend React: build de producción
+cd frontend
+npm ci
+npm run build
+```
+
+- `CHECK OK` + build sin errores = se puede desplegar a Render con confianza.
+- Si el backend falla, Render mostrará el mensaje de Titan en los **logs de
+  `moon-api`** (el contenedor arranca y muere con ese error en consola).
+
+### Errores comunes de Render (y su causa)
+
+| Síntoma | Causa |
+|---|---|
+| `moon-web` build OK pero la página queda en blanco | Error de runtime de React (p. ej. undefined import). Busca errores en la consola del navegador. |
+| `moon-api` se reinicia con un texto `FATAL: ...` en logs | Titán no arrancó: suele ser `DATABASE_URL`/`JWT_SECRET` faltantes o SQL de migración inválido. |
+| Imágenes que no cargan (404) | `moon-web` y `moon-api` son dominios distintos; la API devuelve URLs absolutas desde v1.0.1. Si usas una build vieja, vuelve a desplegar. |
+

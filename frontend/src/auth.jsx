@@ -6,7 +6,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import {
   api, authApi, saveTokens, clearTokens, saveUser, getUser,
-  getAccessToken, getRefreshToken,
+  getAccessToken, getRefreshToken, refreshAccess,
 } from './api.js';
 import { realtime } from './realtime.js';
 
@@ -60,25 +60,29 @@ export function AuthProvider({ children }) {
     } catch { /* sesión inválida la maneja api.js */ }
   }, []);
 
-  // Al arrancar: si hay refresh token, intenta restaurar sesión.
+  // Al arrancar: si hay refresh token, intenta restaurar sesión
+  // (aunque el access token haya expirado o falte).
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!getRefreshToken()) { setLoading(false); return; }
-      if (getAccessToken()) {
-        try {
-          const me = await api.get('/api/auth/me');
-          if (!alive) return;
-          saveUser(me);
-          setUser(me);
-          realtime.start();
-        } catch {
-          if (!alive) return;
-          clearTokens();
-          setUser(null);
+      try {
+        if (!getAccessToken()) {
+          // Access token ausente/expirado: rotar con el refresh primero.
+          await refreshAccess();
         }
+        const me = await api.get('/api/auth/me');
+        if (!alive) return;
+        saveUser(me);
+        setUser(me);
+        realtime.start();
+      } catch {
+        if (!alive) return;
+        clearTokens();
+        setUser(null);
+      } finally {
+        if (alive) setLoading(false);
       }
-      if (alive) setLoading(false);
     })();
     return () => { alive = false; };
   }, []);
