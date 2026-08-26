@@ -70,6 +70,18 @@ fn db_init() -> PostgresPool {
                             std::process::exit(1)
                         }
                     }
+                    // Bootstrap de admin: si NO existe ningún usuario con
+                    // rol admin, el usuario más antiguo lo recibe (así el
+                    // panel /admin es usable en un despliegue nuevo o en
+                    // una BD que ya tenía usuarios).
+                    let admin_exists = db_one(conn, "SELECT 1 FROM users WHERE role = 'admin' LIMIT 1", [])
+                    if admin_exists == nil {
+                        let any_user = db_one(conn, "SELECT 1 FROM users LIMIT 1", [])
+                        if any_user != nil {
+                            let _ = db_exec(conn, "UPDATE users SET role = 'admin' WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)", [])
+                            print("AVISO: no había admins — el usuario más antiguo ahora es admin.")
+                        }
+                    }
                     let _c = std::postgres::close(conn)
                 },
                 Option::None => {
