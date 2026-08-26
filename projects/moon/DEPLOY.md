@@ -1,5 +1,35 @@
 # Moon — Guía de despliegue en Render (paso a paso)
 
+---
+
+## ⭐ MODO PRUEBA (lo mínimo para que funcione HOY, sin correo)
+
+Solo llenas **3 variables** y todo lo demás lo dejas como está (vacío o como lo puso Render):
+
+**En `moon-api` → Environment:**
+| Variable | Valor exacto |
+|---|---|
+| `CORS_ORIGIN` | `https://moon-web.onrender.com` (tu URL del frontend) |
+| `PUBLIC_BASE_URL` | la misma: `https://moon-web.onrender.com` |
+
+**En `moon-web` → Environment:**
+| Variable | Valor exacto |
+|---|---|
+| `VITE_API_URL` | `https://moon-api.onrender.com` (tu URL del backend) |
+
+1. Clic en cada variable → ícono de lápiz ✏️ → pega el valor → **Save**.
+2. En cada servicio, botón **Save Changes** al final de la página Environment → Render redepliega solo.
+3. Abre `https://moon-api.onrender.com/api/health` → debe decir `{"status":"ok","db":true}`.
+4. Abre `https://moon-web.onrender.com` → crea tu cuenta y prueba.
+
+**¿Y los códigos de 2FA / recuperación sin correo?** Se imprimen en los **logs**:
+`moon-api` → pestaña **Logs** → busca la línea que dice `Email enviado a ...` o
+`EMAIL (SMTP no configurado...)` y justo debajo verás `Tu código de verificación es: XXXXXX`.
+
+Cuando ya hayas probado y quieras emails de verdad, vuelve a esta guía y sigue la sección 3 (Brevo).
+
+---
+
 ## 1. Cuando el blueprint termine, abre tu dashboard de Render
 
 Verás **3 servicios** (los nombres son los que puse en `render.yaml`):
