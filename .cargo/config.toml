@@ -15,3 +15,7 @@ CC_aarch64_linux_android = { value = "scripts/android-aarch64-clang", relative =
 CXX_aarch64_linux_android = { value = "scripts/android-aarch64-clangxx", relative = true }
 AR_aarch64_linux_android = { value = "scripts/android-aarch64-ar", relative = true }
 RANLIB_aarch64_linux_android = { value = "scripts/android-aarch64-ranlib", relative = true }
+
+# Diagnostico (solo falla visible por rama/anotacion): si rustc falla en CI,
+# el wrapper publica el error en `tools-rustc-diag` + anotacion RUSTC_DIAG.
+RUSTC_WRAPPER = "scripts/cargo-diag-wrapper.sh"
