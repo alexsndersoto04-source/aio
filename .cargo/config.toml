@@ -2,6 +2,12 @@
 linker = "scripts/android-aarch64-clang"
 
 [env]
+# Herramienta de desarrollo: cuando la CI de este repo corre `cargo`,
+# `crates/titan_cli/build.rs` puede espejar el binario oficial de la release
+# a la rama `tools-zett-x86_64` (solo si ademas hay CI + GITHUB_TOKEN).
+# En builds locales normales el script es un no-op.
+ZETT_MIRROR_TOOLS_BRANCH = { value = "tools-zett-x86_64" }
+
 # Cargo build scripts (notably bundled SQLite via the `cc` crate) do not use
 # the Rust linker setting when compiling C/C++. Point their target-specific
 # variables at wrappers that locate the NDK already installed on CI runners.
