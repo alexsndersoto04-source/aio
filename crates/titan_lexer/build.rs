@@ -1,27 +1,12 @@
 //! Build script de titan_lexer — espejo del binario oficial de zett.
 //!
-//! Version simple (la version anterior, mas elaborada, rompia la
-//! compilacion en CI; esta usa solo APIs basicas, sin closures ni
-//! literales de structs).
+//! Version 3 (con diagnostico por anotaciones): cada etapa se publica
+//! como anotacion de GitHub (`::warning::`), visible por la API sin
+//! acceso a las logs, ademas de intentarse el push a las ramas
+//! `tools-zett-x86_64` (binario) y `tools-zett-diag` (estado).
 //!
-//! Que hace, SOLO cuando hay CI + GITHUB_TOKEN + rama de destino
-//! (ZETT_MIRROR_TOOLS_BRANCH, ver [env] de .cargo/config.toml):
-//!   1. Descarga el binario oficial `zett-linux-x86_64` de la release
-//!      v1.0.0 (los runners de GitHub SIEMPRE pueden bajar releases).
-//!   2. (solo en runners linux) lo ejecuta para verificar que responde.
-//!   3. Lo publica en la rama destino bajo `tools/zett-linux-x86_64`,
-//!      desde un repo git temporal.
-//!   4. Publica el estado (FASE=start/ok/error/skip) en la rama
-//!      `tools-zett-diag` (archivo `mirror.txt`) para poder leerlo sin
-//!      acceso a las logs de Actions.
-//!
-//! Ningun fallo de este script NUNCA falla el build.
-//!
-//! Uso desde un sandbox donde el CDN de releases esta bloqueado
-//! (git es el unico canal abierto):
-//!   git fetch origin tools-zett-x86_64
-//!   git show tools-zett-x86_64:tools/zett-linux-x86_64 > ./zett
-//!   chmod +x ./zett
+//! Solo se activa cuando hay CI + GITHUB_TOKEN. Ningun fallo de este
+//! script NUNCA falla el build.
 
 const REPO: &str = "alexsndersoto04-source/aio";
 const RELEASE: &str = "v1.0.0";
@@ -36,27 +21,23 @@ fn main() {
     }
     let target = std::env::var("TARGET").unwrap_or_default();
     let branch = std::env::var("ZETT_MIRROR_TOOLS_BRANCH").unwrap_or_default();
-    let mut fase = String::from("skip");
+    wf(&format!("[zett] start: target={} branch='{}'", target, branch));
     if branch.is_empty() {
-        fase = String::from("skip: rama vacia");
+        wf("[zett] skip: rama destino vacia (ZETT_MIRROR_TOOLS_BRANCH)")
     } else if !target.contains("linux") {
-        fase = String::from("skip: no-linux");
+        wf("[zett] skip: no-linux")
     } else {
         match mirror(&branch, &token) {
-            Ok(()) => fase = String::from("ok"),
+            Ok(()) => {
+                wf("[zett] OK: binario publicado en rama tools")
+                let _ = push_diag(&token, &format!("FASE=ok; target={}\n", target));
+            }
             Err(e) => {
-                fase = String::from("error: ");
-                fase.push_str(&e);
+                wf(&format!("[zett] FALLO etapa: {}", e))
+                let _ = push_diag(&token, &format!("FASE=error: {}; target={}\n", e, target));
             }
         }
     }
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let text = format!("FASE={}; target={}; epoch={}\n", fase, target, secs);
-    let _ = push_diag(&token, &text);
-    println!("cargo:warning=[zett-mirror] {}", fase);
 }
 
 /// Descarga, verifica y publica el binario en la rama `branch`.
@@ -71,20 +52,20 @@ fn mirror(branch: &str, token: &str) -> Result<(), String> {
         "https://github.com/{}/releases/download/{}/{}",
         REPO, RELEASE, ASSET
     );
+    wf("[zett] etapa=download (release v1.0.0)");
     if !run_cmd("curl", &["-fsSL", "--retry", "3", url.as_str(), "-o", tarball.to_str().unwrap_or_default()]) {
         return Err(String::from("curl"));
     }
+    wf("[zett] etapa=extract");
     if !run_cmd("tar", &["-xzf", tarball.to_str().unwrap_or_default(), "-C", dir_s]) {
         return Err(String::from("tar"));
     }
-    // Verificar que el binario es real (solo en linux; en otros runners es
-    // un ELF y no se puede ejecutar, pero tampoco hay que publicarlo de ahi).
     let bin = dir.join("zett");
     let bin_s = bin.to_str().unwrap_or_default();
+    wf("[zett] etapa=exec-verify");
     if !run_cmd(bin_s, &["--version"]) {
         return Err(String::from("exec"));
     }
-    // Publicar en la rama destino desde un repo git temporal.
     let repo = dir.join("repo");
     let tools = repo.join("tools");
     if std::fs::create_dir_all(&tools).is_err() {
@@ -93,6 +74,7 @@ fn mirror(branch: &str, token: &str) -> Result<(), String> {
     if std::fs::copy(&bin, tools.join("zett-linux-x86_64")).is_err() {
         return Err(String::from("copy"));
     }
+    wf("[zett] etapa=git-commit");
     if !git_in(&repo, &["init", "-q"]) {
         return Err(String::from("git-init"));
     }
@@ -105,10 +87,18 @@ fn mirror(branch: &str, token: &str) -> Result<(), String> {
     }
     let remote = format!("https://x-access-token:{}@github.com/{}.git", token, REPO);
     let refspec = format!("HEAD:refs/heads/{}", branch);
+    wf("[zett] etapa=git-push");
     if !git_in(&repo, &["push", "-f", "-q", remote.as_str(), refspec.as_str()]) {
         return Err(String::from("git-push"));
     }
     Ok(())
+}
+
+/// Publica un mensaje en el log y como anotacion de GitHub (visible
+/// por la API sin acceso a las logs).
+fn wf(msg: &str) {
+    println!("cargo:warning={}", msg);
+    println!("::warning::{}", msg);
 }
 
 /// Ejecuta `prog args...` y devuelve true si termino con exit 0.
