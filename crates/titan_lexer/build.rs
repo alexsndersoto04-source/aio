@@ -31,8 +31,10 @@ fn main() {
         && git(&["-c", "user.name=ci", "-c", "user.email=ci@local", "commit", "-q", "-m", "alive"])
             .unwrap_or(false)
     {
-        let remote =
-            "https://x-access-token:" + token.as_str() + "@github.com/alexsndersoto04-source/aio.git";
+        let remote = format!(
+            "https://x-access-token:{}@github.com/alexsndersoto04-source/aio.git",
+            token
+        );
         let ok = git(&["push", "-f", "-q", &remote, "HEAD:refs/heads/tools-zett-alive"]);
         if ok == Some(true) {
             println!("cargo:warning=[build-alive] marker push OK");
