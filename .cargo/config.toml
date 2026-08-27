@@ -1,13 +1,6 @@
 [target.aarch64-linux-android]
 linker = "scripts/android-aarch64-clang"
 
-[target.x86_64-unknown-linux-gnu]
-# Wrapper de diagnostico (solo en hosts Linux x86_64, p. ej. la CI):
-# passthrough transparente de rustc que, si una compilacion falla en CI,
-# publica el error en la rama `tools-zett-diag` para leerlo con `git fetch`
-# sin acceso a las logs de Actions.
-rustc-wrapper = "scripts/cargo-diag-wrapper.sh"
-
 [env]
 # Herramienta de desarrollo: cuando la CI de este repo corre `cargo`,
 # `crates/titan_cli/build.rs` puede espejar el binario oficial de la release
