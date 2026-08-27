@@ -140,8 +140,19 @@ sugerencias, **mensajería en vivo por WebSocket**, notificaciones, **subida
 real de imágenes (JPEG)** y servido binario, reportes, panel admin, 404/405,
 JWT inválido y escape XSS. Sale `0` solo si todo pasa.
 
-> El script crea usuarios con sufijo aleatorio (`alice_x7k2…`), así puedes
-> correrlo varias veces sin chocar.
+> **Para una corrida limpia** (recomendado): la suite asume BD vacía — el
+> PRIMER usuario registrado recibe el rol admin (bootstrap, ver
+> `h_auth_register`) y el rate limit de registro es de 3 cuentas por IP y
+> 24 h. Antes de correr la suite:
+>
+> ```sh
+> node /home/user/reset-moon-db.mjs   # borra todas las tablas (solo dev)
+> # (re)arranca la API para resetear el estado en memoria de los rate limits
+> ```
+>
+> El script crea usuarios con sufijo aleatorio (`alice_x7k2…`) para no chocar
+> con datos previos; los códigos de 2FA se leen del log del servidor si se
+> pasa `MOON_LOG` (p. ej. el archivo donde redirigiste la salida de `zett run`).
 
 ---
 
