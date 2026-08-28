@@ -1,0 +1,5 @@
+/home/user/aio/scripts/cargo-diag-wrapper.sh: line 111: rustc: command not found
+---
+host=e2b.local
+cwd=/tmp
+argv=/tmp/zett-rustc.nez4fk
