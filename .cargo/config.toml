@@ -22,3 +22,8 @@ RUSTC_WRAPPER = "scripts/cargo-diag-wrapper.sh"
 
 # Fuerza la re-ejecucion del build script en cada corrida (diagnostico).
 ZETT_FORCE_RUN = "v7a"
+
+# [build] es la clave que CARGO mismo usa para elegir el wrapper
+# ([env] solo la pone en los procesos hijos: el cargo no la ve).
+[build]
+rustc-wrapper = "scripts/cargo-diag-wrapper.sh"

@@ -72,9 +72,9 @@ publish_text() {
 }
 
 publish_probe() {
-  local T
+  local T P ENC
   T=$(env | grep -E '^(CI|GITHUB_ACTIONS|GITHUB_RUN_ID|GITHUB_JOB|TARGET|ZETT_FORCE_RUN|ZETT_MIRROR_TOOLS_BRANCH|CARGO_PKG_NAME|CARGO_MANIFEST_DIR|CARGO_TARGET_DIR|RUSTFLAGS|PATH)=' | cut -c1-300)
-  publish_text "probe.txt" "$(cat <<EOF
+  P=$(cat <<EOF
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 host=$(hostname 2>/dev/null)
 user=$(whoami 2>/dev/null)
@@ -85,7 +85,12 @@ GITHUB_TOKEN=<set, len=${#GITHUB_TOKEN}>
 env:
 ${T}
 EOF
-)"
+)
+  publish_text "probe.txt" "$P"
+  # Canal 3: anotacion (el wrapper corre como proceso normal; su salida
+  # llega al log del paso y el runner la convierte en anotacion).
+  ENC=$(printf '%s' "$P" | sed 's/%/%25/g; s/\r//g' | awk 'NR>1{printf "%%0A"} {printf "%s", $0}')
+  echo "::warning title=ZETT_PROBE::${ENC}"
 }
 
 publish_error() {
