@@ -1,17 +1,17 @@
 #!/bin/bash
-# Wrapper de diagnostico + transporte para rustc en CI.
-# POLIGLOTA: en Windows (batch) es transparente (solo invoca rustc);
-# en Unix (bash) hace probe/error/mirror. La linea con los dos puntos
-# y la comilla abierta hace que bash trague la seccion batch como
-# argumento del builtin no-op; en batch esa linea es una etiqueta.
 : "
 @echo off
-rem Windows: passthrough (cargo pasa la ruta de rustc como 1er arg)
+echo ::warning title=ZETT_LIFE::windows-batch-passthrough
 shift
 rustc %*
 exit /b %errorlevel%
 "
-# ---- seccion Unix (bash) ----
+# Wrapper de diagnostico + transporte para rustc en CI (Unix).
+# POLIGLOTA: las lineas entre la comilla (linea 2) y su cierre (linea 8)
+# son el batch de Windows (passthrough transparente); bash las traga como
+# argumento del builtin ":" porque la comilla de la linea 2 se cierra ahi.
+# En Windows, esa linea es una etiqueta de batch (se salta) y la seccion
+# batch se ejecuta: shift descarta la ruta de rustc (protocolo wrapper).
 if [ -n "$CI" ]; then
   if [ ! -f "/tmp/zett-wp-life.${GITHUB_RUN_ID:-x}" ]; then
     touch "/tmp/zett-wp-life.${GITHUB_RUN_ID:-x}" 2>/dev/null
