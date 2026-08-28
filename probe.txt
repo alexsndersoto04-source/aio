@@ -1,1 +1,10 @@
-hola
+ts=2026-08-28T01:30:05Z
+host=e2b.local
+user=user
+cwd=/tmp
+git=git version 2.39.5
+pkg=?
+GITHUB_TOKEN=<set, len=24>
+env:
+PATH=/tmp/fakerustc-ok:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+CI=1
