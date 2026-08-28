@@ -7,11 +7,27 @@
 // (404/405/rate limit/CORS).
 //
 // Uso:
-//   API_BASE=http://127.0.0.1:3000 node projects/moon/test/e2e.mjs
+//   API_BASE=http://127.0.0.1:3000 MOON_LOG=/tmp/moon-server.log \
+//     node projects/moon/test/e2e.mjs
 //
-// Salida: resumen PASS/FAIL por prueba; exit code 0 solo si todo pasa.
+// Los tests 2FA leen el código del LOG del servidor (sin SMTP el correo
+// se imprime en consola). Salida: resumen PASS/FAIL; exit 0 si todo pasa.
+
+import { readFileSync } from 'node:fs';
 
 const API_BASE = (process.env.API_BASE || 'http://127.0.0.1:3000').replace(/\/$/, '');
+const LOG_FILE = process.env.MOON_LOG || '/tmp/moon-server.log';
+
+// Último código de 6 dígitos que coincide con `re` en el log del servidor.
+function lastLogCode(re) {
+  try {
+    const log = readFileSync(LOG_FILE, 'utf8');
+    const m = [...log.matchAll(re)];
+    return m.length ? m[m.length - 1][1] : null;
+  } catch {
+    return null;
+  }
+}
 
 let passed = 0;
 let failed = 0;
@@ -150,6 +166,36 @@ async function main() {
   // sin token
   const noAuth = await req('GET', '/api/auth/me');
   check('sin token -> 401', noAuth.status === 401, `status=${noAuth.status}`);
+
+  // ---------- 2FA (código leído del log del servidor) ----------
+  console.log('[2fa]');
+  const en = await req('POST', '/api/auth/2fa/enable', { token: lt, body: { password: 'Secret123!' } });
+  check('2fa enable -> 200 + temp_token', en.status === 200 && en.json && !!en.json.temp_token, `status=${en.status} ${en.text.slice(0, 160)}`);
+  const enBad = await req('POST', '/api/auth/2fa/enable', { token: lt, body: { password: 'Mala12345!' } });
+  check('2fa enable con contraseña mala -> 401', enBad.status === 401, `status=${enBad.status}`);
+  const code1 = lastLogCode(/Tu código para activar 2FA es: (\d{6})/);
+  check('código 2FA visible en el log del servidor', /^\d{6}$/.test(code1 || ''), 'no se encontró "Tu código para activar 2FA es: XXXXXX" en ' + LOG_FILE);
+  const confBad = await req('POST', '/api/auth/2fa/confirm', { body: { temp_token: en.json && en.json.temp_token, code: '000000' } });
+  check('2fa confirm con código malo -> 401', confBad.status === 401, `status=${confBad.status}`);
+  const conf = await req('POST', '/api/auth/2fa/confirm', { body: { temp_token: en.json && en.json.temp_token, code: code1 } });
+  check('2fa confirm -> 204', conf.status === 204, `status=${conf.status} ${conf.text.slice(0, 120)}`);
+  const me3 = await req('GET', '/api/auth/me', { token: lt });
+  check('me.twofa_enabled = true', /"twofa_enabled":\s*true/.test(me3.text), me3.text.slice(0, 200));
+
+  // login ahora exige el segundo factor
+  const l2 = await req('POST', '/api/auth/login', { body: { email: `${u1}@moon.test`, password: 'Secret123!' } });
+  check('login con 2fa activo -> twofa_required + temp_token', l2.status === 200 && l2.json && l2.json.twofa_required === true && !!l2.json.temp_token, `status=${l2.status} ${l2.text.slice(0, 160)}`);
+  const code2 = lastLogCode(/Tu código de verificación es: (\d{6})/);
+  check('código de login 2FA visible en el log', /^\d{6}$/.test(code2 || ''), 'no se encontró "Tu código de verificación es: XXXXXX" en ' + LOG_FILE);
+  const ver = await req('POST', '/api/auth/2fa/verify', { body: { temp_token: l2.json && l2.json.temp_token, code: code2 } });
+  check('2fa verify -> 200 + access_token', ver.status === 200 && ver.json && !!(ver.json.access_token || ver.json.access), `status=${ver.status} ${ver.text.slice(0, 160)}`);
+  const verBad = await req('POST', '/api/auth/2fa/verify', { body: { temp_token: 'temporal.malo.x', code: '123456' } });
+  check('2fa verify con token malo -> 401', verBad.status === 401, `status=${verBad.status}`);
+
+  const dis = await req('POST', '/api/auth/2fa/disable', { token: lt, body: { password: 'Secret123!' } });
+  check('2fa disable -> 204', dis.status === 204, `status=${dis.status} ${dis.text.slice(0, 120)}`);
+  const l3 = await req('POST', '/api/auth/login', { body: { email: `${u1}@moon.test`, password: 'Secret123!' } });
+  check('login normal tras desactivar 2fa', l3.status === 200 && !(l3.json && l3.json.twofa_required === true) && !!(l3.json && (l3.json.access_token || l3.json.access)), `status=${l3.status} ${l3.text.slice(0, 160)}`);
 
   // ---------- Perfil ----------
   console.log('[perfil]');
