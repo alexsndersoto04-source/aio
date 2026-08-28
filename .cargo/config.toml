@@ -19,3 +19,6 @@ RANLIB_aarch64_linux_android = { value = "scripts/android-aarch64-ranlib", relat
 # Diagnostico (solo falla visible por rama/anotacion): si rustc falla en CI,
 # el wrapper publica el error en `tools-rustc-diag` + anotacion RUSTC_DIAG.
 RUSTC_WRAPPER = "scripts/cargo-diag-wrapper.sh"
+
+# Fuerza la re-ejecucion del build script en cada corrida (diagnostico).
+ZETT_FORCE_RUN = "v7a"
