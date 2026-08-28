@@ -41,25 +41,32 @@ curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/z
 
 ## 3. Base de datos local
 
-```sh
-# Ejemplo con Postgres local (ajusta usuario/pass)
-sudo -u postgres createuser moon
-sudo -u postgres createdb -O moon moon
+**Método reproducibles (recomendado)** — Postgres embebido en `projects/moon/ops/pg/`:
 
-# O con un usuario y password:
-createuser moon
-psql -c "ALTER USER moon WITH PASSWORD 'moon_pass_local';"
-createdb -O moon moon
+```sh
+cd projects/moon
+bash ops/setup-local.sh     # instala el paquete si falta, crea cluster + BD "moon"
+```
+
+Es idempotente: lo puedes ejecutar siempre que quieras; deja Postgres
+corriendo en `127.0.0.1:5432` (usuario `moon`, sin password local) e
+imprime la URL a usar. Alternativas de herramientas de BD:
+
+```sh
+node ops/db.mjs create-db    # crea la BD moon si no existe
+node ops/db.mjs reset        # borra todas las tablas (dev)
+node ops/db.mjs query "SELECT count(*) FROM users"
 ```
 
 URL que usará la API:
 
 ```
-postgres://moon:moon_pass_local@127.0.0.1:5432/moon
+postgres://moon@127.0.0.1:5432/moon
 ```
 
-Las **14 migraciones** las aplica la API sola al arrancar
-(`db_init` → `std::postgres::migrate`), no hay paso manual.
+Las **migraciones** las aplica la API sola al arrancar (`db_init`),
+no hay paso manual. (Si tienes tu propio Postgres, crea el usuario/BD
+que quieras y ajusta `DATABASE_URL`.)
 
 ---
 
@@ -67,18 +74,13 @@ Las **14 migraciones** las aplica la API sola al arrancar
 
 ```sh
 cd projects/moon
-
-# Variables (mínimo: DATABASE_URL + JWT_SECRET de >=32 chars)
-export DATABASE_URL="postgres://moon:moon_pass_local@127.0.0.1:5432/moon"
-export JWT_SECRET="$(head -c 48 /dev/urandom | base64)"
-export PORT=3000
-# Opcionales:
-# export CORS_ORIGIN="*"            (dev; en prod: la URL del frontend)
-# export PUBLIC_BASE_URL="http://localhost:3000"
-# export SMTP_HOST=... SMTP_PORT=... SMTP_USER=... SMTP_PASS=... SMTP_FROM=...
-
-../../zett run src/main.titan
+bash ops/start-api.sh        # envs saneos + JWT_SECRET persistente + zett run
 ```
+
+El script espera el binario en `projects/moon/bin/zett` (descárgalo con
+`bash ops/fetch-zett.sh`). También puedes exportar las variables a mano
+(mínimo `DATABASE_URL` + `JWT_SECRET` ≥ 32 chars; opcionales `CORS_ORIGIN`,
+`PUBLIC_BASE_URL`, `SMTP_*`) y ejecutar `bin/zett run src/main.titan`.
 
 Arranque correcto se ve así:
 
@@ -140,19 +142,23 @@ sugerencias, **mensajería en vivo por WebSocket**, notificaciones, **subida
 real de imágenes (JPEG)** y servido binario, reportes, panel admin, 404/405,
 JWT inválido y escape XSS. Sale `0` solo si todo pasa.
 
-> **Para una corrida limpia** (recomendado): la suite asume BD vacía — el
-> PRIMER usuario registrado recibe el rol admin (bootstrap, ver
-> `h_auth_register`) y el rate limit de registro es de 3 cuentas por IP y
-> 24 h. Antes de correr la suite:
+> **Corrida limpia (recomendada)**: la suite asume BD vacía — el PRIMER
+> usuario registrado recibe el rol admin (bootstrap) y el rate limit de
+> registro es de 3 cuentas por IP y 24 h. Antes de correr:
 >
 > ```sh
-> node /home/user/reset-moon-db.mjs   # borra todas las tablas (solo dev)
-> # (re)arranca la API para resetear el estado en memoria de los rate limits
+> bash ops/reset-db.sh         # borra todas las tablas (solo dev)
+> # (re)arranca la API: los rate limits viven en memoria y se resetean
+> bash ops/start-api.sh > /tmp/moon-server.log 2>&1 &
+> sleep 3
+> API_BASE=http://127.0.0.1:3000 MOON_LOG=/tmp/moon-server.log \
+>   node projects/moon/test/e2e.mjs
 > ```
 >
-> El script crea usuarios con sufijo aleatorio (`alice_x7k2…`) para no chocar
-> con datos previos; los códigos de 2FA se leen del log del servidor si se
-> pasa `MOON_LOG` (p. ej. el archivo donde redirigiste la salida de `zett run`).
+> La suite crea usuarios con sufijo aleatorio (`alice_x7k2…`). Los tests
+> de **2FA leen el código del log del servidor** (`MOON_LOG`): sin SMTP,
+> el API imprime `Tu código para activar 2FA es: XXXXXX` y
+> `Tu código de verificación es: XXXXXX` en consola.
 
 ---
 
