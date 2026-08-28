@@ -32,3 +32,9 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 
+
+# Moon: artefactos locales (binario, secretos, cluster postgres)
+projects/moon/bin/
+projects/moon/ops/.jwt-secret
+projects/moon/pg/data/
+projects/moon/pg/pg.log
