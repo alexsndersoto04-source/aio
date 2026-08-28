@@ -6,7 +6,8 @@
 # argumento del builtin no-op; en batch esa linea es una etiqueta.
 : "
 @echo off
-rem Windows: sin diagnostico, passthrough directo a rustc
+rem Windows: passthrough (cargo pasa la ruta de rustc como 1er arg)
+shift
 rustc %*
 exit /b %errorlevel%
 "
@@ -15,7 +16,7 @@ if [ -n "$CI" ]; then
   if [ ! -f "/tmp/zett-wp-life.${GITHUB_RUN_ID:-x}" ]; then
     touch "/tmp/zett-wp-life.${GITHUB_RUN_ID:-x}" 2>/dev/null
     MKT=$( { mktemp /tmp/zett-wp-life-test.XXXXXX >/dev/null 2>&1 && echo ok; } || echo FAIL )
-    echo "::warning title=ZETT_LIFE::v17 bash=$BASH_VERSION host=$(hostname 2>/dev/null) ci=${CI:-no} token=${GITHUB_TOKEN:+si} ntoken=${#GITHUB_TOKEN} mktemp=$MKT argv0=$1"
+    echo "::warning title=ZETT_LIFE::v18 bash=$BASH_VERSION host=$(hostname 2>/dev/null) ci=${CI:-no} token=${GITHUB_TOKEN:+si} ntoken=${#GITHUB_TOKEN} mktemp=$MKT" >&2
   fi
 fi
 
@@ -107,7 +108,9 @@ ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 host=$(hostname 2>/dev/null)
 cwd=$(pwd 2>/dev/null)
 pkg=${CARGO_PKG_NAME:-?}
-argv=$*"
+rustc_bin=${RUSTC_BIN:-?}
+argv_orig=$(printf '%s' "${ORIG_ARGV:-?}" | cut -c1-400)
+call_argv=$*"
   HASH=$(printf '%s' "$TEXT" | { sha1sum 2>/dev/null || shasum 2>/dev/null || echo "?" ; } | cut -d' ' -f1)
   [ -f "$FLAG_ERR" ] && [ "$(cat "$FLAG_ERR" 2>/dev/null)" = "$HASH" ] && return 0
   echo "$HASH" > "$FLAG_ERR"
@@ -154,7 +157,17 @@ mirror_binary() {
 
 # ---------- principal ----------
 OUT="$(mktemp /tmp/zett-rustc.XXXXXX)" || OUT="/tmp/zett-rustc.$$"
-rustc "$@" > "$OUT" 2>&1
+# Protocolo RUSTC_WRAPPER: cargo invoca  wrapper <ruta-rustc> <args rustc>
+# (la ruta de rustc va como primer argumento). En uso manual (sin ruta)
+# se resuelve rustc de PATH.
+ORIG_ARGV="$*"
+if [ -n "${1:-}" ] && [ -x "${1:-}" ]; then
+  RUSTC_BIN="$1"
+  shift
+else
+  RUSTC_BIN="rustc"
+fi
+"$RUSTC_BIN" "$@" > "$OUT" 2>&1
 code=$?
 
 if [ "$code" -ne 0 ]; then
