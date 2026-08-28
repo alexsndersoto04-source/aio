@@ -1,0 +1,1 @@
+/home/user/aio/scripts/cargo-diag-wrapper.sh: line 14: rustc: command not found
