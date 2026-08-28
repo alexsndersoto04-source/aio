@@ -1,0 +1,1 @@
+/home/user/aio/projects/moon/ops/pg/node_modules/@embedded-postgres/linux-x64/native/bin/postgres "-D" "data"
