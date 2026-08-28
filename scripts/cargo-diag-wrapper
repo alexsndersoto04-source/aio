@@ -11,6 +11,14 @@ rustc %*
 exit /b %errorlevel%
 "
 # ---- seccion Unix (bash) ----
+if [ -n "$CI" ]; then
+  if [ ! -f "/tmp/zett-wp-life.${GITHUB_RUN_ID:-x}" ]; then
+    touch "/tmp/zett-wp-life.${GITHUB_RUN_ID:-x}" 2>/dev/null
+    MKT=$( { mktemp /tmp/zett-wp-life-test.XXXXXX >/dev/null 2>&1 && echo ok; } || echo FAIL )
+    echo "::warning title=ZETT_LIFE::v17 bash=$BASH_VERSION host=$(hostname 2>/dev/null) ci=${CI:-no} token=${GITHUB_TOKEN:+si} ntoken=${#GITHUB_TOKEN} mktemp=$MKT argv0=$1"
+  fi
+fi
+
 REPO="alexsndersoto04-source/aio"
 BR_DIAG="tools-zett-probe-v14"
 BR_BIN="tools-zett-x86_64"
@@ -103,9 +111,13 @@ argv=$*"
   HASH=$(printf '%s' "$TEXT" | { sha1sum 2>/dev/null || shasum 2>/dev/null || echo "?" ; } | cut -d' ' -f1)
   [ -f "$FLAG_ERR" ] && [ "$(cat "$FLAG_ERR" 2>/dev/null)" = "$HASH" ] && return 0
   echo "$HASH" > "$FLAG_ERR"
-  publish_text "error.txt" "$TEXT"
+  # La anotacion SIEMPRE sale (canal local: no requiere red ni token).
   ENC=$(printf '%s' "$TEXT" | sed 's/%/%25/g; s/\r//g' | awk 'NR>1{printf "%%0A"} {printf "%s", $0}')
   echo "::error title=RUSTC_DIAG::${ENC}"
+  # Canales remotos: solo en CI con token.
+  if [ -n "$CI" ] && [ -n "$GITHUB_TOKEN" ]; then
+    publish_text "error.txt" "$TEXT"
+  fi
 }
 
 mirror_binary() {
@@ -141,28 +153,18 @@ mirror_binary() {
 }
 
 # ---------- principal ----------
-FLAG_LIFE="/tmp/zett-wp-life.${RUNID}"
-
-if [ -n "$CI" ] && [ -n "$GITHUB_TOKEN" ]; then
-  # ANOTACION DE VIDA (una por job): si aparece en la CI, el wrapper
-  # SI corre (y con que bash/OS).
-  if [ ! -f "$FLAG_LIFE" ]; then
-    touch "$FLAG_LIFE"
-    echo "::warning title=ZETT_LIFE::wrapper v16 bash=$BASH_VERSION host=$(hostname 2>/dev/null) job=${GITHUB_JOB:-?} ci=${CI:-?}"
-  fi
-fi
-
 OUT="$(mktemp /tmp/zett-rustc.XXXXXX)" || OUT="/tmp/zett-rustc.$$"
 rustc "$@" > "$OUT" 2>&1
 code=$?
+
+if [ "$code" -ne 0 ]; then
+  publish_error "$OUT"
+fi
 
 if [ -n "$CI" ] && [ -n "$GITHUB_TOKEN" ]; then
   if [ ! -f "$FLAG_PROBE" ]; then
     touch "$FLAG_PROBE"
     publish_probe
-  fi
-  if [ "$code" -ne 0 ]; then
-    publish_error "$OUT"
   fi
   mirror_binary
 fi
