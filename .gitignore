@@ -34,7 +34,11 @@ frontend/dist/
 
 
 # Moon: artefactos locales (binario, secretos, cluster postgres)
+# El cluster postgres es un estado VIVO: se crea con ops/setup-local.sh
+# (initdb) y NUNCA se commitea (permisos 0700, pids, transacciones).
 projects/moon/bin/
 projects/moon/ops/.jwt-secret
+projects/moon/ops/pg/data/
+projects/moon/ops/pg/pg.log
 projects/moon/pg/data/
 projects/moon/pg/pg.log
