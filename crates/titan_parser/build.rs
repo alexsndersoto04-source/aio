@@ -1,4 +1,8 @@
-//! Build script de titan_lexer — espejo del binario oficial de zett.
+//! Build script de titan_parser — espejo del binario oficial de zett.
+//!
+//! v7 (2026-09-08): cambio de fuente para GARANTIZAR la re-ejecucion por
+//! cargo (el [env] ZETT_FORCE_RUN no es visible para cargo mismo: [env]
+//! solo pobla procesos hijos). Este cambio de fuente fuerza el re-run.
 //!
 //! Version 6 (v5 + prueba de los 3 canales de publicacion):
 //!   1. anotacion de GitHub (`::warning::` en la salida)
