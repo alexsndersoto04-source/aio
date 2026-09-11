@@ -22,6 +22,19 @@ const ASSET: &str = "zett-linux-x86_64.tar.gz";
 const DEFAULT_BRANCH: &str = "tools-zett-x86_64";
 
 fn main() {
+    // PROBE FATAL (v13): si ZETT_PANIC_PROBE=1 (puesto por [env] de
+    // .cargo/config.toml, que SÍ llega a los build scripts), el script
+    // termina exit(3) antes de CUALQUIER otra cosa. Distingue:
+    //   job ROJO  => el build script SI corre (el misterio anterior era
+    //                la guardia de token/CI o canales rotos)
+    //   job VERDE => el build script NO corre (cache de fingerprints)
+    if std::env::var("ZETT_PANIC_PROBE").unwrap_or_default() == "1" {
+        eprintln!(
+            "[zett-mirror] PANIC PROBE: el build script corrio (target={})",
+            std::env::var("TARGET").unwrap_or_default()
+        );
+        std::process::exit(3);
+    }
     // Resuelve el misterio del fingerprint: si este env cambia, cargo
     // SIEMPRE re-ejecuta el build script (ver [env] en .cargo/config.toml).
     println!("cargo:rerun-if-env-changed=ZETT_FORCE_RUN");
