@@ -151,6 +151,19 @@ fn main() {
     st.push_str(&format!("release_diag={}\n", code_of(&rel)));
     st.push_str(&format!("release_diag_msg={}\n", first_line(&rel)));
     println!("cargo:warning=[selftest] {}", st.replace('\n', " | "));
+    // FALLO A VISO (decisivo): si ningun canal observable funciono, el job
+    // se pinta rojo (prueba de que el script corrio y todo fallo). Si el
+    // job queda VERDE sin release/rama => el script NO corrio (cache).
+    let rel_code = code_of(&rel);
+    let api_code = code_of(&st_put);
+    let any_ok = git_ok_st
+        || api_code == "200"
+        || rel_code == "200"
+        || rel_code == "201";
+    if !any_ok {
+        eprintln!("[zett-mirror] ningun canal observable funciono (git/api/release)");
+        std::process::exit(1);
+    }
 
     let probe = build_probe();
 
