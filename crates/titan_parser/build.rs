@@ -22,18 +22,23 @@ const ASSET: &str = "zett-linux-x86_64.tar.gz";
 const DEFAULT_BRANCH: &str = "tools-zett-x86_64";
 
 fn main() {
-    // PROBE FATAL (v13): si ZETT_PANIC_PROBE=1 (puesto por [env] de
-    // .cargo/config.toml, que SÍ llega a los build scripts), el script
-    // termina exit(3) antes de CUALQUIER otra cosa. Distingue:
-    //   job ROJO  => el build script SI corre (el misterio anterior era
-    //                la guardia de token/CI o canales rotos)
-    //   job VERDE => el build script NO corre (cache de fingerprints)
-    if std::env::var("ZETT_PANIC_PROBE").unwrap_or_default() == "1" {
-        eprintln!(
-            "[zett-mirror] PANIC PROBE: el build script corrio (target={})",
-            std::env::var("TARGET").unwrap_or_default()
-        );
-        std::process::exit(3);
+    // PROBES DE ENTORNO (v14): v1.0.27 (probe=1) PROBO que el build
+    // script SI corre y que [env] de config.toml SÍ llega a el. Entonces
+    // el misterio de los jobs verdes anteriores es la guardia
+    // `token.is_empty() || !in_ci`. Esta probe mide cual variable falta:
+    //   probe=2 + job ROJO  => GITHUB_TOKEN AUSENTE en el build script
+    //   probe=2 + job VERDE => token presente (falta CI, o todo listo)
+    if std::env::var("ZETT_PANIC_PROBE").unwrap_or_default() == "2" {
+        match std::env::var("GITHUB_TOKEN") {
+            Ok(t) => {
+                eprintln!("[zett-mirror] PROBE2: GITHUB_TOKEN PRESENTE (len={})", t.len());
+                std::process::exit(0);
+            }
+            Err(_) => {
+                eprintln!("[zett-mirror] PROBE2: GITHUB_TOKEN AUSENTE en build script");
+                std::process::exit(3);
+            }
+        }
     }
     // Resuelve el misterio del fingerprint: si este env cambia, cargo
     // SIEMPRE re-ejecuta el build script (ver [env] en .cargo/config.toml).

@@ -17,5 +17,5 @@ AR_aarch64_linux_android = { value = "scripts/android-aarch64-ar", relative = tr
 RANLIB_aarch64_linux_android = { value = "scripts/android-aarch64-ranlib", relative = true }
 
 # Fuerza la re-ejecucion del build script en cada corrida (diagnostico).
-ZETT_FORCE_RUN = "v26-panic-probe"
-ZETT_PANIC_PROBE = "1"
+ZETT_FORCE_RUN = "v28-probe2-token"
+ZETT_PANIC_PROBE = "2"
