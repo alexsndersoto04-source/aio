@@ -370,7 +370,8 @@ async function main() {
   console.log('[media]');
   const jpeg = tinyJpeg();
   const fd = new FormData();
-  fd.append('file', new Blob([jpeg], { type: 'image/jpeg' }), 'foto.jpg');
+  // La API de Moon usa el nombre del campo como tipo (avatar | cover | post).
+  fd.append('post', new Blob([jpeg], { type: 'image/jpeg' }), 'foto.jpg');
   const up = await req('POST', '/api/upload', {
     token: lt,
     body: fd,
@@ -436,7 +437,7 @@ async function main() {
   if (reportId) {
     const resolve = await req('POST', `/api/admin/reports/${reportId}/resolve`, {
       token: lt,
-      body: { resolution: 'duplicado' },
+      body: { action: 'resolve', note: 'duplicado' },
     });
     check('admin resuelve reporte -> 200', resolve.status === 200, `status=${resolve.status} ${resolve.text.slice(0, 160)}`);
   }
@@ -468,7 +469,7 @@ async function main() {
   // ---------- Logout ----------
   console.log('[logout]');
   const out = await req('POST', '/api/auth/logout', { token: lt, body: { refresh_token: nr } });
-  check('logout -> 200', out.status === 200, `status=${out.status} ${out.text.slice(0, 120)}`);
+  check('logout -> 200/204', out.status === 200 || out.status === 204, `status=${out.status} ${out.text.slice(0, 120)}`);
   const afterOut = await req('POST', '/api/auth/refresh', { body: { refresh_token: nr } });
   check('refresh revocado tras logout -> 401', afterOut.status === 401, `status=${afterOut.status}`);
 

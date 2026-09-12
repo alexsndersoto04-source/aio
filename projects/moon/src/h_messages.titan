@@ -146,6 +146,7 @@ fn h_messages_start(req: int, ctx: map) {
     }
     let _c = std::postgres::close(conn)
     let mut m = std::map::new()
+    m = std::map::insert(m, "id", conv_id)
     m = std::map::insert(m, "conversation_id", conv_id)
     r_created(req, m)
 }

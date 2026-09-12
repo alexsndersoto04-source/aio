@@ -114,9 +114,25 @@ fn qs_map(req: int) -> map {
     if raw == "" { return std::map::new() }
     let intento = std::try::catch(|| std::http::parse_query(raw, 12))
     match intento {
-        Result::Ok(q) => q,
+        Result::Ok(q) => qs_primero(q),
         Result::Err(_) => std::map::new(),
     }
+}
+
+// parse_query guarda cada valor en un array (para los repetidos); Moon usa
+// el primero. Sin esto, ?page=2 o ?q=ana llegaban como array y se ignoraban.
+fn qs_primero(q: map) -> map {
+    let mut out = std::map::new()
+    for k in std::map::keys(q) {
+        let vals = std::map::get(q, k)
+        let candidato = std::try::catch(|| vals[0])
+        let guardado = match candidato {
+            Result::Ok(v) => { out = std::map::insert(out, k, v); true },
+            Result::Err(_) => false,
+        }
+        let _ = guardado
+    }
+    out
 }
 
 // Lee un entero del query string (valores repetidos se ignoran).

@@ -20,7 +20,8 @@ fn n_ensure_prefs(conn: Postgres, uid: int) {
 fn n_notify(conn: Postgres, hub: Sender, uid: int, ntype: string, from_uid: int, post_id: int, comment_id: int, content: string) {
     if uid <= 0 { return }
     if !n_prefs_allowed(conn, uid, ntype) { return }
-    let _ = db_exec(conn, "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id, content) VALUES (?, ?, ?, ?, ?, ?)", [uid, ntype, from_uid, post_id, comment_id, content])
+    // NULLIF: las columnas post_id/comment_id son FK; un 0 sería «no existe».
+    let _ = db_exec(conn, "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id, content) VALUES (?, ?, ?, NULLIF(?, 0), NULLIF(?, 0), ?)", [uid, ntype, from_uid, post_id, comment_id, content])
     let mut ev = std::map::new()
     ev = std::map::insert(ev, "type", "notification")
     ev = std::map::insert(ev, "kind", ntype)
