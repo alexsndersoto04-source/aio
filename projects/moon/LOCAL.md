@@ -9,33 +9,35 @@ de datos PostgreSQL, mismo frontend. CERO simulaciones.
 
 | Herramienta | Para qué | Cómo obtenerla |
 |---|---|---|
-| Binario `zett` (Titan v1.0.0) | Compilar/ejecutar la API | ver sección 2 |
+| Binario `zett` (Titan, compilado del repo) | Compilar/ejecutar la API | ver sección 2 |
 | PostgreSQL 16+ (cualquier versión ≥16) | Base de datos | `apt install postgresql`, Homebrew, Docker, o [embedded-postgres](https://www.npmjs.com/package/embedded-postgres) |
 | Node.js 22.x | Frontend (Vite) | `nvm install 22` o tu gestor |
 
-> **¿Sin acceso al CDN de GitHub Releases (red restringida)?**
-> La CI de este repo espeja el binario oficial a la rama `tools-zett-x86_64`
-> (lo hace el build script de `titan_lexer` en cada corrida de
-> `cross-platform`). Bájalo con git:
->
-> ```sh
-> git fetch origin tools-zett-x86_64
-> git show tools-zett-x86_64:tools/zett-linux-x86_64 > ./zett
-> chmod +x ./zett
-> ./zett --version
-> ```
+> **El binario sale de este mismo repo.** Los binarios que publican las
+> releases y la rama espejo `tools-zett-x86_64` son de versiones anteriores del
+> lenguaje (esa rama llegó a contener un archivo de relleno en vez de un
+> binario), así que la vía fiable —y la que usa la propia CI— es compilarlo.
 
 ---
 
-## 2. Obtener el binario `zett` (método normal)
+## 2. Obtener el binario `zett`
 
 ```sh
-# Linux x86_64
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-x86_64.tar.gz | tar xz
+# Desde la raíz del repo (necesita Rust: https://rustup.rs)
+cargo build --release -p titan_cli   # (titan_cli produce el binario `titan`)
+cp target/release/titan ./zett
 ./zett --version
 ```
 
-(Windows/macOS/ARM: los assets están en la misma release.)
+O con el atajo que lo deja listo en `projects/moon/bin/zett`:
+
+```sh
+projects/moon/ops/fetch-zett.sh
+```
+
+Es el mismo comando que corre la CI antes del E2E completo, así que lo que
+ejecutas es exactamente lo que está verificado (`cargo test -p titan_cli
+--test moon_e2e`).
 
 ---
 

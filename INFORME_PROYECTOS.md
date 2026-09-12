@@ -282,7 +282,18 @@ Traducción: **Moon tiene tests end-to-end y un entorno local reproducible, pero
    likes, guardados, comentarios, feeds, hashtags, perfiles, follows, búsqueda,
    notificaciones, subida de imágenes reales, reportes y moderación, mensajería
    1:1, WebSocket en vivo, seguridad y logout).
-4. **Cortar un release limpio de TITAN desde `main`** (v1.0.29) y **apuntar el `Dockerfile` de Moon a él** en vez de v1.0.0.
+4. ✅ **HECHO (12-sep):** el `Dockerfile` ya **no descarga la release v1.0.0**:
+   compila TITAN desde las fuentes del repo en una primera etapa (`cargo build
+   --release -p titan_cli`) y, en la imagen final, corre `zett check
+   src/main.titan` **durante el build** — si Moon no compilara con esas fuentes,
+   la imagen no se construye. Así el contenedor desplegado usa exactamente el
+   Titan que verifica la CI, sin depender de los binarios publicados (la rama
+   espejo `tools-zett-x86_64` contenía un archivo de relleno, y la release
+   v1.0.0 es de una versión anterior del lenguaje). Mismo cambio en
+   `projects/moon/ops/fetch-zett.sh` y en `LOCAL.md`.
+   Queda como paso tuyo, si quieres además publicar binarios: **cortar un
+   release limpio de TITAN desde `main`** (v1.0.29) — el `Dockerfile` ya no
+   lo necesita.
 
 ### P1 — Ordenar (dos semanas)
 5. Limpiar `main`: borrar `debug*.txt`, `error.txt`, `probe.txt`, `selftest.txt`, `diag/`; sacar `diag-titan.yml` de `main`; ignorar esos patrones.
