@@ -82,7 +82,7 @@ const casos = [
   ['POST', '/api/upload', null, (d) => !!d.url],
 
   ['GET', '/api/admin/dashboard', null, (d) => typeof d.users_total === 'number' && typeof d.reports_open === 'number'],
-  ['GET', '/api/admin/stats', null, (d) => typeof d.posts_total === 'number'],
+  ['GET', '/api/admin/stats', null, (d) => esLista(d) && d.length === 30 && typeof d[0].new_users === 'number'],
   ['GET', '/api/admin/users?q=&page=1&limit=20', null, (d) => esLista(d.items) && !!d.items[0].username],
   ['GET', '/api/admin/users?q=bru&page=1&limit=20', null, (d) => esLista(d.items)],
   ['POST', '/api/admin/users/2/suspend', { reason: 'x' }, () => true],

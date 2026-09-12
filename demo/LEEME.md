@@ -27,8 +27,14 @@ dirección). `frontend/src/demo.js` responde a las llamadas `/api/...` con datos
 de ejemplo en memoria; la aplicación real no se entera: sin esa marca, todo
 sigue llamando al servidor de verdad.
 
-Se puede comprobar sin navegador con:
+## Comprobaciones
 
 ```bash
-cd frontend && node scripts/prueba-demo.mjs
+cd frontend
+node scripts/prueba-demo.mjs        # 71 llamadas de la API de ejemplo
+npm i --no-save jsdom               # (una vez) navegador simulado
+node scripts/prueba-render.mjs ../demo/moon.html --entrar --rutas
 ```
+
+La última comprueba, sin navegador, que la página arranca, que se puede
+entrar y que las nueve pantallas se pintan sin errores.

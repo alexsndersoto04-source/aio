@@ -40,8 +40,12 @@ function PostMenu({ post, onDelete, onEdit, onReport }) {
     setAbierto(false);
     const url = `${window.location.origin}${window.location.pathname}#/post/${post.id}`;
     try {
-      await navigator.clipboard.writeText(url);
-      toast.ok('Enlace copiado al portapapeles');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url);
+        toast.ok('Enlace copiado al portapapeles');
+      } else {
+        toast.info(url);
+      }
     } catch {
       toast.info(url);
     }

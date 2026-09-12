@@ -201,6 +201,17 @@ const palabrasProhibidas = ['spam', 'estafa', 'insulto'];
 
 const json = (data, status = 200) => ({ status, data });
 
+// Respuesta con la forma que espera `api.js` (ok, status, json, text).
+function respuesta(data, status) {
+  const texto = JSON.stringify(data === undefined ? null : data);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => JSON.parse(texto),
+    text: async () => texto,
+  };
+}
+
 function paginado(items, ruta, extra = {}) {
   const url = new URL(ruta, 'http://demo.local');
   const page = Number(url.searchParams.get('page') || 1);
@@ -540,12 +551,30 @@ export function responder(metodo, ruta, cuerpo) {
 
   // ---- Administración ----
   if (a === 'admin') {
-    if (b === 'dashboard' || b === 'stats') {
+    if (b === 'dashboard') {
       return json({
-        users_total: 1284, users_new_today: 12, users_new_week: 84, suspended_users: 3,
+        users_total: 1284, users_new_today: 12, users_new_7d: 84, suspended_users: 3,
         posts_total: 9731, posts_today: 46, comments_total: 22140,
         follows_total: 15872, messages_total: 42118, reports_open: 3,
       });
+    }
+    if (b === 'stats') {
+      // Últimos 30 días de actividad (mismo formato que el servidor real).
+      return json(
+        Array.from({ length: 30 }, (_, i) => {
+          const dia = new Date(AHORA - (29 - i) * 86400000).toISOString().slice(0, 10);
+          const base = 4 + ((i * 7) % 11);
+          return {
+            stat_date: dia,
+            new_users: base,
+            new_posts: base * 3 + (i % 5),
+            new_messages: base * 9,
+            new_likes: base * 12,
+            new_comments: base * 2,
+            new_follows: base * 5,
+          };
+        })
+      );
     }
     if (b === 'users') {
       if (c) return json({ ok: true }); // suspender / activar / verificar
@@ -654,11 +683,15 @@ export function instalarDemo() {
   if (instalado || !esDemo()) return;
   instalado = true;
 
-  const fetchReal = window.fetch.bind(window);
+  // Algunos entornos no traen `fetch`; la demostración funciona igual.
+  const fetchReal = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
   window.fetch = async (entrada, opciones = {}) => {
     const url = typeof entrada === 'string' ? entrada : (entrada && entrada.url) || '';
     const ruta = url.replace(/^https?:\/\/[^/]+/, '');
-    if (!ruta.startsWith('/api/')) return fetchReal(entrada, opciones);
+    if (!ruta.startsWith('/api/')) {
+      if (fetchReal) return fetchReal(entrada, opciones);
+      return respuesta({ error: 'Sin red en la demostración' }, 503);
+    }
 
     let cuerpo = opciones.body;
     if (typeof cuerpo === 'string' && cuerpo) {
@@ -666,10 +699,7 @@ export function instalarDemo() {
     }
     await new Promise((r) => setTimeout(r, 140)); // latencia para ver los esqueletos
     const { status, data } = responder((opciones.method || 'GET').toUpperCase(), ruta, cuerpo);
-    return new Response(JSON.stringify(data ?? null), {
-      status,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return respuesta(data, status);
   };
 
   window.XMLHttpRequest = SubidaDemo;

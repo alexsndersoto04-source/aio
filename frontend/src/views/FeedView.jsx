@@ -48,6 +48,8 @@ export default function FeedView() {
   useEffect(() => {
     const el = loadRef.current;
     if (!el) return;
+    // Navegadores sin IntersectionObserver: queda el botón «Ver más».
+    if (typeof IntersectionObserver === 'undefined') return;
     const obs = new IntersectionObserver((entries) => {
       if (entries[0].isIntersecting && !loading && more) {
         setPage((p) => {

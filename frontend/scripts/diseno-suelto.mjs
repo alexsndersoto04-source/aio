@@ -47,6 +47,7 @@ await build({
     rollupOptions: {
       input: resolve(raiz, entrada),
       output: {
+        format: 'iife',
         inlineDynamicImports: true,
         entryFileNames: 'app.js',
         assetFileNames: 'app.[ext]',
@@ -60,19 +61,34 @@ const css = readFileSync(join(salida, 'app.css'), 'utf8');
 const js = readFileSync(join(salida, 'app.js'), 'utf8');
 const archivos = readdirSync(salida);
 
+// OJO: las sustituciones que insertan contenido usan una FUNCIÓN, no una
+// cadena. Con una cadena, `String.replace` interpreta los `$&`, `$\``, `$'` y
+// `$$` que aparecen en el código comprimido (¡los nombres de variable `$` son
+// habituales!) e inserta texto donde no toca, rompiendo el programa.
 let final = html
   // Quitar precargas de módulos (ya no hacen falta)
   .replace(/\s*<link rel="modulepreload"[^>]*>/g, '')
   // Incrustar la hoja de estilos
   .replace(/\s*<link rel="stylesheet"[^>]*href="[^"]*app\.css"[^>]*>/g, '')
-  .replace('</head>', `<style>\n${css}\n</style>\n</head>`)
+  .replace('</head>', () => `<style>\n${css}\n</style>\n</head>`)
   // Incrustar el JavaScript
   .replace(/<script type="module"[^>]*src="[^"]*app\.js"[^>]*><\/script>/g, '')
   .replace(
     '</body>',
-    (modoApp ? '<script>window.MOON_DEMO = true;</script>\n' : '') +
-      `<script type="module">\n${js.replace(/<\/script/g, '<\\/script')}\n</script>\n</body>`
+    () =>
+      (modoApp ? '<script>window.MOON_DEMO = true;</script>\n' : '') +
+      // Script clásico: se ejecuta al abrir el archivo con doble clic, sin
+      // depender de módulos ni de CORS.
+      `<script>\n${js.replace(/<\/script/g, '<\\/script')}\n</script>\n</body>`
   );
+
+// Comprobación de seguridad: el HTML final debe conservar el programa entero.
+const sinCierreSuelto = final.split('</body>').length - 1;
+if (sinCierreSuelto !== 1) {
+  throw new Error(
+    `El HTML final tiene ${sinCierreSuelto} etiquetas </body>: el código quedó corrupto.`
+  );
+}
 
 writeFileSync(destino, final, 'utf8');
 const kb = (Buffer.byteLength(final) / 1024).toFixed(0);
