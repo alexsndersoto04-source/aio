@@ -40,6 +40,20 @@ comprueban con `node scripts/prueba-demo.mjs` (71 llamadas).
 
 La galería también se compila en `npm run build` (sale como `dist/design.html`).
 
+## Con el servidor real (recomendado)
+
+```bash
+# 1) Servidor y base de datos reales
+cd ../projects/moon/server && npm install && npm run dev
+
+# 2) La aplicación, en otra terminal
+cd frontend
+API_PROXY_TARGET=http://127.0.0.1:3000 npm run dev
+```
+
+El proxy reenvía `/api` y `/ws` a la API real: las cuentas, publicaciones y
+mensajes que se vean son de verdad (PostgreSQL). Ver `projects/moon/server/LEEME.md`.
+
 ## Deploy en Render
 
 1. Crear un **Web Service** con runtime Node.

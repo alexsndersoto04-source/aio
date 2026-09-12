@@ -20,14 +20,16 @@ const raiz = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const argumentos = process.argv.slice(2);
 const modoApp = argumentos.includes('--app');
+// --real: la aplicación real, sin datos de ejemplo (para pruebas de verdad).
+const modoReal = argumentos.includes('--real');
 const indiceDestino = argumentos.indexOf('--destino');
 const destino = resolve(
   indiceDestino >= 0 && argumentos[indiceDestino + 1]
     ? argumentos[indiceDestino + 1]
-    : join(raiz, modoApp ? 'moon-demo.html' : 'moon-diseno.html')
+    : join(raiz, modoApp ? 'moon-demo.html' : modoReal ? 'moon-real.html' : 'moon-diseno.html')
 );
 
-const entrada = modoApp ? 'index.html' : 'design.html';
+const entrada = modoApp || modoReal ? 'index.html' : 'design.html';
 const salida = join(raiz, 'node_modules/.tmp-pagina-suelta');
 mkdirSync(salida, { recursive: true });
 rmSync(salida, { recursive: true, force: true });
@@ -92,6 +94,10 @@ if (sinCierreSuelto !== 1) {
 
 writeFileSync(destino, final, 'utf8');
 const kb = (Buffer.byteLength(final) / 1024).toFixed(0);
-console.log(`${modoApp ? 'Aplicación en modo demostración' : 'Galería del sistema de diseño'}`);
+console.log(
+  modoApp ? 'Aplicación en modo demostración'
+  : modoReal ? 'Aplicación real (sin datos de ejemplo)'
+  : 'Galería del sistema de diseño'
+);
 console.log(`Piezas compiladas: ${archivos.join(', ')}`);
 console.log(`Listo: ${destino} (${kb} kB)`);

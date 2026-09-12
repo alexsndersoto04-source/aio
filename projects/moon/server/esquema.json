@@ -1,0 +1,77 @@
+[
+  {
+    "version": 1,
+    "name": "create_users",
+    "sql": "CREATE TABLE users (id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', is_private BOOLEAN NOT NULL DEFAULT FALSE, is_verified BOOLEAN NOT NULL DEFAULT FALSE, twofa_enabled BOOLEAN NOT NULL DEFAULT FALSE, status TEXT NOT NULL DEFAULT 'active', suspend_reason TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'user', followers_count INT NOT NULL DEFAULT 0, following_count INT NOT NULL DEFAULT 0, posts_count INT NOT NULL DEFAULT 0, images_count INT NOT NULL DEFAULT 0, images_bytes BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_login_at TIMESTAMPTZ)"
+  },
+  {
+    "version": 2,
+    "name": "create_users_indexes",
+    "sql": "CREATE UNIQUE INDEX uq_users_username_lower ON users (LOWER(username)); CREATE UNIQUE INDEX uq_users_email_lower ON users (LOWER(email)); CREATE INDEX ix_users_status ON users (status)"
+  },
+  {
+    "version": 3,
+    "name": "create_refresh_tokens",
+    "sql": "CREATE TABLE refresh_tokens (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, device TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_used_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ); CREATE INDEX ix_refresh_tokens_user ON refresh_tokens (user_id)"
+  },
+  {
+    "version": 4,
+    "name": "create_recovery_tokens",
+    "sql": "CREATE TABLE recovery_tokens (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'recovery', code_hash TEXT NOT NULL DEFAULT '', expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ); CREATE INDEX ix_recovery_tokens_user ON recovery_tokens (user_id)"
+  },
+  {
+    "version": 5,
+    "name": "create_follows_blocks",
+    "sql": "CREATE TABLE follows (follower_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, following_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (follower_id, following_id)); CREATE INDEX ix_follows_following ON follows (following_id); CREATE TABLE blocks (blocker_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, blocked_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (blocker_id, blocked_id)); CREATE INDEX ix_blocks_blocked ON blocks (blocked_id)"
+  },
+  {
+    "version": 6,
+    "name": "create_posts",
+    "sql": "CREATE TABLE posts (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, edited_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active', likes_count INT NOT NULL DEFAULT 0, comments_count INT NOT NULL DEFAULT 0, saves_count INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_posts_user ON posts (user_id, created_at DESC); CREATE INDEX ix_posts_created ON posts (created_at DESC)"
+  },
+  {
+    "version": 7,
+    "name": "create_post_images",
+    "sql": "CREATE TABLE post_images (id BIGSERIAL PRIMARY KEY, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, position INT NOT NULL DEFAULT 0, original_url TEXT NOT NULL, thumb_url TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_post_images_post ON post_images (post_id)"
+  },
+  {
+    "version": 8,
+    "name": "create_likes_comments",
+    "sql": "CREATE TABLE likes (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id)); CREATE INDEX ix_likes_post ON likes (post_id); CREATE TABLE comments (id BIGSERIAL PRIMARY KEY, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id BIGINT REFERENCES comments(id) ON DELETE CASCADE, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_comments_post ON comments (post_id, created_at)"
+  },
+  {
+    "version": 9,
+    "name": "create_saves_hashtags",
+    "sql": "CREATE TABLE saves (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id)); CREATE INDEX ix_saves_user ON saves (user_id, created_at DESC); CREATE TABLE hashtags (id BIGSERIAL PRIMARY KEY, tag TEXT NOT NULL UNIQUE, posts_count INT NOT NULL DEFAULT 0, last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE TABLE post_hashtags (post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, hashtag_id BIGINT NOT NULL REFERENCES hashtags(id) ON DELETE CASCADE, PRIMARY KEY (post_id, hashtag_id)); CREATE INDEX ix_post_hashtags_tag ON post_hashtags (hashtag_id)"
+  },
+  {
+    "version": 10,
+    "name": "create_messages",
+    "sql": "CREATE TABLE conversations (id BIGSERIAL PRIMARY KEY, user_a BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, user_b BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, last_message TEXT NOT NULL DEFAULT '', last_sender_id BIGINT, last_message_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (user_a, user_b)); CREATE INDEX ix_conversations_user_a ON conversations (user_a, last_message_at DESC); CREATE INDEX ix_conversations_user_b ON conversations (user_b, last_message_at DESC); CREATE TABLE messages (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'sent', reaction TEXT NOT NULL DEFAULT '', read_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_messages_conversation ON messages (conversation_id, created_at)"
+  },
+  {
+    "version": 11,
+    "name": "create_notifications",
+    "sql": "CREATE TABLE notifications (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, from_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT REFERENCES posts(id) ON DELETE CASCADE, comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE, content TEXT NOT NULL DEFAULT '', is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_notifications_user ON notifications (user_id, created_at DESC); CREATE TABLE notification_prefs (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, follow BOOLEAN NOT NULL DEFAULT TRUE, \"like\" BOOLEAN NOT NULL DEFAULT TRUE, comment BOOLEAN NOT NULL DEFAULT TRUE, reply BOOLEAN NOT NULL DEFAULT TRUE, mention BOOLEAN NOT NULL DEFAULT TRUE, message BOOLEAN NOT NULL DEFAULT TRUE, system BOOLEAN NOT NULL DEFAULT TRUE)"
+  },
+  {
+    "version": 12,
+    "name": "create_reports_moderation",
+    "sql": "CREATE TABLE reports (id BIGSERIAL PRIMARY KEY, reporter_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id BIGINT NOT NULL, reason TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', resolution TEXT NOT NULL DEFAULT '', resolved_by BIGINT REFERENCES users(id), resolved_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_reports_status ON reports (status, created_at); CREATE TABLE blocked_words (id BIGSERIAL PRIMARY KEY, word TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+  },
+  {
+    "version": 13,
+    "name": "create_activity_stats_media",
+    "sql": "CREATE TABLE activity_log (id BIGSERIAL PRIMARY KEY, user_id BIGINT, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_activity_log_user ON activity_log (user_id, created_at DESC); CREATE INDEX ix_activity_log_action ON activity_log (action, created_at DESC); CREATE TABLE app_stats (stat_date DATE PRIMARY KEY, new_users INT NOT NULL DEFAULT 0, new_posts INT NOT NULL DEFAULT 0, new_messages INT NOT NULL DEFAULT 0, new_likes INT NOT NULL DEFAULT 0, new_comments INT NOT NULL DEFAULT 0, new_follows INT NOT NULL DEFAULT 0); CREATE TABLE media (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, original_path TEXT NOT NULL, thumb_path TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, width INT NOT NULL DEFAULT 0, height INT NOT NULL DEFAULT 0, bytes BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_media_user ON media (user_id, created_at DESC)"
+  },
+  {
+    "version": 14,
+    "name": "add_dm_privacy",
+    "sql": "ALTER TABLE users ADD COLUMN IF NOT EXISTS dm_privacy TEXT NOT NULL DEFAULT 'all'"
+  },
+  {
+    "version": 15,
+    "name": "enteros_a_bigint",
+    "sql": "ALTER TABLE users ALTER COLUMN followers_count TYPE BIGINT; ALTER TABLE users ALTER COLUMN following_count TYPE BIGINT; ALTER TABLE users ALTER COLUMN posts_count TYPE BIGINT; ALTER TABLE users ALTER COLUMN images_count TYPE BIGINT; ALTER TABLE posts ALTER COLUMN likes_count TYPE BIGINT; ALTER TABLE posts ALTER COLUMN comments_count TYPE BIGINT; ALTER TABLE posts ALTER COLUMN saves_count TYPE BIGINT; ALTER TABLE post_images ALTER COLUMN position TYPE BIGINT; ALTER TABLE hashtags ALTER COLUMN posts_count TYPE BIGINT; ALTER TABLE media ALTER COLUMN width TYPE BIGINT; ALTER TABLE media ALTER COLUMN height TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_users TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_posts TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_messages TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_likes TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_comments TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_follows TYPE BIGINT"
+  }
+]
