@@ -1372,21 +1372,6 @@ impl TypeEnv {
         }
     }
 
-    /// Attributes every error pushed since `start` to a source declaration:
-    /// its span when the caller has one, and the file it was declared in.
-    fn assign_error_location(&mut self, start: usize, span: Option<Span>) {
-        self.synchronize_error_spans();
-        let file = self.current_file.clone();
-        for index in start..self.errors.len() {
-            if self.error_spans[index].is_none() {
-                self.error_spans[index] = span;
-            }
-            if self.error_files[index].is_none() {
-                self.error_files[index] = file.clone();
-            }
-        }
-    }
-
     fn push_error_at(&mut self, error: TypeError, span: Span) {
         self.synchronize_error_spans();
         self.errors.push(error);
