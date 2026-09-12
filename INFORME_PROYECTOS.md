@@ -144,6 +144,17 @@ Una red social web "de nivel startup": registro/login con 2FA, posts con fotos, 
 
 ### 4.4 🔴 El problema central: `zett check` lleva **rojo desde el día 1** y nadie ha visto por qué
 
+> **ACTUALIZADO (12-sep-2026).** Ya está diagnosticado y parcialmente resuelto:
+> eran **dos errores de sintaxis** (uno de ellos, un defecto del propio lenguaje:
+> una constante en mayúsculas antes de la llave de un bloque se leía como literal
+> de struct) y después **19 errores de tipos** repartidos en 6 archivos, listados
+> uno a uno con su ubicación en [`MOON_ERRORES.md`](MOON_ERRORES.md).
+> Arreglado: el parser (commit `b142ba2`), el `[` al inicio de línea en Moon
+> (`3992c82`), el canal de diagnóstico del CLI (`64e5a53`, `0962acc`) y el hecho
+> de que cada diagnóstico nombre su archivo (`e5358dc`). Las 637 pruebas del
+> lenguaje siguen verdes.
+
+
 - El workflow `Moon checks` se añadió el **26-ago** y acumula **16 ejecuciones, 0 exitosas**. Falla siempre en el paso `cargo run -p titan_cli -- check projects/moon/src/main.titan`.
 - Fui a buscar el diagnóstico exacto y encontré esto: **la anotación de GitHub del fallo contiene literalmente 13 caracteres: `CHECK FAILED:`**. Nada más. Ni una línea de error. He comprobado las 15 ejecuciones del workflow de diagnóstico: **todas devuelven el mismo texto vacío**.
 - **La causa es un bug del propio workflow**: el script codifica los saltos de línea con `sed 's/\n/%0A/g'`, pero **GNU sed procesa línea por línea y nunca puede casar `\n`** — lo he reproducido en este entorno. Resultado: el `::error::` lleva el texto multilínea crudo, GitHub solo conserva la **primera línea** (`CHECK FAILED:`) como mensaje de la anotación, y los diagnósticos reales se pierden en un log que nadie mira.
