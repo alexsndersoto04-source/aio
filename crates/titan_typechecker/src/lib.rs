@@ -1977,7 +1977,8 @@ impl TypeEnv {
 
     fn check_function(&mut self, function: &FunctionDecl) {
         let error_start = self.errors.len();
-        let previous_file = self.current_file.replace(function.source_file.clone());
+        let previous_file =
+            std::mem::replace(&mut self.current_file, function.source_file.clone());
         self.check_function_inner(function);
         self.current_file = previous_file;
         self.assign_error_span(error_start, function.span);
