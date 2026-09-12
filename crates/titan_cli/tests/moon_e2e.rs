@@ -290,6 +290,10 @@ fn start_api(moon: &Path, log_path: &Path) -> Child {
     command.env("PORT", API_PORT.to_string());
     command.env("CORS_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173");
     command.env("PUBLIC_BASE_URL", api_url());
+    // Si algo revienta dentro de la API, queremos el rastro completo en el log
+    // (que es lo que acaba en la anotación del run).
+    command.env("RUST_BACKTRACE", "1");
+    command.env("RUST_LIB_BACKTRACE", "1");
     command.stdout(Stdio::from(stdout));
     command.stderr(Stdio::from(log));
     command.spawn().expect("arrancar la API de Moon")

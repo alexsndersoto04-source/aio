@@ -340,6 +340,14 @@ impl std::ops::DerefMut for DatabaseHandle {
 const DEFAULT_NETWORK_HANDLE_LIMIT: usize = 1_024;
 const DEFAULT_DATABASE_HANDLE_LIMIT: usize = 256;
 const MAX_DATABASE_POOL_SIZE: usize = 64;
+/// Pila de las tareas de Titan (`spawn`).
+///
+/// El intérprete consume bastante pila de Rust por cada nivel de llamada
+/// Titan (cada marco de `execute` es una función enorme, sobre todo sin
+/// optimizar), así que los 2 MiB por defecto de Rust se quedan cortos con
+/// programas reales: Moon se caía con «stack overflow» al atender su primera
+/// petición. Son 16 MiB de reserva virtual: sólo se comprometen si se usan.
+const TASK_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 struct ResourceQuota {
@@ -644,6 +652,7 @@ impl Vm {
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let handle = std::thread::Builder::new()
             .name(format!("titan-task-{task_id}"))
+            .stack_size(TASK_STACK_BYTES)
             .spawn(move || {
                 let mut child = Vm {
                     module,
