@@ -1144,6 +1144,7 @@ impl Parser {
                 }
                 if self.at(TokenKind::LBrace)
                     && qualified.chars().next().is_some_and(char::is_uppercase)
+                    && self.brace_opens_struct_body()
                 {
                     self.advance();
                     let mut fields = Vec::new();
@@ -1682,6 +1683,33 @@ impl Parser {
     fn peek_kind(&self) -> Option<&TokenKind> {
         self.tokens.get(self.pos).map(|t| &t.kind)
     }
+    /// Kind of the token `offset` positions ahead (0 = the current one).
+    fn peek_kind_ahead(&self, offset: usize) -> Option<&TokenKind> {
+        self.tokens.get(self.pos + offset).map(|t| &t.kind)
+    }
+    /// Decides whether the `{` at the current position opens a struct literal
+    /// body, or is simply the brace of a block.
+    ///
+    /// `if limit > LIMIT { limit = LIMIT }` places an uppercase identifier —
+    /// a constant, the usual way to name one — right before the block's brace.
+    /// Reading that brace as the beginning of a struct literal made the parser
+    /// reject perfectly ordinary code with "expected RBrace, found Eq", and the
+    /// diagnostic pointed at the `=` inside the assignment, far from the cause.
+    ///
+    /// A struct body can only start with `}` (empty), a field name, or the
+    /// shorthand field (`name:` for a value, `name,` / `name}` for a binding).
+    /// Anything else means the brace belongs to a block, so the identifier is
+    /// an ordinary value and parsing continues as such.
+    fn brace_opens_struct_body(&self) -> bool {
+        match self.peek_kind_ahead(1) {
+            Some(TokenKind::RBrace) => true,
+            Some(TokenKind::Ident(_)) => matches!(
+                self.peek_kind_ahead(2),
+                Some(TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace)
+            ),
+            _ => false,
+        }
+    }
     fn span(&self) -> Span {
         self.tokens
             .get(self.pos)
@@ -1958,6 +1986,34 @@ mod tests {
     fn parses_closures_and_try_operator() {
         assert!(parse("fn main() { let add = |x: int, y: int| -> int x + y add(1, 2) }").is_ok());
         assert!(parse("fn unwrap(value: Result) { value? }").is_ok());
+    }
+
+    #[test]
+    fn uppercase_value_before_a_block_brace_is_not_a_struct_literal() {
+        // Una constante en mayusculas justo antes de la llave del bloque:
+        // `if limit > LIMIT { limit = LIMIT }`. Antes se leia como un literal
+        // de struct y el parser fallaba con "expected RBrace, found Eq".
+        let source =
+            "const LIMIT = 10 fn main() { let mut limit = 1 if limit > LIMIT { limit = LIMIT } }";
+        assert!(parse(source).is_ok(), "{:?}", parse(source).err());
+
+        // Tambien en un `while` y con el identificador cualificado.
+        let source = "fn main() { let mut i = 0 while i < MAX { i = i + 1 } }";
+        assert!(parse(source).is_ok(), "{:?}", parse(source).err());
+    }
+
+    #[test]
+    fn struct_literals_keep_parsing() {
+        // El guardia que distingue una llave de bloque de un literal de struct
+        // no puede romper las formas legitimas: campos con `:`, sin campos y
+        // la forma corta (`Point { x }`, `Point { x, y }`).
+        let source = "struct Point { x: int, y: int } fn main() { \
+                      let a = Point { x: 1, y: 2 } \
+                      let b = Point { x: 1 } \
+                      let c = Point {} \
+                      let d = Point { x } \
+                      let e = Point { x: 1, y } }";
+        assert!(parse(source).is_ok(), "{:?}", parse(source).err());
     }
 
     #[test]
