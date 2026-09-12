@@ -44,3 +44,7 @@ projects/moon/pg/data/
 projects/moon/pg/pg.log
 # Imágenes subidas por la API en local (la BD es nueva en cada prueba)
 projects/moon/uploads/
+# Moon: secretos y archivos locales del servidor
+projects/moon/server/.jwt-secret
+projects/moon/server/node_modules/
+projects/moon/uploads/
