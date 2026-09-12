@@ -44,7 +44,11 @@ function check(name, cond, detail) {
   }
 }
 
-async function req(method, path, { token, body, headers = {}, raw = false } = {}) {
+// Tope por petición: si el servidor se cuelga, la suite lo reporta como fallo
+// (status 0) y sigue con el resto en vez de morir tras 5 minutos de espera.
+const REQ_TIMEOUT_MS = Number(process.env.MOON_E2E_TIMEOUT_MS || 20000);
+
+async function req(method, path, { token, body, headers = {}, raw = false, timeout = REQ_TIMEOUT_MS } = {}) {
   const h = { ...headers };
   if (token) h['Authorization'] = `Bearer ${token}`;
   let payload;
@@ -56,7 +60,19 @@ async function req(method, path, { token, body, headers = {}, raw = false } = {}
   } else {
     payload = body;
   }
-  const res = await fetch(API_BASE + path, { method, headers: h, body: payload, redirect: 'manual' });
+  let res;
+  try {
+    res = await fetch(API_BASE + path, {
+      method,
+      headers: h,
+      body: payload,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch (error) {
+    const motivo = error && error.message ? error.message : String(error);
+    return { status: 0, json: null, text: `ERROR DE RED: ${motivo}`, headers: new Headers() };
+  }
   if (raw) return res;
   const text = await res.text();
   let json = null;

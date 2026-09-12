@@ -98,13 +98,42 @@ fn db_init() -> PostgresPool {
     }
 }
 
+// ---- Marcadores ----
+// Titan no reescribe SQL (ver docs/DATABASE_API.md): PostgreSQL usa $1, $2…
+// y el estilo `?` es el de SQLite/MySQL. Moon arma algunas consultas con `?`
+// (por ejemplo las cláusulas IN dinámicas), así que aquí se numeran justo
+// antes de enviarlas. Un `?` dentro de un literal 'texto' se respeta.
+fn sql_posicional(sql: string) -> string {
+    let n = std::text::length(sql)
+    if n == 0 { return sql }
+    let mut out = ""
+    let mut i = 0
+    let mut k = 0
+    let mut en_texto = false
+    while i < n {
+        let ch = std::text::substring(sql, i, i + 1)
+        if ch == "'" {
+            if en_texto { en_texto = false } else { en_texto = true }
+            out = out + ch
+        } else if ch == "?" && !en_texto {
+            k = k + 1
+            out = out + "$" + k
+        } else {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    out
+}
+
 // ---- Helpers de acceso a BD con manejo de errores real ----
 // El driver lanza error en SQL inválido / conexión caída; estos
 // helpers lo convierten en nil/-1 y lo registran en consola para
 // que un error puntual nunca tumbe el proceso.
 
 fn db_rows(conn: Postgres, sql: string, params: array) -> any {
-    let intento = std::try::catch(|| std::postgres::query(conn, sql, params))
+    let consulta = sql_posicional(sql)
+    let intento = std::try::catch(|| std::postgres::query(conn, consulta, params))
     match intento {
         Result::Ok(rows) => rows,
         Result::Err(msg) => {
@@ -115,7 +144,8 @@ fn db_rows(conn: Postgres, sql: string, params: array) -> any {
 }
 
 fn db_exec(conn: Postgres, sql: string, params: array) -> int {
-    let intento = std::try::catch(|| std::postgres::execute(conn, sql, params))
+    let consulta = sql_posicional(sql)
+    let intento = std::try::catch(|| std::postgres::execute(conn, consulta, params))
     match intento {
         Result::Ok(n) => n,
         Result::Err(msg) => {
