@@ -2,8 +2,21 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 
+// En desarrollo, si se pide MOON_VISTA=diseno, la raíz abre la galería del
+// sistema de diseño en vez de la aplicación. Solo afecta a `vite dev`.
+const raizDiseno = {
+  name: 'moon-raiz-diseno',
+  configureServer(servidor) {
+    if (process.env.MOON_VISTA !== 'diseno') return;
+    servidor.middlewares.use((req, _res, siguiente) => {
+      if (req.url === '/' || req.url.startsWith('/?')) req.url = '/design.html';
+      siguiente();
+    });
+  },
+};
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), raizDiseno],
   server: {
     host: '0.0.0.0',
     port: Number(process.env.PORT || 5173),
