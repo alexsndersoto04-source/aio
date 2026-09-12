@@ -86,6 +86,13 @@ fn annotate(title: &str, message: &str) {
     println!("::error title={title}::{}", annotation_message(&detail));
 }
 
+/// Publica un aviso del job (no falla la prueba y se lee desde la API de
+/// anotaciones, igual que los errores).
+fn notice(title: &str, message: &str) {
+    let detail = clipped_message(message);
+    println!("::notice title={title}::{}", annotation_message(&detail));
+}
+
 /// Tamaño máximo que GitHub acepta en el mensaje de una anotación.
 const ANNOTATION_CHUNK: usize = 3500;
 
@@ -403,6 +410,10 @@ fn run_e2e(moon: &Path, node: &[String], log_path: &Path) {
     if ok {
         let short = tail_of_text(&stdout, 12);
         publish_summary(&format!("{header}\n\n```\n{short}\n```"));
+        // El resultado exacto queda como aviso: así se puede comprobar el
+        // «N PASS / 0 FAIL» desde la API sin descargar los registros del job
+        // (que GitHub no siempre deja leer).
+        notice("Moon E2E · resultado", &format!("{header}\n\n```\n{short}\n```"));
         println!("Moon E2E correcto");
         return;
     }
