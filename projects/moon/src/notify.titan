@@ -5,7 +5,7 @@
 // Las preferencias del usuario se respetan (SPEC §P6).
 
 fn n_prefs_allowed(conn: Postgres, uid: int, ntype: string) -> bool {
-    let row = db_one(conn, "SELECT follow, like, comment, reply, mention, message, system FROM notification_prefs WHERE user_id = ?", [uid])
+    let row = db_one(conn, "SELECT follow, \"like\", comment, reply, mention, message, system FROM notification_prefs WHERE user_id = ?", [uid])
     if row == nil { return true }
     let val = std::map::get(row, ntype)
     if val == nil { return true }

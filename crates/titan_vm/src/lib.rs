@@ -3876,7 +3876,7 @@ fn postgres_pool(runtime: &RuntimeState, value: Value) -> Result<titan_postgres:
 fn postgres_error(error: titan_postgres::PgError) -> VmError {
     VmError::Native {
         function: "std::postgres".into(),
-        message: error.to_string(),
+        message: error.detail(),
     }
 }
 fn postgres_database(
