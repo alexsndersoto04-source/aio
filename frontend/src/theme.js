@@ -5,6 +5,8 @@
 // aplica antes del primer pintado: sin eso, la pantalla aparece clara y
 // salta a oscura (el destello blanco clásico).
 
+import { almacen } from './almacen.js';
+
 const CLAVE = 'moon_theme';
 const OPCIONES = ['light', 'dark', 'system'];
 
@@ -13,7 +15,7 @@ export function prefersDark() {
 }
 
 export function getPreferencia() {
-  const guardado = localStorage.getItem(CLAVE);
+  const guardado = almacen.leer(CLAVE);
   return OPCIONES.includes(guardado) ? guardado : 'system';
 }
 
@@ -34,7 +36,7 @@ export function aplicarTema(pref = getPreferencia()) {
 
 export function setPreferencia(pref) {
   if (!OPCIONES.includes(pref)) return;
-  localStorage.setItem(CLAVE, pref);
+  almacen.escribir(CLAVE, pref);
   aplicarTema(pref);
   window.dispatchEvent(new CustomEvent('moon:tema', { detail: pref }));
 }

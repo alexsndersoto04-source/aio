@@ -5,6 +5,8 @@
 // - Errores tipificados (ApiError con status/code), 401 -> reintento único
 // - CERO simulaciones: todas las llamadas van al backend real.
 
+import { almacen } from './almacen.js';
+
 export const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '') || '';
 
 // Convierte URLs relativas de assets de la API (p. ej. /api/media/x.jpg)
@@ -35,30 +37,30 @@ const ACCESS_KEY = 'moon_access_token';
 const REFRESH_KEY = 'moon_refresh_token';
 const USER_KEY = 'moon_user';
 
-let accessToken = localStorage.getItem(ACCESS_KEY);
+let accessToken = almacen.leer(ACCESS_KEY);
 let refreshPromise = null;
 
 export function getAccessToken() { return accessToken; }
 
 export function saveTokens(access, refresh) {
   accessToken = access || null;
-  if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
-  if (access) localStorage.setItem(ACCESS_KEY, access);
-  else localStorage.removeItem(ACCESS_KEY);
+  if (refresh) almacen.escribir(REFRESH_KEY, refresh);
+  if (access) almacen.escribir(ACCESS_KEY, access);
+  else almacen.borrar(ACCESS_KEY);
 }
 
-export function getRefreshToken() { return localStorage.getItem(REFRESH_KEY); }
+export function getRefreshToken() { return almacen.leer(REFRESH_KEY); }
 
 export function clearTokens() {
   accessToken = null;
-  localStorage.removeItem(ACCESS_KEY);
-  localStorage.removeItem(REFRESH_KEY);
-  localStorage.removeItem(USER_KEY);
+  almacen.borrar(ACCESS_KEY);
+  almacen.borrar(REFRESH_KEY);
+  almacen.borrar(USER_KEY);
 }
 
-export function saveUser(user) { localStorage.setItem(USER_KEY, JSON.stringify(user)); }
+export function saveUser(user) { almacen.escribir(USER_KEY, JSON.stringify(user)); }
 export function getUser() {
-  try { return JSON.parse(localStorage.getItem(USER_KEY) || 'null'); } catch { return null; }
+  try { return JSON.parse(almacen.leer(USER_KEY) || 'null'); } catch { return null; }
 }
 
 // Refresca el token (rotación). Una sola petición concurrente.
