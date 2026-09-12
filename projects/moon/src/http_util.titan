@@ -145,7 +145,9 @@ fn qs_page(req: int) -> array {
     if page < 1 { page = 1 }
     if limit < 1 { limit = 1 }
     if limit > CFG_PAGE_LIMIT_MAX { limit = CFG_PAGE_LIMIT_MAX }
-    [page, limit]
+    // Un `[` al inicio de linea se pegaria a la linea anterior como indice
+    // (gotcha documentado en docs/TITAN_SYNTAX.md), por eso el return.
+    return [page, limit]
 }
 
 // ---- Body JSON ----

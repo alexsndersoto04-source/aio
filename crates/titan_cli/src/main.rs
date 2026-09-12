@@ -685,7 +685,26 @@ fn fatal(label: &str, error: impl std::fmt::Display) -> ! {
     fatal_message(label, &error.to_string())
 }
 fn fatal_message(label: &str, message: &str) -> ! {
-    eprintln!("{label}:\n{message}");
+    // El mensaje puede ser multilinea (un diagnostico por linea). Hay entornos
+    // que solo conservan la PRIMERA linea de un error —por ejemplo, las
+    // anotaciones de GitHub Actions—, y ahi un mensaje multilinea se pierde
+    // entero: quedaria solo la etiqueta, sin la causa. Por eso la primera
+    // linea lleva todos los diagnosticos juntos y, si el mensaje ocupaba mas
+    // de una linea, se repite debajo con su formato legible.
+    let flat = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    eprintln!("{label}: {flat}");
+    if message.trim() != flat {
+        eprintln!("{message}");
+    }
+    // En GitHub Actions se publica ademas el diagnostico como ANOTACION del
+    // job. Las anotaciones solo conservan la primera linea y los logs de un
+    // workflow no siempre son accesibles (por ejemplo, desde un sandbox sin
+    // salida a los hosts de artefactos): la anotacion deja la causa a la vista
+    // en la propia interfaz de Checks, sin abrir el log.
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let escaped = flat.replace('%', "%25").replace('\r', "%0D");
+        eprintln!("::error title={label}::{escaped}");
+    }
     std::process::exit(1)
 }
 
