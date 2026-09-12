@@ -1980,8 +1980,11 @@ impl TypeEnv {
         let previous_file =
             std::mem::replace(&mut self.current_file, function.source_file.clone());
         self.check_function_inner(function);
-        self.current_file = previous_file;
+        // La ubicacion se asigna con el archivo de ESTA funcion todavia en
+        // curso: si se restaurase antes, los errores que solo reciben su
+        // ubicacion aqui se quedarian sin archivo que los identifique.
         self.assign_error_span(error_start, function.span);
+        self.current_file = previous_file;
     }
 
     fn check_function_inner(&mut self, function: &FunctionDecl) {
