@@ -42,3 +42,5 @@ projects/moon/ops/pg/data/
 projects/moon/ops/pg/pg.log
 projects/moon/pg/data/
 projects/moon/pg/pg.log
+# Imágenes subidas por la API en local (la BD es nueva en cada prueba)
+projects/moon/uploads/
