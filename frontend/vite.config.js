@@ -2,21 +2,30 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 
-// En desarrollo, si se pide MOON_VISTA=diseno, la raíz abre la galería del
-// sistema de diseño en vez de la aplicación. Solo afecta a `vite dev`.
-const raizDiseno = {
-  name: 'moon-raiz-diseno',
+// En desarrollo, MOON_VISTA elige qué se abre en la raíz (solo `vite dev`):
+//   diseno → la galería del sistema de diseño
+//   app    → la aplicación en modo demostración (datos de ejemplo, sin servidor)
+const vistaEnRaiz = {
+  name: 'moon-vista-en-raiz',
   configureServer(servidor) {
-    if (process.env.MOON_VISTA !== 'diseno') return;
+    const vista = process.env.MOON_VISTA;
+    if (vista !== 'diseno' && vista !== 'app') return;
+    const destino = vista === 'diseno' ? '/design.html' : '/index.html';
     servidor.middlewares.use((req, _res, siguiente) => {
-      if (req.url === '/' || req.url.startsWith('/?')) req.url = '/design.html';
+      if (req.url === '/' || req.url.startsWith('/?')) req.url = destino;
       siguiente();
     });
+  },
+  // Con MOON_VISTA=app la página activa el modo demostración (datos de ejemplo
+  // en el navegador, sin servidor). Solo en desarrollo: al compilar no se toca.
+  transformIndexHtml(html) {
+    if (process.env.MOON_VISTA !== 'app') return html;
+    return html.replace('<head>', '<head>\n    <script>window.MOON_DEMO = true;</script>');
   },
 };
 
 export default defineConfig({
-  plugins: [react(), raizDiseno],
+  plugins: [react(), vistaEnRaiz],
   server: {
     host: '0.0.0.0',
     port: Number(process.env.PORT || 5173),
