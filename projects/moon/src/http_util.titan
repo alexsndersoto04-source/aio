@@ -126,11 +126,10 @@ fn qs_primero(q: map) -> map {
     for k in std::map::keys(q) {
         let vals = std::map::get(q, k)
         let candidato = std::try::catch(|| vals[0])
-        let guardado = match candidato {
-            Result::Ok(v) => { out = std::map::insert(out, k, v); true },
-            Result::Err(_) => false,
+        match candidato {
+            Result::Ok(v) => { out = std::map::insert(out, k, v) },
+            Result::Err(_) => {},
         }
-        let _ = guardado
     }
     out
 }

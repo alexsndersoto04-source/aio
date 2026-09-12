@@ -40,6 +40,10 @@ const MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
 const MAX_TRAILER_BYTES: usize = 16 * 1024;
 const MAX_TRAILERS: usize = 32;
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Veces que se renueva la espera de un WebSocket sin recibir nada antes de
+/// cerrarlo (10 minutos con IO_DEADLINE de 5 s): un par que desaparece sin
+/// avisar no puede dejar la conexión colgada para siempre.
+const MAX_WS_VUELTAS_SIN_ACTIVIDAD: u32 = 120;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 #[cfg(not(test))]
 const IO_DEADLINE: Duration = Duration::from_secs(5);
@@ -115,6 +119,18 @@ fn map_io(error: std::io::Error, operation: &'static str) -> ServerError {
     }
 }
 
+/// ¿El error es sólo el vencimiento del plazo de E/S?
+///
+/// Un WebSocket espera mensajes del cliente sin plazo natural: `ws_recv`
+/// usa un plazo corto y lo renueva. Si el vencimiento se tratara como
+/// error, cada socket se cerraría al primer silencio y no llegaría ningún
+/// evento en vivo. Las escrituras van por `write_all_deadline`, que tampoco
+/// «pierde» datos a medias: el plazo se recalcula en cada trozo, así que un
+/// `Timeout` en la escritura significa que no se escribió nada.
+fn es_vencimiento(error: &ServerError) -> bool {
+    matches!(error, ServerError::Timeout { .. })
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum HandleKind {
     Server,
@@ -176,8 +192,14 @@ struct WsConn {
 
 struct WsEntry {
     conn: Mutex<WsConn>,
+    /// Mitad de escritura del socket, con candado propio. TCP es full-duplex:
+    /// escribir mientras otro hilo espera un mensaje entrante es correcto, y
+    /// sin candados compartidos una entrega en vivo no espera a la lectura.
+    writer: Mutex<TcpStream>,
     shutdown: TcpStream,
     closed: AtomicBool,
+    /// Vueltas de `ws_recv` vencidas sin recibir nada (ver el límite).
+    sin_actividad: std::sync::atomic::AtomicU32,
 }
 
 impl WsEntry {
@@ -1401,14 +1423,19 @@ pub fn upgrade_websocket(handle: i64, max_message: usize) -> Result<i64, ServerE
     let shutdown = stream
         .try_clone()
         .map_err(|error| map_io(error, "clone WebSocket for cleanup"))?;
+    let writer = stream
+        .try_clone()
+        .map_err(|error| map_io(error, "clone WebSocket for writes"))?;
     let websocket = Arc::new(WsEntry {
         conn: Mutex::new(WsConn {
             stream,
             decoder: MessageDecoder::new(max_message),
             prefetched: std::mem::take(&mut io.prefetched),
         }),
+        writer: Mutex::new(writer),
         shutdown,
         closed: AtomicBool::new(false),
+        sin_actividad: std::sync::atomic::AtomicU32::new(0),
     });
     drop(io);
     reservation.commit(NewHandle::WebSocket(websocket))
@@ -1422,7 +1449,10 @@ fn ensure_websocket_open(websocket: &WsEntry, handle: i64) -> Result<(), ServerE
     }
 }
 
-fn receive_websocket(conn: &mut WsConn) -> Result<(String, String, Vec<u8>), ServerError> {
+fn receive_websocket(
+    websocket: &WsEntry,
+    conn: &mut WsConn,
+) -> Result<(String, String, Vec<u8>), ServerError> {
     if !conn.prefetched.is_empty() {
         conn.decoder.push(&conn.prefetched)?;
         conn.prefetched.clear();
@@ -1437,12 +1467,18 @@ fn receive_websocket(conn: &mut WsConn) -> Result<(String, String, Vec<u8>), Ser
             Some(Message::Binary(bytes)) => return Ok(("binary".into(), String::new(), bytes)),
             Some(Message::Ping(payload)) => {
                 let pong = ws_codec::encode_frame(true, WS_OP_PONG, &payload, None)?;
-                write_all_deadline(
-                    &mut conn.stream,
+                // El pong sale por la mitad de escritura (el candado de
+                // lectura ya lo tiene este hilo, y así no se cruza con un
+                // evento en vivo que salga en el mismo instante).
+                let mut writer = crate::native::lock_recover(&websocket.writer);
+                let pong_result = write_all_deadline(
+                    &mut writer,
                     &pong,
                     deadline,
                     "write WebSocket pong",
-                )?;
+                );
+                drop(writer);
+                pong_result?;
                 return Ok(("ping".into(), String::new(), payload));
             }
             Some(Message::Pong(payload)) => {
@@ -1455,12 +1491,14 @@ fn receive_websocket(conn: &mut WsConn) -> Result<(String, String, Vec<u8>), Ser
                 }
                 payload.extend_from_slice(reason.as_bytes());
                 let close = ws_codec::encode_frame(true, WS_OP_CLOSE, &payload, None)?;
+                let mut writer = crate::native::lock_recover(&websocket.writer);
                 let _ = write_all_deadline(
-                    &mut conn.stream,
+                    &mut writer,
                     &close,
                     deadline,
                     "echo WebSocket close",
                 );
+                drop(writer);
                 return Ok(("close".into(), reason, payload));
             }
             None => {
@@ -1488,16 +1526,23 @@ pub fn ws_recv(handle: i64) -> Result<(String, String, Vec<u8>), ServerError> {
     let websocket = get_websocket(handle)?;
     ensure_websocket_open(&websocket, handle)?;
     let result = {
-        let mut conn = websocket
-            .conn
-            .try_lock()
-            .map_err(|_| ServerError::Busy {
-                resource: "server WebSocket connection",
-            })?;
-        receive_websocket(&mut conn)
+        let mut conn = crate::native::lock_recover(&websocket.conn);
+        receive_websocket(&websocket, &mut conn)
     };
-    if result.is_err() {
-        if let Some(websocket) = take_websocket(handle) {
+    if result.is_ok() {
+        websocket.sin_actividad.store(0, Ordering::Release);
+    } else if let Err(error) = &result {
+        // El plazo vencido sólo significa «el cliente no ha hablado»: se
+        // renueva la espera y el socket sigue vivo para recibir eventos.
+        // Cualquier otro error sí cierra la conexión.
+        if es_vencimiento(error) {
+            let vueltas = websocket.sin_actividad.fetch_add(1, Ordering::AcqRel);
+            if vueltas.saturating_add(1) > MAX_WS_VUELTAS_SIN_ACTIVIDAD {
+                if let Some(websocket) = take_websocket(handle) {
+                    websocket.close();
+                }
+            }
+        } else if let Some(websocket) = take_websocket(handle) {
             websocket.close();
         }
     }
@@ -1514,24 +1559,22 @@ fn send_websocket(handle: i64, opcode: u8, payload: &[u8]) -> Result<(), ServerE
     let websocket = get_websocket(handle)?;
     ensure_websocket_open(&websocket, handle)?;
     let frame = ws_codec::encode_frame(true, opcode, payload, None)?;
-    let result = {
-        let mut conn = websocket
-            .conn
-            .try_lock()
-            .map_err(|_| ServerError::Busy {
-                resource: "server WebSocket connection",
-            })?;
-        write_all_deadline(
-            &mut conn.stream,
-            &frame,
-            Instant::now() + IO_DEADLINE,
-            "write WebSocket message",
-        )
-    };
+    // La escritura usa su propio candado: el hilo de este socket puede estar
+    // esperando un mensaje entrante (hasta 5 s por vuelta) sin impedir que
+    // lleguen los eventos en vivo. Antes compartían candado, el envío fallaba
+    // al instante con «Busy» y el hub daba la conexión por perdida.
+    let mut writer = crate::native::lock_recover(&websocket.writer);
+    let result = write_all_deadline(
+        &mut writer,
+        &frame,
+        Instant::now() + IO_DEADLINE,
+        "write WebSocket message",
+    );
     if result.is_err() {
-        if let Some(websocket) = take_websocket(handle) {
-            websocket.close();
-        }
+        // Un plazo vencido a mitad de fotograma deja el flujo desincronizado:
+        // no hay forma segura de continuar, así que se corta la conexión.
+        drop(writer);
+        websocket.close();
     }
     result
 }
@@ -1574,14 +1617,14 @@ pub fn ws_close(handle: i64, code: Option<u16>, reason: &str) -> Result<(), Serv
     let frame = ws_codec::encode_frame(true, WS_OP_CLOSE, &payload, None)?;
     if let Some(websocket) = take_websocket(handle) {
         websocket.closed.store(true, Ordering::Release);
-        if let Ok(mut conn) = websocket.conn.try_lock() {
-            let _ = write_all_deadline(
-                &mut conn.stream,
-                &frame,
-                Instant::now() + IO_DEADLINE,
-                "write WebSocket close",
-            );
-        }
+        let mut writer = crate::native::lock_recover(&websocket.writer);
+        let _ = write_all_deadline(
+            &mut writer,
+            &frame,
+            Instant::now() + IO_DEADLINE,
+            "write WebSocket close",
+        );
+        drop(writer);
         websocket.close();
     }
     Ok(())

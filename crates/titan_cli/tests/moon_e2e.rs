@@ -86,6 +86,47 @@ fn annotate(title: &str, message: &str) {
     println!("::error title={title}::{}", annotation_message(&detail));
 }
 
+/// Tamaño máximo que GitHub acepta en el mensaje de una anotación.
+const ANNOTATION_CHUNK: usize = 3500;
+
+/// Parte el texto en trozos que quepan en una anotación, cortando por
+/// líneas. GitHub rechaza en silencio el mensaje entero si se pasa del
+/// límite, y con el log de la API entero hace falta partirlo para poder
+/// leerlo desde un run.
+fn chunks(text: &str, limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut actual = String::new();
+    for line in text.lines() {
+        if !actual.is_empty() && actual.len() + line.len() + 1 > limit {
+            out.push(std::mem::take(&mut actual));
+        }
+        if !actual.is_empty() {
+            actual.push('\n');
+        }
+        actual.push_str(line);
+    }
+    if !actual.is_empty() {
+        out.push(actual);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// Publica un texto largo repartido en varias anotaciones numeradas.
+fn annotate_long(title: &str, text: &str) {
+    let trozos = chunks(text, ANNOTATION_CHUNK);
+    let total = trozos.len();
+    for (index, trozo) in trozos.into_iter().enumerate() {
+        if total == 1 {
+            annotate(title, &trozo);
+        } else {
+            annotate(&format!("{title} ({}/{total})", index + 1), &trozo);
+        }
+    }
+}
+
 /// Publica el motivo como anotación del job y falla la prueba.
 fn fail_with(title: &str, message: &str) -> ! {
     annotate(title, message);
@@ -372,7 +413,9 @@ fn run_e2e(moon: &Path, node: &[String], log_path: &Path) {
         "Moon E2E · resumen",
         &format!("{header}\n\n{fallos}"),
     );
-    annotate("Moon E2E · log API", &tail_of_file(log_path, 400));
+    // El log completo, en trozos: GitHub corta el mensaje de una anotación
+    // a ~4 KB, así que un log largo hay que repartirlo o no se ve.
+    annotate_long("Moon E2E · log API", &tail_of_file(log_path, 2000));
     let mut message = format!("la suite E2E de Moon falló ({})", output.status);
     message.push_str("\n--- E2E (últimas 40 líneas) ---\n");
     message.push_str(&tail);

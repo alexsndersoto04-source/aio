@@ -44,6 +44,12 @@ fn db_migrations() -> array {
     list = std::array::push(list, m13)
     let m14 = mx_build(14, "add_dm_privacy", "ALTER TABLE users ADD COLUMN IF NOT EXISTS dm_privacy TEXT NOT NULL DEFAULT 'all'")
     list = std::array::push(list, m14)
+    // Titan tiene un solo tipo entero (i64) y el driver PostgreSQL lo
+    // declara como BIGINT: enviar un parámetro a una columna INT (int4)
+    // falla con «error serializing parameter». Estas columnas son las
+    // últimas que quedaban en int4 (ver docs/DATABASE_API.md).
+    let m15 = mx_build(15, "enteros_a_bigint", "ALTER TABLE users ALTER COLUMN followers_count TYPE BIGINT; ALTER TABLE users ALTER COLUMN following_count TYPE BIGINT; ALTER TABLE users ALTER COLUMN posts_count TYPE BIGINT; ALTER TABLE users ALTER COLUMN images_count TYPE BIGINT; ALTER TABLE posts ALTER COLUMN likes_count TYPE BIGINT; ALTER TABLE posts ALTER COLUMN comments_count TYPE BIGINT; ALTER TABLE posts ALTER COLUMN saves_count TYPE BIGINT; ALTER TABLE post_images ALTER COLUMN position TYPE BIGINT; ALTER TABLE hashtags ALTER COLUMN posts_count TYPE BIGINT; ALTER TABLE media ALTER COLUMN width TYPE BIGINT; ALTER TABLE media ALTER COLUMN height TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_users TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_posts TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_messages TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_likes TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_comments TYPE BIGINT; ALTER TABLE app_stats ALTER COLUMN new_follows TYPE BIGINT")
+    list = std::array::push(list, m15)
     list
 }
 

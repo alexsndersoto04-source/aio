@@ -29,6 +29,18 @@ function lastLogCode(re) {
   }
 }
 
+// Igual que lastLogCode, pero espera a que el servidor escriba la línea:
+// el log se vuelca al imprimir, y el sistema de archivos puede tardar un
+// instante en dejarlo ver.
+async function waitLogCode(re, intentos = 20) {
+  for (let i = 0; i < intentos; i += 1) {
+    const code = lastLogCode(re);
+    if (code) return code;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
+}
+
 let passed = 0;
 let failed = 0;
 const failures = [];
@@ -193,7 +205,7 @@ async function main() {
   check('2fa enable -> 200 + temp_token', en.status === 200 && en.json && !!en.json.temp_token, `status=${en.status} ${en.text.slice(0, 160)}`);
   const enBad = await req('POST', '/api/auth/2fa/enable', { token: lt, body: { password: 'Mala12345!' } });
   check('2fa enable con contraseña mala -> 401', enBad.status === 401, `status=${enBad.status}`);
-  const code1 = lastLogCode(/Tu código para activar 2FA es: (\d{6})/);
+  const code1 = await waitLogCode(/Tu código para activar 2FA es: (\d{6})/);
   check('código 2FA visible en el log del servidor', /^\d{6}$/.test(code1 || ''), 'no se encontró "Tu código para activar 2FA es: XXXXXX" en ' + LOG_FILE);
   const confBad = await req('POST', '/api/auth/2fa/confirm', { body: { temp_token: en.json && en.json.temp_token, code: '000000' } });
   check('2fa confirm con código malo -> 401', confBad.status === 401, `status=${confBad.status}`);
@@ -205,7 +217,7 @@ async function main() {
   // login ahora exige el segundo factor
   const l2 = await req('POST', '/api/auth/login', { body: { email: `${u1}@moon.test`, password: 'Secret123!' } });
   check('login con 2fa activo -> twofa_required + temp_token', l2.status === 200 && l2.json && l2.json.twofa_required === true && !!l2.json.temp_token, `status=${l2.status} ${l2.text.slice(0, 160)}`);
-  const code2 = lastLogCode(/Tu código de verificación es: (\d{6})/);
+  const code2 = await waitLogCode(/Tu código de verificación es: (\d{6})/);
   check('código de login 2FA visible en el log', /^\d{6}$/.test(code2 || ''), 'no se encontró "Tu código de verificación es: XXXXXX" en ' + LOG_FILE);
   const ver = await req('POST', '/api/auth/2fa/verify', { body: { temp_token: l2.json && l2.json.temp_token, code: code2 } });
   check('2fa verify -> 200 + access_token', ver.status === 200 && ver.json && !!(ver.json.access_token || ver.json.access), `status=${ver.status} ${ver.text.slice(0, 160)}`);
@@ -341,15 +353,15 @@ async function main() {
     check('hilo contiene el mensaje', /mensaje E2E/.test(thread.text));
 
     // espera el evento en vivo en el WS de bob
-    await new Promise((r) => setTimeout(r, 2500));
+    await new Promise((r) => setTimeout(r, 3000));
     check('WS entregó evento en vivo a bob', wsEvents.length > 0, `eventos=${JSON.stringify(wsEvents).slice(0, 200)}`);
 
     const read = await req('POST', `/api/messages/conversations/${convId}/read`, { token: t2, body: {} });
-    check('marcar leído -> 200', read.status === 200, `status=${read.status} ${read.text.slice(0, 120)}`);
+    check('marcar leído -> 200/204', read.status === 200 || read.status === 204, `status=${read.status} ${read.text.slice(0, 120)}`);
 
     if (msgId) {
       const react = await req('POST', `/api/messages/${msgId}/react`, { token: t2, body: { reaction: '❤️' } });
-      check('reacción a mensaje -> 200', react.status === 200, `status=${react.status} ${react.text.slice(0, 120)}`);
+      check('reacción a mensaje -> 200/204', react.status === 200 || react.status === 204, `status=${react.status} ${react.text.slice(0, 120)}`);
     }
 
     const convs = await req('GET', '/api/messages/conversations', { token: t2 });

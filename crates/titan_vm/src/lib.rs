@@ -3484,7 +3484,7 @@ impl Vm {
                         // Sin terminal, stdout va con búfer: sin este volcado un
                         // log redirigido a fichero no muestra las líneas hasta
                         // llenar el búfer (Moon imprime los códigos 2FA ahí).
-                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                        let _ = Write::flush(&mut std::io::stdout());
                     }
                     stack.push(Value::Nil);
                 }

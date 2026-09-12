@@ -367,7 +367,7 @@ fn h_posts_comment(req: int, ctx: map, post_id: int, parent_id: int) {
         }
         parent_final = parent_id
     }
-    let _ = db_exec(conn, "INSERT INTO comments (post_id, user_id, parent_id, content) VALUES (?, ?, NULLIF(?, 0), ?)", [post_id, uid, parent_final, clean])
+    let _ = db_exec(conn, "INSERT INTO comments (post_id, user_id, parent_id, content) VALUES (?, ?, NULLIF(?, 0::bigint), ?)", [post_id, uid, parent_final, clean])
     let _ = db_exec(conn, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", [post_id])
     r_bump_stats(conn, "new_comments")
     let hub = std::map::get(ctx, "hub")
