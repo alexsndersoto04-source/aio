@@ -1,17 +1,35 @@
-// Construye un único archivo HTML autocontenido con la galería del sistema
-// de diseño de Moon (CSS + JS incrustados, sin servidor ni red).
-// Uso:  node scripts/diseno-suelto.mjs [destino.html]
+// Construye un único archivo HTML autocontenido (CSS y JavaScript
+// incrustados), sin servidor ni red. Dos usos, desde `frontend/`:
+//
+//   node scripts/diseno-suelto.mjs            → galería del sistema de diseño
+//   node scripts/diseno-suelto.mjs --app      → aplicación en modo demostración
+//
+// Opciones:
+//   --destino <archivo>   ruta de salida (por defecto ./moon-diseno.html
+//                         o ./moon-demo.html según el modo)
+//   --app                 usa la aplicación (index.html) con datos de ejemplo
+
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
-import { readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // La raíz del frontend es la carpeta que contiene este script.
 const raiz = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const salida = '/tmp/diseno-inline';
-const destino = process.argv[2] || resolve(raiz, 'moon-diseno.html');
 
+const argumentos = process.argv.slice(2);
+const modoApp = argumentos.includes('--app');
+const indiceDestino = argumentos.indexOf('--destino');
+const destino = resolve(
+  indiceDestino >= 0 && argumentos[indiceDestino + 1]
+    ? argumentos[indiceDestino + 1]
+    : join(raiz, modoApp ? 'moon-demo.html' : 'moon-diseno.html')
+);
+
+const entrada = modoApp ? 'index.html' : 'design.html';
+const salida = join(raiz, 'node_modules/.tmp-pagina-suelta');
+mkdirSync(salida, { recursive: true });
 rmSync(salida, { recursive: true, force: true });
 
 await build({
@@ -27,7 +45,7 @@ await build({
     assetsInlineLimit: 100 * 1024 * 1024,
     modulePreload: { polyfill: false },
     rollupOptions: {
-      input: resolve(raiz, 'design.html'),
+      input: resolve(raiz, entrada),
       output: {
         inlineDynamicImports: true,
         entryFileNames: 'app.js',
@@ -37,10 +55,10 @@ await build({
   },
 });
 
-const archivos = readdirSync(salida);
-const html = readFileSync(join(salida, 'design.html'), 'utf8');
+const html = readFileSync(join(salida, entrada), 'utf8');
 const css = readFileSync(join(salida, 'app.css'), 'utf8');
 const js = readFileSync(join(salida, 'app.js'), 'utf8');
+const archivos = readdirSync(salida);
 
 let final = html
   // Quitar precargas de módulos (ya no hacen falta)
@@ -50,9 +68,14 @@ let final = html
   .replace('</head>', `<style>\n${css}\n</style>\n</head>`)
   // Incrustar el JavaScript
   .replace(/<script type="module"[^>]*src="[^"]*app\.js"[^>]*><\/script>/g, '')
-  .replace('</body>', `<script type="module">\n${js.replace(/<\/script/g, '<\\/script')}\n</script>\n</body>`);
+  .replace(
+    '</body>',
+    (modoApp ? '<script>window.MOON_DEMO = true;</script>\n' : '') +
+      `<script type="module">\n${js.replace(/<\/script/g, '<\\/script')}\n</script>\n</body>`
+  );
 
 writeFileSync(destino, final, 'utf8');
 const kb = (Buffer.byteLength(final) / 1024).toFixed(0);
-console.log(`Carpeta temporal: ${archivos.join(', ')}`);
+console.log(`${modoApp ? 'Aplicación en modo demostración' : 'Galería del sistema de diseño'}`);
+console.log(`Piezas compiladas: ${archivos.join(', ')}`);
 console.log(`Listo: ${destino} (${kb} kB)`);

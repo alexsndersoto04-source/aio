@@ -4,6 +4,7 @@
 // distinto), a la derecha el formulario. En móvil se apila.
 
 import React, { useState } from 'react';
+import { esDemo } from '../demo.js';
 import { useAuth } from '../auth.jsx';
 import { toast } from '../ui.js';
 import {
@@ -22,7 +23,10 @@ function Campo({ label, hint, ...props }) {
 
 export default function AuthView({ mode }) {
   const { login, register, verify2fa } = useAuth();
-  const [form, setForm] = useState({ username: '', email: '', password: '', code: '' });
+  const demo = esDemo();
+  const [form, setForm] = useState(demo
+    ? { username: 'alice', email: 'alice@moon.test', password: 'demo', code: '' }
+    : { username: '', email: '', password: '', code: '' });
   const [twofa, setTwofa] = useState(null); // { temp_token }
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);

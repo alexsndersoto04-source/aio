@@ -24,7 +24,19 @@ MOON_VISTA=diseno npm run dev
 # 2) En un único archivo HTML, sin servidor ni conexión:
 #    genera `moon-diseno.html` (CSS y JS incrustados) y ábrelo con el navegador
 node scripts/diseno-suelto.mjs
+
+# 3) La aplicación entera, sin servidor: modo demostración con datos de ejemplo
+node scripts/diseno-suelto.mjs --app
 ```
+
+El **modo demostración** (`src/demo.js`) responde a las llamadas `/api/...`
+desde el propio navegador, para poder enseñar la aplicación donde no hay
+servidor. Se activa con `window.MOON_DEMO = true` o con `?demo` en la
+dirección; sin esa marca todo llama al servidor real. Sus respuestas se
+comprueban con `node scripts/prueba-demo.mjs` (71 llamadas).
+
+`scripts/capturas.mjs` genera imágenes PNG de la galería con un navegador real
+(requiere `npx playwright install chromium`).
 
 La galería también se compila en `npm run build` (sale como `dist/design.html`).
 

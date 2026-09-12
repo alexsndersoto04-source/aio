@@ -11,6 +11,7 @@ import LeftNav from './components/LeftNav.jsx';
 import BottomNav, { FloatingCompose } from './components/BottomNav.jsx';
 import RightRail from './components/RightRail.jsx';
 import Overlays from './components/Overlays.jsx';
+import DemoBanner from './components/DemoBanner.jsx';
 import { PostSkeleton } from './components/Skeleton.jsx';
 import AuthView from './views/AuthView.jsx';
 import ResetView from './views/ResetView.jsx';
@@ -41,7 +42,10 @@ function Shell({ children }) {
   return (
     <div className="app">
       <LeftNav />
-      <main className="main">{children}</main>
+      <main className="main">
+        <DemoBanner />
+        {children}
+      </main>
       <RightRail />
       <BottomNav />
       <FloatingCompose />
