@@ -97,7 +97,8 @@ fn h_auth_login(req: int, ctx: map) {
     let pool = std::map::get(ctx, "pool")
     let body = r_body(req)
     if body == nil { return }
-    let login_id = v_body_str(body, "username", 1, 254)
+    let mut login_id = v_body_str(body, "username", 1, 254)
+    if login_id == nil { login_id = v_body_str(body, "email", 1, 254) }
     let password = v_body_str(body, "password", 1, 128)
     if login_id == nil || password == nil {
         r_err(req, 400, "Credenciales incompletas")

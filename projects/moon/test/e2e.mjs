@@ -61,6 +61,7 @@ async function req(method, path, { token, body, headers = {}, raw = false, timeo
     payload = body;
   }
   let res;
+  const t0 = Date.now();
   try {
     res = await fetch(API_BASE + path, {
       method,
@@ -71,8 +72,11 @@ async function req(method, path, { token, body, headers = {}, raw = false, timeo
     });
   } catch (error) {
     const motivo = error && error.message ? error.message : String(error);
+    console.log(`  TIMEOUT  ${Date.now() - t0} ms  ${method} ${path} — ${motivo}`);
     return { status: 0, json: null, text: `ERROR DE RED: ${motivo}`, headers: new Headers() };
   }
+  const elapsed = Date.now() - t0;
+  if (elapsed > 2000) console.log(`  SLOW  ${elapsed} ms  ${method} ${path}`);
   if (raw) return res;
   const text = await res.text();
   let json = null;

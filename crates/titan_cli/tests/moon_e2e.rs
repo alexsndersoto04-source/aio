@@ -32,7 +32,7 @@ const API_PORT: u16 = 31_234;
 /// Secreto JWT de desarrollo (64 hex, como el que genera `ops/start-api.sh`).
 const JWT_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 /// Recorte del mensaje que se publica como anotación.
-const ANNOTATION_LIMIT: usize = 6000;
+const ANNOTATION_LIMIT: usize = 12000;
 /// Versión de Node que se instala desde npm si el Node local es muy viejo.
 const NODE_FALLBACK: &str = "node@22";
 
@@ -80,11 +80,24 @@ fn publish_summary(markdown: &str) {
     }
 }
 
-/// Publica el motivo como anotación del job y falla la prueba.
-fn fail_with(title: &str, message: &str) -> ! {
+/// Publica una anotación del job (visible sin abrir el log).
+fn annotate(title: &str, message: &str) {
     let detail = clipped_message(message);
     println!("::error title={title}::{}", annotation_message(&detail));
-    panic!("{detail}");
+}
+
+/// Publica el motivo como anotación del job y falla la prueba.
+fn fail_with(title: &str, message: &str) -> ! {
+    annotate(title, message);
+    panic!("{}", clipped_message(message));
+}
+
+/// Bloque «Fallos:» del E2E (la lista completa de comprobaciones fallidas).
+fn failures_block(text: &str) -> String {
+    match text.find("Fallos:") {
+        Some(index) => text[index..].to_string(),
+        None => tail_of_text(text, 30),
+    }
 }
 
 /// ¿Estamos en el CI de GitHub sobre Linux, donde esto sí o sí debe correr?
@@ -294,6 +307,8 @@ fn start_api(moon: &Path, log_path: &Path) -> Child {
     // (que es lo que acaba en la anotación del run).
     command.env("RUST_BACKTRACE", "1");
     command.env("RUST_LIB_BACKTRACE", "1");
+    // Traza por petición en el log: si algo se cuelga se ve dónde.
+    command.env("MOON_TRACE", "1");
     command.stdout(Stdio::from(stdout));
     command.stderr(Stdio::from(log));
     command.spawn().expect("arrancar la API de Moon")
@@ -351,14 +366,18 @@ fn run_e2e(moon: &Path, node: &[String], log_path: &Path) {
         return;
     }
 
+    let fallos = failures_block(&stdout);
+    publish_summary(&format!("{header}\n\n```\n{fallos}\n```"));
+    annotate(
+        "Moon E2E · resumen",
+        &format!("{header}\n\n{fallos}"),
+    );
+    annotate("Moon E2E · log API", &tail_of_file(log_path, 400));
     let mut message = format!("la suite E2E de Moon falló ({})", output.status);
     message.push_str("\n--- E2E (últimas 40 líneas) ---\n");
     message.push_str(&tail);
     message.push_str("\n--- E2E stderr (últimas 15 líneas) ---\n");
     message.push_str(&tail_of_text(&stderr, 15));
-    message.push_str("\n--- API (últimas 60 líneas) ---\n");
-    message.push_str(&tail_of_file(log_path, 60));
-    publish_summary(&format!("{header}\n\n```\n{tail}\n```"));
     fail_with("Moon E2E", &message);
 }
 
