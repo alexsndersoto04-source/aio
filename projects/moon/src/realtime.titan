@@ -13,7 +13,7 @@
 // Eventos salientes al cliente: message, notification, typing, read,
 // presence, pong, sync, error. (SPEC §5)
 
-fn rt_start() -> int {
+fn rt_start() -> Sender {
     let endpoints = channel(2048)
     let tx = endpoints[0]
     let rx = endpoints[1]
@@ -116,11 +116,11 @@ fn rt_start() -> int {
 // Envía por el hub sin bloquear al emisor: si el canal está lleno se
 // pierde el evento (trade-off documentado para plan free) pero jamás
 // bloquea un request HTTP.
-fn rt_emit(hub: int, uid: int, payload: string) {
+fn rt_emit(hub: Sender, uid: int, payload: string) {
     let _ = std::try::catch(|| send(hub, ["emit", uid, payload]))
 }
 
-fn rt_broadcast(hub: int, payload: string) {
+fn rt_broadcast(hub: Sender, payload: string) {
     let _ = std::try::catch(|| send(hub, ["broadcast", payload]))
 }
 
@@ -211,7 +211,7 @@ fn rt_handle_ws(req: int, ctx: map) {
 }
 
 // Procesa un mensaje JSON entrante del cliente.
-fn rt_handle_message(pool: PostgresPool, hub: int, uid: int, ws: int, text: string) {
+fn rt_handle_message(pool: PostgresPool, hub: Sender, uid: int, ws: int, text: string) {
     let parsed = std::try::catch(|| std::json::parse(text))
     match parsed {
         Result::Err(_) => {

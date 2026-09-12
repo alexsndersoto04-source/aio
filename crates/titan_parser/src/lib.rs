@@ -864,6 +864,15 @@ impl Parser {
             if precedence < min_precedence {
                 break;
             }
+            // Spacing rule for operators that also exist as prefix operators:
+            // whitespace before the operator and none after it means it is a
+            // prefix operator (`-1`, `*pointer`, `&value`), not a continuation
+            // of the expression written on the previous line. Without this, a
+            // `-1` on its own line silently extended the previous statement:
+            // `print(msg)` followed by `-1` parsed as `print(msg) - 1`.
+            if self.operator_is_prefix_form() {
+                break;
+            }
             self.advance();
             let right = self.parse_binary(precedence + 1)?;
             let span = left.span();
@@ -953,6 +962,36 @@ impl Parser {
             final_expr: Some(Box::new(cmp)),
             span,
         }))
+    }
+
+    /// Whether the operator token at the cursor is written attached to its
+    /// right operand (`-1`, `*pointer`, `&value`) while having whitespace — or a
+    /// line break — before it. Such an operator is a prefix operator, so
+    /// `parse_binary` must not absorb it as a binary operator that continues the
+    /// expression on the previous line.
+    fn operator_is_prefix_form(&self) -> bool {
+        let Some(operator) = self.tokens.get(self.pos) else {
+            return false;
+        };
+        let prefix_capable = matches!(
+            operator.kind,
+            TokenKind::Minus | TokenKind::Star | TokenKind::Ampersand
+        );
+        if !prefix_capable {
+            return false;
+        }
+        let previous = self.tokens.get(self.pos.saturating_sub(1));
+        let spaced_before = match previous {
+            // The first token of the file has nothing before it.
+            None => true,
+            Some(previous) => previous.span.end < operator.span.start,
+        };
+        let following = self.tokens.get(self.pos + 1);
+        let attached_after = match following {
+            Some(token) => token.span.start == operator.span.end,
+            None => false,
+        };
+        spaced_before && attached_after
     }
 
     fn binary_op(&self) -> Option<(BinaryOp, u8)> {
@@ -2055,5 +2094,52 @@ mod tests {
         } else {
             panic!("expected function");
         }
+    }
+
+    #[test]
+    fn an_operator_attached_to_its_operand_starts_a_new_expression() {
+        // `print(msg)` on one line and `-1` on the next used to parse as
+        // `print(msg) - 1`: the previous statement's result silently became the
+        // left operand of the subtraction.
+        let program = parse("fn main() { print(\"x\")\n-1 }").unwrap();
+        let Item::Function(function) = &program.items[0] else {
+            panic!("expected a function declaration");
+        };
+        let body = function.body.as_ref().expect("function body");
+        assert_eq!(body.stmts.len(), 1, "print must stay its own statement");
+        assert!(
+            matches!(
+                body.final_expr.as_deref(),
+                Some(Expr::Unary {
+                    op: UnaryOp::Neg,
+                    ..
+                })
+            ),
+            "expected the trailing `-1` to be the block's value, found {:?}",
+            body.final_expr
+        );
+    }
+
+    #[test]
+    fn an_operator_spaced_on_both_sides_still_continues_the_expression() {
+        let program = parse("fn main() { let total = 1\n + 2 }").unwrap();
+        let Item::Function(function) = &program.items[0] else {
+            panic!("expected a function declaration");
+        };
+        let body = function.body.as_ref().expect("function body");
+        assert_eq!(body.stmts.len(), 1, "the addition is part of the `let`");
+        let Stmt::Let { value, .. } = &body.stmts[0] else {
+            panic!("expected a let statement");
+        };
+        assert!(
+            matches!(
+                value,
+                Expr::Binary {
+                    op: BinaryOp::Add,
+                    ..
+                }
+            ),
+            "expected a binary addition, found {value:?}"
+        );
     }
 }

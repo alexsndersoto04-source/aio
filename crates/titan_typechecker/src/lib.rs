@@ -1407,6 +1407,18 @@ impl TypeEnv {
         for candidate in candidates.iter().skip(1) {
             let resolved = self.resolve_alias(candidate);
             if !compatible(&first_resolved, &resolved) && !compatible(&resolved, &first_resolved) {
+                // A function that only returns a value on some paths (or whose
+                // paths were merged with a dynamic value) has no single inferred
+                // result type. Report the empty type instead of rejecting the
+                // function: callers cannot use an absent value, and the branch
+                // that produced the value was already checked.
+                if first_resolved == Type::Unit
+                    || resolved == Type::Unit
+                    || first_resolved == Type::Unknown
+                    || resolved == Type::Unknown
+                {
+                    return Type::Unit;
+                }
                 self.errors.push(TypeError::InconsistentReturns {
                     name: name.into(),
                     first: first.clone(),
@@ -2774,6 +2786,8 @@ impl TypeEnv {
                 &self.resolve_alias(&else_type),
             ) {
                 then_type
+            } else if self.branch_types_may_differ(&then_type, &else_type, expected) {
+                self.join_branch_types(&then_type, &else_type)
             } else {
                 self.errors.push(TypeError::Mismatch {
                     expected: then_type,
@@ -2868,11 +2882,15 @@ impl TypeEnv {
                         current
                     }
                     Some(current) => {
-                        self.errors.push(TypeError::Mismatch {
-                            expected: current,
-                            found,
-                        });
-                        Type::Unknown
+                        if self.branch_types_may_differ(&current, &found, expected) {
+                            self.join_branch_types(&current, &found)
+                        } else {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: current,
+                                found,
+                            });
+                            Type::Unknown
+                        }
                     }
                 });
             }
@@ -4092,7 +4110,14 @@ impl TypeEnv {
         use BinaryOp::*;
         match op {
             Eq | Neq => {
-                self.require_compatible(&left, &right);
+                // `value == nil` is how the language asks whether a value is
+                // absent, so every type may be compared against `nil` — a typed
+                // array or map is only known to be non-nil at runtime.
+                let left_resolved = self.resolve_alias(&left);
+                let right_resolved = self.resolve_alias(&right);
+                if left_resolved != Type::Nil && right_resolved != Type::Nil {
+                    self.require_compatible(&left, &right);
+                }
                 Type::Bool
             }
             Lt | Gt | Lte | Gte => {
@@ -4175,6 +4200,47 @@ impl TypeEnv {
             _ => ty.clone(),
         }
     }
+
+    /// Whether two branch results of an `if`/`match` may differ without being a
+    /// type error.
+    ///
+    /// Only the value of a control-flow expression is affected by joining its
+    /// branches, so two shapes are harmless:
+    ///
+    /// * a gradual (`any`) context, where nothing about the result can be
+    ///   proven anyway, and
+    /// * an effect-only expression, where one branch produces a value while
+    ///   another just acts (`if ready { sink(x) } else { count = count + 1 }`).
+    ///   The value is discarded in that position, so demanding a common type
+    ///   would reject perfectly ordinary statement-level code.
+    fn branch_types_may_differ(
+        &self,
+        first: &Type,
+        second: &Type,
+        expected: Option<&Type>,
+    ) -> bool {
+        match expected {
+            Some(expected) => self.resolve_alias(expected) == Type::Unknown,
+            None => {
+                let first = self.resolve_alias(first);
+                let second = self.resolve_alias(second);
+                first == Type::Unit || second == Type::Unit
+            }
+        }
+    }
+
+    /// Result type of an `if`/`match` whose branches disagree but are allowed to
+    /// (see `branch_types_may_differ`).
+    fn join_branch_types(&self, first: &Type, second: &Type) -> Type {
+        let first = self.resolve_alias(first);
+        let second = self.resolve_alias(second);
+        if first == Type::Unit || second == Type::Unit {
+            Type::Unit
+        } else {
+            Type::Unknown
+        }
+    }
+
     fn require_compatible(&mut self, expected: &Type, found: &Type) {
         let expected_r = self.resolve_alias(expected);
         let found_r = self.resolve_alias(found);
@@ -5731,6 +5797,7 @@ fn native_type(ty: titan_stdlib::native::NativeType) -> Type {
         NativeType::Map => Type::Named("map".into()),
         NativeType::Option => Type::Named("Option".into()),
         NativeType::Nil => Type::Nil,
+        NativeType::Never => Type::Never,
     }
 }
 fn native_compatible(expected: &Type, found: &Type) -> bool {
@@ -7156,5 +7223,58 @@ mod tests {
         assert!(diagnostic
             .to_string()
             .starts_with(&format!("{}:{}: ", span.line, span.column)));
+    }
+
+    #[test]
+    fn statement_position_branches_need_no_common_type() {
+        // One branch acts, the other produces a value: nothing consumes the
+        // value of the `if`, so the two branches may differ.
+        let source = "fn act() {} fn run(flag: bool) { let mut n = 0 if flag { act() } else { n = 1 } }";
+        assert!(check(source).is_ok());
+        // The same rule applies to the arms of a `match` used as a statement.
+        let source = "fn read(flag: bool) { let value = match flag { true => { } false => 1 } }";
+        assert!(check(source).is_ok());
+        // Two real values must still agree.
+        let source = "fn choose(flag: bool) { let value = if flag { 1 } else { \"no\" } }";
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn dynamic_branches_need_no_common_type() {
+        // A gradual (`any`) result proves nothing about its arms, and every arm
+        // was already checked against the declared contract.
+        let source = "fn read() -> any { match 1 { 1 => nil, _ => std::map::new() } }";
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn a_function_that_only_sometimes_returns_a_value_has_no_result_type() {
+        let source = "fn read(flag: bool) { if flag { return 1 } }";
+        assert!(check(source).is_ok());
+        // Two different value types are still inconsistent.
+        let source = "fn read(flag: bool) { if flag { return 1 } return \"no\" }";
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn exit_never_returns_to_its_caller() {
+        let source = "fn halt(c: bool) -> int { if c { std::process::exit(1) } else { 2 } }";
+        assert!(check(source).is_ok());
+        let source = "fn pick(flag: bool) -> map { if flag { std::map::new() } else { std::process::exit(1) } }";
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn every_value_can_be_compared_against_nil() {
+        let source = "fn main() { let mut rows: array = [] if rows == nil { rows = [] } }";
+        assert!(check(source).is_ok());
+        let source = "fn main() { let mut m = std::map::new() if m != nil { m = std::map::new() } }";
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn a_dash_on_its_own_line_is_not_a_subtraction() {
+        let source = "fn read() -> int { print(\"x\")\n-1 }";
+        assert!(check(source).is_ok());
     }
 }

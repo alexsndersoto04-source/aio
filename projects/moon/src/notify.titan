@@ -17,7 +17,7 @@ fn n_ensure_prefs(conn: Postgres, uid: int) {
 }
 
 // Crea la notificación (respetando preferencias) y la emite en vivo.
-fn n_notify(conn: Postgres, hub: int, uid: int, ntype: string, from_uid: int, post_id: int, comment_id: int, content: string) {
+fn n_notify(conn: Postgres, hub: Sender, uid: int, ntype: string, from_uid: int, post_id: int, comment_id: int, content: string) {
     if uid <= 0 { return }
     if !n_prefs_allowed(conn, uid, ntype) { return }
     let _ = db_exec(conn, "INSERT INTO notifications (user_id, type, from_user_id, post_id, comment_id, content) VALUES (?, ?, ?, ?, ?, ?)", [uid, ntype, from_uid, post_id, comment_id, content])

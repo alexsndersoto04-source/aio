@@ -67,6 +67,7 @@ fn v_to_int(val: any, dflt: int) -> int {
             match opt {
                 Option::Some(n) => { if n < 0 { dflt } else { n } },
                 Option::None => dflt,
+                _ => dflt,
             }
         },
         Result::Err(_) => {

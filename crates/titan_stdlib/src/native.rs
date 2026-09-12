@@ -172,6 +172,9 @@ pub enum NativeType {
     Map,
     Option,
     Nil,
+    /// The call never returns to its caller (`std::process::exit`). Statements
+    /// after it are unreachable and the surrounding branch needs no value.
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1361,7 +1364,9 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::process::username", [], String, Environment),
     native!("std::process::args", [], Array, Environment),
     native!("std::process::send_signal", [Int, Int], Nil, Process),
-    native!("std::process::exit", [Int], Nil, Process),
+    // Como abortar en C: no retorna, así que una rama que termina aquí no
+    // necesita producir el valor de las demás ramas del if/match.
+    native!("std::process::exit", [Int], Never, Process),
     // ------------------- Phase 34: std::collections -------------------
     // Set
     native!("std::collections::set_new", [], Int),

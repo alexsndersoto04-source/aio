@@ -20,7 +20,7 @@ fn hp_process_hashtags(conn: Postgres, post_id: int, content: string) {
     }
 }
 
-fn hp_process_mentions(conn: Postgres, hub: int, post_id: int, content: string, from_uid: int) {
+fn hp_process_mentions(conn: Postgres, hub: Sender, post_id: int, content: string, from_uid: int) {
     let mentions = v_mentions(content)
     for name in mentions {
         let user = q_user_by_username(conn, name)
