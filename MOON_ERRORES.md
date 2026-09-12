@@ -1,5 +1,13 @@
 # Moon — los 19 errores de tipo: **arreglados** (2026-09-12)
 
+> **Estado final (12-sep-2026, commit `bb4f99c`):** `zett check` verde y el
+> **E2E completo verde en CI** — todo el recorrido contra PostgreSQL 16 real
+> (5 checks del run en `success`: CI `cargo test`, *titan-check*,
+> *frontend-build*, Termux AArch64 y Termux ARM 32-bit). El backend arranca,
+> aplica las 15 migraciones y atiende todo el recorrido de la aplicación,
+> incluido el WebSocket en vivo. Detalle del recorrido y de los arreglos:
+> [`INFORME_PROYECTOS.md`](INFORME_PROYECTOS.md) §4.3 y §7.
+
 `zett check projects/moon/src/main.titan` **pasa**. Evidencia: workflow
 *Moon checks*, job `titan-check`, paso «Compilar el backend Titan (zett check)»
 = **success** en el commit `070b556` (run 34707099648). En ese mismo commit

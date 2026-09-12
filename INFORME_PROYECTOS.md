@@ -15,13 +15,15 @@
 | Qué es | Lenguaje compilado + VM + stdlib + tooling, escrito en Rust | Red social web completa (backend en TITAN + Postgres, frontend React) |
 | Tamaño | **64.937 líneas de Rust** en 108 archivos, 19 crates | **4.582 líneas** de TITAN (17 módulos) + **3.669 líneas** JS/JSX |
 | Superficie | **880 funciones nativas** `std::*` en **78 namespaces**; **170 opcodes** | **69 rutas** REST + WebSocket `/ws`; **21 tablas**; **11 vistas** |
-| Pruebas | **637 tests** Rust en CI (verde en `main`) | **0 pruebas en `main`**; el check de CI **nunca ha pasado** (0/16) |
+| Pruebas | **637 tests** Rust en CI (verde en `main`) | **E2E real en CI** (todas las comprobaciones contra Postgres 16 + API compilada) — **verde** desde `bb4f99c` |
 | Documentación | 28 docs (≈3.800 líneas) + README + CHANGELOG de 37 fases | SPEC + STATUS + DEPLOY (muy buenos) |
 | Releases | 45 releases, tags hasta **v1.0.28**; última release **con binarios: v1.0.26** | Sin release propio (se despliega junto al repo) |
-| Estado real | **Producto maduro y verificable**, con deuda de versionado y de higiene | **Código muy completo pero NO compila** (no pasa el propio checker de TITAN) y no está desplegado |
-| Riesgo nº1 | Los tags de release apuntan a commits de diagnóstico, no a `main` | El backend nunca se ha ejecutado con éxito; el error exacto está oculto por un bug de CI |
+| Estado real | **Producto maduro y verificable**, con deuda de versionado y de higiene | **Compila y se ejecuta**: `zett check` verde y E2E completo verde en CI contra PostgreSQL 16 real |
+| Riesgo nº1 | Los tags de release apuntan a commits de diagnóstico, no a `main` | Nada bloqueante para ejecutarlo; queda el riesgo de producción (free de Render caduca a los 30 días, `uploads/` local se borra en cada redeploy) |
 
-**La frase que resume todo:** TITAN es un proyecto **grande y real** (nivel "lenguaje pequeño-medio con ecosistema"), y Moon es una aplicación **grande en ambición y muy completa en código, pero aún no verificada en ejecución**: no hay una sola evidencia de que el backend haya arrancado alguna vez.
+**La frase que resume todo:** TITAN es un proyecto **grande y real** (nivel "lenguaje pequeño-medio con ecosistema"), y Moon es una aplicación **grande, completa y ya verificada en ejecución**: su E2E arranca PostgreSQL 16, aplica las 15 migraciones, compila y levanta el backend, y recorre toda la aplicación (registro/login, 2FA, posts, comentarios, notificaciones, medios, mensajería, WebSocket en vivo, moderación y seguridad) — **todo en verde** en el commit `bb4f99c`.
+
+> **Actualización (12-sep-2026):** las dos marcas rojas de este informe están resueltas. `zett check` pasa y el backend **se ejecuta** contra PostgreSQL real en cada push (ver §4.4 y §7).
 
 ---
 
@@ -139,8 +141,9 @@ Una red social web "de nivel startup": registro/login con 2FA, posts con fotos, 
 3. **✅ Datos coherentes:** las 21 tablas que crean las migraciones son exactamente las que consultan los handlers (`FROM`/`JOIN`/`INTO`/`UPDATE`); no hay referencias a tablas fantasma.
 4. **✅ Contrato frontend ↔ backend consistente al 100 %.** Cruzé las **52 rutas distintas** que llama el frontend contra las **69 rutas registradas** en el router del backend: **0 desajustes**. La única dinámica (`/api/feed/${tab}`) resuelve a las tres rutas declaradas (`/api/feed/latest`, `/for-you`, `/trending`). Es decir: no hay pantallas llamando a endpoints que no existen.
 5. **✅ Configuración defensiva real:** `config.titan` aborta el arranque si falta `DATABASE_URL` o si `JWT_SECRET` mide <32 caracteres.
-6. **❌ El backend NO pasa el chequeo del propio lenguaje.** Ver apartado 4.4.
-7. **❌ Nunca se ha ejecutado.** No hay ninguna evidencia (release, log, captura, CI) de que el backend haya arrancado. Tu propio `STATUS.md` lo admite: la verificación fue **estática**.
+6. **✅ El backend pasa el chequeo del propio lenguaje.** `zett check` verde (workflow *Moon checks*, job `titan-check`). Ver §4.4.
+7. **✅ Ya se ha ejecutado, y está en CI.** El test `crates/titan_cli/tests/moon_e2e.rs` levanta un PostgreSQL 16 en Docker, compila el backend, lo arranca en el puerto 31234 y corre el E2E completo (`projects/moon/test/e2e.mjs`). En el commit `bb4f99c`: **CI verde** (jobs `cargo test (ubuntu-latest)` y `cross-check AArch64`), *Moon checks* verde, Termux AArch64 y ARM 32-bit verdes. La API arranca con «Migraciones aplicadas: 15» y «Moon escuchando en http://0.0.0.0:31234».
+8. **✅ La cadena de datos está probada de extremo a extremo:** los mismos INSERT/UPDATE que fallaban (medios, contadores, imágenes de post, hashtags, notificaciones, comentarios) se validaron además contra PostgreSQL 16 real con un banco propio (`/tmp/pg16`, ver §8).
 
 ### 4.4 🔴 El problema central: `zett check` lleva **rojo desde el día 1** y nadie ha visto por qué
 
@@ -271,19 +274,21 @@ Traducción: **Moon tiene tests end-to-end y un entorno local reproducible, pero
    snippet de §4.4 sigue pendiente de pegar en `check-moon.yml` si quieres el
    resumen en el step summary (los archivos de workflow no se pueden subir desde
    esta sesión).
-3. ⏳ **ÚNICO PASO PENDIENTE para «funcional»:** levantar el backend con Postgres
-   real y correr el **E2E de 467 líneas** — `projects/moon/{LOCAL.md, ops/, test/e2e.mjs}`
-   ya están en esta rama. Hace falta una máquina con `zett` compilado y Postgres
-   (o Render); este entorno de trabajo no tiene ninguno de los dos.
+3. ✅ **HECHO (12-sep):** el backend se levanta con Postgres real y el **E2E
+   completo pasa en CI** en cada push. No hizo falta tocar los workflows: el
+   arnés es un test de Rust (`cargo test -p titan_cli --test moon_e2e`), así
+   que entra por el `cargo test` que ya existía. Cubre el recorrido completo
+   (registro/login, 2FA con el código leído del log del servidor, posts,
+   likes, guardados, comentarios, feeds, hashtags, perfiles, follows, búsqueda,
+   notificaciones, subida de imágenes reales, reportes y moderación, mensajería
+   1:1, WebSocket en vivo, seguridad y logout).
 4. **Cortar un release limpio de TITAN desde `main`** (v1.0.29) y **apuntar el `Dockerfile` de Moon a él** en vez de v1.0.0.
 
 ### P1 — Ordenar (dos semanas)
 5. Limpiar `main`: borrar `debug*.txt`, `error.txt`, `probe.txt`, `selftest.txt`, `diag/`; sacar `diag-titan.yml` de `main`; ignorar esos patrones.
-6. 🟡 Traídos a la rama `projects/moon/{LOCAL.md, ops/, test/e2e.mjs}` (sin los
-   `build.rs` de diagnóstico). Falta **añadir el E2E a CI** con un Postgres de
-   servicio: es un cambio en `.github/workflows/`, y esta sesión no tiene permiso
-   para subir workflows. El snippet listo para pegar está en
-   [`MOON_ERRORES.md`](MOON_ERRORES.md) § «Siguiente hito».
+6. ✅ **HECHO:** el E2E **ya corre en CI** en cada push (test `moon_e2e`), con
+   PostgreSQL 16 levantado por Docker desde el propio test — sin tocar ningún
+   workflow. `projects/moon/{LOCAL.md, ops/, test/e2e.mjs}` están en la rama.
 7. Unificar el versionado: que `titan version` imprima la versión real del release (del tag), y alinear CHANGELOG (`1.0.x`) con los tags.
 8. Retirar el mecanismo "mirror" (`crates/titan_parser/build.rs` + `scripts/zett-mirror.sh` + `cargo-diag-wrapper*`) de cualquier rama desde la que se etiquete; archivar ramas `tools-*`.
 
