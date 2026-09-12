@@ -696,6 +696,15 @@ fn fatal_message(label: &str, message: &str) -> ! {
     if message.trim() != flat {
         eprintln!("{message}");
     }
+    // En GitHub Actions se publica ademas el diagnostico como ANOTACION del
+    // job. Las anotaciones solo conservan la primera linea y los logs de un
+    // workflow no siempre son accesibles (por ejemplo, desde un sandbox sin
+    // salida a los hosts de artefactos): la anotacion deja la causa a la vista
+    // en la propia interfaz de Checks, sin abrir el log.
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let escaped = flat.replace('%', "%25").replace('\r', "%0D");
+        eprintln!("::error title={label}::{escaped}");
+    }
     std::process::exit(1)
 }
 
