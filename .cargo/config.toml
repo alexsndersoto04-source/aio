@@ -1,3 +1,6 @@
+[build]
+rustc-wrapper = "scripts/rustc-annotate.sh"
+
 [target.aarch64-linux-android]
 linker = "scripts/android-aarch64-clang"
 
