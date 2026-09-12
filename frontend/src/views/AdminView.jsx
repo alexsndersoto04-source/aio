@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { toast, confirmar, pedirTexto, avisoError } from '../ui.js';
 import { useAuth } from '../auth.jsx';
 import Avatar from '../components/Avatar.jsx';
 import { timeAgo } from '../utils.js';
@@ -37,7 +38,7 @@ export default function AdminView({ tab }) {
 function Dashboard() {
   const [d, setD] = useState(null);
   useEffect(() => {
-    api.get('/api/admin/dashboard').then(setD).catch((e) => alert(e.message));
+    api.get('/api/admin/dashboard').then(setD).catch(avisoError);
   }, []);
   if (!d) return <div className="spinner" />;
   const stats = [
@@ -94,7 +95,7 @@ function UsersAdmin() {
       const res = await api.get(`/api/admin/users?q=${encodeURIComponent(query)}&page=${page}&limit=20`);
       setRows(res.items || []);
       setTotal(res.total || 0);
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
   useEffect(() => { load(''); /* eslint-disable-next-line */ }, []);
   useEffect(() => {
@@ -105,7 +106,12 @@ function UsersAdmin() {
   async function act(id, kind) {
     try {
       if (kind === 'suspend') {
-        const reason = window.prompt('Motivo de suspensión:', '');
+        const reason = await pedirTexto({
+          title: 'Suspender usuario',
+          label: 'Motivo de la suspensión',
+          placeholder: 'Incumplimiento de las normas…',
+          confirmText: 'Suspender',
+        });
         if (!reason) return;
         await api.post(`/api/admin/users/${id}/suspend`, { reason });
       } else if (kind === 'activate') {
@@ -114,7 +120,7 @@ function UsersAdmin() {
         await api.post(`/api/admin/users/${id}/verify`, { verified: true });
       }
       load(q);
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
 
   return (
@@ -163,16 +169,26 @@ function ReportsAdmin() {
     try {
       const res = await api.get(`/api/admin/reports?status=${status}&page=1&limit=20`);
       setRows(res.items || []);
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [status]);
 
   async function resolve(id, action) {
-    const note = action === 'resolve' ? window.prompt('Nota de resolución:', 'Contenido eliminado') : '';
+    let note = '';
+    if (action === 'resolve') {
+      note = await pedirTexto({
+        title: 'Resolver reporte',
+        label: 'Nota de resolución',
+        value: 'Contenido eliminado',
+        confirmText: 'Resolver',
+      });
+      if (note === null) return;
+    }
     try {
       await api.post(`/api/admin/reports/${id}/resolve`, { action, note: note || '' });
+      toast.ok(action === 'resolve' ? 'Reporte resuelto' : 'Reporte descartado');
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
 
   return (
@@ -214,7 +230,7 @@ function WordsAdmin() {
   const [word, setWord] = useState('');
 
   async function load() {
-    try { setWords(await api.get('/api/admin/words')); } catch (e) { alert(e.message); }
+    try { setWords(await api.get('/api/admin/words')); } catch (e) { avisoError(e); }
   }
   useEffect(() => { load(); }, []);
 
@@ -225,14 +241,14 @@ function WordsAdmin() {
       await api.post('/api/admin/words', { word: word.trim().toLowerCase() });
       setWord('');
       load();
-    } catch (err) { alert(err.message); }
+    } catch (err) { avisoError(err); }
   }
 
   async function remove(id) {
     try {
       await api.del(`/api/admin/words/${id}`);
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
 
   return (
@@ -266,7 +282,7 @@ function ActivityAdmin() {
   useEffect(() => {
     api.get('/api/admin/activity?page=1&limit=30')
       .then((res) => setRows(res.items || []))
-      .catch((e) => alert(e.message));
+      .catch(avisoError);
   }, []);
   return (
     <div className="card" style={{ padding: 16, overflowX: 'auto' }}>

@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
+import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
 import Composer from '../components/Composer.jsx';
 import { useAuth } from '../auth.jsx';
@@ -31,7 +32,7 @@ export default function FeedView() {
       setTotal(res.total || items.length);
       setMore(items.length === 10 && (p * 10) < (res.total || 0));
     } catch (e) {
-      alert(e.message);
+      avisoError(e);
     } finally {
       setLoading(false);
     }

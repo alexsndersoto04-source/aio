@@ -7,6 +7,7 @@ import { uploadMedia, API_URL } from '../api.js';
 import Avatar from '../components/Avatar.jsx';
 import { timeAgo } from '../utils.js';
 import { IconTrash } from '../components/Icons.jsx';
+import { toast, confirmar, avisoError } from '../ui.js';
 
 export default function SettingsView({ tab }) {
   const { user, refreshMe, logout } = useAuth();
@@ -78,7 +79,12 @@ export default function SettingsView({ tab }) {
   }
 
   async function revokeAll() {
-    if (!window.confirm('¿Cerrar sesión en todos los dispositivos?')) return;
+    const cerrarTodas = await confirmar({
+      title: '¿Cerrar sesión en todos los dispositivos?',
+      message: 'Tendrás que volver a entrar en cada uno de ellos.',
+      confirmText: 'Cerrar todas',
+    });
+    if (!cerrarTodas) return;
     try { await api.post('/api/auth/sessions-all', {}); flash('ok', 'Sesiones cerradas'); loadSessions(); } catch (e) { flash('err', e.message); }
   }
 
@@ -104,7 +110,13 @@ export default function SettingsView({ tab }) {
 
   async function disable2fa(e) {
     e.preventDefault();
-    if (!window.confirm('¿Desactivar la verificación en dos pasos?')) return;
+    const ok2 = await confirmar({
+      title: '¿Desactivar la verificación en dos pasos?',
+      message: 'Tu cuenta quedará protegida solo con la contraseña.',
+      confirmText: 'Desactivar',
+      danger: true,
+    });
+    if (!ok2) return;
     try {
       await api.post('/api/auth/2fa/disable', { password: twofa.password });
       setTwofa({ ...twofa, password: '' });
@@ -137,9 +149,21 @@ export default function SettingsView({ tab }) {
 
   async function deleteAccount(e) {
     e.preventDefault();
-    const pw = window.prompt('Escribe tu contraseña para confirmar la ELIMINACIÓN de tu cuenta:');
+    const pw = await confirmar({
+      title: 'Eliminar tu cuenta',
+      message: 'Se borrarán tu perfil, tus publicaciones y tus datos. Esta acción no se puede deshacer.',
+      confirmText: 'Continuar',
+      danger: true,
+      requerirPassword: true,
+    });
     if (!pw) return;
-    if (!window.confirm('Esta acción es irreversible. Se borrarán tu perfil, publicaciones y datos. ¿Continuar?')) return;
+    const seguro = await confirmar({
+      title: 'Última confirmación',
+      message: 'Esta acción es irreversible. ¿Eliminamos tu cuenta definitivamente?',
+      confirmText: 'Eliminar mi cuenta',
+      danger: true,
+    });
+    if (!seguro) return;
     try {
       await api.del('/api/auth/account', { body: { password: pw } });
       await logout();

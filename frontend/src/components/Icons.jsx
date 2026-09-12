@@ -93,3 +93,65 @@ export const IconReport = (p) => (
 export const IconLock = (p) => (
   <svg {...S(p)}><rect x="5" y="10.5" width="14" height="10" rx="2.5" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></svg>
 );
+
+// ---- Iconos del sistema «Órbita» (avisos, temas, panel) ----
+export const IconCheck = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="9" /><path d="m8.2 12.4 2.6 2.6 5-5.4" /></svg>
+);
+export const IconAlert = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5" /><circle cx="12" cy="16.4" r=".8" fill="currentColor" stroke="none" /></svg>
+);
+export const IconInfo = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><circle cx="12" cy="7.8" r=".8" fill="currentColor" stroke="none" /></svg>
+);
+export const IconWarning = (p) => (
+  <svg {...S(p)}><path d="M12 3.5 2.8 20h18.4L12 3.5Z" /><path d="M12 10v4.2" /><circle cx="12" cy="17.2" r=".8" fill="currentColor" stroke="none" /></svg>
+);
+export const IconSun = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="4.2" /><path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4 17 7M7 17l-1.6 1.6" /></svg>
+);
+export const IconTrend = (p) => (
+  <svg {...S(p)}><path d="M3 17.5 9 11l4 4 8-8.5" /><path d="M15 6.5h6v6" /></svg>
+);
+export const IconSpark = (p) => (
+  <svg {...S(p)}><path d="M12 3.2 13.7 9l5.8 1.7-5.8 1.7L12 18.2 10.3 12.4 4.5 10.7 10.3 9 12 3.2Z" /><path d="M19 17.5l.7 2.1 2.1.7-2.1.7-.7 2.1-.7-2.1-2.1-.7 2.1-.7.7-2.1Z" /></svg>
+);
+export const IconGlobe = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="9" /><path d="M3.5 9.5h17M3.5 14.5h17" /><path d="M12 3c2.6 3 2.6 15 0 18M12 3c-2.6 3-2.6 15 0 18" /></svg>
+);
+export const IconCalendar = (p) => (
+  <svg {...S(p)}><rect x="3.5" y="5" width="17" height="16" rx="3" /><path d="M8 3v4M16 3v4M3.5 10h17" /></svg>
+);
+export const IconLink = (p) => (
+  <svg {...S(p)}><path d="M10 13.5a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1.2 1.2" /><path d="M14 10.5a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1.2-1.2" /></svg>
+);
+export const IconBan = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="9" /><path d="m5.6 5.6 12.8 12.8" /></svg>
+);
+export const IconRefresh = (p) => (
+  <svg {...S(p)}><path d="M20 11.5A8 8 0 0 0 6.3 6.3L4 8.5" /><path d="M4 4v4.5h4.5" /><path d="M4 12.5A8 8 0 0 0 17.7 17.7L20 15.5" /><path d="M20 20v-4.5h-4.5" /></svg>
+);
+export const IconChevronLeft = (p) => (
+  <svg {...S(p)}><path d="m14.5 6-6 6 6 6" /></svg>
+);
+export const IconGrid = (p) => (
+  <svg {...S(p)}><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></svg>
+);
+export const IconAt = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="3.6" /><path d="M15.6 8.4v4.9a3.5 3.5 0 0 0 7 .5v-1.8a10.6 10.6 0 1 0-4.4 8.5" /></svg>
+);
+export const IconMapPin = (p) => (
+  <svg {...S(p)}><path d="M12 21s7-5.6 7-11a7 7 0 1 0-14 0c0 5.4 7 11 7 11Z" /><circle cx="12" cy="10" r="2.6" /></svg>
+);
+export const IconEye = (p) => (
+  <svg {...S(p)}><path d="M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.8" /></svg>
+);
+export const IconCopy = (p) => (
+  <svg {...S(p)}><rect x="9" y="9" width="11" height="11" rx="2.5" /><path d="M15 6.5V5.5A2.5 2.5 0 0 0 12.5 3h-6A3.5 3.5 0 0 0 3 6.5v6A2.5 2.5 0 0 0 5.5 15h1" /></svg>
+);
+export const IconCamera = (p) => (
+  <svg {...S(p)}><path d="M4 8.5h3l1.5-2.5h7L17 8.5h3a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 20 19.5H4A1.5 1.5 0 0 1 2.5 18v-8A1.5 1.5 0 0 1 4 8.5Z" /><circle cx="12" cy="13.5" r="3.5" /></svg>
+);
+export const IconLayers = (p) => (
+  <svg {...S(p)}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3.5 12.5 8.5 4.7 8.5-4.7" /><path d="m3.5 16.5 8.5 4.7 8.5-4.7" /></svg>
+);

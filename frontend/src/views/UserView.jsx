@@ -6,6 +6,7 @@ import { useAuth } from '../auth.jsx';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { timeAgo } from '../utils.js';
+import { toast, confirmar, avisoError } from '../ui.js';
 
 export default function UserView({ id }) {
   const { user } = useAuth();
@@ -36,7 +37,7 @@ export default function UserView({ id }) {
       } else if (e.status === 404) {
         setNotFound(true);
       } else {
-        alert(e.message);
+        avisoError(e);
       }
     } finally {
       setLoading(false);
@@ -51,18 +52,27 @@ export default function UserView({ id }) {
       if (profile.is_following) await api.del(`/api/users/${profile.id}/follow`);
       else await api.post(`/api/users/${profile.id}/follow`, {});
       setProfile({ ...profile, is_following: !profile.is_following });
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
     finally { setBusy(false); }
   }
 
   async function block() {
-    if (!window.confirm(profile.is_blocked ? '¿Desbloquear a este usuario?' : '¿Bloquear a este usuario?')) return;
+    const titulo = profile.is_blocked ? '¿Desbloquear a este usuario?' : '¿Bloquear a este usuario?';
+    const ok = await confirmar({
+      title: titulo,
+      message: profile.is_blocked
+        ? 'Volverán a ver tus publicaciones y podrán escribirte.'
+        : 'No verá tus publicaciones ni podrá escribirte.',
+      confirmText: profile.is_blocked ? 'Desbloquear' : 'Bloquear',
+      danger: !profile.is_blocked,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       if (profile.is_blocked) await api.del(`/api/users/${profile.id}/block`);
       else await api.post(`/api/users/${profile.id}/block`, {});
       setProfile({ ...profile, is_blocked: !profile.is_blocked, is_following: false });
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
     finally { setBusy(false); }
   }
 
@@ -70,7 +80,7 @@ export default function UserView({ id }) {
     try {
       const res = await api.post('/api/messages/conversations', { user_id: profile.id });
       window.location.hash = `#/messages/${res.conversation_id}`;
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
 
   if (loading) return <div className="spinner" />;

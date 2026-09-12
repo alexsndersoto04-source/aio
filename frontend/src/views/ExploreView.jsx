@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { debounce } from '../utils.js';
@@ -36,7 +37,7 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
       }
       setSearched(true);
     } catch (e) {
-      alert(e.message);
+      avisoError(e);
     } finally {
       setLoading(false);
     }
