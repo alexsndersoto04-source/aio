@@ -2,10 +2,15 @@
 # Diagnostico TEMPORAL: envuelve a rustc y, si falla, publica su error como
 # anotacion de GitHub Actions (un canal que se puede leer sin acceso a los
 # logs del workflow). Se activa con `rustc-wrapper` en .cargo/config.toml.
+#
+# Cargo invoca el wrapper pasando la ruta del rustc real como primer argumento.
 set -uo pipefail
 
+RUSTC="$1"
+shift
+
 OUT="$(mktemp)"
-rustc "$@" > "$OUT" 2>&1
+"$RUSTC" "$@" > "$OUT" 2>&1
 CODE=$?
 cat "$OUT"
 if [ "$CODE" -ne 0 ] && [ -n "${GITHUB_ACTIONS:-}" ]; then
