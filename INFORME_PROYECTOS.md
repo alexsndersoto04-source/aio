@@ -144,15 +144,28 @@ Una red social web "de nivel startup": registro/login con 2FA, posts con fotos, 
 
 ### 4.4 🔴 El problema central: `zett check` lleva **rojo desde el día 1** y nadie ha visto por qué
 
-> **ACTUALIZADO (12-sep-2026).** Ya está diagnosticado y parcialmente resuelto:
-> eran **dos errores de sintaxis** (uno de ellos, un defecto del propio lenguaje:
-> una constante en mayúsculas antes de la llave de un bloque se leía como literal
-> de struct) y después **19 errores de tipos** repartidos en 6 archivos, listados
-> uno a uno con su ubicación en [`MOON_ERRORES.md`](MOON_ERRORES.md).
-> Arreglado: el parser (commit `b142ba2`), el `[` al inicio de línea en Moon
-> (`3992c82`), el canal de diagnóstico del CLI (`64e5a53`, `0962acc`) y el hecho
-> de que cada diagnóstico nombre su archivo (`e5358dc`). Las 637 pruebas del
-> lenguaje siguen verdes.
+> **ACTUALIZADO (12-sep-2026): RESUELTO.** `zett check` **pasa** (commit
+> `070b556`; workflow *Moon checks*, job `titan-check`, run 34707099648 =
+> success; CI, Termux ARM 32-bit y Termux AArch64 también verdes).
+> Historia completa: eran **dos errores de sintaxis** (uno de ellos, un defecto
+> del propio lenguaje: una constante en mayúsculas antes de la llave de un
+> bloque se leía como literal de struct) y después **19 errores de tipos**
+> repartidos en 6 archivos. Arreglado el parser (`b142ba2`), el `[` al inicio de
+> línea en Moon (`3992c82`), el canal de diagnóstico del CLI (`64e5a53`,
+> `0962acc`) y el hecho de que cada diagnóstico nombre su archivo (`e5358dc`).
+> Los 19 errores de tipos se resolvieron con **cinco reglas del comprobador**
+> (unión de ramas en posición de sentencia, contexto `any`, inferencia de
+> retorno, `== nil` para cualquier tipo, `std::process::exit` como `Never`) y
+> **una regla del parser** (un operador pegado a su operando —`-1`, `*p`, `&x`—
+> es prefijo y no continúa la línea anterior), más dos ajustes en el código de
+> Moon (el hub de tiempo real es un `Sender`; dos `match` sobre valores
+> dinámicos llevan brazo `_`). Detalle uno por uno y pruebas nuevas (6 del
+> comprobador, 2 del parser) en [`MOON_ERRORES.md`](MOON_ERRORES.md).
+>
+> Queda un solo paso para «funcional»: **correrlo contra Postgres real**. El
+> arnés (`ops/`, `test/e2e.mjs`, `LOCAL.md`) ya está en esta rama; no se pudo
+> ejecutar aquí porque este entorno no tiene `zett` compilado, ni Postgres, ni
+> Docker.
 
 
 - El workflow `Moon checks` se añadió el **26-ago** y acumula **16 ejecuciones, 0 exitosas**. Falla siempre en el paso `cargo run -p titan_cli -- check projects/moon/src/main.titan`.
@@ -236,9 +249,9 @@ Traducción: **Moon tiene tests end-to-end y un entorno local reproducible, pero
 |---|---|---|
 | Código | ✅ Grande (65k Rust) | ✅ Medio-grande (8.2k entre TITAN y React) |
 | Arquitectura | ✅ Clara, en capas, con docs | ✅ Clara (handlers/módulos/vistas) y SPEC excelente |
-| Pruebas | ✅ 637 en CI, 3 SO + ARM | ❌ 0 en `main`; E2E existe en otra rama |
-| CI | ✅ Verde en `main` | ❌ Rojo desde su creación, sin diagnóstico visible |
-| Ejecución real probada | ✅ (CI compila y testea de verdad) | ❌ **Nunca ejecutado** |
+| Pruebas | ✅ 600+ en CI, 3 SO + ARM | 🟡 E2E de 467 líneas ya en la rama (no en `main` ni en CI) |
+| CI | ✅ Verde en `main` | ✅ `zett check` verde (12-sep); antes rojo desde su creación |
+| Ejecución real probada | ✅ (CI compila y testea de verdad) | ❌ **Nunca ejecutado** (compila; falta Postgres) |
 | Versionado/releases | ⚠️ Inconsistente, tags fuera de `main` | ⚠️ Sin versión propia |
 | Datos persistentes | n/a | ⚠️ Postgres free caduca a los 30 días; imágenes en disco efímero |
 | Documentación | ✅ 28 docs | ✅ SPEC + STATUS + DEPLOY (mejor que el promedio) |
@@ -251,14 +264,26 @@ Traducción: **Moon tiene tests end-to-end y un entorno local reproducible, pero
 ## 7. Plan priorizado
 
 ### P0 — Desbloquear (esta semana)
-1. **Ver el error real de `zett check`** (comando de §4.4 en Termux o local) y **arreglar Moon hasta que compile**. Nada más importa hasta que esto pase.
-2. **Parchear el workflow `Moon checks`** con el snippet de §4.4 para que el fallo sea legible para siempre.
-3. **Levantar el backend localmente** con Postgres (usa el `ops/setup-local.sh` que ya tienes en la rama de diagnóstico) y correr el **E2E de 467 líneas**. Ese es el hito que convierte Moon en "producto".
+1. ✅ **HECHO (12-sep):** Moon compila — `zett check` verde con los 19 errores de
+   tipos resueltos; ver §4.4 y [`MOON_ERRORES.md`](MOON_ERRORES.md).
+2. ✅ **HECHO:** el fallo ya es legible: cada diagnóstico imprime
+   `archivo:línea:columna` y la CLI lo publica como anotación de GitHub. El
+   snippet de §4.4 sigue pendiente de pegar en `check-moon.yml` si quieres el
+   resumen en el step summary (los archivos de workflow no se pueden subir desde
+   esta sesión).
+3. ⏳ **ÚNICO PASO PENDIENTE para «funcional»:** levantar el backend con Postgres
+   real y correr el **E2E de 467 líneas** — `projects/moon/{LOCAL.md, ops/, test/e2e.mjs}`
+   ya están en esta rama. Hace falta una máquina con `zett` compilado y Postgres
+   (o Render); este entorno de trabajo no tiene ninguno de los dos.
 4. **Cortar un release limpio de TITAN desde `main`** (v1.0.29) y **apuntar el `Dockerfile` de Moon a él** en vez de v1.0.0.
 
 ### P1 — Ordenar (dos semanas)
 5. Limpiar `main`: borrar `debug*.txt`, `error.txt`, `probe.txt`, `selftest.txt`, `diag/`; sacar `diag-titan.yml` de `main`; ignorar esos patrones.
-6. Traer a `main` `projects/moon/{LOCAL.md, ops/, test/e2e.mjs}` (sin los `build.rs` de diagnóstico) y **añadir el E2E a CI** con un Postgres de servicio.
+6. 🟡 Traídos a la rama `projects/moon/{LOCAL.md, ops/, test/e2e.mjs}` (sin los
+   `build.rs` de diagnóstico). Falta **añadir el E2E a CI** con un Postgres de
+   servicio: es un cambio en `.github/workflows/`, y esta sesión no tiene permiso
+   para subir workflows. El snippet listo para pegar está en
+   [`MOON_ERRORES.md`](MOON_ERRORES.md) § «Siguiente hito».
 7. Unificar el versionado: que `titan version` imprima la versión real del release (del tag), y alinear CHANGELOG (`1.0.x`) con los tags.
 8. Retirar el mecanismo "mirror" (`crates/titan_parser/build.rs` + `scripts/zett-mirror.sh` + `cargo-diag-wrapper*`) de cualquier rama desde la que se etiquete; archivar ramas `tools-*`.
 
