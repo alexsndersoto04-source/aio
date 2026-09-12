@@ -62,9 +62,9 @@ const postDemo = {
   images: [],
 };
 
-function Seccion({ titulo, children, descripcion }) {
+function Seccion({ id, titulo, children, descripcion }) {
   return (
-    <section style={{ marginBottom: 34 }}>
+    <section id={id} style={{ marginBottom: 34 }}>
       <h2 style={{ fontSize: 18, marginBottom: 4 }}>{titulo}</h2>
       {descripcion ? <p className="sub" style={{ marginBottom: 12 }}>{descripcion}</p> : null}
       {children}
@@ -95,7 +95,7 @@ function App() {
             (los mismos que usa la aplicación) antes de tocar nada.
           </p>
 
-          <Seccion titulo="Acciones" descripcion="Un solo acento para lo importante; el resto, contorno o texto.">
+          <Seccion id="sec-acciones" titulo="Acciones" descripcion="Un solo acento para lo importante; el resto, contorno o texto.">
             <div className="row" style={{ flexWrap: 'wrap' }}>
               <button className="btn btn-primary"><IconPlus /> Principal</button>
               <button className="btn">Neutro</button>
@@ -118,7 +118,7 @@ function App() {
             </div>
           </Seccion>
 
-          <Seccion titulo="Formularios">
+          <Seccion id="sec-formularios" titulo="Formularios">
             <div className="card card-pad" style={{ maxWidth: 520 }}>
               <div className="field">
                 <label htmlFor="demo-1">Usuario</label>
@@ -140,19 +140,19 @@ function App() {
             </div>
           </Seccion>
 
-          <Seccion titulo="Publicación" descripcion="Reacciones, guardado, menú y estado de edición.">
+          <Seccion id="sec-publicacion" titulo="Publicación" descripcion="Reacciones, guardado, menú y estado de edición.">
             <div className="card" style={{ padding: 0, maxWidth: 640 }}>
               <PostCard post={post} onChanged={setPost} />
             </div>
           </Seccion>
 
-          <Seccion titulo="Redactor" descripcion="Anillo de caracteres, adjuntos por clic o arrastrando.">
+          <Seccion id="sec-redactor" titulo="Redactor" descripcion="Anillo de caracteres, adjuntos por clic o arrastrando.">
             <div className="card" style={{ overflow: 'hidden', maxWidth: 640, padding: 0 }}>
               <Composer onCreated={(p) => toast.ok('Publicación creada (demo)')} />
             </div>
           </Seccion>
 
-          <Seccion titulo="Avisos y diálogos" descripcion="Sin ventanas del navegador: misma estética en todos los sistemas.">
+          <Seccion id="sec-avisos" titulo="Avisos y diálogos" descripcion="Sin ventanas del navegador: misma estética en todos los sistemas.">
             <div className="row" style={{ flexWrap: 'wrap' }}>
               <button className="btn btn-outline" onClick={() => toast.ok('Publicación guardada')}>Aviso correcto</button>
               <button className="btn btn-outline" onClick={() => toast.err('No se pudo conectar con el servidor')}>Aviso de error</button>
@@ -168,7 +168,7 @@ function App() {
             </div>
           </Seccion>
 
-          <Seccion titulo="Conversación" descripcion="Burbujas, reacciones, escritura en vivo y confirmación de lectura.">
+          <Seccion id="sec-mensajes" titulo="Conversación" descripcion="Burbujas, reacciones, escritura en vivo y confirmación de lectura.">
             <div className="card card-pad" style={{ maxWidth: 640 }}>
               <div className="chat-messages" style={{ padding: 0 }}>
                 <div className="msg">¿Viste el nuevo diseño? <span className="time">10:24</span></div>
@@ -179,7 +179,7 @@ function App() {
             </div>
           </Seccion>
 
-          <Seccion titulo="Carga y estados vacíos" descripcion="Nunca una pantalla en blanco: la forma de lo que va a llegar.">
+          <Seccion id="sec-cargas" titulo="Carga y estados vacíos" descripcion="Nunca una pantalla en blanco: la forma de lo que va a llegar.">
             <div className="card" style={{ maxWidth: 640, padding: 0, overflow: 'hidden' }}>
               <PostSkeleton />
               <PostSkeleton lines={2} />
@@ -198,7 +198,7 @@ function App() {
             </div>
           </Seccion>
 
-          <Seccion titulo="Estadísticas y tablas (administración)">
+          <Seccion id="sec-admin" titulo="Estadísticas y tablas (administración)">
             <div className="stat-grid" style={{ padding: 0, marginBottom: 14 }}>
               {[['Usuarios', '1.284'], ['Publicaciones', '9.731'], ['Mensajes', '42.118'], ['Reportes abiertos', '3']].map(([k, v]) => (
                 <div className="stat" key={k}><b>{v}</b><span>{k}</span></div>
@@ -227,7 +227,7 @@ function App() {
             </div>
           </Seccion>
 
-          <Seccion titulo="Iconografía" descripcion="Un solo trazo (1,8 px) en toda la aplicación.">
+          <Seccion id="sec-iconos" titulo="Iconografía" descripcion="Un solo trazo (1,8 px) en toda la aplicación.">
             <div className="row" style={{ flexWrap: 'wrap', gap: 14 }}>
               {[IconHome, IconExplore, IconBell, IconMail, IconUser, IconSettings, IconShield, IconSpark, IconTrend, IconT, IconUsers, IconCheck, IconAlert, IconInfo, IconWarning, IconLock, IconImage, IconSend, IconGlobe, IconGrid, IconAt, IconHeart, IconComment, IconBookmark].map((I, i) => (
                 <span className="icon-btn" key={i}><I /></span>
@@ -235,7 +235,7 @@ function App() {
             </div>
           </Seccion>
 
-          <Seccion titulo="Marcas de color" descripcion="Superficies, tinta y el acento aurora.">
+          <Seccion id="sec-colores" titulo="Marcas de color" descripcion="Superficies, tinta y el acento aurora.">
             <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
               {['--bg', '--surface', '--surface-2', '--surface-3', '--line', '--ink', '--ink-2', '--ink-3', '--accent', '--accent-2', '--accent-3', '--ok', '--warn', '--danger'].map((v) => (
                 <div key={v} style={{ width: 120 }}>

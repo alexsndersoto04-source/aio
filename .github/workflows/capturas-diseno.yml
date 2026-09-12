@@ -1,0 +1,76 @@
+# Capturas del diseño («Órbita»)
+#
+# Abre la galería del sistema de diseño con un navegador real y guarda
+# imágenes PNG en `capturas/`, que además quedan publicadas en la rama.
+# Se ejecuta solo cuando cambia el diseño, o a mano desde la pestaña Actions.
+
+name: Capturas del diseño
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'arena/**'
+    paths:
+      - 'frontend/src/styles.css'
+      - 'frontend/src/design-preview.jsx'
+      - 'frontend/src/components/**'
+      - 'frontend/design.html'
+      - 'frontend/scripts/capturas.mjs'
+      - 'frontend/scripts/diseno-suelto.mjs'
+      - '.github/workflows/capturas-diseno.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  capturas:
+    name: Generar capturas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Dependencias del frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Navegador (Chromium)
+        working-directory: frontend
+        run: |
+          npm i --no-save playwright
+          npx playwright install --with-deps chromium
+
+      - name: Página autocontenida del sistema de diseño
+        working-directory: frontend
+        run: node scripts/diseno-suelto.mjs "$RUNNER_TEMP/diseno.html"
+
+      - name: Capturas
+        working-directory: frontend
+        env:
+          PAGINA: ${{ runner.temp }}/diseno.html
+        run: node scripts/capturas.mjs
+
+      - name: Guardar capturas como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-diseno
+          path: capturas
+          if-no-files-found: error
+
+      - name: Publicar capturas en la rama
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add capturas
+          if git diff --cached --quiet; then
+            echo "Las capturas no cambiaron."
+          else
+            git commit -m "capturas: imágenes del diseño [skip ci]"
+            git push
+          fi
