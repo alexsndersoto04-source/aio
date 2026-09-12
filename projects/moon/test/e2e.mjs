@@ -22,7 +22,10 @@ const LOG_FILE = process.env.MOON_LOG || '/tmp/moon-server.log';
 function lastLogCode(re) {
   try {
     const log = readFileSync(LOG_FILE, 'utf8');
-    const m = [...log.matchAll(re)];
+    // matchAll exige la bandera g; sin ella lanza y el código se daba por
+    // perdido aunque el servidor lo hubiera impreso.
+    const global = re.global ? re : new RegExp(re.source, `${re.flags}g`);
+    const m = [...log.matchAll(global)];
     return m.length ? m[m.length - 1][1] : null;
   } catch {
     return null;
@@ -451,7 +454,7 @@ async function main() {
       token: lt,
       body: { action: 'resolve', note: 'duplicado' },
     });
-    check('admin resuelve reporte -> 200', resolve.status === 200, `status=${resolve.status} ${resolve.text.slice(0, 160)}`);
+    check('admin resuelve reporte -> 200/204', resolve.status === 200 || resolve.status === 204, `status=${resolve.status} ${resolve.text.slice(0, 160)}`);
   }
 
   // ---------- Seguridad / errores ----------

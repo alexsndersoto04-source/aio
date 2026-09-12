@@ -119,18 +119,6 @@ fn map_io(error: std::io::Error, operation: &'static str) -> ServerError {
     }
 }
 
-/// ¿El error es sólo el vencimiento del plazo de E/S?
-///
-/// Un WebSocket espera mensajes del cliente sin plazo natural: `ws_recv`
-/// usa un plazo corto y lo renueva. Si el vencimiento se tratara como
-/// error, cada socket se cerraría al primer silencio y no llegaría ningún
-/// evento en vivo. Las escrituras van por `write_all_deadline`, que tampoco
-/// «pierde» datos a medias: el plazo se recalcula en cada trozo, así que un
-/// `Timeout` en la escritura significa que no se escribió nada.
-fn es_vencimiento(error: &ServerError) -> bool {
-    matches!(error, ServerError::Timeout { .. })
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum HandleKind {
     Server,
@@ -1529,24 +1517,35 @@ pub fn ws_recv(handle: i64) -> Result<(String, String, Vec<u8>), ServerError> {
         let mut conn = crate::native::lock_recover(&websocket.conn);
         receive_websocket(&websocket, &mut conn)
     };
-    if result.is_ok() {
-        websocket.sin_actividad.store(0, Ordering::Release);
-    } else if let Err(error) = &result {
-        // El plazo vencido sólo significa «el cliente no ha hablado»: se
-        // renueva la espera y el socket sigue vivo para recibir eventos.
-        // Cualquier otro error sí cierra la conexión.
-        if es_vencimiento(error) {
+    match result {
+        // El plazo vencido no es un error: sólo significa que el cliente no
+        // envió nada en esta ventana. Se avisa con el evento «timeout» para
+        // que el bucle de la aplicación siga esperando, y tras el tope de
+        // vueltas sin actividad se cierra la conexión (un par desaparecido no
+        // puede dejar el socket colgado para siempre).
+        Err(ServerError::Timeout { .. }) => {
             let vueltas = websocket.sin_actividad.fetch_add(1, Ordering::AcqRel);
             if vueltas.saturating_add(1) > MAX_WS_VUELTAS_SIN_ACTIVIDAD {
                 if let Some(websocket) = take_websocket(handle) {
                     websocket.close();
                 }
+                return Err(ServerError::Timeout {
+                    operation: "read WebSocket message",
+                });
             }
-        } else if let Some(websocket) = take_websocket(handle) {
-            websocket.close();
+            Ok(("timeout".into(), String::new(), Vec::new()))
+        }
+        Ok(frame) => {
+            websocket.sin_actividad.store(0, Ordering::Release);
+            Ok(frame)
+        }
+        Err(error) => {
+            if let Some(websocket) = take_websocket(handle) {
+                websocket.close();
+            }
+            Err(error)
         }
     }
-    result
 }
 
 fn send_websocket(handle: i64, opcode: u8, payload: &[u8]) -> Result<(), ServerError> {
