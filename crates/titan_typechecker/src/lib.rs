@@ -219,14 +219,24 @@ pub enum TypeError {
 pub struct TypeDiagnostic {
     pub error: TypeError,
     pub span: Option<Span>,
+    /// Source file the diagnostic came from, when the program was loaded from
+    /// disk. `Span` knows the line and the column but not the file, so a
+    /// multi-file project used to report "94:9: type mismatch…" with no way to
+    /// tell which of the sources to open.
+    pub file: Option<String>,
 }
 
 impl std::fmt::Display for TypeDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(span) = self.span.filter(|span| span.line > 0 && span.column > 0) {
-            write!(formatter, "{}:{}: {}", span.line, span.column, self.error)
-        } else {
-            std::fmt::Display::fmt(&self.error, formatter)
+        let span = self.span.filter(|span| span.line > 0 && span.column > 0);
+        match (&self.file, span) {
+            (Some(file), Some(span)) => write!(
+                formatter,
+                "{}:{}:{}: {}",
+                file, span.line, span.column, self.error
+            ),
+            (None, Some(span)) => write!(formatter, "{}:{}: {}", span.line, span.column, self.error),
+            _ => std::fmt::Display::fmt(&self.error, formatter),
         }
     }
 }
@@ -262,6 +272,12 @@ pub struct TypeEnv {
     errors: Vec<TypeError>,
     error_spans: Vec<Option<Span>>,
     last_error_spans: Vec<Option<Span>>,
+    /// Source file each reported error belongs to, parallel to `error_spans`.
+    error_files: Vec<Option<String>>,
+    last_error_files: Vec<Option<String>>,
+    /// File of the declaration being checked, so a diagnostic that carries a
+    /// span can also say which source it lives in.
+    current_file: Option<String>,
     return_type: Type,
     return_candidates: Vec<Vec<Type>>,
     loop_depth: usize,
@@ -1199,6 +1215,9 @@ impl TypeEnv {
             errors: Vec::new(),
             error_spans: Vec::new(),
             last_error_spans: Vec::new(),
+            error_files: Vec::new(),
+            last_error_files: Vec::new(),
+            current_file: None,
             return_type: Type::Unknown,
             return_candidates: Vec::new(),
             loop_depth: 0,
@@ -1225,7 +1244,10 @@ impl TypeEnv {
         self.type_aliases.clear();
         self.errors.clear();
         self.error_spans.clear();
+        self.error_files.clear();
         self.last_error_spans.clear();
+        self.last_error_files.clear();
+        self.current_file = None;
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
@@ -1238,6 +1260,7 @@ impl TypeEnv {
         self.synchronize_error_spans();
         let mut validation_errors = std::mem::take(&mut self.errors);
         let mut validation_spans = std::mem::take(&mut self.error_spans);
+        let mut validation_files = std::mem::take(&mut self.error_files);
 
         // Unannotated function returns and global constants are inferred
         // together to a fixed point before the diagnostic pass. Both are
@@ -1269,14 +1292,18 @@ impl TypeEnv {
         // initial Unknown placeholders collected from unannotated methods.
         self.errors.clear();
         self.error_spans.clear();
+        self.error_files.clear();
         self.validate_impl_contracts(&program.items);
         self.synchronize_error_spans();
         validation_errors.append(&mut self.errors);
         validation_spans.append(&mut self.error_spans);
+        validation_files.append(&mut self.error_files);
 
         self.reset_analysis_state();
         self.errors = validation_errors;
         self.error_spans = validation_spans;
+        self.error_files = validation_files;
+        self.current_file = None;
         self.check_constants_in(&program.items);
         for item in &program.items {
             self.check_item(item);
@@ -1284,9 +1311,11 @@ impl TypeEnv {
         self.synchronize_error_spans();
         if self.errors.is_empty() {
             self.last_error_spans.clear();
+            self.last_error_files.clear();
             Ok(())
         } else {
             self.last_error_spans = std::mem::take(&mut self.error_spans);
+            self.last_error_files = std::mem::take(&mut self.error_files);
             Err(std::mem::take(&mut self.errors))
         }
     }
@@ -1300,12 +1329,14 @@ impl TypeEnv {
     ) -> Result<(), Vec<TypeDiagnostic>> {
         self.check_program(program).map_err(|errors| {
             let spans = std::mem::take(&mut self.last_error_spans);
+            let files = std::mem::take(&mut self.last_error_files);
             errors
                 .into_iter()
                 .enumerate()
                 .map(|(index, error)| TypeDiagnostic {
                     error,
                     span: spans.get(index).copied().flatten(),
+                    file: files.get(index).cloned().flatten(),
                 })
                 .collect()
         })
@@ -1313,13 +1344,45 @@ impl TypeEnv {
 
     fn synchronize_error_spans(&mut self) {
         self.error_spans.resize(self.errors.len(), None);
+        self.error_files.resize(self.errors.len(), None);
     }
 
     fn assign_error_span(&mut self, start: usize, span: Span) {
         self.synchronize_error_spans();
-        for error_span in self.error_spans.iter_mut().skip(start) {
-            if error_span.is_none() {
-                *error_span = Some(span);
+        let file = self.current_file.clone();
+        for index in start..self.errors.len() {
+            if self.error_spans[index].is_none() {
+                self.error_spans[index] = Some(span);
+            }
+            if self.error_files[index].is_none() {
+                self.error_files[index] = file.clone();
+            }
+        }
+    }
+
+    /// Attaches a source file to every error emitted since `start`, without
+    /// touching spans that a more precise location already filled in.
+    fn assign_error_file(&mut self, start: usize) {
+        self.synchronize_error_spans();
+        let file = self.current_file.clone();
+        for index in start..self.errors.len() {
+            if self.error_files[index].is_none() {
+                self.error_files[index] = file.clone();
+            }
+        }
+    }
+
+    /// Attributes every error pushed since `start` to a source declaration:
+    /// its span when the caller has one, and the file it was declared in.
+    fn assign_error_location(&mut self, start: usize, span: Option<Span>) {
+        self.synchronize_error_spans();
+        let file = self.current_file.clone();
+        for index in start..self.errors.len() {
+            if self.error_spans[index].is_none() {
+                self.error_spans[index] = span;
+            }
+            if self.error_files[index].is_none() {
+                self.error_files[index] = file.clone();
             }
         }
     }
@@ -1328,6 +1391,7 @@ impl TypeEnv {
         self.synchronize_error_spans();
         self.errors.push(error);
         self.error_spans.push(Some(span));
+        self.error_files.push(self.current_file.clone());
     }
 
     fn reset_analysis_state(&mut self) {
@@ -1342,6 +1406,7 @@ impl TypeEnv {
         self.checked_constants.clear();
         self.errors.clear();
         self.error_spans.clear();
+        self.error_files.clear();
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
@@ -1369,9 +1434,16 @@ impl TypeEnv {
     }
 
     fn validate_declarations(&mut self, items: &[Item]) {
+        let previous = self.current_file.take();
+        for item in items {
+            if let Item::Function(function) = item {
+                self.current_file.clone_from(&function.source_file);
+            }
+        }
         for (error, span) in declaration_errors(&self.base_functions, items) {
             self.push_error_at(error, span);
         }
+        self.current_file = previous;
     }
 
     fn validate_type_aliases(&mut self, items: &[Item]) {
@@ -1823,7 +1895,9 @@ impl TypeEnv {
         for item in items {
             match item {
                 Item::Const(constant) => {
+                    let error_start = self.errors.len();
                     self.check_constant(&constant.name);
+                    self.assign_error_file(error_start);
                 }
                 Item::Module(module) => self.check_constants_in(&module.items),
                 _ => {}
@@ -1918,7 +1992,9 @@ impl TypeEnv {
 
     fn check_function(&mut self, function: &FunctionDecl) {
         let error_start = self.errors.len();
+        let previous_file = self.current_file.replace(function.source_file.clone());
         self.check_function_inner(function);
+        self.current_file = previous_file;
         self.assign_error_span(error_start, function.span);
     }
 
@@ -5883,6 +5959,30 @@ mod tests {
     fn rejects_unknown_names() {
         assert!(check("fn main() { missing + 1 }").is_err());
     }
+    #[test]
+    fn diagnostics_name_the_source_file_when_the_program_has_one() {
+        // Un proyecto de varios archivos tiene que poder decir EN QUE archivo
+        // esta el error: el span solo conoce linea y columna, y con
+        // "94:9: type mismatch" no hay forma de saber cual de las fuentes hay
+        // que abrir.
+        let mut program = parse("fn main() {\n    1 + true\n}");
+        if let Item::Function(function) = &mut program.items[0] {
+            function.source_file = Some("src/math.titan".into());
+        }
+        let diagnostics = TypeEnv::new()
+            .check_program_diagnostics(&program)
+            .unwrap_err();
+        let invalid = diagnostics
+            .iter()
+            .find(|diagnostic| matches!(&diagnostic.error, TypeError::InvalidOperands { .. }))
+            .expect("expected invalid operands diagnostic");
+        assert_eq!(invalid.file.as_deref(), Some("src/math.titan"));
+        assert!(
+            invalid.to_string().starts_with("src/math.titan:2:5: "),
+            "{invalid}"
+        );
+    }
+
     #[test]
     fn reports_expression_diagnostic_spans() {
         let program = parse("fn main() {\n    1 + true\n}");
