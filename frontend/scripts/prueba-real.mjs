@@ -50,7 +50,7 @@ execFileSync(process.execPath, [resolve(aqui, 'diseno-suelto.mjs'), '--real', '-
 const html = readFileSync(destino, 'utf8');
 comprobar(
   'la aplicación compila sin activar los datos de ejemplo',
-  !html.includes('window.MOON_DEMO = true') && html.includes('<style>') && html.includes('127.0.0.1:3000')
+  !html.includes('window.MOON_DEMO = true') && html.includes('<style>') && html.includes(API)
 );
 
 // ---------- 2. Abrirla en un DOM con red real ----------
