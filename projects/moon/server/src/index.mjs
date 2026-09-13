@@ -38,9 +38,53 @@ if (!SECRETO || SECRETO.length < 32) {
 
 const pool = crearPool(URL_BD);
 
-// La base de datos puede tardar en despertar (los servicios gratuitos como
-// Neon se apagan cuando nadie los usa). En vez de rendirse al primer intento,
-// se espera un poco y se vuelve a probar: así el arranque no falla por prisas.
+// Explica en palabras llanas qué hacer cuando la conexión con la base de datos
+// falla. Devuelve la lista de pistas, o vacía si es un fallo pasajero (que sí
+// merece reintentos).
+function pistasDeConexion(e, cadena) {
+  const codigo = (e && e.code) || '';
+  const texto = String((e && e.message) || '');
+  if (String(cadena).includes('YOUR-PASSWORD')) {
+    return [
+      'La dirección DATABASE_URL todavía lleva el hueco [YOUR-PASSWORD].',
+      'Hay que poner ahí la contraseña real de la base de datos.',
+      'En Supabase: botón Connect → pestaña Session pooler → copiar la cadena',
+      'y sustituir [YOUR-PASSWORD] por la contraseña que elegiste.',
+    ];
+  }
+  if (codigo === '28P01' || /password authentication failed/i.test(texto)) {
+    return [
+      'La contraseña de la base de datos no coincide.',
+      'Solución: en Supabase, Settings → Database → Reset database password,',
+      'copia la contraseña nueva y pégala en DATABASE_URL, dentro de la cadena,',
+      'en el lugar de [YOUR-PASSWORD]. Después guarda: se vuelve a publicar solo.',
+    ];
+  }
+  if (codigo === '3D000') {
+    return [
+      'La base de datos indicada no existe.',
+      'Al final de DATABASE_URL (después de la última barra) debe decir «postgres».',
+    ];
+  }
+  if (['ENOTFOUND', 'EAI_AGAIN'].includes(codigo)) {
+    return [
+      'No se encontró el servidor de la base de datos.',
+      'Revisa la dirección (el trozo entre la @ y el puerto) de DATABASE_URL.',
+    ];
+  }
+  if (['ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(codigo)) {
+    return [
+      'No se pudo llegar a la base de datos (red o puerto).',
+      'Copia de nuevo la cadena desde Supabase, pestaña Session pooler.',
+    ];
+  }
+  return [];
+}
+
+// La base de datos puede tardar en despertar (los servicios gratuitos se
+// apagan cuando nadie los usa). En vez de rendirse al primer intento, se
+// espera un poco y se vuelve a probar. Los errores de contraseña, en cambio,
+// no se reintentan: se explican y se termina, para no llenar el registro.
 async function prepararBase() {
   const intentos = Number(process.env.MOON_BD_INTENTOS || 6);
   for (let i = 1; i <= intentos; i += 1) {
@@ -49,9 +93,26 @@ async function prepararBase() {
       return;
     } catch (e) {
       console.error(`[bd] intento ${i} de ${intentos} falló: ${e.message}`);
+      const pistas = pistasDeConexion(e, URL_BD);
+      if (pistas.length) {
+        console.error('');
+        for (const linea of pistas) console.error(`[bd] ${linea}`);
+        console.error('');
+        process.exit(1);
+      }
       if (i === intentos) throw e;
       await new Promise((r) => setTimeout(r, 2000 * i));
     }
+  }
+}
+
+/** Dirección de la base de datos sin la contraseña, para poder revisarla. */
+function destinoVisible(cadena) {
+  try {
+    const u = new URL(cadena);
+    return `${u.hostname}:${u.port || 5432}${u.pathname} (usuario ${u.username})`;
+  } catch {
+    return 'dirección ilegible';
   }
 }
 
@@ -159,6 +220,7 @@ servidor.listen(PUERTO, '0.0.0.0', () => {
   console.log(`[api] Moon escuchando en http://0.0.0.0:${PUERTO}`);
   console.log(`[api] WebSocket en /ws · ${router.rutas.length} rutas registradas`);
   console.log(`[api] Interfaz web: ${estadoWeb()}`);
+  console.log(`[api] Base de datos: ${destinoVisible(URL_BD)}`);
 });
 
 async function apagar(senal) {
