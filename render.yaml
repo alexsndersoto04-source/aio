@@ -24,7 +24,8 @@ services:
       # Secreto de las sesiones: Render lo inventa solo.
       - key: JWT_SECRET
         generateValue: true
-      # Cadena de conexión de Neon (se pega a mano al crear el servicio).
+      # Cadena de conexión de la base de datos (Supabase o Neon). Se pega a
+      # mano al crear el servicio; no se guarda en el repositorio.
       - key: DATABASE_URL
         sync: false
       # Cualquier origen: la aplicación se sirve desde el mismo servicio.

@@ -15,12 +15,27 @@ const aqui = dirname(fileURLToPath(import.meta.url));
 const rutaEsquema = resolve(aqui, '../esquema.json');
 
 export function crearPool(url) {
-  const pool = new pg.Pool({
+  const ajustes = {
     connectionString: url,
     max: 10,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
-  });
+    connectionTimeoutMillis: 15000,
+  };
+
+  // Las bases de datos en la nube (Supabase, Neon, Render…) solo aceptan
+  // conexiones cifradas, y algunas usan certificados propios que Node no
+  // reconoce de fábrica. Si la dirección no es local, se activa el cifrado.
+  let anfitrion = '';
+  try {
+    anfitrion = new URL(url).hostname;
+  } catch {
+    anfitrion = '';
+  }
+  const esLocal =
+    !anfitrion || ['localhost', '127.0.0.1', '::1'].includes(anfitrion) || anfitrion.endsWith('.local');
+  if (!esLocal) ajustes.ssl = { rejectUnauthorized: false };
+
+  const pool = new pg.Pool(ajustes);
   // Un error en una conexión inactiva no debe tumbar el servidor.
   pool.on('error', (e) => console.error('[bd] error en conexión inactiva:', e.message));
   return pool;
