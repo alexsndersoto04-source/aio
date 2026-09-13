@@ -26,6 +26,8 @@ import NotificationsView from './views/NotificationsView.jsx';
 import SettingsView from './views/SettingsView.jsx';
 import AdminView from './views/AdminView.jsx';
 import ContactosView from './views/ContactosView.jsx';
+import GruposView from './views/GruposView.jsx';
+import GrupoView from './views/GrupoView.jsx';
 import { realtime } from './realtime.js';
 import { setUnread, bump } from './unread.js';
 import { aplicarTema } from './theme.js';
@@ -136,6 +138,10 @@ function Router() {
     case 'contactos':
     case 'contacts':
       return <ContactosView />;
+    case 'grupos':
+      return <GruposView />;
+    case 'grupo':
+      return <GrupoView id={parts[1]} />;
     case 'admin':
       return <AdminView tab={parts[1]} />;
     default:

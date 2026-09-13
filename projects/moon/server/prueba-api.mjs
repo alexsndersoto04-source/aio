@@ -232,6 +232,44 @@ function trasResuelto(lista, id) {
   return lista.items.some((r) => r.id === id);
 }
 
+// ---------- Grupos ----------
+const grupo = await pedir('POST', '/api/groups', {
+  token: tokenA,
+  cuerpo: { name: `Cielo del Sur ${sufijo}`, about: 'Fotos y charlas del cielo austral' },
+});
+comprobar('grupo creado con su dirección corta', grupo.id > 0 && grupo.slug.includes('cielo-del-sur') && grupo.miembros === 1, JSON.stringify(grupo));
+
+const listadoGrupos = await pedir('GET', '/api/groups', { token: tokenB });
+comprobar('el grupo aparece para descubrir', listadoGrupos.descubrir.some((g) => g.id === grupo.id));
+
+const entreGrupo = await pedir('POST', `/api/groups/${grupo.id}/join`, { token: tokenB, cuerpo: {} });
+comprobar('segundo usuario entra al grupo', entreGrupo.soy_miembro === true);
+
+const detalleGrupo = await pedir('GET', `/api/groups/${grupo.id}`, { token: tokenB });
+comprobar('el grupo muestra sus dos miembros y sus papeles', detalleGrupo.miembros === 2 && detalleGrupo.miembros_lista.some((m) => m.papel === 'owner'));
+
+const publicacionGrupo = await pedir('POST', `/api/groups/${grupo.id}/posts`, {
+  token: tokenB,
+  cuerpo: { content: `Primera del grupo #cielo ${sufijo}` },
+});
+comprobar('se publica dentro del grupo', publicacionGrupo.id > 0, JSON.stringify(publicacionGrupo).slice(0, 160));
+
+const feedGrupo = await pedir('GET', `/api/groups/${grupo.id}/posts`, { token: tokenA });
+comprobar('el grupo muestra lo publicado', feedGrupo.total === 1 && feedGrupo.items[0].content.includes('cielo'), JSON.stringify(feedGrupo).slice(0, 200));
+
+const misGrupos = await pedir('GET', '/api/me/groups', { token: tokenB });
+comprobar('mis grupos viene con el papel de cada uno', misGrupos.some((g) => g.id === grupo.id && g.papel === 'member'));
+
+const salidaGrupo = await pedir('DELETE', `/api/groups/${grupo.id}/join`, { token: tokenB, crudo: true });
+comprobar('se puede salir del grupo', salidaGrupo.estado === 200 && salidaGrupo.datos.soy_miembro === false, JSON.stringify(salidaGrupo.datos));
+
+const privado = await pedir('POST', '/api/groups', { token: tokenA, cuerpo: { name: `Círculo privado ${sufijo}`, privacy: 'private' } });
+const mirarPrivado = await pedir('GET', `/api/groups/${privado.id}/posts`, { token: tokenB, crudo: true });
+comprobar('grupo privado: hay que entrar para ver lo publicado', mirarPrivado.estado === 403, String(mirarPrivado.estado));
+
+const editarAjeno = await pedir('PATCH', `/api/groups/${grupo.id}`, { token: tokenB, cuerpo: { about: 'no debería' }, crudo: true });
+comprobar('solo quien creó el grupo puede editarlo', editarAjeno.estado === 403, String(editarAjeno.estado));
+
 // ---------- Imágenes: subir y volver a servir ----------
 // (Esta parte cubre dos fallos reales: Busboy cerraba antes de que el archivo
 // terminara de escribirse, y servir una imagen tumbaba el servidor entero.)

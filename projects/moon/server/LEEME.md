@@ -44,7 +44,7 @@ interfaz queda en http://localhost:5173 llamando a datos reales.
 ## Comprobaciones
 
 ```bash
-# 49 comprobaciones contra la API y la base de datos reales
+# 59 comprobaciones contra la API y la base de datos reales
 node prueba-api.mjs
 
 # La aplicación de verdad, manejada desde la interfaz (registro, publicar…)
@@ -64,7 +64,10 @@ cd ../../frontend && npm i --no-save jsdom && API=http://127.0.0.1:3000 node scr
 | `src/rutas-social.mjs` | Inicio, publicaciones, comentarios, personas, búsqueda, etiquetas, notificaciones, reportes |
 | `src/rutas-mensajes.mjs` | Conversaciones, mensajes, no leídos, reacciones, borrado |
 | `src/rutas-admin.mjs` | Resumen, serie diaria, moderación, palabras bloqueadas, actividad |
+| `src/rutas-historias.mjs` | Historias de 24 horas, visitas y presencia |
+| `src/rutas-grupos.mjs` | Grupos: crear, entrar, salir, publicar dentro, miembros |
 | `src/rutas-media.mjs` | Subida y entrega de imágenes (multipart) |
+| `src/estatico.mjs` | Entrega la aplicación web compilada en el mismo puerto |
 | `src/ws.mjs` | Tiempo real: notificaciones, mensajes, «escribiendo…», contadores |
 | `src/correo.mjs` | Correo por SMTP (2FA y recuperación de contraseña) |
 | `src/limites.mjs` | Límite de peticiones por ventana deslizante |

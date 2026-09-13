@@ -13,7 +13,7 @@ import Avatar from './Avatar.jsx';
 import {
   IconHome, IconExplore, IconBookmark, IconBell, IconMail, IconUser,
   IconSettings, IconShield, IconSearch, IconX, IconLogout, IconLayers,
-  IconGrid, IconPlus,
+  IconGrid, IconPlus, IconUsers,
 } from './Icons.jsx';
 
 function useSeccion() {
@@ -206,6 +206,8 @@ export function AccesosRapidos() {
           <div className="hoja-cuerpo">
             <span className="eyebrow">Ir a</span>
             <div className="hoja-rejilla">
+              <a href="#/grupos" onClick={() => setAbierto(false)}><IconLayers /> Grupos</a>
+              <a href="#/amigos" onClick={() => setAbierto(false)}><IconUsers /> Contactos</a>
               <a href={`#/user/${user.id}`} onClick={() => setAbierto(false)}><IconUser /> Mi perfil</a>
               <a href="#/profile/saved" onClick={() => setAbierto(false)}><IconBookmark /> Guardados</a>
               <a href="#/settings" onClick={() => setAbierto(false)}><IconSettings /> Ajustes</a>

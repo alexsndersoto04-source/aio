@@ -20,6 +20,7 @@ import { registrarRutasMensajes } from './rutas-mensajes.mjs';
 import { registrarRutasAdmin } from './rutas-admin.mjs';
 import { registrarRutasMedia } from './rutas-media.mjs';
 import { registrarRutasHistorias } from './rutas-historias.mjs';
+import { registrarRutasGrupos } from './rutas-grupos.mjs';
 import { montarWs, conectados } from './ws.mjs';
 import { demasiadoRapido } from './limites.mjs';
 import { servirWeb, estadoWeb } from './estatico.mjs';
@@ -125,6 +126,7 @@ registrarRutasMensajes(router);
 registrarRutasAdmin(router);
 registrarRutasMedia(router);
 registrarRutasHistorias(router);
+registrarRutasGrupos(router);
 
 // Salud (pública) y métricas (solo administración).
 router.get('/api/health', async (c) => {

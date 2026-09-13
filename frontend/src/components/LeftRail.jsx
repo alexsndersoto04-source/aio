@@ -10,7 +10,7 @@ import { useUnread } from '../unread.js';
 import Avatar from './Avatar.jsx';
 import {
   IconHome, IconExplore, IconBookmark, IconBell, IconMail, IconUser,
-  IconSettings, IconShield, IconUsers, IconTrend, IconLayers,
+  IconSettings, IconShield, IconUsers, IconTrend, IconLayers, IconGrid,
 } from './Icons.jsx';
 
 function useSeccion() {
@@ -59,6 +59,7 @@ export default function LeftRail() {
         {fila('messages', 'Mensajes', <IconMail />, unread.messages)}
         {fila(`user/${user.id}`, 'Mi perfil', <IconUser />)}
         {fila('profile/saved', 'Guardados', <IconBookmark />)}
+        {fila('grupos', 'Grupos', <IconGrid />)}
         {fila('amigos', 'Contactos', <IconUsers />)}
         {fila('explore?type=posts', 'Tendencias', <IconTrend />)}
         {fila('settings', 'Ajustes', <IconSettings />)}

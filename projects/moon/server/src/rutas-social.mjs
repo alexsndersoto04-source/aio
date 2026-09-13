@@ -12,7 +12,7 @@ import { demasiadoRapido } from './limites.mjs';
 
 // ---------- Ayudas ----------
 
-const SQL_POST = `
+export const SQL_POST = `
   SELECT p.id, p.content, p.status, p.likes_count, p.comments_count, p.saves_count,
          p.created_at::text AS created_at, p.edited_at::text AS edited_at,
          p.user_id,
@@ -24,7 +24,7 @@ const SQL_POST = `
 
 const SQL_IMAGENES = 'SELECT id, post_id, original_url, thumb_url, position FROM post_images WHERE post_id = ANY($1::bigint[]) ORDER BY position';
 
-async function conImagenes(pool, filas) {
+export async function conImagenes(pool, filas) {
   if (filas.length === 0) return filas;
   const ids = filas.map((f) => Number(f.id));
   const imagenes = (await pool.query(SQL_IMAGENES, [ids])).rows;
@@ -39,7 +39,7 @@ async function conImagenes(pool, filas) {
   return filas;
 }
 
-function aPublicacion(f, yo) {
+export function aPublicacion(f, yo) {
   return {
     id: Number(f.id),
     content: f.status === 'deleted' ? '' : f.content,

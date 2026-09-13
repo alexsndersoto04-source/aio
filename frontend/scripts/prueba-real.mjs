@@ -302,6 +302,80 @@ comprobar(
   texto().slice(0, 160)
 );
 
+// ---------- 5c. Grupos: se crean, se ven y se publica dentro ----------
+const nombreGrupo = `Cielo ${sufijo}`;
+const grupoCreado = await (
+  await fetch(`${API}/api/groups`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: nombreGrupo, about: 'Grupo de prueba del recorrido' }),
+  })
+).json();
+comprobar('el grupo se crea desde la aplicación', grupoCreado.id > 0 && grupoCreado.miembros === 1, JSON.stringify(grupoCreado).slice(0, 160));
+
+window.location.hash = '#/grupos';
+await esperarA(() => /Grupos/i.test(texto()), 6000);
+const tarjetasGrupo = await esperarA(() => document.querySelectorAll('.tarjeta-grupo').length > 0, 8000);
+comprobar('la pantalla de grupos muestra tarjetas', tarjetasGrupo, texto().slice(0, 120));
+comprobar(
+  'la tarjeta lleva la portada, el nombre y los contadores',
+  !!document.querySelector('.tarjeta-grupo .cubierta') &&
+    !!document.querySelector('.tarjeta-grupo .nombre') &&
+    /miembro/i.test(document.querySelector('.tarjeta-grupo .pie')?.textContent || ''),
+  document.querySelector('.tarjeta-grupo')?.textContent?.slice(0, 100) || ''
+);
+
+window.location.hash = `#/grupo/${grupoCreado.id}`;
+await esperarA(() => !!document.querySelector('.portada-grupo'), 8000);
+comprobar('la portada del grupo abre con su nombre', /Cielo/.test(document.querySelector('.portada-grupo h1')?.textContent || ''), texto().slice(0, 120));
+comprobar('el grupo muestra la lista de miembros', document.querySelectorAll('.lista-miembros li').length >= 1);
+comprobar('el contador de miembros está en su tarjeta lateral', !!document.querySelector('.aside-grupo .tarjeta-rail'));
+
+// Publicar desde el redactor del propio grupo.
+const areaGrupo = document.querySelector('.columna-grupo textarea');
+comprobar('quien es miembro ve el redactor del grupo', !!areaGrupo);
+const marcaGrupo = `Publicado dentro del grupo ${sufijo}`;
+if (areaGrupo) {
+  await escribir(areaGrupo, `${marcaGrupo} #grupo`);
+  const botonGrupo = [...document.querySelectorAll('.columna-grupo button')].find((b) => /Publicar/i.test(b.textContent || '') && !b.disabled);
+  if (botonGrupo) await pulsar(botonGrupo);
+  const aparecio = await esperarA(() => texto().includes(marcaGrupo), 10000);
+  comprobar('la publicación del grupo aparece en su muro', aparecio, texto().slice(0, 160));
+}
+
+const feedDelGrupo = await (
+  await fetch(`${API}/api/groups/${grupoCreado.id}/posts`, { headers: { Authorization: `Bearer ${token}` } })
+).json();
+comprobar(
+  'la publicación del grupo quedó en la base de datos',
+  (feedDelGrupo.items || []).some((p) => (p.content || '').includes(marcaGrupo)),
+  JSON.stringify(feedDelGrupo).slice(0, 200)
+);
+
+// ---------- 5d. Retoque fino del diseño en las pantallas restantes ----------
+comprobar(
+  'la capa de diseño industrial está en el navegador',
+  html.includes('.tarjeta-grupo') && html.includes('.profile-stats') && html.includes('.msg.mine'),
+  'faltan reglas de la capa §29'
+);
+
+window.location.hash = '#/profile';
+await esperarA(() => !!document.querySelector('.profile-head'), 8000);
+comprobar(
+  'el perfil tiene portada, avatar y sus tres contadores',
+  !!document.querySelector('.profile-cover') &&
+    document.querySelectorAll('.profile-stats > span').length === 3,
+  document.querySelector('.profile-stats')?.textContent?.slice(0, 90) || ''
+);
+
+window.location.hash = '#/messages';
+await esperarA(() => !!document.querySelector('.chat'), 8000);
+comprobar('la bandeja de mensajes tiene su estructura de dos columnas', !!document.querySelector('.chat-list') && !!document.querySelector('.chat-thread'));
+
+window.location.hash = '#/notifications';
+await esperarA(() => !!document.querySelector('.topbar'), 6000);
+comprobar('los avisos cargan con su cabecera', /Notificaciones/i.test(texto()));
+
 // ---------- 6. Lo que se ve, ¿está en la base de datos? ----------
 comprobar('la sesión quedó guardada en el navegador', !!token);
 

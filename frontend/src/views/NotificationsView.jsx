@@ -14,6 +14,8 @@ const KIND_LABEL = {
   reply: 'respondió tu comentario',
   mention: 'te mencionó',
   message: 'te envió un mensaje',
+  group_join: 'se unió a tu grupo',
+  group_post: 'publicó en tu grupo',
   system: '',
 };
 

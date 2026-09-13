@@ -14,7 +14,7 @@ import { IconImage, IconX, IconSend } from './Icons.jsx';
 const MAX_CHARS = 2000;
 const MAX_IMAGENES = 4;
 
-export default function Composer({ onCreated }) {
+export default function Composer({ onCreated, destino = '/api/posts', placeholder, etiquetaBoton }) {
   const { user } = useAuth();
   const [contenido, setContenido] = useState('');
   const [imagenes, setImagenes] = useState([]); // { id, url }
@@ -73,7 +73,7 @@ export default function Composer({ onCreated }) {
     if ((!texto && imagenes.length === 0) || enviando) return;
     setEnviando(true);
     try {
-      const creado = await api.post('/api/posts', {
+      const creado = await api.post(destino, {
         content: texto,
         images: imagenes.map((i) => i.id),
       });
@@ -107,7 +107,7 @@ export default function Composer({ onCreated }) {
         <textarea
           ref={area}
           className="textarea"
-          placeholder="¿Qué está pasando en tu órbita?"
+          placeholder={placeholder || '¿Qué está pasando en tu órbita?'}
           value={contenido}
           maxLength={MAX_CHARS + 200}
           rows={2}
@@ -171,8 +171,8 @@ export default function Composer({ onCreated }) {
             {imagenes.length}/{MAX_IMAGENES} fotos
           </span>
 
-          <button className="btn btn-primary btn-sm" onClick={publicar} disabled={!puede}>
-            {enviando ? 'Publicando…' : (<><IconSend /> Publicar</>)}
+          <button className="btn btn-aurora btn-sm" onClick={publicar} disabled={!puede}>
+            {enviando ? 'Publicando…' : (<><IconSend /> {etiquetaBoton || 'Publicar'}</>)}
           </button>
         </div>
       </div>
