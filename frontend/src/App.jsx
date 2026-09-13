@@ -8,6 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './auth.jsx';
 import { parseHash } from './utils.js';
 import LeftNav from './components/LeftNav.jsx';
+import TopBar from './components/TopBar.jsx';
 import BottomNav, { FloatingCompose } from './components/BottomNav.jsx';
 import RightRail from './components/RightRail.jsx';
 import Overlays from './components/Overlays.jsx';
@@ -38,9 +39,28 @@ function useRoute() {
   return route;
 }
 
+/** Barra fina de progreso mientras cambia de pantalla. */
+function BarraProgreso() {
+  const route = useRoute();
+  const [visible, setVisible] = useState(false);
+  const clave = route.parts.join('/');
+
+  useEffect(() => {
+    setVisible(true);
+    const t = setTimeout(() => setVisible(false), 420);
+    return () => clearTimeout(t);
+  }, [clave]);
+
+  if (!visible) return null;
+  return (
+    <div className="barra-progreso" aria-hidden="true"><span /></div>
+  );
+}
+
 function Shell({ children }) {
   return (
     <div className="app">
+      <TopBar />
       <LeftNav />
       <main className="main">
         <DemoBanner />
@@ -125,9 +145,7 @@ function Cargando() {
   return (
     <div aria-busy="true" aria-live="polite">
       <span className="sr-only">Cargando Moon…</span>
-      <PostSkeleton />
-      <PostSkeleton lines={2} />
-      <PostSkeleton lines={2} />
+      <PostSkeleton etiqueta="Abriendo Moon…" alto="60vh" />
     </div>
   );
 }
@@ -166,6 +184,7 @@ function Gate() {
 export default function App() {
   return (
     <AuthProvider>
+      <BarraProgreso />
       <Gate />
       <Overlays />
     </AuthProvider>

@@ -15,36 +15,40 @@
      etiquetas ARIA y contraste AA.
    ============================================================ */
 
-/* ---------- 1. Tokens ---------- */
+/* ---------- 1. Tokens (MONO) ---------- */
+/* Base en blanco y negro puro. El color NO es decoración: solo aparece
+   donde importa (acción principal, foco, estados) y en los acentos
+   que ya funcionaban (aurora). Todo lo demás es tinta sobre papel. */
 :root {
   color-scheme: light;
 
-  /* Superficies */
-  --bg: #f6f7fb;
-  --bg-2: #eef1f7;
+  /* Superficies: blanco y grises neutros, sin matiz azul */
+  --bg: #ffffff;
+  --bg-2: #f4f4f5;
   --surface: #ffffff;
-  --surface-2: #f7f8fc;
-  --surface-3: #eef1f8;
-  --surface-glass: rgba(255, 255, 255, 0.78);
+  --surface-2: #fafafa;
+  --surface-3: #f4f4f5;
+  --surface-glass: rgba(255, 255, 255, 0.82);
+  --overlay: rgba(9, 9, 11, 0.55);
 
-  /* Tinta */
-  --ink: #0d1017;
-  --ink-2: #4b5364;
-  --ink-3: #858da1;
+  /* Tinta: casi negro puro, con dos pasos de gris */
+  --ink: #09090b;
+  --ink-2: #52525b;
+  --ink-3: #8b8b93;
 
-  /* Líneas */
-  --line: #e4e8f0;
-  --line-2: #eef1f7;
-  --line-strong: #d3d9e6;
+  /* Líneas: filetes finos, como papel impreso */
+  --line: #e4e4e7;
+  --line-2: #efeff1;
+  --line-strong: #d4d4d8;
 
-  /* Acento aurora */
+  /* Acento aurora (lo único con color) */
   --accent: #4f46e5;
   --accent-2: #8b5cf6;
   --accent-3: #06b6d4;
   --accent-ink: #ffffff;
-  --accent-soft: rgba(79, 70, 229, 0.09);
-  --accent-line: rgba(79, 70, 229, 0.22);
-  --grad: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 52%, var(--accent-3) 130%);
+  --accent-soft: rgba(79, 70, 229, 0.08);
+  --accent-line: rgba(79, 70, 229, 0.24);
+  --grad: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 55%, var(--accent-3) 135%);
 
   /* Estados */
   --ok: #0f8a5f;
@@ -55,60 +59,62 @@
   --danger-soft: rgba(217, 45, 63, 0.1);
   --like: #e0245e;
 
-  /* Formas */
-  --radius-xs: 8px;
-  --radius-sm: 12px;
-  --radius: 16px;
-  --radius-lg: 22px;
+  /* Formas: sobrias. Nada de pompas. */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-lg: 14px;
   --radius-pill: 999px;
 
-  /* Sombras */
-  --shadow-1: 0 1px 2px rgba(13, 16, 23, 0.04);
-  --shadow-2: 0 2px 6px rgba(13, 16, 23, 0.05), 0 10px 24px -12px rgba(13, 16, 23, 0.12);
-  --shadow-3: 0 8px 20px rgba(13, 16, 23, 0.07), 0 24px 60px -20px rgba(13, 16, 23, 0.22);
-  --ring: 0 0 0 3px var(--accent-soft);
+  /* Sombras: casi imperceptibles. La jerarquía la hace el filete. */
+  --shadow-1: 0 1px 1px rgba(9, 9, 11, 0.03);
+  --shadow-2: 0 1px 2px rgba(9, 9, 11, 0.05), 0 6px 16px -10px rgba(9, 9, 11, 0.12);
+  --shadow-3: 0 6px 16px rgba(9, 9, 11, 0.08), 0 24px 56px -24px rgba(9, 9, 11, 0.28);
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 
-  /* Tipografía */
+  /* Tipografía: Inter, escala corta y jerarquía por peso y espacio */
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --fs-display: 30px;
+  --fs-display: 32px;
   --fs-title: 22px;
-  --fs-lg: 17px;
+  --fs-lg: 16px;
   --fs: 15px;
-  --fs-sm: 13.5px;
-  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-xs: 11.5px;
 
   /* Espacio y movimiento */
   --gap: 16px;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-  --fast: 130ms var(--ease);
-  --mid: 220ms var(--ease);
+  --fast: 120ms var(--ease);
+  --mid: 200ms var(--ease);
 }
 
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --bg: #08090e;
-  --bg-2: #0d0f16;
-  --surface: #121520;
-  --surface-2: #171b28;
-  --surface-3: #1e2333;
-  --surface-glass: rgba(18, 21, 32, 0.76);
+  /* Negro de verdad, no gris azulado */
+  --bg: #000000;
+  --bg-2: #0a0a0b;
+  --surface: #0b0b0c;
+  --surface-2: #141416;
+  --surface-3: #1c1c1f;
+  --surface-glass: rgba(11, 11, 12, 0.82);
+  --overlay: rgba(0, 0, 0, 0.72);
 
-  --ink: #f3f5fa;
-  --ink-2: #b3bccd;
-  --ink-3: #7c8698;
+  --ink: #fafafa;
+  --ink-2: #a1a1aa;
+  --ink-3: #71717a;
 
-  --line: #232939;
-  --line-2: #1b2030;
-  --line-strong: #313a50;
+  --line: #232326;
+  --line-2: #1a1a1c;
+  --line-strong: #333338;
 
   --accent: #8b7bff;
   --accent-2: #b08cff;
   --accent-3: #4fd1e0;
-  --accent-ink: #0b0d14;
+  --accent-ink: #ffffff;
   --accent-soft: rgba(139, 123, 255, 0.14);
-  --accent-line: rgba(139, 123, 255, 0.32);
+  --accent-line: rgba(139, 123, 255, 0.34);
 
   --ok: #34d399;
   --ok-soft: rgba(52, 211, 153, 0.14);
@@ -118,10 +124,10 @@
   --danger-soft: rgba(251, 113, 133, 0.14);
   --like: #ff6b9d;
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45), 0 12px 28px -14px rgba(0, 0, 0, 0.6);
-  --shadow-3: 0 10px 30px rgba(0, 0, 0, 0.55), 0 30px 70px -24px rgba(0, 0, 0, 0.75);
-  --ring: 0 0 0 3px rgba(139, 123, 255, 0.28);
+  --shadow-1: 0 1px 1px rgba(0, 0, 0, 0.6);
+  --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.7), 0 8px 20px -12px rgba(0, 0, 0, 0.9);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.7), 0 28px 64px -28px rgba(0, 0, 0, 0.9);
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 }
 
 /* ---------- 2. Base ---------- */
@@ -1476,4 +1482,635 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 
 @media (max-width: 860px) {
   .demo-banner { border-radius: 14px; }
+}
+
+/* ============================================================
+   §25 · MONO — capa de precisión
+   ============================================================
+   Reglas que reescriben el acabado por encima del sistema anterior:
+   la estructura no cambia, el resultado sí.
+
+   1. La jerarquía la marca la TIPOGRAFÍA y el FILETE, no la sombra.
+   2. El color aparece en tres sitios: acción principal, foco y estados.
+   3. Etiquetas en versalitas espaciadas: firma editorial de la casa.
+   4. Radios pequeños y constantes (10 px). Nada de pompas.
+   ============================================================ */
+
+/* --- 25.1 Tipografía --- */
+h1, h2, h3, h4 {
+  letter-spacing: -0.022em;
+  font-weight: 650;
+}
+h1 { font-size: 26px; line-height: 1.15; }
+h2 { font-size: 19px; line-height: 1.2; }
+h3 { font-size: 16px; line-height: 1.25; }
+
+/* Firma de la casa: micro-etiqueta en versalitas espaciadas. */
+.eyebrow,
+.card-title,
+.section-title {
+  font-size: 11px;
+  font-weight: 640;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* --- 25.2 Estructura --- */
+.app {
+  background: var(--bg);
+  gap: 0;
+}
+.main {
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* --- 25.3 Barra superior (móvil y tablet) --- */
+.topbar-app {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 56px;
+  padding: 0 14px;
+  background: var(--surface-glass);
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-app .marca-app {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 680;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.topbar-app .marca-app .punto {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--grad);
+}
+.topbar-app .acciones {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.topbar-app .acciones a,
+.topbar-app .acciones button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background var(--fast);
+}
+.topbar-app .acciones a:hover,
+.topbar-app .acciones button:hover { background: var(--surface-3); }
+.topbar-app .acciones svg { width: 22px; height: 22px; }
+
+/* --- 25.4 Barra lateral de escritorio --- */
+.sidebar {
+  border-right: 0;
+  background: var(--surface);
+  padding: 18px 12px 14px;
+  gap: 4px;
+}
+.sidebar .brand {
+  padding: 0 8px 16px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  color: var(--ink);
+}
+.sidebar .brand .dot {
+  width: 14px;
+  height: 14px;
+  box-shadow: none;
+}
+.sidebar nav a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  height: 46px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition: background var(--fast), color var(--fast);
+}
+.sidebar nav a svg { width: 23px; height: 23px; }
+.sidebar nav a:hover { background: var(--surface-3); }
+.sidebar nav a.active {
+  background: var(--ink);
+  color: var(--bg);
+  font-weight: 600;
+}
+.sidebar nav a.active svg { stroke-width: 2.1; }
+.sidebar nav a .badge {
+  margin-left: auto;
+  background: var(--accent);
+  color: #fff;
+}
+.sidebar .btn-primary,
+.sidebar .side-cta {
+  margin: 12px 0 18px;
+  height: 46px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* --- 25.5 Botones --- */
+.btn {
+  border-radius: var(--radius-sm);
+  font-weight: 570;
+  letter-spacing: -0.01em;
+  box-shadow: none;
+}
+.btn:not(.btn-primary):not(.btn-danger):not(.btn-outline):not(.btn-ghost) {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+}
+.btn-outline:hover { background: var(--surface-3); border-color: var(--ink); }
+.btn-ghost { color: var(--ink-2); }
+.btn-ghost:hover { background: var(--surface-3); color: var(--ink); }
+.btn-primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+.btn-primary:hover { opacity: 0.88; }
+/* El degradado aurora se reserva a UNA acción: la de crear. */
+.btn-acento,
+.composer .btn-primary,
+.auth-form .btn-primary,
+.empty .btn-primary {
+  background: var(--grad);
+  border-color: transparent;
+  color: #fff;
+}
+.btn-primary:disabled { opacity: 0.38; }
+
+/* --- 25.6 Campos --- */
+.input, .textarea, select.input {
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  font-size: 15px;
+  transition: border-color var(--fast), box-shadow var(--fast);
+}
+.input:focus, .textarea:focus, select.input:focus {
+  border-color: var(--ink);
+  box-shadow: none;
+  outline: none;
+}
+.input::placeholder, .textarea::placeholder { color: var(--ink-3); }
+.field > label {
+  font-size: 11px;
+  font-weight: 640;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* --- 25.7 Superficies: filete, no sombra --- */
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: none;
+  background: var(--surface);
+}
+.card-pad { padding: 20px; }
+
+/* --- 25.8 Publicaciones: continuas, como una revista --- */
+.post {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface);
+  padding: 18px 20px 12px;
+  transition: background var(--fast);
+}
+.post:hover { background: var(--surface-2); }
+.post + .post { margin-top: 0; }
+.post-head { gap: 11px; }
+.post-head .who {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.post-head b, .post-head .nombre {
+  font-size: 14.5px;
+  font-weight: 620;
+  letter-spacing: -0.012em;
+}
+.post-head .handle, .post-head .muted {
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.post-body {
+  font-size: 15px;
+  line-height: 1.62;
+  letter-spacing: -0.006em;
+  margin: 12px 0 12px;
+}
+.post-body a, .post .hashtag { color: var(--accent); font-weight: 520; }
+.post-images {
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin: 12px 0;
+}
+.post-actions {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-2);
+  gap: 4px;
+}
+.post-actions button {
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 530;
+  padding: 7px 10px;
+}
+.post-actions button:hover { background: var(--surface-3); color: var(--ink); }
+.post-actions button.liked { color: var(--like); }
+
+/* --- 25.9 Avatares --- */
+.avatar { border: 0; box-shadow: none; }
+.avatar-ring,
+.avatar.ring {
+  padding: 2px;
+  background: var(--grad);
+  border-radius: 50%;
+}
+.verified { color: var(--accent); }
+
+/* --- 25.10 Pestañas: subrayado, no pastilla --- */
+.tabs, .segmented {
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  gap: 2px;
+  padding: 0;
+  border-radius: 0;
+}
+.tabs button, .segmented button {
+  position: relative;
+  height: 48px;
+  padding: 0 16px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 14px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
+}
+.tabs button:hover, .segmented button:hover { color: var(--ink); background: transparent; }
+.tabs button.active, .segmented button.active {
+  color: var(--ink);
+  background: transparent;
+  font-weight: 640;
+}
+.tabs button.active::after, .segmented button.active::after {
+  content: '';
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--ink);
+}
+
+/* --- 25.11 Barra lateral derecha --- */
+.rail .card, .rail > section {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 18px 4px;
+  background: transparent;
+}
+.rail h3, .rail .card-title { margin-bottom: 12px; }
+.rail .search input {
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  border-color: transparent;
+}
+.rail .search input:focus { background: var(--surface); border-color: var(--ink); }
+
+/* --- 25.12 Mensajería: dos paneles, aire --- */
+.chat-list, .convs {
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+}
+.chat-list .conv {
+  border-radius: 0;
+  border-bottom: 1px solid var(--line-2);
+  padding: 13px 14px;
+}
+.chat-list .conv.active { background: var(--ink); color: var(--bg); }
+.chat-list .conv.active .muted, .chat-list .conv.active .last { color: rgba(255, 255, 255, 0.72); }
+.msg {
+  border-radius: var(--radius-lg);
+  font-size: 14.5px;
+  line-height: 1.5;
+  box-shadow: none;
+}
+.msg.mine {
+  background: var(--ink);
+  color: var(--bg);
+}
+.chat-thread { background: var(--surface-2); }
+
+/* --- 25.13 Panel de administración --- */
+.stat-grid { gap: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.stat {
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface);
+  padding: 18px;
+}
+.stat:last-child { border-right: 0; }
+.stat b { font-size: 26px; letter-spacing: -0.03em; font-weight: 660; }
+.stat span { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); }
+.table th {
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 640;
+}
+.table td, .table th { border-bottom: 1px solid var(--line-2); padding: 12px 14px; }
+
+/* --- 25.14 Avisos y diálogos --- */
+.toast {
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-3);
+  background: var(--surface);
+  font-size: 14px;
+}
+.toast.ok { border-left: 3px solid var(--ok); }
+.toast.err { border-left: 3px solid var(--danger); }
+.toast.info { border-left: 3px solid var(--accent); }
+.dialogo {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-3);
+}
+.dialogo h3 { letter-spacing: -0.025em; }
+
+/* --- 25.15 Perfil --- */
+.perfil-cabecera .cover, .cover { border-radius: 0; border-bottom: 1px solid var(--line); }
+.perfil-datos h1 { font-size: 24px; letter-spacing: -0.03em; }
+.perfil-cifras { gap: 22px; }
+.perfil-cifras b { font-size: 17px; font-weight: 660; }
+.perfil-cifras span { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); }
+
+/* --- 25.16 Navegación inferior (móvil) --- */
+.bottom-nav {
+  border-top: 1px solid var(--line);
+  background: var(--surface-glass);
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+}
+.bottom-nav a {
+  border-radius: 0;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+.bottom-nav a svg { width: 24px; height: 24px; }
+.bottom-nav a.active { color: var(--ink); }
+.bottom-nav a.active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 28px;
+  height: 2px;
+  background: var(--ink);
+}
+.fab {
+  background: var(--ink);
+  color: var(--bg);
+  box-shadow: var(--shadow-3);
+}
+
+/* --- 25.17 Barra superior de tema y cuenta --- */
+.theme-toggle {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 2px;
+  gap: 0;
+  background: var(--surface-2);
+}
+.theme-toggle button {
+  border-radius: var(--radius-pill);
+  color: var(--ink-3);
+}
+.theme-toggle button.active { background: var(--ink); color: var(--bg); }
+
+/* --- 25.18 Carga: barra fina y giro, sin bloques grises --- */
+.cargando {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 44px 20px;
+  color: var(--ink-3);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+.giro {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--ink);
+  animation: girar 720ms linear infinite;
+}
+@keyframes girar { to { transform: rotate(360deg); } }
+.barra-progreso {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 60;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+}
+.barra-progreso span {
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--grad);
+  animation: avanzar 900ms var(--ease) infinite;
+}
+@keyframes avanzar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+/* --- 25.19 Un detalle propio: el filete del tiempo --- */
+.post-head .time { position: relative; padding-left: 0; }
+.eyebrow-linea {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  margin: 22px 0 10px;
+}
+.eyebrow-linea::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+@media (max-width: 1180px) {
+  .rail { display: none; }
+}
+
+@media (max-width: 860px) {
+  .topbar-app { display: flex; }
+  .main { border-left: 0; border-right: 0; }
+  .post { padding: 16px 15px 10px; }
+  .btn, .input, .textarea { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .barra-progreso span, .giro { animation-duration: 0.001ms; animation-iteration-count: 1; }
+}
+
+/* ============================================================
+   §26 · MONO — cabeceras de pantalla, giros y estados vacíos
+   ============================================================ */
+
+/* Cabecera de pantalla: pegada arriba, con el título grande y apretado. */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 60px;
+  padding: 12px 20px;
+  background: var(--surface-glass);
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 660;
+  letter-spacing: -0.03em;
+}
+
+/* Giro fino, igual en toda la aplicación. */
+.spinner {
+  width: 26px;
+  height: 26px;
+  margin: 40px auto;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: girar 720ms linear infinite;
+}
+
+/* Estados vacíos: aire, jerarquía y una acción clara. */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 56px 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.empty h3 { margin: 6px 0 0; font-size: 18px; letter-spacing: -0.025em; }
+.empty p { margin: 0; max-width: 42ch; color: var(--ink-2); font-size: 14.5px; line-height: 1.55; }
+.empty .moon-emoji { font-size: 26px; line-height: 1; opacity: 0.9; }
+.empty .btn { margin-top: 10px; }
+
+/* Píldoras y contadores: monocromos; el color solo si dicen estado. */
+.pill {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+}
+.pill.accent { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+.badge {
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 10.5px;
+  font-weight: 640;
+  letter-spacing: 0.01em;
+}
+.badge.quiet { background: var(--surface-3); color: var(--ink-2); }
+
+/* Enlaces y acciones de texto */
+.link, a.link { color: var(--accent); font-weight: 540; }
+.link:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Buscadores: campo hundido, sin bordes ruidosos */
+.search input, .buscador input {
+  background: var(--surface-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.search input:focus, .buscador input:focus {
+  background: var(--surface);
+  border-color: var(--ink);
+}
+
+/* La columna principal nunca se estira sin sentido */
+.main > * { max-width: 720px; }
+.main > .topbar,
+.main > .tabs { max-width: none; }
+
+@media (max-width: 860px) {
+  .topbar { padding: 10px 15px; min-height: 54px; }
+  .topbar h1 { font-size: 19px; }
+  .main > * { max-width: none; }
 }
