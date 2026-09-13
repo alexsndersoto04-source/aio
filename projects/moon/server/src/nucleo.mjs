@@ -16,17 +16,25 @@ export function crearRouter() {
 
   function buscar(metodo, camino) {
     const partes = camino.split('/').filter(Boolean);
-    for (const r of rutas) {
-      if (r.metodo !== metodo) continue;
-      if (r.partes.length !== partes.length) continue;
-      const params = {};
-      let coincide = true;
-      for (let i = 0; i < r.partes.length; i += 1) {
-        const p = r.partes[i];
-        if (p.startsWith(':')) params[p.slice(1)] = decodeURIComponent(partes[i]);
-        else if (p !== partes[i]) { coincide = false; break; }
+
+    // Las direcciones fijas SIEMPRE ganan a las que llevan parámetros.
+    // Sin esto, `/api/users/presence` caía en `/api/users/:id` y el
+    // parámetro se convertía en un número inválido.
+    for (const conParametros of [false, true]) {
+      for (const r of rutas) {
+        if (r.metodo !== metodo) continue;
+        if (r.partes.length !== partes.length) continue;
+        const tieneParametros = r.partes.some((p) => p.startsWith(':'));
+        if (tieneParametros !== conParametros) continue;
+        const params = {};
+        let coincide = true;
+        for (let i = 0; i < r.partes.length; i += 1) {
+          const p = r.partes[i];
+          if (p.startsWith(':')) params[p.slice(1)] = decodeURIComponent(partes[i]);
+          else if (p !== partes[i]) { coincide = false; break; }
+        }
+        if (coincide) return { ruta: r, params };
       }
-      if (coincide) return { ruta: r, params };
     }
     return null;
   }
@@ -97,7 +105,12 @@ export function cors(origins) {
 
 export function manejadorErrores(res) {
   return (e) => {
-    if (res.writableEnded) return;
+    // Si la respuesta ya empezó a salir (por ejemplo una imagen en curso),
+    // no se puede volver a escribir: solo se registra el problema.
+    if (res.writableEnded || res.headersSent) {
+      console.error('[api] error tras enviar la respuesta:', e);
+      return;
+    }
     if (e instanceof ApiErr) {
       error(res, e.status, e.message, e.code);
       return;

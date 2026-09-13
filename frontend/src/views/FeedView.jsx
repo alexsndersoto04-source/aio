@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
 import Composer from '../components/Composer.jsx';
+import Historias from '../components/Historias.jsx';
 import { useAuth } from '../auth.jsx';
 
 const TABS = [
@@ -73,6 +74,7 @@ export default function FeedView() {
         <h1>{tab === 'feed' ? 'Inicio' : tab === 'trending' ? 'Tendencias' : 'Recientes'}</h1>
       </div>
 
+      {tab === 'feed' ? <Historias /> : null}
       {tab === 'feed' ? <Composer onCreated={onCreated} /> : null}
 
       <div className="tabs">

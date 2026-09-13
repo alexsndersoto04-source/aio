@@ -51,6 +51,12 @@ export function montarWs(servidorHttp, pool, secreto) {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(evento));
     };
     ws.enviar({ type: 'connected', user_id: uid });
+    // Aviso de presencia: los demás refrescan la lista de contactos.
+    setTimeout(() => {
+      for (const otro of conexiones.keys()) {
+        if (Number(otro) !== uid) enviarA(Number(otro), { type: 'presence', user_id: uid, online: true });
+      }
+    }, 50);
 
     ws.on('message', async (datos) => {
       let msg;
@@ -104,7 +110,12 @@ export function montarWs(servidorHttp, pool, secreto) {
       const conjunto = conexiones.get(uid);
       if (!conjunto) return;
       conjunto.delete(ws);
-      if (conjunto.size === 0) conexiones.delete(uid);
+      if (conjunto.size === 0) {
+        conexiones.delete(uid);
+        for (const otro of conexiones.keys()) {
+          enviarA(Number(otro), { type: 'presence', user_id: uid, online: false });
+        }
+      }
     });
     ws.on('error', () => {});
   });
@@ -136,7 +147,9 @@ export function enviarATodos(evento) {
   }
 }
 
+// Cuántas conexiones hay y QUÉ usuarios están conectados ahora mismo.
 export const conectados = () => conexiones.size;
+export const usuariosConectados = () => [...conexiones.keys()].map(Number);
 
 // Crea la notificación (respetando las preferencias) y la empuja en vivo.
 export async function notificar(pool, { userId, tipo, deUserId, postId = null, commentId = null, contenido = '' }) {

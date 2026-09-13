@@ -42,9 +42,12 @@ export function registrarRutasMedia(router) {
     let clase = 'post';
     let archivo = null;
     let error = null;
+    // La escritura en disco puede terminar después de que Busboy avise del
+    // final del formulario: hay que esperar las dos cosas, no solo una.
+    let escritura = null;
 
     bb.on('field', (nombre, valor) => {
-      if (nombre === 'name' && ['avatar', 'cover', 'post'].includes(valor)) clase = valor;
+      if (nombre === 'name' && ['avatar', 'cover', 'post', 'story'].includes(valor)) clase = valor;
     });
 
     const terminado = new Promise((resolver) => {
@@ -62,14 +65,21 @@ export function registrarRutasMedia(router) {
         const salida = createWriteStream(destino);
         stream.on('data', (t) => { bytes += t.length; });
         stream.on('limit', () => { truncado = true; });
-        stream.pipe(salida);
-        salida.on('close', () => {
-          if (truncado) {
-            error = new ApiErr('La imagen supera los 8 MB', 413);
-            return;
-          }
-          archivo = { nombre: nombreFichero, ruta: destino, bytes, mime: info.mimeType };
+        escritura = new Promise((listo) => {
+          salida.on('close', () => {
+            if (truncado) {
+              error = new ApiErr('La imagen supera los 8 MB', 413);
+            } else if (bytes > 0) {
+              archivo = { nombre: nombreFichero, ruta: destino, bytes, mime: info.mimeType };
+            }
+            listo();
+          });
+          salida.on('error', () => {
+            error = new ApiErr('No se pudo guardar la imagen', 500);
+            listo();
+          });
         });
+        stream.pipe(salida);
       });
       bb.on('error', (e) => { error = new ApiErr(`No se pudo leer el archivo: ${e.message}`, 400); });
       bb.on('close', () => resolver());
@@ -77,6 +87,7 @@ export function registrarRutasMedia(router) {
 
     c.req.pipe(bb);
     await terminado;
+    if (escritura) await escritura;
 
     if (error) throw error;
     if (!archivo) throw new ApiErr('No se recibió ninguna imagen', 400);
@@ -121,6 +132,12 @@ export function registrarRutasMedia(router) {
       'Cache-Control': 'public, max-age=31536000, immutable',
       'X-Content-Type-Options': 'nosniff',
     });
-    createReadStream(ruta).pipe(c.res);
+    const lectura = createReadStream(ruta);
+    lectura.on('error', (e) => {
+      console.error('[api] no se pudo leer la imagen:', e.message);
+      if (!c.res.writableEnded) c.res.end();
+    });
+    c.res.on('close', () => lectura.destroy());
+    lectura.pipe(c.res);
   });
 }

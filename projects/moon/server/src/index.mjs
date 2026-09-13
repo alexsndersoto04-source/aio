@@ -19,8 +19,10 @@ import { registrarRutasSocial } from './rutas-social.mjs';
 import { registrarRutasMensajes } from './rutas-mensajes.mjs';
 import { registrarRutasAdmin } from './rutas-admin.mjs';
 import { registrarRutasMedia } from './rutas-media.mjs';
+import { registrarRutasHistorias } from './rutas-historias.mjs';
 import { montarWs, conectados } from './ws.mjs';
 import { demasiadoRapido } from './limites.mjs';
+import { servirWeb, estadoWeb } from './estatico.mjs';
 import { ApiErr } from './util.mjs';
 
 const PUERTO = Number(process.env.PORT || 3000);
@@ -43,6 +45,7 @@ registrarRutasSocial(router);
 registrarRutasMensajes(router);
 registrarRutasAdmin(router);
 registrarRutasMedia(router);
+registrarRutasHistorias(router);
 
 // Salud (pública) y métricas (solo administración).
 router.get('/api/health', async (c) => {
@@ -98,6 +101,8 @@ const servidor = createServer(async (req, res) => {
 
   const encontrado = router.buscar(req.method, camino);
   if (!encontrado) {
+    // No es una ruta de la API: puede ser la aplicación web compilada.
+    if (servirWeb(req, res, camino)) return;
     json(res, 404, { error: `No existe ${req.method} ${camino}` });
     return;
   }
@@ -108,13 +113,20 @@ const servidor = createServer(async (req, res) => {
 
   try {
     const datos = await encontrado.ruta.handler(c);
-    if (res.writableEnded) return;
+    // Las rutas que envían la respuesta por su cuenta (imágenes, descargas)
+    // ya tienen las cabeceras fuera: aquí no hay nada más que hacer.
+    if (res.writableEnded || res.headersSent) return;
     if (datos === undefined || datos === null) {
       res.writeHead(204).end();
       return;
     }
     json(res, 200, datos);
   } catch (e) {
+    if (res.headersSent) {
+      console.error('[api] fallo con la respuesta ya iniciada:', e);
+      res.end();
+      return;
+    }
     if (e instanceof ApiErr) {
       json(res, e.status, e.code ? { error: e.message, code: e.code } : { error: e.message });
       return;
@@ -128,6 +140,7 @@ montarWs(servidor, pool, SECRETO);
 servidor.listen(PUERTO, '0.0.0.0', () => {
   console.log(`[api] Moon escuchando en http://0.0.0.0:${PUERTO}`);
   console.log(`[api] WebSocket en /ws · ${router.rutas.length} rutas registradas`);
+  console.log(`[api] Interfaz web: ${estadoWeb()}`);
 });
 
 async function apagar(senal) {

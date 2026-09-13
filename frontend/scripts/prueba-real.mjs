@@ -184,8 +184,87 @@ await irA('#/profile', /Perfil|Publicaciones|guardad/i, 'Perfil propio');
 await irA('#/settings', /Ajustes|Cuenta|Seguridad|Perfil/i, 'Ajustes');
 await irA('#/admin', /Administración|Usuarios|Reportes|Resumen|Actividad/i, 'Administración');
 
-// ---------- 6. Lo que se ve, ¿está en la base de datos? ----------
+// ---------- 5b. La estructura de red social: barra, historias, contactos ----------
 const token = window.localStorage.getItem('moon_access_token');
+
+window.location.hash = '#/feed';
+await esperar(1800);
+comprobar('la barra superior está presente', !!document.querySelector('.topnav'));
+comprobar(
+  'la barra superior tiene sus pestañas con enlace',
+  document.querySelectorAll('.topnav .nav-tab').length >= 5,
+  `pestañas: ${document.querySelectorAll('.topnav .nav-tab').length}`
+);
+comprobar(
+  'la columna de accesos rápidos está presente',
+  document.querySelectorAll('.rail-izq .fila-acceso').length >= 5,
+  `accesos: ${document.querySelectorAll('.rail-izq .fila-acceso').length}`
+);
+comprobar('la fila de historias está arriba del inicio', !!document.querySelector('.historias'));
+
+// Una historia de verdad: se sube la imagen, se guarda y se abre el visor.
+const png = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+  'base64'
+);
+const forma = new FormData();
+forma.append('name', 'story');
+forma.append('file', new Blob([png], { type: 'image/png' }), 'historia.png');
+const subida = await (
+  await fetch(`${API}/api/upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: forma })
+).json();
+comprobar('la imagen de la historia se sube de verdad', !!subida.url, JSON.stringify(subida).slice(0, 200));
+
+const creada = await (
+  await fetch(`${API}/api/stories`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_url: subida.url, caption: `Historia real ${sufijo}` }),
+  })
+).json();
+comprobar('la historia queda guardada, con cero visitas', creada.id > 0 && creada.views_count === 0, JSON.stringify(creada).slice(0, 200));
+
+window.location.hash = '#/explore';
+await esperar(900);
+window.location.hash = '#/feed';
+await esperarA(() => document.querySelectorAll('.historias .historia').length >= 2, 6000);
+const tarjetas = [...document.querySelectorAll('.historias .historia')].filter((b) => !b.classList.contains('crear'));
+comprobar('la historia aparece en la fila del inicio', tarjetas.length >= 1, texto().slice(0, 120));
+if (tarjetas.length) {
+  await pulsar(tarjetas[0]);
+  const abrio = await esperarA(() => !!document.querySelector('.visor-historias'), 8000);
+  comprobar('el visor a pantalla completa abre la historia', abrio);
+  const imagenPuesta = await esperarA(() => {
+    const img = document.querySelector('.visor-contenido img');
+    return !!img && /api\/media\//.test(img.getAttribute('src') || '');
+  }, 8000);
+  comprobar('el visor muestra la imagen real subida', imagenPuesta);
+  const vistas = await esperarA(() => /\b1\b|\b2\b/.test(document.querySelector('.visor-cabecera .vistas')?.textContent || ''), 6000);
+  comprobar('la visita queda contada en la historia', vistas, document.querySelector('.visor-cabecera .vistas')?.textContent || '');
+  const cerrar = document.querySelector('.visor-cabecera .acciones button:last-child');
+  if (cerrar) await pulsar(cerrar);
+  await esperarA(() => !document.querySelector('.visor-historias'), 4000);
+}
+
+// La presencia y la página de contactos, con datos del servidor.
+const miId = (await (await fetch(`${API}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })).json()).id;
+const detalle = await (
+  await fetch(`${API}/api/stories/${miId}`, { headers: { Authorization: `Bearer ${token}` } })
+).json();
+const guardada = (detalle.stories || []).find((s) => s.id === creada.id);
+comprobar('la base de datos registró la visita', !!guardada && guardada.vista === true && guardada.views_count >= 1, JSON.stringify(guardada));
+
+const presencia = await (await fetch(`${API}/api/users/presence`, { headers: { Authorization: `Bearer ${token}` } })).json();
+comprobar('la presencia real responde con sus dos listas', Array.isArray(presencia.en_linea) && Array.isArray(presencia.otros));
+
+await irA('#/amigos', /Contactos/i, 'Contactos');
+comprobar(
+  'la página de contactos muestra personas o su vacío honesto',
+  /En línea ahora|Tus contactos|Otros contactos|Sin contactos todavía/i.test(texto()),
+  texto().slice(0, 160)
+);
+
+// ---------- 6. Lo que se ve, ¿está en la base de datos? ----------
 comprobar('la sesión quedó guardada en el navegador', !!token);
 
 const respuesta = await fetch(`${API}/api/feed?page=1&limit=10`, { headers: { Authorization: `Bearer ${token}` } });

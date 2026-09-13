@@ -11,10 +11,80 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { toast, avisoError } from '../ui.js';
+import { realtime } from '../realtime.js';
 import Avatar, { VerifiedBadge } from './Avatar.jsx';
 import {
-  IconSearch, IconTrend, IconUsers, IconPlus, IconCheck, IconAt,
+  IconSearch, IconTrend, IconUsers, IconPlus, IconCheck, IconAt, IconMail,
 } from './Icons.jsx';
+
+// ------------------------------------------------------------------
+// Contactos: quién está conectado ahora mismo (presencia real, del
+// WebSocket). Se refresca cuando alguien entra o sale.
+// ------------------------------------------------------------------
+function Contactos() {
+  const [datos, setDatos] = useState({ en_linea: [], otros: [] });
+
+  const cargar = React.useCallback(() => {
+    api.get('/api/users/presence').then(setDatos).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    cargar();
+    const t = setInterval(cargar, 60000);
+    const off = realtime.on((ev) => {
+      if (ev.type === 'presence') cargar();
+    });
+    return () => { clearInterval(t); off(); };
+  }, [cargar]);
+
+  async function abrirChat(usuario) {
+    try {
+      const res = await api.post('/api/messages/conversations', { user_id: usuario.id });
+      window.location.hash = `#/messages/${res.conversation_id}`;
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  const fila = (u) => (
+    <li key={u.id} className="contacto">
+      <a href={`#/user/${u.id}`} className="quien">
+        <span className={`punto-estado${u.online ? ' en-linea' : ''}`} aria-hidden="true" />
+        <Avatar user={{ username: u.username, display_name: u.display_name, avatar_url: u.avatar_url }} size="sm" />
+        <span className="nombre">{u.display_name || u.username}</span>
+      </a>
+      <button type="button" className="abrir-chat" onClick={() => abrirChat(u)} aria-label={`Escribir a ${u.username}`}>
+        <IconMail />
+      </button>
+    </li>
+  );
+
+  const vacio = datos.en_linea.length === 0 && datos.otros.length === 0;
+
+  return (
+    <section className="tarjeta-rail">
+      <h3 className="card-title">Contactos</h3>
+      {vacio ? (
+        <p className="muted mini">Aquí verás a quien esté conectado.</p>
+      ) : (
+        <>
+          {datos.en_linea.length > 0 ? (
+            <>
+              <p className="subtitulo-rail">En línea · {datos.en_linea.length}</p>
+              <ul className="lista-contactos">{datos.en_linea.map(fila)}</ul>
+            </>
+          ) : null}
+          {datos.otros.length > 0 ? (
+            <>
+              <p className="subtitulo-rail">{datos.en_linea.length > 0 ? 'Otros' : 'Tus contactos'}</p>
+              <ul className="lista-contactos">{datos.otros.slice(0, 12).map(fila)}</ul>
+            </>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
 
 function numero(n) {
   const v = Number(n || 0);
@@ -74,7 +144,6 @@ function Sugerencia({ usuario, onSeguido }) {
 
 export default function RightRail() {
   const { user } = useAuth();
-  const [q, setQ] = useState('');
   const [tendencias, setTendencias] = useState(null);
   const [sugerencias, setSugerencias] = useState(null);
 
@@ -90,31 +159,14 @@ export default function RightRail() {
     return () => { vivo = false; };
   }, [user]);
 
-  function buscar(e) {
-    e.preventDefault();
-    const texto = q.trim();
-    if (!texto) return;
-    window.location.hash = `#/explore?q=${encodeURIComponent(texto)}&type=users`;
-  }
-
   if (!user) return null;
 
   return (
     <aside className="rail" aria-label="Descubrir">
-      <form className="rail-search" onSubmit={buscar} role="search">
-        <IconSearch />
-        <input
-          className="input"
-          type="search"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Buscar en Moon"
-          aria-label="Buscar en Moon"
-        />
-      </form>
+      <Contactos />
 
       {tendencias && tendencias.length > 0 ? (
-        <section className="rail-card">
+        <section className="tarjeta-rail">
           <h3><IconTrend /> Tendencias</h3>
           {tendencias.map((t, i) => (
             <a className="trend" key={t.tag} href={`#/explore?q=${encodeURIComponent(t.tag)}&type=posts`}>
@@ -130,7 +182,7 @@ export default function RightRail() {
       ) : null}
 
       {sugerencias && sugerencias.length > 0 ? (
-        <section className="rail-card">
+        <section className="tarjeta-rail">
           <h3><IconUsers /> A quién seguir</h3>
           {sugerencias.map((u) => (
             <Sugerencia

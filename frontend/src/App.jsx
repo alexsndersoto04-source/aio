@@ -7,8 +7,8 @@
 import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './auth.jsx';
 import { parseHash } from './utils.js';
-import LeftNav from './components/LeftNav.jsx';
-import TopBar from './components/TopBar.jsx';
+import TopNav, { AccesosRapidos } from './components/TopNav.jsx';
+import LeftRail from './components/LeftRail.jsx';
 import BottomNav, { FloatingCompose } from './components/BottomNav.jsx';
 import RightRail from './components/RightRail.jsx';
 import Overlays from './components/Overlays.jsx';
@@ -25,6 +25,7 @@ import MessagesView from './views/MessagesView.jsx';
 import NotificationsView from './views/NotificationsView.jsx';
 import SettingsView from './views/SettingsView.jsx';
 import AdminView from './views/AdminView.jsx';
+import ContactosView from './views/ContactosView.jsx';
 import { realtime } from './realtime.js';
 import { setUnread, bump } from './unread.js';
 import { aplicarTema } from './theme.js';
@@ -59,14 +60,16 @@ function BarraProgreso() {
 
 function Shell({ children }) {
   return (
-    <div className="app">
-      <TopBar />
-      <LeftNav />
-      <main className="main">
-        <DemoBanner />
-        {children}
-      </main>
-      <RightRail />
+    <div className="marco">
+      <TopNav />
+      <div className="app">
+        <LeftRail />
+        <main className="main">
+          <DemoBanner />
+          {children}
+        </main>
+        <RightRail />
+      </div>
       <BottomNav />
       <FloatingCompose />
     </div>
@@ -129,6 +132,10 @@ function Router() {
       return <NotificationsView />;
     case 'settings':
       return <SettingsView tab={parts[1]} />;
+    case 'amigos':
+    case 'contactos':
+    case 'contacts':
+      return <ContactosView />;
     case 'admin':
       return <AdminView tab={parts[1]} />;
     default:

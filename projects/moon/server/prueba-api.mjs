@@ -232,6 +232,59 @@ function trasResuelto(lista, id) {
   return lista.items.some((r) => r.id === id);
 }
 
+// ---------- Imágenes: subir y volver a servir ----------
+// (Esta parte cubre dos fallos reales: Busboy cerraba antes de que el archivo
+// terminara de escribirse, y servir una imagen tumbaba el servidor entero.)
+const png = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+  'base64'
+);
+const formulario = new FormData();
+formulario.append('name', 'story');
+formulario.append('file', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'foto.png');
+const subida = await pedir('POST', '/api/upload', { token: tokenA, cuerpo: formulario });
+comprobar(
+  'la imagen se sube y queda registrada',
+  Number(subida.id) > 0 && /^\/api\/media\//.test(subida.url || '') && subida.kind === 'story',
+  JSON.stringify(subida)
+);
+
+const imagen = await fetch(`${API}${subida.url}`);
+const bytesImagen = Buffer.from(await imagen.arrayBuffer());
+comprobar(
+  'la imagen se sirve con su tipo y su tamaño',
+  imagen.status === 200 && imagen.headers.get('content-type') === 'image/png' && bytesImagen.length === png.length,
+  `${imagen.status} ${imagen.headers.get('content-type')} ${bytesImagen.length}`
+);
+
+const saludTrasImagen = await pedir('GET', '/api/health');
+comprobar('el servidor sigue en pie después de servir una imagen', saludTrasImagen.status === 'ok', JSON.stringify(saludTrasImagen));
+
+// ---------- Historias (24 horas) y presencia ----------
+const historia = await pedir('POST', '/api/stories', {
+  token: tokenA,
+  cuerpo: { image_url: subida.url, caption: 'Primera historia de la prueba' },
+});
+comprobar('historia creada', historia.id > 0 && historia.caption.includes('prueba'));
+
+const historias = await pedir('GET', '/api/stories', { token: tokenB });
+comprobar('la historia se ve desde quien sigue', historias.some((h) => h.user_id === yo.id && h.total === 1), JSON.stringify(historias));
+
+const detalleHistoria = await pedir('GET', `/api/stories/${yo.id}`, { token: tokenB });
+comprobar('detalle de la historia', detalleHistoria.stories.length === 1 && detalleHistoria.user.username === nombreA);
+
+const vista = await pedir('POST', `/api/stories/${historia.id}/view`, { token: tokenB, cuerpo: {} });
+comprobar('marcar la historia como vista', vista.ok === true);
+
+const trasVer = await pedir('GET', `/api/stories/${yo.id}`, { token: tokenA });
+comprobar('el contador de visitas de la historia subió', trasVer.stories[0].views_count === 1, String(trasVer.stories[0].views_count));
+
+const presencia = await pedir('GET', '/api/users/presence', { token: tokenA });
+comprobar('presencia devuelve contactos', Array.isArray(presencia.otros) && (presencia.otros.length + presencia.en_linea.length) >= 1);
+
+const novedades = await pedir('GET', '/api/novedades', { token: tokenA });
+comprobar('novedades con contadores reales', typeof novedades.avisos === 'number' && typeof novedades.mensajes === 'number' && typeof novedades.historias === 'number', JSON.stringify(novedades));
+
 // ---------- Bloqueo ----------
 await pedir('POST', `/api/users/${beto.user.id}/block`, { token: tokenA, cuerpo: {} });
 const perfilBloqueado = await pedir('GET', `/api/users/${beto.user.id}`, { token: tokenA, crudo: true });
