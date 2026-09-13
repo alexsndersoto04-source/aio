@@ -37,7 +37,25 @@ if (!SECRETO || SECRETO.length < 32) {
 }
 
 const pool = crearPool(URL_BD);
-await migrar(pool);
+
+// La base de datos puede tardar en despertar (los servicios gratuitos como
+// Neon se apagan cuando nadie los usa). En vez de rendirse al primer intento,
+// se espera un poco y se vuelve a probar: así el arranque no falla por prisas.
+async function prepararBase() {
+  const intentos = Number(process.env.MOON_BD_INTENTOS || 6);
+  for (let i = 1; i <= intentos; i += 1) {
+    try {
+      await migrar(pool);
+      return;
+    } catch (e) {
+      console.error(`[bd] intento ${i} de ${intentos} falló: ${e.message}`);
+      if (i === intentos) throw e;
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
+}
+
+await prepararBase();
 
 const router = crearRouter();
 registrarRutasAuth(router);
