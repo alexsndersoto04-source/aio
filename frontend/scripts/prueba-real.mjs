@@ -202,6 +202,44 @@ comprobar(
 );
 comprobar('la fila de historias está arriba del inicio', !!document.querySelector('.historias'));
 
+// ---------- 5a-bis. Identidad visual y menús (lo que antes se veía roto) ----------
+comprobar(
+  'la identidad de Moon llega al navegador (panel noche y aro activo)',
+  html.includes('--noche') && /\.fila-acceso\.active:?:before/.test(html),
+  'faltan reglas de la capa §28'
+);
+comprobar(
+  'los iconos de los menús tienen tamaño fijo (ya no se estiran)',
+  /\.menu button svg\s*,\s*\.menu a svg/.test(html) || html.includes('.menu button svg'),
+  'falta la regla de tamaño de los iconos'
+);
+
+const menuCuenta = document.querySelector('.chip-cuenta');
+comprobar('el menú de cuenta se puede abrir', !!menuCuenta);
+if (menuCuenta) {
+  await pulsar(menuCuenta);
+  const abierto = await esperarA(() => !!document.querySelector('.menu-cuenta-panel'), 3000);
+  comprobar(
+    'el menú de cuenta muestra sus opciones',
+    abierto && /Mi perfil/.test(document.querySelector('.menu-cuenta-panel')?.textContent || ''),
+    document.querySelector('.menu-cuenta-panel')?.textContent?.slice(0, 80) || ''
+  );
+  await pulsar(menuCuenta);
+}
+
+const botonMas = document.querySelector('.post .icon-btn');
+comprobar('la publicación tiene su botón de opciones', !!botonMas);
+if (botonMas) {
+  await pulsar(botonMas);
+  const menu = await esperarA(() => !!document.querySelector('.post .menu'), 3000);
+  comprobar(
+    'el menú de la publicación abre con sus opciones',
+    menu && /Editar|Eliminar|Copiar enlace|Reportar/.test(document.querySelector('.post .menu')?.textContent || ''),
+    document.querySelector('.post .menu')?.textContent?.slice(0, 90) || ''
+  );
+  if (menu) await pulsar(document.querySelector('.post .icon-btn'));
+}
+
 // Una historia de verdad: se sube la imagen, se guarda y se abre el visor.
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
