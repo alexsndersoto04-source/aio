@@ -73,6 +73,32 @@ function PruebaSocial({ post }) {
   );
 }
 
+/** Cuerpo del post: los textos largos se recortan con «Ver más» en vez de
+ *  quedar amputados en mitad de la tarjeta. */
+function CuerpoPost({ contenido }) {
+  const [expandido, setExpandido] = useState(false);
+  const texto = contenido || '';
+  const necesita = texto.length > 300 || texto.split('\n').length > 4;
+  return (
+    <div className="post-body-caja">
+      <p
+        className={`post-body${necesita && !expandido ? ' recortado' : ''}`}
+        dangerouslySetInnerHTML={{ __html: linkify(texto) }}
+      />
+      {necesita ? (
+        <button
+          type="button"
+          className="ver-mas"
+          onClick={() => setExpandido((v) => !v)}
+          aria-expanded={expandido}
+        >
+          {expandido ? 'Mostrar menos' : 'Ver más'}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function PostMenu({ post, onDelete, onEdit, onReport }) {
   const { user } = useAuth();
   const [abierto, setAbierto] = useState(false);
@@ -308,7 +334,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
           </div>
         </div>
       ) : (
-        <p className="post-body" dangerouslySetInnerHTML={{ __html: linkify(p.content) }} />
+        <CuerpoPost contenido={p.content} />
       )}
 
       {imagenes.length > 0 ? (

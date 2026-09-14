@@ -4,7 +4,7 @@
 // que la API. Así la red social y su servidor viven en una sola dirección:
 // un único enlace que abre todo, sin depender de dos servicios distintos.
 
-import { createReadStream, statSync, existsSync } from 'node:fs';
+import { createReadStream, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -94,6 +94,24 @@ export function servirWeb(req, res, camino) {
   if (esIndex) cabeceras['Content-Type'] = TIPOS['.html'];
 
   try {
+    // El index lleva la marca __ORIGEN__ en las etiquetas og: al servirla se
+    // sustituye por el origen real de la petición, para que al compartir un
+    // enlace WhatsApp y compañía encuentren la imagen absoluta correcta.
+    if (esIndex) {
+      const proto = req.headers['x-forwarded-proto'] || 'http';
+      const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+      const html = readFileSync(archivo, 'utf8').split('__ORIGEN__').join(`${proto}://${host}`);
+      const buf = Buffer.from(html, 'utf8');
+      cabeceras['Content-Length'] = String(buf.length);
+      res.writeHead(200, cabeceras);
+      if (req.method === 'HEAD') {
+        res.end();
+        return true;
+      }
+      res.end(buf);
+      return true;
+    }
+
     const info = statSync(archivo);
     cabeceras['Content-Length'] = String(info.size);
     res.writeHead(200, cabeceras);

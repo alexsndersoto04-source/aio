@@ -15,6 +15,14 @@ export function timeAgo(iso) {
   return d.toLocaleDateString('es-VE', { day: 'numeric', month: 'short' });
 }
 
+/** «Se unió en septiembre de 2026» — mucho más legible que «Se unió 1 d». */
+export function miembroDesde(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + (iso.includes('+') ? '' : 'Z'));
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('es-VE', { month: 'long', year: 'numeric' });
+}
+
 export function parseHash(hash) {
   const h = (hash || '#/feed').replace(/^#/, '');
   const [path, query = ''] = h.split('?');
@@ -46,6 +54,27 @@ export function debounce(fn, ms = 350) {
 
 export function plural(n, singular, pluralForm) {
   return `${n} ${n === 1 ? singular : (pluralForm || singular + 's')}`;
+}
+
+/**
+ * Hora de un mensaje: hoy → «14:32»; este año → «12 mar»; antes → «12/03/25».
+ * En un chat la hora exacta importa más que «hace 3 min».
+ */
+export function horaMensaje(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + (iso.includes('+') ? '' : 'Z'));
+  if (isNaN(d.getTime())) return '';
+  const ahora = new Date();
+  const mismoDia = d.toDateString() === ahora.toDateString();
+  if (mismoDia) {
+    return d.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+  const ayer = new Date(ahora.getTime() - 86400000);
+  if (d.toDateString() === ayer.toDateString()) return 'ayer';
+  if (d.getFullYear() === ahora.getFullYear()) {
+    return d.toLocaleDateString('es-VE', { day: 'numeric', month: 'short' });
+  }
+  return d.toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
 export function humanNumber(n) {

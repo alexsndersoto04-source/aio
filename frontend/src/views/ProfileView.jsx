@@ -8,7 +8,7 @@ import { api, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
-import { timeAgo } from '../utils.js';
+import { miembroDesde } from '../utils.js';
 import { toast, avisoError } from '../ui.js';
 import {
   IconBookmark, IconGrid, IconLayers, IconSettings, IconShield, IconLink,
@@ -153,7 +153,7 @@ export default function ProfileView({ tab }) {
 
           <div className="profile-meta">
             {me.location ? <span className="dato"><IconMapPin /> {me.location}</span> : null}
-            {me.created_at ? <span className="dato"><IconCalendar /> Se unió {timeAgo(me.created_at)}</span> : null}
+            {me.created_at ? <span className="dato"><IconCalendar /> Se unió en {miembroDesde(me.created_at)}</span> : null}
             {me.link ? (
               <span className="dato"><IconLink />
                 <a href={me.link.startsWith('http') ? me.link : `https://${me.link}`} target="_blank" rel="noopener noreferrer">
@@ -164,8 +164,8 @@ export default function ProfileView({ tab }) {
           </div>
 
           <div className="profile-stats">
-            <span><b>{numero(me.posts_count)}</b><span>publicaciones</span></span>
-            <span><b>{numero(me.followers_count)}</b><span>seguidores</span></span>
+            <span><b>{numero(me.posts_count)}</b><span>{me.posts_count === 1 ? 'publicación' : 'publicaciones'}</span></span>
+            <span><b>{numero(me.followers_count)}</b><span>{me.followers_count === 1 ? 'seguidor' : 'seguidores'}</span></span>
             <span><b>{numero(me.following_count)}</b><span>siguiendo</span></span>
           </div>
         </div>

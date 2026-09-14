@@ -324,12 +324,16 @@ const novedades = await pedir('GET', '/api/novedades', { token: tokenA });
 comprobar('novedades con contadores reales', typeof novedades.avisos === 'number' && typeof novedades.mensajes === 'number' && typeof novedades.historias === 'number', JSON.stringify(novedades));
 
 // ---------- Ajustes ampliados: reacciones, números y bloqueados ----------
+// Beto reacciona primero: más arriba el like de prueba se quitó, así que sin
+// una reacción viva la lista estaría vacía y no comprobaría nada.
+await pedir('POST', `/api/posts/${publicacion.id}/like`, { token: tokenB, cuerpo: {} });
 const reacciones = await pedir('GET', `/api/posts/${publicacion.id}/likes`, { token: tokenA });
 comprobar(
   'la lista de reacciones trae gente y total',
   typeof reacciones.total === 'number' && Array.isArray(reacciones.items) && reacciones.total >= 1,
   JSON.stringify(reacciones).slice(0, 120)
 );
+await pedir('DELETE', `/api/posts/${publicacion.id}/like`, { token: tokenB });
 
 const misNumeros = await pedir('GET', '/api/me/stats', { token: tokenA });
 comprobar(

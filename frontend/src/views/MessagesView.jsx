@@ -10,7 +10,7 @@ import { api } from '../api.js';
 import { toast, confirmar, avisoError } from '../ui.js';
 import { useAuth } from '../auth.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
-import { timeAgo } from '../utils.js';
+import { timeAgo, horaMensaje } from '../utils.js';
 import { realtime } from '../realtime.js';
 import { ListSkeleton } from '../components/Skeleton.jsx';
 import {
@@ -239,6 +239,9 @@ export default function MessagesView({ conversationId }) {
                   <span className="muted" style={{ fontSize: 12.5 }}>
                     <IconAt style={{ width: 11, height: 11, verticalAlign: -1 }} />
                     {thread.partner?.username}
+                    {enLinea.has(Number(thread.partner?.id)) ? (
+                      <span className="estado-linea"><span className="punto-online" /> en línea</span>
+                    ) : null}
                   </span>
                 </span>
               </a>
@@ -261,8 +264,8 @@ export default function MessagesView({ conversationId }) {
                     {borrado ? <em style={{ opacity: 0.65 }}>Mensaje eliminado</em> : m.content}
                     {m.reaction ? <span className="react">{m.reaction}</span> : null}
                     <span className="time">
-                      {timeAgo(m.created_at)}
-                      {!mio && m.status === 'read' ? ' · leído' : null}
+                      {horaMensaje(m.created_at)}
+                      {mio && m.status === 'read' ? ' · leído' : null}
                     </span>
 
                     {borrado ? null : (
