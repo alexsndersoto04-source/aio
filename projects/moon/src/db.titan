@@ -60,6 +60,12 @@ fn db_migrations() -> array {
     list = std::array::push(list, m16)
     let m17 = mx_build(17, "create_groups", "CREATE TABLE groups (id BIGSERIAL PRIMARY KEY, owner_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, about TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', privacy TEXT NOT NULL DEFAULT 'public', members_count INT NOT NULL DEFAULT 1, posts_count INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX ix_groups_owner ON groups (owner_id, created_at DESC); CREATE INDEX ix_groups_nombre ON groups (name); CREATE TABLE group_members (group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'member', joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (group_id, user_id)); CREATE INDEX ix_group_members_user ON group_members (user_id, joined_at DESC); ALTER TABLE posts ADD COLUMN IF NOT EXISTS group_id BIGINT REFERENCES groups(id) ON DELETE CASCADE; CREATE INDEX ix_posts_group ON posts (group_id, created_at DESC); ALTER TABLE groups ALTER COLUMN members_count TYPE BIGINT; ALTER TABLE groups ALTER COLUMN posts_count TYPE BIGINT")
     list = std::array::push(list, m17)
+    // Las imágenes viven EN la base de datos (BYTEA), no en el disco del
+    // contenedor: en los planes gratuitos el disco es temporal y cada
+    // redeploy borraba todas las fotos subidas. Con esto, un reinicio o un
+    // despliegue nuevo nunca pierden el contenido de la gente.
+    let m18 = mx_build(18, "media_en_base_de_datos", "ALTER TABLE media ADD COLUMN IF NOT EXISTS original_data BYTEA; ALTER TABLE media ADD COLUMN IF NOT EXISTS mime TEXT NOT NULL DEFAULT 'image/jpeg'")
+    list = std::array::push(list, m18)
     list
 }
 
