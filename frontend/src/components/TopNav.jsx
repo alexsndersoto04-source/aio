@@ -123,6 +123,10 @@ export default function TopNav() {
         >
           <IconSearch />
         </button>
+        <a className="solo-movil icono-redondo" href="#/notifications" aria-label={`Avisos${unread.notifications ? ` (${unread.notifications})` : ''}`}>
+          <IconBell />
+          {unread.notifications > 0 ? <span className="badge">{numero(unread.notifications)}</span> : null}
+        </a>
         <ThemeToggle compact />
         <button
           type="button"
@@ -158,6 +162,16 @@ export default function TopNav() {
               </a>
               <div className="menu-cuenta-linea" />
               <a href={`#/user/${user.id}`} role="menuitem" onClick={() => setMenuAbierto(false)}><IconUser /> Mi perfil</a>
+              <a href="#/notifications" role="menuitem" onClick={() => setMenuAbierto(false)}>
+                <IconBell /> Avisos
+                {unread.notifications > 0 ? <span className="badge" style={{ marginLeft: 'auto' }}>{numero(unread.notifications)}</span> : null}
+              </a>
+              <a href="#/messages" role="menuitem" onClick={() => setMenuAbierto(false)}>
+                <IconMail /> Mensajes
+                {unread.messages > 0 ? <span className="badge" style={{ marginLeft: 'auto' }}>{numero(unread.messages)}</span> : null}
+              </a>
+              <a href="#/grupos" role="menuitem" onClick={() => setMenuAbierto(false)}><IconLayers /> Grupos</a>
+              <a href="#/amigos" role="menuitem" onClick={() => setMenuAbierto(false)}><IconUsers /> Contactos</a>
               <a href="#/profile/saved" role="menuitem" onClick={() => setMenuAbierto(false)}><IconBookmark /> Guardados</a>
               <a href="#/settings" role="menuitem" onClick={() => setMenuAbierto(false)}><IconSettings /> Ajustes</a>
               {isAdmin ? (
@@ -167,7 +181,11 @@ export default function TopNav() {
               <div className="menu-cuenta-tema">
                 <IconLayers />
                 <span>Tema</span>
-                <ThemeToggle compact />
+                <a className="solo-movil icono-redondo" href="#/notifications" aria-label={`Avisos${unread.notifications ? ` (${unread.notifications})` : ''}`}>
+          <IconBell />
+          {unread.notifications > 0 ? <span className="badge">{numero(unread.notifications)}</span> : null}
+        </a>
+        <ThemeToggle compact />
               </div>
               <button
                 type="button"

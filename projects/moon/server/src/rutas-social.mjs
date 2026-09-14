@@ -18,6 +18,7 @@ export const SQL_POST = `
          p.user_id,
          u.username AS author_username, u.display_name AS author_display_name,
          u.avatar_url AS author_avatar_url, u.is_verified AS author_is_verified,
+         u.is_private AS author_is_private,
          (SELECT COUNT(*)::int FROM likes l WHERE l.post_id = p.id AND l.user_id = $1) > 0 AS is_liked,
          (SELECT COUNT(*)::int FROM saves s WHERE s.post_id = p.id AND s.user_id = $1) > 0 AS is_saved
     FROM posts p JOIN users u ON u.id = p.user_id`;
@@ -57,6 +58,7 @@ export function aPublicacion(f, yo) {
     author_display_name: f.author_display_name || f.author_username,
     author_avatar_url: f.author_avatar_url,
     author_is_verified: !!f.author_is_verified,
+    author_is_private: !!f.author_is_private,
   };
 }
 
@@ -560,6 +562,96 @@ export function registrarRutasSocial(router) {
       Number(c.params.id), yo.id,
     ]);
     return { ok: true };
+  });
+
+  // ---------- Quién reaccionó (prueba social real) ----------
+  // Devuelve las últimas personas que dieron «me gusta» y el total, para
+  // poder escribir «A María y 23 más les gusta» con datos de verdad.
+  router.get('/api/posts/:id/likes', async (c) => {
+    const yo = await c.exigir();
+    const postId = Number(c.params.id);
+    if (!postId) throw new ApiErr('Falta la publicación', 400);
+    const total = await uno(
+      c.pool,
+      'SELECT COUNT(*)::int AS count FROM likes WHERE post_id = $1',
+      [postId]
+    );
+    const filas = await c.pool.query(
+      `SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified
+         FROM likes l JOIN users u ON u.id = l.user_id
+        WHERE l.post_id = $1
+        ORDER BY l.created_at DESC LIMIT 4`,
+      [postId]
+    );
+    void yo;
+    return {
+      total: Number(total?.count || 0),
+      items: filas.rows.map((u) => ({
+        id: Number(u.id),
+        username: u.username,
+        display_name: u.display_name || u.username,
+        avatar_url: u.avatar_url,
+        is_verified: !!u.is_verified,
+      })),
+    };
+  });
+
+  // ---------- Mis números ----------
+  // Un resumen honesto de la cuenta: lo que hay en la base, sin inventar.
+  router.get('/api/me/stats', async (c) => {
+    const yo = await c.exigir();
+    const f = await uno(
+      c.pool,
+      `SELECT
+         (SELECT COUNT(*)::int FROM posts WHERE user_id = $1 AND status = 'active') AS posts,
+         (SELECT COUNT(*)::int FROM comments WHERE user_id = $1 AND status = 'active') AS comments,
+         (SELECT COUNT(*)::int FROM saves WHERE user_id = $1) AS guardados,
+         (SELECT COUNT(*)::int FROM likes l JOIN posts p ON p.id = l.post_id WHERE p.user_id = $1 AND p.status = 'active') AS me_gusta_recibidos,
+         (SELECT COUNT(*)::int FROM posts p JOIN likes l ON l.post_id = p.id WHERE p.user_id = $1) AS reacciones,
+         (SELECT COALESCE(SUM(p.comments_count), 0)::int FROM posts p WHERE p.user_id = $1 AND p.status = 'active') AS comentarios_recibidos,
+         (SELECT COUNT(*)::int FROM conversations WHERE user_a = $1 OR user_b = $1) AS conversaciones,
+         (SELECT COUNT(*)::int FROM messages WHERE sender_id = $1 AND status <> 'deleted') AS mensajes,
+         (SELECT COUNT(*)::int FROM stories WHERE user_id = $1 AND expires_at > NOW()) AS historias,
+         (SELECT COUNT(*)::int FROM group_members WHERE user_id = $1) AS grupos,
+         (SELECT COUNT(*)::int FROM follows WHERE following_id = $1) AS seguidores,
+         (SELECT COUNT(*)::int FROM follows WHERE follower_id = $1) AS siguiendo`,
+      [yo.id]
+    );
+    return {
+      posts: Number(f?.posts || 0),
+      comentarios: Number(f?.comments || 0),
+      guardados: Number(f?.guardados || 0),
+      me_gusta_recibidos: Number(f?.me_gusta_recibidos || 0),
+      reacciones: Number(f?.reacciones || 0),
+      comentarios_recibidos: Number(f?.comentarios_recibidos || 0),
+      conversaciones: Number(f?.conversaciones || 0),
+      mensajes: Number(f?.mensajes || 0),
+      historias: Number(f?.historias || 0),
+      grupos: Number(f?.grupos || 0),
+      seguidores: Number(f?.seguidores || 0),
+      siguiendo: Number(f?.siguiendo || 0),
+    };
+  });
+
+  // ---------- Personas que bloqueé ----------
+  // Hasta ahora se podía bloquear pero no ver ni deshacer la lista.
+  router.get('/api/me/blocked', async (c) => {
+    const yo = await c.exigir();
+    const filas = await c.pool.query(
+      `SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified, b.created_at::text AS blocked_at
+         FROM blocks b JOIN users u ON u.id = b.blocked_id
+        WHERE b.blocker_id = $1
+        ORDER BY b.created_at DESC`,
+      [yo.id]
+    );
+    return filas.rows.map((u) => ({
+      id: Number(u.id),
+      username: u.username,
+      display_name: u.display_name || u.username,
+      avatar_url: u.avatar_url,
+      is_verified: !!u.is_verified,
+      blocked_at: u.blocked_at,
+    }));
   });
 
   // ---------- Reportes ----------

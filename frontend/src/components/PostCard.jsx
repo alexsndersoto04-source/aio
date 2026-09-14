@@ -13,8 +13,65 @@ import { toast, confirmar, pedirTexto, avisoError } from '../ui.js';
 import Avatar, { VerifiedBadge } from './Avatar.jsx';
 import {
   IconHeart, IconBookmark, IconComment, IconMore, IconTrash, IconEdit, IconReport,
-  IconLink, IconX,
+  IconLink, IconX, IconGlobe, IconLock, IconSend,
 } from './Icons.jsx';
+
+// Caché en memoria de quién reaccionó: evita repetir la misma petición
+// cada vez que la publicación vuelve a pintarse (feed, perfil, hilo).
+const cacheReacciones = new Map();
+
+function useReacciones(post) {
+  const [datos, setDatos] = useState(() => cacheReacciones.get(post.id) || null);
+  const cuenta = post.likes_count || 0;
+  useEffect(() => {
+    if (cuenta <= 0) return undefined;
+    const guardado = cacheReacciones.get(post.id);
+    if (guardado && guardado.total === cuenta) { setDatos(guardado); return undefined; }
+    let vivo = true;
+    api.get(`/api/posts/${post.id}/likes`)
+      .then((res) => {
+        if (!vivo) return;
+        cacheReacciones.set(post.id, res);
+        setDatos(res);
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [post.id, cuenta]);
+  return datos;
+}
+
+/** «A María y 23 más les gusta» — con nombres de verdad, no inventados. */
+function PruebaSocial({ post }) {
+  const datos = useReacciones(post);
+  const total = post.likes_count || 0;
+  if (total <= 0) return null;
+  const gente = (datos?.items || []).slice(0, 3);
+  const primero = gente[0];
+  const resto = Math.max(0, total - 1);
+
+  return (
+    <div className="prueba-social">
+      {gente.length > 0 ? (
+        <span className="pila-avatares" aria-hidden="true">
+          {gente.map((u) => (
+            <Avatar key={u.id} user={u} className="mini" />
+          ))}
+        </span>
+      ) : null}
+      <span>
+        {primero ? (
+          <>
+            A <b>{primero.display_name || primero.username}</b>
+            {resto > 0 ? <> y <b>{resto}</b> {resto === 1 ? 'persona más' : 'personas más'}</> : null} les gusta
+          </>
+        ) : (
+          <><b>{total}</b> {total === 1 ? 'me gusta' : 'me gusta'}</>
+        )}
+      </span>
+      <span className="corazon" aria-hidden="true"><IconHeart filled /></span>
+    </div>
+  );
+}
 
 function PostMenu({ post, onDelete, onEdit, onReport }) {
   const { user } = useAuth();
@@ -160,6 +217,24 @@ export default function PostCard({ post, onChanged, compact = false }) {
     }
   }
 
+  // Compartir de verdad: el menú del sistema si existe, si no el enlace.
+  async function compartir() {
+    const url = `${window.location.origin}${window.location.pathname}#/post/${p.id}`;
+    const texto = (p.content || '').slice(0, 120);
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'Publicación de Moon', text: texto, url });
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url);
+        toast.ok('Enlace copiado. Ya puedes pegarlo donde quieras.');
+        return;
+      }
+      toast.info(url);
+    } catch { /* la persona canceló: no pasa nada */ }
+  }
+
   async function reportar() {
     const motivo = await pedirTexto({
       title: 'Reportar publicación',
@@ -198,6 +273,9 @@ export default function PostCard({ post, onChanged, compact = false }) {
               {timeAgo(p.created_at)}
             </a>
             {p.edited_at ? <span className="pill">editado</span> : null}
+            <span className="quien-meta" title={p.author_is_private ? 'Cuenta privada' : 'Publicación pública'}>
+              {p.author_is_private ? <IconLock /> : <IconGlobe />}
+            </span>
           </div>
         </div>
         {compact ? null : (
@@ -235,6 +313,9 @@ export default function PostCard({ post, onChanged, compact = false }) {
 
       {imagenes.length > 0 ? (
         <div className={`post-images count-${Math.min(imagenes.length, 4)}`}>
+          {imagenes.length > 1 ? (
+            <span className="contador-fotos">1 / {imagenes.length}</span>
+          ) : null}
           {imagenes.map((img, i) => (
             <img
               key={i}
@@ -246,6 +327,8 @@ export default function PostCard({ post, onChanged, compact = false }) {
         </div>
       ) : null}
 
+      <PruebaSocial post={p} />
+
       <footer className="post-actions">
         <button
           className={p.is_liked ? 'liked' : ''}
@@ -255,17 +338,23 @@ export default function PostCard({ post, onChanged, compact = false }) {
           aria-label={p.is_liked ? 'Quitar me gusta' : 'Me gusta'}
         >
           <IconHeart filled={p.is_liked} className={animarLike ? 'latido' : ''} />
-          <span className="count">{p.likes_count || 0}</span>
+          <span className="etiqueta">{p.is_liked ? 'Te gusta' : 'Me gusta'}</span>
+          {p.likes_count > 0 ? <span className="count">{p.likes_count}</span> : null}
         </button>
 
         <a href={`#/post/${p.id}`} aria-label={`Ver comentarios (${p.comments_count || 0})`}>
           <IconComment />
-          <span className="count">{p.comments_count || 0}</span>
+          <span className="etiqueta">Comentar</span>
+          {p.comments_count > 0 ? <span className="count">{p.comments_count}</span> : null}
         </a>
+
+        <button className="compartir" onClick={compartir} aria-label="Compartir publicación">
+          <IconSend />
+          <span className="etiqueta">Compartir</span>
+        </button>
 
         <button
           className={p.is_saved ? 'saved' : ''}
-          style={{ marginLeft: 'auto' }}
           onClick={() => alternar('save')}
           disabled={busy}
           aria-pressed={!!p.is_saved}
@@ -273,7 +362,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
           title={p.is_saved ? 'Quitar de guardados' : 'Guardar'}
         >
           <IconBookmark filled={p.is_saved} />
-          <span className="count">{p.is_saved ? 'Guardado' : 'Guardar'}</span>
+          <span className="etiqueta">{p.is_saved ? 'Guardado' : 'Guardar'}</span>
         </button>
       </footer>
     </article>

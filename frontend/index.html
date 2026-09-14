@@ -11,9 +11,17 @@
       // Aplica el tema guardado antes de pintar: evita el destello blanco.
       (function () {
         try {
+          var r = document.documentElement;
           var g = localStorage.getItem('moon_theme') || 'system';
           var oscuro = g === 'dark' || (g === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          document.documentElement.dataset.theme = oscuro ? 'dark' : 'light';
+          r.dataset.theme = oscuro ? 'dark' : 'light';
+          // Apariencia (vidrio, tamaño de letra, movimiento y densidad)
+          var v = localStorage.getItem('moon_vidrio');
+          r.dataset.vidrio = (v === 'suave' || v === 'intenso') ? v : 'normal';
+          var t = localStorage.getItem('moon_texto');
+          r.dataset.texto = (t === 'grande' || t === 'enorme') ? t : 'normal';
+          r.dataset.movimiento = localStorage.getItem('moon_movimiento') === 'no' ? 'no' : 'si';
+          r.dataset.denso = localStorage.getItem('moon_denso') === 'si' ? 'si' : 'no';
         } catch (e) { /* sin almacenamiento: se queda el tema claro */ }
       })();
     </script>

@@ -7,12 +7,49 @@ import PostCard from '../components/PostCard.jsx';
 import Composer from '../components/Composer.jsx';
 import Historias from '../components/Historias.jsx';
 import { useAuth } from '../auth.jsx';
+import Avatar from '../components/Avatar.jsx';
+import { realtime } from '../realtime.js';
 
 const TABS = [
   { id: 'feed', label: 'Para ti' },
   { id: 'trending', label: 'Tendencias' },
   { id: 'latest', label: 'Recientes' },
 ];
+
+/** Franja de gente conectada ahora mismo, con presencia real del servidor. */
+function EnLinea() {
+  const { user } = useAuth();
+  const [datos, setDatos] = useState(null);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    let vivo = true;
+    const cargar = () => api.get('/api/users/presence')
+      .then((res) => { if (vivo) setDatos(res); })
+      .catch(() => {});
+    cargar();
+    const off = realtime.on((ev) => { if (ev.type === 'presence') cargar(); });
+    return () => { vivo = false; off(); };
+  }, [user]);
+
+  const gente = (datos?.en_linea || []).slice(0, 6);
+  if (gente.length === 0) return null;
+
+  return (
+    <a className="franja-en-linea" href="#/amigos">
+      <span className="pila-avatares" aria-hidden="true">
+        {gente.map((u) => (
+          <span className="avatar-con-estado" key={u.id}>
+            <Avatar user={u} className="mini" />
+            <span className="punto-online" />
+          </span>
+        ))}
+      </span>
+      <span className="etiqueta-viva"><span className="luz" />{datos.total_en_linea} en línea ahora</span>
+      <span className="ver">Ver contactos</span>
+    </a>
+  );
+}
 
 export default function FeedView() {
   const { user } = useAuth();
@@ -74,6 +111,7 @@ export default function FeedView() {
         <h1>{tab === 'feed' ? 'Inicio' : tab === 'trending' ? 'Tendencias' : 'Recientes'}</h1>
       </div>
 
+      <EnLinea />
       {tab === 'feed' ? <Historias /> : null}
       {tab === 'feed' ? <Composer onCreated={onCreated} /> : null}
 

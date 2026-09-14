@@ -31,6 +31,7 @@ import GrupoView from './views/GrupoView.jsx';
 import { realtime } from './realtime.js';
 import { setUnread, bump } from './unread.js';
 import { aplicarTema } from './theme.js';
+import { aplicar as aplicarPrefs, sonar } from './prefs.js';
 
 function useRoute() {
   const [route, setRoute] = useState(() => parseHash(window.location.hash));
@@ -60,9 +61,20 @@ function BarraProgreso() {
   );
 }
 
+/* El cielo aurora: vive detrás de todo y no intercepta toques. */
+function Cielo() {
+  return (
+    <div className="cielo" aria-hidden="true">
+      <span className="cielo-estrellas" />
+      <span className="cielo-estrellas-2" />
+    </div>
+  );
+}
+
 function Shell({ children }) {
   return (
     <div className="marco">
+      <Cielo />
       <TopNav />
       <div className="app">
         <LeftRail />
@@ -88,6 +100,7 @@ function UnreadProvider({ children }) {
         bump('notification');
       } else if (ev.type === 'message') {
         bump('message');
+        sonar();
       } else if (ev.type === 'sync') {
         const data = ev.data || {};
         setUnread({ notifications: data.unread_notifications || 0, messages: data.unread_messages || 0 });
@@ -170,7 +183,7 @@ function Gate() {
   const isAuthPage = ['login', 'register', 'reset'].includes(parts[0] || '');
   const ruta = parts.join('/') || 'feed';
 
-  useEffect(() => { aplicarTema(); }, []);
+  useEffect(() => { aplicarTema(); aplicarPrefs(); }, []);
 
   if (loading) return <Cargando />;
 

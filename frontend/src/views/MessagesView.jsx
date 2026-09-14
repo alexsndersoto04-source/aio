@@ -23,22 +23,31 @@ export default function MessagesView({ conversationId }) {
   const { user } = useAuth();
   const [convs, setConvs] = useState(null);
   const [convId, setConvId] = useState(conversationId ? Number(conversationId) : null);
+  // Quién está conectado ahora mismo (presencia real del servidor).
+  const [enLinea, setEnLinea] = useState(() => new Set());
   const [thread, setThread] = useState(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
   const [reaccionando, setReaccionando] = useState(null);
   const endRef = useRef(null);
+  // Solo se entra solo en la primera conversación la primera vez que se abre
+  // la pantalla: si la persona pulsa «volver», se queda en la lista (antes
+  // volvía a entrar y en el teléfono no había manera de salir del hilo).
+  const entroSolo = useRef(!!conversationId);
 
   const loadConvs = useCallback(() => {
     api.get('/api/messages/conversations')
       .then((rows) => {
         const lista = rows || [];
         setConvs(lista);
-        if (!convId && lista.length > 0) setConvId(lista[0].id);
+        if (!entroSolo.current && lista.length > 0) {
+          entroSolo.current = true;
+          setConvId(lista[0].id);
+        }
       })
       .catch((e) => { setConvs([]); avisoError(e); });
-  }, [convId]);
+  }, []);
 
   useEffect(() => { loadConvs(); }, [loadConvs]);
 
@@ -57,6 +66,20 @@ export default function MessagesView({ conversationId }) {
   }, []);
 
   useEffect(() => { loadThread(convId); }, [convId, loadThread]);
+
+  // Presencia: quién está conectado, para el punto verde de la lista.
+  useEffect(() => {
+    let vivo = true;
+    const cargarPresencia = () => api.get('/api/users/presence')
+      .then((res) => {
+        if (!vivo) return;
+        setEnLinea(new Set((res.en_linea || []).map((u) => Number(u.id))));
+      })
+      .catch(() => {});
+    cargarPresencia();
+    const off = realtime.on((ev) => { if (ev.type === 'presence') cargarPresencia(); });
+    return () => { vivo = false; off(); };
+  }, []);
 
   useEffect(() => {
     if (endRef.current) endRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -169,7 +192,10 @@ export default function MessagesView({ conversationId }) {
               className={`conv ${convId === c.id ? 'active' : ''}`}
               onClick={() => loadThread(c.id)}
             >
-              <Avatar user={c} size="sm" />
+              <span className="avatar-con-estado">
+                <Avatar user={c} size="sm" />
+                {enLinea.has(Number(c.id)) ? <span className="punto-online" /> : null}
+              </span>
               <span className="body">
                 <b className="ellipsis">
                   {c.display_name || c.username}
@@ -190,7 +216,13 @@ export default function MessagesView({ conversationId }) {
             <header className="head">
               <button
                 className="icon-btn"
-                onClick={() => setConvId(null)}
+                onClick={() => {
+                  setConvId(null);
+                  setThread(null);
+                  if (window.location.hash !== '#/messages') {
+                    history.replaceState(null, '', '#/messages');
+                  }
+                }}
                 aria-label="Volver a las conversaciones"
                 style={{ display: 'none' }}
                 data-volver

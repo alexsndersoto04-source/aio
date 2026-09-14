@@ -142,6 +142,7 @@ function publicacionJSON(p) {
     author_display_name: autor.display_name,
     author_avatar_url: autor.avatar_url,
     author_is_verified: autor.is_verified,
+    author_is_private: !!autor.is_private,
   };
 }
 
@@ -196,6 +197,9 @@ const conversaciones = [
 ];
 
 const palabrasProhibidas = ['spam', 'estafa', 'insulto'];
+
+// Preferencias de avisos del modo demostración (solo en memoria).
+const avisos = { follow: true, like: true, comment: true, reply: true, mention: true, message: true, system: true };
 
 // ---------- Respuestas ----------
 
@@ -255,6 +259,11 @@ export function responder(metodo, ruta, cuerpo) {
   const partes = camino.replace(/^\/api\//, '').split('/').filter(Boolean);
   const q = new URLSearchParams(consulta);
   const [a, b, c, d] = partes;
+
+  // ---- Estado del servidor ----
+  if (a === 'health') {
+    return json({ status: 'ok', app: 'moon', time: new Date().toISOString(), db: true });
+  }
 
   // ---- Sesión ----
   if (a === 'auth') {
@@ -324,6 +333,16 @@ export function responder(metodo, ruta, cuerpo) {
       if (metodo === 'PATCH') { post.texto = cuerpo?.content ?? post.texto; post.editada = true; }
       return json(publicacionJSON(post));
     }
+    if (accion === 'likes') {
+      const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id).slice(0, 3);
+      return json({
+        total: post.likes,
+        items: gente.map((u) => ({
+          id: u.id, username: u.username, display_name: u.display_name,
+          avatar_url: u.avatar_url, is_verified: u.is_verified,
+        })),
+      });
+    }
     if (accion === 'like') {
       const dando = metodo === 'POST';
       post.meGusta = dando;
@@ -370,6 +389,46 @@ export function responder(metodo, ruta, cuerpo) {
         })
       );
     }
+  }
+
+  if (a === 'users' && b === 'presence') {
+    const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id);
+    const en_linea = gente.slice(0, 2).map((u) => ({
+      id: u.id, username: u.username, display_name: u.display_name,
+      avatar_url: u.avatar_url, is_verified: u.is_verified, online: true,
+    }));
+    const otros = gente.slice(2).map((u) => ({
+      id: u.id, username: u.username, display_name: u.display_name,
+      avatar_url: u.avatar_url, is_verified: u.is_verified, online: false,
+    }));
+    return json({ en_linea, otros, total_en_linea: en_linea.length });
+  }
+
+  if (a === 'notifications' && b === 'prefs') {
+    if (metodo === 'PATCH' && cuerpo) Object.assign(avisos, cuerpo);
+    return json(avisos);
+  }
+
+  if (a === 'me' && b === 'stats') {
+    return json({
+      posts: publicaciones.filter((x) => x.autor === USUARIO.id && !x.borrada).length,
+      comentarios: 24,
+      guardados: publicaciones.filter((x) => x.guardada).length,
+      me_gusta_recibidos: publicaciones.filter((x) => x.autor === USUARIO.id).reduce((n, x) => n + x.likes, 0),
+      reacciones: publicaciones.filter((x) => x.autor === USUARIO.id).reduce((n, x) => n + x.likes, 0),
+      comentarios_recibidos: publicaciones.filter((x) => x.autor === USUARIO.id).reduce((n, x) => n + x.comentarios, 0),
+      conversaciones: conversaciones.length,
+      mensajes: conversaciones.reduce((n, c) => n + c.mensajes.length, 0),
+      historias: 0,
+      grupos: 0,
+      seguidores: USUARIO.followers_count,
+      siguiendo: USUARIO.following_count,
+    });
+  }
+
+  if (a === 'me' && b === 'blocked') {
+    if (metodo === 'DELETE') return json({ ok: true });
+    return json([]);
   }
 
   if (a === 'me' && b === 'saved') {

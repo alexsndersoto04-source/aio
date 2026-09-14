@@ -178,6 +178,15 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
   );
 }
 
+/** Una historia recién publicada (menos de una hora) se marca como nueva. */
+function esNueva(grupo) {
+  const creada = grupo?.ultima_at || grupo?.created_at;
+  if (!creada) return false;
+  const t = new Date(creada).getTime();
+  if (!t) return false;
+  return Date.now() - t < 60 * 60 * 1000;
+}
+
 export default function Historias({ onNovedad }) {
   const { user } = useAuth();
   const [grupos, setGrupos] = useState([]);
@@ -253,7 +262,9 @@ export default function Historias({ onNovedad }) {
               </span>
             </span>
             <b>{g.mine ? 'Tu historia' : (g.display_name || g.username).split(' ')[0]}</b>
-            <small>{g.total > 1 ? `${g.total} historias` : '1 historia'}</small>
+            {esNueva(g) ? <span className="en-vivo">nueva</span> : (
+              <small>{g.total > 1 ? `${g.total} historias` : '1 historia'}</small>
+            )}
           </button>
         ))}
       </section>

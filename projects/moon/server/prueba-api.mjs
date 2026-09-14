@@ -323,6 +323,45 @@ comprobar('presencia devuelve contactos', Array.isArray(presencia.otros) && (pre
 const novedades = await pedir('GET', '/api/novedades', { token: tokenA });
 comprobar('novedades con contadores reales', typeof novedades.avisos === 'number' && typeof novedades.mensajes === 'number' && typeof novedades.historias === 'number', JSON.stringify(novedades));
 
+// ---------- Ajustes ampliados: reacciones, números y bloqueados ----------
+const reacciones = await pedir('GET', `/api/posts/${publicacion.id}/likes`, { token: tokenA });
+comprobar(
+  'la lista de reacciones trae gente y total',
+  typeof reacciones.total === 'number' && Array.isArray(reacciones.items) && reacciones.total >= 1,
+  JSON.stringify(reacciones).slice(0, 120)
+);
+
+const misNumeros = await pedir('GET', '/api/me/stats', { token: tokenA });
+comprobar(
+  'mis números traen publicaciones, me gusta y mensajes',
+  typeof misNumeros.posts === 'number' && typeof misNumeros.me_gusta_recibidos === 'number'
+    && typeof misNumeros.mensajes === 'number' && typeof misNumeros.seguidores === 'number',
+  JSON.stringify(misNumeros).slice(0, 140)
+);
+
+const prefsAvisos = await pedir('GET', '/api/notifications/prefs', { token: tokenA });
+comprobar(
+  'las preferencias de avisos tienen las siete claves',
+  ['follow', 'like', 'comment', 'reply', 'mention', 'message', 'system'].every((k) => k in prefsAvisos),
+  JSON.stringify(prefsAvisos)
+);
+const prefsGuardadas = await pedir('PATCH', '/api/notifications/prefs', {
+  token: tokenA,
+  cuerpo: { follow: true, like: false, comment: true, reply: true, mention: true, message: false, system: true },
+});
+comprobar('apagar un aviso se guarda', prefsGuardadas.like === false && prefsGuardadas.message === false, JSON.stringify(prefsGuardadas));
+
+await pedir('POST', `/api/users/${beto.user.id}/block`, { token: tokenA, cuerpo: {} });
+const bloqueados = await pedir('GET', '/api/me/blocked', { token: tokenA });
+comprobar(
+  'mi lista de bloqueados incluye a quien bloqueé',
+  Array.isArray(bloqueados) && bloqueados.some((u) => Number(u.id) === Number(beto.user.id)),
+  JSON.stringify(bloqueados).slice(0, 120)
+);
+await pedir('DELETE', `/api/users/${beto.user.id}/block`, { token: tokenA });
+const sinBloqueos = await pedir('GET', '/api/me/blocked', { token: tokenA });
+comprobar('desbloquear deja la lista vacía', Array.isArray(sinBloqueos) && sinBloqueos.length === 0, JSON.stringify(sinBloqueos));
+
 // ---------- Bloqueo ----------
 await pedir('POST', `/api/users/${beto.user.id}/block`, { token: tokenA, cuerpo: {} });
 const perfilBloqueado = await pedir('GET', `/api/users/${beto.user.id}`, { token: tokenA, crudo: true });
