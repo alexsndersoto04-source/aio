@@ -5,8 +5,9 @@ import { api } from '../api.js';
 import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
-import { debounce } from '../utils.js';
+import { debounce, plural } from '../utils.js';
 import { IconSearch } from '../components/Icons.jsx';
+import { SugerenciasPersonas } from '../components/Sugerencias.jsx';
 
 export default function ExploreView({ initialQ = '', initialType = 'users' }) {
   const [q, setQ] = useState(initialQ);
@@ -92,12 +93,18 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
             <a key={t.tag} href={`#/explore?q=${encodeURIComponent(t.tag)}&type=posts`}
               className="row" style={{ padding: '9px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span className="hash">#{t.tag}</span>
-              <span className="muted">{t.posts_count} publicaciones</span>
+              <span className="muted">{plural(t.posts_count, 'publicación')}</span>
             </a>
           ))}
-          {trendingTags.length === 0 ? <p className="muted" style={{ margin: 0 }}>Aún no hay hashtags.</p> : null}
+          {trendingTags.length === 0 ? (
+            <p className="muted" style={{ margin: 0 }}>
+              Aún no hay hashtags: usa #algo al publicar y crea el primero.
+            </p>
+          ) : null}
         </div>
       ) : null}
+
+      {!loading && !q.trim() ? <SugerenciasPersonas titulo="Personas destacadas" limite={4} /> : null}
 
       {!loading && searched && type === 'users' ? (
         users.length === 0 ? (
@@ -112,7 +119,7 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
                 </span>
                 <span className="at">@{u.username}</span>
               </span>
-              <span className="muted">{u.followers_count} seguidores</span>
+              <span className="muted">{plural(u.followers_count, 'seguidor')}</span>
             </a>
           ))
         )

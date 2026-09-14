@@ -29,7 +29,7 @@ import ContactosView from './views/ContactosView.jsx';
 import GruposView from './views/GruposView.jsx';
 import GrupoView from './views/GrupoView.jsx';
 import { realtime } from './realtime.js';
-import { setUnread, bump } from './unread.js';
+import { setUnread, bump, useUnread } from './unread.js';
 import { aplicarTema } from './theme.js';
 import { aplicar as aplicarPrefs, sonar } from './prefs.js';
 
@@ -116,6 +116,13 @@ function UnreadProvider({ children }) {
     realtime.send({ type: 'sync' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [window.location.hash]);
+
+  // El título de la pestaña avisa de lo pendiente, como en las apps grandes.
+  const unread = useUnread();
+  useEffect(() => {
+    const total = (unread.notifications || 0) + (unread.messages || 0);
+    document.title = total > 0 ? `(${total > 9 ? '9+' : total}) Moon — red social` : 'Moon — red social';
+  }, [unread.notifications, unread.messages]);
 
   return children;
 }

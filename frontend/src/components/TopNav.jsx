@@ -13,7 +13,7 @@ import Avatar from './Avatar.jsx';
 import {
   IconHome, IconExplore, IconBookmark, IconBell, IconMail, IconUser,
   IconSettings, IconShield, IconSearch, IconX, IconLogout, IconLayers,
-  IconGrid, IconPlus, IconUsers,
+  IconGrid, IconPlus, IconUsers, IconMoon,
 } from './Icons.jsx';
 
 function useSeccion() {
@@ -179,13 +179,9 @@ export default function TopNav() {
               ) : null}
               <div className="menu-cuenta-linea" />
               <div className="menu-cuenta-tema">
-                <IconLayers />
+                <IconMoon />
                 <span>Tema</span>
-                <a className="solo-movil icono-redondo" href="#/notifications" aria-label={`Avisos${unread.notifications ? ` (${unread.notifications})` : ''}`}>
-          <IconBell />
-          {unread.notifications > 0 ? <span className="badge">{numero(unread.notifications)}</span> : null}
-        </a>
-        <ThemeToggle compact />
+                <ThemeToggle compact />
               </div>
               <button
                 type="button"

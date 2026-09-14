@@ -6,6 +6,7 @@ import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
 import Composer from '../components/Composer.jsx';
 import Historias from '../components/Historias.jsx';
+import { SugerenciasPersonas } from '../components/Sugerencias.jsx';
 import { useAuth } from '../auth.jsx';
 import Avatar from '../components/Avatar.jsx';
 import { realtime } from '../realtime.js';
@@ -126,12 +127,15 @@ export default function FeedView() {
       {loading ? <div className="spinner" /> : null}
 
       {!loading && posts.length === 0 ? (
-        <div className="card empty">
-          <div className="moon-emoji">🌙</div>
-          <h3>Sin publicaciones todavía</h3>
-          <p>Sigue a personas para llenar tu feed, o publica algo tú mismo.</p>
-          <a className="btn" href="#/explore">Explorar</a>
-        </div>
+        <>
+          <div className="card empty">
+            <div className="moon-emoji">🌙</div>
+            <h3>Sin publicaciones todavía</h3>
+            <p>Sigue a personas para llenar tu feed, o publica algo tú mismo.</p>
+            <a className="btn btn-aurora" href="#/explore">Explorar</a>
+          </div>
+          <SugerenciasPersonas />
+        </>
       ) : null}
 
       {posts.map((post) => (

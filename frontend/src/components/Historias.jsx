@@ -229,9 +229,13 @@ export default function Historias({ onNovedad }) {
   if (!user) return null;
   const mia = grupos.find((g) => g.mine);
 
+  // Sin historias de otras personas la fila sería un hueco enorme con un solo
+  // círculo: en ese caso se dibuja como franja compacta, no como tarjeta alta.
+  const sola = grupos.length === 0;
+
   return (
     <>
-      <section className="historias" aria-label="Historias">
+      <section className={`historias${sola ? ' historias-sola' : ''}`} aria-label="Historias">
         <button
           type="button"
           className="historia crear"
