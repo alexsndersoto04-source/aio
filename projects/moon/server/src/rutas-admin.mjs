@@ -6,7 +6,9 @@
 import { ApiErr, texto, paginacion, qs, booleano } from './util.mjs';
 import { uno } from './db.mjs';
 import { auditar } from './db.mjs';
+import { volcarBase, copiaPorCorreo } from './copias.mjs';
 import { enviarA } from './ws.mjs';
+import { demasiadoRapido } from './limites.mjs';
 
 export function registrarRutasAdmin(router) {
   router.get('/api/admin/dashboard', async (c) => {
@@ -131,6 +133,34 @@ export function registrarRutasAdmin(router) {
     await c.pool.query('UPDATE users SET role = $1 WHERE id = $2', [rol, Number(c.params.id)]);
     await auditar(c.pool, Number(admin.id), 'rol_cambiado', `#${c.params.id} → ${rol}`, c.ip);
     return { ok: true, role: rol };
+  });
+
+  // ---------- Copias de seguridad ----------
+  // El plan gratuito de la base de datos no hace copias: aquí se pueden
+  // descargar a mano (y una vez al día se envían solas por correo).
+  router.get('/api/admin/backup', async (c) => {
+    await c.admin();
+    if (demasiadoRapido(`copia:${c.ip || 'x'}`, 3, 600_000)) {
+      throw new ApiErr('Se pidieron varias copias seguidas: espera unos minutos', 429, 'rate_limit');
+    }
+    const copia = await volcarBase(c.pool);
+    const cuerpo = Buffer.from(JSON.stringify(copia, null, 2), 'utf8');
+    c.res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="copia-moon-${copia.fecha.slice(0, 10)}.json"`,
+      'Content-Length': cuerpo.length,
+      'Cache-Control': 'no-store',
+    });
+    c.res.end(cuerpo);
+    await auditar(c.pool, null, 'copia_descargada', `${Math.round(cuerpo.length / 1024)} KB`, c.ip);
+    return undefined;
+  });
+
+  router.post('/api/admin/backup/correo', async (c) => {
+    await c.admin();
+    const r = await copiaPorCorreo(c.pool);
+    if (!r.enviada) throw new ApiErr(r.motivo || 'No se pudo enviar la copia', 400);
+    return { ok: true, enviadas: r.enviadas, resumen: r.resumen };
   });
 
   // ---------- Reportes ----------

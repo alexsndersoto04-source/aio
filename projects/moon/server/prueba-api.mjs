@@ -366,6 +366,75 @@ await pedir('DELETE', `/api/users/${beto.user.id}/block`, { token: tokenA });
 const sinBloqueos = await pedir('GET', '/api/me/blocked', { token: tokenA });
 comprobar('desbloquear deja la lista vacía', Array.isArray(sinBloqueos) && sinBloqueos.length === 0, JSON.stringify(sinBloqueos));
 
+// ---------- Encuestas ----------
+const conEncuesta = await pedir('POST', '/api/posts', {
+  token: tokenA,
+  cuerpo: {
+    content: `¿Qué hacemos el sábado? #encuesta${sufijo}`,
+    poll: { pregunta: '¿Qué preparamos?', opciones: ['Pizza', 'Sushi', 'Asado'], horas: 24 },
+  },
+});
+comprobar(
+  'la publicación con encuesta trae sus opciones',
+  Array.isArray(conEncuesta.poll?.opciones) && conEncuesta.poll.opciones.length === 3 && conEncuesta.poll.total === 0,
+  JSON.stringify(conEncuesta.poll).slice(0, 140)
+);
+const votada = await pedir('POST', `/api/posts/${conEncuesta.id}/vote`, { token: tokenB, cuerpo: { opcion: 1 } });
+comprobar(
+  'votar suma el voto y lo marca como mío',
+  votada.poll?.total === 1 && votada.poll.mi_voto.includes(1) && votada.poll.opciones[1].porcentaje === 100,
+  JSON.stringify(votada.poll).slice(0, 160)
+);
+const revotada = await pedir('POST', `/api/posts/${conEncuesta.id}/vote`, { token: tokenB, cuerpo: { opcion: 0 } });
+comprobar(
+  'cambiar el voto no duplica (una sola respuesta)',
+  revotada.poll?.total === 1 && revotada.poll.mi_voto.includes(0) && revotada.poll.opciones[1].votos === 0,
+  JSON.stringify(revotada.poll).slice(0, 160)
+);
+const votoMalo = await pedir('POST', `/api/posts/${conEncuesta.id}/vote`, { token: tokenA, cuerpo: { opcion: 9 }, crudo: true });
+comprobar('una opción que no existe se rechaza', votoMalo.estado === 400, String(votoMalo.estado));
+
+// ---------- Avisos al teléfono ----------
+const llavePush = await pedir('GET', '/api/push/public-key', { token: tokenA });
+comprobar('el servidor entrega la llave de los avisos', typeof llavePush.key === 'string' && llavePush.key.length > 20, JSON.stringify(llavePush).slice(0, 80));
+const suscripcion = await pedir('POST', '/api/push/subscribe', {
+  token: tokenA,
+  cuerpo: { endpoint: `https://ejemplo.test/${sufijo}`, keys: { p256dh: 'p'.repeat(40), auth: 'a'.repeat(20) } },
+});
+comprobar('el dispositivo queda registrado', suscripcion.ok === true && suscripcion.dispositivos >= 1, JSON.stringify(suscripcion));
+const estadoPush = await pedir('GET', '/api/push/estado', { token: tokenA });
+comprobar('el estado dice cuántos dispositivos hay', estadoPush.dispositivos >= 1, JSON.stringify(estadoPush));
+await pedir('DELETE', '/api/push/subscribe', { token: tokenA, cuerpo: {} });
+const trasBorrar = await pedir('GET', '/api/push/estado', { token: tokenA });
+comprobar('al desactivar quedan cero dispositivos', trasBorrar.dispositivos === 0, JSON.stringify(trasBorrar));
+
+// ---------- Copias de seguridad ----------
+if (esAdmin) {
+  const copia = await pedir('GET', '/api/admin/backup', { token: tokenA, crudo: true });
+  comprobar(
+    'el administrador puede descargar la copia',
+    copia.estado === 200 && String(copia.texto || '').includes('"app": "moon"'),
+    `estado ${copia.estado}`
+  );
+} else {
+  const copiaSinPermiso = await pedir('GET', '/api/admin/backup', { token: tokenA, crudo: true });
+  comprobar('quien no es administrador no puede descargar la copia', copiaSinPermiso.estado === 403, String(copiaSinPermiso.estado));
+}
+
+// ---------- Imágenes dentro de la base de datos ----------
+const subidaImagen = await pedir('POST', '/api/upload', {
+  token: tokenA,
+  cuerpo: (() => {
+    const fd = new FormData();
+    fd.append('name', 'post');
+    fd.append('file', new Blob([Buffer.from('PNG-falso-de-prueba')], { type: 'image/png' }), 'prueba.png');
+    return fd;
+  })(),
+});
+comprobar('la imagen se sube y devuelve dirección', /^\/api\/media\//.test(String(subidaImagen.url || '')), JSON.stringify(subidaImagen).slice(0, 120));
+const imagenServida = await pedir('GET', String(subidaImagen.url || '/api/media/x'), { token: tokenA, crudo: true });
+comprobar('la imagen se entrega (guardada en la base de datos)', imagenServida.estado === 200, `estado ${imagenServida.estado}`);
+
 // ---------- Bloqueo ----------
 await pedir('POST', `/api/users/${beto.user.id}/block`, { token: tokenA, cuerpo: {} });
 const perfilBloqueado = await pedir('GET', `/api/users/${beto.user.id}`, { token: tokenA, crudo: true });

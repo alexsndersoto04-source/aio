@@ -21,7 +21,11 @@ import { registrarRutasAdmin } from './rutas-admin.mjs';
 import { registrarRutasMedia } from './rutas-media.mjs';
 import { registrarRutasHistorias } from './rutas-historias.mjs';
 import { registrarRutasGrupos } from './rutas-grupos.mjs';
+import { registrarRutasPush } from './rutas-push.mjs';
 import { montarWs, conectados } from './ws.mjs';
+import { importarDelDisco } from './medios.mjs';
+import { programarCopiaDiaria } from './copias.mjs';
+import { correoConfigurado, viaDeCorreo } from './correo.mjs';
 import { demasiadoRapido } from './limites.mjs';
 import { servirWeb, estadoWeb } from './estatico.mjs';
 import { ApiErr } from './util.mjs';
@@ -127,6 +131,7 @@ registrarRutasAdmin(router);
 registrarRutasMedia(router);
 registrarRutasHistorias(router);
 registrarRutasGrupos(router);
+registrarRutasPush(router);
 
 // Salud (pública) y métricas (solo administración).
 router.get('/api/health', async (c) => {
@@ -136,7 +141,21 @@ router.get('/api/health', async (c) => {
   } catch {
     bd = false;
   }
-  return { status: bd ? 'ok' : 'degraded', app: 'moon', time: new Date().toISOString(), db: bd };
+  // Si las imágenes viven en la base de datos (lo normal), se informa: es lo
+  // que garantiza que las fotos no se pierdan al reiniciar.
+  let fotosEnBase = null;
+  try {
+    const r = await c.pool.query('SELECT COUNT(*)::int AS n FROM media_blobs');
+    fotosEnBase = Number(r.rows[0]?.n || 0);
+  } catch { fotosEnBase = null; }
+  return {
+    status: bd ? 'ok' : 'degraded',
+    app: 'moon',
+    time: new Date().toISOString(),
+    db: bd,
+    fotos_en_base: fotosEnBase,
+    correo: correoConfigurado() ? viaDeCorreo() : 'sin configurar',
+  };
 });
 
 router.get('/api/metrics', async (c) => {
@@ -154,6 +173,11 @@ router.get('/api/metrics', async (c) => {
     totales: r.rows[0],
   };
 });
+
+// Las fotos que quedaran en el disco se pasan a la base de datos (una vez).
+importarDelDisco(pool).catch(() => {});
+// Copia de seguridad diaria por correo (si hay correo configurado).
+programarCopiaDiaria(pool, Number(process.env.MOON_BACKUP_HORA || 4));
 
 const aplicarCors = cors(ORIGENES);
 const alError = manejadorErrores;

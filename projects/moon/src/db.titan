@@ -66,6 +66,24 @@ fn db_migrations() -> array {
     // despliegue nuevo nunca pierden el contenido de la gente.
     let m18 = mx_build(18, "media_en_base_de_datos", "ALTER TABLE media ADD COLUMN IF NOT EXISTS original_data BYTEA; ALTER TABLE media ADD COLUMN IF NOT EXISTS mime TEXT NOT NULL DEFAULT 'image/jpeg'")
     list = std::array::push(list, m18)
+    // Los bytes de cada imagen, en su propia tabla (`media_blobs`), ya
+    // reducidos y girados al subirlos: así la ficha de `media` sigue ligera y
+    // una foto de teléfono no se come la base de datos gratuita.
+    let m19 = mx_build(19, "create_media_blobs", "CREATE TABLE IF NOT EXISTS media_blobs (media_id BIGINT PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE, mime TEXT NOT NULL DEFAULT 'image/jpeg', bytes BYTEA NOT NULL, ancho BIGINT NOT NULL DEFAULT 0, alto BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX IF NOT EXISTS ix_media_url ON media (url); CREATE INDEX IF NOT EXISTS ix_media_blobs_fecha ON media_blobs (created_at DESC)")
+    list = std::array::push(list, m19)
+    // Ajustes del servidor que deben sobrevivir a los reinicios (por ejemplo
+    // las llaves de los avisos al teléfono, que se generan solas la primera
+    // vez y no hay que configurar a mano).
+    let m20 = mx_build(20, "create_app_settings", "CREATE TABLE IF NOT EXISTS app_settings (clave TEXT PRIMARY KEY, valor TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+    list = std::array::push(list, m20)
+    // Suscripciones a los avisos del teléfono (Web Push): un registro por
+    // dispositivo, para poder avisar aunque la aplicación esté cerrada.
+    let m21 = mx_build(21, "create_push_subscriptions", "CREATE TABLE IF NOT EXISTS push_subscriptions (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL, device TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_ok_at TIMESTAMPTZ, last_error TEXT NOT NULL DEFAULT ''); CREATE INDEX IF NOT EXISTS ix_push_user ON push_subscriptions (user_id)")
+    list = std::array::push(list, m21)
+    // Encuestas: una pregunta con opciones dentro de una publicación, con los
+    // votos de cada persona. Se cierra sola al llegar la fecha.
+    let m22 = mx_build(22, "create_polls", "CREATE TABLE IF NOT EXISTS polls (post_id BIGINT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE, pregunta TEXT NOT NULL DEFAULT '', opciones JSONB NOT NULL DEFAULT '[]'::jsonb, multiple BOOLEAN NOT NULL DEFAULT FALSE, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE TABLE IF NOT EXISTS poll_votes (post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, opcion BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (post_id, user_id, opcion)); CREATE INDEX IF NOT EXISTS ix_poll_votes_post ON poll_votes (post_id)")
+    list = std::array::push(list, m22)
     list
 }
 

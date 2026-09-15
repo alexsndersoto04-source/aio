@@ -1,18 +1,112 @@
 // Moon — Panel de administración (moderación real)
 
-import React, { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import React, { useEffect, useRef, useState } from 'react';
+import { api, getAccessToken, API_URL } from '../api.js';
 import { toast, confirmar, pedirTexto, avisoError } from '../ui.js';
 import { useAuth } from '../auth.jsx';
 import Avatar from '../components/Avatar.jsx';
+import { IconShield, IconBell, IconCheck } from '../components/Icons.jsx';
 import { timeAgo } from '../utils.js';
 
 const STATUS_PILL = { active: 'ok', suspended: 'err', deleted: 'info' };
 const REPORT_PILL = { open: 'warn', resolved: 'ok', dismissed: 'info' };
 
+function SeccionCopias() {
+  const [busy, setBusy] = useState('');
+  const [hechas, setHechas] = useState([]);
+
+  async function descargar() {
+    setBusy('descargar');
+    try {
+      const res = await fetch(`${API_URL}/api/admin/backup`, {
+        headers: { Authorization: `Bearer ${getAccessToken()}` },
+      });
+      if (!res.ok) throw new Error('El servidor no pudo preparar la copia');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `copia-moon-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setHechas((l) => [new Date().toLocaleString('es-VE'), ...l].slice(0, 5));
+      toast.ok('Copia descargada. Guárdala en un sitio seguro.');
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function porCorreo() {
+    const ok = await confirmar({
+      title: '¿Enviar la copia por correo?',
+      message: 'Se enviará el archivo completo a los correos de administración.',
+      confirmText: 'Enviar',
+    });
+    if (!ok) return;
+    setBusy('correo');
+    try {
+      const r = await api.post('/api/admin/backup/correo', {});
+      toast.ok(`Copia enviada a ${r.enviadas} correo(s)`);
+      setHechas((l) => [new Date().toLocaleString('es-VE') + ' (correo)', ...l].slice(0, 5));
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <>
+      <div className="card ajustes-bloque">
+        <div className="titulo">Copia de seguridad</div>
+        <div className="fila-ajuste">
+          <span className="icono"><IconShield /></span>
+          <span className="texto">
+            <b>Descargar todo ahora</b>
+            <small>Un archivo con usuarios, publicaciones, comentarios, mensajes, grupos y estadísticas. Las contraseñas nunca se incluyen.</small>
+          </span>
+          <button className="btn btn-primary btn-sm" onClick={descargar} disabled={busy === 'descargar'}>
+            {busy === 'descargar' ? 'Preparando…' : 'Descargar'}
+          </button>
+        </div>
+        <div className="fila-ajuste">
+          <span className="icono"><IconBell /></span>
+          <span className="texto">
+            <b>Enviarla a mi correo</b>
+            <small>Llega como archivo adjunto a las cuentas de administración. Todos los días a las 4 de la mañana se envía sola (si el correo está configurado).</small>
+          </span>
+          <button className="btn btn-outline btn-sm" onClick={porCorreo} disabled={busy === 'correo'}>
+            {busy === 'correo' ? 'Enviando…' : 'Enviar por correo'}
+          </button>
+        </div>
+        {hechas.length > 0 ? (
+          <div className="fila-ajuste">
+            <span className="icono"><IconCheck /></span>
+            <span className="texto">
+              <b>Últimas copias de esta sesión</b>
+              <small>{hechas.join(' · ')}</small>
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 export default function AdminView({ tab }) {
   const { isAdmin } = useAuth();
   const [section, setSection] = useState(tab || 'dashboard');
+  const migas = useRef(null);
+
+  // La pestaña activa se trae a la vista (en el teléfono hay que deslizar).
+  useEffect(() => {
+    const activa = migas.current?.querySelector('button.active');
+    if (activa && activa.scrollIntoView) {
+      activa.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    }
+  }, [section]);
 
   if (!isAdmin) {
     return <div className="card empty"><h3>Acceso restringido</h3><p>Necesitas rol de administrador.</p></div>;
@@ -21,8 +115,8 @@ export default function AdminView({ tab }) {
   return (
     <>
       <div className="topbar"><h1>Panel de administración</h1></div>
-      <div className="tabs">
-        {[['dashboard', 'Resumen'], ['users', 'Usuarios'], ['reports', 'Reportes'], ['words', 'Palabras'], ['activity', 'Actividad']].map(([id, label]) => (
+      <div className="tabs" ref={migas}>
+        {[['dashboard', 'Resumen'], ['users', 'Usuarios'], ['reports', 'Reportes'], ['words', 'Palabras'], ['activity', 'Actividad'], ['copias', 'Copias']].map(([id, label]) => (
           <button key={id} className={section === id ? 'active' : ''} onClick={() => setSection(id)}>{label}</button>
         ))}
       </div>
@@ -31,6 +125,7 @@ export default function AdminView({ tab }) {
       {section === 'reports' ? <ReportsAdmin /> : null}
       {section === 'words' ? <WordsAdmin /> : null}
       {section === 'activity' ? <ActivityAdmin /> : null}
+      {section === 'copias' ? <SeccionCopias /> : null}
     </>
   );
 }

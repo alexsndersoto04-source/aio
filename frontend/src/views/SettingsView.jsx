@@ -20,8 +20,10 @@ import {
   IconTrash, IconUser, IconShield, IconBell, IconLayers, IconLock, IconSettings,
   IconCheck, IconAlert, IconWarning, IconInfo, IconSun, IconMoon, IconRefresh,
   IconGrid, IconCamera, IconAt, IconMapPin, IconLink, IconEye, IconBan, IconSpark,
+  IconMail,
 } from '../components/Icons.jsx';
 import { toast, confirmar, avisoError } from '../ui.js';
+import { soportaAvisos, activarAvisos, desactivarAvisos, estadoAvisos, esIOS, instalada } from '../push.js';
 
 const SECCIONES = [
   { id: 'perfil', label: 'Perfil', icono: <IconUser /> },
@@ -115,6 +117,52 @@ export default function SettingsView({ tab }) {
   // Acerca de
   const [salud, setSalud] = useState(null);
 
+  // Avisos al teléfono
+  const [push, setPush] = useState(null);
+  const [pushBusy, setPushBusy] = useState(false);
+
+  async function refrescarPush() {
+    try { setPush(await estadoAvisos()); } catch { setPush(null); }
+  }
+
+  async function encenderAvisos() {
+    setPushBusy(true);
+    try {
+      const r = await activarAvisos();
+      toast.ok(`Avisos activados en este dispositivo (${r.dispositivos})`);
+      await refrescarPush();
+    } catch (e) {
+      toast.err(e.message || 'No se pudieron activar los avisos');
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function apagarAvisos() {
+    setPushBusy(true);
+    try {
+      await desactivarAvisos();
+      toast.ok('Avisos apagados en este dispositivo');
+      await refrescarPush();
+    } catch (e) {
+      toast.err(e.message || 'No se pudieron apagar los avisos');
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function probarAviso() {
+    setPushBusy(true);
+    try {
+      await api.post('/api/push/test', {});
+      toast.ok('Aviso de prueba enviado: mira la barra de tu teléfono');
+    } catch (e) {
+      toast.err(e.message || 'No se pudo enviar la prueba');
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
   useEffect(() => {
     api.get('/api/auth/me').then((u) => { setMe(u); setForm({ display_name: u.display_name || '', bio: u.bio || '', link: u.link || '', location: u.location || '' }); }).catch(() => {});
     api.get('/api/auth/sessions').then(setSessions).catch(() => {});
@@ -122,6 +170,7 @@ export default function SettingsView({ tab }) {
     api.get('/api/notifications/prefs').then(setPrefs).catch(() => setPrefs(null));
     api.get('/api/me/blocked').then(setBloqueados).catch(() => setBloqueados([]));
     api.get('/api/health').then(setSalud).catch(() => setSalud(null));
+    refrescarPush();
   }, []);
 
   useEffect(() => { if (user) setMe(user); }, [user]);
@@ -291,12 +340,6 @@ export default function SettingsView({ tab }) {
       await api.del('/api/auth/account', { body: { password: contrasena } });
       await logout();
     } catch (err) { flash('err', err.message); }
-  }
-
-  async function pedirNotificaciones() {
-    if (!('Notification' in window)) { flash('err', 'Este navegador no admite avisos del sistema'); return; }
-    const permiso = await Notification.requestPermission();
-    flash(permiso === 'granted' ? 'ok' : 'err', permiso === 'granted' ? 'Avisos del sistema activados' : 'No se concedió el permiso');
   }
 
   // ---- Apariencia: cada cambio se aplica al instante y se recuerda ----
@@ -508,19 +551,59 @@ export default function SettingsView({ tab }) {
           </div>
 
           <div className="card ajustes-bloque">
+            <div className="titulo">Avisos al teléfono</div>
+            {push === null ? <div className="spinner" /> : null}
+            {push ? (
+              <>
+                <div className="fila-ajuste">
+                  <span className="icono"><IconBell /></span>
+                  <span className="texto">
+                    <b>{push.dispositivoActivo ? 'Activados en este dispositivo' : 'Apagados en este dispositivo'}</b>
+                    <small>
+                      {push.dispositivoActivo
+                        ? 'Te llegan aunque Moon esté cerrada.'
+                        : push.permiso === 'denied'
+                          ? 'El navegador tiene bloqueados los avisos para Moon. Actívalos en los ajustes del navegador.'
+                          : 'Actívalos para que te lleguen los mensajes sin abrir Moon.'}
+                      {push.dispositivos > 0 ? ` · ${push.dispositivos} dispositivo(s) conectados` : ''}
+                    </small>
+                  </span>
+                  {!soportaAvisos() ? (
+                    <span className="btn-ghost btn-sm">No disponible</span>
+                  ) : push.dispositivoActivo ? (
+                    <button className="btn btn-outline btn-sm" onClick={apagarAvisos} disabled={pushBusy}>Apagar</button>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={encenderAvisos} disabled={pushBusy}>
+                      {pushBusy ? 'Activando…' : 'Activar'}
+                    </button>
+                  )}
+                </div>
+                {push.dispositivoActivo ? (
+                  <div className="fila-ajuste">
+                    <span className="icono"><IconCheck /></span>
+                    <span className="texto"><b>Probar el aviso</b><small>Manda un aviso ahora mismo a tus dispositivos.</small></span>
+                    <button className="btn btn-outline btn-sm" onClick={probarAviso} disabled={pushBusy}>Enviar prueba</button>
+                  </div>
+                ) : null}
+                {push.ios && !push.instalada ? (
+                  <div className="fila-ajuste">
+                    <span className="icono"><IconInfo /></span>
+                    <span className="texto">
+                      <b>En iPhone hace falta instalarla</b>
+                      <small>Compartir → «Añadir a pantalla de inicio», ábrela desde el ícono y activa aquí los avisos.</small>
+                    </span>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+
+          <div className="card ajustes-bloque">
             <div className="titulo">En este dispositivo</div>
             <div className="fila-ajuste">
               <span className="icono"><IconSpark /></span>
               <span className="texto"><b>Sonido de aviso</b><small>Un tono corto cuando llega un mensaje con Moon abierto.</small></span>
               <Interruptor activo={sonido === 'si'} onChange={(v) => cambiarSonido(v ? 'si' : 'no')} etiqueta="Sonido de aviso" />
-            </div>
-            <div className="fila-ajuste">
-              <span className="icono"><IconBell /></span>
-              <span className="texto">
-                <b>Avisos del sistema</b>
-                <small>Avisos del navegador cuando no tienes Moon delante.</small>
-              </span>
-              <button className="btn btn-outline btn-sm" onClick={pedirNotificaciones}>Activar</button>
             </div>
           </div>
         </>
@@ -719,7 +802,25 @@ export default function SettingsView({ tab }) {
             </div>
             <div className="fila-ajuste">
               <span className="icono"><IconCheck /></span>
-              <span className="texto"><b>Lo que puedes hacer</b><small>Publicar con fotos, historias de 24 h, grupos, mensajes con reacciones, guardados, avisos y moderación.</small></span>
+              <span className="texto"><b>Lo que puedes hacer</b><small>Publicar con fotos y encuestas, historias de 24 h, grupos, mensajes con reacciones, guardados, avisos y moderación.</small></span>
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconLayers /></span>
+              <span className="texto">
+                <b>Fotos guardadas a salvo</b>
+                <small>
+                  {salud?.fotos_en_base === null || salud?.fotos_en_base === undefined
+                    ? 'Comprobando…'
+                    : `${salud.fotos_en_base} imágenes dentro de la base de datos (no se pierden al reiniciar).`}
+                </small>
+              </span>
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconMail /></span>
+              <span className="texto">
+                <b>Correo</b>
+                <small>{salud?.correo && salud.correo !== 'sin configurar' ? `Configurado (${salud.correo})` : 'Sin configurar: no salen los correos de recuperación ni la copia diaria.'}</small>
+              </span>
             </div>
             <div className="fila-ajuste">
               <span className="icono"><IconAlert /></span>

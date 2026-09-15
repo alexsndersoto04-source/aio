@@ -5,12 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Moon — red social</title>
     <meta name="description" content="Moon — una red social real: publicaciones, fotos, mensajes en vivo y más." />
-    <meta name="theme-color" content="#f6f6f4" />
+    <meta name="theme-color" content="#0a0a17" />
+    <meta name="color-scheme" content="light dark" />
     <!-- PWA: instalable en el teléfono como aplicación propia -->
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/icono-192.png" />
+    <link rel="apple-touch-icon" href="/iconos/icono-180.png" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Moon" />
     <!-- Tarjeta al compartir enlaces (__ORIGEN__ lo completa el servidor) -->
     <meta property="og:type" content="website" />
@@ -35,6 +37,8 @@
           r.dataset.texto = (t === 'grande' || t === 'enorme') ? t : 'normal';
           r.dataset.movimiento = localStorage.getItem('moon_movimiento') === 'no' ? 'no' : 'si';
           r.dataset.denso = localStorage.getItem('moon_denso') === 'si' ? 'si' : 'no';
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', oscuro ? '#0a0a17' : '#eef1fb');
         } catch (e) { /* sin almacenamiento: se queda el tema claro */ }
       })();
     </script>

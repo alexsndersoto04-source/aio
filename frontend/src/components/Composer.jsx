@@ -9,7 +9,7 @@ import { api, uploadMedia, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { toast, avisoError } from '../ui.js';
 import Avatar from './Avatar.jsx';
-import { IconImage, IconX, IconSend } from './Icons.jsx';
+import { IconImage, IconX, IconSend, IconTrend } from './Icons.jsx';
 
 const MAX_CHARS = 2000;
 const MAX_IMAGENES = 4;
@@ -21,6 +21,8 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
   const [enviando, setEnviando] = useState(false);
   const [subiendo, setSubiendo] = useState(0);
   const [arrastrando, setArrastrando] = useState(false);
+  // Encuesta opcional: una pregunta con dos a cuatro respuestas.
+  const [encuesta, setEncuesta] = useState(null); // null = sin encuesta
   const area = useRef(null);
   const archivos = useRef(null);
 
@@ -70,15 +72,21 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
 
   async function publicar() {
     const texto = contenido.trim();
-    if ((!texto && imagenes.length === 0) || enviando) return;
+    const opciones = encuesta ? encuesta.opciones.map((o) => o.trim()).filter(Boolean) : [];
+    const hayEncuesta = !!encuesta && opciones.length >= 2;
+    if ((!texto && imagenes.length === 0 && !hayEncuesta) || enviando) return;
     setEnviando(true);
     try {
       const creado = await api.post(destino, {
         content: texto,
         images: imagenes.map((i) => i.id),
+        poll: hayEncuesta
+          ? { pregunta: (encuesta.pregunta || '').trim(), opciones, horas: encuesta.horas }
+          : undefined,
       });
       setContenido('');
       setImagenes([]);
+      setEncuesta(null);
       toast.ok('Publicación creada');
       if (onCreated) onCreated(creado);
     } catch (e) {
@@ -91,7 +99,8 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
   const usados = contenido.length;
   const pct = Math.min(100, Math.round((usados / MAX_CHARS) * 100));
   const nivel = pct >= 100 ? 'danger' : pct >= 85 ? 'warn' : '';
-  const puede = (contenido.trim().length > 0 || imagenes.length > 0) && !enviando && usados <= MAX_CHARS;
+  const opcionesOk = encuesta ? encuesta.opciones.map((o) => o.trim()).filter(Boolean).length >= 2 : false;
+  const puede = (contenido.trim().length > 0 || imagenes.length > 0 || opcionesOk) && !enviando && usados <= MAX_CHARS;
 
   return (
     <div
@@ -137,6 +146,77 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
           </div>
         ) : null}
 
+        {encuesta ? (
+          <div className="composer-encuesta">
+            <div className="cabecera-encuesta">
+              <b>Encuesta</b>
+              <button type="button" className="icon-btn" onClick={() => setEncuesta(null)} aria-label="Quitar la encuesta">
+                <IconX />
+              </button>
+            </div>
+            <input
+              className="input"
+              placeholder="Escribe la pregunta"
+              value={encuesta.pregunta}
+              maxLength={160}
+              aria-label="Pregunta de la encuesta"
+              onChange={(e) => setEncuesta({ ...encuesta, pregunta: e.target.value })}
+            />
+            {encuesta.opciones.map((o, i) => (
+              <div className="fila-opcion" key={i}>
+                <input
+                  className="input"
+                  placeholder={`Respuesta ${i + 1}`}
+                  value={o}
+                  maxLength={80}
+                  aria-label={`Respuesta ${i + 1}`}
+                  onChange={(e) => {
+                    const copia = [...encuesta.opciones];
+                    copia[i] = e.target.value;
+                    setEncuesta({ ...encuesta, opciones: copia });
+                  }}
+                />
+                {encuesta.opciones.length > 2 ? (
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label={`Quitar la respuesta ${i + 1}`}
+                    onClick={() => setEncuesta({ ...encuesta, opciones: encuesta.opciones.filter((_, j) => j !== i) })}
+                  >
+                    <IconX />
+                  </button>
+                ) : null}
+              </div>
+            ))}
+            <div className="pie-encuesta-redactor">
+              {encuesta.opciones.length < 4 ? (
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  onClick={() => setEncuesta({ ...encuesta, opciones: [...encuesta.opciones, ''] })}
+                >
+                  + Añadir respuesta
+                </button>
+              ) : null}
+              <span className="spacer" />
+              <label className="duracion">
+                Dura
+                <select
+                  className="select"
+                  value={encuesta.horas}
+                  aria-label="Duración de la encuesta"
+                  onChange={(e) => setEncuesta({ ...encuesta, horas: Number(e.target.value) })}
+                >
+                  <option value={6}>6 horas</option>
+                  <option value={24}>1 día</option>
+                  <option value={72}>3 días</option>
+                  <option value={168}>7 días</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        ) : null}
+
         <div className="composer-tools">
           <input
             ref={archivos}
@@ -155,6 +235,18 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
             aria-label="Añadir imágenes"
           >
             <IconImage />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn${encuesta ? ' activo' : ''}`}
+            onClick={() => setEncuesta(encuesta
+              ? null
+              : { pregunta: '', opciones: ['', ''], horas: 24 })}
+            title={encuesta ? 'Quitar la encuesta' : 'Añadir una encuesta'}
+            aria-label={encuesta ? 'Quitar la encuesta' : 'Añadir una encuesta'}
+            aria-pressed={!!encuesta}
+          >
+            <IconTrend />
           </button>
           {subiendo > 0 ? <span className="muted" style={{ fontSize: 13 }}>Subiendo {subiendo}…</span> : null}
           {arrastrando ? <span className="muted" style={{ fontSize: 13 }}>Suelta las imágenes aquí</span> : null}

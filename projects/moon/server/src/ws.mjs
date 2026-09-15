@@ -8,6 +8,7 @@
 import { WebSocketServer } from 'ws';
 import { verificarJwt } from './auth.mjs';
 import { uno } from './db.mjs';
+import { empujarSiQuiere } from './empuje.mjs';
 
 const conexiones = new Map(); // userId -> Set(socket)
 
@@ -165,6 +166,24 @@ export async function notificar(pool, { userId, tipo, deUserId, postId = null, c
     [userId, tipo, deUserId, postId, commentId, contenido]
   );
   const de = await uno(pool, 'SELECT username, display_name, avatar_url FROM users WHERE id = $1', [deUserId]);
+
+  // Aviso al teléfono: llega aunque Moon esté cerrado.
+  const textos = {
+    follow: `${de?.display_name || de?.username || 'Alguien'} empezó a seguirte`,
+    like: `${de?.display_name || de?.username || 'Alguien'} reaccionó a tu publicación`,
+    comment: `${de?.display_name || de?.username || 'Alguien'} comentó tu publicación`,
+    reply: `${de?.display_name || de?.username || 'Alguien'} respondió tu comentario`,
+    mention: `${de?.display_name || de?.username || 'Alguien'} te mencionó`,
+    system: 'Tienes un aviso nuevo en Moon',
+  };
+  const destino = postId ? `#/post/${postId}` : tipo === 'follow' ? `#/user/${deUserId}` : '#/notifications';
+  empujarSiQuiere(pool, userId, clave, {
+    titulo: 'Moon',
+    texto: contenido || textos[tipo] || 'Tienes algo nuevo en Moon',
+    url: destino,
+    etiqueta: `${tipo}-${creada.id}`,
+  }).catch(() => {});
+
   enviarA(userId, {
     type: 'notification',
     notification: {

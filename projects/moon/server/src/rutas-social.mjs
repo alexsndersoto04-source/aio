@@ -25,6 +25,12 @@ export const SQL_POST = `
 
 const SQL_IMAGENES = 'SELECT id, post_id, original_url, thumb_url, position FROM post_images WHERE post_id = ANY($1::bigint[]) ORDER BY position';
 
+export async function conContenido(pool, filas, yoId) {
+  const conIm = await conImagenes(pool, filas);
+  await marcarConEncuesta(pool, conIm);
+  return conEncuestas(pool, conIm, yoId);
+}
+
 export async function conImagenes(pool, filas) {
   if (filas.length === 0) return filas;
   const ids = filas.map((f) => Number(f.id));
@@ -38,6 +44,56 @@ export async function conImagenes(pool, filas) {
   }
   for (const f of filas) f.images = porPost.get(Number(f.id)) || [];
   return filas;
+}
+
+/** Encuestas: se pegan a las publicaciones que las tengan, con sus votos. */
+export async function conEncuestas(pool, posts, yoId) {
+  const con = posts.filter((p) => p && p.poll);
+  if (con.length === 0) return posts;
+  const ids = posts.map((p) => Number(p.id));
+  const encuestas = (await pool.query(
+    `SELECT post_id, pregunta, opciones, multiple, ends_at, (ends_at IS NOT NULL AND ends_at < NOW()) AS cerrada
+       FROM polls WHERE post_id = ANY($1::bigint[])`,
+    [ids]
+  )).rows;
+  const votos = (await pool.query(
+    `SELECT post_id, opcion, COUNT(*)::int AS n FROM poll_votes WHERE post_id = ANY($1::bigint[]) GROUP BY post_id, opcion`,
+    [ids]
+  )).rows;
+  const mios = (await pool.query(
+    `SELECT post_id, opcion FROM poll_votes WHERE post_id = ANY($1::bigint[]) AND user_id = $2`,
+    [ids, yoId || 0]
+  )).rows;
+
+  const porPost = new Map();
+  for (const e of encuestas) {
+    const total = votos.filter((v) => Number(v.post_id) === Number(e.post_id)).reduce((n, v) => n + Number(v.n), 0);
+    const opciones = (Array.isArray(e.opciones) ? e.opciones : []).map((texto, i) => {
+      const n = Number(votos.find((v) => Number(v.post_id) === Number(e.post_id) && Number(v.opcion) === i)?.n || 0);
+      return { texto, votos: n, porcentaje: total > 0 ? Math.round((n / total) * 100) : 0 };
+    });
+    porPost.set(Number(e.post_id), {
+      pregunta: e.pregunta,
+      opciones,
+      multiple: !!e.multiple,
+      total,
+      cerrada: !!e.cerrada,
+      ends_at: e.ends_at ? String(e.ends_at) : null,
+      mi_voto: mios.filter((m) => Number(m.post_id) === Number(e.post_id)).map((m) => Number(m.opcion)),
+    });
+  }
+  for (const p of posts) p.poll = porPost.get(Number(p.id)) || null;
+  return posts;
+}
+
+/** Cuántas publicaciones tienen encuesta (se usa al listar). */
+async function marcarConEncuesta(pool, posts) {
+  if (posts.length === 0) return posts;
+  const ids = posts.map((p) => Number(p.id));
+  const con = (await pool.query('SELECT post_id FROM polls WHERE post_id = ANY($1::bigint[])', [ids])).rows;
+  const set = new Set(con.map((r) => Number(r.post_id)));
+  for (const p of posts) if (set.has(Number(p.id))) p.poll = true;
+  return posts;
 }
 
 export function aPublicacion(f, yo) {
@@ -93,7 +149,7 @@ export function registrarRutasSocial(router) {
         ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       args
     );
-    return conPagina(c, await conImagenes(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id))), Number(total?.count || 0), page, limit);
+    return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), Number(total?.count || 0), page, limit);
   });
 
   router.get('/api/feed/trending', async (c) => {
@@ -109,7 +165,7 @@ export function registrarRutasSocial(router) {
       "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND p.created_at > NOW() - INTERVAL '7 days'",
       [yo.id]
     );
-    return conPagina(c, await conImagenes(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id))), total, page, limit);
+    return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
   });
 
   router.get('/api/feed/latest', async (c) => {
@@ -120,7 +176,7 @@ export function registrarRutasSocial(router) {
       [yo.id]
     );
     const total = await contarPublicaciones(c.pool, "p.status = 'active' AND " + SQL_NO_BLOQUEADOS, [yo.id]);
-    return conPagina(c, await conImagenes(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id))), total, page, limit);
+    return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
   });
 
   // ---------- Publicaciones ----------
@@ -181,10 +237,29 @@ export function registrarRutasSocial(router) {
       });
     }
 
+    // Encuesta (opcional): una pregunta con dos a seis respuestas.
+    const encuesta = b.poll && typeof b.poll === 'object' ? b.poll : null;
+    if (encuesta) {
+      const pregunta = String(encuesta.pregunta || '').trim().slice(0, 160);
+      const opciones = (Array.isArray(encuesta.opciones) ? encuesta.opciones : [])
+        .map((o) => String(o || '').trim().slice(0, 80))
+        .filter(Boolean)
+        .slice(0, 6);
+      if (opciones.length >= 2) {
+        const horas = Math.min(168, Math.max(1, Number(encuesta.horas || 24)));
+        await c.pool.query(
+          `INSERT INTO polls (post_id, pregunta, opciones, multiple, ends_at)
+           VALUES ($1, $2, $3::jsonb, $4, NOW() + ($5 || ' hours')::interval)
+           ON CONFLICT (post_id) DO NOTHING`,
+          [creado.id, pregunta, JSON.stringify(opciones), !!encuesta.multiple, String(horas)]
+        );
+      }
+    }
+
     await sumarEstadistica(c.pool, 'new_posts');
     await auditar(c.pool, Number(yo.id), 'publicacion_creada', `#${creado.id}`, c.ip);
     const filas = await c.pool.query(`${SQL_POST} WHERE p.id = $2`, [yo.id, creado.id]);
-    const conIm = await conImagenes(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)));
+    const conIm = await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id);
     return conIm[0];
   });
 
@@ -193,8 +268,39 @@ export function registrarRutasSocial(router) {
     const yoId = yo ? Number(yo.id) : 0;
     const f = await fila(c.pool, `${SQL_POST} WHERE p.id = $2`, [yoId, Number(c.params.id)]);
     if (!f || f.status !== 'active') throw new ApiErr('Publicación no encontrada', 404);
-    const [conIm] = await conImagenes(c.pool, [aPublicacion(f, yoId)]);
+    const [conIm] = await conContenido(c.pool, [aPublicacion(f, yoId)], yoId);
     return conIm;
+  });
+
+  // Votar en una encuesta. Si es de una sola respuesta, el voto reemplaza al
+  // anterior; si es múltiple, se suma.
+  router.post('/api/posts/:id/vote', async (c) => {
+    const yo = await c.exigir();
+    const postId = Number(c.params.id);
+    const b = await c.cuerpo();
+    const opcion = Number(b.opcion);
+    if (!Number.isInteger(opcion) || opcion < 0) throw new ApiErr('Voto inválido', 400);
+
+    const encuesta = await uno(
+      c.pool,
+      `SELECT post_id, opciones, multiple, (ends_at IS NOT NULL AND ends_at < NOW()) AS cerrada FROM polls WHERE post_id = $1`,
+      [postId]
+    );
+    if (!encuesta) throw new ApiErr('Esta publicación no tiene encuesta', 404);
+    if (encuesta.cerrada) throw new ApiErr('La encuesta ya cerró', 400, 'poll_closed');
+    const total = Array.isArray(encuesta.opciones) ? encuesta.opciones.length : 0;
+    if (opcion >= total) throw new ApiErr('Esa opción no existe', 400);
+
+    if (!encuesta.multiple) {
+      await c.pool.query('DELETE FROM poll_votes WHERE post_id = $1 AND user_id = $2', [postId, yo.id]);
+    }
+    await c.pool.query(
+      'INSERT INTO poll_votes (post_id, user_id, opcion) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+      [postId, yo.id, opcion]
+    );
+    const fila2 = await uno(c.pool, `${SQL_POST} WHERE p.id = $2`, [Number(yo.id), postId]);
+    const [conTodo] = await conContenido(c.pool, [aPublicacion(fila2, yo.id)], yo.id);
+    return conTodo;
   });
 
   router.patch('/api/posts/:id', async (c) => {
@@ -207,7 +313,7 @@ export function registrarRutasSocial(router) {
     );
     if (r.rowCount === 0) throw new ApiErr('No puedes editar esta publicación', 404);
     const f = await fila(c.pool, `${SQL_POST} WHERE p.id = $2`, [yo.id, Number(c.params.id)]);
-    const [conIm] = await conImagenes(c.pool, [aPublicacion(f, yo.id)]);
+    const [conIm] = await conContenido(c.pool, [aPublicacion(f, yo.id)], yo.id);
     return conIm;
   });
 
@@ -252,7 +358,7 @@ export function registrarRutasSocial(router) {
       }
     }
     const f = await fila(c.pool, `${SQL_POST} WHERE p.id = $2`, [yo.id, postId]);
-    const [conIm] = await conImagenes(c.pool, [aPublicacion(f, yo.id)]);
+    const [conIm] = await conContenido(c.pool, [aPublicacion(f, yo.id)], yo.id);
     return conIm;
   }
 
@@ -404,7 +510,7 @@ export function registrarRutasSocial(router) {
     );
     return conPagina(
       c,
-      await conImagenes(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id))),
+      await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id),
       Number(total?.count || 0), page, limit
     );
   });
@@ -479,7 +585,7 @@ export function registrarRutasSocial(router) {
            ORDER BY p.created_at DESC LIMIT 40`,
         [yo.id, `%${consulta}%`, `%${consulta.replace(/^#/, '')}%`]
       );
-      return conImagenes(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)));
+      return conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id);
     }
 
     const filas = await c.pool.query(
@@ -512,7 +618,7 @@ export function registrarRutasSocial(router) {
     const total = await uno(c.pool, 'SELECT COUNT(*)::int AS count FROM saves WHERE user_id = $1', [yo.id]);
     return conPagina(
       c,
-      await conImagenes(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id))),
+      await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id),
       Number(total?.count || 0), page, limit
     );
   });
