@@ -91,6 +91,9 @@ fn db_migrations() -> array {
     // Notas de voz en los mensajes privados: la dirección del audio y lo que dura.
     let m24 = mx_build(24, "mensajes_con_audio", "ALTER TABLE messages ADD COLUMN IF NOT EXISTS audio_url TEXT NOT NULL DEFAULT ''; ALTER TABLE messages ADD COLUMN IF NOT EXISTS duracion_ms BIGINT NOT NULL DEFAULT 0")
     list = std::array::push(list, m24)
+    // 25 — Lo que cada quien decide de una conversación: silenciarla, archivarla u ocultarla.
+    let m25 = mx_build(25, "conversation_prefs", "CREATE TABLE IF NOT EXISTS conversation_prefs (conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, silenciada BOOLEAN NOT NULL DEFAULT FALSE, archivada BOOLEAN NOT NULL DEFAULT FALSE, oculta BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (conversation_id, user_id)); CREATE INDEX IF NOT EXISTS ix_conversation_prefs_usuario ON conversation_prefs (user_id)")
+    list = std::array::push(list, m25)
     list
 }
 

@@ -173,12 +173,26 @@ export default function ProfileView({ tab }) {
         <div className="row" style={{ gap: 8, padding: '12px 14px 2px', flexWrap: 'wrap' }}>
           <a className="btn btn-outline btn-sm" href="#/settings"><IconSettings /> Editar perfil</a>
           <button className="btn btn-outline btn-sm" onClick={compartirPerfil}><IconLink /> Compartir</button>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={async () => {
+              const enlace = `${window.location.origin}/#/user/${me?.username || me?.id || ''}`;
+              try {
+                await navigator.clipboard.writeText(enlace);
+                toast.ok('Enlace copiado');
+              } catch {
+                toast.info(enlace);
+              }
+            }}
+          >
+            <IconLink /> Copiar enlace
+          </button>
           <a className="btn btn-outline btn-sm" href="#/settings/apariencia">Apariencia</a>
           {isAdmin ? <a className="btn btn-outline btn-sm" href="#/admin"><IconShield /> Administración</a> : null}
         </div>
       </div>
 
-      <div className="tabs">
+      <div className="tabs tabs-perfil">
         {SECCIONES.map((s) => (
           <button key={s.id} className={section === s.id ? 'active' : ''} onClick={() => setSection(s.id)}>
             {s.label}

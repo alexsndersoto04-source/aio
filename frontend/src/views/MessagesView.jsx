@@ -16,6 +16,7 @@ import { realtime } from '../realtime.js';
 import { ListSkeleton } from '../components/Skeleton.jsx';
 import {
   IconSend, IconSearch, IconChevronLeft, IconTrash, IconMail, IconCheck, IconAt,
+  IconMore, IconBell, IconLayers, IconEye, IconComment, IconExplore, IconUsers,
 } from '../components/Icons.jsx';
 
 const REACCIONES = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
@@ -30,11 +31,18 @@ export default function MessagesView({ conversationId }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
+  // Filtro de la lista: todas · sin leer · archivadas
+  const [filtro, setFiltro] = useState('todas');
+  // Qué conversación tiene el menú de opciones abierto
+  const [menuDe, setMenuDe] = useState(null);
+  // Preferencias por conversación (silenciada / archivada) traídas del servidor
+  const [prefs, setPrefs] = useState({});
   const [reaccionando, setReaccionando] = useState(null);
   const endRef = useRef(null);
-  // Solo se entra solo en la primera conversación la primera vez que se abre
-  // la pantalla: si la persona pulsa «volver», se queda en la lista (antes
-  // volvía a entrar y en el teléfono no había manera de salir del hilo).
+  // En el teléfono se abre SIEMPRE la lista: así se ven el buscador, los
+  // filtros (sin leer / archivadas) y las opciones de cada conversación.
+  // En pantalla ancha, donde la lista y el hilo se ven a la vez, se entra
+  // solo en la primera conversación para no dejar el lado derecho vacío.
   const entroSolo = useRef(!!conversationId);
 
   const loadConvs = useCallback(() => {
@@ -42,7 +50,8 @@ export default function MessagesView({ conversationId }) {
       .then((rows) => {
         const lista = rows || [];
         setConvs(lista);
-        if (!entroSolo.current && lista.length > 0) {
+        const anchoDeSobra = typeof window !== 'undefined' && window.innerWidth >= 900;
+        if (anchoDeSobra && !entroSolo.current && lista.length > 0) {
           entroSolo.current = true;
           setConvId(lista[0].id);
         }
@@ -163,11 +172,39 @@ export default function MessagesView({ conversationId }) {
       .catch(avisoError);
   }
 
+  /** Cuántas conversaciones del filtro activo hay sin abrir. */
+  const sinLeer = (convs || []).filter((c) => c.unread > 0).length;
+  const archivadas = (convs || []).filter((c) => c.archivada).length;
+
   const visibles = (convs || []).filter((c) => {
     const t = search.trim().toLowerCase();
-    if (!t) return true;
-    return (c.username || '').toLowerCase().includes(t) || (c.display_name || '').toLowerCase().includes(t);
+    if (t) {
+      const coincide = (c.username || '').toLowerCase().includes(t) || (c.display_name || '').toLowerCase().includes(t);
+      if (!coincide) return false;
+    }
+    if (filtro === 'sin_leer') return c.unread > 0;
+    if (filtro === 'archivadas') return !!c.archivada;
+    return !c.archivada;
   });
+
+  /** Silenciar, archivar u ocultar: se guarda en el servidor y se ve al instante. */
+  async function cambiarPref(conv, cambios) {
+    const antes = { silenciada: !!conv.silenciada, archivada: !!conv.archivada };
+    setConvs((lista) => (lista || []).map((c) => (c.id === conv.id ? { ...c, ...cambios } : c)));
+    setMenuDe(null);
+    try {
+      const r = await api.post(`/api/messages/conversations/${conv.id}/prefs`, cambios);
+      setPrefs((p) => ({ ...p, [conv.id]: r }));
+      if (cambios.archivada === true) toast.ok('Conversación archivada');
+      else if (cambios.archivada === false && antes.archivada) toast.ok('Conversación de vuelta en la lista');
+      else if (cambios.silenciada === true) toast.ok('Avisos silenciados');
+      else if (cambios.silenciada === false) toast.ok('Avisos activados');
+      else if (cambios.oculta === true) toast.ok('Conversación oculta');
+    } catch (e) {
+      setConvs((lista) => (lista || []).map((c) => (c.id === conv.id ? { ...c, ...antes } : c)));
+      avisoError(e);
+    }
+  }
 
   return (
     <>
@@ -194,38 +231,88 @@ export default function MessagesView({ conversationId }) {
             </div>
           </div>
 
+          <div className="chips-filtro chips-chat" role="group" aria-label="Filtrar conversaciones">
+            <button type="button" className={filtro === 'todas' ? 'activo' : ''} onClick={() => setFiltro('todas')}>
+              Todas
+            </button>
+            <button type="button" className={filtro === 'sin_leer' ? 'activo' : ''} onClick={() => setFiltro('sin_leer')}>
+              Sin leer{sinLeer > 0 ? ` (${sinLeer})` : ''}
+            </button>
+            <button type="button" className={filtro === 'archivadas' ? 'activo' : ''} onClick={() => setFiltro('archivadas')}>
+              Archivadas{archivadas > 0 ? ` (${archivadas})` : ''}
+            </button>
+          </div>
+
           {convs === null ? <ListSkeleton rows={5} /> : null}
 
           {convs && visibles.length === 0 ? (
             <div className="empty">
               <IconMail />
-              <h3>Sin conversaciones</h3>
-              <p>Busca a alguien en Explorar y toca «Mensaje» para empezar.</p>
+              <h3>{filtro === 'sin_leer' ? 'Nada sin leer' : filtro === 'archivadas' ? 'Sin conversaciones archivadas' : 'Sin conversaciones'}</h3>
+              <p>
+                {filtro === 'sin_leer'
+                  ? 'Estás al día con todos tus mensajes.'
+                  : filtro === 'archivadas'
+                    ? 'Archiva una conversación desde su menú (los tres puntos) para quitarla de en medio sin perderla.'
+                    : 'Busca a alguien en Explorar y toca «Mensaje» para empezar.'}
+              </p>
+              {filtro === 'todas' ? (
+                <a className="btn btn-outline btn-sm" href="#/explore">
+                  <IconExplore /> Buscar personas
+                </a>
+              ) : null}
             </div>
           ) : null}
 
           {visibles.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              className={`conv ${convId === c.id ? 'active' : ''}`}
-              onClick={() => loadThread(c.id)}
-            >
-              <span className="avatar-con-estado">
-                <Avatar user={c} size="sm" />
-                {enLinea.has(Number(c.id)) ? <span className="punto-online" /> : null}
-              </span>
-              <span className="body">
-                <b className="ellipsis">
-                  {c.display_name || c.username}
-                  <VerifiedBadge show={c.is_verified} />
-                </b>
-                <span className="last ellipsis">
-                  {c.last_message ? c.last_message : `@${c.username}`}
+            <div className={`fila-conv ${convId === c.id ? 'active' : ''}`} key={c.id}>
+              <button type="button" className="conv" onClick={() => loadThread(c.id)}>
+                <span className="avatar-con-estado">
+                  <Avatar user={c} size="sm" />
+                  {enLinea.has(Number(c.id)) ? <span className="punto-online" /> : null}
                 </span>
-              </span>
-              {c.unread > 0 ? <span className="badge">{c.unread > 99 ? '99+' : c.unread}</span> : null}
-            </button>
+                <span className="body">
+                  <b className="ellipsis">
+                    {c.display_name || c.username}
+                    <VerifiedBadge show={c.is_verified} />
+                    {c.silenciada ? <span className="icono-silencio" title="Avisos silenciados"><IconBell /></span> : null}
+                  </b>
+                  <span className="last ellipsis">
+                    {c.last_message ? c.last_message : `@${c.username}`}
+                  </span>
+                </span>
+                {c.unread > 0 ? <span className="badge">{c.unread > 99 ? '99+' : c.unread}</span> : null}
+              </button>
+
+              <button
+                type="button"
+                className="mas-conv"
+                onClick={() => setMenuDe(menuDe === c.id ? null : c.id)}
+                aria-expanded={menuDe === c.id}
+                aria-label={`Opciones de la conversación con ${c.display_name || c.username}`}
+              >
+                <IconMore />
+              </button>
+
+              {menuDe === c.id ? (
+                <div className="menu-conv" role="menu">
+                  <button type="button" onClick={() => cambiarPref(c, { silenciada: !c.silenciada })}>
+                    <IconBell />
+                    {c.silenciada ? 'Activar los avisos' : 'Silenciar los avisos'}
+                  </button>
+                  <button type="button" onClick={() => cambiarPref(c, { archivada: !c.archivada })}>
+                    <IconLayers />
+                    {c.archivada ? 'Sacar de archivadas' : 'Archivar conversación'}
+                  </button>
+                  <a href={`#/user/${c.username}`} onClick={() => setMenuDe(null)}>
+                    <IconUsers /> Ver el perfil
+                  </a>
+                  <button type="button" onClick={() => cambiarPref(c, { oculta: true })}>
+                    <IconEye /> Ocultar de la lista
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ))}
         </aside>
 
@@ -264,6 +351,30 @@ export default function MessagesView({ conversationId }) {
                   </span>
                 </span>
               </a>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setMenuDe(menuDe === `hilo-${convId}` ? null : `hilo-${convId}`)}
+                aria-expanded={menuDe === `hilo-${convId}`}
+                aria-label="Opciones de la conversación"
+              >
+                <IconMore />
+              </button>
+              {menuDe === `hilo-${convId}` ? (
+                <div className="menu-conv menu-hilo" role="menu">
+                  <button type="button" onClick={() => cambiarPref(thread.partner, { silenciada: !(prefs[convId]?.silenciada ?? false) })}>
+                    <IconBell />
+                    {(prefs[convId]?.silenciada ?? false) ? 'Activar los avisos' : 'Silenciar los avisos'}
+                  </button>
+                  <button type="button" onClick={() => cambiarPref(thread.partner, { archivada: !(prefs[convId]?.archivada ?? false) })}>
+                    <IconLayers /> Archivar conversación
+                  </button>
+                  <a href={`#/user/${thread.partner?.username}`} onClick={() => setMenuDe(null)}>
+                    <IconUsers /> Ver el perfil
+                  </a>
+                </div>
+              ) : null}
             </header>
 
             <div className="chat-messages">

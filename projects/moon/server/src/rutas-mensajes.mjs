@@ -41,17 +41,40 @@ async function buscarOCrearConversacion(pool, uno_, otro) {
 }
 
 export function registrarRutasMensajes(router) {
+  /**
+   * Preferencias de una conversación para quien la pide: silenciada,
+   * archivada u oculta. Si no hay fila, todo queda en falso.
+   */
+  async function prefsDe(pool, conversacionId, userId) {
+    const p = await uno(
+      pool,
+      'SELECT silenciada, archivada, oculta FROM conversation_prefs WHERE conversation_id = $1 AND user_id = $2',
+      [conversacionId, userId]
+    );
+    return {
+      silenciada: !!p?.silenciada,
+      archivada: !!p?.archivada,
+      oculta: !!p?.oculta,
+    };
+  }
+
   router.get('/api/messages/conversations', async (c) => {
     const yo = await c.exigir();
+    // todas (por defecto) · sin_leer · archivadas
+    const filtro = String(c.query.get('filtro') || 'todas');
     const filas = await c.pool.query(
       `SELECT cv.id, cv.last_message, cv.last_message_at::text AS last_message_at,
               CASE WHEN cv.user_a = $1 THEN cv.user_b ELSE cv.user_a END AS otro_id,
               u.username, u.display_name, u.avatar_url, u.is_verified,
+              COALESCE(pr.silenciada, FALSE) AS silenciada,
+              COALESCE(pr.archivada, FALSE) AS archivada,
+              COALESCE(pr.oculta, FALSE) AS oculta,
               (SELECT COUNT(*)::int FROM messages m
                 WHERE m.conversation_id = cv.id AND m.sender_id <> $1
                   AND m.read_at IS NULL AND m.status <> 'deleted') AS unread
          FROM conversations cv
          JOIN users u ON u.id = (CASE WHEN cv.user_a = $1 THEN cv.user_b ELSE cv.user_a END)
+         LEFT JOIN conversation_prefs pr ON pr.conversation_id = cv.id AND pr.user_id = $1
         WHERE (cv.user_a = $1 OR cv.user_b = $1)
           AND NOT EXISTS (SELECT 1 FROM blocks b
                            WHERE (b.blocker_id = $1 AND b.blocked_id = u.id)
@@ -59,7 +82,7 @@ export function registrarRutasMensajes(router) {
         ORDER BY COALESCE(cv.last_message_at, cv.created_at) DESC LIMIT 100`,
       [yo.id]
     );
-    return filas.rows.map((f) => ({
+    const lista = filas.rows.map((f) => ({
       id: Number(f.id),
       username: f.username,
       display_name: f.display_name || f.username,
@@ -68,7 +91,37 @@ export function registrarRutasMensajes(router) {
       last_message: f.last_message,
       updated_at: f.last_message_at,
       unread: Number(f.unread),
+      silenciada: !!f.silenciada,
+      archivada: !!f.archivada,
+      oculta: !!f.oculta,
     }));
+    if (filtro === 'sin_leer') return lista.filter((cv) => cv.unread > 0 && !cv.archivada);
+    if (filtro === 'archivadas') return lista.filter((cv) => cv.archivada);
+    return lista.filter((cv) => !cv.oculta && !cv.archivada);
+  });
+
+  // Silenciar, archivar u ocultar una conversación (solo cambia para quien lo pide).
+  router.post('/api/messages/conversations/:id/prefs', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const conv = await uno(c.pool, 'SELECT id, user_a, user_b FROM conversations WHERE id = $1', [id]);
+    if (!conv) throw new ApiErr('Conversación no encontrada', 404);
+    if (Number(conv.user_a) !== Number(yo.id) && Number(conv.user_b) !== Number(yo.id)) {
+      throw new ApiErr('Esa conversación no es tuya', 403);
+    }
+    const b = await c.cuerpo();
+    const antes = await prefsDe(c.pool, id, yo.id);
+    const silenciada = 'silenciada' in b ? !!b.silenciada : antes.silenciada;
+    const archivada = 'archivada' in b ? !!b.archivada : antes.archivada;
+    const oculta = 'oculta' in b ? !!b.oculta : antes.oculta;
+    await c.pool.query(
+      `INSERT INTO conversation_prefs (conversation_id, user_id, silenciada, archivada, oculta, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (conversation_id, user_id)
+       DO UPDATE SET silenciada = $3, archivada = $4, oculta = $5, updated_at = NOW()`,
+      [id, yo.id, silenciada, archivada, oculta]
+    );
+    return { silenciada, archivada, oculta };
   });
 
   router.post('/api/messages/conversations', async (c) => {
@@ -168,6 +221,15 @@ export function registrarRutasMensajes(router) {
 
     const publico = mensajePublico(creado);
     enviarA(otroId, { type: 'message', conversation_id: Number(conv.id), message: publico });
+
+    // Si el otro la había ocultado o archivado, un mensaje nuevo la devuelve a la lista.
+    await c.pool.query(
+      `INSERT INTO conversation_prefs (conversation_id, user_id, oculta, archivada, updated_at)
+       VALUES ($1, $2, FALSE, FALSE, NOW())
+       ON CONFLICT (conversation_id, user_id)
+       DO UPDATE SET oculta = FALSE, archivada = FALSE, updated_at = NOW()`,
+      [conv.id, otroId]
+    ).catch(() => {});
 
     // Aviso al teléfono de quien recibe (llega con Moon cerrado).
     const quien = await uno(c.pool, 'SELECT display_name, username FROM users WHERE id = $1', [yo.id]);

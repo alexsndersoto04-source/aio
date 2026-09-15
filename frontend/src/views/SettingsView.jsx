@@ -90,6 +90,9 @@ export default function SettingsView({ tab }) {
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
 
+  // Lo que tienes en Moon (pestaña Datos)
+  const [uso, setUso] = useState(undefined); // undefined = cargando · null = no se pudo
+
   // Privacidad
   const [isPrivate, setIsPrivate] = useState(false);
   const [dmPrivacy, setDmPrivacy] = useState('all');
@@ -170,6 +173,7 @@ export default function SettingsView({ tab }) {
     api.get('/api/notifications/prefs').then(setPrefs).catch(() => setPrefs(null));
     api.get('/api/me/blocked').then(setBloqueados).catch(() => setBloqueados([]));
     api.get('/api/health').then(setSalud).catch(() => setSalud(null));
+    api.get('/api/me/resumen').then(setUso).catch(() => setUso(null));
     refrescarPush();
   }, []);
 
@@ -740,6 +744,40 @@ export default function SettingsView({ tab }) {
       {/* ---------------- DATOS ---------------- */}
       {section === 'datos' ? (
         <>
+          <div className="card ajustes-bloque">
+            <div className="titulo">Lo que tienes en Moon</div>
+            {uso ? (
+              <>
+                <div className="rejilla-uso">
+                  {[
+                    ['Publicaciones', uso.publicaciones],
+                    ['Fotos guardadas', uso.fotos],
+                    ['Comentarios', uso.comentarios],
+                    ['Mensajes enviados', uso.mensajes],
+                    ['Grupos', uso.grupos],
+                    ['Siguiendo', uso.siguiendo],
+                    ['Seguidores', uso.seguidores],
+                    ['Espacio usado', `${uso.megabytes} MB`],
+                  ].map(([etiqueta, valor]) => (
+                    <div className="dato-uso" key={etiqueta}>
+                      <b>{valor}</b>
+                      <small>{etiqueta}</small>
+                    </div>
+                  ))}
+                </div>
+                <p className="muted small" style={{ margin: '10px 2px 0' }}>
+                  Tu cuenta se guarda en la base de datos de Moon. Las fotos ya no se pierden cuando el servidor se reinicia.
+                </p>
+              </>
+            ) : uso === undefined ? (
+              <div className="spinner" />
+            ) : (
+              <p className="muted small" style={{ margin: '2px 2px 0' }}>
+                No se pudo leer el resumen ahora mismo. Vuelve a entrar dentro de un momento.
+              </p>
+            )}
+          </div>
+
           <div className="card ajustes-bloque">
             <div className="titulo">Tus datos</div>
             <div className="fila-ajuste">

@@ -118,5 +118,10 @@
     "version": 24,
     "name": "mensajes_con_audio",
     "sql": "ALTER TABLE messages ADD COLUMN IF NOT EXISTS audio_url TEXT NOT NULL DEFAULT ''; ALTER TABLE messages ADD COLUMN IF NOT EXISTS duracion_ms BIGINT NOT NULL DEFAULT 0"
+  },
+  {
+    "version": 25,
+    "name": "conversation_prefs",
+    "sql": "CREATE TABLE IF NOT EXISTS conversation_prefs (\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  silenciada BOOLEAN NOT NULL DEFAULT FALSE,\n  archivada BOOLEAN NOT NULL DEFAULT FALSE,\n  oculta BOOLEAN NOT NULL DEFAULT FALSE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  PRIMARY KEY (conversation_id, user_id)\n);\nCREATE INDEX IF NOT EXISTS ix_conversation_prefs_usuario ON conversation_prefs (user_id);"
   }
 ]

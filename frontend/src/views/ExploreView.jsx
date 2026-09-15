@@ -6,36 +6,54 @@ import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { debounce, plural } from '../utils.js';
-import { IconSearch } from '../components/Icons.jsx';
+import { IconSearch, IconUsers, IconLayers, IconImage, IconTrend } from '../components/Icons.jsx';
 import { SugerenciasPersonas } from '../components/Sugerencias.jsx';
+
+const TIPOS = [
+  { id: 'users', label: 'Personas', icono: <IconUsers /> },
+  { id: 'posts', label: 'Publicaciones', icono: <IconImage /> },
+  { id: 'groups', label: 'Grupos', icono: <IconLayers /> },
+  { id: 'tags', label: 'Etiquetas', icono: <IconTrend /> },
+];
+
+const ORDENES = [
+  { id: 'recientes', label: 'Recientes' },
+  { id: 'populares', label: 'Con más me gusta' },
+];
+
+const TIPO_VALIDO = (t) => (TIPOS.some((x) => x.id === t) ? t : 'users');
 
 export default function ExploreView({ initialQ = '', initialType = 'users' }) {
   const [q, setQ] = useState(initialQ);
-  const [type, setType] = useState(initialType === 'posts' ? 'posts' : 'users');
+  const [type, setType] = useState(TIPO_VALIDO(initialType));
+  const [orden, setOrden] = useState('recientes');
   const [users, setUsers] = useState([]);
   const [posts, setPosts] = useState([]);
+  const [grupos, setGrupos] = useState([]);
+  const [etiquetas, setEtiquetas] = useState([]);
   const [trendingTags, setTrendingTags] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
 
-  const runSearch = useCallback(debounce(async (query, t) => {
-    if (!query.trim()) {
+  const runSearch = useCallback(debounce(async (query, t, ord = 'recientes') => {
+    const limpio = query.trim();
+    if (!limpio) {
       setUsers([]);
       setPosts([]);
+      setGrupos([]);
+      setEtiquetas([]);
       setSearched(false);
       return;
     }
     setLoading(true);
     try {
-      if (t === 'users') {
-        const res = await api.get(`/api/search?q=${encodeURIComponent(query.trim())}&type=users`);
-        setUsers(res || []);
-        setPosts([]);
-      } else {
-        const res = await api.get(`/api/search?q=${encodeURIComponent(query.trim())}&type=posts`);
-        setPosts(res || []);
-        setUsers([]);
-      }
+      const url = `/api/search?q=${encodeURIComponent(limpio)}&type=${t}${t === 'posts' ? `&orden=${ord}` : ''}`;
+      const res = await api.get(url);
+      const lista = Array.isArray(res) ? res : [];
+      if (t === 'users') { setUsers(lista); setPosts([]); setGrupos([]); setEtiquetas([]); }
+      else if (t === 'posts') { setPosts(lista); setUsers([]); setGrupos([]); setEtiquetas([]); }
+      else if (t === 'groups') { setGrupos(lista); setUsers([]); setPosts([]); setEtiquetas([]); }
+      else { setEtiquetas(lista); setUsers([]); setPosts([]); setGrupos([]); }
       setSearched(true);
     } catch (e) {
       avisoError(e);
@@ -51,16 +69,21 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
   // Sincroniza cuando la URL cambia (p. ej. clic en #hashtag de un post).
   useEffect(() => {
     if (!initialQ) return;
-    const t = initialType === 'posts' ? 'posts' : 'users';
+    const t = TIPO_VALIDO(initialType);
     setQ(initialQ);
     setType(t);
-    runSearch(initialQ, t);
+    runSearch(initialQ, t, orden);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQ, initialType]);
 
   function onType(t) {
     setType(t);
-    if (q.trim()) runSearch(q, t);
+    if (q.trim()) runSearch(q, t, orden);
+  }
+
+  function onOrden(o) {
+    setOrden(o);
+    if (q.trim()) runSearch(q, type, o);
   }
 
   return (
@@ -78,10 +101,31 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
             onChange={(e) => { setQ(e.target.value); runSearch(e.target.value, type); }}
           />
         </div>
-        <div className="tabs" style={{ borderBottom: 'none', marginBottom: 0, marginTop: 6 }}>
-          <button className={type === 'users' ? 'active' : ''} onClick={() => onType('users')}>Personas</button>
-          <button className={type === 'posts' ? 'active' : ''} onClick={() => onType('posts')}>Publicaciones</button>
+        <div className="tabs tabs-buscar" style={{ borderBottom: 'none', marginBottom: 0, marginTop: 6 }}>
+          {TIPOS.map((t) => (
+            <button key={t.id} className={type === t.id ? 'active' : ''} onClick={() => onType(t.id)}>
+              {t.icono}
+              {t.label}
+            </button>
+          ))}
         </div>
+
+        {/* Solo las publicaciones se pueden ordenar */}
+        {type === 'posts' ? (
+          <div className="chips-filtro chips-buscar" role="group" aria-label="Ordenar resultados">
+            {ORDENES.map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                className={orden === o.id ? 'activo' : ''}
+                aria-pressed={orden === o.id}
+                onClick={() => onOrden(o.id)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       {loading ? <div className="spinner" /> : null}
@@ -130,6 +174,39 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
           <div className="card empty"><p>Sin publicaciones para «{q}».</p></div>
         ) : (
           posts.map((post) => <PostCard key={post.id} post={post} />)
+        )
+      ) : null}
+
+      {!loading && searched && type === 'groups' ? (
+        grupos.length === 0 ? (
+          <div className="card empty"><p>Ningún grupo se llama «{q}».</p></div>
+        ) : (
+          grupos.map((g) => (
+            <a key={g.id} href={`#/grupo/${g.id}`} className="card tarjeta-resultado">
+              <span className="marca"><IconLayers /></span>
+              <span className="datos">
+                <b>{g.name}</b>
+                <small>{plural(g.miembros || 0, 'miembro')} · {g.privacy === 'private' ? 'privado' : 'abierto'}</small>
+                {g.about ? <span className="muted small linea-2">{g.about}</span> : null}
+              </span>
+              <span className="accion">{g.soy_miembro ? 'Estás dentro' : 'Ver grupo'}</span>
+            </a>
+          ))
+        )
+      ) : null}
+
+      {!loading && searched && type === 'tags' ? (
+        etiquetas.length === 0 ? (
+          <div className="card empty"><p>Ninguna etiqueta con «{q}».</p></div>
+        ) : (
+          <div className="card">
+            {etiquetas.map((t) => (
+              <a key={t.tag} href={`#/explore?q=${encodeURIComponent(t.tag)}&type=posts`} className="fila-etiqueta">
+                <span className="hash">#{t.tag}</span>
+                <span className="muted">{plural(t.posts_count, 'publicación')}</span>
+              </a>
+            ))}
+          </div>
         )
       ) : null}
     </>

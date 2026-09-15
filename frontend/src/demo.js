@@ -405,7 +405,13 @@ export function responder(metodo, ruta, cuerpo) {
 
   // ---- Publicaciones ----
   if (a === 'feed') {
-    const lista = publicaciones.filter((p) => !p.borrada);
+    const tipo = q.get('tipo') || '';
+    const lista = publicaciones.filter((p) => !p.borrada).filter((p) => {
+      if (tipo === 'fotos') return (p.imagenes || []).length > 0;
+      if (tipo === 'encuestas') return !!p.encuesta;
+      if (tipo === 'texto') return (p.imagenes || []).length === 0 && !p.encuesta;
+      return true;
+    });
     const orden =
       b === 'trending' ? [...lista].sort((x, y) => y.likes - x.likes)
       : b === 'latest' ? [...lista].sort((x, y) => x.creada - y.creada)
@@ -561,6 +567,23 @@ export function responder(metodo, ruta, cuerpo) {
     });
   }
 
+  if (a === 'me' && b === 'resumen') {
+    const mias = publicaciones.filter((x) => x.autor === USUARIO.id && !x.borrada);
+    const fotos = mias.reduce((n, x) => n + (x.imagenes || []).length, 0);
+    return json({
+      publicaciones: mias.length,
+      comentarios: 24,
+      fotos,
+      megabytes: Math.round((fotos * 0.42) * 10) / 10,
+      grupos: 3,
+      mensajes: conversaciones.reduce((n, c) => n + c.mensajes.length, 0),
+      archivos: fotos,
+      siguiendo: USUARIO.following_count,
+      seguidores: USUARIO.followers_count,
+      imagenes_en_publicaciones: fotos,
+    });
+  }
+
   if (a === 'me' && b === 'blocked') {
     if (metodo === 'DELETE') return json({ ok: true });
     return json([]);
@@ -607,11 +630,24 @@ export function responder(metodo, ruta, cuerpo) {
     const texto = (q.get('q') || '').toLowerCase();
     const tipo = q.get('type') || 'users';
     if (tipo === 'posts') {
-      return json(
-        publicaciones
-          .filter((p) => !p.borrada && (p.texto.toLowerCase().includes(texto) || !texto))
-          .map(publicacionJSON)
-      );
+      const elegidas = publicaciones.filter((p) => !p.borrada && (p.texto.toLowerCase().includes(texto) || !texto));
+      const orden = q.get('orden') === 'populares'
+        ? [...elegidas].sort((x, y) => y.likes - x.likes)
+        : elegidas;
+      return json(orden.map(publicacionJSON));
+    }
+    if (tipo === 'groups') {
+      const todos = [grupoDemo, { ...grupoDemo, id: 8, name: 'Cocina de barrio', about: 'Recetas de todos los días, sin prisa.', miembros: 12 },
+        { ...grupoDemo, id: 9, name: 'Rendimiento web', about: 'Medir antes de optimizar.', miembros: 31, privacy: 'private' }];
+      return json(todos
+        .filter((g) => !texto || g.name.toLowerCase().includes(texto) || (g.about || '').toLowerCase().includes(texto))
+        .map((g) => ({ id: g.id, name: g.name, about: g.about, privacy: g.privacy, miembros: g.miembros, soy_miembro: g.id === grupoDemo.id })));
+    }
+    if (tipo === 'tags') {
+      const usadas = ['diseno', 'moon', 'rendimiento', 'fotografia', 'equipos', 'periodismo', 'ciudad', 'cocina'];
+      return json(usadas
+        .filter((t) => !texto || t.includes(texto.replace('#', '')))
+        .map((t, i) => ({ tag: t, posts_count: 128 - i * 17 })));
     }
     return json(
       [...perfiles.values()]
@@ -672,27 +708,41 @@ export function responder(metodo, ruta, cuerpo) {
         }
         return json({ conversation_id: conv.id });
       }
-      return json(
-        conversaciones.map((conv) => {
-          const socio = perfiles.get(conv.partnerId);
-          const ultimo = conv.mensajes[conv.mensajes.length - 1];
-          return {
-            id: conv.id,
-            username: socio.username,
-            display_name: socio.display_name,
-            avatar_url: socio.avatar_url,
-            is_verified: socio.is_verified,
-            last_message: ultimo ? (ultimo.texto || (ultimo.audio ? '🎤 Nota de voz' : '')) : '',
-            updated_at: ultimo ? hace(ultimo.creada) : hace(9999),
-            unread: conv.noLeidos,
-          };
-        })
-      );
+      const filtro = q.get('filtro') || 'todas';
+      const fila = (conv) => {
+        const socio = perfiles.get(conv.partnerId);
+        const ultimo = conv.mensajes[conv.mensajes.length - 1];
+        return {
+          id: conv.id,
+          username: socio.username,
+          display_name: socio.display_name,
+          avatar_url: socio.avatar_url,
+          is_verified: socio.is_verified,
+          last_message: ultimo ? (ultimo.texto || (ultimo.audio ? '🎤 Nota de voz' : '')) : '',
+          updated_at: ultimo ? hace(ultimo.creada) : hace(9999),
+          unread: conv.noLeidos,
+          silenciada: !!conv.silenciada,
+          archivada: !!conv.archivada,
+          oculta: !!conv.oculta,
+        };
+      };
+      let lista = conversaciones.map(fila);
+      if (filtro === 'sin_leer') lista = lista.filter((c) => c.unread > 0 && !c.archivada);
+      else if (filtro === 'archivadas') lista = lista.filter((c) => c.archivada);
+      else lista = lista.filter((c) => !c.archivada && !c.oculta);
+      return json(lista);
     }
     if (b === 'conversations' && c) {
       const conv = conversaciones.find((x) => x.id === Number(c));
       if (!conv) return json({ error: 'Conversación no encontrada' }, 404);
       const socio = perfiles.get(conv.partnerId);
+
+      if (d === 'prefs' && metodo === 'POST') {
+        if ('silenciada' in (cuerpo || {})) conv.silenciada = !!cuerpo.silenciada;
+        if ('archivada' in (cuerpo || {})) conv.archivada = !!cuerpo.archivada;
+        if ('oculta' in (cuerpo || {})) conv.oculta = !!cuerpo.oculta;
+        return json({ silenciada: !!conv.silenciada, archivada: !!conv.archivada, oculta: !!conv.oculta });
+      }
 
       if (d === 'read') { conv.noLeidos = 0; return json({ ok: true }); }
 

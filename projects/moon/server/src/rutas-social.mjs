@@ -134,10 +134,29 @@ function contarPublicaciones(pool, where, args) {
 
 export function registrarRutasSocial(router) {
   // ---------- Inicio ----------
+  /**
+   * Filtro por tipo de publicación: «fotos», «encuestas», «voz» o vacío (todo).
+   * Se usa en las tres vistas del inicio (Para ti, Tendencias y Recientes).
+   */
+  function condicionDeTipo(tipo) {
+    if (tipo === 'fotos') return 'EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id)';
+    if (tipo === 'encuestas') return 'EXISTS (SELECT 1 FROM polls pl WHERE pl.post_id = p.id)';
+    if (tipo === 'texto') return 'NOT EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id) AND NOT EXISTS (SELECT 1 FROM polls pl WHERE pl.post_id = p.id)';
+    return '';
+  }
+
+  /** «Para ti» de verdad: primero quienes sigo, después el resto. */
+  function ordenParaTi(yoId) {
+    return `(CASE WHEN p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ${Number(yoId) || 0}) OR p.user_id = ${Number(yoId) || 0} THEN 0 ELSE 1 END),
+            p.created_at DESC`;
+  }
+
   router.get('/api/feed', async (c) => {
     const yo = await c.exigir();
     const { page, limit, offset } = paginacion(c.req, 10, 50);
+    const tipo = condicionDeTipo(String(c.query.get('tipo') || ''));
     const condiciones = ["p.status = 'active'", SQL_NO_BLOQUEADOS];
+    if (tipo) condiciones.push(tipo);
     const args = [yo.id];
     const total = await uno(
       c.pool,
@@ -146,7 +165,7 @@ export function registrarRutasSocial(router) {
     );
     const filas = await c.pool.query(
       `${SQL_POST} WHERE ${condiciones.join(' AND ')}
-        ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+        ORDER BY ${ordenParaTi(yo.id)} LIMIT ${limit} OFFSET ${offset}`,
       args
     );
     return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), Number(total?.count || 0), page, limit);
@@ -155,14 +174,17 @@ export function registrarRutasSocial(router) {
   router.get('/api/feed/trending', async (c) => {
     const yo = await c.exigir();
     const { page, limit, offset } = paginacion(c.req, 10, 50);
+    const tipoTrending = condicionDeTipo(String(c.query.get('tipo') || ''));
     const filas = await c.pool.query(
       `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND p.created_at > NOW() - INTERVAL '7 days'
+        ${tipoTrending ? `AND ${tipoTrending}` : ''}
         ORDER BY (p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       [yo.id]
     );
     const total = await contarPublicaciones(
       c.pool,
-      "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND p.created_at > NOW() - INTERVAL '7 days'",
+      "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND p.created_at > NOW() - INTERVAL '7 days'"
+        + (tipoTrending ? ` AND ${tipoTrending}` : ''),
       [yo.id]
     );
     return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
@@ -171,8 +193,10 @@ export function registrarRutasSocial(router) {
   router.get('/api/feed/latest', async (c) => {
     const yo = await c.exigir();
     const { page, limit, offset } = paginacion(c.req, 10, 50);
+    const tipoNuevo = condicionDeTipo(String(c.query.get('tipo') || ''));
     const filas = await c.pool.query(
-      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} ${tipoNuevo ? `AND ${tipoNuevo}` : ''}
+        ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       [yo.id]
     );
     const total = await contarPublicaciones(c.pool, "p.status = 'active' AND " + SQL_NO_BLOQUEADOS, [yo.id]);
@@ -578,14 +602,47 @@ export function registrarRutasSocial(router) {
     if (!consulta) return [];
 
     if (tipo === 'posts') {
+      const orden = qs(c.req, 'orden', 'recientes') === 'populares'
+        ? '(p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC'
+        : 'p.created_at DESC';
       const filas = await c.pool.query(
         `${SQL_POST} WHERE p.status = 'active' AND (p.content ILIKE $2 OR EXISTS (
             SELECT 1 FROM post_hashtags ph JOIN hashtags h ON h.id = ph.hashtag_id
              WHERE ph.post_id = p.id AND h.tag ILIKE $3))
-           ORDER BY p.created_at DESC LIMIT 40`,
+           ORDER BY ${orden} LIMIT 40`,
         [yo.id, `%${consulta}%`, `%${consulta.replace(/^#/, '')}%`]
       );
       return conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id);
+    }
+
+    // Grupos: se buscan por nombre o por su descripción.
+    if (tipo === 'groups') {
+      const resultado = await c.pool.query(
+        `SELECT g.id, g.name, g.about, g.privacy, g.created_at::text AS created_at, g.owner_id,
+                (SELECT COUNT(*)::int FROM group_members gm WHERE gm.group_id = g.id) AS miembros,
+                (gm.user_id IS NOT NULL) AS soy_miembro
+           FROM groups g
+           LEFT JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $1
+          WHERE g.name ILIKE $2 OR g.about ILIKE $2
+          ORDER BY (SELECT COUNT(*) FROM group_members gm2 WHERE gm2.group_id = g.id) DESC
+          LIMIT 30`,
+        [yo.id, `%${consulta}%`]);
+      return resultado.rows.map((g) => ({
+        id: Number(g.id), name: g.name, about: g.about || '', privacy: g.privacy,
+        miembros: Number(g.miembros || 0), soy_miembro: !!g.soy_miembro,
+        created_at: String(g.created_at || ''),
+      }));
+    }
+
+    // Etiquetas: lo que la gente usa, filtrado por lo que escribiste.
+    if (tipo === 'tags') {
+      const resultado = await c.pool.query(
+        `SELECT h.tag, COUNT(ph.post_id)::int AS posts_count
+           FROM hashtags h LEFT JOIN post_hashtags ph ON ph.hashtag_id = h.id
+          WHERE h.tag ILIKE $1
+          GROUP BY h.tag ORDER BY posts_count DESC, h.tag ASC LIMIT 30`,
+        [`%${consulta.replace(/^#/, '')}%`]);
+      return resultado.rows.map((t) => ({ tag: t.tag, posts_count: Number(t.posts_count || 0) }));
     }
 
     const filas = await c.pool.query(
@@ -595,6 +652,36 @@ export function registrarRutasSocial(router) {
       [`%${consulta}%`, consulta]
     );
     return filas.rows.map((u) => perfilPublico(u));
+  });
+
+  // Cuánto ocupa tu cuenta: para la pestaña «Datos» de Ajustes.
+  router.get('/api/me/resumen', async (c) => {
+    const yo = await c.exigir();
+    const fila = await uno(c.pool,
+      `SELECT
+         (SELECT COUNT(*)::int FROM posts WHERE user_id = $1 AND status = 'active') AS publicaciones,
+         (SELECT COUNT(*)::int FROM comments WHERE user_id = $1) AS comentarios,
+         (SELECT COALESCE(SUM(images_count), 0)::int FROM users WHERE id = $1) AS fotos,
+         (SELECT COALESCE(SUM(images_bytes), 0)::bigint FROM users WHERE id = $1) AS bytes,
+         (SELECT COUNT(*)::int FROM group_members WHERE user_id = $1) AS grupos,
+         (SELECT COUNT(*)::int FROM messages WHERE sender_id = $1) AS mensajes,
+         (SELECT COUNT(*)::int FROM media WHERE user_id = $1) AS archivos,
+         (SELECT COUNT(*)::int FROM follows WHERE follower_id = $1) AS siguiendo,
+         (SELECT COUNT(*)::int FROM follows WHERE following_id = $1) AS seguidores,
+         (SELECT COUNT(*)::int FROM post_images pi JOIN posts p ON p.id = pi.post_id WHERE p.user_id = $1) AS imagenes_en_publicaciones`,
+      [yo.id]);
+    return {
+      publicaciones: Number(fila?.publicaciones || 0),
+      comentarios: Number(fila?.comentarios || 0),
+      fotos: Number(fila?.fotos || 0),
+      megabytes: Math.round((Number(fila?.bytes || 0) / (1024 * 1024)) * 10) / 10,
+      grupos: Number(fila?.grupos || 0),
+      mensajes: Number(fila?.mensajes || 0),
+      archivos: Number(fila?.archivos || 0),
+      siguiendo: Number(fila?.siguiendo || 0),
+      seguidores: Number(fila?.seguidores || 0),
+      imagenes_en_publicaciones: Number(fila?.imagenes_en_publicaciones || 0),
+    };
   });
 
   router.get('/api/hashtags', async (c) => {

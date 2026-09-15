@@ -389,6 +389,28 @@ body { background: var(--bg); }
 .historias .historia.crear .aro .relleno { background: var(--aurora-grad-suave); color: var(--accent); }
 .historias .crear .aro { background: transparent; box-shadow: none; }
 .historias .historia b { font-size: 11.5px; font-weight: 600; }
+.historias-sola { display: flex; align-items: center; gap: 10px; }
+.historias-sola .historia.crear {
+  flex: 0 0 auto;
+  min-width: 168px;
+  width: auto;
+  padding: 9px 14px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--vidrio-fondo);
+  border: 1px solid var(--vidrio-borde);
+}
+.historias-sola .historia.crear .aro { width: 30px; height: 30px; }
+.historias-sola .historia.crear .aro .relleno { width: 30px; height: 30px; }
+.historias-sola .historia.crear b {
+  font-size: 13px;
+  white-space: nowrap;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
 .historia .en-vivo {
   position: absolute;
   bottom: -2px;
@@ -1477,4 +1499,263 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
   .chat-grupo-input { padding: 9px 10px 10px; gap: 6px; }
   .btn-grabar { width: 38px; height: 38px; }
   .nota-voz { min-width: 168px; }
+}
+
+/* ============================================================
+   §32 · Opciones nuevas: inicio, explorar, mensajes y perfil
+   ============================================================ */
+
+/* --- Barra del inicio con sus dos botones --- */
+.barra-inicio { display: flex; align-items: center; gap: 8px; }
+.barra-inicio h1 { margin: 0; }
+.barra-inicio .icon-btn { flex: 0 0 auto; }
+.icon-btn.girando svg { animation: girar 0.9s linear infinite; }
+@keyframes girar { to { transform: rotate(360deg); } }
+
+/* --- Menú de opciones del inicio --- */
+.menu-inicio {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 var(--aire);
+  padding: 8px;
+  border-radius: var(--r-tarjeta, 18px);
+  background: var(--vidrio-fondo);
+  border: 1px solid var(--vidrio-borde);
+  backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+  -webkit-backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+  box-shadow: 0 22px 50px -32px rgba(15, 18, 45, 0.65);
+  animation: aparecer 0.16s ease-out;
+}
+@keyframes aparecer { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.menu-inicio .atajo {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--fast);
+}
+.menu-inicio .atajo:hover { background: rgba(120, 128, 170, 0.14); }
+.menu-inicio .atajo .icono {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  color: #fff;
+  background: var(--aurora-grad);
+  box-shadow: 0 10px 22px -16px rgba(99, 102, 241, 0.95);
+}
+.menu-inicio .atajo .icono svg { width: 17px; height: 17px; }
+.menu-inicio .atajo .texto { display: flex; flex-direction: column; min-width: 0; }
+.menu-inicio .atajo .texto b { font-size: 14px; }
+.menu-inicio .atajo .texto small { color: var(--ink-3); font-size: 12px; }
+
+/* --- Chips de filtro (inicio, búsqueda y mensajes) --- */
+.chips-filtro {
+  display: flex;
+  gap: 7px;
+  margin: 0 0 var(--aire);
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.chips-filtro::-webkit-scrollbar { display: none; }
+.chips-filtro button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 13px;
+  border: 1px solid var(--vidrio-borde);
+  border-radius: 999px;
+  background: var(--vidrio-fondo);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--ink-2, var(--ink));
+  font: inherit;
+  font-size: 12.8px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--fast), background var(--fast), border-color var(--fast), transform var(--fast);
+}
+.chips-filtro button svg { width: 15px; height: 15px; }
+.chips-filtro button:hover { color: var(--ink); border-color: rgba(99, 102, 241, 0.45); }
+.chips-filtro button:active { transform: scale(0.97); }
+.chips-filtro button.activo {
+  color: #fff;
+  background: var(--aurora-grad);
+  border-color: transparent;
+  box-shadow: var(--aurora-halo);
+}
+.chips-chat { padding: 10px 12px 2px; margin-bottom: 4px; }
+.chips-buscar { margin-top: 10px; margin-bottom: 0; }
+
+/* --- Pestañas de búsqueda y de perfil: se deslizan, no se cortan --- */
+.tabs-buscar, .tabs-perfil {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  overflow: visible;
+}
+.tabs-buscar button, .tabs-perfil button { flex: 1 1 auto; justify-content: center; }
+.tabs-buscar button, .tabs-perfil button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 13px;
+  padding: 9px 6px;
+}
+.tabs-buscar button svg { width: 15px; height: 15px; }
+
+/* --- Resultados de búsqueda (grupos y etiquetas) --- */
+.tarjeta-resultado {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  text-decoration: none;
+  color: inherit;
+}
+.tarjeta-resultado .marca {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  color: #fff;
+  background: var(--aurora-grad);
+  box-shadow: 0 12px 24px -18px rgba(99, 102, 241, 0.95);
+}
+.tarjeta-resultado .marca svg { width: 20px; height: 20px; }
+.tarjeta-resultado .datos { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.tarjeta-resultado .datos b { font-size: 14.5px; }
+.tarjeta-resultado .datos small { color: var(--ink-3); font-size: 12px; }
+.tarjeta-resultado .linea-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tarjeta-resultado .accion {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--accent);
+}
+.fila-etiqueta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 4px;
+  text-decoration: none;
+  color: inherit;
+  border-bottom: 1px solid rgba(120, 128, 170, 0.14);
+}
+.fila-etiqueta:last-child { border-bottom: 0; }
+
+/* --- Mensajes: cada conversación con su menú --- */
+.fila-conv { position: relative; display: flex; align-items: stretch; }
+.fila-conv .conv { flex: 1; min-width: 0; }
+.mas-conv {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--vidrio-borde);
+  border-radius: 999px;
+  background: var(--vidrio-fondo);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--ink-3);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--fast), color var(--fast);
+}
+.mas-conv svg { width: 16px; height: 16px; }
+.fila-conv:hover .mas-conv, .fila-conv:focus-within .mas-conv { opacity: 1; }
+.mas-conv:hover { color: var(--ink); }
+@media (hover: none) { .mas-conv { opacity: 0.75; } }
+
+.menu-conv {
+  position: absolute;
+  top: 44px;
+  right: 8px;
+  z-index: 40;
+  min-width: 236px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px;
+  border-radius: 15px;
+  background: var(--superficie-menu, rgba(24, 25, 45, 0.96));
+  border: 1px solid var(--vidrio-borde);
+  box-shadow: 0 26px 60px -28px rgba(6, 8, 24, 0.9);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  animation: aparecer 0.14s ease-out;
+}
+.menu-conv button, .menu-conv a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+  width: 100%;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.menu-conv button svg, .menu-conv a svg { width: 16px; height: 16px; color: var(--ink-3); }
+.menu-conv button:hover, .menu-conv a:hover { background: rgba(120, 128, 170, 0.16); }
+.menu-conv button:hover svg, .menu-conv a:hover svg { color: var(--accent); }
+.menu-hilo { top: 58px; }
+.icono-silencio { display: inline-flex; margin-left: 6px; color: var(--ink-3); }
+.icono-silencio svg { width: 13px; height: 13px; }
+
+/* --- Ajustes: lo que tienes en Moon --- */
+.rejilla-uso {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 9px;
+}
+.dato-uso {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: var(--vidrio-fondo);
+  border: 1px solid var(--vidrio-borde);
+}
+.dato-uso b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.dato-uso small { color: var(--ink-3); font-size: 11.5px; }
+
+@media (max-width: 560px) {
+  .menu-conv { right: 4px; min-width: 214px; }
+  .chips-filtro button { padding: 7px 11px; font-size: 12.4px; }
 }
