@@ -48,7 +48,18 @@ export default function BottomNav() {
 /** Botón flotante de publicar (solo móvil). */
 export function FloatingCompose() {
   const { user } = useAuth();
+  const [hash, setHash] = useState(() => (typeof window === 'undefined' ? '' : window.location.hash));
+  useEffect(() => {
+    const h = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', h);
+    return () => window.removeEventListener('hashchange', h);
+  }, []);
   if (!user) return null;
+  // Donde «publicar» no pinta nada (ajustes, panel, mensajes, avisos…), se quita:
+  // así no tapa botones ni campos en el teléfono.
+  const seccion = hash.replace(/^#\/?/, '').split('/')[0];
+  const sinBoton = ['settings', 'admin', 'messages', 'notifications', 'contactos', 'amigos', 'contacts', 'login', 'register', 'reset'];
+  if (sinBoton.includes(seccion)) return null;
   return (
     <button
       className="fab"

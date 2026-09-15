@@ -53,7 +53,11 @@ export default function GruposView() {
 
   const cargar = useCallback((q = '') => {
     api.get(`/api/groups${q ? `?q=${encodeURIComponent(q)}` : ''}`)
-      .then(setDatos)
+      .then((r) => setDatos({
+        mios: Array.isArray(r?.mios) ? r.mios : [],
+        // Si algún día el servidor devolviera otra forma, tampoco se rompe la pantalla.
+        descubrir: Array.isArray(r?.descubrir) ? r.descubrir : (Array.isArray(r?.items) ? r.items.filter((g) => !g.soy_miembro) : []),
+      }))
       .catch(() => setDatos({ mios: [], descubrir: [] }));
   }, []);
 

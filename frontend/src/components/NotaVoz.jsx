@@ -12,6 +12,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { IconMic, IconPlay, IconPause, IconTrash, IconSend, IconWarning } from './Icons.jsx';
 
+/** Tope por nota de voz: 5 minutos (el servidor admite hasta 10). */
+export const MAX_NOTA_MS = 5 * 60 * 1000;
+const AVISO_TOPE_MS = MAX_NOTA_MS - 30 * 1000;
+
 const CANDIDATOS = [
   'audio/webm;codecs=opus',
   'audio/webm',
@@ -97,7 +101,12 @@ export function Grabador({ onListo, onCancelar, disabled = false }) {
       rec.start();
       setGrabando(true);
       setMs(0);
-      reloj.current = setInterval(() => setMs(Date.now() - inicio.current), 120);
+      reloj.current = setInterval(() => {
+        const llevo = Date.now() - inicio.current;
+        setMs(llevo);
+        // A los 5 minutos se corta sola: así nunca se pierde la nota por ser larga.
+        if (llevo >= MAX_NOTA_MS) terminar();
+      }, 120);
     } catch (e) {
       const permiso = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
       setError(permiso ? 'Para grabar hay que dar permiso al micrófono.' : 'No se pudo abrir el micrófono.');
@@ -127,6 +136,9 @@ export function Grabador({ onListo, onCancelar, disabled = false }) {
       <div className="grabador" role="status" aria-live="polite">
         <span className="punto-rojo" aria-hidden="true" />
         <span className="tiempo">{segundos(ms)}</span>
+        {ms >= AVISO_TOPE_MS ? (
+          <span className="aviso-tope" role="status">termina en {segundos(MAX_NOTA_MS - ms)}</span>
+        ) : null}
         <span className="ondas" aria-hidden="true">
           {Array.from({ length: 14 }).map((_, i) => (
             <i key={i} style={{ animationDelay: `${i * 70}ms` }} />

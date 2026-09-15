@@ -18,7 +18,7 @@ function iniciales(u) {
   return (u.display_name || u.username || '?').slice(0, 2).toUpperCase();
 }
 
-export default function ChatGrupo({ grupo, esMiembro, onNecesitaEntrar }) {
+export default function ChatGrupo({ grupo, esMiembro, onNecesitaEntrar, onVistos }) {
   const { user } = useAuth();
   const [mensajes, setMensajes] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -38,6 +38,9 @@ export default function ChatGrupo({ grupo, esMiembro, onNecesitaEntrar }) {
       const lista = r.mensajes || [];
       setHayMas(!!r.hay_mas);
       setMensajes((prev) => (antes ? [...lista, ...prev] : lista));
+      // Con el chat a la vista, lo último ya está visto: así no vuelve a avisar.
+      const ultimo = lista[lista.length - 1]?.id;
+      if (!antes && ultimo && onVistos) onVistos(ultimo);
     } catch (e) {
       if (e.status === 403) onNecesitaEntrar();
       else avisoError(e);
@@ -60,6 +63,7 @@ export default function ChatGrupo({ grupo, esMiembro, onNecesitaEntrar }) {
       if (ev.type === 'group_message') {
         if (ev.message && Number(ev.message.user_id) === Number(user?.id)) return;
         setMensajes((prev) => (prev.some((m) => m.id === ev.message.id) ? prev : [...prev, ev.message]));
+        if (onVistos) onVistos(ev.message.id);
         setOtroEscribe(false);
       } else if (ev.type === 'group_message_deleted') {
         setMensajes((prev) => prev.filter((m) => m.id !== ev.message_id));
@@ -84,6 +88,7 @@ export default function ChatGrupo({ grupo, esMiembro, onNecesitaEntrar }) {
     try {
       const creado = await api.post(`/api/groups/${grupo.id}/messages`, { content: limpio });
       setMensajes((prev) => [...prev, creado]);
+      if (onVistos) onVistos(creado.id);
       setBorrador('');
     } catch (err) {
       avisoError(err);
@@ -101,6 +106,7 @@ export default function ChatGrupo({ grupo, esMiembro, onNecesitaEntrar }) {
         duracion_ms: duracionMs,
       });
       setMensajes((prev) => [...prev, creado]);
+      if (onVistos) onVistos(creado.id);
     } catch (err) {
       avisoError(err);
     } finally {

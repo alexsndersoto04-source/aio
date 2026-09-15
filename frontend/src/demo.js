@@ -749,8 +749,22 @@ export function responder(metodo, ruta, cuerpo) {
   if (a === 'groups') {
     if (b === 'messages') return json({ error: 'Falta el grupo' }, 404);
     if (!b && metodo === 'GET') {
-      // Lista de grupos (para Explorar y el buscador).
-      return json(paginado([{ ...grupoDemo }], ruta));
+      // Lista de grupos: «tus grupos» y «grupos para descubrir».
+      const comoTarjeta = (g, papel, soy) => ({
+        ...g,
+        soy_miembro: soy,
+        mi_papel: papel,
+        owner_username: 'carla',
+        owner_display_name: 'Carla Ríos',
+      });
+      void ruta;
+      return json({
+        mios: [comoTarjeta(grupoDemo, 'member', true)],
+        descubrir: [
+          comoTarjeta({ ...grupoDemo, id: 8, name: 'Cocina de barrio', about: 'Recetas de todos los días, sin prisa.', miembros: 12, privacy: 'public' }, '', false),
+          comoTarjeta({ ...grupoDemo, id: 9, name: 'Rendimiento web', about: 'Medir antes de optimizar.', miembros: 31, privacy: 'private' }, '', false),
+        ],
+      });
     }
     const gid = Number(b) || grupoDemo.id;
 

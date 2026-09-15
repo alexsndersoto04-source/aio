@@ -1280,6 +1280,26 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
   font-size: 12px;
 }
 
+/* Punto de «hay mensajes nuevos» en la pestaña Chat del grupo */
+.pestanas-grupo button { position: relative; }
+.punto-nuevo {
+  width: 8px;
+  height: 8px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: #22d3ee;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.25);
+}
+.pestanas-grupo button.activa .punto-nuevo { background: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.3); }
+
+/* Aviso de que la nota de voz está llegando al tope */
+.grabador .aviso-tope {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: #f59e0b;
+  white-space: nowrap;
+}
+
 /* Mientras se graba, la barra de escribir se esconde (queda solo el grabador) */
 .chat-input:has(.grabador) .textarea { display: none; }
 /* Las notas de voz se llevan su espacio, sin apretujarse */

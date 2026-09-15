@@ -9,6 +9,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { realtime } from '../realtime.js';
+import { useAuth } from '../auth.jsx';
 import { toast, avisoError, confirmar } from '../ui.js';
 import Composer from '../components/Composer.jsx';
 import PostCard from '../components/PostCard.jsx';
@@ -18,12 +20,15 @@ import { IconUsers, IconPlus, IconCheck, IconSettings, IconLayers, IconChat } fr
 import ChatGrupo from '../components/ChatGrupo.jsx';
 
 export default function GrupoView({ id }) {
+  const { user } = useAuth();
   const [grupo, setGrupo] = useState(null);
   const [posts, setPosts] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   // 'publicaciones' o 'chat'; si la dirección trae «?chat» se abre el chat.
   const [vista, setVista] = useState(() => (/[?&]chat/.test(window.location.hash) ? 'chat' : 'publicaciones'));
+  // Aviso de «hay mensajes nuevos en el chat» cuando estás en Publicaciones.
+  const [chatNuevo, setChatNuevo] = useState(false);
   const [ocupado, setOcupado] = useState(false);
 
   const cargar = useCallback(async () => {
@@ -46,6 +51,34 @@ export default function GrupoView({ id }) {
   }, [id]);
 
   useEffect(() => { cargar(); }, [cargar]);
+
+  // ¿Hay algo nuevo en el chat del grupo que no haya visto en este teléfono?
+  useEffect(() => {
+    if (!grupo?.soy_miembro) return undefined;
+    let vivo = true;
+    const marca = () => Number(localStorage.getItem(`moon_chat_visto_${grupo.id}`) || 0);
+    api.get(`/api/groups/${grupo.id}/messages?limite=1`)
+      .then((r) => {
+        // La lista llega del más viejo al más nuevo: el último es el más reciente.
+        const lista = r?.mensajes || [];
+        const ultimo = Number(lista[lista.length - 1]?.id || 0);
+        if (vivo && vista !== 'chat') setChatNuevo(ultimo > marca());
+      })
+      .catch(() => {});
+    const off = realtime.on((ev) => {
+      if (Number(ev.group_id) !== Number(grupo.id)) return;
+      if (ev.type === 'group_message') setChatNuevo(Number(ev.message?.user_id) !== Number(user?.id));
+      if (ev.type === 'group_message_deleted') setChatNuevo(false);
+    });
+    return () => { vivo = false; off(); };
+  }, [grupo?.id, grupo?.soy_miembro, vista]);
+
+  /** El chat avisa de por dónde va para no repetir el aviso en cada visita. */
+  function marcarChatVisto(ultimoId) {
+    if (!grupo?.id || !ultimoId) return;
+    try { localStorage.setItem(`moon_chat_visto_${grupo.id}`, String(ultimoId)); } catch { /* sin almacén */ }
+    setChatNuevo(false);
+  }
 
   async function entrarOSalir() {
     if (!grupo || ocupado) return;
@@ -135,6 +168,7 @@ export default function GrupoView({ id }) {
               onClick={() => setVista('chat')}
             >
               <IconChat /> Chat
+              {chatNuevo ? <span className="punto-nuevo" aria-label="mensajes nuevos" /> : null}
             </button>
           </div>
 
@@ -164,6 +198,7 @@ export default function GrupoView({ id }) {
               grupo={grupo}
               esMiembro={!!grupo.soy_miembro}
               onNecesitaEntrar={() => setVista('publicaciones')}
+              onVistos={marcarChatVisto}
             />
           ) : posts.length === 0 ? (
             <div className="empty">
