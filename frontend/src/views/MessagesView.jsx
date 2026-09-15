@@ -6,7 +6,8 @@
 // confirmación de lectura.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { Grabador, AudioMensaje, puedeGrabar } from '../components/NotaVoz.jsx';
+import { api, uploadMedia, imgUrl } from '../api.js';
 import { toast, confirmar, avisoError } from '../ui.js';
 import { useAuth } from '../auth.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
@@ -117,6 +118,24 @@ export default function MessagesView({ conversationId }) {
       const created = await api.post(`/api/messages/conversations/${convId}/messages`, { content: draft.trim() });
       setThread((t) => (t ? { ...t, messages: [...t.messages, created] } : t));
       setDraft('');
+      loadConvs();
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enviarNota(blob, duracionMs) {
+    if (!convId) return;
+    setBusy(true);
+    try {
+      const subida = await uploadMedia('audio', blob);
+      const creado = await api.post(`/api/messages/conversations/${convId}/messages`, {
+        audio_url: subida.url,
+        duracion_ms: duracionMs,
+      });
+      setThread((t) => (t ? { ...t, messages: [...t.messages, creado] } : t));
       loadConvs();
     } catch (err) {
       avisoError(err);
@@ -261,7 +280,15 @@ export default function MessagesView({ conversationId }) {
                 const borrado = m.status === 'deleted';
                 return (
                   <div className={`msg ${mio ? 'mine' : ''}`} key={m.id}>
-                    {borrado ? <em style={{ opacity: 0.65 }}>Mensaje eliminado</em> : m.content}
+                    {borrado ? (
+                      <em style={{ opacity: 0.65 }}>Mensaje eliminado</em>
+                    ) : (
+                      <>
+                        {m.audio_url ? <AudioMensaje url={m.audio_url} duracionMs={m.duracion_ms} mio={mio} /> : null}
+                        {m.image_url ? <img className="img-msg" src={imgUrl(m.image_url)} alt="" /> : null}
+                        {m.content ? <span className="texto-msg">{m.content}</span> : null}
+                      </>
+                    )}
                     {m.reaction ? <span className="react">{m.reaction}</span> : null}
                     <span className="time">
                       {horaMensaje(m.created_at)}
@@ -325,6 +352,7 @@ export default function MessagesView({ conversationId }) {
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(e); }
                 }}
               />
+              {puedeGrabar() ? <Grabador onListo={enviarNota} disabled={busy} /> : null}
               <button className="btn btn-primary" disabled={busy || !draft.trim()} aria-label="Enviar mensaje">
                 {busy ? <IconCheck /> : <IconSend />}
               </button>

@@ -95,6 +95,21 @@ export function montarWs(servidorHttp, pool, secreto) {
         });
         return;
       }
+      if (msg.type === 'typing' && msg.group_id) {
+        // «Escribiendo…» dentro del chat de un grupo: solo ven los miembros.
+        const dentro = await uno(
+          pool,
+          'SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2',
+          [Number(msg.group_id), uid]
+        );
+        if (!dentro) return;
+        const miembros = await pool.query('SELECT user_id FROM group_members WHERE group_id = $1 LIMIT 200', [Number(msg.group_id)]);
+        for (const m of miembros.rows) {
+          const otro = Number(m.user_id);
+          if (otro !== uid) enviarA(otro, { type: 'typing', group_id: Number(msg.group_id), user_id: uid });
+        }
+        return;
+      }
       if (msg.type === 'typing' && msg.conversation_id) {
         const conv = await uno(
           pool,

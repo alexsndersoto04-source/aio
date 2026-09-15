@@ -1,18 +1,27 @@
-// Moon — Imágenes
+// Moon — Archivos (imágenes y notas de voz)
 // ============================================================
-// Subida (multipart) y entrega de archivos. Los bytes viven en la base de
-// datos (`media_blobs`), con una copia en disco como caché: así una foto no
-// se pierde cuando el servidor se reinicia.
+// Subida (multipart) y entrega. Los bytes viven en la base de datos
+// (`media_blobs`), con una copia en disco como caché: así una foto —o una
+// nota de voz— no se pierde cuando el servidor se reinicia.
+//
+// Las imágenes se giran y se reducen al subirlas; las notas de voz se guardan
+// tal cual. La entrega admite peticiones por trozos (Range), que es lo que
+// usan los reproductores del teléfono.
 //
 // Al subir avatar o portada se actualiza el perfil en el momento.
 
 import Busboy from 'busboy';
 import { ApiErr } from './util.mjs';
 import { uno, auditar } from './db.mjs';
-import { guardarImagen, leerImagen, servirDeDisco, asegurarCarpeta } from './medios.mjs';
+import {
+  guardarImagen, leerImagen, servirDeDisco, asegurarCarpeta,
+  esAudio, mimeDeNombre, rangoDe,
+} from './medios.mjs';
 
 const TIPOS = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
 const MAX_BYTES = 8 * 1024 * 1024;
+// Las notas de voz también son archivos: hasta 8 MB (más de 10 minutos).
+const aceptado = (mime) => TIPOS.has(mime) || esAudio(mime);
 
 /** Lee el formulario completo en memoria (con tope de tamaño). */
 function leerFormulario(req) {
@@ -26,7 +35,7 @@ function leerFormulario(req) {
     let fallo = null;
 
     bb.on('field', (nombre, valor) => {
-      if (nombre === 'name' && ['avatar', 'cover', 'post', 'story'].includes(valor)) clase = valor;
+      if (nombre === 'name' && ['avatar', 'cover', 'post', 'story', 'audio'].includes(valor)) clase = valor;
     });
 
     bb.on('file', (_campo, stream, info) => {
@@ -40,11 +49,14 @@ function leerFormulario(req) {
     bb.on('error', (e) => { fallo = e; });
     bb.on('close', () => {
       if (fallo) return rechazar(new ApiErr(`No se pudo leer el archivo: ${fallo.message}`, 400));
-      if (truncado) return rechazar(new ApiErr('La imagen supera los 8 MB', 413));
+      if (truncado) return rechazar(new ApiErr('El archivo supera los 8 MB', 413));
       const bytes = Buffer.concat(trozos);
-      if (bytes.length === 0) return rechazar(new ApiErr('No se recibió ninguna imagen', 400));
-      if (mime && !TIPOS.has(mime)) return rechazar(new ApiErr('Formato de imagen no admitido (JPEG, PNG, WebP, GIF o AVIF)', 400));
-      return resolver({ clase, bytes, mime: mime || 'image/jpeg', nombreOriginal });
+      if (bytes.length === 0) return rechazar(new ApiErr('No se recibió ningún archivo', 400));
+      if (mime && !aceptado(mime)) {
+        return rechazar(new ApiErr('Formato no admitido: imágenes (JPEG, PNG, WebP, GIF, AVIF) o notas de voz', 400));
+      }
+      const limpio = String(mime || '').split(';')[0].trim();
+      return resolver({ clase, bytes, mime: limpio || 'image/jpeg', nombreOriginal });
     });
 
     req.pipe(bb);
@@ -81,18 +93,40 @@ export function registrarRutasMedia(router) {
     const nombre = String(c.params.archivo || '');
     if (!/^[A-Za-z0-9._-]+$/.test(nombre)) throw new ApiErr('Nombre inválido', 400);
 
-    if (servirDeDisco(c.res, nombre)) return undefined;
+    const cabeceraRango = String(c.req.headers.range || '');
+    if (servirDeDisco(c.res, nombre, cabeceraRango)) return undefined;
 
     const fila = await leerImagen(c.pool, nombre);
     if (!fila) throw new ApiErr('Archivo no encontrado', 404);
 
     const bytes = fila.bytes;
-    c.res.writeHead(200, {
-      'Content-Type': fila.mime || 'image/jpeg',
-      'Content-Length': bytes.length,
+    const mime = fila.mime || mimeDeNombre(nombre);
+    const comun = {
+      'Content-Type': mime,
       'Cache-Control': 'public, max-age=31536000, immutable',
+      'Accept-Ranges': 'bytes',
       'X-Content-Type-Options': 'nosniff',
-    });
+    };
+
+    // Los reproductores del teléfono piden trozos (Range) para poder avanzar
+    // dentro de una nota de voz. Sin esto, en iPhone no suena.
+    const r = rangoDe(cabeceraRango, bytes.length);
+    if (r && r.invalido) {
+      c.res.writeHead(416, { ...comun, 'Content-Range': `bytes */${bytes.length}` });
+      c.res.end();
+      return undefined;
+    }
+    if (r) {
+      const trozo = bytes.subarray(r.inicio, r.fin + 1);
+      c.res.writeHead(206, {
+        ...comun,
+        'Content-Length': trozo.length,
+        'Content-Range': `bytes ${r.inicio}-${r.fin}/${bytes.length}`,
+      });
+      c.res.end(trozo);
+      return undefined;
+    }
+    c.res.writeHead(200, { ...comun, 'Content-Length': bytes.length });
     c.res.end(bytes);
     return undefined;
   });

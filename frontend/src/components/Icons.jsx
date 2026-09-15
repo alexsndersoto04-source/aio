@@ -155,3 +155,17 @@ export const IconCamera = (p) => (
 export const IconLayers = (p) => (
   <svg {...S(p)}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3.5 12.5 8.5 4.7 8.5-4.7" /><path d="m3.5 16.5 8.5 4.7 8.5-4.7" /></svg>
 );
+
+// --- Chat y notas de voz ---
+export const IconChat = (p) => (
+  <svg {...S(p)}><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.4-4.4A8 8 0 1 1 21 12Z" /><path d="M8.5 12h.01M12 12h.01M15.5 12h.01" /></svg>
+);
+export const IconMic = (p) => (
+  <svg {...S(p)}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /><path d="M8.5 21h7" /></svg>
+);
+export const IconPlay = (p) => (
+  <svg {...S(p)}><path d="M7 4.5v15l12-7.5-12-7.5Z" /></svg>
+);
+export const IconPause = (p) => (
+  <svg {...S(p)}><path d="M9 5v14M15 5v14" /></svg>
+);

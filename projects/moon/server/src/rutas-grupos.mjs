@@ -8,7 +8,8 @@
 import { ApiErr, texto, paginacion, qs, hashtagsDe, mencionesDe } from './util.mjs';
 import { fila, uno, filas } from './db.mjs';
 import { auditar } from './db.mjs';
-import { notificar } from './ws.mjs';
+import { notificar, enviarA } from './ws.mjs';
+import { empujarSiQuiere } from './empuje.mjs';
 import { demasiadoRapido } from './limites.mjs';
 import { SQL_POST, conImagenes, aPublicacion } from './rutas-social.mjs';
 
@@ -375,6 +376,149 @@ export function registrarRutasGrupos(router) {
       miembros: Number(g.members_count),
       papel: g.role,
     }));
+  });
+
+  // ---------------------------- Chat del grupo ----------------------------
+  // Mensajes cortos entre los miembros (texto o nota de voz), en vivo. Solo
+  // los miembros entran: en un grupo privado, nadie de fuera lee el chat.
+
+  /** Comprueba que el grupo exista y que quien pide sea miembro. */
+  async function grupoDeMiembro(c, id) {
+    const yo = await c.exigir();
+    const grupo = await uno(
+      c.pool,
+      `SELECT g.id, g.name, g.privacy, (gm.user_id IS NOT NULL) AS soy_miembro
+         FROM groups g
+         LEFT JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $2
+        WHERE g.id = $1`,
+      [id, yo.id]
+    );
+    if (!grupo) throw new ApiErr('Grupo no encontrado', 404);
+    if (!grupo.soy_miembro) throw new ApiErr('Entra al grupo para ver y escribir en el chat', 403);
+    return { yo, grupo };
+  }
+
+  function aMensajeDeGrupo(m) {
+    return {
+      id: Number(m.id),
+      group_id: Number(m.group_id),
+      user_id: Number(m.user_id),
+      content: m.content || '',
+      audio_url: m.audio_url || '',
+      duracion_ms: Number(m.duracion_ms || 0),
+      created_at: String(m.created_at),
+      username: m.username || '',
+      display_name: m.display_name || '',
+      avatar_url: m.avatar_url || '',
+    };
+  }
+
+  const SQL_MENSAJES_GRUPO =
+    `SELECT gm.*, u.username, u.display_name, u.avatar_url
+       FROM group_messages gm JOIN users u ON u.id = gm.user_id`;
+
+  // Los últimos mensajes del chat (se piden hacia atrás con «antes»).
+  router.get('/api/groups/:id/messages', async (c) => {
+    const id = Number(c.params.id);
+    const { yo } = await grupoDeMiembro(c, id);
+    const antes = Number(c.query.get('antes') || 0);
+    const limite = Math.min(Math.max(Number(c.query.get('limite') || 40), 1), 100);
+
+    const filasMensajes = await filas(
+      c.pool,
+      `${SQL_MENSAJES_GRUPO}
+        WHERE gm.group_id = $1 ${antes > 0 ? 'AND gm.id < $2' : ''}
+        ORDER BY gm.id DESC
+        LIMIT ${limite}`,
+      antes > 0 ? [id, antes] : [id]
+    );
+
+    const hayMas = filasMensajes.length === limite;
+    const ordenados = filasMensajes.slice().reverse().map(aMensajeDeGrupo);
+    await auditar(c.pool, Number(yo.id), 'chat_grupo_leido', String(id), c.ip).catch(() => {});
+    return { mensajes: ordenados, hay_mas: hayMas };
+  });
+
+  // Escribir en el chat del grupo (texto o nota de voz).
+  router.post('/api/groups/:id/messages', async (c) => {
+    const id = Number(c.params.id);
+    const { yo, grupo } = await grupoDeMiembro(c, id);
+    if (demasiadoRapido(`chat:${yo.id}`, 30, 60_000)) {
+      throw new ApiErr('Vas demasiado rápido: espera unos segundos', 429, 'rate_limit');
+    }
+
+    const b = await c.cuerpo();
+    const contenido = texto(b.content || '', { min: 0, max: 2000, campo: 'mensaje' }).trim();
+    const audio = typeof b.audio_url === 'string' && /^\/api\/media\/[A-Za-z0-9._-]+$/.test(b.audio_url) ? b.audio_url : '';
+    const duracion = Math.min(Math.max(Number(b.duracion_ms || 0), 0), 600_000);
+    if (!contenido && !audio) throw new ApiErr('Escribe un mensaje o manda una nota de voz', 400);
+
+    const creado = await uno(
+      c.pool,
+      `INSERT INTO group_messages (group_id, user_id, content, audio_url, duracion_ms)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [id, yo.id, contenido, audio, audio ? duracion : 0]
+    );
+    const publico = aMensajeDeGrupo({
+      ...creado, username: yo.username, display_name: yo.display_name, avatar_url: yo.avatar_url,
+    });
+
+    // Aviso en vivo a todos los miembros que tengan Moon abierta.
+    const miembros = await filas(c.pool, 'SELECT user_id FROM group_members WHERE group_id = $1 LIMIT 200', [id]);
+    for (const m of miembros) {
+      const uid = Number(m.user_id);
+      if (uid === Number(yo.id)) continue;
+      enviarA(uid, { type: 'group_message', group_id: id, message: publico });
+    }
+
+    // Y al teléfono de los que no la tengan abierta (respetando sus avisos).
+    const quien = yo.display_name || yo.username || 'Moon';
+    for (const m of miembros.slice(0, 30)) {
+      const uid = Number(m.user_id);
+      if (uid === Number(yo.id)) continue;
+      empujarSiQuiere(c.pool, uid, 'message', {
+        titulo: `${quien} · ${grupo.name}`,
+        texto: contenido ? contenido.slice(0, 140) : 'Te envió una nota de voz',
+        url: `#/grupo/${id}?chat`,
+        etiqueta: `chat-grupo-${id}`,
+      }).catch(() => {});
+    }
+
+    await auditar(c.pool, Number(yo.id), 'chat_grupo', String(id), c.ip).catch(() => {});
+    return publico;
+  });
+
+  // Borrar un mensaje del chat: quien lo escribió o quien creó el grupo.
+  router.del('/api/groups/:id/messages/:mensaje', async (c) => {
+    const id = Number(c.params.id);
+    const mensajeId = Number(c.params.mensaje);
+    const { yo } = await grupoDeMiembro(c, id);
+
+    const mensaje = await uno(
+      c.pool,
+      `SELECT gm.id, gm.user_id, g.owner_id
+         FROM group_messages gm JOIN groups g ON g.id = gm.group_id
+        WHERE gm.id = $1 AND gm.group_id = $2`,
+      [mensajeId, id]
+    );
+    if (!mensaje) throw new ApiErr('Mensaje no encontrado', 404);
+    const puede = Number(mensaje.user_id) === Number(yo.id) || Number(mensaje.owner_id) === Number(yo.id);
+    if (!puede) throw new ApiErr('Solo quien lo escribió (o quien creó el grupo) puede borrarlo', 403);
+
+    await c.pool.query('DELETE FROM group_messages WHERE id = $1', [mensajeId]);
+    const miembros = await filas(c.pool, 'SELECT user_id FROM group_members WHERE group_id = $1 LIMIT 200', [id]);
+    for (const m of miembros) {
+      enviarA(Number(m.user_id), { type: 'group_message_deleted', group_id: id, message_id: mensajeId });
+    }
+    return { ok: true };
+  });
+
+  // Cuántos mensajes tiene el chat (para el contador de la pestaña).
+  router.get('/api/groups/:id/messages/count', async (c) => {
+    const id = Number(c.params.id);
+    await grupoDeMiembro(c, id);
+    const r = await uno(c.pool, 'SELECT COUNT(*)::int AS total FROM group_messages WHERE group_id = $1', [id]);
+    return { total: Number(r?.total || 0) };
   });
 }
 

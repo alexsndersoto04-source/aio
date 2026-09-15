@@ -86,7 +86,6 @@
   },
   {
     "version": 18,
-    "version": 18,
     "name": "media_en_base_de_datos",
     "sql": "ALTER TABLE media ADD COLUMN IF NOT EXISTS original_data BYTEA; ALTER TABLE media ADD COLUMN IF NOT EXISTS mime TEXT NOT NULL DEFAULT 'image/jpeg'"
   },
@@ -109,5 +108,15 @@
     "version": 22,
     "name": "create_polls",
     "sql": "CREATE TABLE IF NOT EXISTS polls (post_id BIGINT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE, pregunta TEXT NOT NULL DEFAULT '', opciones JSONB NOT NULL DEFAULT '[]'::jsonb, multiple BOOLEAN NOT NULL DEFAULT FALSE, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE TABLE IF NOT EXISTS poll_votes (post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, opcion BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (post_id, user_id, opcion)); CREATE INDEX IF NOT EXISTS ix_poll_votes_post ON poll_votes (post_id)"
+  },
+  {
+    "version": 23,
+    "name": "create_group_messages",
+    "sql": "CREATE TABLE IF NOT EXISTS group_messages (id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL DEFAULT '', audio_url TEXT NOT NULL DEFAULT '', duracion_ms BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX IF NOT EXISTS ix_group_messages_grupo ON group_messages (group_id, created_at DESC)"
+  },
+  {
+    "version": 24,
+    "name": "mensajes_con_audio",
+    "sql": "ALTER TABLE messages ADD COLUMN IF NOT EXISTS audio_url TEXT NOT NULL DEFAULT ''; ALTER TABLE messages ADD COLUMN IF NOT EXISTS duracion_ms BIGINT NOT NULL DEFAULT 0"
   }
 ]

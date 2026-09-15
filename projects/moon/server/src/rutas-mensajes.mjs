@@ -17,6 +17,8 @@ function mensajePublico(m) {
     sender_id: Number(m.sender_id),
     content: m.status === 'deleted' ? '' : m.content,
     image_url: m.image_url || '',
+    audio_url: m.status === 'deleted' ? '' : (m.audio_url || ''),
+    duracion_ms: Number(m.duracion_ms || 0),
     status: m.status,
     reaction: m.reaction || null,
     read_at: m.read_at ? String(m.read_at) : null,
@@ -106,8 +108,8 @@ export function registrarRutasMensajes(router) {
     const { limit } = paginacion(c.req, 50, 100);
     const mensajes = await c.pool.query(
       `SELECT * FROM (
-         SELECT id, conversation_id, sender_id, content, image_url, status, reaction,
-                read_at, created_at::text AS created_at
+         SELECT id, conversation_id, sender_id, content, image_url, audio_url, duracion_ms,
+                status, reaction, read_at, created_at::text AS created_at
            FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT ${limit}
        ) AS recientes ORDER BY created_at ASC`,
       [conv.id]
@@ -134,7 +136,9 @@ export function registrarRutasMensajes(router) {
     const b = await c.cuerpo();
     const contenido = texto(b.content || '', { min: 0, max: 2000, campo: 'mensaje' }).trim();
     const imagen = typeof b.image_url === 'string' ? b.image_url.slice(0, 500) : '';
-    if (!contenido && !imagen) throw new ApiErr('Escribe un mensaje', 400);
+    const audio = typeof b.audio_url === 'string' && /^\/api\/media\/[A-Za-z0-9._-]+$/.test(b.audio_url) ? b.audio_url : '';
+    const duracion = Math.min(Math.max(Number(b.duracion_ms || 0), 0), 600_000);
+    if (!contenido && !imagen && !audio) throw new ApiErr('Escribe un mensaje o manda una nota de voz', 400);
 
     const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [Number(c.params.id)]);
     if (!conv) throw new ApiErr('Conversación no encontrada', 404);
@@ -151,12 +155,14 @@ export function registrarRutasMensajes(router) {
 
     const creado = await uno(
       c.pool,
-      `INSERT INTO messages (conversation_id, sender_id, content, image_url) VALUES ($1, $2, $3, $4) RETURNING *`,
-      [conv.id, yo.id, contenido, imagen]
+      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [conv.id, yo.id, contenido, imagen, audio, audio ? duracion : 0]
     );
+    const resumen = contenido || (audio ? '🎤 Nota de voz' : '📷 Imagen');
     await c.pool.query(
       'UPDATE conversations SET last_message = $1, last_sender_id = $2, last_message_at = NOW() WHERE id = $3',
-      [(contenido || '📷 Imagen').slice(0, 200), yo.id, conv.id]
+      [resumen.slice(0, 200), yo.id, conv.id]
     );
     await sumarEstadistica(c.pool, 'new_messages');
 
@@ -167,7 +173,7 @@ export function registrarRutasMensajes(router) {
     const quien = await uno(c.pool, 'SELECT display_name, username FROM users WHERE id = $1', [yo.id]);
     empujarSiQuiere(c.pool, otroId, 'message', {
       titulo: quien?.display_name || quien?.username || 'Moon',
-      texto: contenido ? contenido.slice(0, 140) : 'Te envió una imagen',
+      texto: contenido ? contenido.slice(0, 140) : (audio ? 'Te envió una nota de voz' : 'Te envió una imagen'),
       url: `#/messages/${conv.id}`,
       etiqueta: `mensaje-${conv.id}`,
     }).catch(() => {});

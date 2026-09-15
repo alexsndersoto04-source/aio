@@ -1,8 +1,11 @@
 // Moon — Un grupo
 // ============================================================
-// La portada del grupo, quién está dentro, el redactor para publicar (solo
-// para miembros) y lo que se ha publicado, con los mismos me gusta,
-// comentarios y guardados de siempre.
+// La portada del grupo, quién está dentro y dos pestañas: lo que se publica
+// (con los mismos me gusta, comentarios y guardados de siempre) y el chat
+// entre los miembros, con texto y notas de voz, en vivo.
+//
+// Al tocar un aviso del chat se abre directamente en la pestaña del chat:
+// la dirección llega con «?chat» al final.
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
@@ -11,13 +14,16 @@ import Composer from '../components/Composer.jsx';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { PostSkeleton } from '../components/Skeleton.jsx';
-import { IconUsers, IconPlus, IconCheck, IconSettings, IconLayers } from '../components/Icons.jsx';
+import { IconUsers, IconPlus, IconCheck, IconSettings, IconLayers, IconChat } from '../components/Icons.jsx';
+import ChatGrupo from '../components/ChatGrupo.jsx';
 
 export default function GrupoView({ id }) {
   const [grupo, setGrupo] = useState(null);
   const [posts, setPosts] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
+  // 'publicaciones' o 'chat'; si la dirección trae «?chat» se abre el chat.
+  const [vista, setVista] = useState(() => (/[?&]chat/.test(window.location.hash) ? 'chat' : 'publicaciones'));
   const [ocupado, setOcupado] = useState(false);
 
   const cargar = useCallback(async () => {
@@ -111,7 +117,28 @@ export default function GrupoView({ id }) {
 
       <div className="cuerpo-grupo">
         <div className="columna-grupo">
-          {grupo.soy_miembro ? (
+          <div className="pestanas-grupo" role="tablist" aria-label="Secciones del grupo">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={vista === 'publicaciones'}
+              className={vista === 'publicaciones' ? 'activa' : ''}
+              onClick={() => setVista('publicaciones')}
+            >
+              <IconLayers /> Publicaciones
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={vista === 'chat'}
+              className={vista === 'chat' ? 'activa' : ''}
+              onClick={() => setVista('chat')}
+            >
+              <IconChat /> Chat
+            </button>
+          </div>
+
+          {vista === 'publicaciones' ? (grupo.soy_miembro ? (
             <Composer
               destino={`/api/groups/${grupo.id}/posts`}
               placeholder={`Comparte algo con ${grupo.name}…`}
@@ -130,9 +157,15 @@ export default function GrupoView({ id }) {
                 Entrar al grupo
               </button>
             </div>
-          )}
+          )) : null}
 
-          {posts.length === 0 ? (
+          {vista === 'chat' ? (
+            <ChatGrupo
+              grupo={grupo}
+              esMiembro={!!grupo.soy_miembro}
+              onNecesitaEntrar={() => setVista('publicaciones')}
+            />
+          ) : posts.length === 0 ? (
             <div className="empty">
               <IconLayers />
               <h3>Aquí todavía no ha publicado nadie</h3>

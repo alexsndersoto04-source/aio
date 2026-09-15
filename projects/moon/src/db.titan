@@ -84,6 +84,13 @@ fn db_migrations() -> array {
     // votos de cada persona. Se cierra sola al llegar la fecha.
     let m22 = mx_build(22, "create_polls", "CREATE TABLE IF NOT EXISTS polls (post_id BIGINT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE, pregunta TEXT NOT NULL DEFAULT '', opciones JSONB NOT NULL DEFAULT '[]'::jsonb, multiple BOOLEAN NOT NULL DEFAULT FALSE, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE TABLE IF NOT EXISTS poll_votes (post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, opcion BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (post_id, user_id, opcion)); CREATE INDEX IF NOT EXISTS ix_poll_votes_post ON poll_votes (post_id)")
     list = std::array::push(list, m22)
+    // Chat dentro de cada grupo: mensajes cortos entre los miembros, con
+    // texto o nota de voz, en vivo.
+    let m23 = mx_build(23, "create_group_messages", "CREATE TABLE IF NOT EXISTS group_messages (id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL DEFAULT '', audio_url TEXT NOT NULL DEFAULT '', duracion_ms BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX IF NOT EXISTS ix_group_messages_grupo ON group_messages (group_id, created_at DESC)")
+    list = std::array::push(list, m23)
+    // Notas de voz en los mensajes privados: la dirección del audio y lo que dura.
+    let m24 = mx_build(24, "mensajes_con_audio", "ALTER TABLE messages ADD COLUMN IF NOT EXISTS audio_url TEXT NOT NULL DEFAULT ''; ALTER TABLE messages ADD COLUMN IF NOT EXISTS duracion_ms BIGINT NOT NULL DEFAULT 0")
+    list = std::array::push(list, m24)
     list
 }
 

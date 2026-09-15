@@ -1106,3 +1106,355 @@ body { background: var(--bg); }
   .post-actions .etiqueta { display: none; }
   .post-actions button, .post-actions a { padding: 9px 12px; }
 }
+
+/* ============================================================
+   §31 · Chat de grupo y notas de voz
+   Burbujas de vidrio, mi voz con el degradado Aurora y un
+   grabador que se siente como el de una app de mensajería.
+   ============================================================ */
+
+/* --- Pestañas dentro del grupo: Publicaciones | Chat --- */
+.pestanas-grupo {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border-radius: 999px;
+  background: var(--vidrio-fondo);
+  border: 1px solid var(--vidrio-borde);
+  backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+  -webkit-backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+  box-shadow: 0 10px 26px -20px rgba(15, 18, 45, 0.5);
+  margin-bottom: var(--aire);
+}
+.pestanas-grupo button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-weight: 620;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: color var(--fast), background var(--fast), transform var(--fast);
+}
+.pestanas-grupo button svg { width: 16px; height: 16px; }
+.pestanas-grupo button:hover { color: var(--ink); }
+.pestanas-grupo button.activa {
+  color: #fff;
+  background: var(--aurora-grad);
+  box-shadow: var(--aurora-halo);
+}
+.pestanas-grupo button:active { transform: scale(0.985); }
+
+/* --- Chat del grupo --- */
+.chat-grupo {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: var(--r-tarjeta, 18px);
+  background: var(--vidrio-fondo);
+  border: 1px solid var(--vidrio-borde);
+  backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+  -webkit-backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+  box-shadow: 0 22px 50px -34px rgba(15, 18, 45, 0.6);
+  overflow: hidden;
+}
+.chat-grupo-mensajes {
+  flex: 1;
+  min-height: 240px;
+  max-height: min(58vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 14px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ver-mas-chat { align-self: center; margin-bottom: 10px; }
+
+.fila-chat {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 100%;
+}
+.fila-chat.mia { justify-content: flex-end; }
+.fila-chat.seguida { margin-top: 2px; }
+
+.avatar-chat {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--aurora-grad);
+  box-shadow: 0 6px 16px -10px rgba(99, 102, 241, 0.8);
+  text-decoration: none;
+}
+.avatar-chat img { width: 100%; height: 100%; object-fit: cover; }
+.hueco-avatar { flex: 0 0 auto; width: 30px; }
+
+.burbuja-chat {
+  position: relative;
+  max-width: min(76%, 520px);
+  padding: 9px 12px;
+  border-radius: 16px 16px 16px 5px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.72));
+  border: 1px solid var(--vidrio-borde);
+  box-shadow: 0 10px 24px -22px rgba(15, 18, 45, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  word-break: break-word;
+}
+html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); }
+.fila-chat.mia .burbuja-chat {
+  border-radius: 16px 16px 5px 16px;
+  background: var(--aurora-grad);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: var(--aurora-halo);
+}
+.burbuja-chat .quien {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--accent);
+}
+.burbuja-chat .texto-chat { font-size: 14.5px; line-height: 1.45; white-space: pre-wrap; }
+.burbuja-chat .hora-chat {
+  align-self: flex-end;
+  font-size: 10.5px;
+  opacity: 0.62;
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
+.borrar-chat {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--vidrio-borde);
+  border-radius: 999px;
+  background: var(--surface-1, #fff);
+  color: var(--ink-3);
+  opacity: 0;
+  transition: opacity var(--fast), color var(--fast);
+  cursor: pointer;
+}
+.borrar-chat svg { width: 13px; height: 13px; }
+.fila-chat:hover .borrar-chat { opacity: 1; }
+.borrar-chat:hover { color: #e5484d; }
+@media (hover: none) {
+  .borrar-chat { opacity: 0.55; }
+}
+
+/* --- Barra de escritura del grupo --- */
+.chat-grupo-input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--vidrio-borde);
+  background: linear-gradient(180deg, transparent, rgba(99, 102, 241, 0.05));
+}
+.chat-grupo-input .textarea { flex: 1; }
+.subiendo-nota {
+  margin: 0;
+  padding: 0 14px 10px;
+  font-size: 12px;
+}
+
+/* Mientras se graba, la barra de escribir se esconde (queda solo el grabador) */
+.chat-input:has(.grabador) .textarea { display: none; }
+/* Las notas de voz se llevan su espacio, sin apretujarse */
+.burbuja-chat:has(.nota-voz) { min-width: 224px; }
+
+/* --- Grabador de notas de voz --- */
+.grabador-caja { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+
+.btn-grabar {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--vidrio-borde);
+  background: var(--vidrio-fondo);
+  color: var(--ink-2, var(--ink));
+  cursor: pointer;
+  transition: transform var(--fast), color var(--fast), box-shadow var(--fast), background var(--fast);
+}
+.btn-grabar svg { width: 19px; height: 19px; }
+.btn-grabar:hover {
+  color: #fff;
+  background: var(--aurora-grad);
+  border-color: transparent;
+  box-shadow: var(--aurora-halo);
+}
+.btn-grabar:active { transform: scale(0.94); }
+.btn-grabar:disabled { opacity: 0.5; cursor: default; }
+.btn-grabar.cancelar { color: #e5484d; }
+.btn-grabar.cancelar:hover { background: #e5484d; }
+.btn-grabar.enviar {
+  color: #fff;
+  background: var(--aurora-grad);
+  border-color: transparent;
+  box-shadow: var(--aurora-halo);
+}
+
+.grabador {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 9px 7px 13px;
+  border-radius: 999px;
+  background: var(--vidrio-fondo);
+  border: 1px solid var(--vidrio-borde);
+  backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+  -webkit-backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
+}
+.grabador .punto-rojo {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #e5484d;
+  box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.55);
+  animation: latido-rojo 1.5s infinite;
+}
+@keyframes latido-rojo {
+  0% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.5); }
+  70% { box-shadow: 0 0 0 9px rgba(229, 72, 77, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); }
+}
+.grabador .tiempo {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 13px;
+  min-width: 34px;
+}
+.grabador .ondas {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 30px;
+  height: 22px;
+  overflow: hidden;
+}
+.grabador .ondas i {
+  flex: 0 0 2px;
+  height: 22%;
+  border-radius: 999px;
+  background: var(--aurora-grad);
+  animation: onda 1s ease-in-out infinite;
+}
+@keyframes onda {
+  0%, 100% { height: 18%; opacity: 0.55; }
+  50% { height: 92%; opacity: 1; }
+}
+.grabador .btn-grabar { width: 32px; height: 32px; }
+.grabador .btn-grabar svg { width: 16px; height: 16px; }
+.error-nota {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: #e5484d;
+  text-align: center;
+  max-width: 92px;
+}
+.error-nota svg { width: 12px; height: 12px; flex: 0 0 auto; }
+
+/* --- Reproductor de una nota de voz enviada --- */
+.nota-voz {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 196px;
+  padding: 2px 0;
+}
+.nota-voz audio { display: none; }
+.nota-voz .btn-play {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 0;
+  cursor: pointer;
+  color: #fff;
+  background: var(--aurora-grad);
+  box-shadow: 0 8px 18px -12px rgba(99, 102, 241, 0.9);
+}
+.nota-voz.mia .btn-play {
+  color: var(--aurora-1);
+  background: #fff;
+  box-shadow: 0 8px 18px -14px rgba(15, 18, 45, 0.7);
+}
+.nota-voz .btn-play svg { width: 16px; height: 16px; }
+.nota-voz .barra-audio {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 92px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(120, 128, 170, 0.28);
+  overflow: hidden;
+}
+.nota-voz .barra-audio > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--aurora-grad);
+  transition: width 0.18s linear;
+}
+.nota-voz.mia .barra-audio { background: rgba(255, 255, 255, 0.34); }
+.nota-voz.mia .barra-audio > i { background: #fff; }
+.nota-voz .tiempo-audio {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+  min-width: 32px;
+  text-align: right;
+}
+.nota-voz.fallo .barra-audio > i { background: #e5484d; }
+
+/* --- Mensajes privados con audio o foto --- */
+.msg .img-msg {
+  display: block;
+  max-width: 100%;
+  border-radius: 12px;
+  margin: 3px 0;
+}
+.msg .texto-msg { white-space: pre-wrap; }
+.msg .nota-voz { margin: 1px 0; }
+
+@media (max-width: 560px) {
+  .chat-grupo-mensajes { max-height: 62vh; padding: 12px 10px 4px; }
+  .burbuja-chat { max-width: 84%; }
+  .chat-grupo-input { padding: 9px 10px 10px; gap: 6px; }
+  .btn-grabar { width: 38px; height: 38px; }
+  .nota-voz { min-width: 168px; }
+}

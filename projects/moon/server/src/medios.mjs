@@ -26,6 +26,57 @@ export const CARPETA = process.env.MOON_UPLOADS || resolve(process.cwd(), 'uploa
 const LADO_MAXIMO = 1600;
 const CALIDAD = 82;
 
+// Notas de voz: se guardan tal cual (comprimirlas otra vez estropearía el
+// audio). Estos son los formatos que graban los teléfonos.
+export const TIPOS_AUDIO = new Set([
+  'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-wav',
+  'audio/aac', 'audio/m4a', 'audio/x-m4a', 'audio/3gpp', 'video/webm', 'video/mp4',
+]);
+
+const EXT_DE_MIME = {
+  'audio/webm': '.webm', 'video/webm': '.webm',
+  'audio/ogg': '.ogg',
+  'audio/mp4': '.m4a', 'audio/m4a': '.m4a', 'audio/x-m4a': '.m4a', 'video/mp4': '.m4a',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav', 'audio/x-wav': '.wav',
+  'audio/aac': '.aac', 'audio/3gpp': '.3gp',
+};
+
+const MIME_DE_EXT = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
+  '.gif': 'image/gif', '.avif': 'image/avif',
+  '.webm': 'audio/webm', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.m4a': 'audio/mp4',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.aac': 'audio/aac', '.3gp': 'audio/3gpp',
+};
+
+/** ¿Es una nota de voz (o un video corto que manda el grabador del teléfono)? */
+export function esAudio(mime) {
+  const m = String(mime || '').toLowerCase().split(';')[0].trim();
+  return TIPOS_AUDIO.has(m) || m.startsWith('audio/');
+}
+
+/** Tipo de archivo a partir de su nombre. */
+export function mimeDeNombre(nombre) {
+  const ext = extname(String(nombre || '')).toLowerCase();
+  return MIME_DE_EXT[ext] || 'application/octet-stream';
+}
+
+/**
+ * Lee la cabecera `Range` de una petición (la usan los reproductores de audio
+ * del teléfono para poder avanzar dentro de la nota de voz).
+ */
+export function rangoDe(cabecera, total) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(cabecera || '').trim());
+  if (!m) return null;
+  let inicio = m[1] === '' ? null : Number(m[1]);
+  let fin = m[2] === '' ? null : Number(m[2]);
+  if (inicio === null && fin === null) return null;
+  if (inicio === null) { inicio = Math.max(0, total - fin); fin = total - 1; }
+  if (fin === null || fin >= total) fin = total - 1;
+  if (inicio > fin || inicio >= total) return { invalido: true };
+  return { inicio, fin };
+}
+
 export function asegurarCarpeta() {
   try {
     if (!existsSync(CARPETA)) mkdirSync(CARPETA, { recursive: true });
@@ -114,7 +165,9 @@ function copiaEnDisco(nombre, bytes) {
  * de datos. Devuelve la fila creada con su dirección pública.
  */
 export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
-  const listo = await optimizar(bytes, mime);
+  const listo = esAudio(mime)
+    ? { bytes, mime: String(mime).split(';')[0], ext: EXT_DE_MIME[String(mime).split(';')[0]] || '.webm', ancho: 0, alto: 0 }
+    : await optimizar(bytes, mime);
   const nombre = nombrePara(listo.ext);
   const url = `/api/media/${nombre}`;
 
@@ -168,29 +221,39 @@ export async function leerImagen(pool, nombre) {
 }
 
 /** Sirve un archivo de la caché en disco. Devuelve `false` si no existe. */
-export function servirDeDisco(res, nombre) {
+export function servirDeDisco(res, nombre, cabeceraRango = '') {
   if (!/^[A-Za-z0-9._-]+$/.test(nombre)) return false;
   const ruta = resolve(CARPETA, nombre);
   if (!ruta.startsWith(CARPETA)) return false;
+  let tamano = 0;
   try {
     if (!existsSync(ruta) || !statSync(ruta).isFile()) return false;
+    tamano = statSync(ruta).size;
   } catch {
     return false;
   }
-  const ext = extname(nombre).toLowerCase();
-  const mime =
-    ext === '.png' ? 'image/png'
-    : ext === '.webp' ? 'image/webp'
-    : ext === '.gif' ? 'image/gif'
-    : ext === '.avif' ? 'image/avif'
-    : 'image/jpeg';
-  res.writeHead(200, {
+  const mime = mimeDeNombre(nombre);
+  const comun = {
     'Content-Type': mime,
-    'Content-Length': statSync(ruta).size,
     'Cache-Control': 'public, max-age=31536000, immutable',
+    'Accept-Ranges': 'bytes',
     'X-Content-Type-Options': 'nosniff',
+  };
+
+  const r = rangoDe(cabeceraRango, tamano);
+  if (r && r.invalido) {
+    res.writeHead(416, { ...comun, 'Content-Range': `bytes */${tamano}` });
+    res.end();
+    return true;
+  }
+  const desde = r ? r.inicio : 0;
+  const hasta = r ? r.fin : tamano - 1;
+  res.writeHead(r ? 206 : 200, {
+    ...comun,
+    'Content-Length': hasta - desde + 1,
+    ...(r ? { 'Content-Range': `bytes ${desde}-${hasta}/${tamano}` } : {}),
   });
-  const lectura = createReadStream(ruta);
+  const lectura = createReadStream(ruta, { start: desde, end: hasta });
   lectura.on('error', () => { if (!res.writableEnded) res.end(); });
   res.on('close', () => lectura.destroy());
   lectura.pipe(res);
@@ -204,7 +267,7 @@ export function servirDeDisco(res, nombre) {
 export async function importarDelDisco(pool, limite = 400) {
   try {
     asegurarCarpeta();
-    const archivos = readdirSync(CARPETA).filter((n) => /\.(jpg|jpeg|png|webp|gif|avif)$/i.test(n));
+    const archivos = readdirSync(CARPETA).filter((n) => /\.(jpg|jpeg|png|webp|gif|avif|webm|ogg|m4a|mp3|wav|aac|3gp)$/i.test(n));
     if (archivos.length === 0) return 0;
     let importadas = 0;
     for (const nombre of archivos.slice(0, limite)) {
@@ -220,8 +283,7 @@ export async function importarDelDisco(pool, limite = 400) {
       if (bytes <= 0 || bytes > 12 * 1024 * 1024) continue;
       const { readFileSync } = await import('node:fs');
       const datos = readFileSync(ruta);
-      const ext = extname(nombre).toLowerCase();
-      const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : ext === '.avif' ? 'image/avif' : 'image/jpeg';
+      const mime = mimeDeNombre(nombre);
       const ficha = await uno(pool, 'SELECT id FROM media WHERE url = $1', [url]);
       let mediaId = ficha ? Number(ficha.id) : null;
       if (!mediaId) {

@@ -192,9 +192,10 @@ const conversaciones = [
     noLeidos: 2,
     mensajes: [
       { id: 1, de: 3, texto: '¿Ya subiste la versión con el nuevo diseño?', creada: 90, estado: 'read' },
-      { id: 2, de: 1, texto: 'Sí, acabo de terminarlo. Se siente mucho más limpio 🌙', creada: 86, estado: 'read' },
+      { id: 2, de: 1, texto: 'Sí, acabo de terminarlo. Se siente mucho más limpio y ordenado.', creada: 86, estado: 'read' },
       { id: 3, de: 3, texto: 'Se nota muchísimo en el modo oscuro.', creada: 60, estado: 'delivered' },
       { id: 4, de: 3, texto: 'Cuando quieras lo reviso con calma y te dejo notas.', creada: 12, estado: 'delivered' },
+      { id: 5, de: 3, texto: '', audio: 'VOZ', duracion: 2600, creada: 4, estado: 'delivered' },
     ],
   },
   {
@@ -259,16 +260,90 @@ export function emitirDemo(ev) {
 }
 
 function mensajeJSON(c, m) {
-  const autor = perfiles.get(m.de);
   return {
     id: m.id,
     conversation_id: c.id,
     sender_id: m.de,
     content: m.texto,
+    image_url: m.imagen || '',
+    audio_url: m.audio === 'VOZ' ? vozDeEjemplo((m.duracion || 2600) / 1000) : (m.audio || ''),
+    duracion_ms: m.duracion || 0,
     created_at: hace(m.creada),
     status: m.estado || 'sent',
     reaction: m.reaccion || null,
     edited_at: null,
+  };
+}
+
+/**
+ * Nota de voz de ejemplo: se genera aquí mismo, sin red.
+ * Un navegador puede reproducir WAV sin más, así que se arma la cabecera a
+ * mano y se rellena con una onda que sube y baja como una voz hablando.
+ */
+let vozDemo = null;
+function vozDeEjemplo(segundos = 3.4) {
+  if (vozDemo) return vozDemo;
+  const Hz = 8000;
+  const n = Math.max(1, Math.floor(Hz * segundos));
+  const datos = new DataView(new ArrayBuffer(44 + n));
+  const txt = (pos, t) => { for (let i = 0; i < t.length; i++) datos.setUint8(pos + i, t.charCodeAt(i)); };
+  txt(0, 'RIFF'); datos.setUint32(4, 36 + n, true); txt(8, 'WAVE');
+  txt(12, 'fmt '); datos.setUint32(16, 16, true); datos.setUint16(20, 1, true);
+  datos.setUint16(22, 1, true); datos.setUint32(24, Hz, true);
+  datos.setUint32(28, Hz, true); datos.setUint16(32, 1, true); datos.setUint16(34, 8, true);
+  txt(36, 'data'); datos.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) {
+    const t = i / Hz;
+    const envolvente = 0.35 + 0.65 * Math.abs(Math.sin(2 * Math.PI * (t / 1.05)));
+    const tono = 150 + 55 * Math.sin(2 * Math.PI * 0.9 * t) + 30 * Math.sin(2 * Math.PI * 3.1 * t);
+    datos.setUint8(44 + i, 128 + Math.round(58 * envolvente * Math.sin(2 * Math.PI * tono * t)));
+  }
+  try {
+    vozDemo = URL.createObjectURL(new Blob([datos.buffer], { type: 'audio/wav' }));
+  } catch {
+    vozDemo = '';
+  }
+  return vozDemo;
+}
+
+// ---------- Datos del grupo de ejemplo ----------
+const grupoDemo = {
+  id: 7,
+  name: 'Fotografía nocturna',
+  about: 'Salimos a fotografiar la ciudad cuando se apagan las luces. Comparte aquí tus tomas y tus ajustes.',
+  privacy: 'public',
+  miembros: 4,
+  owner_id: 3,
+  soy_miembro: true,
+  es_mio: false,
+  created_at: hace(14000),
+};
+
+const chatDelGrupo = [
+  { id: 701, de: 3, texto: '¿Alguien sale esta noche? La luna está enorme y quiero probar el 35 mm.', creada: 260 },
+  { id: 702, de: 2, texto: 'Yo me apunto. Llevo el trípode y el filtro de densidad.', creada: 240 },
+  { id: 703, de: 4, texto: '', audio: 'VOZ', duracion: 3400, creada: 180 },
+  { id: 704, de: 3, texto: 'Escuchado, salimos a las 8 desde la plaza.', creada: 170 },
+];
+
+function miembroJSON(id) {
+  const p = perfiles.get(id);
+  return { id, username: p.username, display_name: p.display_name, avatar_url: p.avatar_url, is_verified: p.is_verified };
+}
+
+function mensajeDeGrupoJSON(m) {
+  const p = perfiles.get(m.de) || USUARIO;
+  return {
+    id: m.id,
+    group_id: grupoDemo.id,
+    user_id: m.de,
+    content: m.texto || '',
+    audio_url: m.audio === 'VOZ' ? vozDeEjemplo((m.duracion || 3400) / 1000) : (m.audio || ''),
+    duracion_ms: m.duracion || 0,
+    created_at: hace(m.creada),
+    username: p.username,
+    display_name: p.display_name,
+    avatar_url: p.avatar_url,
   };
 }
 
@@ -607,7 +682,7 @@ export function responder(metodo, ruta, cuerpo) {
             display_name: socio.display_name,
             avatar_url: socio.avatar_url,
             is_verified: socio.is_verified,
-            last_message: ultimo ? ultimo.texto : '',
+            last_message: ultimo ? (ultimo.texto || (ultimo.audio ? '🎤 Nota de voz' : '')) : '',
             updated_at: ultimo ? hace(ultimo.creada) : hace(9999),
             unread: conv.noLeidos,
           };
@@ -622,7 +697,15 @@ export function responder(metodo, ruta, cuerpo) {
       if (d === 'read') { conv.noLeidos = 0; return json({ ok: true }); }
 
       if (d === 'messages' && metodo === 'POST') {
-        const nuevo = { id: ++siguienteId, de: USUARIO.id, texto: cuerpo?.content || '', creada: 0, estado: 'sent' };
+        const nuevo = {
+          id: ++siguienteId,
+          de: USUARIO.id,
+          texto: cuerpo?.content || '',
+          audio: cuerpo?.audio_url || '',
+          duracion: Number(cuerpo?.duracion_ms || 0),
+          creada: 0,
+          estado: 'sent',
+        };
         conv.mensajes.push(nuevo);
         // El contacto «responde» para que la demostración se sienta viva.
         setTimeout(() => emitirDemo({ type: 'typing', conversation_id: conv.id, user_id: socio.id }), 700);
@@ -660,6 +743,88 @@ export function responder(metodo, ruta, cuerpo) {
       if (msg) { msg.texto = ''; msg.estado = 'deleted'; }
       return json({ ok: true });
     }
+  }
+
+  // ---- Grupos (modo demostración) ----
+  if (a === 'groups') {
+    if (b === 'messages') return json({ error: 'Falta el grupo' }, 404);
+    if (!b && metodo === 'GET') {
+      // Lista de grupos (para Explorar y el buscador).
+      return json(paginado([{ ...grupoDemo }], ruta));
+    }
+    const gid = Number(b) || grupoDemo.id;
+
+    // El chat del grupo: leer, escribir, borrar y contar.
+    if (c === 'messages') {
+      if (d === 'count') return json({ total: chatDelGrupo.length });
+      if (metodo === 'DELETE') {
+        const i = chatDelGrupo.findIndex((m) => m.id === Number(d));
+        if (i >= 0) {
+          chatDelGrupo.splice(i, 1);
+          emitirDemo({ type: 'group_message_deleted', group_id: gid, message_id: Number(d) });
+        }
+        return json({ ok: true });
+      }
+      if (metodo === 'POST') {
+        const nuevo = {
+          id: ++siguienteId,
+          de: USUARIO.id,
+          texto: cuerpo?.content || '',
+          audio: cuerpo?.audio_url || '',
+          duracion: Number(cuerpo?.duracion_ms || 0),
+          creada: 0,
+        };
+        chatDelGrupo.push(nuevo);
+        // Alguien del grupo contesta, para que se sienta vivo.
+        setTimeout(() => {
+          const quien = perfiles.get(2);
+          emitirDemo({ type: 'typing', group_id: gid, user_id: 2 });
+          setTimeout(() => {
+            const respuestas = [
+              '¡Buena! Lo vemos esta noche 👍',
+              'Anotado, llevo el objetivo largo.',
+              'Escucho tu nota en un momento.',
+              'Perfecto, nos vemos en la plaza.',
+            ];
+            const respuesta = {
+              id: ++siguienteId,
+              de: 2,
+              texto: respuestas[chatDelGrupo.length % respuestas.length],
+              creada: 0,
+            };
+            chatDelGrupo.push(respuesta);
+            emitirDemo({ type: 'group_message', group_id: gid, message: mensajeDeGrupoJSON(respuesta) });
+          }, 1900);
+        }, 900);
+        void quien;
+        return json(mensajeDeGrupoJSON(nuevo));
+      }
+      return json({ mensajes: chatDelGrupo.map(mensajeDeGrupoJSON), hay_mas: false });
+    }
+
+    if (c === 'posts') {
+      if (metodo === 'POST') {
+        const nueva = {
+          id: ++siguienteId, autor: USUARIO.id, creada: 0, likes: 0, comentarios: 0, guardados: 0,
+          meGusta: false, guardada: false, texto: cuerpo?.content || '', imagenes: [],
+        };
+        publicaciones.unshift(nueva);
+        return json(publicacionJSON(nueva));
+      }
+      return json(paginado([publicaciones[0], publicaciones[2]], ruta));
+    }
+
+    if (metodo === 'POST' || metodo === 'DELETE') return json({ ok: true });
+
+    return json({
+      ...grupoDemo,
+      miembros_lista: [
+        { ...miembroJSON(3), papel: 'owner' },
+        { ...miembroJSON(4), papel: 'member' },
+        { ...miembroJSON(2), papel: 'member' },
+        { ...miembroJSON(1), papel: 'member' },
+      ],
+    });
   }
 
   // ---- Reportes ----
