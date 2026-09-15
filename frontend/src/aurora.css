@@ -2411,3 +2411,860 @@ html, body { max-width: 100%; overflow-x: hidden; }
 @media (max-width: 720px) {
   .ajustes-migas { margin: 0 -10px; padding: 4px 12px 10px; }
 }
+
+/* ============================================================
+   §37 · Superficie continua (móvil, estándar de red social grande)
+   ============================================================
+   Reglas del lenguaje visual:
+   · Nada vive dentro de una caja. Todo se apoya en UNA superficie.
+   · Lo que separa es un separador de un píxel, nunca sombras ni huecos.
+   · El color aurora se usa como acento (acción, pestaña activa, avatares).
+   · Cabeceras pegadas arriba con fondo sólido y separador inferior.
+   · Rejillas y filas a sangre, con 16 px de aire lateral constante.
+   ============================================================ */
+
+@media (max-width: 860px) {
+  /* ---------- 37.1 Base: un solo lienzo ---------- */
+  :root {
+    --gutter: 16px;
+    --hair: rgba(17, 21, 50, 0.09);
+    --superficie: #ffffff;
+    --lienzo: #f0f2f6;
+  }
+  [data-theme='dark'] {
+    --hair: rgba(255, 255, 255, 0.1);
+    --superficie: #0e1014;
+    --lienzo: #07080b;
+  }
+
+  /* El cielo deja de competir: apenas un brillo aurora en el borde de arriba */
+  .cielo,
+  [data-theme='dark'] .cielo {
+    background: var(--lienzo) !important;
+  }
+  .cielo::before,
+  .cielo::after { display: none !important; }
+  .marco::before {
+    content: '';
+    position: fixed;
+    inset: 0 0 auto 0;
+    height: 220px;
+    z-index: -1;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.05) 42%, transparent);
+  }
+  [data-theme='dark'] .marco::before {
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.16), transparent 60%);
+  }
+
+  .marco[data-pantalla='completa'] .main { padding: 0 !important; }
+  .main > * { max-width: none; }
+
+  /* ---------- 37.2 Fuera las cajas ---------- */
+  .card,
+  .post,
+  .composer,
+  .topbar,
+  .page-head,
+  .tarjeta-rail,
+  .stat-card,
+  .hoja-cuerpo,
+  .panel,
+  .tabla-caja,
+  .crear-rapido,
+  .franja-en-linea,
+  .historias,
+  .ajustes-bloque,
+  .rejilla-uso,
+  .dato-uso,
+  .aviso-silencias,
+  .aviso-silenciadas,
+  .aviso-grupo,
+  .empty,
+  .perfil-cabecera,
+  .portada-grupo {
+    background: var(--superficie) !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    margin: 0 !important;
+  }
+  .card::before, .post::before, .composer::before { content: none !important; }
+
+  /* ---------- 37.3 Cabecera de sección: sólida, pegada, con separador ---------- */
+  .topbar,
+  .page-head {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: calc(10px + env(safe-area-inset-top)) calc(var(--gutter) - 2px) 10px;
+    border-bottom: 1px solid var(--hair) !important;
+  }
+  .topbar h1, .page-head h1 {
+    font-size: 20px;
+    font-weight: 750;
+    letter-spacing: -0.015em;
+    margin: 0;
+  }
+  .page-head .btn-nueva, .page-head .btn { padding: 8px 12px; font-size: 13px; }
+
+  /* ---------- 37.4 Publicaciones: filas de una superficie ---------- */
+  .post {
+    padding: 14px var(--gutter) 6px !important;
+    border-bottom: 1px solid var(--hair) !important;
+  }
+  .post-head { gap: 12px; align-items: flex-start; }
+  .post-head .avatar { width: 42px; height: 42px; font-size: 15px; }
+  .post-head .name { font-size: 15px; font-weight: 700; }
+  .post-head .name .at { font-weight: 500; }
+  .post-body {
+    margin: 2px 0 0 !important;
+    font-size: 15.5px;
+    line-height: 1.48;
+    letter-spacing: -0.003em;
+  }
+  .post-body-caja { margin-bottom: 8px; }
+  .post-images {
+    margin: 8px calc(-1 * var(--gutter)) 4px !important;
+    border-radius: 0 !important;
+    gap: 2px !important;
+  }
+  .post-images img, .post-images .foto { border-radius: 0 !important; }
+  .prueba-social {
+    margin: 8px calc(-1 * var(--gutter)) 0 !important;
+    padding: 8px var(--gutter) !important;
+    border-radius: 0 !important;
+    border-top: 1px solid var(--hair) !important;
+    border-bottom: 0 !important;
+  }
+  .post-actions {
+    margin: 8px calc(-1 * var(--gutter)) 0 !important;
+    padding: 4px 6px 2px !important;
+    border-top: 1px solid var(--hair) !important;
+    border-radius: 0 !important;
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .post-actions button {
+    justify-content: center;
+    padding: 10px 2px !important;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: 10px;
+  }
+  .post-actions button .etiqueta { font-size: 12.5px; }
+  .post-actions button .count { font-size: 12.5px; margin-left: 4px; }
+  .post-actions svg { width: 20px; height: 20px; }
+
+  /* ---------- 37.5 Crear y personas en línea: filas lisas ---------- */
+  .crear-rapido {
+    border-bottom: 1px solid var(--hair) !important;
+    border-radius: 0 !important;
+    padding: 12px var(--gutter) !important;
+    margin: 0 !important;
+  }
+  .crear-rapido .icono { width: 32px; height: 32px; }
+  .franja-en-linea {
+    border-bottom: 1px solid var(--hair) !important;
+    border-radius: 0 !important;
+    padding: 10px var(--gutter) !important;
+    margin: 0 !important;
+  }
+
+  /* ---------- 37.6 Historias: círculos a sangre, sin tarjeta ---------- */
+  .historias {
+    border-bottom: 1px solid var(--hair) !important;
+    border-radius: 0 !important;
+    padding: 12px var(--gutter) 10px !important;
+    margin: 0 !important;
+    overflow-x: auto;
+  }
+  .historias .historia.crear {
+    height: auto !important;
+    min-width: 0 !important;
+    width: 68px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .historias .historia.crear .aro { width: 60px; height: 60px; }
+  .historias .historia.crear .aro .relleno { width: 60px; height: 60px; }
+  .historias .historia.crear b {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--ink-2);
+    max-width: 68px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .historias .historia:not(.crear) { width: 68px; }
+  .historias .aro, .historias .aro .relleno { width: 60px; height: 60px; }
+
+  /* ---------- 37.7 Pestañas: subrayado aurora, sin pastilla ---------- */
+  .tabs, .tabs-inicio {
+    position: sticky;
+    top: 0;
+    z-index: 18;
+    display: flex;
+    gap: 0;
+    background: var(--superficie) !important;
+    border-bottom: 1px solid var(--hair) !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .tabs button, .tabs-inicio button {
+    flex: 1 1 0;
+    padding: 12px 6px 11px !important;
+    font-size: 14px !important;
+    font-weight: 650;
+    color: var(--ink-3);
+    border-radius: 0 !important;
+    background: transparent !important;
+    position: relative;
+  }
+  .tabs button.active, .tabs-inicio button.active { color: var(--accent) !important; }
+  .tabs button.active::after, .tabs-inicio button.active::after {
+    content: '';
+    position: absolute;
+    left: 22%;
+    right: 22%;
+    bottom: -1px;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+    background: var(--aurora-grad);
+  }
+  .tabs-buscar, .tabs-perfil { padding: 0 8px !important; }
+  .tabs-buscar button, .tabs-perfil button { flex: 1 1 auto !important; }
+
+  /* ---------- 37.8 Barra inferior: barra real, no pastilla flotante ---------- */
+  .bottom-nav {
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    transform: none !important;
+    border-radius: 0 !important;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom)) !important;
+    background: var(--superficie) !important;
+    border: 0 !important;
+    border-top: 1px solid var(--hair) !important;
+    box-shadow: 0 -1px 0 var(--hair) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .bottom-nav a, .bottom-nav button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--ink-3);
+    padding: 6px 0 !important;
+  }
+  .bottom-nav .active, .bottom-nav a.active, .bottom-nav button.active { color: var(--accent) !important; }
+  .bottom-nav svg { width: 23px !important; height: 23px !important; }
+  .bottom-nav .badge {
+    top: 2px !important;
+    right: 50% !important;
+    margin-right: -18px;
+    border: 2px solid var(--superficie);
+  }
+
+  /* ---------- 37.9 Mensajes: lista limpia y conversación a pantalla completa ---------- */
+  .marco[data-seccion='messages'] .page-head { border-bottom: 1px solid var(--hair) !important; }
+  .chat { display: block; }
+  .chat-list { padding: 0 !important; }
+  .chips-chat {
+    padding: 10px var(--gutter) 8px !important;
+    margin: 0 !important;
+    border-bottom: 1px solid var(--hair);
+    background: var(--superficie);
+  }
+  .chips-chat button {
+    border-radius: 8px !important;
+    padding: 7px 12px !important;
+    border-color: var(--hair) !important;
+    background: transparent !important;
+    color: var(--ink-2) !important;
+    font-size: 13px !important;
+  }
+  .chips-chat button.activo {
+    background: var(--accent) !important;
+    color: #fff !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+  .rail-search {
+    margin: 10px var(--gutter) 0 !important;
+    height: 40px;
+    border-radius: 10px !important;
+    background: rgba(120, 128, 170, 0.12) !important;
+    border-color: transparent !important;
+  }
+  [data-theme='dark'] .rail-search { background: rgba(255, 255, 255, 0.08) !important; }
+  .conv { padding: 11px var(--gutter) !important; border-radius: 0 !important; }
+  .conv .avatar-con-estado .avatar { width: 48px; height: 48px; font-size: 16px; }
+  .fila-conv .mas-conv { right: 6px; }
+  .marco[data-hilo='si'] .chat-thread .head {
+    border-radius: 0 !important;
+    padding: calc(8px + env(safe-area-inset-top)) var(--gutter) 8px 6px !important;
+    border-bottom: 1px solid var(--hair) !important;
+    background: var(--superficie) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .msg { border-radius: 16px !important; font-size: 15px !important; }
+  .chat-input { padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom)) !important; background: var(--superficie); border-top: 1px solid var(--hair) !important; }
+
+  /* ---------- 37.10 Ajustes: lista con separadores, sin tarjetas ---------- */
+  .ajustes-migas {
+    position: sticky;
+    top: 0;
+    z-index: 18;
+    background: var(--superficie);
+    border-bottom: 1px solid var(--hair);
+    padding: 10px 12px !important;
+    margin: 0 -0 !important;
+    scroll-snap-type: x proximity;
+  }
+  .ajustes-migas button {
+    border-radius: 8px !important;
+    border-color: var(--hair) !important;
+    background: transparent !important;
+    padding: 8px 11px !important;
+    font-size: 12.6px !important;
+    box-shadow: none !important;
+  }
+  .ajustes-migas button.active {
+    background: var(--accent) !important;
+    color: #fff !important;
+    border-color: transparent !important;
+  }
+  [data-theme='dark'] .ajustes-migas button { background: transparent !important; }
+  .ajustes-bloque { border-bottom: 1px solid var(--hair); padding-bottom: 6px; }
+  .ajustes-bloque .titulo {
+    padding: 16px var(--gutter) 6px;
+    font-size: 11.5px;
+    font-weight: 750;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+  }
+  .fila-ajuste {
+    padding: 12px var(--gutter) !important;
+    gap: 12px;
+    border-bottom: 1px solid var(--hair);
+    border-radius: 0 !important;
+  }
+  .fila-ajuste:last-child { border-bottom: 0; }
+  .fila-ajuste .texto b { font-size: 15px; font-weight: 650; }
+  .fila-ajuste .texto small { font-size: 12.8px; line-height: 1.4; }
+  .fila-ajuste .icono { width: 34px; height: 34px; border-radius: 10px; }
+  .ajustes-bloque .row { padding: 10px var(--gutter) 14px !important; }
+  .aviso-como-funciona { margin: 12px var(--gutter) 0 !important; border-radius: 10px !important; }
+
+  /* ---------- 37.11 Perfil: portada a sangre, números en fila con separadores ---------- */
+  .perfil-cabecera { padding: 0 !important; }
+  .profile-head, .perfil-cabecera .profile-head { padding: 0 !important; }
+  .perfil-cubierta, .perfil-cabecera .cubierta, .profile-head .cubierta {
+    height: 150px;
+    border-radius: 0 !important;
+    margin: 0 calc(-1 * 0px) !important;
+  }
+  .profile-head .avatar, .perfil-cabecera .avatar {
+    width: 92px; height: 92px; font-size: 30px;
+    border: 4px solid var(--superficie);
+  }
+  .rejilla-perfil, .profile-stats {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 0 !important;
+    background: var(--superficie);
+    border-bottom: 1px solid var(--hair);
+  }
+  .rejilla-perfil .stat-card, .profile-stats > * {
+    border-radius: 0 !important;
+    border: 0 !important;
+    border-right: 1px solid var(--hair) !important;
+    padding: 12px 4px !important;
+    text-align: center;
+  }
+  .rejilla-perfil .stat-card:last-child, .profile-stats > *:last-child { border-right: 0 !important; }
+  .rejilla-perfil .stat-card b, .profile-stats b { font-size: 17px; font-weight: 750; }
+  .rejilla-perfil .stat-card small, .profile-stats small { font-size: 11.5px; }
+  .perfil-cabecera .row { padding: 12px var(--gutter) !important; gap: 8px !important; border-bottom: 1px solid var(--hair); }
+  .rejilla-fotos, .galeria-perfil { gap: 2px !important; }
+  .rejilla-fotos img, .galeria-perfil img { border-radius: 0 !important; }
+
+  /* ---------- 37.12 Grupos: portada a sangre y pestañas con subrayado ---------- */
+  .portada-grupo { margin: 0 -0 !important; }
+  .cubierta-grupo { height: 140px !important; border-radius: 0 !important; }
+  .datos-grupo { padding: 14px var(--gutter) 12px !important; border-bottom: 1px solid var(--hair); }
+  .datos-grupo h1 { font-size: 21px; font-weight: 750; letter-spacing: -0.015em; }
+  .pestanas-grupo {
+    position: sticky;
+    top: 0;
+    z-index: 18;
+    display: flex !important;
+    gap: 0 !important;
+    background: var(--superficie) !important;
+    border-radius: 0 !important;
+    border-bottom: 1px solid var(--hair) !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .pestanas-grupo button {
+    flex: 1 1 0;
+    padding: 12px 6px 11px !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    color: var(--ink-3) !important;
+    font-size: 14px !important;
+    font-weight: 650;
+    position: relative;
+  }
+  .pestanas-grupo button.activa { color: var(--accent) !important; }
+  .pestanas-grupo button.activa::after {
+    content: '';
+    position: absolute;
+    left: 24%; right: 24%; bottom: -1px; height: 3px;
+    border-radius: 3px 3px 0 0;
+    background: var(--aurora-grad);
+  }
+  .cuerpo-grupo, .aside-grupo { padding: 0 !important; }
+  .lista-miembros { padding: 0 !important; }
+  .lista-miembros li { border-bottom: 1px solid var(--hair); border-radius: 0 !important; }
+  .tarjeta-rail { padding: 14px var(--gutter) !important; border-bottom: 1px solid var(--hair) !important; }
+
+  /* ---------- 37.13 Explorar y avisos ---------- */
+  .marco[data-seccion='explore'] .card { border-bottom: 1px solid var(--hair) !important; padding: 12px var(--gutter) !important; }
+  .suggest, .card.suggest {
+    border-bottom: 1px solid var(--hair) !important;
+    border-radius: 0 !important;
+    padding: 12px var(--gutter) !important;
+    margin: 0 !important;
+  }
+  .fila-etiqueta { padding: 12px var(--gutter) !important; }
+  .notif, .fila-aviso {
+    border-bottom: 1px solid var(--hair) !important;
+    border-radius: 0 !important;
+    padding: 12px var(--gutter) !important;
+  }
+
+  /* ---------- 37.14 Hojas y menús: limpios, con separadores ---------- */
+  .menu-conv, .menu-inicio, .hoja-cuerpo, .panel {
+    border-radius: 16px 16px 0 0 !important;
+    border: 0 !important;
+    border-top: 1px solid var(--hair) !important;
+    background: var(--superficie) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .menu-conv button, .menu-conv a, .menu-inicio .atajo {
+    border-radius: 10px !important;
+    padding: 13px 12px !important;
+    border-bottom: 1px solid var(--hair);
+  }
+  .menu-conv button:last-child, .menu-conv a:last-child { border-bottom: 0; }
+
+  /* ---------- 37.15 Botones: sólidos y planos ---------- */
+  .btn { border-radius: 10px !important; font-weight: 650; }
+  .btn-aurora, .btn-primary {
+    background: var(--accent) !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    border: 0 !important;
+    color: #fff !important;
+  }
+  .btn-outline { border: 1px solid var(--hair) !important; background: transparent !important; }
+  .chips-filtro button { border-radius: 8px !important; }
+  .fab { box-shadow: 0 10px 26px -12px rgba(99, 102, 241, 0.75) !important; }
+
+  /* Avisos flotantes (toast) */
+  .toast, .avisos-flotantes > * { border-radius: 10px !important; }
+}
+
+/* Cinta de progreso: fino, aurora */
+.barra-progreso span { background: var(--aurora-grad) !important; height: 2px !important; }
+
+/* ============================================================
+   §38 · Superficie continua, pasada de cascada (móvil)
+   ============================================================
+   Por qué existe esta capa y no bastaba §37:
+   La receta de «vidrio» de Aurora vive en reglas del tipo
+   `:root:not([data-theme='dark']) .card { … }`, con `!important` y
+   especificidad (0,3,0). Cualquier regla de una sola clase —por muy
+   posterior que sea— pierde contra ella. Aquí se espeja EXACTAMENTE esa
+   especificidad para el mismo conjunto de superficies y, al ir después
+   en la hoja, la aplanamos: una sola superficie, separadores de 1 px,
+   cero cajas, cero sombras, cero desenfoque.
+   ============================================================ */
+
+@media (max-width: 860px) {
+  /* ---------- 38.1 Neutralizador: mismas superficies, misma especificidad ---------- */
+  :root:not([data-theme='dark']) .card,
+  :root:not([data-theme='dark']) .post,
+  :root:not([data-theme='dark']) .composer,
+  :root:not([data-theme='dark']) .tarjeta-rail,
+  :root:not([data-theme='dark']) .leftrail .dock,
+  :root:not([data-theme='dark']) .rightrail .rail,
+  :root:not([data-theme='dark']) .chat-list,
+  :root:not([data-theme='dark']) .chat-thread,
+  :root:not([data-theme='dark']) .hoja-cuerpo,
+  :root:not([data-theme='dark']) .panel,
+  :root:not([data-theme='dark']) .tabla-caja,
+  :root:not([data-theme='dark']) .stat-card,
+  :root:not([data-theme='dark']) .topbar,
+  :root:not([data-theme='dark']) .page-head,
+  :root:not([data-theme='dark']) .ajustes-bloque,
+  :root:not([data-theme='dark']) .crear-rapido,
+  :root:not([data-theme='dark']) .franja-en-linea,
+  :root:not([data-theme='dark']) .historias,
+  :root:not([data-theme='dark']) .historias-sola,
+  :root:not([data-theme='dark']) .encuesta,
+  :root:not([data-theme='dark']) .aviso-grupo,
+  :root:not([data-theme='dark']) .aviso-silenciadas,
+  :root:not([data-theme='dark']) .panel-ajustes-grupo,
+  :root:not([data-theme='dark']) .perfil-cabecera,
+  :root:not([data-theme='dark']) .portada-grupo,
+  :root:not([data-theme='dark']) .cuerpo-grupo,
+  :root:not([data-theme='dark']) .dato-uso,
+  :root:not([data-theme='dark']) .rejilla-uso,
+  :root:not([data-theme='dark']) .empty,
+  :root:not([data-theme='dark']) .card.suggest,
+  :root:not([data-theme='dark']) .card.tarjeta-resultado,
+  :root:not([data-theme='dark']) .card.profile-head,
+  :root[data-theme='dark'] .card,
+  :root[data-theme='dark'] .post,
+  :root[data-theme='dark'] .composer,
+  :root[data-theme='dark'] .tarjeta-rail,
+  :root[data-theme='dark'] .leftrail .dock,
+  :root[data-theme='dark'] .rightrail .rail,
+  :root[data-theme='dark'] .chat-list,
+  :root[data-theme='dark'] .chat-thread,
+  :root[data-theme='dark'] .hoja-cuerpo,
+  :root[data-theme='dark'] .panel,
+  :root[data-theme='dark'] .tabla-caja,
+  :root[data-theme='dark'] .stat-card,
+  :root[data-theme='dark'] .topbar,
+  :root[data-theme='dark'] .page-head,
+  :root[data-theme='dark'] .ajustes-bloque,
+  :root[data-theme='dark'] .crear-rapido,
+  :root[data-theme='dark'] .franja-en-linea,
+  :root[data-theme='dark'] .historias,
+  :root[data-theme='dark'] .historias-sola,
+  :root[data-theme='dark'] .encuesta,
+  :root[data-theme='dark'] .aviso-grupo,
+  :root[data-theme='dark'] .aviso-silenciadas,
+  :root[data-theme='dark'] .panel-ajustes-grupo,
+  :root[data-theme='dark'] .perfil-cabecera,
+  :root[data-theme='dark'] .portada-grupo,
+  :root[data-theme='dark'] .cuerpo-grupo,
+  :root[data-theme='dark'] .dato-uso,
+  :root[data-theme='dark'] .rejilla-uso,
+  :root[data-theme='dark'] .empty,
+  :root[data-theme='dark'] .card.suggest,
+  :root[data-theme='dark'] .card.tarjeta-resultado,
+  :root[data-theme='dark'] .card.profile-head {
+    background: var(--superficie) !important;
+    background-image: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    margin: 0 !important;
+  }
+
+  /* Los relojes de arena y los vacíos no se ven: nada de cajas vacías */
+  .empty { padding: 34px var(--gutter) !important; }
+
+  /* ---------- 38.1b La app, a sangre: el aire lo pone cada sección ---------- */
+  /* Sin esto, los 10 px de relleno de .app dejaban ver el lienzo gris por los
+     lados y cada bloque volvía a leerse como una tarjeta flotante. */
+  .app, .marco .app { padding: 0 !important; max-width: none !important; }
+  .main { padding: 0 !important; gap: 0 !important; }
+  .main > * { border-radius: 0 !important; }
+  .contenido-principal, .main-inner { padding: 0 !important; }
+
+  /* ---------- 38.2 Portada del perfil: a sangre y con degradado aurora ---------- */
+  .profile-cover {
+    height: 150px !important;
+    border-radius: 0 !important;
+    background: var(--grad) !important;
+  }
+  .profile-head .profile-info { padding: 0 var(--gutter) !important; }
+  .profile-head .profile-bio { padding: 0 var(--gutter) !important; }
+  .profile-meta { padding: 0 var(--gutter) !important; }
+
+  /* Los botones de la cabecera del perfil: fila desplazable de píldoras planas */
+  .perfil-cabecera .row {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    gap: 8px !important;
+    overflow-x: auto !important;
+    scrollbar-width: none;
+    padding: 12px var(--gutter) 14px !important;
+    border-bottom: 1px solid var(--hair) !important;
+  }
+  .perfil-cabecera .row::-webkit-scrollbar { display: none; }
+  .perfil-cabecera .row > * { flex: 0 0 auto !important; }
+
+  /* ---------- 38.3 Botones: relleno plano, cero contorno ---------- */
+  .btn.btn-outline,
+  .btn-outline {
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(99, 102, 241, 0.09) !important;
+    background-image: none !important;
+    color: var(--ink) !important;
+    box-shadow: none !important;
+    font-weight: 620 !important;
+  }
+  .btn.btn-outline:hover { background: rgba(99, 102, 241, 0.15) !important; }
+  :root[data-theme='dark'] .btn.btn-outline { background: rgba(255, 255, 255, 0.09) !important; }
+  :root[data-theme='dark'] .btn.btn-outline:hover { background: rgba(255, 255, 255, 0.15) !important; }
+  .btn.btn-ghost { background: transparent !important; border: 0 !important; }
+  .btn.btn-danger {
+    border: 0 !important;
+    background: rgba(239, 68, 68, 0.11) !important;
+    color: #dc2626 !important;
+  }
+  :root[data-theme='dark'] .btn.btn-danger { background: rgba(248, 113, 113, 0.15) !important; color: #fca5a5 !important; }
+  .btn.btn-sm { padding: 8px 12px !important; font-size: 13px !important; }
+
+  /* Pestañas de Explorar y de Inicio: una sola fila, se desplaza en horizontal */
+  .tabs-buscar, .tabs-inicio, .tabs-perfil {
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tabs-buscar::-webkit-scrollbar, .tabs-inicio::-webkit-scrollbar, .tabs-perfil::-webkit-scrollbar { display: none; }
+  .tabs-buscar button, .tabs-inicio button, .tabs-perfil button { flex: 0 0 auto !important; }
+
+  /* ---------- 38.4 Campos de texto: relleno suave, sin contorno ---------- */
+  .input, .textarea, .campo input, .campo textarea, .buscador-top, .rail-search {
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(17, 21, 50, 0.055) !important;
+    box-shadow: none !important;
+  }
+  :root[data-theme='dark'] .input,
+  :root[data-theme='dark'] .textarea,
+  :root[data-theme='dark'] .buscador-top,
+  :root[data-theme='dark'] .rail-search { background: rgba(255, 255, 255, 0.07) !important; }
+  .input:focus, .textarea:focus, .buscador-top:focus-within {
+    box-shadow: 0 0 0 2px var(--accent-soft) !important;
+  }
+
+  /* ---------- 38.5 Chips de filtro: relleno plano, activo en aurora ---------- */
+  .chips-filtro button,
+  .chips-buscar button,
+  .chips-chat button {
+    border: 0 !important;
+    border-radius: 9px !important;
+    background: rgba(17, 21, 50, 0.055) !important;
+    color: var(--ink-2) !important;
+    box-shadow: none !important;
+    padding: 7px 12px !important;
+    font-size: 13px !important;
+  }
+  :root[data-theme='dark'] .chips-filtro button { background: rgba(255, 255, 255, 0.07) !important; }
+  .chips-filtro button.activo,
+  .chips-filtro button[aria-pressed='true'] {
+    background: var(--accent) !important;
+    color: #fff !important;
+  }
+  .chips-filtro button.activo svg,
+  .chips-filtro button[aria-pressed='true'] svg { color: #fff !important; }
+
+  /* ---------- 38.6 Migas de Ajustes: subrayado, no píldoras con borde ---------- */
+  .ajustes-migas button {
+    border: 0 !important;
+    border-radius: 9px !important;
+    background: transparent !important;
+    color: var(--ink-2) !important;
+    box-shadow: none !important;
+  }
+  .ajustes-migas button.active { background: var(--accent) !important; color: #fff !important; }
+
+  /* Iconos de Ajustes: círculo de color suave (no cuadros) */
+  .ajustes-bloque .icono,
+  .fila-ajuste .icono,
+  .ajustes-cabecera .icono,
+  .fila-ajuste .icono svg + span,
+  .card .icono {
+    border-radius: 50% !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  .ajustes-bloque .icono svg,
+  .fila-ajuste .icono svg { width: 17px; height: 17px; }
+
+  /* ---------- 38.7 Pestañas de grupo: subrayado aurora, ni una caja ---------- */
+  .pestanas-grupo {
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    border-bottom: 1px solid var(--hair) !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    padding: 0 !important;
+    gap: 4px !important;
+    margin: 0 !important;
+  }
+  .pestanas-grupo button {
+    position: relative;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 12px 10px !important;
+    color: var(--ink-3) !important;
+  }
+  .pestanas-grupo button.activa { color: var(--accent) !important; background: transparent !important; }
+  .pestanas-grupo button::after {
+    content: '';
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 0;
+    height: 2.5px;
+    border-radius: 3px;
+    background: var(--aurora-grad);
+    opacity: 0;
+  }
+  .pestanas-grupo button.activa::after { opacity: 1; }
+  .cubierta-grupo, .portada-grupo {
+    border-radius: 0 !important;
+    background-image: var(--grad) !important;
+  }
+
+  /* ---------- 38.8 Contenedores de pestañas: solo el filo de abajo ---------- */
+  .tabs {
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    border-bottom: 1px solid var(--hair) !important;
+    box-shadow: none !important;
+    padding: 0 8px !important;
+    gap: 4px !important;
+  }
+
+  /* ---------- 38.9 Burbujas del chat: planas, sin contorno ---------- */
+  .msg:not(.mine) {
+    background: rgba(17, 21, 50, 0.055) !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    color: var(--ink) !important;
+  }
+  :root[data-theme='dark'] .msg:not(.mine) { background: rgba(255, 255, 255, 0.08) !important; }
+  .msg.mine { border: 0 !important; box-shadow: none !important; }
+  .chat-input { border-top: 1px solid var(--hair) !important; }
+
+  /* ---------- 38.10 Filas con separador en listas y encuestas ---------- */
+  .lista-simple .fila-ajuste,
+  .fila-etiqueta,
+  .tabla-caja tr,
+  .menu-conv button,
+  .menu-conv a,
+  .menu-inicio .atajo { border-bottom: 1px solid var(--hair) !important; }
+  .lista-simple .fila-ajuste:last-child,
+  .fila-etiqueta:last-child,
+  .tabla-caja tr:last-child,
+  .menu-conv button:last-child,
+  .menu-conv a:last-child { border-bottom: 0 !important; }
+  .encuesta { padding: 12px var(--gutter) !important; border-top: 1px solid var(--hair) !important; }
+  .encuesta .opcion {
+    border: 0 !important;
+    border-radius: 9px !important;
+    background: rgba(17, 21, 50, 0.055) !important;
+  }
+  :root[data-theme='dark'] .encuesta .opcion { background: rgba(255, 255, 255, 0.07) !important; }
+  .encuesta .opcion.elegida { background: var(--accent-soft) !important; }
+
+  /* ---------- 38.10b Últimos recuadros sueltos ---------- */
+  /* Los números del perfil, sin fondo propio: solo separadores verticales */
+  .profile-stats > *,
+  .profile-stats span,
+  .perfil-cabecera .profile-stats span { background: transparent !important; background-image: none !important; }
+  /* Campos de búsqueda que aún traían contorno */
+  .buscador-en-linea {
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(17, 21, 50, 0.055) !important;
+    box-shadow: none !important;
+  }
+  :root[data-theme='dark'] .buscador-en-linea { background: rgba(255, 255, 255, 0.07) !important; }
+  /* Los avisos explicativos: barra de acento a la izquierda, no una caja */
+  .aviso-como-funciona {
+    margin: 12px var(--gutter) 0 !important;
+    padding: 3px 0 3px 12px !important;
+    border: 0 !important;
+    border-left: 3px solid var(--accent) !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    background-image: none !important;
+  }
+  /* Títulos de bloque: mismo aire lateral que el resto de la sección */
+  .titulo-bloque {
+    margin: 22px 0 8px !important;
+    padding: 0 var(--gutter) !important;
+    font-size: 11.5px !important;
+    letter-spacing: 0.09em !important;
+    color: var(--ink-3) !important;
+  }
+
+  /* ---------- 38.10c Tarjetas que aún flotaban (grupos, cifras, chat) ---------- */
+  /* Las tarjetas de grupo: filas de la misma superficie, separadas por un filo */
+  .tarjeta-grupo {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: var(--superficie) !important;
+    margin: 0 !important;
+  }
+  .tarjeta-grupo + .tarjeta-grupo { border-top: 1px solid var(--hair) !important; }
+  .tarjeta-grupo .cubierta { border-radius: 0 !important; }
+  .tarjeta-grupo .cuerpo { padding: 12px var(--gutter) 14px !important; }
+  /* Las cifras de la cuenta: números desnudos en fila, con filos verticales */
+  .cifra, .dato-uso {
+    background: transparent !important;
+    background-image: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+  .cifra + .cifra, .dato-uso + .dato-uso { border-left: 1px solid var(--hair) !important; }
+  /* El contenedor del chat: una sola superficie, sin esquina ni sombra */
+  .chat, .chat.hide-thread {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+  /* Las fotos de una publicación no llevan sombra: son la propia superficie */
+  .post-images, .post-images img, .post-body-caja { box-shadow: none !important; border-radius: 0 !important; }
+  .post-images { border: 0 !important; background: transparent !important; }
+
+  /* ---------- 38.11 Etiqueta de rol y contadores: planos ---------- */
+  .insignia-rol {
+    border: 0 !important;
+    background: rgba(99, 102, 241, 0.12) !important;
+    color: var(--accent) !important;
+  }
+}
