@@ -1,11 +1,19 @@
-// Moon — Aplicación (shell + routing por hash)
+// Moon — Aplicación (armazón + navegación por hash)
 // ============================================================
+// Estructura de tres columnas en escritorio (menú, contenido y descubrir),
+// una sola columna con barra inferior en móvil. Todo el «chrome» de la
+// aplicación vive aquí: avisos flotantes, diálogos, tema y contadores.
 
 import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './auth.jsx';
 import { parseHash } from './utils.js';
-import LeftNav from './components/LeftNav.jsx';
-import BottomNav from './components/BottomNav.jsx';
+import TopNav, { AccesosRapidos } from './components/TopNav.jsx';
+import LeftRail from './components/LeftRail.jsx';
+import BottomNav, { FloatingCompose } from './components/BottomNav.jsx';
+import RightRail from './components/RightRail.jsx';
+import Overlays from './components/Overlays.jsx';
+import DemoBanner from './components/DemoBanner.jsx';
+import { PostSkeleton } from './components/Skeleton.jsx';
 import AuthView from './views/AuthView.jsx';
 import ResetView from './views/ResetView.jsx';
 import FeedView from './views/FeedView.jsx';
@@ -17,8 +25,14 @@ import MessagesView from './views/MessagesView.jsx';
 import NotificationsView from './views/NotificationsView.jsx';
 import SettingsView from './views/SettingsView.jsx';
 import AdminView from './views/AdminView.jsx';
+import ContactosView from './views/ContactosView.jsx';
+import GruposView from './views/GruposView.jsx';
+import GrupoView from './views/GrupoView.jsx';
 import { realtime } from './realtime.js';
-import { setUnread, bump } from './unread.js';
+import { setUnread, bump, useUnread } from './unread.js';
+import { aplicarTema } from './theme.js';
+import { aplicar as aplicarPrefs, sonar, leer as leerPref } from './prefs.js';
+import { toast } from './ui.js';
 
 function useRoute() {
   const [route, setRoute] = useState(() => parseHash(window.location.hash));
@@ -30,13 +44,89 @@ function useRoute() {
   return route;
 }
 
-function Shell({ children }) {
+/** Barra fina de progreso mientras cambia de pantalla. */
+function BarraProgreso() {
+  const route = useRoute();
+  const [visible, setVisible] = useState(false);
+  const clave = route.parts.join('/');
+
+  useEffect(() => {
+    setVisible(true);
+    const t = setTimeout(() => setVisible(false), 420);
+    return () => clearTimeout(t);
+  }, [clave]);
+
+  if (!visible) return null;
   return (
-    <div className="app">
-      <LeftNav />
-      <main className="main">{children}</main>
-      <div className="rail" />
+    <div className="barra-progreso" aria-hidden="true"><span /></div>
+  );
+}
+
+/* El cielo aurora: vive detrás de todo y no intercepta toques. */
+function Cielo() {
+  return (
+    <div className="cielo" aria-hidden="true">
+      <span className="cielo-estrellas" />
+      <span className="cielo-estrellas-2" />
+    </div>
+  );
+}
+
+// Secciones que en el teléfono se comportan como pantalla completa: cada una
+// trae su propia cabecera y su propio scroll.
+const SECCIONES_PANTALLA = [
+  'feed', 'explore', 'grupos', 'grupo', 'messages', 'profile', 'user',
+  'notifications', 'settings', 'admin', 'amigos', 'contactos', 'contacts',
+];
+
+/** Aviso suave de descanso, según lo que se elija en Ajustes → Bienestar. */
+function RecordatorioDescanso() {
+  useEffect(() => {
+    let temporizador = null;
+    const armar = () => {
+      if (temporizador) clearTimeout(temporizador);
+      const minutos = Number(leerPref('bienestar') || 0);
+      if (!minutos) return;
+      temporizador = setTimeout(() => {
+        toast.info(`Llevas ${minutos} minutos en Moon: estírate y mira lejos un momento`);
+        armar();
+      }, minutos * 60 * 1000);
+    };
+    armar();
+    window.addEventListener('moon:prefs', armar);
+    return () => {
+      if (temporizador) clearTimeout(temporizador);
+      window.removeEventListener('moon:prefs', armar);
+    };
+  }, []);
+  return null;
+}
+
+function Shell({ children }) {
+  const route = useRoute();
+  const seccion = route.parts[0] || 'feed';
+  const enHilo = seccion === 'messages' && !!route.parts[1];
+  const completa = SECCIONES_PANTALLA.includes(seccion);
+  return (
+    <div
+      className="marco"
+      data-seccion={seccion}
+      data-pantalla={completa ? 'completa' : 'normal'}
+      data-hilo={enHilo ? 'si' : 'no'}
+    >
+      <Cielo />
+      <TopNav />
+      <div className="app">
+        <LeftRail />
+        <main className="main">
+          <DemoBanner />
+          {children}
+        </main>
+        <RightRail />
+      </div>
       <BottomNav />
+      <FloatingCompose />
+      <RecordatorioDescanso />
     </div>
   );
 }
@@ -51,6 +141,7 @@ function UnreadProvider({ children }) {
         bump('notification');
       } else if (ev.type === 'message') {
         bump('message');
+        sonar();
       } else if (ev.type === 'sync') {
         const data = ev.data || {};
         setUnread({ notifications: data.unread_notifications || 0, messages: data.unread_messages || 0 });
@@ -59,12 +150,21 @@ function UnreadProvider({ children }) {
     realtime.send({ type: 'sync' });
     return off;
   }, [user]);
-  // Cuando cambia la ruta, actualizar contadores desde el servidor.
+
+  // Al cambiar de ruta, pedir los contadores reales al servidor.
   useEffect(() => {
     if (!user) return;
     realtime.send({ type: 'sync' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [window.location.hash]);
+
+  // El título de la pestaña avisa de lo pendiente, como en las apps grandes.
+  const unread = useUnread();
+  useEffect(() => {
+    const total = (unread.notifications || 0) + (unread.messages || 0);
+    document.title = total > 0 ? `(${total > 9 ? '9+' : total}) Moon — red social` : 'Moon — red social';
+  }, [unread.notifications, unread.messages]);
+
   return children;
 }
 
@@ -95,6 +195,14 @@ function Router() {
       return <NotificationsView />;
     case 'settings':
       return <SettingsView tab={parts[1]} />;
+    case 'amigos':
+    case 'contactos':
+    case 'contacts':
+      return <ContactosView />;
+    case 'grupos':
+      return <GruposView />;
+    case 'grupo':
+      return <GrupoView id={parts[1]} />;
     case 'admin':
       return <AdminView tab={parts[1]} />;
     default:
@@ -107,16 +215,30 @@ function Navigate({ to }) {
   return null;
 }
 
+function Cargando() {
+  return (
+    <div aria-busy="true" aria-live="polite">
+      <span className="sr-only">Cargando Moon…</span>
+      <PostSkeleton etiqueta="Abriendo Moon…" alto="60vh" />
+    </div>
+  );
+}
+
 function Gate() {
   const { user, loading } = useAuth();
   const route = useRoute();
   const { parts } = route;
   const isAuthPage = ['login', 'register', 'reset'].includes(parts[0] || '');
+  const ruta = parts.join('/') || 'feed';
 
-  if (loading) return <div className="spinner" />;
+  useEffect(() => { aplicarTema(); aplicarPrefs(); }, []);
+
+  if (loading) return <Cargando />;
 
   if (!user) {
-    if (isAuthPage) return <Router />;
+    if (isAuthPage) {
+      return <div className="route-fade" key={ruta}><Router /></div>;
+    }
     return <Navigate to="#/login" />;
   }
 
@@ -124,7 +246,11 @@ function Gate() {
 
   return (
     <UnreadProvider>
-      <Shell><Router /></Shell>
+      <Shell>
+        <div className="route-fade" key={ruta}>
+          <Router />
+        </div>
+      </Shell>
     </UnreadProvider>
   );
 }
@@ -132,7 +258,9 @@ function Gate() {
 export default function App() {
   return (
     <AuthProvider>
+      <BarraProgreso />
       <Gate />
+      <Overlays />
     </AuthProvider>
   );
 }

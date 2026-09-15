@@ -192,6 +192,7 @@ fn h_media_upload(req: int, ctx: map) {
             processed = match processed {
                 Result::Ok(p) => p,
                 Result::Err(_) => nil,
+                _ => nil,
             }
             if processed == nil {
                 let _c = std::postgres::close(conn)

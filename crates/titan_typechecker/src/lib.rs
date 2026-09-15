@@ -219,14 +219,24 @@ pub enum TypeError {
 pub struct TypeDiagnostic {
     pub error: TypeError,
     pub span: Option<Span>,
+    /// Source file the diagnostic came from, when the program was loaded from
+    /// disk. `Span` knows the line and the column but not the file, so a
+    /// multi-file project used to report "94:9: type mismatch…" with no way to
+    /// tell which of the sources to open.
+    pub file: Option<String>,
 }
 
 impl std::fmt::Display for TypeDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(span) = self.span.filter(|span| span.line > 0 && span.column > 0) {
-            write!(formatter, "{}:{}: {}", span.line, span.column, self.error)
-        } else {
-            std::fmt::Display::fmt(&self.error, formatter)
+        let span = self.span.filter(|span| span.line > 0 && span.column > 0);
+        match (&self.file, span) {
+            (Some(file), Some(span)) => write!(
+                formatter,
+                "{}:{}:{}: {}",
+                file, span.line, span.column, self.error
+            ),
+            (None, Some(span)) => write!(formatter, "{}:{}: {}", span.line, span.column, self.error),
+            _ => std::fmt::Display::fmt(&self.error, formatter),
         }
     }
 }
@@ -262,6 +272,12 @@ pub struct TypeEnv {
     errors: Vec<TypeError>,
     error_spans: Vec<Option<Span>>,
     last_error_spans: Vec<Option<Span>>,
+    /// Source file each reported error belongs to, parallel to `error_spans`.
+    error_files: Vec<Option<String>>,
+    last_error_files: Vec<Option<String>>,
+    /// File of the declaration being checked, so a diagnostic that carries a
+    /// span can also say which source it lives in.
+    current_file: Option<String>,
     return_type: Type,
     return_candidates: Vec<Vec<Type>>,
     loop_depth: usize,
@@ -1199,6 +1215,9 @@ impl TypeEnv {
             errors: Vec::new(),
             error_spans: Vec::new(),
             last_error_spans: Vec::new(),
+            error_files: Vec::new(),
+            last_error_files: Vec::new(),
+            current_file: None,
             return_type: Type::Unknown,
             return_candidates: Vec::new(),
             loop_depth: 0,
@@ -1225,7 +1244,10 @@ impl TypeEnv {
         self.type_aliases.clear();
         self.errors.clear();
         self.error_spans.clear();
+        self.error_files.clear();
         self.last_error_spans.clear();
+        self.last_error_files.clear();
+        self.current_file = None;
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
@@ -1238,6 +1260,7 @@ impl TypeEnv {
         self.synchronize_error_spans();
         let mut validation_errors = std::mem::take(&mut self.errors);
         let mut validation_spans = std::mem::take(&mut self.error_spans);
+        let mut validation_files = std::mem::take(&mut self.error_files);
 
         // Unannotated function returns and global constants are inferred
         // together to a fixed point before the diagnostic pass. Both are
@@ -1269,14 +1292,18 @@ impl TypeEnv {
         // initial Unknown placeholders collected from unannotated methods.
         self.errors.clear();
         self.error_spans.clear();
+        self.error_files.clear();
         self.validate_impl_contracts(&program.items);
         self.synchronize_error_spans();
         validation_errors.append(&mut self.errors);
         validation_spans.append(&mut self.error_spans);
+        validation_files.append(&mut self.error_files);
 
         self.reset_analysis_state();
         self.errors = validation_errors;
         self.error_spans = validation_spans;
+        self.error_files = validation_files;
+        self.current_file = None;
         self.check_constants_in(&program.items);
         for item in &program.items {
             self.check_item(item);
@@ -1284,9 +1311,11 @@ impl TypeEnv {
         self.synchronize_error_spans();
         if self.errors.is_empty() {
             self.last_error_spans.clear();
+            self.last_error_files.clear();
             Ok(())
         } else {
             self.last_error_spans = std::mem::take(&mut self.error_spans);
+            self.last_error_files = std::mem::take(&mut self.error_files);
             Err(std::mem::take(&mut self.errors))
         }
     }
@@ -1300,12 +1329,14 @@ impl TypeEnv {
     ) -> Result<(), Vec<TypeDiagnostic>> {
         self.check_program(program).map_err(|errors| {
             let spans = std::mem::take(&mut self.last_error_spans);
+            let files = std::mem::take(&mut self.last_error_files);
             errors
                 .into_iter()
                 .enumerate()
                 .map(|(index, error)| TypeDiagnostic {
                     error,
                     span: spans.get(index).copied().flatten(),
+                    file: files.get(index).cloned().flatten(),
                 })
                 .collect()
         })
@@ -1313,13 +1344,30 @@ impl TypeEnv {
 
     fn synchronize_error_spans(&mut self) {
         self.error_spans.resize(self.errors.len(), None);
+        self.error_files.resize(self.errors.len(), None);
     }
 
     fn assign_error_span(&mut self, start: usize, span: Span) {
         self.synchronize_error_spans();
-        for error_span in self.error_spans.iter_mut().skip(start) {
-            if error_span.is_none() {
-                *error_span = Some(span);
+        let file = self.current_file.clone();
+        for index in start..self.errors.len() {
+            if self.error_spans[index].is_none() {
+                self.error_spans[index] = Some(span);
+            }
+            if self.error_files[index].is_none() {
+                self.error_files[index] = file.clone();
+            }
+        }
+    }
+
+    /// Attaches a source file to every error emitted since `start`, without
+    /// touching spans that a more precise location already filled in.
+    fn assign_error_file(&mut self, start: usize) {
+        self.synchronize_error_spans();
+        let file = self.current_file.clone();
+        for index in start..self.errors.len() {
+            if self.error_files[index].is_none() {
+                self.error_files[index] = file.clone();
             }
         }
     }
@@ -1328,6 +1376,7 @@ impl TypeEnv {
         self.synchronize_error_spans();
         self.errors.push(error);
         self.error_spans.push(Some(span));
+        self.error_files.push(self.current_file.clone());
     }
 
     fn reset_analysis_state(&mut self) {
@@ -1342,6 +1391,7 @@ impl TypeEnv {
         self.checked_constants.clear();
         self.errors.clear();
         self.error_spans.clear();
+        self.error_files.clear();
         self.return_type = Type::Unknown;
         self.return_candidates.clear();
         self.loop_depth = 0;
@@ -1357,6 +1407,18 @@ impl TypeEnv {
         for candidate in candidates.iter().skip(1) {
             let resolved = self.resolve_alias(candidate);
             if !compatible(&first_resolved, &resolved) && !compatible(&resolved, &first_resolved) {
+                // A function that only returns a value on some paths (or whose
+                // paths were merged with a dynamic value) has no single inferred
+                // result type. Report the empty type instead of rejecting the
+                // function: callers cannot use an absent value, and the branch
+                // that produced the value was already checked.
+                if first_resolved == Type::Unit
+                    || resolved == Type::Unit
+                    || first_resolved == Type::Unknown
+                    || resolved == Type::Unknown
+                {
+                    return Type::Unit;
+                }
                 self.errors.push(TypeError::InconsistentReturns {
                     name: name.into(),
                     first: first.clone(),
@@ -1369,9 +1431,16 @@ impl TypeEnv {
     }
 
     fn validate_declarations(&mut self, items: &[Item]) {
+        let previous = self.current_file.take();
+        for item in items {
+            if let Item::Function(function) = item {
+                self.current_file.clone_from(&function.source_file);
+            }
+        }
         for (error, span) in declaration_errors(&self.base_functions, items) {
             self.push_error_at(error, span);
         }
+        self.current_file = previous;
     }
 
     fn validate_type_aliases(&mut self, items: &[Item]) {
@@ -1823,7 +1892,9 @@ impl TypeEnv {
         for item in items {
             match item {
                 Item::Const(constant) => {
+                    let error_start = self.errors.len();
                     self.check_constant(&constant.name);
+                    self.assign_error_file(error_start);
                 }
                 Item::Module(module) => self.check_constants_in(&module.items),
                 _ => {}
@@ -1918,8 +1989,14 @@ impl TypeEnv {
 
     fn check_function(&mut self, function: &FunctionDecl) {
         let error_start = self.errors.len();
+        let previous_file =
+            std::mem::replace(&mut self.current_file, function.source_file.clone());
         self.check_function_inner(function);
+        // La ubicacion se asigna con el archivo de ESTA funcion todavia en
+        // curso: si se restaurase antes, los errores que solo reciben su
+        // ubicacion aqui se quedarian sin archivo que los identifique.
         self.assign_error_span(error_start, function.span);
+        self.current_file = previous_file;
     }
 
     fn check_function_inner(&mut self, function: &FunctionDecl) {
@@ -2709,6 +2786,8 @@ impl TypeEnv {
                 &self.resolve_alias(&else_type),
             ) {
                 then_type
+            } else if self.branch_types_may_differ(&then_type, &else_type, expected) {
+                self.join_branch_types(&then_type, &else_type)
             } else {
                 self.errors.push(TypeError::Mismatch {
                     expected: then_type,
@@ -2803,11 +2882,15 @@ impl TypeEnv {
                         current
                     }
                     Some(current) => {
-                        self.errors.push(TypeError::Mismatch {
-                            expected: current,
-                            found,
-                        });
-                        Type::Unknown
+                        if self.branch_types_may_differ(&current, &found, expected) {
+                            self.join_branch_types(&current, &found)
+                        } else {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: current,
+                                found,
+                            });
+                            Type::Unknown
+                        }
                     }
                 });
             }
@@ -4027,7 +4110,14 @@ impl TypeEnv {
         use BinaryOp::*;
         match op {
             Eq | Neq => {
-                self.require_compatible(&left, &right);
+                // `value == nil` is how the language asks whether a value is
+                // absent, so every type may be compared against `nil` — a typed
+                // array or map is only known to be non-nil at runtime.
+                let left_resolved = self.resolve_alias(&left);
+                let right_resolved = self.resolve_alias(&right);
+                if left_resolved != Type::Nil && right_resolved != Type::Nil {
+                    self.require_compatible(&left, &right);
+                }
                 Type::Bool
             }
             Lt | Gt | Lte | Gte => {
@@ -4110,6 +4200,47 @@ impl TypeEnv {
             _ => ty.clone(),
         }
     }
+
+    /// Whether two branch results of an `if`/`match` may differ without being a
+    /// type error.
+    ///
+    /// Only the value of a control-flow expression is affected by joining its
+    /// branches, so two shapes are harmless:
+    ///
+    /// * a gradual (`any`) context, where nothing about the result can be
+    ///   proven anyway, and
+    /// * an effect-only expression, where one branch produces a value while
+    ///   another just acts (`if ready { sink(x) } else { count = count + 1 }`).
+    ///   The value is discarded in that position, so demanding a common type
+    ///   would reject perfectly ordinary statement-level code.
+    fn branch_types_may_differ(
+        &self,
+        first: &Type,
+        second: &Type,
+        expected: Option<&Type>,
+    ) -> bool {
+        match expected {
+            Some(expected) => self.resolve_alias(expected) == Type::Unknown,
+            None => {
+                let first = self.resolve_alias(first);
+                let second = self.resolve_alias(second);
+                first == Type::Unit || second == Type::Unit
+            }
+        }
+    }
+
+    /// Result type of an `if`/`match` whose branches disagree but are allowed to
+    /// (see `branch_types_may_differ`).
+    fn join_branch_types(&self, first: &Type, second: &Type) -> Type {
+        let first = self.resolve_alias(first);
+        let second = self.resolve_alias(second);
+        if first == Type::Unit || second == Type::Unit {
+            Type::Unit
+        } else {
+            Type::Unknown
+        }
+    }
+
     fn require_compatible(&mut self, expected: &Type, found: &Type) {
         let expected_r = self.resolve_alias(expected);
         let found_r = self.resolve_alias(found);
@@ -5666,6 +5797,7 @@ fn native_type(ty: titan_stdlib::native::NativeType) -> Type {
         NativeType::Map => Type::Named("map".into()),
         NativeType::Option => Type::Named("Option".into()),
         NativeType::Nil => Type::Nil,
+        NativeType::Never => Type::Never,
     }
 }
 fn native_compatible(expected: &Type, found: &Type) -> bool {
@@ -5883,6 +6015,30 @@ mod tests {
     fn rejects_unknown_names() {
         assert!(check("fn main() { missing + 1 }").is_err());
     }
+    #[test]
+    fn diagnostics_name_the_source_file_when_the_program_has_one() {
+        // Un proyecto de varios archivos tiene que poder decir EN QUE archivo
+        // esta el error: el span solo conoce linea y columna, y con
+        // "94:9: type mismatch" no hay forma de saber cual de las fuentes hay
+        // que abrir.
+        let mut program = parse("fn main() {\n    1 + true\n}");
+        if let Item::Function(function) = &mut program.items[0] {
+            function.source_file = Some("src/math.titan".into());
+        }
+        let diagnostics = TypeEnv::new()
+            .check_program_diagnostics(&program)
+            .unwrap_err();
+        let invalid = diagnostics
+            .iter()
+            .find(|diagnostic| matches!(&diagnostic.error, TypeError::InvalidOperands { .. }))
+            .expect("expected invalid operands diagnostic");
+        assert_eq!(invalid.file.as_deref(), Some("src/math.titan"));
+        assert!(
+            invalid.to_string().starts_with("src/math.titan:2:5: "),
+            "{invalid}"
+        );
+    }
+
     #[test]
     fn reports_expression_diagnostic_spans() {
         let program = parse("fn main() {\n    1 + true\n}");
@@ -7067,5 +7223,58 @@ mod tests {
         assert!(diagnostic
             .to_string()
             .starts_with(&format!("{}:{}: ", span.line, span.column)));
+    }
+
+    #[test]
+    fn statement_position_branches_need_no_common_type() {
+        // One branch acts, the other produces a value: nothing consumes the
+        // value of the `if`, so the two branches may differ.
+        let source = "fn act() {} fn run(flag: bool) { let mut n = 0 if flag { act() } else { n = 1 } }";
+        assert!(check(source).is_ok());
+        // The same rule applies to the arms of a `match` used as a statement.
+        let source = "fn read(flag: bool) { let value = match flag { true => { } false => 1 } }";
+        assert!(check(source).is_ok());
+        // Two real values must still agree.
+        let source = "fn choose(flag: bool) { let value = if flag { 1 } else { \"no\" } }";
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn dynamic_branches_need_no_common_type() {
+        // A gradual (`any`) result proves nothing about its arms, and every arm
+        // was already checked against the declared contract.
+        let source = "fn read() -> any { match 1 { 1 => nil, _ => std::map::new() } }";
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn a_function_that_only_sometimes_returns_a_value_has_no_result_type() {
+        let source = "fn read(flag: bool) { if flag { return 1 } }";
+        assert!(check(source).is_ok());
+        // Two different value types are still inconsistent.
+        let source = "fn read(flag: bool) { if flag { return 1 } return \"no\" }";
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn exit_never_returns_to_its_caller() {
+        let source = "fn halt(c: bool) -> int { if c { std::process::exit(1) } else { 2 } }";
+        assert!(check(source).is_ok());
+        let source = "fn pick(flag: bool) -> map { if flag { std::map::new() } else { std::process::exit(1) } }";
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn every_value_can_be_compared_against_nil() {
+        let source = "fn main() { let mut rows: array = [] if rows == nil { rows = [] } }";
+        assert!(check(source).is_ok());
+        let source = "fn main() { let mut m = std::map::new() if m != nil { m = std::map::new() } }";
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn a_dash_on_its_own_line_is_not_a_subtraction() {
+        let source = "fn read() -> int { print(\"x\")\n-1 }";
+        assert!(check(source).is_ok());
     }
 }

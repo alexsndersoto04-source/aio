@@ -20,7 +20,7 @@ fn hp_process_hashtags(conn: Postgres, post_id: int, content: string) {
     }
 }
 
-fn hp_process_mentions(conn: Postgres, hub: int, post_id: int, content: string, from_uid: int) {
+fn hp_process_mentions(conn: Postgres, hub: Sender, post_id: int, content: string, from_uid: int) {
     let mentions = v_mentions(content)
     for name in mentions {
         let user = q_user_by_username(conn, name)
@@ -56,6 +56,12 @@ fn h_posts_create(req: int, ctx: map) {
     let conn = db_acquire(pool)
     if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
     let clean = v_clean_text(content_input, CFG_POST_MAX_CHARS)
+    // Solo espacios no es un post (la limpieza ya recortó el texto).
+    if clean == "" && images == nil {
+        let _c = std::postgres::close(conn)
+        r_err(req, 400, "El post debe tener contenido o al menos una imagen")
+        return
+    }
     // Moderación automática real (SPEC §7)
     let bad = v_blocked_word(conn, clean)
     if bad != "" {
@@ -361,7 +367,7 @@ fn h_posts_comment(req: int, ctx: map, post_id: int, parent_id: int) {
         }
         parent_final = parent_id
     }
-    let _ = db_exec(conn, "INSERT INTO comments (post_id, user_id, parent_id, content) VALUES (?, ?, ?, ?)", [post_id, uid, parent_final, clean])
+    let _ = db_exec(conn, "INSERT INTO comments (post_id, user_id, parent_id, content) VALUES (?, ?, NULLIF(?, 0::bigint), ?)", [post_id, uid, parent_final, clean])
     let _ = db_exec(conn, "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?", [post_id])
     r_bump_stats(conn, "new_comments")
     let hub = std::map::get(ctx, "hub")

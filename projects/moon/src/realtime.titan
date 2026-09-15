@@ -13,7 +13,7 @@
 // Eventos salientes al cliente: message, notification, typing, read,
 // presence, pong, sync, error. (SPEC §5)
 
-fn rt_start() -> int {
+fn rt_start() -> Sender {
     let endpoints = channel(2048)
     let tx = endpoints[0]
     let rx = endpoints[1]
@@ -116,11 +116,11 @@ fn rt_start() -> int {
 // Envía por el hub sin bloquear al emisor: si el canal está lleno se
 // pierde el evento (trade-off documentado para plan free) pero jamás
 // bloquea un request HTTP.
-fn rt_emit(hub: int, uid: int, payload: string) {
+fn rt_emit(hub: Sender, uid: int, payload: string) {
     let _ = std::try::catch(|| send(hub, ["emit", uid, payload]))
 }
 
-fn rt_broadcast(hub: int, payload: string) {
+fn rt_broadcast(hub: Sender, payload: string) {
     let _ = std::try::catch(|| send(hub, ["broadcast", payload]))
 }
 
@@ -157,32 +157,34 @@ fn rt_try_send(ws: int, payload: string) -> bool {
 fn rt_handle_ws(req: int, ctx: map) {
     let pool = std::map::get(ctx, "pool")
     let hub = std::map::get(ctx, "hub")
+    // El token se lee ANTES de subir la conexión: `upgrade_websocket` se
+    // queda con el request (lo saca del registro y le entrega el socket), así
+    // que después ya no se puede consultar nada de él. Hacerlo al revés
+    // terminaba en «unknown request handle»: la conexión se abría, el servidor
+    // se caía dentro del manejador y nunca se registraba en el hub, por lo que
+    // no llegaba ningún evento en vivo.
+    let q = qs_map(req)
+    let token = std::map::get(q, "token")
+    if token == nil {
+        r_err(req, 401, "Token requerido para el WebSocket")
+        return
+    }
+    let claims = a_verify(token)
+    if claims == nil {
+        r_err(req, 401, "Token inválido")
+        return
+    }
+    let uid = a_uid(claims)
+    if uid <= 0 {
+        r_err(req, 401, "Token inválido")
+        return
+    }
     let ws_opt = std::try::catch(|| std::server::upgrade_websocket(req, 262144))
     match ws_opt {
         Result::Err(_) => {
             let _ = std::try::catch(|| r_err(req, 400, "Upgrade de WebSocket fallido"))
-            return
         },
         Result::Ok(ws) => {
-            let q = qs_map(req)
-            let token = std::map::get(q, "token")
-            if token == nil {
-                rt_try_send(ws, "{\"type\":\"error\",\"message\":\"token requerido\"}")
-                let _ = std::try::catch(|| std::server::ws_close(ws, 4401, "no token"))
-                return
-            }
-            let claims = a_verify(token)
-            if claims == nil {
-                rt_try_send(ws, "{\"type\":\"error\",\"message\":\"token inválido\"}")
-                let _ = std::try::catch(|| std::server::ws_close(ws, 4401, "bad token"))
-                return
-            }
-            let uid = a_uid(claims)
-            if uid <= 0 {
-                rt_try_send(ws, "{\"type\":\"error\",\"message\":\"token inválido\"}")
-                let _ = std::try::catch(|| std::server::ws_close(ws, 4401, "bad token"))
-                return
-            }
             let _ = std::try::catch(|| send(hub, ["register", uid, ws]))
             let welcome = "{\"type\":\"connected\",\"user_id\":" + uid + "}"
             let _ = std::try::catch(|| std::server::ws_send_text(ws, welcome))
@@ -211,7 +213,7 @@ fn rt_handle_ws(req: int, ctx: map) {
 }
 
 // Procesa un mensaje JSON entrante del cliente.
-fn rt_handle_message(pool: PostgresPool, hub: int, uid: int, ws: int, text: string) {
+fn rt_handle_message(pool: PostgresPool, hub: Sender, uid: int, ws: int, text: string) {
     let parsed = std::try::catch(|| std::json::parse(text))
     match parsed {
         Result::Err(_) => {

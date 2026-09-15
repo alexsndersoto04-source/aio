@@ -176,7 +176,7 @@ fn a_new_code() -> string {
 
 fn a_store_code(conn: Postgres, uid: int, kind: string, raw_code: string, ttl_minutes: int) -> int {
     let hashed = std::encoding::hex_encode(std::hash::sha256_bytes(std::encoding::utf8_encode(raw_code)))
-    let _ = db_exec(conn, "INSERT INTO recovery_tokens (user_id, kind, code_hash, expires_at) VALUES (?, ?, ?, NOW() + INTERVAL '" + ttl_minutes + " minutes')", [uid, kind, hashed])
+    let _ = db_exec(conn, "INSERT INTO recovery_tokens (user_id, token_hash, kind, code_hash, expires_at) VALUES (?, ?, ?, ?, NOW() + INTERVAL '" + ttl_minutes + " minutes')", [uid, hashed, kind, hashed])
     // Retorna id de la fila para revocar usos
     let row = db_one(conn, "SELECT id FROM recovery_tokens WHERE user_id = ? AND kind = ? AND code_hash = ? ORDER BY id DESC LIMIT 1", [uid, kind, hashed])
     if row == nil { return 0 }
@@ -196,7 +196,7 @@ fn a_verify_code(conn: Postgres, uid: int, kind: string, raw_code: string) -> bo
 fn a_store_recovery_token(conn: Postgres, uid: int) -> string {
     let raw = a_new_secret_token()
     let hashed = a_hash_token(raw)
-    let _ = db_exec(conn, "INSERT INTO recovery_tokens (user_id, kind, code_hash, expires_at) VALUES (?, 'recovery', ?, NOW() + INTERVAL '15 minutes')", [uid, hashed])
+    let _ = db_exec(conn, "INSERT INTO recovery_tokens (user_id, token_hash, kind, code_hash, expires_at) VALUES (?, ?, 'recovery', ?, NOW() + INTERVAL '15 minutes')", [uid, hashed, hashed])
     raw
 }
 

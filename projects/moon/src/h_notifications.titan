@@ -56,7 +56,7 @@ fn h_notifications_prefs(req: int, ctx: map) {
     let uid = a_uid(claims)
     let conn = db_acquire(pool)
     if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
-    let row = db_one(conn, "SELECT follow, like, comment, reply, mention, message, system FROM notification_prefs WHERE user_id = ?", [uid])
+    let row = db_one(conn, "SELECT follow, \"like\", comment, reply, mention, message, system FROM notification_prefs WHERE user_id = ?", [uid])
     let _c = std::postgres::close(conn)
     if row == nil {
         let mut dflt = std::map::new()
@@ -89,7 +89,7 @@ fn h_notifications_prefs_update(req: int, ctx: map) {
     let system = v_body_bool(body, "system", true)
     let conn = db_acquire(pool)
     if conn == nil { r_err(req, 503, "Base de datos no disponible"); return }
-    let _ = db_exec(conn, "INSERT INTO notification_prefs (user_id, follow, like, comment, reply, mention, message, system) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET follow = EXCLUDED.follow, like = EXCLUDED.like, comment = EXCLUDED.comment, reply = EXCLUDED.reply, mention = EXCLUDED.mention, message = EXCLUDED.message, system = EXCLUDED.system", [uid, follow, like, comment, reply, mention, message, system])
+    let _ = db_exec(conn, "INSERT INTO notification_prefs (user_id, follow, \"like\", comment, reply, mention, message, system) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET follow = EXCLUDED.follow, \"like\" = EXCLUDED.\"like\", comment = EXCLUDED.comment, reply = EXCLUDED.reply, mention = EXCLUDED.mention, message = EXCLUDED.message, system = EXCLUDED.system", [uid, follow, like, comment, reply, mention, message, system])
     let _c = std::postgres::close(conn)
     r_no_content(req)
 }

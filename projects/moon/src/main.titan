@@ -220,6 +220,7 @@ fn main_dispatch(r: int, req: int, ctx: map) {
     }
     let tag = hit.pattern
     let params = hit.params
+    if std::env::get("MOON_TRACE") != nil { print("[req] ruta " + tag) }
 
     // ---- Sistema ----
     if tag == "health" { if r_expect_method(req, "GET") { h_health(req, ctx) } return }
@@ -540,6 +541,16 @@ fn main_accept_once(s: int, control: ServerControl, r: int, ctx: map, req: int) 
 // Una conexión completa se atiende en su propia tarea; al terminar se
 // libera el slot del control de backpressure.
 fn main_handle_connection(r: int, req: int, ctx: map, control: ServerControl) {
+    // Traza opcional (MOON_TRACE=1): sirve para ver hasta dónde llega cada
+    // petición cuando algo se queda colgado. Sin la variable no imprime nada.
+    let traza = std::env::get("MOON_TRACE") != nil
+    if traza {
+        let info = std::try::catch(|| std::server::method(req) + " " + std::server::path(req))
+        match info {
+            Result::Ok(t) => { print("[req] inicio " + t) },
+            Result::Err(_) => { print("[req] inicio (petición ilegible)") },
+        }
+    }
     let attempt = std::try::catch(|| main_dispatch(r, req, ctx))
     match attempt {
         Result::Err(msg) => {
@@ -548,6 +559,7 @@ fn main_handle_connection(r: int, req: int, ctx: map, control: ServerControl) {
         },
         Result::Ok(_) => {}
     }
+    if traza { print("[req] fin") }
     let _ = std::try::catch(|| std::server::release(control))
 }
 

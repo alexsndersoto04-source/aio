@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { toast, pedirTexto, avisoError } from '../ui.js';
 import { useAuth } from '../auth.jsx';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
@@ -43,7 +44,7 @@ export default function PostView({ id }) {
       setComments(res || []);
     } catch (e) {
       if (e.status === 404) setNotFound(true);
-      else alert(e.message);
+      else avisoError(e);
     }
   }
 
@@ -59,18 +60,23 @@ export default function PostView({ id }) {
       setDraft('');
       setPost((p) => ({ ...p, comments_count: (p.comments_count || 0) + 1 }));
     } catch (err) {
-      alert(err.message);
+      avisoError(err);
     } finally {
       setBusy(false);
     }
   }
 
-  function report() {
-    const reason = window.prompt('Motivo del reporte:', '');
+  async function report() {
+    const reason = await pedirTexto({
+      title: 'Reportar publicación',
+      label: '¿Por qué la reportas?',
+      placeholder: 'Spam, acoso, contenido inapropiado…',
+      confirmText: 'Enviar reporte',
+    });
     if (!reason) return;
     api.post('/api/reports', { target_type: 'post', target_id: id, reason, detail: '' })
-      .then(() => alert('Reporte enviado.'))
-      .catch((e) => alert(e.message));
+      .then(() => toast.ok('Reporte enviado. Gracias por cuidar Moon.'))
+      .catch(avisoError);
   }
 
   if (notFound) return <div className="card empty"><h3>Publicación no encontrada</h3></div>;

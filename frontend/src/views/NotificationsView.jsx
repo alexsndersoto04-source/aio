@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { avisoError } from '../ui.js';
 import Avatar from '../components/Avatar.jsx';
 import { timeAgo } from '../utils.js';
 import { realtime } from '../realtime.js';
@@ -13,6 +14,8 @@ const KIND_LABEL = {
   reply: 'respondió tu comentario',
   mention: 'te mencionó',
   message: 'te envió un mensaje',
+  group_join: 'se unió a tu grupo',
+  group_post: 'publicó en tu grupo',
   system: '',
 };
 
@@ -25,7 +28,7 @@ export default function NotificationsView() {
       const res = await api.get('/api/notifications?page=1&limit=30');
       setItems(res.items || []);
     } catch (e) {
-      alert(e.message);
+      avisoError(e);
     } finally {
       setLoading(false);
     }
