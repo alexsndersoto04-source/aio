@@ -1,48 +1,114 @@
 // Moon — Envío de correo
 // ============================================================
-// Usa SMTP si está configurado (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
-// SMTP_FROM). Si no lo está —por ejemplo en desarrollo— no manda nada y lo
-// informa, sin romper el flujo: el código o el enlace se devuelven en la
-// respuesta para poder terminar la operación.
+// Dos caminos, el que esté configurado:
+//
+//   1. Resend (recomendado, gratis): basta con pegar la clave en la variable
+//      RESEND_API_KEY en Render. No hay que tocar nada más.
+//   2. SMTP (cualquier proveedor): SMTP_HOST, SMTP_PORT, SMTP_USER,
+//      SMTP_PASS, SMTP_FROM.
+//
+// Si no hay ninguno, Moon no rompe nada: informa que no se pudo enviar y
+// devuelve el código o el enlace en la respuesta para poder continuar.
 
 import nodemailer from 'nodemailer';
 
 let transporte = null;
-let configurado = null;
+let smtpListo = false;
+let smtpRevisado = false;
+
+export function correoConfigurado() {
+  return !!process.env.RESEND_API_KEY || !!(process.env.SMTP_HOST && (process.env.SMTP_FROM || process.env.SMTP_USER));
+}
+
+export function viaDeCorreo() {
+  if (process.env.RESEND_API_KEY) return 'resend';
+  if (process.env.SMTP_HOST) return 'smtp';
+  return '';
+}
 
 function obtenerTransporte() {
-  if (configurado !== null) return transporte;
+  if (smtpRevisado) return smtpListo ? transporte : null;
+  smtpRevisado = true;
   const host = process.env.SMTP_HOST || '';
   const puerto = Number(process.env.SMTP_PORT || 587);
   const usuario = process.env.SMTP_USER || '';
   const clave = process.env.SMTP_PASS || '';
   const remitente = process.env.SMTP_FROM || usuario || '';
 
-  if (!host || !remitente) {
-    configurado = false;
-    transporte = null;
-    return transporte;
-  }
+  if (!host || !remitente) { smtpListo = false; return null; }
   transporte = nodemailer.createTransport({
-    host,
-    port: puerto,
-    secure: puerto === 465,
+    host, port: puerto, secure: puerto === 465,
     auth: usuario ? { user: usuario, pass: clave } : undefined,
   });
-  configurado = true;
+  smtpListo = true;
   return transporte;
 }
 
-export async function enviarCorreo(destino, asunto, cuerpoTexto) {
+function remitentePorDefecto() {
+  return process.env.MAIL_FROM
+    || process.env.SMTP_FROM
+    || process.env.SMTP_USER
+    || 'Moon <onboarding@resend.dev>';
+}
+
+/** Envía por la API de Resend (una sola clave, sin configurar servidor). */
+async function enviarConResend(destino, asunto, cuerpoTexto, adjunto) {
+  const cuerpo = {
+    from: remitentePorDefecto(),
+    to: [destino],
+    subject: asunto,
+    text: cuerpoTexto,
+  };
+  if (adjunto) {
+    cuerpo.attachments = [{
+      filename: adjunto.nombre,
+      content: adjunto.contenido.toString('base64'),
+    }];
+  }
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(cuerpo),
+  });
+  if (!res.ok) {
+    const detalle = await res.text().catch(() => '');
+    throw new Error(`Resend respondió ${res.status}: ${detalle.slice(0, 200)}`);
+  }
+  return true;
+}
+
+/**
+ * Envía un correo. `adjunto` es opcional: { nombre, contenido (Buffer) }.
+ * Nunca lanza: devuelve { enviado: true|false }.
+ */
+export async function enviarCorreo(destino, asunto, cuerpoTexto, { adjunto = null } = {}) {
+  if (!destino) return { enviado: false, error: 'sin destinatario' };
+
+  if (process.env.RESEND_API_KEY) {
+    try {
+      await enviarConResend(destino, asunto, cuerpoTexto, adjunto);
+      return { enviado: true, via: 'resend' };
+    } catch (e) {
+      console.error('[correo] Resend falló:', e.message);
+      return { enviado: false, error: e.message };
+    }
+  }
+
   const t = obtenerTransporte();
-  const remitente = process.env.SMTP_FROM || process.env.SMTP_USER || 'moon@localhost';
   if (!t) {
-    console.log(`[correo] sin SMTP configurado; no se envía a ${destino}: ${asunto}`);
+    console.log(`[correo] sin correo configurado; no se envía a ${destino}: ${asunto}`);
     return { enviado: false };
   }
   try {
-    await t.sendMail({ from: remitente, to: destino, subject: asunto, text: cuerpoTexto });
-    return { enviado: true };
+    const mensaje = { from: remitentePorDefecto(), to: destino, subject: asunto, text: cuerpoTexto };
+    if (adjunto) {
+      mensaje.attachments = [{ filename: adjunto.nombre, content: adjunto.contenido }];
+    }
+    await t.sendMail(mensaje);
+    return { enviado: true, via: 'smtp' };
   } catch (e) {
     console.error('[correo] fallo al enviar:', e.message);
     return { enviado: false, error: e.message };

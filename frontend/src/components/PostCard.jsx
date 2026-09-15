@@ -73,6 +73,65 @@ function PruebaSocial({ post }) {
   );
 }
 
+/** Encuesta dentro de una publicación: se vota y se ven los resultados. */
+function Encuesta({ post, onCambio }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const p = post.poll;
+  if (!p || p === true) return null;
+
+  const votado = (p.mi_voto || []).length > 0;
+  const mostrarResultados = votado || p.cerrada;
+  const misVotos = p.mi_voto || [];
+
+  async function votar(i) {
+    if (busy || p.cerrada) return;
+    setBusy(true);
+    setError('');
+    try {
+      const res = await api.post(`/api/posts/${post.id}/vote`, { opcion: i });
+      if (onCambio) onCambio(res);
+    } catch (e) {
+      setError(e.message || 'No se pudo votar');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="encuesta" role="group" aria-label="Encuesta">
+      {p.pregunta ? <p className="pregunta">{p.pregunta}</p> : null}
+      <div className="opciones">
+        {p.opciones.map((o, i) => {
+          const marcada = misVotos.includes(i);
+          return (
+            <button
+              key={i}
+              type="button"
+              className={`opcion${marcada ? ' marcada' : ''}`}
+              onClick={() => votar(i)}
+              disabled={busy || p.cerrada}
+              aria-pressed={marcada}
+            >
+              {mostrarResultados ? <span className="barra" style={{ width: `${o.porcentaje}%` }} aria-hidden="true" /> : null}
+              <span className="texto">{o.texto}</span>
+              {mostrarResultados ? <span className="porcentaje">{o.porcentaje}%</span> : null}
+              {marcada ? <span className="hecho">✓</span> : null}
+            </button>
+          );
+        })}
+      </div>
+      <div className="pie-encuesta">
+        <span>{p.total} {p.total === 1 ? 'voto' : 'votos'}</span>
+        <span>·</span>
+        <span>{p.cerrada ? 'Encuesta cerrada' : votado ? 'Ya votaste' : 'Toca para votar'}</span>
+        {p.multiple ? <span className="pastilla">varias respuestas</span> : null}
+      </div>
+      {error ? <p className="error-encuesta">{error}</p> : null}
+    </div>
+  );
+}
+
 function PostMenu({ post, onDelete, onEdit, onReport }) {
   const { user } = useAuth();
   const [abierto, setAbierto] = useState(false);
@@ -310,6 +369,8 @@ export default function PostCard({ post, onChanged, compact = false }) {
       ) : (
         <p className="post-body" dangerouslySetInnerHTML={{ __html: linkify(p.content) }} />
       )}
+
+      <Encuesta post={p} onCambio={aplicar} />
 
       {imagenes.length > 0 ? (
         <div className={`post-images count-${Math.min(imagenes.length, 4)}`}>

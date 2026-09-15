@@ -117,6 +117,7 @@ const publicaciones = [
   { id: 101, autor: 1, creada: 22, likes: 128, comentarios: 14, guardados: 9, meGusta: true, guardada: true, texto: 'Terminé el rediseño de Moon con el sistema «Órbita». Menos ruido, más foco y por fin un modo oscuro de verdad. ¿Qué os parece? #diseño #moon', imagenes: [foto('#4f46e5', '#06b6d4', 1)] },
   { id: 102, autor: 3, creada: 55, likes: 342, comentarios: 28, guardados: 40, meGusta: false, guardada: false, texto: 'Consejo del día: antes de optimizar, mide. Cambiamos una consulta y pasamos de 900 ms a 40 ms. El 80 % del trabajo estaba en índices mal puestos. #rendimiento', imagenes: [] },
   { id: 103, autor: 2, creada: 130, likes: 89, comentarios: 6, guardados: 12, meGusta: false, guardada: false, texto: 'Amanecer en la avenida. La ciudad se ve distinta cuando nadie la mira. #fotografía #ciudad', imagenes: [foto('#0ea5e9', '#8b5cf6', 2), foto('#f59e0b', '#ef4444', 3)] },
+  { id: 108, autor: 4, creada: 90, likes: 62, comentarios: 11, guardados: 4, meGusta: false, guardada: false, texto: 'Necesito ayuda con una decisión importante para el grupo. ¿Qué hacemos el sábado? #cocina #encuesta', imagenes: [], encuesta: { pregunta: '¿Qué preparamos el sábado?', opciones: ['Pizza casera', 'Sushi', 'Asado', 'Lo que diga el grupo'], multiple: false, votos: [3, 1, 2, 4], miVoto: [] } },
   { id: 104, autor: 5, creada: 260, likes: 512, comentarios: 63, guardados: 88, meGusta: true, guardada: false, texto: 'Tres meses visitando el mercado de San Juan. Esto es lo que aprendí sobre contar historias con respeto: pregunta, escucha y no robes el protagonismo. #periodismo #datos', imagenes: [foto('#22c55e', '#0ea5e9', 4)] },
   { id: 105, autor: 4, creada: 400, likes: 41, comentarios: 3, guardados: 2, meGusta: false, guardada: false, texto: 'Pan de masa madre: 12 horas de espera para 900 g de felicidad. #cocina', imagenes: [] },
   { id: 106, autor: 1, creada: 640, likes: 76, comentarios: 9, guardados: 15, meGusta: false, guardada: false, texto: 'Recordatorio: los esqueletos de carga hacen que la aplicación se sienta más rápida aunque tarde lo mismo. La gente percibe el tiempo, no los milisegundos. #diseño #producto', imagenes: [] },
@@ -143,6 +144,25 @@ function publicacionJSON(p) {
     author_avatar_url: autor.avatar_url,
     author_is_verified: autor.is_verified,
     author_is_private: !!autor.is_private,
+    poll: p.encuesta ? encuestaJSON(p) : null,
+  };
+}
+
+function encuestaJSON(p) {
+  const e = p.encuesta;
+  const votos = e.votos || [];
+  const total = votos.reduce((n, v) => n + v, 0);
+  return {
+    pregunta: e.pregunta,
+    multiple: !!e.multiple,
+    cerrada: !!e.cerrada,
+    total,
+    mi_voto: e.miVoto || [],
+    opciones: e.opciones.map((texto, i) => ({
+      texto,
+      votos: votos[i] || 0,
+      porcentaje: total > 0 ? Math.round(((votos[i] || 0) / total) * 100) : 0,
+    })),
   };
 }
 
@@ -260,6 +280,19 @@ export function responder(metodo, ruta, cuerpo) {
   const q = new URLSearchParams(consulta);
   const [a, b, c, d] = partes;
 
+  // ---- Avisos al teléfono (modo demostración) ----
+  if (a === 'push') {
+    if (b === 'public-key') return json({ key: 'DEMO-DEMO-DEMO' });
+    if (b === 'estado') return json({ dispositivos: 1, ultimo: hace(30) });
+    if (b === 'test') return json({ ok: true, enviados: 1 });
+    return json({ ok: true, dispositivos: 1 });
+  }
+
+  // ---- Copias de seguridad (modo demostración) ----
+  if (a === 'admin' && b === 'backup') {
+    return json({ app: 'moon', fecha: new Date().toISOString(), resumen: { users: 1, posts: 8 }, tablas: {} });
+  }
+
   // ---- Estado del servidor ----
   if (a === 'health') {
     return json({ status: 'ok', app: 'moon', time: new Date().toISOString(), db: true });
@@ -318,6 +351,15 @@ export function responder(metodo, ruta, cuerpo) {
         guardada: false,
         texto: cuerpo?.content || '',
         imagenes: (cuerpo?.images || []).map((im) => im.url || im),
+        encuesta: cuerpo?.poll && Array.isArray(cuerpo.poll.opciones) && cuerpo.poll.opciones.filter(Boolean).length >= 2
+          ? {
+            pregunta: String(cuerpo.poll.pregunta || '').slice(0, 160),
+            opciones: cuerpo.poll.opciones.filter(Boolean).slice(0, 6),
+            multiple: !!cuerpo.poll.multiple,
+            votos: cuerpo.poll.opciones.filter(Boolean).map(() => 0),
+            miVoto: [],
+          }
+          : null,
       };
       publicaciones.unshift(nueva);
       USUARIO.posts_count += 1;
@@ -331,6 +373,24 @@ export function responder(metodo, ruta, cuerpo) {
     if (!accion) {
       if (metodo === 'DELETE') { post.borrada = true; return json({ ok: true }); }
       if (metodo === 'PATCH') { post.texto = cuerpo?.content ?? post.texto; post.editada = true; }
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'vote' && post.encuesta) {
+      const opcion = Number(cuerpo?.opcion);
+      const e = post.encuesta;
+      if (!Number.isInteger(opcion) || opcion < 0 || opcion >= e.opciones.length) {
+        return json({ error: 'Voto inválido' }, 400);
+      }
+      e.votos = e.votos || e.opciones.map(() => 0);
+      e.miVoto = e.miVoto || [];
+      if (!e.multiple) {
+        for (const anterior of e.miVoto) e.votos[anterior] = Math.max(0, (e.votos[anterior] || 0) - 1);
+        e.miVoto = [];
+      }
+      if (!e.miVoto.includes(opcion)) {
+        e.votos[opcion] = (e.votos[opcion] || 0) + 1;
+        e.miVoto.push(opcion);
+      }
       return json(publicacionJSON(post));
     }
     if (accion === 'likes') {

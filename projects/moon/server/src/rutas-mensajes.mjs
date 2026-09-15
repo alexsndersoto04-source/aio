@@ -7,6 +7,7 @@ import { ApiErr, texto, paginacion } from './util.mjs';
 import { fila, uno } from './db.mjs';
 import { auditar, sumarEstadistica } from './db.mjs';
 import { enviarA } from './ws.mjs';
+import { empujarSiQuiere } from './empuje.mjs';
 import { demasiadoRapido } from './limites.mjs';
 
 function mensajePublico(m) {
@@ -161,6 +162,16 @@ export function registrarRutasMensajes(router) {
 
     const publico = mensajePublico(creado);
     enviarA(otroId, { type: 'message', conversation_id: Number(conv.id), message: publico });
+
+    // Aviso al teléfono de quien recibe (llega con Moon cerrado).
+    const quien = await uno(c.pool, 'SELECT display_name, username FROM users WHERE id = $1', [yo.id]);
+    empujarSiQuiere(c.pool, otroId, 'message', {
+      titulo: quien?.display_name || quien?.username || 'Moon',
+      texto: contenido ? contenido.slice(0, 140) : 'Te envió una imagen',
+      url: `#/messages/${conv.id}`,
+      etiqueta: `mensaje-${conv.id}`,
+    }).catch(() => {});
+
     return publico;
   });
 

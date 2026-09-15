@@ -32,7 +32,7 @@ export function linkify(text) {
   const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return esc
     .replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/#([A-Za-z0-9_]+)/g, '<a class="hash" href="#/explore?q=$1&type=posts">#$1</a>')
+    .replace(/#([A-Za-z0-9_]+)/g, '<a class="enlace-hash" href="#/explore?q=$1&type=posts">#$1</a>')
     .replace(/@([A-Za-z0-9_.-]+)/g, '<a href="#/user/$1">@$1</a>');
 }
 

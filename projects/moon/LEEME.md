@@ -11,6 +11,9 @@ en una base de datos PostgreSQL de verdad; no hay nada simulado ni de ejemplo.
 | Aplicación publicada | la dirección del servicio en Render (ver `DESPLEGAR.md`) |
 | Base de datos | PostgreSQL (en producción, la nube; en local, el motor que trae `dev.mjs`) |
 | Servidor | `projects/moon/server` (Node 22, sin dependencias de pago) |
+| Imágenes | dentro de la base de datos (`media_blobs`) con caché en disco |
+| Avisos al teléfono | Web Push con llaves propias guardadas en `app_settings` |
+| Copias de seguridad | descarga desde el panel y envío diario por correo |
 | Interfaz | `frontend/` (React + Vite) |
 
 ## Cómo se arranca en tu computadora

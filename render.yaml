@@ -34,7 +34,19 @@ services:
       # Carpeta del sitio ya compilado (la crea el paso de compilación).
       - key: MOON_WEB_DIR
         value: /opt/render/project/src/frontend/dist
-      # Fotos subidas. En el plan gratuito el disco es temporal: se pierden al
-      # reiniciar. (La siguiente mejora es guardarlas en la base de datos.)
+      # Carpeta de caché de las fotos. Las imágenes se guardan DENTRO de la
+      # base de datos, así que esta carpeta solo acelera la entrega: si el
+      # servidor se reinicia y se vacía, no se pierde ninguna foto.
+      # Correo (recuperación de contraseña, códigos y copia de seguridad
+      # diaria). Basta con pegar aquí la clave gratuita de Resend.
+      - key: RESEND_API_KEY
+        sync: false
+      # Remitente de los correos. Con Resend gratis se usa onboarding@resend.dev
+      # hasta que se verifique un dominio propio.
+      - key: MAIL_FROM
+        value: Moon <onboarding@resend.dev>
+      # Desde dónde se generan los enlaces de los correos.
+      - key: PUBLIC_BASE_URL
+        sync: false
       - key: MOON_UPLOADS
         value: /opt/render/project/src/uploads

@@ -965,3 +965,144 @@ body { background: var(--bg); }
 .ajustes-cabecera .icono svg { width: 26px; height: 26px; }
 .ajustes-bloque > .titulo svg,
 .fila-ajuste > .texto svg { width: 15px; height: 15px; }
+
+/* ---------- 30.18 Encuestas ---------- */
+.encuesta {
+  margin: 8px 0 10px;
+  padding: 12px;
+  border-radius: 16px;
+  background: var(--aurora-grad-suave);
+  border: 1px solid var(--accent-line);
+}
+.encuesta .pregunta {
+  font-weight: 650;
+  font-size: calc(var(--texto-base) - 0.2px);
+  letter-spacing: -0.01em;
+  margin: 0 0 9px;
+}
+.encuesta .opciones { display: grid; gap: 7px; }
+.encuesta .opcion {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--vidrio-borde);
+  background: var(--vidrio-fondo);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 580;
+  text-align: left;
+  overflow: hidden;
+  transition: transform var(--fast), border-color var(--fast);
+}
+.encuesta .opcion:not(:disabled):hover { transform: translateY(-1px); border-color: var(--accent-line); }
+.encuesta .opcion:active:not(:disabled) { transform: scale(0.985); }
+.encuesta .opcion .barra {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--aurora-grad);
+  opacity: 0.26;
+  transition: width 260ms cubic-bezier(0.3, 0.9, 0.3, 1);
+}
+.encuesta .opcion .texto { position: relative; flex: 1; min-width: 0; }
+.encuesta .opcion .porcentaje { position: relative; font-variant-numeric: tabular-nums; color: var(--ink-2); font-weight: 650; }
+.encuesta .opcion .hecho { position: relative; color: var(--accent); font-weight: 800; }
+.encuesta .opcion.marcada { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.encuesta .pie-encuesta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+.encuesta .pie-encuesta .pastilla {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--vidrio-fondo);
+  border: 1px solid var(--vidrio-borde);
+}
+.encuesta .error-encuesta { color: var(--danger); font-size: 12.5px; margin: 6px 0 0; }
+
+/* El bloque para armar la encuesta dentro del redactor */
+.composer-encuesta {
+  margin: 10px 0 4px;
+  padding: 12px;
+  border-radius: 16px;
+  background: var(--aurora-grad-suave);
+  border: 1px solid var(--accent-line);
+  display: grid;
+  gap: 8px;
+}
+.composer-encuesta .cabecera-encuesta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13.5px;
+}
+.composer-encuesta .cabecera-encuesta b { letter-spacing: -0.01em; }
+.composer-encuesta .fila-opcion { display: flex; align-items: center; gap: 6px; }
+.composer-encuesta .fila-opcion .input { flex: 1; }
+.composer-encuesta .pie-encuesta-redactor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.composer-encuesta .duracion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.composer-encuesta .duracion .select { padding: 5px 8px; font-size: 12.5px; }
+.icon-btn.activo {
+  background: var(--aurora-grad-suave);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+/* El título de la pantalla y las migas no deben llevar cristal encima */
+.topbar, .page-head { background: transparent; }
+
+/* El botón flotante de publicar no debe tapar la barra del redactor */
+@media (max-width: 720px) {
+  .composer-tools { flex-wrap: wrap; padding-right: 56px; row-gap: 6px; }
+  .composer-tools .btn { order: 5; }
+}
+
+/* El hashtag dentro de una publicación es texto, no una fila del buscador
+   (la clase `.hash` de Explorar se colaba aquí y partía las publicaciones). */
+.post-body .enlace-hash,
+.post-body a.enlace-hash {
+  display: inline;
+  padding: 0;
+  border: 0;
+  gap: 0;
+  color: var(--accent);
+  font-weight: 620;
+  text-decoration: none;
+}
+.post-body .enlace-hash:hover { text-decoration: underline; }
+.post-body a { display: inline; padding: 0; border: 0; }
+
+/* Acciones de la publicación: en el teléfono, sin números y sin cortes */
+.post-actions { white-space: nowrap; }
+@media (max-width: 460px) {
+  .post-actions { gap: 0; }
+  .post-actions button,
+  .post-actions a { padding: 9px 8px; font-size: 12.5px; gap: 5px; }
+  .post-actions .count { display: none; }
+}
+@media (max-width: 380px) {
+  .post-actions .etiqueta { display: none; }
+  .post-actions button, .post-actions a { padding: 9px 12px; }
+}

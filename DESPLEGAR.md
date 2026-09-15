@@ -70,3 +70,46 @@ Se puede seguir usando la máquina de esta sesión mientras esté encendida, per
 su enlace **no es fijo** y además exige un token que solo tiene la plataforma:
 no sirve para compartir. Para algo que puedas mandar a cualquiera hacen falta
 los dos pasos de arriba.
+
+---
+
+## Las dos cosas que solo puedes hacer tú (2 minutos)
+
+Todo lo demás ya está hecho en el código. Estas dos son cuestión de pegar una
+clave y crear una cuenta gratis, y se hacen una sola vez.
+
+### 1. Correo (recuperar contraseña, códigos y copia de seguridad diaria)
+
+1. Entra en **resend.com** y crea la cuenta gratis (no pide tarjeta).
+2. En el panel, busca **API Keys** → **Create API Key** → copia la clave
+   (empieza por `re_`).
+3. Ve a **Render** → tu servicio **moon** → **Environment** → **Add
+   Environment Variable**:
+   - Nombre: `RESEND_API_KEY`
+   - Valor: la clave que copiaste
+4. Guarda. Render reinicia solo (2–3 minutos).
+
+> Con la cuenta gratuita de Resend, los correos salen desde
+> `onboarding@resend.dev` y solo llegan al correo con el que te registraste en
+> Resend. Para que le lleguen a cualquier persona hay que verificar un dominio
+> (se hace en Resend, en **Domains**, y luego se cambia `MAIL_FROM` en Render).
+
+### 2. Que la aplicación no se duerma
+
+El plan gratuito de Render apaga la aplicación a los 15 minutos sin visitas:
+la primera visita después tarda entre 30 y 60 segundos en abrir. Se evita con
+un vigilante gratuito que la visita cada 10 minutos:
+
+1. Entra en **cron-job.org** y crea la cuenta gratis.
+2. **Create cronjob**:
+   - Título: `Moon despierta`
+   - Dirección: `https://TU-DIRECCION.onrender.com/api/health`
+   - Cada: **10 minutos**
+3. Guarda. Listo: la aplicación queda siempre despierta.
+
+### 3. Avisos al teléfono (opcional, se activa desde la aplicación)
+
+En **Ajustes → Avisos → Avisos al teléfono → Activar**. No hay que configurar
+nada más: las llaves se crean solas en la base de datos. En iPhone hay que
+instalar antes Moon en la pantalla de inicio (Compartir → Añadir a pantalla de
+inicio) y activarlos desde ahí.
