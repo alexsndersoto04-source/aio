@@ -11,7 +11,7 @@ import {
   listarSesiones, revocarTodas, emitirCodigo, consumirCodigo, emitirTokenRecuperacion,
   consumirTokenRecuperacion, verificarJwt, tokenRefrescoDe, usuarioPublico, ACCESO_MIN,
 } from './auth.mjs';
-import { enviarCorreo } from './correo.mjs';
+import { enviarCorreo, correoConfigurado } from './correo.mjs';
 
 const ACCESO_SEG = ACCESO_MIN * 60;
 
@@ -85,11 +85,18 @@ export function registrarRutasAuth(router) {
       const codigo = await emitirCodigo(c.pool, Number(usuario.id), '2fa', 5);
       const correo = await enviarCorreo(usuario.email, 'Tu código de acceso a Moon', `Tu código es ${codigo}. Caduca en 5 minutos.`);
       const temp = firmarJwt({ uid: Number(usuario.id), purpose: '2fa' }, c.req._secreto, 300);
+      // El código solo se muestra en la respuesta cuando NO hay correo
+      // configurado; si lo hay y el envío falla, no se entrega (seguridad).
+      const mostrarCodigo = !correo.enviado && !correoConfigurado();
       return {
         twofa_required: true,
         temp_token: temp,
-        message: correo.enviado ? 'Código enviado a tu correo' : 'Código generado (sin correo configurado)',
-        dev_code: correo.enviado ? undefined : codigo,
+        message: correo.enviado
+          ? 'Código enviado a tu correo'
+          : mostrarCodigo
+            ? 'Código generado (sin correo configurado)'
+            : 'No pudimos enviar el código. Revisa la clave de correo en Render.',
+        dev_code: mostrarCodigo ? codigo : undefined,
       };
     }
 
@@ -271,10 +278,18 @@ export function registrarRutasAuth(router) {
       `Abre este enlace para elegir una contraseña nueva (caduca en 60 minutos):\n${enlace}`
     );
     if (!correo.enviado) {
-      // Sin servidor de correo configurado, en desarrollo el enlace se
-      // devuelve para poder terminar el proceso (nunca en producción).
-      respuesta.dev_token = token;
-      respuesta.message = 'Sin correo configurado: usa el enlace de abajo.';
+      if (correoConfigurado()) {
+        // El correo está configurado pero no salió (clave vencida, sin red…).
+        // Por seguridad NO se entrega el enlace: quien lo pidiera podría
+        // usarlo para entrar en la cuenta de otra persona.
+        respuesta.message = 'No pudimos enviar el correo. Revisa la clave de correo en Render.';
+      } else {
+        // Sin servidor de correo configurado, el enlace se devuelve para
+        // poder terminar el proceso: así Moon sirve aunque nadie haya puesto
+        // una clave de correo.
+        respuesta.dev_token = token;
+        respuesta.message = 'Sin correo configurado: usa el enlace de abajo.';
+      }
     }
     return respuesta;
   });

@@ -289,10 +289,17 @@ comprobar(
 
 const imagen = await fetch(`${API}${subida.url}`);
 const bytesImagen = Buffer.from(await imagen.arrayBuffer());
+// La imagen se reoptimiza al subirla (se gira y se reduce), así que el tipo
+// y el tamaño no tienen por qué ser idénticos a los del archivo original: lo
+// que se comprueba es que se sirve como imagen, con contenido y del mismo
+// tipo que anunció la subida.
 comprobar(
   'la imagen se sirve con su tipo y su tamaño',
-  imagen.status === 200 && imagen.headers.get('content-type') === 'image/png' && bytesImagen.length === png.length,
-  `${imagen.status} ${imagen.headers.get('content-type')} ${bytesImagen.length}`
+  imagen.status === 200
+    && (imagen.headers.get('content-type') || '').startsWith('image/')
+    && bytesImagen.length > 0
+    && (imagen.headers.get('content-type') || '').includes(String(subida.mime || '').replace('image/', '')),
+  `${imagen.status} ${imagen.headers.get('content-type')} ${bytesImagen.length} vs ${subida.mime}`
 );
 
 const saludTrasImagen = await pedir('GET', '/api/health');

@@ -37,7 +37,7 @@ export function registrarRutasPush(router) {
     return { ok: true, dispositivos: Number(total?.n || 0) };
   });
 
-  router.delete('/api/push/subscribe', async (c) => {
+  router.del('/api/push/subscribe', async (c) => {
     const yo = await c.exigir();
     const b = await c.cuerpo();
     const endpoint = String(b?.endpoint || '').slice(0, 600);

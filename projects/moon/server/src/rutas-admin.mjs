@@ -159,7 +159,14 @@ export function registrarRutasAdmin(router) {
   router.post('/api/admin/backup/correo', async (c) => {
     await c.admin();
     const r = await copiaPorCorreo(c.pool);
-    if (!r.enviada) throw new ApiErr(r.motivo || 'No se pudo enviar la copia', 400);
+    if (!r.enviada) {
+      throw new ApiErr(
+        r.motivo === 'sin correo configurado'
+          ? 'Todavía no hay correo configurado: pega la clave de Resend en Render (ver DESPLEGAR.md).'
+          : r.motivo || 'No se pudo enviar la copia: revisa la clave de correo en Render.',
+        400
+      );
+    }
     return { ok: true, enviadas: r.enviadas, resumen: r.resumen };
   });
 

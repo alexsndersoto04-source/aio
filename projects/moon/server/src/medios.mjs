@@ -40,27 +40,58 @@ function nombrePara(ext) {
 
 /**
  * Optimiza la imagen. Devuelve `{ bytes, mime, ext, ancho, alto }`.
- * Los GIF se dejan tal cual (para no perder la animación) y si algo falla se
- * guarda el original: nunca se pierde una subida por culpa de la optimización.
+ *
+ * Reglas (pensadas para no estropear nada de lo que sube la gente):
+ *   · Las animaciones (GIF o WebP animado) se guardan tal cual: recortarlas
+ *     perdería el movimiento.
+ *   · Las imágenes con transparencia (PNG con canal alfa) se quedan en PNG,
+ *     porque pasar a JPEG las volvería negras por detrás.
+ *   · WebP se queda en WebP; lo demás (fotos de teléfono) pasa a JPEG.
+ *   · Todo se gira según el EXIF y se reduce a 1600 px: una foto de 5 MB
+ *     baja a unos 250 KB, que es lo que permite que la base gratuita aguante.
+ * Si algo falla, se guarda el original: nunca se pierde una subida.
  */
 export async function optimizar(original, mime) {
-  const esGif = mime === 'image/gif';
-  if (esGif) {
+  const LADO = { width: LADO_MAXIMO, height: LADO_MAXIMO, fit: 'inside', withoutEnlargement: true };
+
+  if (mime === 'image/gif') {
     return { bytes: original, mime, ext: '.gif', ancho: 0, alto: 0 };
   }
+
   try {
-    const salida = await sharp(original, { failOn: 'none' })
-      .rotate()
-      .resize({ width: LADO_MAXIMO, height: LADO_MAXIMO, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: CALIDAD, progressive: true, mozjpeg: true })
-      .toBuffer({ resolveWithObject: true });
-    return {
-      bytes: salida.data,
-      mime: 'image/jpeg',
-      ext: '.jpg',
-      ancho: salida.info.width || 0,
-      alto: salida.info.height || 0,
-    };
+    const meta = await sharp(original, { failOn: 'none', animated: true }).metadata();
+    if ((meta.pages || 1) > 1) {
+      // Animación (WebP o GIF): intacta.
+      const ext = mime === 'image/webp' ? '.webp' : mime === 'image/gif' ? '.gif' : '.png';
+      return { bytes: original, mime, ext, ancho: 0, alto: 0 };
+    }
+
+    const tubo = sharp(original, { failOn: 'none' }).rotate().resize(LADO);
+    const jpeg = () => tubo.clone().jpeg({ quality: CALIDAD, progressive: true, mozjpeg: true }).toBuffer({ resolveWithObject: true });
+    const enJpeg = (salida) => ({
+      bytes: salida.data, mime: 'image/jpeg', ext: '.jpg',
+      ancho: salida.info.width || 0, alto: salida.info.height || 0,
+    });
+
+    if (mime === 'image/png') {
+      const png = await tubo.clone().png({ compressionLevel: 9, palette: true }).toBuffer({ resolveWithObject: true });
+      // Con transparencia, PNG es obligatorio (si no, el fondo sale negro).
+      if (meta.hasAlpha) {
+        return { bytes: png.data, mime: 'image/png', ext: '.png', ancho: png.info.width || 0, alto: png.info.height || 0 };
+      }
+      // Sin transparencia (capturas, dibujos): se queda el más liviano de los
+      // dos. Un plano de color pesa menos en PNG; una foto, menos en JPEG.
+      const jpg = await jpeg();
+      if (png.data.length <= jpg.data.length) {
+        return { bytes: png.data, mime: 'image/png', ext: '.png', ancho: png.info.width || 0, alto: png.info.height || 0 };
+      }
+      return enJpeg(jpg);
+    }
+    if (mime === 'image/webp') {
+      const salida = await tubo.clone().webp({ quality: 80 }).toBuffer({ resolveWithObject: true });
+      return { bytes: salida.data, mime: 'image/webp', ext: '.webp', ancho: salida.info.width || 0, alto: salida.info.height || 0 };
+    }
+    return enJpeg(await jpeg());
   } catch (e) {
     console.error('[medios] no se pudo optimizar, se guarda el original:', e.message);
     const ext = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : mime === 'image/avif' ? '.avif' : '.jpg';
