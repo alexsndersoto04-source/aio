@@ -31,7 +31,8 @@ import GrupoView from './views/GrupoView.jsx';
 import { realtime } from './realtime.js';
 import { setUnread, bump, useUnread } from './unread.js';
 import { aplicarTema } from './theme.js';
-import { aplicar as aplicarPrefs, sonar } from './prefs.js';
+import { aplicar as aplicarPrefs, sonar, leer as leerPref } from './prefs.js';
+import { toast } from './ui.js';
 
 function useRoute() {
   const [route, setRoute] = useState(() => parseHash(window.location.hash));
@@ -71,9 +72,48 @@ function Cielo() {
   );
 }
 
+// Secciones que en el teléfono se comportan como pantalla completa: cada una
+// trae su propia cabecera y su propio scroll.
+const SECCIONES_PANTALLA = [
+  'feed', 'explore', 'grupos', 'grupo', 'messages', 'profile', 'user',
+  'notifications', 'settings', 'admin', 'amigos', 'contactos', 'contacts',
+];
+
+/** Aviso suave de descanso, según lo que se elija en Ajustes → Bienestar. */
+function RecordatorioDescanso() {
+  useEffect(() => {
+    let temporizador = null;
+    const armar = () => {
+      if (temporizador) clearTimeout(temporizador);
+      const minutos = Number(leerPref('bienestar') || 0);
+      if (!minutos) return;
+      temporizador = setTimeout(() => {
+        toast.info(`Llevas ${minutos} minutos en Moon: estírate y mira lejos un momento`);
+        armar();
+      }, minutos * 60 * 1000);
+    };
+    armar();
+    window.addEventListener('moon:prefs', armar);
+    return () => {
+      if (temporizador) clearTimeout(temporizador);
+      window.removeEventListener('moon:prefs', armar);
+    };
+  }, []);
+  return null;
+}
+
 function Shell({ children }) {
+  const route = useRoute();
+  const seccion = route.parts[0] || 'feed';
+  const enHilo = seccion === 'messages' && !!route.parts[1];
+  const completa = SECCIONES_PANTALLA.includes(seccion);
   return (
-    <div className="marco">
+    <div
+      className="marco"
+      data-seccion={seccion}
+      data-pantalla={completa ? 'completa' : 'normal'}
+      data-hilo={enHilo ? 'si' : 'no'}
+    >
       <Cielo />
       <TopNav />
       <div className="app">
@@ -86,6 +126,7 @@ function Shell({ children }) {
       </div>
       <BottomNav />
       <FloatingCompose />
+      <RecordatorioDescanso />
     </div>
   );
 }

@@ -7,6 +7,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Grabador, AudioMensaje, puedeGrabar } from '../components/NotaVoz.jsx';
+import { leer as leerPref } from '../prefs.js';
 import { api, uploadMedia, imgUrl } from '../api.js';
 import { toast, confirmar, avisoError } from '../ui.js';
 import { useAuth } from '../auth.jsx';
@@ -38,6 +39,8 @@ export default function MessagesView({ conversationId }) {
   // Preferencias por conversación (silenciada / archivada) traídas del servidor
   const [prefs, setPrefs] = useState({});
   const [reaccionando, setReaccionando] = useState(null);
+  // «Reproducir las notas de voz solas» (Ajustes → Mensajes)
+  const notasSolas = useRef(leerPref('notas') === 'si');
   const endRef = useRef(null);
   // En el teléfono se abre SIEMPRE la lista: así se ven el buscador, los
   // filtros (sin leer / archivadas) y las opciones de cada conversación.
@@ -411,16 +414,25 @@ export default function MessagesView({ conversationId }) {
                 </div>
               ) : null}
 
-              {thread.messages.map((m) => {
+              {thread.messages.map((m, i, todos) => {
                 const mio = m.sender_id === user?.id;
                 const borrado = m.status === 'deleted';
+                // La última nota de voz (y que no sea tuya) suena sola si lo pediste.
+                const esUltimo = i === todos.length - 1;
                 return (
                   <div className={`msg ${mio ? 'mine' : ''}`} key={m.id}>
                     {borrado ? (
                       <em style={{ opacity: 0.65 }}>Mensaje eliminado</em>
                     ) : (
                       <>
-                        {m.audio_url ? <AudioMensaje url={m.audio_url} duracionMs={m.duracion_ms} mio={mio} /> : null}
+                        {m.audio_url ? (
+                          <AudioMensaje
+                            url={m.audio_url}
+                            duracionMs={m.duracion_ms}
+                            mio={mio}
+                            auto={notasSolas.current && esUltimo && !mio}
+                          />
+                        ) : null}
                         {m.image_url ? <img className="img-msg" src={imgUrl(m.image_url)} alt="" /> : null}
                         {m.content ? <span className="texto-msg">{m.content}</span> : null}
                       </>

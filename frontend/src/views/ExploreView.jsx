@@ -8,6 +8,7 @@ import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { debounce, plural } from '../utils.js';
 import { IconSearch, IconUsers, IconLayers, IconImage, IconTrend } from '../components/Icons.jsx';
 import { SugerenciasPersonas } from '../components/Sugerencias.jsx';
+import { palabrasSilenciadas } from '../prefs.js';
 
 const TIPOS = [
   { id: 'users', label: 'Personas', icono: <IconUsers /> },
@@ -49,7 +50,16 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
     try {
       const url = `/api/search?q=${encodeURIComponent(limpio)}&type=${t}${t === 'posts' ? `&orden=${ord}` : ''}`;
       const res = await api.get(url);
-      const lista = Array.isArray(res) ? res : [];
+      let lista = Array.isArray(res) ? res : [];
+      if (t === 'posts') {
+        const malas = palabrasSilenciadas();
+        if (malas.length) {
+          lista = lista.filter((post) => {
+            const texto = String(post.content || '').toLowerCase();
+            return !malas.some((palabra) => texto.includes(palabra));
+          });
+        }
+      }
       if (t === 'users') { setUsers(lista); setPosts([]); setGrupos([]); setEtiquetas([]); }
       else if (t === 'posts') { setPosts(lista); setUsers([]); setGrupos([]); setEtiquetas([]); }
       else if (t === 'groups') { setGrupos(lista); setUsers([]); setPosts([]); setEtiquetas([]); }

@@ -11,6 +11,10 @@
 //   · movimiento → sí / no                  (animaciones cortas o nada)
 //   · sonido   → sí / no                    (aviso sonoro de mensajes)
 //   · denso    → sí / no                    (más contenido por pantalla)
+//   · contraste → normal / alto             (texto y bordes con más fuerza)
+//   · notas    → sí / no                    (reproducir las notas de voz solas)
+//   · silenciadas → lista de palabras       (las publicaciones con esas
+//                                            palabras no se muestran)
 
 import { almacen } from './almacen.js';
 
@@ -20,6 +24,10 @@ export const CLAVES = {
   movimiento: 'moon_movimiento',
   sonido: 'moon_sonido',
   denso: 'moon_denso',
+  contraste: 'moon_contraste',
+  notas: 'moon_notas_auto',
+  silenciadas: 'moon_palabras_silenciadas',
+  bienestar: 'moon_bienestar_min',
 };
 
 export const OPCIONES = {
@@ -28,6 +36,9 @@ export const OPCIONES = {
   movimiento: ['si', 'no'],
   sonido: ['si', 'no'],
   denso: ['no', 'si'],
+  contraste: ['normal', 'alto'],
+  notas: ['no', 'si'],
+  bienestar: ['0', '20', '40', '60'],
 };
 
 export const DEFECTOS = {
@@ -36,12 +47,19 @@ export const DEFECTOS = {
   movimiento: 'si',
   sonido: 'si',
   denso: 'no',
+  contraste: 'normal',
+  notas: 'no',
+  bienestar: '0',
+  silenciadas: '',
 };
 
 const escuchas = new Set();
 
 export function leer(clave) {
   const v = almacen.leer(CLAVES[clave]);
+  // Hay ajustes que no son listas de opciones (por ejemplo, las palabras
+  // silenciadas): esos se devuelven tal cual, con su valor por defecto.
+  if (!OPCIONES[clave]) return v === null || v === undefined ? DEFECTOS[clave] : v;
   return OPCIONES[clave].includes(v) ? v : DEFECTOS[clave];
 }
 
@@ -58,6 +76,27 @@ export function aplicar() {
   raiz.dataset.texto = leer('texto');
   raiz.dataset.movimiento = leer('movimiento');
   raiz.dataset.denso = leer('denso');
+  raiz.dataset.contraste = leer('contraste');
+}
+
+/** Las palabras que esta persona no quiere ver en el feed (una por línea). */
+export function palabrasSilenciadas() {
+  try {
+    return String(almacen.leer(CLAVES.silenciadas) || '')
+      .split(/[\n,]/)
+      .map((x) => x.trim().toLowerCase())
+      .filter((x) => x.length >= 2)
+      .slice(0, 60);
+  } catch {
+    return [];
+  }
+}
+
+/** Guarda la lista de palabras silenciadas. */
+export function guardarSilenciadas(texto) {
+  almacen.escribir(CLAVES.silenciadas, String(texto || '').slice(0, 2000));
+  escuchas.forEach((fn) => fn(leerTodo()));
+  window.dispatchEvent(new CustomEvent('moon:prefs', { detail: leerTodo() }));
 }
 
 export function guardar(clave, valor) {

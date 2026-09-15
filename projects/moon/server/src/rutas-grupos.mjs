@@ -251,7 +251,11 @@ export function registrarRutasGrupos(router) {
     const grupo = await uno(c.pool, 'SELECT owner_id FROM groups WHERE id = $1', [id]);
     if (!grupo) throw new ApiErr('Grupo no encontrado', 404);
     if (Number(grupo.owner_id) === Number(yo.id)) {
-      throw new ApiErr('Quien creó el grupo no puede salir de él', 400);
+      throw new ApiErr(
+        'Eres quien creó este grupo: para salir, primero elimínalo o pásale el mando a otra persona',
+        409,
+        'owner_no_sale'
+      );
     }
     const r = await c.pool.query('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [id, yo.id]);
     if (r.rowCount > 0) {
@@ -261,6 +265,54 @@ export function registrarRutasGrupos(router) {
   });
 
   // ---------- Publicaciones del grupo ----------
+  // Quien creó el grupo puede sacar a un miembro (menos a sí mismo).
+  router.del('/api/groups/:id/members/:usuario', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const quien = Number(c.params.usuario);
+    const grupo = await uno(c.pool, 'SELECT owner_id FROM groups WHERE id = $1', [id]);
+    if (!grupo) throw new ApiErr('Grupo no encontrado', 404);
+    if (Number(grupo.owner_id) !== Number(yo.id)) {
+      throw new ApiErr('Solo quien creó el grupo puede quitar miembros', 403, 'not_owner');
+    }
+    if (quien === Number(yo.id)) {
+      throw new ApiErr('No puedes sacarte a ti mismo: elimina el grupo si quieres cerrarlo', 409, 'soy_yo');
+    }
+    const r = await c.pool.query('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [id, quien]);
+    if (r.rowCount === 0) return { ok: true, ya_no_estaba: true };
+    await c.pool.query('UPDATE groups SET members_count = GREATEST(members_count - 1, 0) WHERE id = $1', [id]);
+    const g = await uno(c.pool, 'SELECT name FROM groups WHERE id = $1', [id]);
+    await notificar(c.pool, {
+      userId: quien,
+      tipo: 'system',
+      deUserId: Number(yo.id),
+      contenido: `Te sacó del grupo «${g?.name || ''}»`,
+    }).catch(() => {});
+    enviarA(quien, { type: 'group_left', group_id: id });
+    return { ok: true };
+  });
+
+  // Dar o quitar el mando de administración (solo quien creó el grupo).
+  router.post('/api/groups/:id/members/:usuario/role', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const quien = Number(c.params.usuario);
+    const grupo = await uno(c.pool, 'SELECT owner_id FROM groups WHERE id = $1', [id]);
+    if (!grupo) throw new ApiErr('Grupo no encontrado', 404);
+    if (Number(grupo.owner_id) !== Number(yo.id)) {
+      throw new ApiErr('Solo quien creó el grupo puede dar el mando', 403, 'not_owner');
+    }
+    const b = await c.cuerpo();
+    const papel = b.papel === 'admin' ? 'admin' : 'member';
+    if (quien === Number(grupo.owner_id)) throw new ApiErr('El mando del grupo no se cambia', 409, 'es_owner');
+    const r = await c.pool.query(
+      'UPDATE group_members SET role = $3 WHERE group_id = $1 AND user_id = $2',
+      [id, quien, papel]
+    );
+    if (r.rowCount === 0) throw new ApiErr('Esa persona no está en el grupo', 404);
+    return { ok: true, papel };
+  });
+
   router.get('/api/groups/:id/posts', async (c) => {
     const yo = await c.exigir();
     const id = Number(c.params.id);

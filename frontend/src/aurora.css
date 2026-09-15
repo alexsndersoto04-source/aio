@@ -1903,16 +1903,26 @@ html, body { max-width: 100%; overflow-x: hidden; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
+  min-width: 0;
+}
+.linea-superior b, .linea-inferior .last {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .conv .body b { font-size: 15px; font-weight: 650; }
 .conv .last { font-size: 13px; }
 .hora-conv {
   flex: 0 0 auto;
-  font-size: 11.5px;
+  font-size: 11px;
+  line-height: 1.2;
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .sin-leer {
   flex: 0 0 auto;
@@ -2061,7 +2071,7 @@ html, body { max-width: 100%; overflow-x: hidden; }
 @keyframes sube-hoja { from { transform: translateY(18px); opacity: 0.4; } to { transform: none; opacity: 1; } }
 
 /* Los tres puntos de cada conversación: con su hueco, que no tapen la hora */
-.conv { padding-right: 40px; }
+.conv { padding-right: 44px; }
 .fila-conv .mas-conv {
   right: 2px;
   top: 10px;
@@ -2069,8 +2079,10 @@ html, body { max-width: 100%; overflow-x: hidden; }
   opacity: 0.5;
 }
 .fila-conv:hover .mas-conv, .fila-conv:focus-within .mas-conv, .fila-conv.active .mas-conv { opacity: 1; }
-.hora-conv { white-space: nowrap; padding-right: 2px; }
-.linea-superior { padding-right: 4px; }
+/* Hueco fijo para los tres puntos: la hora y el número nunca quedan debajo */
+.linea-superior { padding-right: 30px; }
+.linea-inferior { padding-right: 30px; }
+.hora-conv { white-space: nowrap; }
 
 /* La hora del mensaje, con su hueco: nunca tapa el texto */
 .msg { padding: 9px 13px 20px; }
@@ -2116,3 +2128,286 @@ html, body { max-width: 100%; overflow-x: hidden; }
 
 /* Los avisos de «nada por aquí» con más aire */
 .empty { padding: 26px 16px; }
+
+/* En el teléfono, «Crear historia» es una franja fina, no una tarjeta alta */
+@media (max-width: 720px) {
+  .historias { flex-direction: column; align-items: stretch; gap: 8px; }
+  .historias .historia.crear {
+    width: 100%;
+    min-width: 0;
+    height: 54px;
+    padding: 0 14px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(17, 21, 50, 0.09);
+    display: flex;
+    align-items: center;
+    gap: 11px;
+  }
+  [data-theme='dark'] .historias .historia.crear {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  .historias .historia.crear .aro { width: 34px; height: 34px; }
+  .historias .historia.crear .aro .relleno { width: 34px; height: 34px; }
+  .historias .historia.crear b { font-size: 14.5px; max-width: none; }
+  .historias .historia:not(.crear) { width: 74px; }
+}
+
+/* ============================================================
+   §35 · Cada sección, independiente y a pantalla completa (móvil)
+   ============================================================
+   En el teléfono cada sección se comporta como su propia pantalla:
+   · Arriba solo queda una barra fina (marca, avisos y cuenta). El buscador
+     se va a Explorar, donde tiene su propio campo grande.
+   · Cada sección trae su título grande y su propio desplazamiento.
+   · El chat de una conversación ocupa TODO: sin barra de arriba ni de abajo.
+   ============================================================ */
+
+/* Pantalla de redactor: hoja completa, por encima de todo */
+.pantalla-redactor {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  background: rgba(244, 245, 252, 0.97);
+  backdrop-filter: blur(26px) saturate(150%);
+  -webkit-backdrop-filter: blur(26px) saturate(150%);
+  animation: entrarPantalla 0.18s ease-out;
+}
+[data-theme='dark'] .pantalla-redactor { background: rgba(11, 11, 28, 0.97); }
+@keyframes entrarPantalla { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.cabecera-redactor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(10px + env(safe-area-inset-top)) 14px 10px;
+  border-bottom: 1px solid rgba(17, 21, 50, 0.08);
+}
+[data-theme='dark'] .cabecera-redactor { border-bottom-color: rgba(255, 255, 255, 0.08); }
+.cabecera-redactor b { flex: 1; text-align: center; font-size: 15.5px; }
+.cabecera-redactor .hueco { width: 74px; }
+.cuerpo-redactor { flex: 1; overflow-y: auto; padding: 14px 12px calc(20px + env(safe-area-inset-bottom)); }
+.cuerpo-redactor .composer { margin-bottom: 0; }
+
+/* La fila fina para crear del Inicio */
+.crear-rapido {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  margin: 0 0 var(--aire);
+  padding: 11px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(17, 21, 50, 0.09);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 14.5px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(17, 21, 50, 0.05), 0 18px 40px -34px rgba(17, 21, 50, 0.5);
+}
+[data-theme='dark'] .crear-rapido {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+}
+.crear-rapido .texto {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.crear-rapido .avatar,
+.crear-rapido .avatar.mini {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  font-size: 12.5px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.crear-rapido .icono {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--aurora-grad);
+}
+.crear-rapido .icono svg { width: 18px; height: 18px; }
+.crear-rapido:active { transform: scale(0.995); }
+
+/* Pestañas del Inicio pegadas arriba al bajar */
+.tabs-inicio {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: rgba(247, 248, 253, 0.86);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 12px;
+}
+[data-theme='dark'] .tabs-inicio { background: rgba(12, 12, 26, 0.82); }
+
+@media (max-width: 860px) {
+  /* Barra de arriba, fina: marca, avisos y cuenta. El buscador vive en Explorar. */
+  .marco[data-pantalla='completa'] .topnav {
+    padding: 6px 12px;
+    margin-bottom: 6px;
+    border-radius: 0 0 16px 16px;
+  }
+  .marco[data-pantalla='completa'] .topnav .buscador-top { display: none; }
+  .marco[data-pantalla='completa'] .topnav-centro { display: none; }
+  .marco[data-pantalla='completa'] .topnav-der .btn-nueva { display: none; }
+  .topnav-izq .marca-texto { display: inline; }
+
+  /* Cada sección: su propio desplazamiento y su propio aire */
+  .marco[data-pantalla='completa'] .main { padding: 0 10px calc(84px + env(safe-area-inset-bottom)); }
+  .marco[data-pantalla='completa'] .topbar h1 { font-size: 21px; }
+
+  /* Explorar: la búsqueda tiene que verse grande y cómoda */
+  .marco[data-seccion='explore'] .card { padding: 12px; }
+}
+
+/* ---------- Conversación a pantalla completa (como Facebook) ---------- */
+@media (max-width: 900px) {
+  .marco[data-hilo='si'] .topnav,
+  .marco[data-hilo='si'] .bottom-nav,
+  .marco[data-hilo='si'] .fab { display: none !important; }
+  .marco[data-hilo='si'] .main {
+    padding: 0 10px calc(8px + env(safe-area-inset-bottom)) !important;
+  }
+  /* En una conversación no hay título de sección: el chat manda */
+  .marco[data-hilo='si'] .page-head { display: none; }
+  .marco[data-hilo='si'] .chat-thread {
+    min-height: calc(100dvh - 16px - env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+  }
+  .marco[data-hilo='si'] .chat-thread .head {
+    border-radius: 0 0 14px 14px;
+    padding: calc(8px + env(safe-area-inset-top)) 8px 8px 4px;
+    top: 0;
+  }
+  .marco[data-hilo='si'] .chat-messages { flex: 1; overflow-y: auto; }
+}
+
+/* ---------- La lista de mensajes, a lo ancho y sin cajas ---------- */
+@media (max-width: 900px) {
+  .marco[data-seccion='messages'] .page-head { align-items: center; }
+  .marco[data-seccion='messages'] .page-head h1 { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+  .marco[data-seccion='messages'] .conv { padding: 12px 6px; }
+  .marco[data-seccion='messages'] .fila-conv .conv { border-radius: 0; }
+}
+
+/* ============================================================
+   §36 · Ajustes avanzados de verdad
+   ============================================================ */
+
+/* Contraste alto: más fuerza en el texto y en los bordes */
+[data-contraste='alto'] {
+  --ink-2: #2c3145;
+  --ink-3: #4a5070;
+}
+[data-theme='dark'][data-contraste='alto'] {
+  --ink-2: #e7e9f5;
+  --ink-3: #c3c7de;
+}
+[data-contraste='alto'] .card,
+[data-contraste='alto'] .post,
+[data-contraste='alto'] .composer,
+[data-contraste='alto'] .topbar,
+[data-contraste='alto'] .crear-rapido {
+  border-color: rgba(17, 21, 50, 0.22) !important;
+}
+[data-theme='dark'][data-contraste='alto'] .card,
+[data-theme='dark'][data-contraste='alto'] .post,
+[data-theme='dark'][data-contraste='alto'] .composer,
+[data-theme='dark'][data-contraste='alto'] .topbar,
+[data-theme='dark'][data-contraste='alto'] .crear-rapido {
+  border-color: rgba(255, 255, 255, 0.3) !important;
+}
+[data-contraste='alto'] .muted,
+[data-contraste='alto'] small { color: var(--ink-2) !important; }
+[data-contraste='alto'] .chips-filtro button,
+[data-contraste='alto'] .tabs button { font-weight: 700; }
+
+/* El aviso de que se ocultaron publicaciones */
+.aviso-silenciadas {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 var(--aire);
+  padding: 10px 13px;
+  border-radius: 14px;
+  background: var(--aurora-grad-suave);
+  color: var(--ink-2);
+  font-size: 12.8px;
+}
+.aviso-silenciadas a { color: var(--accent); font-weight: 650; text-decoration: none; }
+
+/* El panel de ajustes del grupo */
+.panel-ajustes-grupo { display: flex; flex-direction: column; gap: var(--aire); }
+.panel-ajustes-grupo .campo { display: block; padding: 6px 12px 12px; }
+.panel-ajustes-grupo .campo > span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+.panel-ajustes-grupo .tabs { margin-top: 0; }
+.panel-ajustes-grupo .fila-ajuste { align-items: center; }
+.panel-ajustes-grupo .menu-grupo-caja { margin-left: 8px; }
+
+/* Ajustes: la lista de pestañas, en dos filas ordenadas */
+.ajustes-migas {
+  display: flex;
+  gap: 7px;
+  padding: 4px 2px 10px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.ajustes-migas::-webkit-scrollbar { display: none; }
+.ajustes-migas button {
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(17, 21, 50, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[data-theme='dark'] .ajustes-migas button {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+}
+.ajustes-migas button svg { width: 15px; height: 15px; }
+.ajustes-migas button.active {
+  color: #fff;
+  border-color: transparent;
+  background: var(--aurora-grad);
+  box-shadow: var(--aurora-halo);
+}
+@media (max-width: 720px) {
+  .ajustes-migas { margin: 0 -10px; padding: 4px 12px 10px; }
+}

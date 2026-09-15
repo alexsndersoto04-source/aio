@@ -321,9 +321,9 @@ const grupoDemo = {
   about: 'Salimos a fotografiar la ciudad cuando se apagan las luces. Comparte aquí tus tomas y tus ajustes.',
   privacy: 'public',
   miembros: 4,
-  owner_id: 3,
+  owner_id: 1,
   soy_miembro: true,
-  es_mio: false,
+  es_mio: true,
   created_at: hace(14000),
 };
 
@@ -826,9 +826,9 @@ export function responder(metodo, ruta, cuerpo) {
       // Lista de grupos: «tus grupos» y «grupos para descubrir».
       const comoTarjeta = (g) => ({
         ...g,
-        mi_papel: g.soy_miembro ? 'member' : '',
-        owner_username: 'carla',
-        owner_display_name: 'Carla Ríos',
+        mi_papel: g.soy_miembro ? (g.es_mio ? 'owner' : 'member') : '',
+        owner_username: g.es_mio ? USUARIO.username : 'carla',
+        owner_display_name: g.es_mio ? USUARIO.display_name : 'Carla Ríos',
       });
       void ruta;
       return json({

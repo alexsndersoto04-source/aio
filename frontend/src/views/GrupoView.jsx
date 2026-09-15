@@ -18,7 +18,7 @@ import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { PostSkeleton } from '../components/Skeleton.jsx';
 import {
   IconUsers, IconPlus, IconCheck, IconSettings, IconLayers, IconChat, IconMore,
-  IconEdit, IconLink, IconTrash, IconLogout, IconImage,
+  IconEdit, IconLink, IconTrash, IconLogout, IconImage, IconShield,
 } from '../components/Icons.jsx';
 import ChatGrupo from '../components/ChatGrupo.jsx';
 
@@ -200,6 +200,213 @@ export default function GrupoView({ id }) {
     }
   }
 
+  /** Panel de ajustes del grupo: todo lo configurable, en un solo sitio. */
+  function PanelAjustes() {
+    const esMio = !!grupo.es_mio;
+    const [nombre, setNombre] = useState(grupo.name || '');
+    const [sobre, setSobre] = useState(grupo.about || '');
+    const [privacidad, setPrivacidad] = useState(grupo.privacy || 'public');
+    const [guardando, setGuardando] = useState(false);
+    const [menuMiembro, setMenuMiembro] = useState(null);
+
+    async function guardar(e) {
+      e.preventDefault();
+      if (!esMio) return;
+      setGuardando(true);
+      try {
+        await api.patch(`/api/groups/${grupo.id}`, { name: nombre, about: sobre, privacy: privacidad });
+        toast.ok('Grupo actualizado');
+        cargar();
+      } catch (err) {
+        avisoError(err);
+      } finally {
+        setGuardando(false);
+      }
+    }
+
+    async function sacar(m) {
+      const ok = await confirmar({
+        title: `¿Sacar a ${m.display_name} del grupo?`,
+        message: 'Podrá volver a entrar cuando quiera si el grupo es abierto.',
+        confirmText: 'Sacar del grupo',
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api.del(`/api/groups/${grupo.id}/members/${m.id}`);
+        toast.ok('Miembro fuera del grupo');
+        setMenuMiembro(null);
+        cargar();
+      } catch (err) {
+        avisoError(err);
+      }
+    }
+
+    async function darMando(m, papel) {
+      try {
+        await api.post(`/api/groups/${grupo.id}/members/${m.id}/role`, { papel });
+        toast.ok(papel === 'admin' ? 'Ahora administra el grupo' : 'Ya no administra el grupo');
+        setMenuMiembro(null);
+        cargar();
+      } catch (err) {
+        avisoError(err);
+      }
+    }
+
+    return (
+      <div className="panel-ajustes-grupo">
+        <section className="card ajustes-bloque">
+          <div className="titulo">Cómo se ve el grupo</div>
+          {esMio ? (
+            <form onSubmit={guardar}>
+              <label className="campo">
+                <span>Nombre</span>
+                <input className="input" value={nombre} onChange={(e) => setNombre(e.target.value)} maxLength={80} />
+              </label>
+              <label className="campo">
+                <span>Descripción</span>
+                <textarea
+                  className="textarea"
+                  value={sobre}
+                  onChange={(e) => setSobre(e.target.value)}
+                  maxLength={400}
+                  rows={3}
+                  placeholder="Cuéntale a la gente de qué va el grupo"
+                />
+              </label>
+              <label className="campo">
+                <span>Tipo de grupo</span>
+                <div className="tabs">
+                  <button
+                    type="button"
+                    className={privacidad === 'public' ? 'active' : ''}
+                    onClick={() => setPrivacidad('public')}
+                  >
+                    Abierto
+                  </button>
+                  <button
+                    type="button"
+                    className={privacidad === 'private' ? 'active' : ''}
+                    onClick={() => setPrivacidad('private')}
+                  >
+                    Privado
+                  </button>
+                </div>
+              </label>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-primary" disabled={guardando}>
+                  {guardando ? 'Guardando…' : 'Guardar cambios'}
+                </button>
+                <button type="button" className="btn btn-outline" onClick={cambiarPortada} disabled={ocupadoMenu}>
+                  <IconImage /> Cambiar la portada
+                </button>
+              </div>
+            </form>
+          ) : (
+            <p className="muted small">Eres miembro del grupo. Quien lo creó es quien puede cambiar su nombre, su descripción y su portada.</p>
+          )}
+        </section>
+
+        <section className="card ajustes-bloque">
+          <div className="titulo">Invitar</div>
+          <div className="fila-ajuste">
+            <span className="icono"><IconLink /></span>
+            <span className="texto">
+              <b>Enlace del grupo</b>
+              <small>Compártelo para que entren directo.</small>
+            </span>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={async () => {
+                const enlace = `${window.location.origin}/#/grupo/${grupo.id}`;
+                try { await navigator.clipboard.writeText(enlace); toast.ok('Enlace copiado'); }
+                catch { toast.info(enlace); }
+              }}
+            >
+              Copiar
+            </button>
+          </div>
+        </section>
+
+        <section className="card ajustes-bloque">
+          <div className="titulo">Miembros · {grupo.miembros}</div>
+          {(grupo.miembros_lista || []).map((m) => (
+            <div className="fila-ajuste" key={m.id}>
+              <Avatar user={m} size="sm" />
+              <span className="texto">
+                <b>{m.display_name}<VerifiedBadge show={m.is_verified} /></b>
+                <small>
+                  @{m.username}
+                  {m.papel === 'owner' ? ' · lo creó' : m.papel === 'admin' ? ' · administra' : ''}
+                </small>
+              </span>
+              {esMio && m.papel !== 'owner' ? (
+                <div className="menu-grupo-caja">
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setMenuMiembro(menuMiembro === m.id ? null : m.id)}
+                    aria-label={`Opciones de ${m.display_name}`}
+                  >
+                    <IconMore />
+                  </button>
+                  {menuMiembro === m.id ? (
+                    <>
+                      <span className="hoja-fondo" role="presentation" onClick={() => setMenuMiembro(null)} />
+                      <div className="menu-conv menu-grupo" role="menu">
+                        {m.papel === 'admin' ? (
+                          <button type="button" onClick={() => darMando(m, 'member')}>
+                            <IconUsers /> Quitarle el mando
+                          </button>
+                        ) : (
+                          <button type="button" onClick={() => darMando(m, 'admin')}>
+                            <IconShield /> Darle el mando del grupo
+                          </button>
+                        )}
+                        <button type="button" className="peligro" onClick={() => sacar(m)}>
+                          <IconTrash /> Sacar del grupo
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </section>
+
+        <section className="card ajustes-bloque">
+          <div className="titulo">Zona sensible</div>
+          {grupo.soy_miembro && !esMio ? (
+            <div className="fila-ajuste peligro">
+              <span className="icono"><IconLogout /></span>
+              <span className="texto">
+                <b>Salir del grupo</b>
+                <small>Dejarás de ver sus publicaciones y su chat.</small>
+              </span>
+              <button type="button" className="btn btn-danger btn-sm" onClick={entrarOSalir} disabled={ocupado}>
+                Salir
+              </button>
+            </div>
+          ) : null}
+          {esMio ? (
+            <div className="fila-ajuste peligro">
+              <span className="icono"><IconTrash /></span>
+              <span className="texto">
+                <b>Eliminar el grupo</b>
+                <small>Se borran el grupo, sus publicaciones y su chat. No se puede deshacer.</small>
+              </span>
+              <button type="button" className="btn btn-danger btn-sm" onClick={eliminarGrupo} disabled={ocupadoMenu}>
+                Eliminar
+              </button>
+            </div>
+          ) : null}
+        </section>
+      </div>
+    );
+  }
+
   /** Botón «…» del grupo: el menú con todo lo que se puede hacer. */
   function OpcionesGrupo({ grupo: g }) {
     const esMio = !!g.es_mio;
@@ -328,6 +535,15 @@ export default function GrupoView({ id }) {
               <IconChat /> Chat
               {chatNuevo ? <span className="punto-nuevo" aria-label="mensajes nuevos" /> : null}
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={vista === 'ajustes'}
+              className={vista === 'ajustes' ? 'activa' : ''}
+              onClick={() => setVista('ajustes')}
+            >
+              <IconSettings /> Ajustes
+            </button>
           </div>
 
           {vista === 'publicaciones' ? (grupo.soy_miembro ? (
@@ -351,7 +567,9 @@ export default function GrupoView({ id }) {
             </div>
           )) : null}
 
-          {vista === 'chat' ? (
+          {vista === 'ajustes' ? (
+            <PanelAjustes />
+          ) : vista === 'chat' ? (
             <ChatGrupo
               grupo={grupo}
               esMiembro={!!grupo.soy_miembro}

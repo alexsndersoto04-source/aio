@@ -176,7 +176,7 @@ export function Grabador({ onListo, onCancelar, disabled = false }) {
 }
 
 /** Reproductor de una nota de voz ya enviada. */
-export function AudioMensaje({ url, duracionMs = 0, mio = false }) {
+export function AudioMensaje({ url, duracionMs = 0, mio = false, auto = false }) {
   const audio = useRef(null);
   const [sonando, setSonando] = useState(false);
   const [avance, setAvance] = useState(0);
@@ -188,6 +188,14 @@ export function AudioMensaje({ url, duracionMs = 0, mio = false }) {
     setAvance(0);
     setSonando(false);
   }, [url]);
+
+  // Si la persona pidió que las notas se escuchen solas, esta (la última) arranca.
+  useEffect(() => {
+    if (!auto || !url) return;
+    const el = audio.current;
+    if (!el) return;
+    el.play().then(() => setSonando(true)).catch(() => { /* el navegador pide un toque */ });
+  }, [auto, url]);
 
   function alternar() {
     const el = audio.current;

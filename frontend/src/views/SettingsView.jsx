@@ -15,7 +15,9 @@ import { uploadMedia, API_URL } from '../api.js';
 import Avatar from '../components/Avatar.jsx';
 import { timeAgo } from '../utils.js';
 import { getPreferencia, setPreferencia } from '../theme.js';
-import { leer as leerPref, guardar as guardarPref } from '../prefs.js';
+import {
+  leer as leerPref, guardar as guardarPref, leerTodo, palabrasSilenciadas, guardarSilenciadas,
+} from '../prefs.js';
 import {
   IconTrash, IconUser, IconShield, IconBell, IconLayers, IconLock, IconSettings,
   IconCheck, IconAlert, IconWarning, IconInfo, IconSun, IconMoon, IconRefresh,
@@ -31,6 +33,10 @@ const SECCIONES = [
   { id: 'privacidad', label: 'Privacidad', icono: <IconLock /> },
   { id: 'notificaciones', label: 'Avisos', icono: <IconBell /> },
   { id: 'apariencia', label: 'Apariencia', icono: <IconSpark /> },
+  { id: 'accesibilidad', label: 'Accesibilidad', icono: <IconEye /> },
+  { id: 'contenido', label: 'Contenido', icono: <IconComment /> },
+  { id: 'mensajes', label: 'Mensajes', icono: <IconMail /> },
+  { id: 'bienestar', label: 'Bienestar', icono: <IconSpark /> },
   { id: 'seguridad', label: 'Seguridad', icono: <IconShield /> },
   { id: 'datos', label: 'Datos', icono: <IconLayers /> },
   { id: 'acerca', label: 'Acerca de', icono: <IconInfo /> },
@@ -105,6 +111,10 @@ export default function SettingsView({ tab }) {
 
   // Avisos
   const [prefs, setPrefs] = useState(null);
+  // Opciones avanzadas (se guardan en este teléfono)
+  const [opc, setOpc] = useState(() => leerTodo());
+  const [palabras, setPalabras] = useState(() => String(leerPref('silenciadas') || ''));
+  const [limpiado, setLimpiado] = useState('');
 
   // Apariencia
   const [tema, setTema] = useState(getPreferencia());
@@ -192,6 +202,28 @@ export default function SettingsView({ tab }) {
   }, []);
 
   useEffect(() => { if (user) setMe(user); }, [user]);
+
+  /** Guarda una opción avanzada y refresca la vista. */
+  function guardarOpc(clave, valor) {
+    guardarPref(clave, valor);
+    setOpc(leerTodo());
+  }
+
+  /** Limpia los datos guardados en este teléfono (no toca la cuenta). */
+  function limpiarLocal() {
+    const claves = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('moon_')) claves.push(k);
+    }
+    claves.forEach((k) => {
+      // Se respetan la sesión y el tema: solo se va lo prescindible.
+      if (k === 'moon_access_token' || k === 'moon_refresh_token' || k === 'moon_theme') return;
+      localStorage.removeItem(k);
+    });
+    setLimpiado(`Se limpiaron ${claves.length > 3 ? claves.length - 3 : 0} datos guardados en este teléfono`);
+    window.setTimeout(() => setLimpiado(''), 5000);
+  }
 
   function flash(kind, msg) {
     setAlert({ kind, msg });
@@ -803,6 +835,214 @@ export default function SettingsView({ tab }) {
             <div className="row" style={{ padding: '8px 12px 12px' }}>
               <button className="btn btn-outline btn-sm" onClick={revokeAll}>Cerrar sesión en todos los dispositivos</button>
             </div>
+          </div>
+        </>
+      ) : null}
+
+      {/* ---------------- ACCESIBILIDAD ---------------- */}
+      {section === 'accesibilidad' ? (
+        <>
+          <div className="card ajustes-bloque">
+            <div className="titulo">Que se lea y se sienta bien</div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconEye /></span>
+              <span className="texto">
+                <b>Contraste alto</b>
+                <small>Texto y bordes con más fuerza, para verlo sin esfuerzo.</small>
+              </span>
+              <Opciones
+                etiqueta="Contraste"
+                valor={opc.contraste}
+                onChange={(v) => guardarOpc('contraste', v)}
+                opciones={[{ id: 'normal', label: 'Normal' }, { id: 'alto', label: 'Alto' }]}
+              />
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconAt /></span>
+              <span className="texto">
+                <b>Tamaño de la letra</b>
+                <small>Se aplica a toda la app al instante.</small>
+              </span>
+              <Opciones
+                etiqueta="Tamaño de la letra"
+                valor={opc.texto}
+                onChange={(v) => guardarOpc('texto', v)}
+                opciones={[{ id: 'normal', label: 'Normal' }, { id: 'grande', label: 'Grande' }, { id: 'enorme', label: 'Enorme' }]}
+              />
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconSpark /></span>
+              <span className="texto">
+                <b>Más contenido por pantalla</b>
+                <small>Menos aire entre cosas: se ve más de una vez.</small>
+              </span>
+              <Interruptor activo={opc.denso === 'si'} onChange={(v) => guardarOpc('denso', v ? 'si' : 'no')} etiqueta="Más contenido por pantalla" />
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconRefresh /></span>
+              <span className="texto">
+                <b>Reducir el movimiento</b>
+                <small>Menos animaciones: la app se queda quieta.</small>
+              </span>
+              <Interruptor activo={opc.movimiento === 'no'} onChange={(v) => guardarOpc('movimiento', v ? 'no' : 'si')} etiqueta="Reducir el movimiento" />
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconLock /></span>
+              <span className="texto">
+                <b>Cristal de las tarjetas</b>
+                <small>Cuánto desenfoque llevan las superficies.</small>
+              </span>
+              <Opciones
+                etiqueta="Cristal"
+                valor={opc.vidrio}
+                onChange={(v) => guardarOpc('vidrio', v)}
+                opciones={[{ id: 'suave', label: 'Suave' }, { id: 'normal', label: 'Normal' }, { id: 'intenso', label: 'Intenso' }]}
+              />
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {/* ---------------- CONTENIDO ---------------- */}
+      {section === 'contenido' ? (
+        <>
+          <div className="card ajustes-bloque">
+            <div className="titulo">Palabras silenciadas</div>
+            <p className="muted small" style={{ margin: '0 2px 10px' }}>
+              Las publicaciones que traigan estas palabras no aparecerán en tu Inicio ni en tus búsquedas.
+              Una por línea (o separadas por comas).
+            </p>
+            <textarea
+              className="textarea"
+              rows={5}
+              placeholder="Una palabra por línea: spoilers, política, lo que no quieras ver"
+
+              value={palabras}
+              onChange={(e) => setPalabras(e.target.value)}
+            />
+            <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  guardarSilenciadas(palabras);
+                  toast.ok('Palabras guardadas');
+                }}
+              >
+                Guardar palabras
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  setPalabras('');
+                  guardarSilenciadas('');
+                  toast.ok('Lista vacía: vuelves a ver todo');
+                }}
+              >
+                Borrar la lista
+              </button>
+              <span className="muted small">
+                {palabrasSilenciadas().length > 0
+                  ? `Ahora mismo se silencian ${palabrasSilenciadas().length} palabra(s).`
+                  : 'No hay ninguna palabra silenciada.'}
+              </span>
+            </div>
+          </div>
+
+          <div className="card ajustes-bloque">
+            <div className="titulo">Lo que ves al entrar</div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconBell /></span>
+              <span className="texto">
+                <b>Sonido al recibir un mensaje</b>
+                <small>Un aviso corto cuando llega algo nuevo.</small>
+              </span>
+              <Interruptor activo={opc.sonido === 'si'} onChange={(v) => guardarOpc('sonido', v ? 'si' : 'no')} etiqueta="Sonido de mensajes" />
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {/* ---------------- MENSAJES ---------------- */}
+      {section === 'mensajes' ? (
+        <>
+          <div className="card ajustes-bloque">
+            <div className="titulo">Cómo se comportan tus mensajes</div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconMail /></span>
+              <span className="texto">
+                <b>Reproducir las notas de voz solas</b>
+                <small>La última nota se escucha al abrir la conversación.</small>
+              </span>
+              <Interruptor activo={opc.notas === 'si'} onChange={(v) => guardarOpc('notas', v ? 'si' : 'no')} etiqueta="Reproducir notas de voz solas" />
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconLock /></span>
+              <span className="texto">
+                <b>Quién puede escribirte</b>
+                <small>Lo mismo que en Privacidad, aquí a mano.</small>
+              </span>
+              <Opciones
+                etiqueta="Quién puede escribirte"
+                valor={dmPrivacy}
+                onChange={setDmPrivacy}
+                opciones={[{ id: 'all', label: 'Todos' }, { id: 'following', label: 'Quienes sigo' }, { id: 'nobody', label: 'Nadie' }]}
+              />
+            </div>
+            <div className="row" style={{ padding: '4px 12px 12px' }}>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={async () => {
+                  try {
+                    await api.patch('/api/auth/privacy', { dm_privacy: dmPrivacy });
+                    await refreshMe();
+                    flash('ok', 'Listo: así se queda quién puede escribirte');
+                  } catch (err) { flash('err', err.message); }
+                }}
+              >
+                Guardar
+              </button>
+              <a className="btn btn-outline btn-sm" href="#/messages">Ir a Mensajes</a>
+            </div>
+          </div>
+
+          <div className="card ajustes-bloque">
+            <div className="titulo">Tus conversaciones</div>
+            <p className="muted small" style={{ margin: '0 2px 8px' }}>
+              Silenciar, archivar u ocultar se hace desde los tres puntos de cada conversación.
+              Lo que archives queda en la pestaña «Archivadas».
+            </p>
+          </div>
+        </>
+      ) : null}
+
+      {/* ---------------- BIENESTAR ---------------- */}
+      {section === 'bienestar' ? (
+        <>
+          <div className="card ajustes-bloque">
+            <div className="titulo">Tu tiempo en Moon</div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconBell /></span>
+              <span className="texto">
+                <b>Recordarme descansar</b>
+                <small>Un aviso suave cuando llevas mucho rato seguido.</small>
+              </span>
+              <Opciones
+                etiqueta="Recordatorio de descanso"
+                valor={opc.bienestar}
+                onChange={(v) => guardarOpc('bienestar', v)}
+                opciones={[
+                  { id: '0', label: 'No' },
+                  { id: '20', label: '20 min' },
+                  { id: '40', label: '40 min' },
+                  { id: '60', label: '1 hora' },
+                ]}
+              />
+            </div>
+            <p className="muted small" style={{ margin: '6px 2px 0' }}>
+              {opc.bienestar === '0'
+                ? 'Ahora mismo no te avisamos de nada.'
+                : `Te avisaremos cuando lleves ${opc.bienestar} minutos seguidos con la app abierta.`}
+            </p>
           </div>
         </>
       ) : null}
