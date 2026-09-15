@@ -18,6 +18,7 @@ import { ListSkeleton } from '../components/Skeleton.jsx';
 import {
   IconSend, IconSearch, IconChevronLeft, IconTrash, IconMail, IconCheck, IconAt,
   IconMore, IconBell, IconLayers, IconEye, IconComment, IconExplore, IconUsers,
+  IconResponder, IconX,
 } from '../components/Icons.jsx';
 
 const REACCIONES = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
@@ -39,6 +40,10 @@ export default function MessagesView({ conversationId }) {
   // Preferencias por conversación (silenciada / archivada) traídas del servidor
   const [prefs, setPrefs] = useState({});
   const [reaccionando, setReaccionando] = useState(null);
+  // A quién le estoy respondiendo (respuesta citada) y la búsqueda dentro del hilo.
+  const [respondiendo, setRespondiendo] = useState(null);
+  const [buscarEnHilo, setBuscarEnHilo] = useState(false);
+  const [qHilo, setQHilo] = useState('');
   // «Reproducir las notas de voz solas» (Ajustes → Mensajes)
   const notasSolas = useRef(leerPref('notas') === 'si');
   const endRef = useRef(null);
@@ -127,9 +132,13 @@ export default function MessagesView({ conversationId }) {
     if (!draft.trim() || !convId) return;
     setBusy(true);
     try {
-      const created = await api.post(`/api/messages/conversations/${convId}/messages`, { content: draft.trim() });
+      const created = await api.post(`/api/messages/conversations/${convId}/messages`, {
+        content: draft.trim(),
+        ...(respondiendo ? { reply_to_id: respondiendo.id } : {}),
+      });
       setThread((t) => (t ? { ...t, messages: [...t.messages, created] } : t));
       setDraft('');
+      setRespondiendo(null);
       loadConvs();
     } catch (err) {
       avisoError(err);
@@ -137,6 +146,13 @@ export default function MessagesView({ conversationId }) {
       setBusy(false);
     }
   }
+
+  // Al abrir otra conversación no se arrastra la cita ni la búsqueda anterior.
+  useEffect(() => {
+    setRespondiendo(null);
+    setQHilo('');
+    setBuscarEnHilo(false);
+  }, [convId]);
 
   async function enviarNota(blob, duracionMs) {
     if (!convId) return;
@@ -380,6 +396,15 @@ export default function MessagesView({ conversationId }) {
               <button
                 type="button"
                 className="icon-btn"
+                onClick={() => { setBuscarEnHilo((v) => !v); setQHilo(''); }}
+                aria-label={buscarEnHilo ? 'Cerrar la búsqueda' : 'Buscar en la conversación'}
+                title="Buscar en la conversación"
+              >
+                {buscarEnHilo ? <IconX /> : <IconSearch />}
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
                 onClick={() => setMenuDe(menuDe === `hilo-${convId}` ? null : `hilo-${convId}`)}
                 aria-expanded={menuDe === `hilo-${convId}`}
                 aria-label="Opciones de la conversación"
@@ -405,6 +430,22 @@ export default function MessagesView({ conversationId }) {
               ) : null}
             </header>
 
+            {buscarEnHilo ? (
+              <div className="buscar-hilo">
+                <IconSearch />
+                <input
+                  className="input"
+                  placeholder="Buscar en esta conversación…"
+                  aria-label="Buscar en esta conversación"
+                  value={qHilo}
+                  onChange={(e) => setQHilo(e.target.value)}
+                />
+                <span className="muted small">
+                  {qHilo.trim() ? `${(thread.messages || []).filter((m) => (m.content || '').toLowerCase().includes(qHilo.trim().toLowerCase())).length} resultados` : ''}
+                </span>
+              </div>
+            ) : null}
+
             <div className="chat-messages">
               {thread.messages.length === 0 ? (
                 <div className="empty">
@@ -414,17 +455,36 @@ export default function MessagesView({ conversationId }) {
                 </div>
               ) : null}
 
-              {thread.messages.map((m, i, todos) => {
+              {(qHilo.trim()
+                ? thread.messages.filter((m) => (m.content || '').toLowerCase().includes(qHilo.trim().toLowerCase()))
+                : thread.messages
+              ).map((m, i, todos) => {
                 const mio = m.sender_id === user?.id;
                 const borrado = m.status === 'deleted';
                 // La última nota de voz (y que no sea tuya) suena sola si lo pediste.
                 const esUltimo = i === todos.length - 1;
                 return (
-                  <div className={`msg ${mio ? 'mine' : ''}`} key={m.id}>
+                  <div className={`msg ${mio ? 'mine' : ''}`} key={m.id} id={`msg-${m.id}`}>
                     {borrado ? (
                       <em style={{ opacity: 0.65 }}>Mensaje eliminado</em>
                     ) : (
                       <>
+                        {m.reply_to ? (
+                          <button
+                            type="button"
+                            className="cita"
+                            title="Ir al mensaje citado"
+                            onClick={() => {
+                              document.getElementById(`msg-${m.reply_to.id}`)
+                                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }}
+                          >
+                            <b>{m.reply_to.sender_id === user?.id ? 'Tú' : (m.reply_to.autor || 'Mensaje')}</b>
+                            <span className="texto-cita">
+                              {m.reply_to.content ? m.reply_to.content.slice(0, 140) : 'Mensaje eliminado'}
+                            </span>
+                          </button>
+                        ) : null}
                         {m.audio_url ? (
                           <AudioMensaje
                             url={m.audio_url}
@@ -451,6 +511,13 @@ export default function MessagesView({ conversationId }) {
                           title="Reaccionar"
                         >
                           <span className="moon-emoji">🙂</span>
+                        </button>
+                        <button
+                          onClick={() => setRespondiendo(m)}
+                          aria-label="Responder al mensaje"
+                          title="Responder"
+                        >
+                          <IconResponder />
                         </button>
                         {mio ? (
                           <button onClick={() => delMsg(m)} aria-label="Eliminar mensaje" title="Eliminar">
@@ -483,6 +550,19 @@ export default function MessagesView({ conversationId }) {
 
               <div ref={endRef} />
             </div>
+
+            {respondiendo ? (
+              <div className="respondiendo">
+                <IconResponder />
+                <span className="texto">
+                  <b>Respondiendo a {respondiendo.sender_id === user?.id ? 'ti' : (thread.partner?.display_name || thread.partner?.username)}</b>
+                  <span className="ellipsis">{respondiendo.content || 'Nota de voz'}</span>
+                </span>
+                <button type="button" className="icon-btn" onClick={() => setRespondiendo(null)} aria-label="Cancelar la respuesta" title="Cancelar">
+                  <IconX />
+                </button>
+              </div>
+            ) : null}
 
             <form className="chat-input" onSubmit={send}>
               <textarea

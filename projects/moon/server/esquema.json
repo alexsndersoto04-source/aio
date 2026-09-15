@@ -128,5 +128,10 @@
     "version": 26,
     "name": "privacidad_avanzada",
     "sql": "ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_comment TEXT NOT NULL DEFAULT 'all'; ALTER TABLE users ADD COLUMN IF NOT EXISTS show_online BOOLEAN NOT NULL DEFAULT TRUE; ALTER TABLE users ADD COLUMN IF NOT EXISTS searchable BOOLEAN NOT NULL DEFAULT TRUE; ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_see_follows BOOLEAN NOT NULL DEFAULT TRUE"
+  },
+  {
+    "version": 27,
+    "name": "mensajes_con_respuesta",
+    "sql": "ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id BIGINT REFERENCES messages(id) ON DELETE SET NULL; CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to_id)"
   }
 ]

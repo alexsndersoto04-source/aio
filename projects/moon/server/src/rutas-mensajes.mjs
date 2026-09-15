@@ -10,6 +10,12 @@ import { enviarA } from './ws.mjs';
 import { empujarSiQuiere } from './empuje.mjs';
 import { demasiadoRapido } from './limites.mjs';
 
+// Columnas que traen, además del mensaje, el mensaje al que responde.
+export const COLUMNAS_CON_RESPUESTA = `m.id, m.conversation_id, m.sender_id, m.content, m.image_url,
+  m.audio_url, m.duracion_ms, m.status, m.reaction, m.read_at, m.created_at::text AS created_at,
+  m.reply_to_id, r.content AS cita_texto, r.sender_id AS cita_de, r.status AS cita_estado,
+  ru.display_name AS cita_nombre, ru.username AS cita_usuario`;
+
 function mensajePublico(m) {
   return {
     id: Number(m.id),
@@ -24,6 +30,15 @@ function mensajePublico(m) {
     read_at: m.read_at ? String(m.read_at) : null,
     edited_at: null,
     created_at: String(m.created_at),
+    // Respuesta citada: lo justo para pintarla (quién y qué decía).
+    reply_to: m.reply_to_id
+      ? {
+        id: Number(m.reply_to_id),
+        sender_id: m.cita_de ? Number(m.cita_de) : null,
+        autor: m.cita_nombre || m.cita_usuario || '',
+        content: m.cita_estado === 'deleted' ? '' : (m.cita_texto || ''),
+      }
+      : null,
   };
 }
 
@@ -128,6 +143,7 @@ export function registrarRutasMensajes(router) {
     const yo = await c.exigir();
     const b = await c.cuerpo();
     const objetivo = Number(b.user_id);
+    if (!Number.isInteger(objetivo) || objetivo <= 0) throw new ApiErr('Indica a quién le escribes', 400, 'sin_destino');
     const otro = await uno(c.pool, 'SELECT * FROM users WHERE id = $1', [objetivo]);
     if (!otro) throw new ApiErr('Usuario no encontrado', 404);
     if (Number(otro.id) === Number(yo.id)) throw new ApiErr('No puedes abrir una conversación contigo', 400);
@@ -151,7 +167,9 @@ export function registrarRutasMensajes(router) {
 
   router.get('/api/messages/conversations/:id', async (c) => {
     const yo = await c.exigir();
-    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [Number(c.params.id)]);
+    const idConv = Number(c.params.id);
+    if (!Number.isInteger(idConv) || idConv <= 0) throw new ApiErr('Conversación no encontrada', 404);
+    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [idConv]);
     if (!conv) throw new ApiErr('Conversación no encontrada', 404);
     if (![Number(conv.user_a), Number(conv.user_b)].includes(Number(yo.id))) {
       throw new ApiErr('Conversación no encontrada', 404);
@@ -161,9 +179,11 @@ export function registrarRutasMensajes(router) {
     const { limit } = paginacion(c.req, 50, 100);
     const mensajes = await c.pool.query(
       `SELECT * FROM (
-         SELECT id, conversation_id, sender_id, content, image_url, audio_url, duracion_ms,
-                status, reaction, read_at, created_at::text AS created_at
-           FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT ${limit}
+         SELECT ${COLUMNAS_CON_RESPUESTA}
+           FROM messages m
+           LEFT JOIN messages r ON r.id = m.reply_to_id
+           LEFT JOIN users ru ON ru.id = r.sender_id
+          WHERE m.conversation_id = $1 ORDER BY m.created_at DESC LIMIT ${limit}
        ) AS recientes ORDER BY created_at ASC`,
       [conv.id]
     );
@@ -191,9 +211,12 @@ export function registrarRutasMensajes(router) {
     const imagen = typeof b.image_url === 'string' ? b.image_url.slice(0, 500) : '';
     const audio = typeof b.audio_url === 'string' && /^\/api\/media\/[A-Za-z0-9._-]+$/.test(b.audio_url) ? b.audio_url : '';
     const duracion = Math.min(Math.max(Number(b.duracion_ms || 0), 0), 600_000);
+    const respondeA = Number(b.reply_to_id) > 0 ? Number(b.reply_to_id) : null;
     if (!contenido && !imagen && !audio) throw new ApiErr('Escribe un mensaje o manda una nota de voz', 400);
 
-    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [Number(c.params.id)]);
+    const idConv = Number(c.params.id);
+    if (!Number.isInteger(idConv) || idConv <= 0) throw new ApiErr('Conversación no encontrada', 404);
+    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [idConv]);
     if (!conv) throw new ApiErr('Conversación no encontrada', 404);
     if (![Number(conv.user_a), Number(conv.user_b)].includes(Number(yo.id))) {
       throw new ApiErr('Conversación no encontrada', 404);
@@ -206,11 +229,19 @@ export function registrarRutasMensajes(router) {
     );
     if (bloqueo) throw new ApiErr('No puedes escribir en esta conversación', 403, 'blocked');
 
+    // Solo se puede responder a un mensaje de esta misma conversación.
+    if (respondeA) {
+      const objetivo = await uno(c.pool, 'SELECT id, conversation_id FROM messages WHERE id = $1', [respondeA]);
+      if (!objetivo || Number(objetivo.conversation_id) !== Number(conv.id)) {
+        throw new ApiErr('No puedes responder a ese mensaje', 400, 'cita_invalida');
+      }
+    }
+
     const creado = await uno(
       c.pool,
-      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [conv.id, yo.id, contenido, imagen, audio, audio ? duracion : 0]
+      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms, reply_to_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [conv.id, yo.id, contenido, imagen, audio, audio ? duracion : 0, respondeA]
     );
     const resumen = contenido || (audio ? '🎤 Nota de voz' : '📷 Imagen');
     await c.pool.query(
@@ -219,7 +250,16 @@ export function registrarRutasMensajes(router) {
     );
     await sumarEstadistica(c.pool, 'new_messages');
 
-    const publico = mensajePublico(creado);
+    // Se relee con la cita ya unida para que el receptor la vea igual.
+    const conCita = await uno(
+      c.pool,
+      `SELECT ${COLUMNAS_CON_RESPUESTA} FROM messages m
+         LEFT JOIN messages r ON r.id = m.reply_to_id
+         LEFT JOIN users ru ON ru.id = r.sender_id
+        WHERE m.id = $1`,
+      [creado.id]
+    );
+    const publico = mensajePublico(conCita || creado);
     enviarA(otroId, { type: 'message', conversation_id: Number(conv.id), message: publico });
 
     // Si el otro la había ocultado o archivado, un mensaje nuevo la devuelve a la lista.

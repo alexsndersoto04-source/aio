@@ -157,6 +157,13 @@ export const IconLayers = (p) => (
 );
 
 // --- Chat y notas de voz ---
+export const IconResponder = (p) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...p}>
+    <path d="M9 17l-5-5 5-5" />
+    <path d="M4 12h9a6 6 0 0 1 6 6v2" />
+  </svg>
+);
+
 export const IconChat = (p) => (
   <svg {...S(p)}><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.4-4.4A8 8 0 1 1 21 12Z" /><path d="M8.5 12h.01M12 12h.01M15.5 12h.01" /></svg>
 );

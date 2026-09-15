@@ -202,6 +202,7 @@ const conversaciones = [
       { id: 3, de: 3, texto: 'Se nota muchísimo en el modo oscuro.', creada: 60, estado: 'delivered' },
       { id: 4, de: 3, texto: 'Cuando quieras lo reviso con calma y te dejo notas.', creada: 12, estado: 'delivered' },
       { id: 5, de: 3, texto: '', audio: 'VOZ', duracion: 2600, creada: 4, estado: 'delivered' },
+      { id: 6, de: 1, texto: 'Sí: el oscuro quedó redondo. Ahí lo tienes.', creada: 3, estado: 'sent', respuestaA: 3 },
     ],
   },
   {
@@ -266,6 +267,9 @@ export function emitirDemo(ev) {
 }
 
 function mensajeJSON(c, m) {
+  // Si el mensaje responde a otro, se manda su vista previa (quién y qué decía).
+  const citado = m.respuestaA ? (c.mensajes || []).find((x) => x.id === m.respuestaA) : null;
+  const autorCitado = citado ? personas.find((u) => u.id === citado.de) : null;
   return {
     id: m.id,
     conversation_id: c.id,
@@ -278,6 +282,14 @@ function mensajeJSON(c, m) {
     status: m.estado || 'sent',
     reaction: m.reaccion || null,
     edited_at: null,
+    reply_to: citado
+      ? {
+        id: citado.id,
+        sender_id: citado.de,
+        autor: autorCitado ? (autorCitado.display_name || autorCitado.username) : '',
+        content: citado.texto || '',
+      }
+      : null,
   };
 }
 
@@ -779,6 +791,8 @@ export function responder(metodo, ruta, cuerpo) {
           duracion: Number(cuerpo?.duracion_ms || 0),
           creada: 0,
           estado: 'sent',
+          // Si se respondió citando, se guarda a quién (igual que el servidor real).
+          respuestaA: Number(cuerpo?.reply_to_id) || undefined,
         };
         conv.mensajes.push(nuevo);
         // El contacto «responde» para que la demostración se sienta viva.
