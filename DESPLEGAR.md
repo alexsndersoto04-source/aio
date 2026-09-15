@@ -40,14 +40,35 @@ pega directamente en el panel de Render, en el paso siguiente.
    paso 1.
 5. Pulsa **Apply** y espera unos 3 minutos (verás cómo compila y arranca).
 
-Al terminar, arriba del panel aparece la dirección del servicio, del estilo:
+Al terminar, arriba del panel aparece la dirección del servicio:
 
 ```
-https://moon-xxxx.onrender.com
+https://moon-dal0.onrender.com
 ```
 
 Esa es la dirección de tu red social: ábrela, pulsa **Regístrate** y tu cuenta
 será la administradora (el primer usuario de una instalación nueva lo es).
+
+Para comprobar que está viva y con base de datos, abre:
+
+```
+https://moon-dal0.onrender.com/api/health
+```
+
+Debe responder `{"status":"ok","db":true,…}`. Cuando además diga
+`"correo":"resend"`, el correo ya está configurado (paso siguiente).
+
+El panel de este servicio en Render es:
+
+```
+https://dashboard.render.com/web/srv-daj1i1nqj5pc73btno0g
+```
+
+y las variables de entorno se cambian en:
+
+```
+https://dashboard.render.com/web/srv-daj1i1nqj5pc73btno0g/env
+```
 
 ## Paso 3 · Contármelo
 
@@ -103,7 +124,7 @@ un vigilante gratuito que la visita cada 10 minutos:
 1. Entra en **cron-job.org** y crea la cuenta gratis.
 2. **Create cronjob**:
    - Título: `Moon despierta`
-   - Dirección: `https://TU-DIRECCION.onrender.com/api/health`
+   - Dirección: `https://moon-dal0.onrender.com/api/health`
    - Cada: **10 minutos**
 3. Guarda. Listo: la aplicación queda siempre despierta.
 
