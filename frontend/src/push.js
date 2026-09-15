@@ -39,6 +39,27 @@ function claveABytes(base64) {
   return bytes;
 }
 
+/**
+ * Espera a que el servicio en segundo plano esté listo, pero sin quedarse
+ * colgado: si no arranca (navegador en privado, permiso bloqueado, demo…),
+ * a los 3 segundos se sigue igual y se mira lo que haya registrado.
+ */
+async function registroActivo(esperaMs = 3000) {
+  if (!('serviceWorker' in navigator)) return null;
+  let porTiempo = false;
+  const listo = await Promise.race([
+    navigator.serviceWorker.ready.catch(() => null),
+    new Promise((resolver) => setTimeout(() => { porTiempo = true; resolver(null); }, esperaMs)),
+  ]);
+  if (listo && listo.active) return listo;
+  if (!porTiempo && listo) return listo;
+  try {
+    return (await navigator.serviceWorker.getRegistration()) || listo;
+  } catch {
+    return listo;
+  }
+}
+
 /** Registra el servicio en segundo plano (se llama al arrancar la app). */
 export async function registrarServicio() {
   if (!('serviceWorker' in navigator)) return null;
@@ -60,7 +81,8 @@ export async function activarAvisos() {
   const permiso = await Notification.requestPermission();
   if (permiso !== 'granted') throw new Error('No se concedió el permiso de avisos');
 
-  const registro = await navigator.serviceWorker.ready;
+  const registro = await registroActivo();
+  if (!registro) throw new Error('Este navegador no tiene listo el servicio de avisos. Prueba a recargar la página.');
   const { key } = await api.get('/api/push/public-key');
   if (!key) throw new Error('El servidor no tiene listos los avisos');
 
@@ -85,8 +107,8 @@ export async function activarAvisos() {
 /** Apaga los avisos en ESTE dispositivo. */
 export async function desactivarAvisos() {
   if (!('serviceWorker' in navigator)) return { ok: true };
-  const registro = await navigator.serviceWorker.ready.catch(() => null);
-  const suscripcion = registro ? await registro.pushManager.getSubscription() : null;
+  const registro = await registroActivo();
+  const suscripcion = registro && registro.pushManager ? await registro.pushManager.getSubscription().catch(() => null) : null;
   if (suscripcion) {
     await api.del('/api/push/subscribe', { body: { endpoint: suscripcion.endpoint } }).catch(() => {});
     await suscripcion.unsubscribe().catch(() => {});
@@ -100,9 +122,9 @@ export async function estadoAvisos() {
   const soporte = soportaAvisos();
   const permiso = permisoActual();
   let dispositivoActivo = false;
-  if (soporte && navigator.serviceWorker) {
-    const registro = await navigator.serviceWorker.ready.catch(() => null);
-    const suscripcion = registro ? await registro.pushManager.getSubscription().catch(() => null) : null;
+  if (soporte) {
+    const registro = await registroActivo();
+    const suscripcion = registro && registro.pushManager ? await registro.pushManager.getSubscription().catch(() => null) : null;
     dispositivoActivo = !!suscripcion;
   }
   let servidor = { dispositivos: 0, ultimo: null };
