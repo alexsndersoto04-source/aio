@@ -8,7 +8,7 @@
 // la dirección llega con «?chat» al final.
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, uploadMedia } from '../api.js';
 import { realtime } from '../realtime.js';
 import { useAuth } from '../auth.jsx';
 import { toast, avisoError, confirmar } from '../ui.js';
@@ -16,7 +16,10 @@ import Composer from '../components/Composer.jsx';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { PostSkeleton } from '../components/Skeleton.jsx';
-import { IconUsers, IconPlus, IconCheck, IconSettings, IconLayers, IconChat } from '../components/Icons.jsx';
+import {
+  IconUsers, IconPlus, IconCheck, IconSettings, IconLayers, IconChat, IconMore,
+  IconEdit, IconLink, IconTrash, IconLogout, IconImage,
+} from '../components/Icons.jsx';
 import ChatGrupo from '../components/ChatGrupo.jsx';
 
 export default function GrupoView({ id }) {
@@ -29,6 +32,9 @@ export default function GrupoView({ id }) {
   const [vista, setVista] = useState(() => (/[?&]chat/.test(window.location.hash) ? 'chat' : 'publicaciones'));
   // Aviso de «hay mensajes nuevos en el chat» cuando estás en Publicaciones.
   const [chatNuevo, setChatNuevo] = useState(false);
+  // Menú de opciones del grupo (editar, portada, enlace, salir, eliminar).
+  const [menu, setMenu] = useState(false);
+  const [ocupadoMenu, setOcupadoMenu] = useState(false);
   const [ocupado, setOcupado] = useState(false);
 
   const cargar = useCallback(async () => {
@@ -106,6 +112,157 @@ export default function GrupoView({ id }) {
     }
   }
 
+  async function editarNombre() {
+    setMenu(false);
+    const { pedirTexto } = await import('../ui.js');
+    const nombre = await pedirTexto({
+      title: 'Nombre del grupo',
+      label: 'Cómo se llama',
+      value: grupo.name || '',
+      confirmText: 'Siguiente',
+    });
+    if (nombre === null) return;
+    const sobre = await pedirTexto({
+      title: 'Descripción del grupo',
+      label: 'De qué va el grupo',
+      value: grupo.about || '',
+      confirmText: 'Guardar',
+      requerido: false,
+    });
+    if (sobre === null) return;
+    setOcupadoMenu(true);
+    try {
+      await api.patch(`/api/groups/${grupo.id}`, { name: nombre, about: sobre || '' });
+      toast.ok('Grupo actualizado');
+      cargar();
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setOcupadoMenu(false);
+    }
+  }
+
+  async function cambiarPrivacidad(g) {
+    setMenu(false);
+    const nuevo = g.privacy === 'private' ? 'public' : 'private';
+    setOcupadoMenu(true);
+    try {
+      await api.patch(`/api/groups/${g.id}`, { privacy: nuevo });
+      toast.ok(nuevo === 'private' ? 'Ahora el grupo es privado' : 'Ahora el grupo es abierto');
+      cargar();
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setOcupadoMenu(false);
+    }
+  }
+
+  async function cambiarPortada() {
+    setMenu(false);
+    const entrada = document.createElement('input');
+    entrada.type = 'file';
+    entrada.accept = 'image/*';
+    entrada.onchange = async () => {
+      const archivo = entrada.files && entrada.files[0];
+      if (!archivo) return;
+      setOcupadoMenu(true);
+      try {
+        const subida = await uploadMedia('post', archivo);
+        await api.patch(`/api/groups/${grupo.id}`, { cover_url: subida.url });
+        toast.ok('Portada cambiada');
+        cargar();
+      } catch (e) {
+        avisoError(e);
+      } finally {
+        setOcupadoMenu(false);
+      }
+    };
+    entrada.click();
+  }
+
+  async function eliminarGrupo() {
+    setMenu(false);
+    const ok = await confirmar({
+      title: `¿Eliminar «${grupo.name}»?`,
+      message: 'Se borran el grupo, sus publicaciones y su chat. No se puede deshacer.',
+      confirmText: 'Eliminar el grupo',
+      danger: true,
+    });
+    if (!ok) return;
+    setOcupadoMenu(true);
+    try {
+      await api.del(`/api/groups/${grupo.id}`);
+      toast.ok('Grupo eliminado');
+      window.location.hash = '#/grupos';
+    } catch (e) {
+      avisoError(e);
+      setOcupadoMenu(false);
+    }
+  }
+
+  /** Botón «…» del grupo: el menú con todo lo que se puede hacer. */
+  function OpcionesGrupo({ grupo: g }) {
+    const esMio = !!g.es_mio;
+    return (
+      <div className="menu-grupo-caja">
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => setMenu((v) => !v)}
+          aria-expanded={menu}
+          aria-label="Opciones del grupo"
+          title="Opciones del grupo"
+        >
+          <IconMore />
+        </button>
+        {menu ? (
+          <>
+            <span className="hoja-fondo" role="presentation" onClick={() => setMenu(false)} />
+            <div className="menu-conv menu-grupo" role="menu">
+            {esMio ? (
+              <button type="button" onClick={editarNombre} disabled={ocupadoMenu}>
+                <IconEdit /> Cambiar el nombre y la descripción
+              </button>
+            ) : null}
+            {esMio ? (
+              <button type="button" onClick={cambiarPortada} disabled={ocupadoMenu}>
+                <IconImage /> Cambiar la portada
+              </button>
+            ) : null}
+            {esMio ? (
+              <button type="button" onClick={() => cambiarPrivacidad(g)} disabled={ocupadoMenu}>
+                <IconSettings />
+                {g.privacy === 'private' ? 'Hacerlo abierto' : 'Hacerlo privado'}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={async () => {
+                setMenu(false);
+                const enlace = `${window.location.origin}/#/grupo/${g.id}`;
+                try { await navigator.clipboard.writeText(enlace); toast.ok('Enlace del grupo copiado'); }
+                catch { toast.info(enlace); }
+              }}
+            >
+              <IconLink /> Copiar el enlace para invitar
+            </button>
+            {g.soy_miembro ? (
+              <button type="button" onClick={async () => { setMenu(false); await entrarOSalir(); }} disabled={ocupado}>
+                <IconLogout /> Salir del grupo
+              </button>
+            ) : null}
+            {esMio ? (
+              <button type="button" className="peligro" onClick={eliminarGrupo} disabled={ocupadoMenu}>
+                <IconTrash /> Eliminar el grupo
+              </button>
+            ) : null}
+            </div>
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
   if (cargando) return <PostSkeleton etiqueta="Abriendo el grupo…" alto="40vh" />;
 
   if (error || !grupo) {
@@ -144,6 +301,7 @@ export default function GrupoView({ id }) {
               {grupo.soy_miembro ? (<><IconCheck /> Estás dentro</>) : (<><IconPlus /> Entrar al grupo</>)}
             </button>
             <a className="btn btn-ghost" href="#/grupos">Todos los grupos</a>
+            <OpcionesGrupo grupo={grupo} />
           </div>
         </div>
       </header>

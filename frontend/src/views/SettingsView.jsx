@@ -20,7 +20,7 @@ import {
   IconTrash, IconUser, IconShield, IconBell, IconLayers, IconLock, IconSettings,
   IconCheck, IconAlert, IconWarning, IconInfo, IconSun, IconMoon, IconRefresh,
   IconGrid, IconCamera, IconAt, IconMapPin, IconLink, IconEye, IconBan, IconSpark,
-  IconMail,
+  IconMail, IconComment, IconUsers, IconSearch,
 } from '../components/Icons.jsx';
 import { toast, confirmar, avisoError } from '../ui.js';
 import { soportaAvisos, activarAvisos, desactivarAvisos, estadoAvisos, esIOS, instalada } from '../push.js';
@@ -96,6 +96,11 @@ export default function SettingsView({ tab }) {
   // Privacidad
   const [isPrivate, setIsPrivate] = useState(false);
   const [dmPrivacy, setDmPrivacy] = useState('all');
+  // Privacidad avanzada
+  const [quienComenta, setQuienComenta] = useState('all');
+  const [verEnLinea, setVerEnLinea] = useState(true);
+  const [enBuscadores, setEnBuscadores] = useState(true);
+  const [verSeguidos, setVerSeguidos] = useState(true);
   const [bloqueados, setBloqueados] = useState(null);
 
   // Avisos
@@ -167,7 +172,16 @@ export default function SettingsView({ tab }) {
   }
 
   useEffect(() => {
-    api.get('/api/auth/me').then((u) => { setMe(u); setForm({ display_name: u.display_name || '', bio: u.bio || '', link: u.link || '', location: u.location || '' }); }).catch(() => {});
+    api.get('/api/auth/me').then((u) => {
+      setMe(u);
+      setForm({ display_name: u.display_name || '', bio: u.bio || '', link: u.link || '', location: u.location || '' });
+      setIsPrivate(!!u.is_private);
+      setDmPrivacy(u.dm_privacy || 'all');
+      setQuienComenta(u.who_can_comment || 'all');
+      setVerEnLinea(u.show_online !== false);
+      setEnBuscadores(u.searchable !== false);
+      setVerSeguidos(u.who_can_see_follows !== false);
+    }).catch(() => {});
     api.get('/api/auth/sessions').then(setSessions).catch(() => {});
     api.get('/api/me/stats').then(setStats).catch(() => {});
     api.get('/api/notifications/prefs').then(setPrefs).catch(() => setPrefs(null));
@@ -199,7 +213,14 @@ export default function SettingsView({ tab }) {
   async function savePrivacy(e) {
     e.preventDefault();
     try {
-      await api.patch('/api/auth/privacy', { is_private: isPrivate, dm_privacy: dmPrivacy });
+      await api.patch('/api/auth/privacy', {
+        is_private: isPrivate,
+        dm_privacy: dmPrivacy,
+        who_can_comment: quienComenta,
+        show_online: verEnLinea,
+        searchable: enBuscadores,
+        who_can_see_follows: verSeguidos,
+      });
       await refreshMe();
       flash('ok', 'Privacidad actualizada');
     } catch (err) { flash('err', err.message); }
@@ -505,8 +526,53 @@ export default function SettingsView({ tab }) {
                   opciones={[{ id: 'all', label: 'Todos' }, { id: 'followers', label: 'Quienes sigo' }, { id: 'nobody', label: 'Nadie' }]}
                 />
               </div>
+              <div className="fila-ajuste">
+                <span className="icono"><IconComment /></span>
+                <span className="texto">
+                  <b>¿Quién puede comentar tus publicaciones?</b>
+                  <small>Se cumple de verdad: si eliges «Nadie», nadie puede comentar lo que publicas.</small>
+                </span>
+                <Opciones
+                  etiqueta="Quién puede comentar"
+                  valor={quienComenta}
+                  onChange={setQuienComenta}
+                  opciones={[{ id: 'all', label: 'Todos' }, { id: 'following', label: 'Quienes me siguen' }, { id: 'nobody', label: 'Nadie' }]}
+                />
+              </div>
+              <div className="fila-ajuste">
+                <span className="icono"><IconUsers /></span>
+                <span className="texto">
+                  <b>Que se vea si estoy en línea</b>
+                  <small>Si lo apagas, nadie verá el punto verde de «en línea» contigo.</small>
+                </span>
+                <Interruptor activo={verEnLinea} onChange={setVerEnLinea} etiqueta="Mostrar si estás en línea" />
+              </div>
+              <div className="fila-ajuste">
+                <span className="icono"><IconSearch /></span>
+                <span className="texto">
+                  <b>Aparecer en las búsquedas</b>
+                  <small>Si lo apagas, tu perfil no sale al buscar ni en las sugerencias de personas.</small>
+                </span>
+                <Interruptor activo={enBuscadores} onChange={setEnBuscadores} etiqueta="Aparecer en búsquedas" />
+              </div>
+              <div className="fila-ajuste">
+                <span className="icono"><IconEye /></span>
+                <span className="texto">
+                  <b>Que se vea a quién sigo</b>
+                  <small>Oculta tus listas de seguidos y seguidores del resto.</small>
+                </span>
+                <Interruptor activo={verSeguidos} onChange={setVerSeguidos} etiqueta="Mostrar a quién sigues" />
+              </div>
               <div className="row" style={{ padding: '4px 12px 12px' }}>
                 <button className="btn btn-primary">Guardar privacidad</button>
+              </div>
+
+              <div className="aviso-como-funciona">
+                <IconInfo />
+                <span>
+                  Lo que elijas aquí se cumple en toda la app: la búsqueda, los comentarios,
+                  el punto verde y las listas de seguidores lo respetan al momento.
+                </span>
               </div>
             </form>
           </div>

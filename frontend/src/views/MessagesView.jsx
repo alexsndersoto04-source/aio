@@ -172,6 +172,20 @@ export default function MessagesView({ conversationId }) {
       .catch(avisoError);
   }
 
+  /** La hora de la última vez: hoy → «9:55»; ayer → «ayer»; antes → fecha corta. */
+  function cuandoConv(iso) {
+    if (!iso) return '';
+    const d = new Date(String(iso).replace(' ', 'T'));
+    if (Number.isNaN(d.getTime())) return '';
+    const hoy = new Date();
+    const mismoDia = d.toDateString() === hoy.toDateString();
+    if (mismoDia) return d.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const ayer = new Date(hoy); ayer.setDate(hoy.getDate() - 1);
+    if (d.toDateString() === ayer.toDateString()) return 'ayer';
+    const mismoAnio = d.getFullYear() === hoy.getFullYear();
+    return d.toLocaleDateString('es-VE', mismoAnio ? { day: 'numeric', month: 'short' } : { day: '2-digit', month: '2-digit', year: '2-digit' });
+  }
+
   /** Cuántas conversaciones del filtro activo hay sin abrir. */
   const sinLeer = (convs || []).filter((c) => c.unread > 0).length;
   const archivadas = (convs || []).filter((c) => c.archivada).length;
@@ -214,7 +228,7 @@ export default function MessagesView({ conversationId }) {
         <a className="btn btn-outline btn-sm" href="#/explore">Nueva conversación</a>
       </div>
 
-      <div className={`chat ${convId ? 'hide-list' : 'hide-thread'}`}>
+      <div className={`chat ${convId ? 'hide-list' : 'hide-thread'}`} data-con-hilo={convId ? 'si' : 'no'}>
         {/* ---- Conversaciones ---- */}
         <aside className="chat-list" aria-label="Conversaciones">
           <div className="head">
@@ -268,20 +282,25 @@ export default function MessagesView({ conversationId }) {
             <div className={`fila-conv ${convId === c.id ? 'active' : ''}`} key={c.id}>
               <button type="button" className="conv" onClick={() => loadThread(c.id)}>
                 <span className="avatar-con-estado">
-                  <Avatar user={c} size="sm" />
+                  <Avatar user={c} size="md" />
                   {enLinea.has(Number(c.id)) ? <span className="punto-online" /> : null}
                 </span>
                 <span className="body">
-                  <b className="ellipsis">
-                    {c.display_name || c.username}
-                    <VerifiedBadge show={c.is_verified} />
-                    {c.silenciada ? <span className="icono-silencio" title="Avisos silenciados"><IconBell /></span> : null}
-                  </b>
-                  <span className="last ellipsis">
-                    {c.last_message ? c.last_message : `@${c.username}`}
+                  <span className="linea-superior">
+                    <b className="ellipsis">
+                      {c.display_name || c.username}
+                      <VerifiedBadge show={c.is_verified} />
+                      {c.silenciada ? <span className="icono-silencio" title="Avisos silenciados"><IconBell /></span> : null}
+                    </b>
+                    <span className="hora-conv">{cuandoConv(c.updated_at)}</span>
+                  </span>
+                  <span className="linea-inferior">
+                    <span className="last ellipsis">
+                      {c.last_message ? c.last_message : `@${c.username}`}
+                    </span>
+                    {c.unread > 0 ? <span className="sin-leer">{c.unread > 99 ? '99+' : c.unread}</span> : null}
                   </span>
                 </span>
-                {c.unread > 0 ? <span className="badge">{c.unread > 99 ? '99+' : c.unread}</span> : null}
               </button>
 
               <button
@@ -295,7 +314,9 @@ export default function MessagesView({ conversationId }) {
               </button>
 
               {menuDe === c.id ? (
-                <div className="menu-conv" role="menu">
+                <>
+                  <span className="hoja-fondo" role="presentation" onClick={() => setMenuDe(null)} />
+                  <div className="menu-conv" role="menu">
                   <button type="button" onClick={() => cambiarPref(c, { silenciada: !c.silenciada })}>
                     <IconBell />
                     {c.silenciada ? 'Activar los avisos' : 'Silenciar los avisos'}
@@ -310,7 +331,8 @@ export default function MessagesView({ conversationId }) {
                   <button type="button" onClick={() => cambiarPref(c, { oculta: true })}>
                     <IconEye /> Ocultar de la lista
                   </button>
-                </div>
+                  </div>
+                </>
               ) : null}
             </div>
           ))}
@@ -362,7 +384,9 @@ export default function MessagesView({ conversationId }) {
                 <IconMore />
               </button>
               {menuDe === `hilo-${convId}` ? (
-                <div className="menu-conv menu-hilo" role="menu">
+                <>
+                  <span className="hoja-fondo" role="presentation" onClick={() => setMenuDe(null)} />
+                  <div className="menu-conv menu-hilo" role="menu">
                   <button type="button" onClick={() => cambiarPref(thread.partner, { silenciada: !(prefs[convId]?.silenciada ?? false) })}>
                     <IconBell />
                     {(prefs[convId]?.silenciada ?? false) ? 'Activar los avisos' : 'Silenciar los avisos'}
@@ -373,7 +397,8 @@ export default function MessagesView({ conversationId }) {
                   <a href={`#/user/${thread.partner?.username}`} onClick={() => setMenuDe(null)}>
                     <IconUsers /> Ver el perfil
                   </a>
-                </div>
+                  </div>
+                </>
               ) : null}
             </header>
 

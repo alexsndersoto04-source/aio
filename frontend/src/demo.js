@@ -29,6 +29,12 @@ const USUARIO = {
   posts_count: 214,
   is_following: false,
   is_blocked: false,
+  is_private: false,
+  dm_privacy: 'all',
+  who_can_comment: 'all',
+  show_online: true,
+  searchable: true,
+  who_can_see_follows: true,
 };
 
 export function esDemo() {
@@ -307,6 +313,8 @@ function vozDeEjemplo(segundos = 3.4) {
 }
 
 // ---------- Datos del grupo de ejemplo ----------
+const gruposDemo = [];
+
 const grupoDemo = {
   id: 7,
   name: 'Fotografía nocturna',
@@ -325,6 +333,12 @@ const chatDelGrupo = [
   { id: 703, de: 4, texto: '', audio: 'VOZ', duracion: 3400, creada: 180 },
   { id: 704, de: 3, texto: 'Escuchado, salimos a las 8 desde la plaza.', creada: 170 },
 ];
+
+// El grupo de ejemplo y dos para descubrir, en una lista que se puede tocar
+// (renombrar, cambiar de privacidad o eliminar desde la demostración).
+gruposDemo.push(grupoDemo);
+gruposDemo.push({ ...grupoDemo, id: 8, name: 'Cocina de barrio', about: 'Recetas de todos los días, sin prisa.', miembros: 12, soy_miembro: false, es_mio: false });
+gruposDemo.push({ ...grupoDemo, id: 9, name: 'Rendimiento web', about: 'Medir antes de optimizar.', miembros: 31, privacy: 'private', soy_miembro: false, es_mio: false });
 
 function miembroJSON(id) {
   const p = perfiles.get(id);
@@ -384,7 +398,17 @@ export function responder(metodo, ruta, cuerpo) {
       Object.assign(USUARIO, cuerpo || {});
       return json(USUARIO);
     }
-    if (b === 'privacy') return json({ ok: true });
+    if (b === 'privacy') {
+      Object.assign(USUARIO, {
+        is_private: !!cuerpo?.is_private,
+        dm_privacy: cuerpo?.dm_privacy || USUARIO.dm_privacy || 'all',
+        who_can_comment: cuerpo?.who_can_comment || 'all',
+        show_online: cuerpo?.show_online !== false,
+        searchable: cuerpo?.searchable !== false,
+        who_can_see_follows: cuerpo?.who_can_see_follows !== false,
+      });
+      return json(USUARIO);
+    }
     if (b === 'change-password') return json({ ok: true });
     if (b === 'sessions') {
       if (metodo === 'DELETE') return json({ ok: true });
@@ -800,20 +824,16 @@ export function responder(metodo, ruta, cuerpo) {
     if (b === 'messages') return json({ error: 'Falta el grupo' }, 404);
     if (!b && metodo === 'GET') {
       // Lista de grupos: «tus grupos» y «grupos para descubrir».
-      const comoTarjeta = (g, papel, soy) => ({
+      const comoTarjeta = (g) => ({
         ...g,
-        soy_miembro: soy,
-        mi_papel: papel,
+        mi_papel: g.soy_miembro ? 'member' : '',
         owner_username: 'carla',
         owner_display_name: 'Carla Ríos',
       });
       void ruta;
       return json({
-        mios: [comoTarjeta(grupoDemo, 'member', true)],
-        descubrir: [
-          comoTarjeta({ ...grupoDemo, id: 8, name: 'Cocina de barrio', about: 'Recetas de todos los días, sin prisa.', miembros: 12, privacy: 'public' }, '', false),
-          comoTarjeta({ ...grupoDemo, id: 9, name: 'Rendimiento web', about: 'Medir antes de optimizar.', miembros: 31, privacy: 'private' }, '', false),
-        ],
+        mios: gruposDemo.filter((g) => g.soy_miembro).map(comoTarjeta),
+        descubrir: gruposDemo.filter((g) => !g.soy_miembro).map(comoTarjeta),
       });
     }
     const gid = Number(b) || grupoDemo.id;
@@ -878,7 +898,22 @@ export function responder(metodo, ruta, cuerpo) {
       return json(paginado([publicaciones[0], publicaciones[2]], ruta));
     }
 
-    if (metodo === 'POST' || metodo === 'DELETE') return json({ ok: true });
+    if (metodo === 'PATCH') {
+      const g = gruposDemo.find((x) => x.id === gid);
+      if (g) {
+        if (typeof cuerpo?.name === 'string' && cuerpo.name.trim()) g.name = cuerpo.name.trim();
+        if (typeof cuerpo?.about === 'string') g.about = cuerpo.about;
+        if (['public', 'private'].includes(cuerpo?.privacy)) g.privacy = cuerpo.privacy;
+        if (typeof cuerpo?.cover_url === 'string') g.cover_url = cuerpo.cover_url;
+        return json({ ...g, soy_miembro: true, mi_papel: 'owner' });
+      }
+    }
+    if (metodo === 'DELETE') {
+      const i = gruposDemo.findIndex((x) => x.id === gid);
+      if (i >= 0) gruposDemo.splice(i, 1);
+      return json({ ok: true, eliminado: gid });
+    }
+    if (metodo === 'POST') return json({ ok: true });
 
     return json({
       ...grupoDemo,

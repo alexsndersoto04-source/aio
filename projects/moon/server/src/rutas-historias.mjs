@@ -121,7 +121,7 @@ export function registrarRutasHistorias(router) {
     const conocidos = await filas(
       c.pool,
       `SELECT u.* FROM users u
-        WHERE u.id <> $1 AND u.status = 'active'
+        WHERE u.id <> $1 AND u.status = 'active' AND u.show_online <> FALSE
           AND (EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.following_id = u.id)
             OR EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = u.id AND f.following_id = $1))
           AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = $1 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $1))

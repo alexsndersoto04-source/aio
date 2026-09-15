@@ -357,7 +357,11 @@ export function registrarRutasSocial(router) {
   async function alternar(c, tabla, activar, contador) {
     const yo = await c.exigir();
     const postId = Number(c.params.id);
-    const post = await uno(c.pool, 'SELECT id, user_id FROM posts WHERE id = $1 AND status = $2', [postId, 'active']);
+    const post = await uno(
+      c.pool,
+      'SELECT id, user_id FROM posts WHERE id = $1 AND status = $2',
+      [postId, 'active']
+    );
     if (!post) throw new ApiErr('Publicación no encontrada', 404);
 
     if (activar) {
@@ -423,8 +427,31 @@ export function registrarRutasSocial(router) {
     const b = await c.cuerpo();
     const contenido = texto(b.content, { min: 1, max: 1000, campo: 'comentario' });
     const postId = Number(c.params.id);
-    const post = await uno(c.pool, 'SELECT id, user_id FROM posts WHERE id = $1 AND status = $2', [postId, 'active']);
+    const post = await uno(
+      c.pool,
+      `SELECT p.id, p.user_id, u.who_can_comment
+         FROM posts p JOIN users u ON u.id = p.user_id
+        WHERE p.id = $1 AND p.status = 'active'`,
+      [postId]
+    );
     if (!post) throw new ApiErr('Publicación no encontrada', 404);
+
+    // Cada quien decide quién puede comentar lo suyo (Ajustes → Privacidad).
+    const permiso = post.who_can_comment || 'all';
+    if (Number(post.user_id) !== Number(yo.id)) {
+      if (permiso === 'nobody') {
+        throw new ApiErr('Esta persona decidió que nadie comente sus publicaciones', 403, 'comments_off');
+      }
+      if (permiso === 'following') {
+        // «Quienes me siguen» = esta persona me sigue a mí.
+        const meSigue = await uno(
+          c.pool,
+          'SELECT 1 FROM follows WHERE follower_id = $1 AND following_id = $2',
+          [yo.id, post.user_id]
+        );
+        if (!meSigue) throw new ApiErr('Solo quienes siguen a esta persona pueden comentar', 403, 'comments_followers');
+      }
+    }
 
     const creado = await uno(
       c.pool,
@@ -489,7 +516,7 @@ export function registrarRutasSocial(router) {
     const yo = await c.exigir();
     const filas = await c.pool.query(
       `SELECT u.* FROM users u
-        WHERE u.id <> $1 AND u.status = 'active'
+        WHERE u.id <> $1 AND u.status = 'active' AND u.searchable <> FALSE
           AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.following_id = u.id)
           AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = $1 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $1))
         ORDER BY u.followers_count DESC, u.created_at DESC LIMIT 5`,
@@ -647,7 +674,8 @@ export function registrarRutasSocial(router) {
 
     const filas = await c.pool.query(
       `SELECT u.* FROM users u
-        WHERE u.status = 'active' AND (u.username ILIKE $1 OR u.display_name ILIKE $1)
+        WHERE u.status = 'active' AND u.searchable <> FALSE
+          AND (u.username ILIKE $1 OR u.display_name ILIKE $1)
         ORDER BY (LOWER(u.username) = LOWER($2)) DESC, u.followers_count DESC LIMIT 40`,
       [`%${consulta}%`, consulta]
     );

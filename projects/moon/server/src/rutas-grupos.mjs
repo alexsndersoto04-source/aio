@@ -181,17 +181,42 @@ export function registrarRutasGrupos(router) {
     const about = typeof b.about === 'string' ? b.about.slice(0, 400).trim() : null;
     const nombre = typeof b.name === 'string' ? texto(b.name, { min: 3, max: 80, campo: 'nombre' }).trim() : null;
     const privacidad = ['public', 'private'].includes(b.privacy) ? b.privacy : null;
+    const portada = typeof b.cover_url === 'string' && (!b.cover_url || /^\/api\/media\/[A-Za-z0-9._-]+$/.test(b.cover_url))
+      ? b.cover_url.slice(0, 300)
+      : null;
 
     const actualizado = await uno(
       c.pool,
       `UPDATE groups SET
           name = COALESCE($2, name),
           about = COALESCE($3, about),
-          privacy = COALESCE($4, privacy)
+          privacy = COALESCE($4, privacy),
+          cover_url = COALESCE($5, cover_url)
         WHERE id = $1 RETURNING *`,
-      [id, nombre, about, privacidad]
+      [id, nombre, about, privacidad, portada]
     );
     return aGrupo({ ...actualizado, soy_miembro: true, mi_papel: 'owner' }, yo.id);
+  });
+
+  // ---------- Eliminar el grupo (solo quien lo creó) ----------
+  router.del('/api/groups/:id', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const grupo = await uno(c.pool, 'SELECT id, owner_id, name FROM groups WHERE id = $1', [id]);
+    if (!grupo) throw new ApiErr('Grupo no encontrado', 404);
+    if (Number(grupo.owner_id) !== Number(yo.id)) {
+      throw new ApiErr('Solo quien creó el grupo puede eliminarlo', 403, 'not_owner');
+    }
+
+    // A los miembros se les avisa antes de que el grupo desaparezca: el
+    // contenido del grupo se va con él (publicaciones y chat incluidos).
+    const miembros = await filas(c.pool, 'SELECT user_id FROM group_members WHERE group_id = $1 LIMIT 200', [id]);
+    await c.pool.query('DELETE FROM groups WHERE id = $1', [id]);
+    for (const m of miembros) {
+      enviarA(Number(m.user_id), { type: 'group_deleted', group_id: id, name: grupo.name });
+    }
+    await auditar(c.pool, Number(yo.id), 'grupo_eliminado', String(id), c.ip).catch(() => {});
+    return { ok: true, eliminado: id };
   });
 
   // ---------- Entrar y salir ----------

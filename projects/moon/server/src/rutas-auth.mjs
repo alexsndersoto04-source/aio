@@ -176,10 +176,17 @@ export function registrarRutasAuth(router) {
     const b = await c.cuerpo();
     const privado = booleano(b.is_private, u.is_private);
     const dm = ['all', 'following', 'nobody'].includes(b.dm_privacy) ? b.dm_privacy : u.dm_privacy;
+    // Privacidad avanzada (opcional: si no viene, se queda como estaba).
+    const comentarios = ['all', 'following', 'nobody'].includes(b.who_can_comment) ? b.who_can_comment : (u.who_can_comment || 'all');
+    const enLinea = booleano(b.show_online, u.show_online !== false);
+    const buscable = booleano(b.searchable, u.searchable !== false);
+    const verSeguidos = booleano(b.who_can_see_follows, u.who_can_see_follows !== false);
     const actualizado = await uno(
       c.pool,
-      'UPDATE users SET is_private = $1, dm_privacy = $2 WHERE id = $3 RETURNING *',
-      [privado, dm, u.id]
+      `UPDATE users SET is_private = $1, dm_privacy = $2, who_can_comment = $3,
+              show_online = $4, searchable = $5, who_can_see_follows = $6
+        WHERE id = $7 RETURNING *`,
+      [privado, dm, comentarios, enLinea, buscable, verSeguidos, u.id]
     );
     return usuarioPublico(actualizado, { propio: true });
   });

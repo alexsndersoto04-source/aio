@@ -1759,3 +1759,360 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
   .menu-conv { right: 4px; min-width: 214px; }
   .chips-filtro button { padding: 7px 11px; font-size: 12.4px; }
 }
+
+/* ============================================================
+   §33 · Todo ordenado para el teléfono (y con contraste de verdad)
+   ============================================================
+   1) El tema claro deja de verse lavado: cielo con más color, tarjetas
+      blancas de verdad, borde fino y sombra suave.
+   2) En el teléfono nada se sale de la pantalla: nada de cortes ni de
+      barras que se pierden.
+   3) Mensajes como una app de mensajería: lista plana con hora y sin leer,
+      y la conversación a pantalla completa, sin cuadros dentro de cuadros.
+   ============================================================ */
+
+/* ---------- 33.1 Tema claro: contraste real ---------- */
+:root:not([data-theme='dark']) .cielo {
+  background:
+    radial-gradient(120% 78% at 50% -20%, #cbc7ff 0%, rgba(236, 236, 255, 0) 58%),
+    radial-gradient(78% 54% at 106% 4%, #b6eaf6 0%, rgba(211, 244, 251, 0) 60%),
+    radial-gradient(74% 52% at -8% 8%, #ddc2ff 0%, rgba(236, 220, 255, 0) 60%),
+    linear-gradient(180deg, #f1f1fd 0%, #e8ebf9 46%, #e2e8f7 100%);
+}
+:root:not([data-theme='dark']) {
+  --vidrio-fondo: rgba(255, 255, 255, 0.94);
+  --vidrio-borde: rgba(255, 255, 255, 0.85);
+}
+/* Manchas más contenidas: se ve el color, no la niebla */
+:root:not([data-theme='dark']) .cielo::before { opacity: 0.34; }
+:root:not([data-theme='dark']) .cielo::after { opacity: 0.3; }
+
+/* Tarjetas: borde fino y sombra corta = se leen como superficies */
+:root:not([data-theme='dark']) .card,
+:root:not([data-theme='dark']) .post,
+:root:not([data-theme='dark']) .composer,
+:root:not([data-theme='dark']) .tarjeta-rail,
+:root:not([data-theme='dark']) .hoja-cuerpo,
+:root:not([data-theme='dark']) .panel,
+:root:not([data-theme='dark']) .tabla-caja,
+:root:not([data-theme='dark']) .stat-card,
+:root:not([data-theme='dark']) .topbar {
+  border-color: rgba(17, 21, 50, 0.09) !important;
+  box-shadow: 0 1px 2px rgba(17, 21, 50, 0.05), 0 20px 44px -34px rgba(17, 21, 50, 0.45);
+}
+/* Y el texto secundario deja de ser gris fantasma */
+:root:not([data-theme='dark']) {
+  --ink-2: #454a63;
+  --ink-3: #6a6f8a;
+}
+
+/* ---------- 33.2 Todo cabe en el teléfono ---------- */
+@media (max-width: 860px) {
+  .app { padding: 0 10px; }
+  .main > * { max-width: 100%; }
+}
+@media (max-width: 720px) {
+  .card, .post, .composer { padding: 12px; border-radius: 16px; }
+  .post { margin-bottom: 10px; }
+  .topbar { padding: 13px 12px 11px; border-radius: 16px; margin-bottom: 10px; }
+  .topbar h1 { font-size: 19px; }
+  .page-head { padding: 0 2px 8px; }
+  .page-head h1 { font-size: 20px; }
+  .topbar .icon-btn, .page-head .icon-btn { width: 34px; height: 34px; }
+  .tabs { gap: 2px; }
+  .tabs button { padding: 9px 10px; font-size: 13.5px; }
+  .btn { padding: 9px 13px; font-size: 13.5px; }
+  .btn-sm { padding: 7px 10px; font-size: 12.5px; }
+  .empty { padding: 22px 14px; }
+  .empty h3 { font-size: 16px; }
+  .post-body { font-size: 15px; }
+  /* La franja de estar en línea y la de historias, compactas */
+  .franja-en-linea { padding: 9px 12px; border-radius: 14px; }
+  .historias { padding: 10px 0; }
+}
+
+/* Nada se sale por el lado en ninguna pantalla */
+html, body { max-width: 100%; overflow-x: hidden; }
+.arco-ancho, .menu-inicio, .menu-conv { max-width: calc(100vw - 24px); }
+
+/* ---------- 33.3 Mensajes: lista y conversación independientes ---------- */
+/* Fuera los cuadros: la lista y el hilo viven sueltos sobre el fondo. */
+.chat-list, .chat-thread {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  overflow: visible;
+}
+.chat-list .head {
+  position: static;
+  padding: 0 0 8px;
+  background: transparent;
+  border-bottom: 0;
+}
+.rail-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 42px;
+  border-radius: 999px;
+  border: 1px solid rgba(17, 21, 50, 0.09);
+  background: rgba(255, 255, 255, 0.9);
+}
+[data-theme='dark'] .rail-search {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+}
+.rail-search .input {
+  position: static;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  height: 40px;
+  padding: 0 0 0 28px;
+  font-size: 14.5px;
+}
+.rail-search { position: relative; }
+.rail-search svg { left: 13px; }
+
+.chips-chat { padding: 10px 0 6px; margin-bottom: 2px; }
+.chips-chat button { padding: 7px 12px; font-size: 12.6px; }
+
+.fila-conv { border-radius: 14px; }
+.conv {
+  padding: 11px 6px;
+  gap: 12px;
+  border-bottom: 1px solid rgba(17, 21, 50, 0.07);
+  border-radius: 0;
+  align-items: center;
+}
+[data-theme='dark'] .conv { border-bottom-color: rgba(255, 255, 255, 0.07); }
+.fila-conv:last-child .conv { border-bottom: 0; }
+.conv:hover, .fila-conv.active .conv {
+  background: rgba(99, 102, 241, 0.07);
+  border-radius: 14px;
+  border-bottom-color: transparent;
+}
+.conv .body { display: flex; flex-direction: column; gap: 3px; }
+.linea-superior, .linea-inferior {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.conv .body b { font-size: 15px; font-weight: 650; }
+.conv .last { font-size: 13px; }
+.hora-conv {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.sin-leer {
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--aurora-grad);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+.conv .avatar-con-estado .avatar { width: 46px; height: 46px; font-size: 16px; }
+
+/* El hilo: pantalla completa, cabecera fija y barra de escribir abajo */
+.chat-thread { min-height: 0; }
+.chat-thread .head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 4px;
+  border-bottom: 1px solid rgba(17, 21, 50, 0.08);
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border-radius: 16px;
+  position: sticky;
+  top: 6px;
+  z-index: 6;
+}
+[data-theme='dark'] .chat-thread .head {
+  background: rgba(16, 17, 36, 0.82);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.chat-thread .head .row { gap: 10px; }
+.chat-messages { padding: 14px 2px; gap: 8px; }
+.msg {
+  max-width: 84%;
+  padding: 9px 13px;
+  border-radius: 18px;
+  font-size: 14.6px;
+  background: rgba(120, 128, 170, 0.14);
+}
+[data-theme='dark'] .msg { background: rgba(255, 255, 255, 0.08); }
+.msg.mine { background: var(--aurora-grad); border-bottom-right-radius: 6px; }
+.msg:not(.mine) { border-bottom-left-radius: 6px; }
+.msg .time { opacity: 0.62; }
+.chat-input {
+  gap: 7px;
+  padding: 10px 2px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(17, 21, 50, 0.08);
+  background: transparent;
+  position: sticky;
+  bottom: 0;
+}
+[data-theme='dark'] .chat-input { border-top-color: rgba(255, 255, 255, 0.08); }
+.chat-input .textarea {
+  min-height: 42px;
+  border-radius: 21px;
+  padding: 11px 15px;
+  font-size: 14.5px;
+}
+@media (max-width: 900px) {
+  .chat { min-height: 0; }
+  .chat-messages { flex: 1; }
+  .chat-thread { min-height: calc(100dvh - 132px); }
+}
+
+/* ---------- 33.4 Menú de opciones del grupo ---------- */
+.menu-grupo-caja { position: relative; margin-left: auto; }
+.menu-grupo { top: 44px; right: 0; }
+.menu-conv button.peligro { color: #e5484d; }
+.menu-conv button.peligro svg { color: #e5484d; }
+.menu-conv button.peligro:hover { background: rgba(229, 72, 77, 0.12); }
+
+/* Aviso de cómo funciona la privacidad */
+.aviso-como-funciona {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 10px 2px 0;
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: var(--aurora-grad-suave);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.aviso-como-funciona svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--accent); margin-top: 1px; }
+
+/* ---------- 33.5 La cabecera de Inicio, sencilla ---------- */
+.barra-inicio { display: flex; align-items: center; gap: 8px; }
+.barra-inicio h1 { margin: 0; }
+.barra-inicio .spacer { flex: 1; }
+
+@media (max-width: 560px) {
+  .chat-thread { min-height: calc(100dvh - 120px); }
+  .msg { max-width: 88%; }
+  .fila-conv .mas-conv { width: 28px; height: 28px; right: 2px; }
+}
+
+/* ============================================================
+   §34 · Menús en hoja (como una app de verdad) y remates del móvil
+   ============================================================ */
+
+/* Fondo oscuro que cierra el menú al tocarlo */
+.hoja-fondo {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(8, 10, 26, 0.42);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: aparecer 0.14s ease-out;
+}
+
+/* En el teléfono, el menú sube desde abajo: nunca se corta y se toca cómodo */
+@media (max-width: 720px) {
+  .menu-conv, .menu-hilo, .menu-grupo {
+    position: fixed !important;
+    left: 0;
+    right: 0;
+    top: auto !important;
+    bottom: 0;
+    z-index: 61;
+    min-width: 0;
+    width: 100%;
+    border-radius: 20px 20px 0 0;
+    padding: 8px 10px calc(14px + env(safe-area-inset-bottom));
+    box-shadow: 0 -22px 60px -20px rgba(6, 8, 24, 0.65);
+    animation: sube-hoja 0.18s ease-out;
+  }
+  .menu-conv button, .menu-conv a { padding: 14px 12px; font-size: 15px; }
+  .menu-conv::before {
+    content: '';
+    display: block;
+    width: 42px;
+    height: 4px;
+    margin: 2px auto 8px;
+    border-radius: 999px;
+    background: rgba(120, 128, 170, 0.45);
+  }
+}
+@keyframes sube-hoja { from { transform: translateY(18px); opacity: 0.4; } to { transform: none; opacity: 1; } }
+
+/* Los tres puntos de cada conversación: con su hueco, que no tapen la hora */
+.conv { padding-right: 40px; }
+.fila-conv .mas-conv {
+  right: 2px;
+  top: 10px;
+  transform: none;
+  opacity: 0.5;
+}
+.fila-conv:hover .mas-conv, .fila-conv:focus-within .mas-conv, .fila-conv.active .mas-conv { opacity: 1; }
+.hora-conv { white-space: nowrap; padding-right: 2px; }
+.linea-superior { padding-right: 4px; }
+
+/* La hora del mensaje, con su hueco: nunca tapa el texto */
+.msg { padding: 9px 13px 20px; }
+.msg .time {
+  position: absolute;
+  right: 12px;
+  bottom: 5px;
+  font-size: 10px;
+  white-space: nowrap;
+  opacity: 0.6;
+}
+.msg img, .msg .nota-voz { margin-bottom: 2px; }
+.chat-messages { padding: 14px 8px 14px 2px; }
+
+/* Perfil: las cuatro pestañas en una sola fila, siempre */
+.tabs-perfil { flex-wrap: nowrap; gap: 2px; overflow: visible; }
+.tabs-perfil { margin-left: 0; margin-right: 0; padding: 0 2px; }
+.tabs-perfil button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 9px 2px;
+  font-size: 12.4px;
+  letter-spacing: -0.01em;
+  justify-content: center;
+  white-space: nowrap;
+  overflow: visible;
+}
+.tabs-perfil button svg { display: none; }
+
+/* Portada del grupo sin la trama de rayas: degradado limpio */
+.cubierta-grupo .trama,
+.perfil-cubierta .trama,
+.cover-vacio .trama {
+  position: absolute;
+  inset: 0;
+  background-image: var(--aurora-grad) !important;
+  background-color: transparent;
+  opacity: 1;
+}
+
+/* Portada del perfil sin trama fea */
+.perfil-cubierta .trama, .cover-vacio .trama { background: var(--aurora-grad); }
+
+/* Los avisos de «nada por aquí» con más aire */
+.empty { padding: 26px 16px; }
