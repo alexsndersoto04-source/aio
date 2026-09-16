@@ -3363,3 +3363,271 @@ html, body { max-width: 100%; overflow-x: hidden; }
   align-items: center;
   gap: 7px;
 }
+
+/* ============================================================
+   §41 · Interacción rica (tanda 1)
+   ============================================================
+   Reacciones variadas, publicación fijada, «no me interesa»,
+   comentarios con reacción y fijado, menciones con @ y votos de
+   encuesta. Todo con el lenguaje de superficie continua: sin cajas,
+   con filos de 1 px y el acento aurora para lo activo.
+   ============================================================ */
+
+/* ---------- 41.1 Reacciones: barra y menú de emojis ---------- */
+.reaccion-caja { position: relative; display: inline-flex; align-items: center; gap: 2px; }
+.reaccion-mia { font-size: 17px; line-height: 1; }
+.post-actions .reaccion-mia { filter: none; }
+.mas-reacciones { width: 28px; height: 28px; opacity: 0.75; }
+.mas-reacciones:hover { opacity: 1; }
+.reacciones-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  background: var(--superficie-firme, #fff);
+  border: 1px solid var(--line-2, rgba(17, 21, 50, 0.1));
+  box-shadow: 0 18px 40px -22px rgba(17, 21, 50, 0.55);
+  animation: subir-reacciones 160ms ease-out;
+}
+.reacciones-menu.arriba { bottom: auto; top: calc(100% + 6px); }
+@keyframes subir-reacciones { from { opacity: 0; transform: translateY(6px) scale(0.94); } to { opacity: 1; transform: none; } }
+.reacciones-menu button {
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease;
+}
+.reacciones-menu button .moon-emoji { font-size: 21px; }
+.reacciones-menu button:hover { transform: scale(1.22) translateY(-2px); background: rgba(99, 102, 241, 0.1); }
+.reacciones-menu button.activa { background: rgba(99, 102, 241, 0.16); box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* Resumen de reacciones de la publicación */
+.resumen-reacciones {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0 6px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+.resumen-reacciones .emojis { display: inline-flex; gap: -2px; }
+.resumen-reacciones .emojis .moon-emoji { font-size: 15px; margin-right: -3px; }
+
+/* ---------- 41.2 Publicación fijada ---------- */
+.pill-fijada {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.12);
+}
+.pill-fijada svg { width: 12px; height: 12px; }
+
+/* ---------- 41.3 Menciones con @ en el redactor ---------- */
+.menciones {
+  position: absolute;
+  z-index: 40;
+  margin-top: 6px;
+  width: min(340px, 100%);
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--superficie-firme, #fff);
+  border: 1px solid var(--line-2, rgba(17, 21, 50, 0.1));
+  box-shadow: 0 22px 48px -26px rgba(17, 21, 50, 0.6);
+}
+.menciones button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.menciones button:hover, .menciones button:focus-visible { background: rgba(99, 102, 241, 0.1); }
+.menciones .quien { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+
+/* ---------- 41.4 Comentarios: fila, autor, fijado y reacción ---------- */
+.comentarios-cabecera { align-items: center; }
+.orden-comentarios {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(17, 21, 50, 0.06);
+}
+.orden-comentarios button {
+  border: 0;
+  background: transparent;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.orden-comentarios button.activo { background: var(--superficie, #fff); color: var(--ink); box-shadow: 0 2px 8px -4px rgba(17, 21, 50, 0.4); }
+
+.comentario {
+  display: flex;
+  gap: 11px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line-2, rgba(17, 21, 50, 0.08));
+}
+.comentario:last-child { border-bottom: 0; }
+.comentario.fijado { background: linear-gradient(90deg, rgba(99, 102, 241, 0.07), transparent 70%); }
+.comentario .cuerpo { flex: 1; min-width: 0; position: relative; }
+.comentario .linea { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.comentario .nombre { font-weight: 700; font-size: 13.5px; }
+.comentario .texto-comentario { margin: 3px 0 0; font-size: 14.5px; line-height: 1.45; white-space: pre-wrap; }
+.etiqueta-autor {
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 5px;
+  padding: 2px 5px;
+}
+.etiqueta-fijado {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.12);
+  border-radius: 999px;
+  padding: 2px 5px;
+  flex: 0 0 auto;
+}
+.etiqueta-fijado svg { width: 12px; height: 12px; }
+.cuenta-reacciones {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--ink-3);
+  background: rgba(17, 21, 50, 0.05);
+  border-radius: 999px;
+  padding: 1px 7px 1px 4px;
+}
+.cuenta-reacciones .moon-emoji { font-size: 13px; }
+.reaccionar-comentario {
+  width: auto;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  gap: 3px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+}
+.reaccionar-comentario .conteo { font-size: 11.5px; font-weight: 700; color: var(--ink-3); }
+.reaccionar-comentario.activo { background: rgba(99, 102, 241, 0.13); }
+.reaccionar-comentario .moon-emoji { font-size: 15px; }
+.menu-caja { position: relative; display: inline-flex; }
+.comentario-menu { right: 0; left: auto; min-width: 208px; }
+
+/* ---------- 41.5 Encuesta: cierre y quién votó ---------- */
+.pie-encuesta .ver-votantes { margin-left: auto; color: var(--accent); font-weight: 650; }
+.quien-voto { margin-top: 8px; border-top: 1px solid var(--line-2, rgba(17, 21, 50, 0.08)); padding-top: 8px; }
+.linea-voto {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+.linea-voto b { min-width: 0; flex: 0 1 auto; }
+.linea-voto .personas { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; }
+.linea-voto .personas .avatar { width: 24px; height: 24px; }
+
+/* La cabecera del comentario nunca se parte: nombre a la izquierda,
+   acciones a la derecha, y lo que sobra se recorta con puntos suspensivos. */
+.comentario .linea { flex-wrap: nowrap; }
+.comentario .linea .meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+/* El chip de reacciones es lo primero que cede espacio: nunca empuja al nombre */
+.cuenta-reacciones {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 1px 6px 1px 3px;
+  gap: 1px;
+}
+.cuenta-reacciones .moon-emoji { font-size: 12px; }
+.cuenta-reacciones b { font-size: 11.5px; font-weight: 650; }
+.comentario .linea .meta .nombre { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.comentario .linea .meta .muted { white-space: nowrap; }
+.comentario .linea .spacer { flex: 1 1 auto; min-width: 4px; }
+
+/* El menú del comentario va sólido y por encima de todo */
+.comentario-menu {
+  position: absolute;
+  z-index: 60;
+  background: var(--superficie-firme, #fff);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.reacciones-menu { z-index: 62; background: var(--superficie-firme, #fff); backdrop-filter: none; -webkit-backdrop-filter: none; }
+
+/* Acciones de la publicación: cada botón dentro de su celda, sin salirse */
+.post-actions { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+.post-actions > * { min-width: 0 !important; }
+.post-actions .etiqueta,
+.post-actions button > .etiqueta {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .comentario { padding: 13px 0; }
+  .resumen-reacciones { padding-bottom: 4px; }
+  .orden-comentarios { padding: 2px; }
+  .reacciones-menu button { width: 40px; height: 40px; }
+  /* En el teléfono las etiquetas largas se acortan: el icono manda */
+  .post-actions .etiqueta { font-size: 11.5px; }
+  .post-actions .count { margin-left: 2px; }
+}
+
+/* ---------- §41.6 Barra de acciones: que nunca se corte una palabra ----------
+   En un teléfono de 390 px cada celda tiene unos 89 px. Con icono, palabra y
+   contador no cabe «Reaccionar» + número: o se recorta o se pega al vecino.
+   Se elige lo mismo que hacen las redes grandes: en pantallas estrechas manda
+   el icono con su contador (la palabra sigue en el aria-label para lectores de
+   pantalla y en el title para el resto), y desde 431 px se muestran las
+   palabras otra vez. */
+@media (max-width: 430px) {
+  .post-actions .etiqueta { display: none; }
+  .post-actions > * { justify-content: center; gap: 5px; }
+  .post-actions .count { margin-left: 0; }
+  .post-actions { padding: 4px 0 6px; }
+}
+@media (min-width: 431px) and (max-width: 860px) {
+  .post-actions .etiqueta { font-size: 12px; white-space: nowrap; }
+  .post-actions > * { gap: 4px; }
+  .post-actions .count { margin-left: 1px; }
+}

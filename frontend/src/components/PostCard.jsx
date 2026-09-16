@@ -13,8 +13,18 @@ import { toast, confirmar, pedirTexto, avisoError } from '../ui.js';
 import Avatar, { VerifiedBadge } from './Avatar.jsx';
 import {
   IconHeart, IconBookmark, IconComment, IconMore, IconTrash, IconEdit, IconReport,
-  IconLink, IconX, IconGlobe, IconLock, IconSend,
+  IconLink, IconX, IconGlobe, IconLock, IconSend, IconPin, IconEyeOff, IconCheck,
 } from './Icons.jsx';
+
+// Las reacciones que se pueden poner: mismas claves que entiende el servidor.
+export const REACCIONES = [
+  { tipo: 'me_gusta', emoji: '👍', nombre: 'Me gusta' },
+  { tipo: 'me_encanta', emoji: '❤️', nombre: 'Me encanta' },
+  { tipo: 'risa', emoji: '😂', nombre: 'Me da risa' },
+  { tipo: 'sorpresa', emoji: '😮', nombre: 'Me sorprende' },
+  { tipo: 'triste', emoji: '😢', nombre: 'Me entristece' },
+  { tipo: 'enojo', emoji: '😠', nombre: 'Me molesta' },
+];
 
 // Caché en memoria de quién reaccionó: evita repetir la misma petición
 // cada vez que la publicación vuelve a pintarse (feed, perfil, hilo).
@@ -103,12 +113,23 @@ function CuerpoPost({ contenido }) {
 function Encuesta({ post, onCambio }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [votantes, setVotantes] = useState(null);
   const p = post.poll;
   if (!p || p === true) return null;
 
   const votado = (p.mi_voto || []).length > 0;
   const mostrarResultados = votado || p.cerrada;
   const misVotos = p.mi_voto || [];
+
+  /** Quién votó: solo lo ve quien creó la encuesta (el servidor lo verifica). */
+  async function verQuienVoto() {
+    if (votantes) { setVotantes(null); return; }
+    try {
+      setVotantes(await api.get(`/api/posts/${post.id}/poll/votos`));
+    } catch (e) {
+      avisoError(e);
+    }
+  }
 
   async function votar(i) {
     if (busy || p.cerrada) return;
@@ -152,13 +173,39 @@ function Encuesta({ post, onCambio }) {
         <span>·</span>
         <span>{p.cerrada ? 'Encuesta cerrada' : votado ? 'Ya votaste' : 'Toca para votar'}</span>
         {p.multiple ? <span className="pastilla">varias respuestas</span> : null}
+        {p.cierra ? <span className="pastilla">{p.cierra}</span> : null}
+        {post.is_mine ? (
+          <button type="button" className="btn-ghost btn-sm ver-votantes" onClick={verQuienVoto} aria-expanded={!!votantes}>
+            {votantes ? 'Ocultar los votos' : 'Ver quién votó'}
+          </button>
+        ) : null}
       </div>
+      {votantes ? (
+        <div className="quien-voto">
+          {votantes.opciones.map((o) => (
+            <div key={o.indice} className="linea-voto">
+              <b>{o.texto}</b>
+              <span className="muted small">{o.votos} {o.votos === 1 ? 'voto' : 'votos'}</span>
+              {o.personas.length > 0 ? (
+                <span className="personas">
+                  {o.personas.slice(0, 8).map((u) => (
+                    <a key={u.id} href={`#/user/${u.username}`} title={u.display_name}>
+                      <Avatar user={u} className="mini" size="sm" />
+                    </a>
+                  ))}
+                  {o.personas.length > 8 ? <span className="muted small">+{o.personas.length - 8}</span> : null}
+                </span>
+              ) : <span className="muted small">nadie todavía</span>}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {error ? <p className="error-encuesta">{error}</p> : null}
     </div>
   );
 }
 
-function PostMenu({ post, onDelete, onEdit, onReport }) {
+function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onReaccionar }) {
   const { user } = useAuth();
   const [abierto, setAbierto] = useState(false);
   const caja = useRef(null);
@@ -209,6 +256,12 @@ function PostMenu({ post, onDelete, onEdit, onReport }) {
         <div className="menu" role="menu">
           {esMio ? (
             <>
+              <button role="menuitem" onClick={() => { setAbierto(false); onReaccionar(); }}>
+                <IconHeart /> Elegir reacción
+              </button>
+              <button role="menuitem" onClick={() => { setAbierto(false); onPin(); }}>
+                <IconPin /> {post.pinned ? 'Quitar de fijadas' : 'Fijar en mi perfil'}
+              </button>
               <button role="menuitem" onClick={() => { setAbierto(false); onEdit(); }}>
                 <IconEdit /> Editar
               </button>
@@ -218,9 +271,18 @@ function PostMenu({ post, onDelete, onEdit, onReport }) {
               <hr />
             </>
           ) : (
-            <button role="menuitem" onClick={() => { setAbierto(false); onReport(); }}>
-              <IconReport /> Reportar
-            </button>
+            <>
+              <button role="menuitem" onClick={() => { setAbierto(false); onReaccionar(); }}>
+                <IconHeart /> Elegir reacción
+              </button>
+              <button role="menuitem" onClick={() => { setAbierto(false); onNoInteresa(); }}>
+                <IconEyeOff /> No me interesa
+              </button>
+              <button role="menuitem" onClick={() => { setAbierto(false); onReport(); }}>
+                <IconReport /> Reportar
+              </button>
+              <hr />
+            </>
           )}
           <button role="menuitem" onClick={copiarEnlace}>
             <IconLink /> Copiar enlace
@@ -238,6 +300,19 @@ export default function PostCard({ post, onChanged, compact = false }) {
   const [editando, setEditando] = useState(false);
   const [borrador, setBorrador] = useState(p.content || '');
   const [animarLike, setAnimarLike] = useState(false);
+  // Selector de reacciones variadas (se abre al mantener pulsado o con el botón).
+  const [reaccionando, setReaccionando] = useState(false);
+  const [oculto, setOculto] = useState(false);
+  const reacciones = p.reacciones || null;
+  const cajaReaccion = useRef(null);
+
+  // Si el selector se abre desde el menú ⋯ (que está arriba), la barra de
+  // acciones queda fuera de la pantalla: se baja a la vista para que el
+  // selector aparezca donde la persona está mirando.
+  useEffect(() => {
+    if (!reaccionando) return;
+    cajaReaccion.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [reaccionando]);
 
   useEffect(() => { setP(post); }, [post]);
 
@@ -268,6 +343,61 @@ export default function PostCard({ post, onChanged, compact = false }) {
       avisoError(e);
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Poner (o cambiar) la reacción: una sola por persona. */
+  async function reaccionar(tipo) {
+    setReaccionando(false);
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await api.post(`/api/posts/${p.id}/react`, { tipo });
+      aplicar(res);
+      if (tipo === 'me_gusta') {
+        setAnimarLike(true);
+        setTimeout(() => setAnimarLike(false), 420);
+      }
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Quitar mi reacción. */
+  async function quitarReaccion() {
+    setReaccionando(false);
+    if (busy) return;
+    setBusy(true);
+    try {
+      aplicar(await api.del(`/api/posts/${p.id}/react`));
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Fijar (o soltar) la publicación: aparece arriba en tu perfil. */
+  async function fijar() {
+    try {
+      const res = await api.post(`/api/posts/${p.id}/pin`, {});
+      aplicar(res);
+      toast.ok(res.pinned ? 'Fijada: se verá arriba en tu perfil' : 'Ya no está fijada');
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  /** «No me interesa»: desaparece de tu inicio sin bloquear a nadie. */
+  async function noInteresa() {
+    try {
+      await api.post(`/api/posts/${p.id}/interesa`, { no: true });
+      setOculto(true);
+      toast.ok('Listo: te mostraremos menos de esto');
+    } catch (e) {
+      avisoError(e);
     }
   }
 
@@ -336,7 +466,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
     }
   }
 
-  if (p.deleted) return null;
+  if (p.deleted || oculto) return null;
 
   const imagenes = p.images || [];
 
@@ -358,6 +488,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
               {timeAgo(p.created_at)}
             </a>
             {p.edited_at ? <span className="pill">editado</span> : null}
+            {p.pinned ? <span className="pill pill-fijada"><IconPin /> Fijada</span> : null}
             <span className="quien-meta" title={p.author_is_private ? 'Cuenta privada' : 'Publicación pública'}>
               {p.author_is_private ? <IconLock /> : <IconGlobe />}
             </span>
@@ -369,6 +500,9 @@ export default function PostCard({ post, onChanged, compact = false }) {
             onDelete={eliminar}
             onEdit={() => { setBorrador(p.content || ''); setEditando(true); }}
             onReport={reportar}
+            onPin={fijar}
+            onNoInteresa={noInteresa}
+            onReaccionar={() => setReaccionando(true)}
           />
         )}
       </header>
@@ -414,20 +548,62 @@ export default function PostCard({ post, onChanged, compact = false }) {
         </div>
       ) : null}
 
+      {reacciones && reacciones.total > 0 ? (
+        <div className="resumen-reacciones">
+          <span className="emojis" aria-hidden="true">
+            {reacciones.orden.slice(0, 3).map((r) => (
+              <span key={r.tipo} className="moon-emoji">{r.emoji}</span>
+            ))}
+          </span>
+          <span className="cuenta">
+            {reacciones.total === 1 ? '1 reacción' : `${reacciones.total} reacciones`}
+            {reacciones.total > 3 ? ` · ${reacciones.orden.slice(0, 3).map((r) => r.emoji).join(' ')}` : ''}
+          </span>
+        </div>
+      ) : null}
+
       <PruebaSocial post={p} />
 
       <footer className="post-actions">
-        <button
-          className={p.is_liked ? 'liked' : ''}
-          onClick={() => alternar(p.is_liked ? 'unlike' : 'like')}
-          disabled={busy}
-          aria-pressed={!!p.is_liked}
-          aria-label={p.is_liked ? 'Quitar me gusta' : 'Me gusta'}
-        >
-          <IconHeart filled={p.is_liked} className={animarLike ? 'latido' : ''} />
-          <span className="etiqueta">{p.is_liked ? 'Te gusta' : 'Me gusta'}</span>
-          {p.likes_count > 0 ? <span className="count">{p.likes_count}</span> : null}
-        </button>
+        <span className="reaccion-caja" ref={cajaReaccion}>
+          <button
+            className={p.is_liked ? 'liked' : ''}
+            onClick={() => (p.is_liked ? quitarReaccion() : reaccionar('me_gusta'))}
+            onContextMenu={(e) => { e.preventDefault(); setReaccionando(true); }}
+            disabled={busy}
+            aria-pressed={!!p.is_liked}
+            aria-label={p.is_liked ? 'Quitar mi reacción' : 'Reaccionar'}
+          >
+            {reacciones?.mi ? (
+              <span className="moon-emoji reaccion-mia" aria-hidden="true">{REACCIONES.find((r) => r.tipo === reacciones.mi)?.emoji || '👍'}</span>
+            ) : (
+              <IconHeart filled={p.is_liked} className={animarLike ? 'latido' : ''} />
+            )}
+            <span className="etiqueta">
+              {reacciones?.mi ? REACCIONES.find((r) => r.tipo === reacciones.mi)?.nombre : 'Reaccionar'}
+            </span>
+            {p.likes_count > 0 ? <span className="count">{p.likes_count}</span> : null}
+          </button>
+          {reaccionando ? (
+            <>
+              <span className="hoja-fondo" role="presentation" onClick={() => setReaccionando(false)} />
+              <span className="reacciones-menu" role="menu" aria-label="Reacciones">
+                {REACCIONES.map((r) => (
+                  <button
+                    key={r.tipo}
+                    role="menuitem"
+                    className={reacciones?.mi === r.tipo ? 'activa' : ''}
+                    onClick={() => reaccionar(r.tipo)}
+                    title={r.nombre}
+                    aria-label={r.nombre}
+                  >
+                    <span className="moon-emoji">{r.emoji}</span>
+                  </button>
+                ))}
+              </span>
+            </>
+          ) : null}
+        </span>
 
         <a href={`#/post/${p.id}`} aria-label={`Ver comentarios (${p.comments_count || 0})`}>
           <IconComment />

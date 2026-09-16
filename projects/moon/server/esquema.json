@@ -133,5 +133,10 @@
     "version": 27,
     "name": "mensajes_con_respuesta",
     "sql": "ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id BIGINT REFERENCES messages(id) ON DELETE SET NULL; CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to_id)"
+  },
+  {
+    "version": 28,
+    "name": "interaccion_rica",
+    "sql": "ALTER TABLE likes ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'me_gusta'; ALTER TABLE posts ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ; ALTER TABLE comments ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ; CREATE TABLE IF NOT EXISTS post_hidden (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id)); CREATE INDEX IF NOT EXISTS ix_post_hidden_user ON post_hidden (user_id); CREATE TABLE IF NOT EXISTS comment_likes (comment_id BIGINT NOT NULL REFERENCES comments(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, tipo TEXT NOT NULL DEFAULT 'me_gusta', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (comment_id, user_id)); CREATE INDEX IF NOT EXISTS ix_comment_likes_comment ON comment_likes (comment_id)"
   }
 ]

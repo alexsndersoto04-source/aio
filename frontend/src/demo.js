@@ -132,6 +132,8 @@ const publicaciones = [
 
 function publicacionJSON(p) {
   const autor = perfiles.get(p.autor);
+  // Las publicaciones de ejemplo pueden no traer reacciones: se normaliza aquí.
+  p.reacciones = p.reacciones || {};
   return {
     id: p.id,
     content: p.texto,
@@ -151,6 +153,16 @@ function publicacionJSON(p) {
     author_is_verified: autor.is_verified,
     author_is_private: !!autor.is_private,
     poll: p.encuesta ? encuestaJSON(p) : null,
+    pinned: !!p.fijada,
+    pinned_at: p.fijada ? hace(1) : null,
+    reacciones: (() => {
+      const conteo = p.reacciones || {};
+      const total = Object.values(conteo).reduce((n, v) => n + v, 0);
+      const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+      const orden = Object.entries(conteo).sort((x, y) => y[1] - x[1])
+        .map(([tipo, n]) => ({ tipo, emoji: EMOJI[tipo] || '👍', n }));
+      return { total, mi: p.miReaccion || null, conteo, orden };
+    })(),
   };
 }
 
@@ -162,6 +174,7 @@ function encuestaJSON(p) {
     pregunta: e.pregunta,
     multiple: !!e.multiple,
     cerrada: !!e.cerrada,
+    cierra: e.cierra || null,
     total,
     mi_voto: e.miVoto || [],
     opciones: e.opciones.map((texto, i) => ({
@@ -174,12 +187,13 @@ function encuestaJSON(p) {
 
 const comentarios = {
   101: [
-    { id: 1, autor: 2, texto: 'El modo oscuro quedó impecable. ¿Lo probaste en móvil?', creada: 18 },
-    { id: 2, autor: 3, texto: 'Se nota el trabajo en los detalles: los avisos, los esqueletos… 👏', creada: 12 },
+    { id: 1, autor: 2, texto: 'El modo oscuro quedó impecable. ¿Lo probaste en móvil?', creada: 18, reacciones: { me_gusta: 3, me_encanta: 1 } },
+    { id: 2, autor: 3, texto: 'Se nota el trabajo en los detalles: los avisos, los esqueletos… 👏', creada: 12, reacciones: { me_encanta: 5 }, fijado: true },
     { id: 3, autor: 5, texto: 'Me gusta que el acento sea uno solo. Menos ruido visual.', creada: 4 },
+    { id: 5, autor: 1, texto: 'Gracias a los dos. Falta pulir la mensajería.', creada: 2, reacciones: { me_gusta: 1 } },
   ],
   102: [
-    { id: 4, autor: 4, texto: '¿Qué índice usaron al final?', creada: 30 },
+    { id: 4, autor: 4, texto: '¿Qué índice usaron al final?', creada: 30, reacciones: { risa: 2 } },
   ],
 };
 
@@ -466,6 +480,8 @@ export function responder(metodo, ruta, cuerpo) {
         guardados: 0,
         meGusta: false,
         guardada: false,
+        reacciones: {},
+        miReaccion: null,
         texto: cuerpo?.content || '',
         imagenes: (cuerpo?.images || []).map((im) => im.url || im),
         encuesta: cuerpo?.poll && Array.isArray(cuerpo.poll.opciones) && cuerpo.poll.opciones.filter(Boolean).length >= 2
@@ -520,6 +536,63 @@ export function responder(metodo, ruta, cuerpo) {
         })),
       });
     }
+    if (accion === 'react') {
+      const tipo = String(cuerpo?.tipo || 'me_gusta');
+      const previo = post.miReaccion || null;
+      if (previo) post.reacciones[previo] = Math.max(0, (post.reacciones[previo] || 1) - 1);
+      if (metodo === 'DELETE') {
+        post.miReaccion = null;
+        post.meGusta = false;
+        post.likes = Math.max(0, post.likes - (previo ? 1 : 0));
+      } else {
+        post.reacciones[tipo] = (post.reacciones[tipo] || 0) + 1;
+        post.miReaccion = tipo;
+        post.meGusta = true;
+        if (!previo) post.likes += 1;
+      }
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'pin') {
+      const fijarAhora = !post.fijada;
+      for (const otra of publicaciones) if (otra.autor === USUARIO.id) otra.fijada = false;
+      post.fijada = fijarAhora;
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'interesa') {
+      post.oculta = cuerpo?.no === false ? false : true;
+      return json({ ok: true, no_interesa: !!post.oculta });
+    }
+    if (accion === 'reacciones') {
+      const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+      const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id).slice(0, 3);
+      return json({
+        total: post.likes,
+        personas: gente.map((u) => ({
+          id: u.id, username: u.username, display_name: u.display_name,
+          avatar_url: u.avatar_url, is_verified: u.is_verified, tipo: 'me_gusta', is_mine: false,
+        })).map((x) => ({ ...x, emoji: EMOJI[x.tipo] })),
+      });
+    }
+    if (accion === 'poll') {
+      // /api/posts/:id/poll/votos
+      const e = post.encuesta;
+      if (!e) return json({ error: 'Sin encuesta' }, 404);
+      const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id);
+      return json({
+        total: (e.votos || []).reduce((n, v) => n + v, 0),
+        opciones: (e.opciones || []).map((texto, i) => ({
+          indice: i,
+          texto,
+          votos: e.votos?.[i] || 0,
+          personas: (e.votos?.[i] || 0) > 0
+            ? gente.slice(0, Math.min(e.votos[i], gente.length)).map((u) => ({
+              id: u.id, username: u.username, display_name: u.display_name,
+              avatar_url: u.avatar_url, is_verified: u.is_verified,
+            }))
+            : [],
+        })),
+      });
+    }
     if (accion === 'like') {
       const dando = metodo === 'POST';
       post.meGusta = dando;
@@ -533,6 +606,29 @@ export function responder(metodo, ruta, cuerpo) {
     }
     if (accion === 'comments') {
       const lista = comentarios[id] || [];
+      const autorDelPost = post.autor === USUARIO.id;
+      const conForma = (com) => {
+        const autor = perfiles.get(com.autor);
+        const conteo = com.reacciones || {};
+        const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+        const total = Object.values(conteo).reduce((n, v) => n + v, 0);
+        const orden = Object.entries(conteo).sort((x, y) => y[1] - x[1]).map(([tipo, n]) => ({ tipo, emoji: EMOJI[tipo] || '👍', n }));
+        const esAutor = com.autor === post.autor;
+        return {
+          id: com.id,
+          content: com.texto,
+          created_at: hace(com.creada),
+          parent_id: com.padre || null,
+          pinned: !!com.fijado,
+          es_autor: esAutor,
+          username: autor.username,
+          display_name: autor.display_name,
+          avatar_url: autor.avatar_url,
+          is_verified: autor.is_verified,
+          is_mine: com.autor === USUARIO.id,
+          reacciones: { total, mi: com.miReaccion || null, conteo, orden },
+        };
+      };
       if (metodo === 'POST') {
         const autor = USUARIO;
         const nuevo = { id: ++siguienteId, autor: autor.id, texto: cuerpo?.content || '', creada: 0 };
@@ -550,10 +646,18 @@ export function responder(metodo, ruta, cuerpo) {
           is_mine: true,
         });
       }
+      // El orden lo pide el cliente: «mejores» por reacciones, «recientes» por hora.
+      if (q.get('orden') === 'mejores') {
+        lista.sort((x, y) => {
+          if (!!y.fijado !== !!x.fijado) return y.fijado ? 1 : -1;
+          return Object.values(y.reacciones || {}).reduce((n, v) => n + v, 0) - Object.values(x.reacciones || {}).reduce((n, v) => n + v, 0);
+        });
+      }
       return json(
-        lista.map((com) => {
+        [...lista].map((com) => {
           const autor = perfiles.get(com.autor);
           return {
+            ...conForma(com),
             id: com.id,
             content: com.texto,
             created_at: hace(com.creada),
@@ -566,6 +670,44 @@ export function responder(metodo, ruta, cuerpo) {
         })
       );
     }
+  }
+
+  // ---- Comentarios: reacción y fijado (modo demostración) ----
+  if (a === 'comments') {
+    const idCom = Number(b);
+    const accionCom = c;
+    const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+    let hallado = null;
+    for (const lista of Object.values(comentarios)) {
+      const com = lista.find((x) => x.id === idCom);
+      if (com) { hallado = com; break; }
+    }
+    if (!hallado) return json({ error: 'Comentario no encontrado' }, 404);
+
+    if (accionCom === 'react') {
+      const tipo = String(cuerpo?.tipo || 'me_gusta');
+      const previo = hallado.miReaccion || null;
+      hallado.reacciones = hallado.reacciones || {};
+      if (previo) hallado.reacciones[previo] = Math.max(0, (hallado.reacciones[previo] || 1) - 1);
+      if (metodo === 'DELETE') {
+        hallado.miReaccion = null;
+      } else {
+        hallado.reacciones[tipo] = (hallado.reacciones[tipo] || 0) + 1;
+        hallado.miReaccion = tipo;
+      }
+      const conteo = hallado.reacciones;
+      const total = Object.values(conteo).reduce((n, v) => n + v, 0);
+      const orden = Object.entries(conteo).sort((x, y) => y[1] - x[1]).map(([t, n]) => ({ tipo: t, emoji: EMOJI[t] || '👍', n }));
+      return json({ reacciones: { total, mi: hallado.miReaccion || null, conteo, orden } });
+    }
+
+    if (accionCom === 'pin') {
+      const fijarAhora = !hallado.fijado;
+      for (const lista of Object.values(comentarios)) for (const com of lista) com.fijado = false;
+      hallado.fijado = fijarAhora;
+      return json({ ok: true, fijado: fijarAhora });
+    }
+    return json({ error: 'Acción desconocida' }, 404);
   }
 
   if (a === 'users' && b === 'presence') {

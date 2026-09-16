@@ -164,6 +164,22 @@ export const IconResponder = (p) => (
   </svg>
 );
 
+export const IconPin = (p) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...p}>
+    <path d="M9 3h6l-1 7 3.5 3.5H6.5L10 10 9 3Z" />
+    <path d="M12 13.5V21" />
+  </svg>
+);
+
+export const IconEyeOff = (p) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...p}>
+    <path d="M3 3l18 18" />
+    <path d="M10.6 5.2A9.9 9.9 0 0 1 12 5c5 0 9 4.5 9 7 0 .8-.4 1.7-1 2.6" />
+    <path d="M6.2 6.8C4 8.3 3 10.4 3 12c0 2.5 4 7 9 7 1.9 0 3.6-.6 5-1.5" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+  </svg>
+);
+
 export const IconChat = (p) => (
   <svg {...S(p)}><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.4-4.4A8 8 0 1 1 21 12Z" /><path d="M8.5 12h.01M12 12h.01M15.5 12h.01" /></svg>
 );

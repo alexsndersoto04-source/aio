@@ -9,13 +9,14 @@ import { fila, uno } from './db.mjs';
 import { auditar, sumarEstadistica } from './db.mjs';
 import { notificar } from './ws.mjs';
 import { demasiadoRapido } from './limites.mjs';
+import { conReacciones, conReaccionesComentarios, tipoValido } from './reacciones.mjs';
 
 // ---------- Ayudas ----------
 
 export const SQL_POST = `
   SELECT p.id, p.content, p.status, p.likes_count, p.comments_count, p.saves_count,
          p.created_at::text AS created_at, p.edited_at::text AS edited_at,
-         p.user_id,
+         p.pinned_at::text AS pinned_at, p.user_id,
          u.username AS author_username, u.display_name AS author_display_name,
          u.avatar_url AS author_avatar_url, u.is_verified AS author_is_verified,
          u.is_private AS author_is_private,
@@ -28,7 +29,8 @@ const SQL_IMAGENES = 'SELECT id, post_id, original_url, thumb_url, position FROM
 export async function conContenido(pool, filas, yoId) {
   const conIm = await conImagenes(pool, filas);
   await marcarConEncuesta(pool, conIm);
-  return conEncuestas(pool, conIm, yoId);
+  const conEnc = await conEncuestas(pool, conIm, yoId);
+  return conReacciones(pool, conEnc, yoId);
 }
 
 export async function conImagenes(pool, filas) {
@@ -72,8 +74,18 @@ export async function conEncuestas(pool, posts, yoId) {
       const n = Number(votos.find((v) => Number(v.post_id) === Number(e.post_id) && Number(v.opcion) === i)?.n || 0);
       return { texto, votos: n, porcentaje: total > 0 ? Math.round((n / total) * 100) : 0 };
     });
+    // Texto corto de cierre: «cierra en 5 h» / «cierra el 20 sep».
+    let cierra = null;
+    if (e.ends_at && !e.cerrada) {
+      const fin = new Date(e.ends_at);
+      const horas = Math.round((fin.getTime() - Date.now()) / 3_600_000);
+      cierra = horas <= 1 ? 'cierra en menos de 1 h'
+        : horas < 24 ? `cierra en ${horas} h`
+        : `cierra el ${fin.toLocaleDateString('es-VE', { day: 'numeric', month: 'short' })}`;
+    }
     porPost.set(Number(e.post_id), {
       pregunta: e.pregunta,
+      cierra,
       opciones,
       multiple: !!e.multiple,
       total,
@@ -109,6 +121,8 @@ export function aPublicacion(f, yo) {
     saves_count: Number(f.saves_count),
     is_liked: !!f.is_liked,
     is_saved: !!f.is_saved,
+    pinned: !!f.pinned_at,
+    pinned_at: f.pinned_at || null,
     is_mine: Number(f.user_id) === Number(yo),
     author_username: f.author_username,
     author_display_name: f.author_display_name || f.author_username,
@@ -122,6 +136,9 @@ export function aPublicacion(f, yo) {
 const SQL_NO_BLOQUEADOS = `
   NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = $1 AND b.blocked_id = p.user_id)
                                         OR (b.blocker_id = p.user_id AND b.blocked_id = $1))`;
+
+// «No me interesa»: esa publicación no vuelve a aparecer en tu inicio.
+const SQL_NO_OCULTOS = `NOT EXISTS (SELECT 1 FROM post_hidden ph WHERE ph.user_id = $1 AND ph.post_id = p.id)`;
 
 async function conPagina(c, filas, total, page, limit) {
   return { items: filas, total, page, limit };
@@ -155,7 +172,7 @@ export function registrarRutasSocial(router) {
     const yo = await c.exigir();
     const { page, limit, offset } = paginacion(c.req, 10, 50);
     const tipo = condicionDeTipo(String(c.query.get('tipo') || ''));
-    const condiciones = ["p.status = 'active'", SQL_NO_BLOQUEADOS];
+    const condiciones = ["p.status = 'active'", SQL_NO_BLOQUEADOS, SQL_NO_OCULTOS];
     if (tipo) condiciones.push(tipo);
     const args = [yo.id];
     const total = await uno(
@@ -399,24 +416,39 @@ export function registrarRutasSocial(router) {
   router.get('/api/posts/:id/comments', async (c) => {
     const yo = await c.usuario();
     const yoId = yo ? Number(yo.id) : 0;
+    const postId = Number(c.params.id);
+    const orden = String(c.query.get('orden') || 'recientes');
+    const autor = await uno(c.pool, 'SELECT user_id FROM posts WHERE id = $1', [postId]);
+    const autorId = autor ? Number(autor.user_id) : 0;
+
+    // «Mejores» = las reacciones primero, después lo más nuevo. El fijado
+    // siempre va arriba, y luego el autor del comentario con más reacciones.
     const filas = await c.pool.query(
       `SELECT cm.id, cm.content, cm.created_at::text AS created_at, cm.user_id,
+              cm.parent_id, cm.pinned_at::text AS pinned_at,
+              (SELECT COUNT(*)::int FROM comment_likes cl WHERE cl.comment_id = cm.id) AS reacciones,
               u.username, u.display_name, u.avatar_url, u.is_verified
          FROM comments cm JOIN users u ON u.id = cm.user_id
         WHERE cm.post_id = $1 AND cm.status = 'active'
-        ORDER BY cm.created_at ASC LIMIT 200`,
-      [Number(c.params.id)]
+        ORDER BY cm.pinned_at DESC NULLS LAST,
+                 ${orden === 'mejores' ? 'reacciones DESC, cm.created_at DESC' : 'cm.created_at ASC'}
+        LIMIT 200`,
+      [postId]
     );
-    return filas.rows.map((f) => ({
+    const lista = filas.rows.map((f) => ({
       id: Number(f.id),
       content: f.content,
       created_at: f.created_at,
+      parent_id: f.parent_id ? Number(f.parent_id) : null,
+      pinned: !!f.pinned_at,
+      es_autor: Number(f.user_id) === autorId,
       username: f.username,
       display_name: f.display_name || f.username,
       avatar_url: f.avatar_url,
       is_verified: !!f.is_verified,
       is_mine: Number(f.user_id) === yoId,
     }));
+    return conReaccionesComentarios(c.pool, lista, yoId);
   });
 
   router.post('/api/posts/:id/comments', async (c) => {
@@ -464,16 +496,29 @@ export function registrarRutasSocial(router) {
       userId: Number(post.user_id), tipo: 'comment', deUserId: Number(yo.id), postId, commentId: Number(creado.id),
       contenido: `comentó: «${contenido.slice(0, 80)}»`,
     });
-    return {
+    // Menciones dentro del comentario: aviso directo a quien se nombró.
+    for (const nombre of mencionesDe(contenido)) {
+      const mencionado = await uno(c.pool, 'SELECT id FROM users WHERE LOWER(username) = $1', [nombre]);
+      if (!mencionado || Number(mencionado.id) === Number(yo.id)) continue;
+      await notificar(c.pool, {
+        userId: Number(mencionado.id), tipo: 'mention', deUserId: Number(yo.id),
+        postId, commentId: Number(creado.id), contenido: 'te mencionó en un comentario',
+      });
+    }
+    const [conReac] = await conReaccionesComentarios(c.pool, [{
       id: Number(creado.id),
       content: creado.content,
       created_at: String(creado.created_at),
+      parent_id: creado.parent_id ? Number(creado.parent_id) : null,
+      pinned: false,
+      es_autor: Number(post.user_id) === Number(yo.id),
       username: yo.username,
       display_name: yo.display_name || yo.username,
       avatar_url: yo.avatar_url,
       is_verified: !!yo.is_verified,
       is_mine: true,
-    };
+    }], Number(yo.id));
+    return conReac;
   });
 
   router.del('/api/comments/:id', async (c) => {
@@ -551,7 +596,8 @@ export function registrarRutasSocial(router) {
     const { page, limit, offset } = paginacion(c.req, 20, 50);
     const objetivo = Number(c.params.id);
     const filas = await c.pool.query(
-      `${SQL_POST} WHERE p.user_id = $2 AND p.status = 'active' ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+      `${SQL_POST} WHERE p.user_id = $2 AND p.status = 'active'
+        ORDER BY p.pinned_at DESC NULLS LAST, p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       [yo.id, objetivo]
     );
     const total = await uno(

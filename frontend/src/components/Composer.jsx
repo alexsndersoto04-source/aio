@@ -23,6 +23,9 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
   const [arrastrando, setArrastrando] = useState(false);
   // Encuesta opcional: una pregunta con dos a cuatro respuestas.
   const [encuesta, setEncuesta] = useState(null); // null = sin encuesta
+  // Menciones: al escribir «@» se busca gente y se ofrece la lista.
+  const [mencion, setMencion] = useState(null); // { desde, consulta }
+  const [gente, setGente] = useState([]);
   const area = useRef(null);
   const archivos = useRef(null);
 
@@ -99,6 +102,29 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
   const usados = contenido.length;
   const pct = Math.min(100, Math.round((usados / MAX_CHARS) * 100));
   const nivel = pct >= 100 ? 'danger' : pct >= 85 ? 'warn' : '';
+  // Busca personas mientras se escribe una mención (con un respiro de 220 ms).
+  useEffect(() => {
+    if (!mencion) { setGente([]); return undefined; }
+    let vivo = true;
+    const t = setTimeout(() => {
+      api.get(`/api/search?q=${encodeURIComponent(mencion.consulta)}&type=users`)
+        .then((res) => { if (vivo) setGente((res || []).slice(0, 5)); })
+        .catch(() => {});
+    }, 220);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [mencion?.consulta, mencion?.desde]);
+
+  /** Mete el @usuario en el texto, en el sitio donde se escribió. */
+  function elegirMencion(usuario) {
+    const desde = mencion?.desde ?? contenido.length;
+    const hasta = desde + 1 + (mencion?.consulta || '').length;
+    const next = `${contenido.slice(0, desde)}@${usuario} ${contenido.slice(hasta)}`;
+    setContenido(next.slice(0, MAX_CHARS + 200));
+    setMencion(null);
+    setGente([]);
+    if (area.current) area.current.focus();
+  }
+
   const opcionesOk = encuesta ? encuesta.opciones.map((o) => o.trim()).filter(Boolean).length >= 2 : false;
   const puede = (contenido.trim().length > 0 || imagenes.length > 0 || opcionesOk) && !enviando && usados <= MAX_CHARS;
 
@@ -122,12 +148,47 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
           rows={2}
           aria-label="Texto de la publicación"
           onChange={(e) => {
-            setContenido(e.target.value);
+            const valor = e.target.value;
+            setContenido(valor);
             const el = e.target;
             el.style.height = 'auto';
             el.style.height = `${Math.min(el.scrollHeight, 320)}px`;
+
+            // ¿Estoy escribiendo una mención? Se mira la palabra antes del cursor.
+            const cursor = el.selectionStart ?? valor.length;
+            const antes = valor.slice(0, cursor);
+            const m = antes.match(/(^|\s)@([a-zA-Z0-9_]{0,24})$/);
+            if (m) setMencion({ desde: cursor - m[2].length - 1, consulta: m[2] });
+            else setMencion(null);
+          }}
+          onKeyDown={(e) => {
+            if (mencion && gente.length > 0 && e.key === 'Enter') {
+              e.preventDefault();
+              elegirMencion(gente[0].username);
+            }
+            if (e.key === 'Escape') setMencion(null);
           }}
         />
+
+        {mencion && gente.length > 0 ? (
+          <div className="menciones" role="listbox" aria-label="Personas para mencionar">
+            {gente.map((u) => (
+              <button
+                type="button"
+                key={u.id}
+                role="option"
+                aria-selected="false"
+                onClick={() => elegirMencion(u.username)}
+              >
+                <Avatar user={u} size="sm" />
+                <span className="quien">
+                  <b>{u.display_name || u.username}</b>
+                  <span className="muted small">@{u.username}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         {imagenes.length > 0 ? (
           <div className="composer-preview">
