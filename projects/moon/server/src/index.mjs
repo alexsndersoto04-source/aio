@@ -24,6 +24,7 @@ import { registrarRutasGrupos } from './rutas-grupos.mjs';
 import { registrarRutasPush } from './rutas-push.mjs';
 import { registrarRutasInteraccion } from './rutas-interaccion.mjs';
 import { registrarRutasGruposExtra } from './rutas-grupos-extra.mjs';
+import { registrarRutasPerfil } from './rutas-perfil.mjs';
 import { montarWs, conectados } from './ws.mjs';
 import { importarDelDisco } from './medios.mjs';
 import { programarCopiaDiaria } from './copias.mjs';
@@ -136,6 +137,7 @@ registrarRutasGrupos(router);
 registrarRutasPush(router);
 registrarRutasInteraccion(router);
 registrarRutasGruposExtra(router);
+registrarRutasPerfil(router);
 
 // Salud (pública) y métricas (solo administración).
 router.get('/api/health', async (c) => {

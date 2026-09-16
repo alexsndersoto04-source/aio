@@ -4078,3 +4078,221 @@ html, body { max-width: 100%; overflow-x: hidden; }
   .pestanas-grupo { border-radius: 14px; padding: 4px; }
   .pestanas-grupo button { padding: 9px 12px; }
 }
+
+/* ============================================================
+   §44 · Perfil completo (tanda 4)
+   ============================================================
+   Listas de seguidores y seguidos, solicitudes de las cuentas
+   privadas, mis me gusta y mis comentarios, etiquetas que sigo,
+   historial de búsqueda y los ajustes nuevos (idioma, oscuro por
+   horario, ahorro de datos, PIN y exportar).
+   Igual que el resto: superficie continua, filos de 1 px y el
+   acento aurora solo donde hay algo vivo.
+   ============================================================ */
+
+/* ---------- 44.1 Los números del perfil se tocan ---------- */
+.profile-stats button.stat-pulsable {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  cursor: pointer;
+  border-radius: 10px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.profile-stats button.stat-pulsable:hover { background: var(--aurora-grad-suave); }
+.profile-stats button.stat-pulsable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.profile-stats button.stat-pulsable b { font-size: 15px; }
+.profile-stats button.stat-pulsable span { color: var(--ink-3); font-size: 12px; }
+.profile-stats button.stat-pulsable.activa b,
+.profile-stats button.stat-pulsable.activa span { color: var(--accent); }
+.profile-stats button.stat-pulsable.activa { background: var(--aurora-grad-suave); }
+
+.acciones-perfil-extra { padding: 10px 14px 2px; display: flex; justify-content: center; }
+.enlace-suave {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+.enlace-suave:hover { text-decoration: underline; }
+
+/* ---------- 44.2 Lista de gente (seguidores y seguidos) ---------- */
+.panel-gente {
+  margin: 0 0 4px;
+  padding: 0 var(--gutter, 18px) 10px;
+  border-top: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+  background: var(--aurora-grad-suave);
+  animation: aparecer-suave 0.22s ease;
+}
+.panel-gente-cabecera {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 6px;
+}
+.panel-gente-cabecera .muted { margin-left: auto; }
+.cambiar-lista { display: inline-flex; gap: 2px; background: rgba(99, 102, 241, 0.08); border-radius: 12px; padding: 3px; }
+.cambiar-lista button {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-3);
+  padding: 6px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.cambiar-lista button.active { background: var(--vidrio-fondo); color: var(--accent); box-shadow: 0 1px 3px rgba(24, 20, 80, 0.12); }
+.fila-gente {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.08));
+}
+.fila-gente:last-of-type { border-bottom: 0; }
+.fila-gente .quien {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-decoration: none;
+}
+.fila-gente .quien .texto { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.fila-gente .quien .texto b { font-size: 14px; display: flex; align-items: center; gap: 4px; }
+.fila-gente .quien .texto small { color: var(--ink-3); font-size: 12px; }
+.fila-gente .btn { flex: 0 0 auto; }
+
+/* ---------- 44.3 Solicitudes de las cuentas privadas ---------- */
+.solicitudes { margin: 10px 0; }
+.solicitud .acciones { margin-top: 8px; }
+.solicitud .quien .texto small { color: var(--ink-3); font-size: 12px; }
+.privado-aviso {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px var(--gutter, 18px);
+  border-top: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+  background: var(--aurora-grad-suave);
+  color: var(--ink-2);
+}
+.privado-aviso > svg { width: 18px; height: 18px; color: var(--accent); flex: 0 0 auto; }
+.privado-aviso > svg:last-child { width: 15px; height: 15px; color: var(--ink-3); }
+.privado-aviso span { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.privado-aviso b { font-size: 14px; }
+.privado-aviso small { color: var(--ink-3); font-size: 12.5px; }
+
+/* ---------- 44.4 Mis me gusta, mis comentarios y etiquetas ---------- */
+.lista-mis-cosas { display: flex; flex-direction: column; }
+.fila-mia {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px var(--gutter, 18px);
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.08));
+  color: inherit;
+  text-decoration: none;
+}
+.fila-mia:hover { background: var(--aurora-grad-suave); }
+.fila-mia .texto { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fila-mia .mia { font-size: 14.5px; color: var(--ink); }
+.fila-mia .texto small { color: var(--ink-3); font-size: 12px; }
+.chips-etiquetas { margin: 4px 2px 12px; }
+.chips-etiquetas button svg { width: 12px; height: 12px; }
+
+/* ---------- 44.5 Historial de búsqueda ---------- */
+.cabecera-historial {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+.cabecera-historial h3 { display: flex; align-items: center; gap: 7px; font-size: 14px; margin: 0; }
+.cabecera-historial h3 svg { width: 15px; height: 15px; color: var(--accent); }
+.chips-historial { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-historial {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--aurora-grad-suave);
+  border: 1px solid var(--accent-line, rgba(99, 102, 241, 0.22));
+  overflow: hidden;
+}
+.chip-historial .termino {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-2);
+  padding: 6px 4px 6px 12px;
+  cursor: pointer;
+}
+.chip-historial .quitar {
+  appearance: none;
+  border: 0;
+  background: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px 6px 4px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.chip-historial .quitar svg { width: 12px; height: 12px; }
+.chip-historial:hover { border-color: var(--accent); }
+.chip-historial:hover .quitar { color: var(--accent); }
+.fila-etiqueta .btn { flex: 0 0 auto; }
+.bloque-historial { margin-bottom: 14px; }
+
+/* ---------- 44.6 Ajustes nuevos: horario, PIN, exportar ---------- */
+.fila-horario .horas { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.hora-input {
+  width: 108px;
+  padding: 7px 9px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.pin-form .field { margin-top: 6px; }
+.pin-campo {
+  max-width: 150px;
+  letter-spacing: 0.35em;
+  font-size: 17px;
+  text-align: center;
+}
+.pin-form .error-nota { margin: 8px 0 0; }
+@media (max-width: 520px) {
+  .fila-horario { flex-wrap: wrap; }
+  .fila-horario .horas { width: 100%; justify-content: flex-start; padding-left: 34px; }
+  .pin-campo { max-width: 100%; }
+}
+
+/* Los botones de la cabecera de un perfil ajeno se acomodan en el teléfono
+   (con «Pedir seguir» son tres y antes se salían de la pantalla). */
+.profile-row .row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 6px;
+  max-width: 100%;
+}
+@media (max-width: 420px) {
+  .profile-row .row .btn { padding-left: 10px; padding-right: 10px; }
+}

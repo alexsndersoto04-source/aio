@@ -6,7 +6,8 @@ import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { debounce, plural } from '../utils.js';
-import { IconSearch, IconUsers, IconLayers, IconImage, IconTrend } from '../components/Icons.jsx';
+import { toast } from '../ui.js';
+import { IconSearch, IconUsers, IconLayers, IconImage, IconTrend, IconX, IconClock, IconCheck } from '../components/Icons.jsx';
 import { SugerenciasPersonas } from '../components/Sugerencias.jsx';
 import { palabrasSilenciadas } from '../prefs.js';
 
@@ -35,6 +36,8 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
   const [trendingTags, setTrendingTags] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [historial, setHistorial] = useState([]);
+  const [misTags, setMisTags] = useState(() => new Set());
 
   const runSearch = useCallback(debounce(async (query, t, ord = 'recientes') => {
     const limpio = query.trim();
@@ -65,6 +68,7 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
       else if (t === 'groups') { setGrupos(lista); setUsers([]); setPosts([]); setEtiquetas([]); }
       else { setEtiquetas(lista); setUsers([]); setPosts([]); setGrupos([]); }
       setSearched(true);
+      cargarHistorial();
     } catch (e) {
       avisoError(e);
     } finally {
@@ -72,8 +76,20 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
     }
   }, 400), []);
 
+  function cargarHistorial() {
+    api.get('/api/me/busquedas').then((r) => setHistorial(r?.busquedas || [])).catch(() => setHistorial([]));
+  }
+
+  function cargarMisTags() {
+    api.get('/api/me/hashtags')
+      .then((r) => setMisTags(new Set((r?.hashtags || []).map((h) => h.tag))))
+      .catch(() => {});
+  }
+
   useEffect(() => {
     api.get('/api/hashtags').then(setTrendingTags).catch(() => {});
+    cargarHistorial();
+    cargarMisTags();
   }, []);
 
   // Sincroniza cuando la URL cambia (p. ej. clic en #hashtag de un post).
@@ -85,6 +101,49 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
     runSearch(initialQ, t, orden);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQ, initialType]);
+
+  /** Seguir una etiqueta (o dejarla) sin salir de donde estás. */
+  async function seguirTag(tag) {
+    const dentro = misTags.has(tag);
+    setMisTags((prev) => {
+      const copia = new Set(prev);
+      if (dentro) copia.delete(tag); else copia.add(tag);
+      return copia;
+    });
+    try {
+      if (dentro) await api.del(`/api/hashtags/${tag}/follow`);
+      else {
+        await api.post(`/api/hashtags/${tag}/follow`, {});
+        toast.ok(`Sigues #${tag}: lo nuevo aparece en tu perfil`);
+      }
+    } catch (e) {
+      avisoError(e);
+      setMisTags((prev) => {
+        const copia = new Set(prev);
+        if (dentro) copia.add(tag); else copia.delete(tag);
+        return copia;
+      });
+    }
+  }
+
+  async function borrarBusqueda(b) {
+    setHistorial((l) => l.filter((x) => x.id !== b.id));
+    try { await api.del(`/api/me/busquedas/${b.id}`); } catch { cargarHistorial(); }
+  }
+
+  async function borrarHistorial() {
+    setHistorial([]);
+    try { await api.del('/api/me/busquedas'); toast.info('Historial de búsqueda vacío'); }
+    catch (e) { avisoError(e); cargarHistorial(); }
+  }
+
+  /** Reabre una búsqueda guardada, tal como estaba. */
+  function repetirBusqueda(b) {
+    const t = TIPO_VALIDO(b.tipo);
+    setQ(b.termino);
+    setType(t);
+    runSearch(b.termino, t, orden);
+  }
 
   function onType(t) {
     setType(t);
@@ -140,21 +199,61 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
 
       {loading ? <div className="spinner" /> : null}
 
+      {!loading && !q.trim() && historial.length > 0 ? (
+        <div className="card bloque-historial" style={{ padding: '12px 14px 6px' }}>
+          <div className="cabecera-historial">
+            <h3><IconClock /> Búsquedas recientes</h3>
+            <button type="button" className="btn-ghost btn-sm" onClick={borrarHistorial}>Borrar todo</button>
+          </div>
+          <div className="chips-historial">
+            {historial.map((b) => (
+              <span className={`chip-historial ${misTags.has(b.termino) ? 'seguida' : ''}`} key={b.id}>
+                <button type="button" className="termino" onClick={() => repetirBusqueda(b)}>
+                  {b.tipo === 'tags' ? '#' : ''}{b.termino}
+                </button>
+                <button type="button" className="quitar" aria-label={`Borrar «${b.termino}» del historial`} onClick={() => borrarBusqueda(b)}>
+                  <IconX />
+                </button>
+              </span>
+            ))}
+          </div>
+          <p className="muted small" style={{ margin: '2px 2px 8px' }}>
+            Se guardan tus últimas búsquedas en tu cuenta (no en este teléfono): puedes borrar una o todas.
+          </p>
+        </div>
+      ) : null}
+
       {!loading && !q.trim() ? (
         <div className="card" style={{ padding: 16 }}>
-          <h3 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 800 }}>Tendencias</h3>
-          {trendingTags.map((t) => (
-            <a key={t.tag} href={`#/explore?q=${encodeURIComponent(t.tag)}&type=posts`}
-              className="row" style={{ padding: '9px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span className="hash">#{t.tag}</span>
-              <span className="muted">{plural(t.posts_count, 'publicación')}</span>
-            </a>
-          ))}
-          {trendingTags.length === 0 ? (
-            <p className="muted" style={{ margin: 0 }}>
-              Aún no hay hashtags: usa #algo al publicar y crea el primero.
-            </p>
-          ) : null}
+          <div className="cabecera-historial">
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Tendencias</h3>
+            {misTags.size > 0 ? (
+              <span className="muted small">Sigues {misTags.size} {misTags.size === 1 ? 'etiqueta' : 'etiquetas'}</span>
+            ) : null}
+          </div>
+          <div style={{ marginTop: 8 }}>
+            {[...trendingTags]
+              .sort((x, y) => Number(misTags.has(y.tag)) - Number(misTags.has(x.tag)))
+              .map((t) => (
+                <div className="fila-etiqueta" key={t.tag}>
+                  <a className="hash" href={`#/explore?q=${encodeURIComponent(t.tag)}&type=posts`}>#{t.tag}</a>
+                  <span className="muted">{plural(t.posts_count, 'publicación')}</span>
+                  <button
+                    type="button"
+                    className={misTags.has(t.tag) ? 'btn btn-outline btn-sm' : 'btn btn-sm'}
+                    aria-pressed={misTags.has(t.tag)}
+                    onClick={() => seguirTag(t.tag)}
+                  >
+                    {misTags.has(t.tag) ? 'Siguiendo' : 'Seguir'}
+                  </button>
+                </div>
+              ))}
+            {trendingTags.length === 0 ? (
+              <p className="muted" style={{ margin: 0 }}>
+                Aún no hay hashtags: usa #algo al publicar y crea el primero.
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -211,10 +310,18 @@ export default function ExploreView({ initialQ = '', initialType = 'users' }) {
         ) : (
           <div className="card">
             {etiquetas.map((t) => (
-              <a key={t.tag} href={`#/explore?q=${encodeURIComponent(t.tag)}&type=posts`} className="fila-etiqueta">
-                <span className="hash">#{t.tag}</span>
+              <div className="fila-etiqueta" key={t.tag}>
+                <a className="hash" href={`#/explore?q=${encodeURIComponent(t.tag)}&type=posts`}>#{t.tag}</a>
                 <span className="muted">{plural(t.posts_count, 'publicación')}</span>
-              </a>
+                <button
+                  type="button"
+                  className={misTags.has(t.tag) ? 'btn btn-outline btn-sm' : 'btn btn-sm'}
+                  aria-pressed={misTags.has(t.tag)}
+                  onClick={() => seguirTag(t.tag)}
+                >
+                  {misTags.has(t.tag) ? <><IconCheck /> Siguiendo</> : 'Seguir'}
+                </button>
+              </div>
             ))}
           </div>
         )

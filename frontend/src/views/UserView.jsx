@@ -7,6 +7,8 @@ import PostCard from '../components/PostCard.jsx';
 import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { miembroDesde } from '../utils.js';
 import { toast, confirmar, avisoError } from '../ui.js';
+import ListaGente from '../components/ListaGente.jsx';
+import { IconLock, IconUsers, IconCheck } from '../components/Icons.jsx';
 
 export default function UserView({ id }) {
   const { user } = useAuth();
@@ -15,6 +17,7 @@ export default function UserView({ id }) {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [gente, setGente] = useState(null); // 'followers' | 'following' | null
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,9 +52,19 @@ export default function UserView({ id }) {
   async function follow() {
     setBusy(true);
     try {
-      if (profile.is_following) await api.del(`/api/users/${profile.id}/follow`);
-      else await api.post(`/api/users/${profile.id}/follow`, {});
-      setProfile({ ...profile, is_following: !profile.is_following });
+      if (profile.is_following) {
+        await api.del(`/api/users/${profile.id}/follow`);
+        setProfile({ ...profile, is_following: false, solicitud_enviada: false });
+      } else {
+        const r = await api.post(`/api/users/${profile.id}/follow`, {});
+        // Cuenta privada: no se sigue de una, queda pedido el permiso.
+        if (r?.solicitado) {
+          setProfile({ ...profile, is_following: false, solicitud_enviada: true });
+          toast.ok(`Le pediste a ${profile.display_name || profile.username} seguir su cuenta`);
+        } else {
+          setProfile({ ...profile, is_following: true, solicitud_enviada: false });
+        }
+      }
     } catch (e) { avisoError(e); }
     finally { setBusy(false); }
   }
@@ -112,8 +125,16 @@ export default function UserView({ id }) {
             {!isMe ? (
               <>
                 <button className="btn btn-sm" disabled={busy} onClick={message}>Mensaje</button>
-                <button className={profile.is_following ? 'btn btn-outline btn-sm' : 'btn btn-sm'} disabled={busy} onClick={follow}>
-                  {profile.is_following ? 'Siguiendo' : 'Seguir'}
+                <button
+                  className={profile.is_following ? 'btn btn-outline btn-sm' : 'btn btn-sm'}
+                  disabled={busy || (profile.is_private && profile.solicitud_enviada && !profile.is_following)}
+                  onClick={follow}
+                >
+                  {profile.is_following
+                    ? 'Siguiendo'
+                    : profile.is_private && profile.solicitud_enviada
+                      ? <><IconCheck /> Solicitud enviada</>
+                      : profile.is_private ? <><IconLock /> Pedir seguir</> : 'Seguir'}
                 </button>
                 <button className="btn btn-ghost btn-sm" disabled={busy} onClick={block}>
                   {profile.is_blocked ? 'Desbloquear' : 'Bloquear'}
@@ -130,14 +151,54 @@ export default function UserView({ id }) {
           </div>
           <div className="profile-stats">
             <span><b>{profile.posts_count}</b><span>{profile.posts_count === 1 ? 'publicación' : 'publicaciones'}</span></span>
-            <span><b>{profile.followers_count}</b><span>{profile.followers_count === 1 ? 'seguidor' : 'seguidores'}</span></span>
-            <span><b>{profile.following_count}</b><span>siguiendo</span></span>
+            <button
+              type="button"
+              className={`stat-pulsable ${gente === 'followers' ? 'activa' : ''}`}
+              aria-expanded={gente === 'followers'}
+              onClick={() => setGente(gente === 'followers' ? null : 'followers')}
+            >
+              <b>{profile.followers_count}</b>
+              <span>{profile.followers_count === 1 ? 'seguidor' : 'seguidores'}</span>
+            </button>
+            <button
+              type="button"
+              className={`stat-pulsable ${gente === 'following' ? 'activa' : ''}`}
+              aria-expanded={gente === 'following'}
+              onClick={() => setGente(gente === 'following' ? null : 'following')}
+            >
+              <b>{profile.following_count}</b><span>siguiendo</span>
+            </button>
           </div>
         </div>
       </div>
 
+      {gente ? (
+        <ListaGente id={profile.id} inicial={gente} onCerrar={() => setGente(null)} />
+      ) : null}
+
+      {profile.is_private && !profile.is_following && !isMe ? (
+        <div className="privado-aviso">
+          <IconLock />
+          <span>
+            <b>Esta cuenta es privada</b>
+            <small>
+              {profile.solicitud_enviada
+                ? 'Ya le pediste seguirla: cuando acepte verás sus publicaciones.'
+                : 'Pídele seguirla y, si acepta, verás lo que publica.'}
+            </small>
+          </span>
+          <IconUsers />
+        </div>
+      ) : null}
+
       {posts.length === 0 ? (
-        <div className="card empty"><p>{isMe ? 'Sin publicaciones todavía.' : 'Este usuario aún no publica.'}</p></div>
+        <div className="card empty">
+          <p>{isMe
+            ? 'Sin publicaciones todavía.'
+            : profile.is_private && !profile.is_following
+              ? 'No hay nada que enseñar aquí.'
+              : 'Este usuario aún no publica.'}</p>
+        </div>
       ) : (
         posts.map((post) => <PostCard key={post.id} post={post} />)
       )}

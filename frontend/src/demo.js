@@ -106,7 +106,8 @@ for (const p of personas) {
     location: p.location,
     created_at: '2024-06-02T12:00:00.000Z',
     is_verified: p.is_verified,
-    is_private: false,
+    // Elena tiene la cuenta privada: hay que pedirle permiso para seguirla.
+    is_private: p.id === 5,
     is_following: p.id === 2 || p.id === 3,
     is_blocked: false,
     followers_count: p.followers_count,
@@ -246,6 +247,130 @@ const palabrasProhibidas = ['spam', 'estafa', 'insulto'];
 
 // Preferencias de avisos del modo demostración (solo en memoria).
 const avisos = { follow: true, like: true, comment: true, reply: true, mention: true, message: true, system: true };
+
+// ---------- Tanda 4: perfil completo (todo vive en memoria) ----------
+// Gente de relleno: así las listas de seguidores y seguidos se ven llenas.
+const RELLENO = [
+  { id: 20, username: 'gabriela', display_name: 'Gabriela Núñez', iniciales: 'GN', color: ['#6366f1', '#22d3ee'], bio: 'Front-end. Animaciones que no marean.', location: 'Valencia' },
+  { id: 21, username: 'hector', display_name: 'Héctor Bravo', iniciales: 'HB', color: ['#0ea5e9', '#22c55e'], bio: 'Back-end y bases de datos.', location: 'Caracas' },
+  { id: 22, username: 'ines', display_name: 'Inés Ochoa', iniciales: 'IO', color: ['#8b5cf6', '#ec4899'], bio: 'Ilustración y color.', location: 'Mérida' },
+  { id: 23, username: 'joaquin', display_name: 'Joaquín Vera', iniciales: 'JV', color: ['#f59e0b', '#ef4444'], bio: 'Música y sonido en vivo.', location: 'Maracaibo' },
+  { id: 24, username: 'karina', display_name: 'Karina López', iniciales: 'KL', color: ['#4f46e5', '#06b6d4'], bio: 'Producto. Preguntas antes que respuestas.', location: 'Barquisimeto' },
+  { id: 25, username: 'lautaro', display_name: 'Lautaro Gómez', iniciales: 'LG', color: ['#22c55e', '#0ea5e9'], bio: 'Datos abiertos y mapas.', location: 'Buenos Aires' },
+  { id: 26, username: 'micaela', display_name: 'Micaela Rey', iniciales: 'MR', color: ['#ec4899', '#8b5cf6'], bio: 'Periodista de barrio.', location: 'Montevideo' },
+  { id: 27, username: 'nicolas', display_name: 'Nicolás Parra', iniciales: 'NP', color: ['#06b6d4', '#6366f1'], bio: 'Seguridad y contraseñas fuertes.', location: 'Santiago' },
+  { id: 28, username: 'olivia', display_name: 'Olivia Duarte', iniciales: 'OD', color: ['#ef4444', '#f59e0b'], bio: 'Cocina de mercado.', location: 'Lima' },
+  { id: 29, username: 'pablo', display_name: 'Pablo Serrano', iniciales: 'PS', color: ['#3b82f6', '#8b5cf6'], bio: 'Fotografía de noche.', location: 'Quito' },
+  { id: 30, username: 'queralt', display_name: 'Queralt Soler', iniciales: 'QS', color: ['#14b8a6', '#6366f1'], bio: 'Accesibilidad y tipografía.', location: 'Barcelona' },
+  { id: 31, username: 'ramiro', display_name: 'Ramiro Ayala', iniciales: 'RA', color: ['#f97316', '#ec4899'], bio: 'Deporte y comunidad.', location: 'Bogotá' },
+  { id: 32, username: 'sofia', display_name: 'Sofía Márquez', iniciales: 'SM', color: ['#6366f1', '#ec4899'], bio: 'Bosquejos y prototipos rápidos.', location: 'Maracaibo' },
+  { id: 33, username: 'tomas', display_name: 'Tomás Herrera', iniciales: 'TH', color: ['#0ea5e9', '#14b8a6'], bio: 'Servidores pequeños y baratos.', location: 'Cali' },
+  { id: 34, username: 'ursula', display_name: 'Úrsula Peña', iniciales: 'UP', color: ['#8b5cf6', '#06b6d4'], bio: 'Textos claros, sin relleno.', location: 'Madrid' },
+  { id: 35, username: 'valentina', display_name: 'Valentina Ruiz', iniciales: 'VR', color: ['#f59e0b', '#8b5cf6'], bio: 'Cerámica y fotos de taller.', location: 'Valencia' },
+  { id: 36, username: 'wenceslao', display_name: 'Wenceslao Gil', iniciales: 'WG', color: ['#22c55e', '#0ea5e9'], bio: 'Bicicletas y ciudad.', location: 'Caracas' },
+  { id: 37, username: 'ximena', display_name: 'Ximena Cortés', iniciales: 'XC', color: ['#ec4899', '#f97316'], bio: 'Podcast sobre oficios.', location: 'Mérida' },
+  { id: 38, username: 'yamil', display_name: 'Yamil Rondón', iniciales: 'YR', color: ['#4f46e5', '#22c55e'], bio: 'Soporte y paciencia.', location: 'Maracay' },
+  { id: 39, username: 'zoe', display_name: 'Zoe Alarcón', iniciales: 'ZA', color: ['#06b6d4', '#8b5cf6'], bio: 'Dibujo urbano al mediodía.', location: 'San Cristóbal' },
+  { id: 40, username: 'adrian', display_name: 'Adrián Nava', iniciales: 'AN', color: ['#ef4444', '#6366f1'], bio: 'Café, código y madrugadas.', location: 'Barquisimeto' },
+  { id: 41, username: 'brigitte', display_name: 'Brigitte Salas', iniciales: 'BS', color: ['#14b8a6', '#4f46e5'], bio: 'Traducción y matices.', location: 'Puerto Ordaz' },
+];
+for (const r of RELLENO) {
+  perfiles.set(r.id, {
+    id: r.id,
+    username: r.username,
+    display_name: r.display_name,
+    avatar_url: retrato(r.iniciales, r.color[0], r.color[1]),
+    cover_url: '',
+    bio: r.bio,
+    location: r.location,
+    created_at: '2025-02-14T12:00:00.000Z',
+    is_verified: false,
+    is_private: false,
+    is_following: false,
+    is_blocked: false,
+    followers_count: 0,
+    following_count: 0,
+    posts_count: 4,
+  });
+}
+
+// Quién sigue a quién, para que las listas de seguidores y seguidos tengan sentido.
+const ALICE_SIGO = [2, 3, 20, 21, 22, 24, 25, 26, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41];
+const ALICE_SIGUEN = [2, 3, 4, 5, 20, 21, 23, 25, 27, 28, 29, 30, 31, 32, 33, 35, 36, 38, 40, 41];
+const relaciones = new Map([
+  [1, { sigo: ALICE_SIGO, meSiguen: ALICE_SIGUEN }],
+  [2, { sigo: [1, 3, 29, 30], meSiguen: [1, 3, 4, 20, 31] }],
+  [3, { sigo: [1, 25], meSiguen: [1, 2, 21, 26] }],
+  [4, { sigo: [5, 28], meSiguen: [1, 2, 23, 31] }],
+  [5, { sigo: [2, 26], meSiguen: [1, 3, 4, 27] }],
+]);
+// Cada persona de relleno sigue (y es seguida) según las dos listas de arriba.
+for (const r of RELLENO) {
+  relaciones.set(r.id, {
+    sigo: ALICE_SIGUEN.includes(r.id) ? [1] : [],
+    meSiguen: ALICE_SIGO.includes(r.id) ? [1] : [],
+  });
+}
+
+// Los números del perfil salen de estas listas: si dice 20 seguidores, hay 20.
+function ajustarContadores() {
+  for (const [id, rel] of relaciones) {
+    const perfil = perfiles.get(id);
+    if (perfil) {
+      perfil.followers_count = rel.meSiguen.length;
+      perfil.following_count = rel.sigo.length;
+    }
+    if (id === 1) {
+      USUARIO.followers_count = rel.meSiguen.length;
+      USUARIO.following_count = rel.sigo.length;
+    }
+  }
+}
+ajustarContadores();
+
+function relacionesDe(id) {
+  if (!relaciones.has(id)) relaciones.set(id, { sigo: [], meSiguen: [] });
+  return relaciones.get(id);
+}
+
+// Gente que quiere seguirme (cuenta privada) y búsquedas recientes.
+const solicitudes = [
+  { id: 61, de: 4, creada: 95 },
+  { id: 62, de: 2, creada: 640 },
+];
+// Lo que yo pedí para entrar a una cuenta privada (todavía sin respuesta).
+const enviadas = [];
+const busquedas = [
+  { id: 71, termino: 'rendimiento web', tipo: 'posts', creada: 40 },
+  { id: 72, termino: 'carla', tipo: 'users', creada: 320 },
+  { id: 73, termino: 'fotografia', tipo: 'tags', creada: 900 },
+];
+const etiquetasSeguidas = new Set(['diseno', 'fotografia']);
+
+// Ajustes que viven en el servidor (aquí solo en memoria).
+const ajustes = {
+  idioma: 'es',
+  tema_auto: false,
+  tema_desde: '20:00',
+  tema_hasta: '07:00',
+  ahorro_datos: false,
+  avisos_tipos: {
+    me_gusta: true, comentarios: true, seguidores: true, menciones: true,
+    mensajes: true, grupos: true, eventos: true, solicitudes: true,
+  },
+  bloqueo_activo: false,
+  tiene_pin: false,
+};
+let pinDemo = '';
+
+/** Ficha corta de una persona para las listas (con su estado de seguimiento). */
+function fichaGente(perfil, yoId) {
+  return {
+    ...perfil,
+    le_sigo: relacionesDe(yoId).sigo.includes(perfil.id),
+    soy_yo: perfil.id === yoId,
+  };
+}
 
 // ---------- Respuestas ----------
 
@@ -555,6 +680,15 @@ export function responder(metodo, ruta, cuerpo) {
   }
 
   // ---- Publicaciones ----
+  if (a === 'feed' && b === 'etiquetas') {
+    const sinAcentos = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const mias = publicaciones.filter((p) => !p.borrada).filter((p) => {
+      const texto = sinAcentos(p.texto);
+      return [...etiquetasSeguidas].some((t) => texto.includes(`#${sinAcentos(t)}`));
+    });
+    return json({ items: mias.map(publicacionJSON), total: mias.length, etiquetas: [...etiquetasSeguidas] });
+  }
+
   if (a === 'feed') {
     const tipo = q.get('tipo') || '';
     const lista = publicaciones.filter((p) => !p.borrada).filter((p) => {
@@ -873,6 +1007,171 @@ export function responder(metodo, ruta, cuerpo) {
     return json(paginado(guardadas.map(publicacionJSON), ruta));
   }
 
+  // ---- Tanda 4: perfil completo ----
+  if (a === 'me' && b === 'solicitudes') {
+    if (metodo === 'GET') {
+      return json({
+        solicitudes: solicitudes.map((s) => ({
+          ...fichaGente(perfiles.get(s.de), USUARIO.id),
+          solicitud_id: s.id,
+          created_at: hace(s.creada),
+        })),
+      });
+    }
+    if (metodo === 'DELETE') {
+      const i = solicitudes.findIndex((s) => s.id === Number(c));
+      if (i >= 0) solicitudes.splice(i, 1);
+      return json({ ok: true });
+    }
+    if (metodo === 'POST') {
+      const s = solicitudes.find((x) => x.id === Number(c));
+      if (!s) return json({ error: 'Esa solicitud no existe' }, 404);
+      if (cuerpo?.aceptar !== false) {
+        const suyo = relacionesDe(s.de).sigo;
+        const mio = relacionesDe(USUARIO.id).meSiguen;
+        if (!suyo.includes(USUARIO.id)) suyo.push(USUARIO.id);
+        if (!mio.includes(s.de)) mio.push(s.de);
+        const perfil = perfiles.get(s.de);
+        perfil.is_following = true;
+        perfil.followers_count += 1;
+        USUARIO.followers_count += 1;
+      }
+      solicitudes.splice(solicitudes.indexOf(s), 1);
+      const perfil = perfiles.get(s.de);
+      perfil.solicitud_enviada = false;
+      return json({ ok: true, aceptada: cuerpo?.aceptar !== false });
+    }
+  }
+
+  if (a === 'me' && b === 'likes') {
+    const items = publicaciones.filter((p) => p.meGusta && !p.borrada).map(publicacionJSON);
+    return json({ items, total: items.length, page: 1, limit: items.length || 20 });
+  }
+
+  if (a === 'me' && b === 'comments') {
+    const mios = [];
+    for (const [postId, lista] of Object.entries(comentarios)) {
+      const post = publicaciones.find((p) => String(p.id) === String(postId));
+      const autor = post ? perfiles.get(post.autor) : null;
+      for (const cm of lista) {
+        if (cm.autor !== USUARIO.id) continue;
+        mios.push({
+          id: cm.id,
+          content: cm.texto,
+          created_at: hace(cm.creada),
+          post_id: Number(postId),
+          post_content: post ? post.texto : '',
+          post_autor: autor ? autor.username : '',
+          post_display_name: autor ? autor.display_name : '',
+          post_avatar_url: autor ? autor.avatar_url : '',
+          likes_count: Object.values(cm.reacciones || {}).reduce((n, v) => n + v, 0),
+        });
+      }
+    }
+    mios.sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
+    return json({ items: mios, total: mios.length, page: 1, limit: 20 });
+  }
+
+  if (a === 'me' && b === 'busquedas') {
+    if (metodo === 'POST') {
+      const termino = String(cuerpo?.termino || '').trim();
+      if (!termino) return json({ error: 'Escribe algo para buscar' }, 400);
+      const repetida = busquedas.find((x) => x.termino === termino);
+      if (repetida) busquedas.splice(busquedas.indexOf(repetida), 1);
+      busquedas.unshift({ id: ++siguienteId, termino, tipo: cuerpo?.tipo || 'users', creada: 0 });
+      return json({ ok: true, busquedas: busquedas.map((x) => ({ ...x, created_at: hace(x.creada) })) });
+    }
+    if (metodo === 'DELETE') {
+      if (c) {
+        const i = busquedas.findIndex((x) => x.id === Number(c));
+        if (i >= 0) busquedas.splice(i, 1);
+      } else {
+        busquedas.length = 0;
+      }
+      return json({ ok: true });
+    }
+    return json({ busquedas: busquedas.map((x) => ({ ...x, created_at: hace(x.creada) })) });
+  }
+
+  if (a === 'me' && b === 'hashtags') {
+    return json({
+      hashtags: [...etiquetasSeguidas].map((tag, i) => ({
+        tag,
+        posts_count: 128 - i * 46,
+        desde: hace(200 + i * 300),
+      })),
+    });
+  }
+
+  if (a === 'me' && b === 'ajustes') {
+    if (c === 'pin') {
+      if (d === 'verificar') {
+        if (!ajustes.tiene_pin) return json({ ok: true, correcto: true, tiene_pin: false });
+        if (String(cuerpo?.pin || '') !== pinDemo) return json({ error: 'PIN incorrecto' }, 403);
+        return json({ ok: true, correcto: true, tiene_pin: true });
+      }
+      if (d === 'activar') {
+        ajustes.bloqueo_activo = cuerpo?.activo !== false;
+        return json({ ok: true, bloqueo_activo: ajustes.bloqueo_activo });
+      }
+      const pin = String(cuerpo?.pin || '');
+      if (pin && !/^\d{4,8}$/.test(pin)) return json({ error: 'El PIN son de 4 a 8 números' }, 400);
+      if (!pin) {
+        pinDemo = '';
+        ajustes.tiene_pin = false;
+        ajustes.bloqueo_activo = false;
+        return json({ ok: true, tiene_pin: false, bloqueo_activo: false });
+      }
+      if (ajustes.tiene_pin && String(cuerpo?.pin_actual || '') !== pinDemo) {
+        return json({ error: 'El PIN actual no es ese' }, 403);
+      }
+      pinDemo = pin;
+      ajustes.tiene_pin = true;
+      ajustes.bloqueo_activo = true;
+      return json({ ok: true, tiene_pin: true, bloqueo_activo: true });
+    }
+    if (metodo === 'PATCH' && cuerpo) {
+      const b2 = cuerpo;
+      if (['es', 'en', 'pt'].includes(b2.idioma)) ajustes.idioma = b2.idioma;
+      if (typeof b2.tema_auto === 'boolean') ajustes.tema_auto = b2.tema_auto;
+      if (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b2.tema_desde || ''))) ajustes.tema_desde = b2.tema_desde;
+      if (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b2.tema_hasta || ''))) ajustes.tema_hasta = b2.tema_hasta;
+      if (typeof b2.ahorro_datos === 'boolean') ajustes.ahorro_datos = b2.ahorro_datos;
+      if (b2.avisos_tipos && typeof b2.avisos_tipos === 'object') {
+        ajustes.avisos_tipos = { ...ajustes.avisos_tipos, ...b2.avisos_tipos };
+      }
+    }
+    return json({ ...ajustes });
+  }
+
+  if (a === 'me' && b === 'exportar') {
+    const mias = publicaciones.filter((p) => p.autor === USUARIO.id && !p.borrada);
+    const mios = [];
+    for (const [postId, lista] of Object.entries(comentarios)) {
+      for (const cm of lista) if (cm.autor === USUARIO.id) mios.push({ id: cm.id, post_id: Number(postId), content: cm.texto });
+    }
+    return json({
+      aplicacion: 'Moon',
+      exportado: new Date().toISOString(),
+      perfil: { ...USUARIO, password_hash: undefined },
+      publicaciones: mias.map((p) => ({ id: p.id, content: p.texto, created_at: hace(p.creada) })),
+      comentarios: mios,
+      mensajes: conversaciones.flatMap((cv) => cv.mensajes
+        .filter((m) => m.de === USUARIO.id)
+        .map((m) => ({ id: m.id, conversation_id: cv.id, content: m.texto, created_at: hace(m.creada) }))),
+      grupos: [{ id: grupoDemo.id, name: grupoDemo.name, privacy: grupoDemo.privacy, role: 'owner' }],
+      me_gusta: publicaciones.filter((p) => p.meGusta).map((p) => ({ post_id: p.id, created_at: hace(p.creada) })),
+      seguidores: relacionesDe(USUARIO.id).meSiguen.map((id) => perfiles.get(id)?.username).filter(Boolean),
+      siguiendo: relacionesDe(USUARIO.id).sigo.map((id) => perfiles.get(id)?.username).filter(Boolean),
+      etiquetas: [...etiquetasSeguidas],
+      ajustes: { ...ajustes },
+    });
+  }
+
+  if (a === 'me' && b === 'enviadas') {
+    return json({ enviadas: enviadas.map((id) => perfiles.get(id)?.username).filter(Boolean) });
+  }
+
   // ---- Personas ----
   if (a === 'users') {
     if (b === 'suggestions') {
@@ -887,27 +1186,78 @@ export function responder(metodo, ruta, cuerpo) {
       );
     }
 
-    const perfil = perfiles.get(Number(b));
+    const uid = Number(b);
+    if (c === 'followers' || c === 'following') {
+      const ids = c === 'followers' ? relacionesDe(uid).meSiguen : relacionesDe(uid).sigo;
+      const items = ids
+        .map((x) => perfiles.get(x))
+        .filter(Boolean)
+        .map((u) => fichaGente(u, USUARIO.id));
+      return json({ total: items.length, items });
+    }
+
+    const perfil = perfiles.get(uid);
     if (!perfil) return json({ error: 'Usuario no encontrado' }, 404);
     if (c === 'posts') {
       const suyas = publicaciones.filter((p) => p.autor === perfil.id && !p.borrada).sort((x, y) => x.creada - y.creada);
       return json(paginado(suyas.map(publicacionJSON), ruta));
     }
     if (c === 'follow') {
+      // Cuenta privada: no se entra, se pide permiso.
+      if (perfil.is_private && perfil.id !== USUARIO.id) {
+        if (metodo === 'DELETE') {
+          const i = enviadas.findIndex((x) => x === perfil.id);
+          if (i >= 0) enviadas.splice(i, 1);
+          perfil.solicitud_enviada = false;
+          return json({ ok: true, is_following: false, solicitado: false });
+        }
+        perfil.solicitud_enviada = true;
+        if (!enviadas.includes(perfil.id)) enviadas.push(perfil.id);
+        return json({ ok: true, is_following: false, solicitado: true, privada: true });
+      }
+      const dentro = relacionesDe(perfil.id).meSiguen.includes(USUARIO.id);
+      if (metodo === 'POST' && !dentro) {
+        relacionesDe(perfil.id).meSiguen.push(USUARIO.id);
+        if (!relacionesDe(USUARIO.id).sigo.includes(perfil.id)) relacionesDe(USUARIO.id).sigo.push(perfil.id);
+        perfil.followers_count += 1;
+        USUARIO.following_count += 1;
+      } else if (metodo === 'DELETE') {
+        relacionesDe(perfil.id).meSiguen = relacionesDe(perfil.id).meSiguen.filter((x) => x !== USUARIO.id);
+        relacionesDe(USUARIO.id).sigo = relacionesDe(USUARIO.id).sigo.filter((x) => x !== perfil.id);
+        perfil.followers_count = Math.max(0, perfil.followers_count - 1);
+        USUARIO.following_count = Math.max(0, USUARIO.following_count - 1);
+      }
       perfil.is_following = metodo === 'POST';
-      perfil.followers_count += metodo === 'POST' ? 1 : -1;
-      return json({ ok: true, is_following: perfil.is_following });
+      return json({ ok: true, is_following: perfil.is_following, solicitado: false });
     }
     if (c === 'block') {
       perfil.is_blocked = metodo === 'POST';
       return json({ ok: true, is_blocked: perfil.is_blocked });
     }
-    return json(perfil);
+    // Perfil privado sin permiso: se enseña quién es y nada más.
+    if (perfil.is_private && perfil.id !== USUARIO.id && !perfil.is_following) {
+      return json({
+        ...perfil,
+        posts_count: 0,
+        is_private: true,
+        is_following: false,
+        solicitud_enviada: !!perfil.solicitud_enviada,
+      });
+    }
+    return json({ ...perfil, solicitud_enviada: false });
   }
 
   if (a === 'search') {
     const texto = (q.get('q') || '').toLowerCase();
     const tipo = q.get('type') || 'users';
+    // Lo buscado queda en el historial (se puede borrar desde Ajustes → Datos).
+    if (texto.trim().length >= 2 && q.get('historial') !== '0') {
+      const termino = (q.get('q') || '').trim();
+      const repetida = busquedas.find((x) => x.termino === termino);
+      if (repetida) busquedas.splice(busquedas.indexOf(repetida), 1);
+      busquedas.unshift({ id: ++siguienteId, termino, tipo, creada: 0 });
+      if (busquedas.length > 40) busquedas.length = 40;
+    }
     if (tipo === 'posts') {
       const elegidas = publicaciones.filter((p) => !p.borrada && (p.texto.toLowerCase().includes(texto) || !texto));
       const orden = q.get('orden') === 'populares'
@@ -935,7 +1285,17 @@ export function responder(metodo, ruta, cuerpo) {
     );
   }
 
-  // ---- Tendencias ----
+  // ---- Tendencias y etiquetas seguidas ----
+  if (a === 'hashtags' && c === 'follow') {
+    const tag = String(b || '').toLowerCase();
+    if (metodo === 'DELETE') {
+      etiquetasSeguidas.delete(tag);
+      return json({ ok: true, tag, siguiendo: false });
+    }
+    etiquetasSeguidas.add(tag);
+    return json({ ok: true, tag, siguiendo: true });
+  }
+
   if (a === 'hashtags') {
     return json([
       { tag: 'diseno', posts_count: 128, last_used_at: hace(6) },

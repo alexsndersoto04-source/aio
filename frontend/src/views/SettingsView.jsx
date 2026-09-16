@@ -22,7 +22,8 @@ import {
   IconTrash, IconUser, IconShield, IconBell, IconLayers, IconLock, IconSettings,
   IconCheck, IconAlert, IconWarning, IconInfo, IconSun, IconMoon, IconRefresh,
   IconGrid, IconCamera, IconAt, IconMapPin, IconLink, IconEye, IconBan, IconSpark,
-  IconMail, IconComment, IconUsers, IconSearch,
+  IconMail, IconComment, IconUsers, IconSearch, IconTrend,
+  IconClock, IconGlobe, IconImage,
 } from '../components/Icons.jsx';
 import { toast, confirmar, avisoError } from '../ui.js';
 import { soportaAvisos, activarAvisos, desactivarAvisos, estadoAvisos, esIOS, instalada } from '../push.js';
@@ -132,6 +133,14 @@ export default function SettingsView({ tab }) {
   const [sessions, setSessions] = useState([]);
   const [twofa, setTwofa] = useState({ step: null, temp_token: '', code: '', password: '' });
 
+  // Tanda 4: ajustes que viven en el servidor (idioma, oscuro por horario,
+  // ahorro de datos, filtros de avisos y PIN de entrada).
+  const [aj, setAj] = useState(null);
+  const [pin, setPin] = useState({ nuevo: '', actual: '' });
+  const [pinMsg, setPinMsg] = useState('');
+  const [historial, setHistorial] = useState([]);
+  const [misTags, setMisTags] = useState([]);
+
   // Acerca de
   const [salud, setSalud] = useState(null);
 
@@ -198,10 +207,18 @@ export default function SettingsView({ tab }) {
     api.get('/api/me/blocked').then(setBloqueados).catch(() => setBloqueados([]));
     api.get('/api/health').then(setSalud).catch(() => setSalud(null));
     api.get('/api/me/resumen').then(setUso).catch(() => setUso(null));
+    api.get('/api/me/ajustes').then(setAj).catch(() => setAj(null));
+    api.get('/api/me/busquedas').then((r) => setHistorial(r?.busquedas || [])).catch(() => setHistorial([]));
+    api.get('/api/me/hashtags').then((r) => setMisTags(r?.hashtags || [])).catch(() => setMisTags([]));
     refrescarPush();
   }, []);
 
   useEffect(() => { if (user) setMe(user); }, [user]);
+
+  // Si se llega a otra sección por el enlace (Ajustes → Seguridad), se cambia sola.
+  useEffect(() => {
+    if (tab && SECCIONES.some((s) => s.id === tab)) setSection(tab);
+  }, [tab]);
 
   /** Guarda una opción avanzada y refresca la vista. */
   function guardarOpc(clave, valor) {
@@ -363,18 +380,65 @@ export default function SettingsView({ tab }) {
     } catch (err) { flash('err', err.message); }
   }
 
-  async function exportData() {
+  /** Guarda un ajuste del servidor: se ve al instante y viaja a tu cuenta. */
+  async function guardarAjuste(cambio) {
+    const antes = aj;
+    setAj({ ...(aj || {}), ...cambio });
     try {
-      const res = await fetch(`${API_URL}/api/auth/export`, { headers: { Authorization: `Bearer ${getAccessToken()}` } });
-      const blob = await res.blob();
+      const res = await api.patch('/api/me/ajustes', cambio);
+      setAj(res);
+    } catch (e) {
+      setAj(antes);
+      avisoError(e);
+    }
+  }
+
+  /** Pon, cambia o quita el PIN con el que se abre Moon en este teléfono. */
+  async function guardarPin(e) {
+    e.preventDefault();
+    setPinMsg('');
+    const pinLimpio = pin.nuevo.trim();
+    if (pinLimpio && !/^\d{4,8}$/.test(pinLimpio)) {
+      setPinMsg('El PIN son de 4 a 8 números.');
+      return;
+    }
+    try {
+      const res = await api.post('/api/me/ajustes/pin', { pin: pinLimpio, pin_actual: pin.actual.trim() });
+      setAj({ ...(aj || {}), tiene_pin: res.tiene_pin, bloqueo_activo: res.bloqueo_activo });
+      setPin({ nuevo: '', actual: '' });
+      flash('ok', pinLimpio ? 'PIN guardado: Moon te lo pedirá al abrir' : 'PIN quitado');
+    } catch (err) {
+      setPinMsg(err.message || 'No se pudo guardar el PIN');
+    }
+  }
+
+  /** Exporta todo lo mío en un archivo que puedo abrir y guardar. */
+  async function exportarTodo() {
+    try {
+      const datos = await api.get('/api/me/exportar');
+      const blob = new Blob([JSON.stringify(datos, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'moon-export.json';
+      a.download = `moon-mis-datos-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
       a.click();
+      a.remove();
       URL.revokeObjectURL(url);
-    } catch (e) { flash('err', 'No se pudo exportar'); }
+      flash('ok', 'Copia descargada: perfil, publicaciones, comentarios, mensajes y ajustes.');
+    } catch (e) { flash('err', e.message || 'No se pudieron exportar tus datos'); }
   }
+
+  async function borrarTodoElHistorial() {
+    try {
+      await api.del('/api/me/busquedas');
+      setHistorial([]);
+      flash('ok', 'Historial de búsqueda borrado');
+    } catch (e) { avisoError(e); }
+  }
+
+  /** Se mantiene el nombre viejo para el botón de siempre. */
+  async function exportData() { return exportarTodo(); }
 
   async function deleteAccount(e) {
     e.preventDefault();
@@ -701,6 +765,33 @@ export default function SettingsView({ tab }) {
           </div>
 
           <div className="card ajustes-bloque">
+            <div className="titulo">Filtros finos de lo que ves aquí</div>
+            <p className="muted small" style={{ margin: '0 12px 8px' }}>
+              Los avisos de arriba deciden si te enteramos. Estos deciden qué aparece en la
+              pantalla de avisos: apaga los que no quieras ver ni ahí.
+            </p>
+            {[
+              ['me_gusta', 'Me gusta', 'Reacciones a tus publicaciones.'],
+              ['comentarios', 'Comentarios y respuestas', 'Cuando comentan o te responden.'],
+              ['seguidores', 'Seguidores', 'Quién te empieza a seguir.'],
+              ['menciones', 'Menciones', 'Cuando te nombran con @.'],
+              ['mensajes', 'Mensajes', 'Avisos de conversaciones.'],
+              ['grupos', 'Grupos y eventos', 'Lo que pasa en tus grupos.'],
+              ['solicitudes', 'Solicitudes de permiso', 'Cuentas privadas que piden seguirte.'],
+            ].map(([clave, titulo, texto]) => (
+              <div className="fila-ajuste" key={clave}>
+                <span className="icono"><IconBell /></span>
+                <span className="texto"><b>{titulo}</b><small>{texto}</small></span>
+                <Interruptor
+                  activo={(aj?.avisos_tipos || {})[clave] !== false}
+                  onChange={(v) => guardarAjuste({ avisos_tipos: { ...(aj?.avisos_tipos || {}), [clave]: v } })}
+                  etiqueta={titulo}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="card ajustes-bloque">
             <div className="titulo">En este dispositivo</div>
             <div className="fila-ajuste">
               <span className="icono"><IconSpark /></span>
@@ -754,6 +845,72 @@ export default function SettingsView({ tab }) {
           </div>
 
           <div className="card ajustes-bloque">
+            <div className="titulo">Idioma, horario y datos</div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconGlobe /></span>
+              <span className="texto">
+                <b>Idioma</b>
+                <small>El que prefieres para Moon. Se guarda en tu cuenta.</small>
+              </span>
+              <Opciones
+                etiqueta="Idioma"
+                valor={aj?.idioma || 'es'}
+                onChange={(v) => guardarAjuste({ idioma: v })}
+                opciones={[{ id: 'es', label: 'Español' }, { id: 'en', label: 'English' }, { id: 'pt', label: 'Português' }]}
+              />
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconMoon /></span>
+              <span className="texto">
+                <b>Oscuro por horario</b>
+                <small>De noche cambia sola al tema oscuro y de día vuelve al claro.</small>
+              </span>
+              <Interruptor
+                activo={!!aj?.tema_auto}
+                onChange={(v) => guardarAjuste({ tema_auto: v })}
+                etiqueta="Oscuro por horario"
+              />
+            </div>
+            {aj?.tema_auto ? (
+              <div className="fila-ajuste fila-horario">
+                <span className="icono"><IconClock /></span>
+                <span className="texto"><b>Desde y hasta</b><small>Fuera de ese rango se ve el tema claro.</small></span>
+                <div className="horas">
+                  <input
+                    type="time"
+                    className="input hora-input"
+                    aria-label="Oscuro desde"
+                    value={aj?.tema_desde || '20:00'}
+                    onChange={(e) => setAj({ ...aj, tema_desde: e.target.value })}
+                    onBlur={(e) => guardarAjuste({ tema_desde: e.target.value })}
+                  />
+                  <span className="muted">a</span>
+                  <input
+                    type="time"
+                    className="input hora-input"
+                    aria-label="Oscuro hasta"
+                    value={aj?.tema_hasta || '07:00'}
+                    onChange={(e) => setAj({ ...aj, tema_hasta: e.target.value })}
+                    onBlur={(e) => guardarAjuste({ tema_hasta: e.target.value })}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <div className="fila-ajuste">
+              <span className="icono"><IconImage /></span>
+              <span className="texto">
+                <b>Ahorro de datos</b>
+                <small>Baja la calidad de las fotos y no carga videos solos.</small>
+              </span>
+              <Interruptor
+                activo={!!aj?.ahorro_datos}
+                onChange={(v) => guardarAjuste({ ahorro_datos: v })}
+                etiqueta="Ahorro de datos"
+              />
+            </div>
+          </div>
+
+          <div className="card ajustes-bloque">
             <div className="titulo">Vista previa</div>
             <div style={{ padding: '4px 12px 12px' }}>
               <div className="pill pill-aurora" style={{ marginBottom: 8 }}>Así se ve el acento de Moon</div>
@@ -774,6 +931,91 @@ export default function SettingsView({ tab }) {
       {/* ---------------- SEGURIDAD ---------------- */}
       {section === 'seguridad' ? (
         <>
+          <div className="card ajustes-bloque">
+            <div className="titulo">PIN para abrir Moon</div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconLock /></span>
+              <span className="texto">
+                <b>{aj?.tiene_pin ? 'PIN puesto' : 'Sin PIN'}</b>
+                <small>
+                  {aj?.tiene_pin
+                    ? 'Además de tu contraseña, Moon pide este PIN para abrir la aplicación.'
+                    : 'Un PIN de 4 a 8 números para que nadie entre si te prestan el teléfono.'}
+                </small>
+              </span>
+              <span className={`pill ${aj?.tiene_pin ? 'pill-viva' : ''}`}>
+                {aj?.tiene_pin ? (aj?.bloqueo_activo ? 'Activo' : 'Guardado') : 'Apagado'}
+              </span>
+            </div>
+            <form onSubmit={guardarPin} className="pin-form" style={{ padding: '0 12px 12px' }}>
+              <div className="field">
+                <label>{aj?.tiene_pin ? 'Nuevo PIN (déjalo vacío para quitarlo)' : 'Elige tu PIN (4 a 8 números)'}</label>
+                <input
+                  className="input pin-campo"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  maxLength={8}
+                  placeholder="••••"
+                  value={pin.nuevo}
+                  onChange={(e) => setPin({ ...pin, nuevo: e.target.value.replace(/\D/g, '') })}
+                />
+              </div>
+              {aj?.tiene_pin ? (
+                <div className="field">
+                  <label>PIN actual</label>
+                  <input
+                    className="input pin-campo"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={8}
+                    placeholder="••••"
+                    value={pin.actual}
+                    onChange={(e) => setPin({ ...pin, actual: e.target.value.replace(/\D/g, '') })}
+                  />
+                </div>
+              ) : null}
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-primary btn-sm">{aj?.tiene_pin ? 'Cambiar el PIN' : 'Poner el PIN'}</button>
+                {aj?.tiene_pin ? (
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={async () => {
+                      try {
+                        await api.post('/api/me/ajustes/pin', { pin: '', pin_actual: pin.actual.trim() });
+                        setAj({ ...(aj || {}), tiene_pin: false, bloqueo_activo: false });
+                        setPin({ nuevo: '', actual: '' });
+                        flash('ok', 'PIN quitado');
+                      } catch (err) { setPinMsg(err.message || 'No se pudo quitar el PIN'); }
+                    }}
+                  >
+                    Quitar el PIN
+                  </button>
+                ) : null}
+              </div>
+              {pinMsg ? <p className="error-nota">{pinMsg}</p> : null}
+            </form>
+            {aj?.tiene_pin ? (
+              <div className="fila-ajuste">
+                <span className="icono"><IconShield /></span>
+                <span className="texto">
+                  <b>Pedir el PIN al abrir</b>
+                  <small>Si lo apagas, el PIN queda guardado pero Moon no lo pide.</small>
+                </span>
+                <Interruptor
+                  activo={!!aj?.bloqueo_activo}
+                  onChange={async (v) => {
+                    try {
+                      const r = await api.post('/api/me/ajustes/pin/activar', { activo: v });
+                      setAj({ ...(aj || {}), bloqueo_activo: r.bloqueo_activo });
+                    } catch (e) { avisoError(e); }
+                  }}
+                  etiqueta="Pedir el PIN al abrir"
+                />
+              </div>
+            ) : null}
+          </div>
+
           <div className="card ajustes-bloque">
             <div className="titulo">Contraseña</div>
             <form onSubmit={changePassword} style={{ padding: '0 12px 12px' }}>
@@ -1090,9 +1332,35 @@ export default function SettingsView({ tab }) {
               <span className="icono"><IconLayers /></span>
               <span className="texto">
                 <b>Exportar mis datos</b>
-                <small>Descarga un archivo con tu perfil, publicaciones, comentarios, reacciones y mensajes.</small>
+                <small>Descarga un archivo con tu perfil, publicaciones, comentarios, mensajes, me gusta, seguidores y ajustes.</small>
               </span>
-              <button className="btn btn-outline btn-sm" onClick={exportData}>Exportar</button>
+              <button className="btn btn-outline btn-sm" onClick={exportarTodo}>Descargar copia</button>
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconSearch /></span>
+              <span className="texto">
+                <b>Historial de búsqueda</b>
+                <small>
+                  {historial.length === 0
+                    ? 'No hay búsquedas guardadas.'
+                    : `${historial.length} ${historial.length === 1 ? 'búsqueda guardada' : 'búsquedas guardadas'}: ${historial.slice(0, 3).map((b) => b.termino).join(' · ')}`}
+                </small>
+              </span>
+              <button className="btn btn-outline btn-sm" disabled={historial.length === 0} onClick={borrarTodoElHistorial}>
+                Borrar historial
+              </button>
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconTrend /></span>
+              <span className="texto">
+                <b>Etiquetas que sigo</b>
+                <small>
+                  {misTags.length === 0
+                    ? 'No sigues ninguna etiqueta todavía.'
+                    : `${misTags.length} ${misTags.length === 1 ? 'etiqueta' : 'etiquetas'}: ${misTags.slice(0, 4).map((h) => `#${h.tag}`).join(' ')}`}
+                </small>
+              </span>
+              <a className="btn btn-outline btn-sm" href="#/explore">Ver en Explorar</a>
             </div>
             <div className="fila-ajuste">
               <span className="icono"><IconInfo /></span>

@@ -149,6 +149,27 @@ function contarPublicaciones(pool, where, args) {
     .then((r) => Number(r?.count || 0));
 }
 
+export function perfilPublico(u, { siguiendo = false, bloqueado = false } = {}) {
+    return {
+      id: Number(u.id),
+      username: u.username,
+      display_name: u.display_name || u.username,
+      avatar_url: u.avatar_url,
+      cover_url: u.cover_url,
+      bio: u.bio,
+      link: u.link,
+      location: u.location,
+      is_verified: !!u.is_verified,
+      is_private: !!u.is_private,
+      followers_count: Number(u.followers_count),
+      following_count: Number(u.following_count),
+      posts_count: Number(u.posts_count),
+      created_at: u.created_at ? String(u.created_at) : null,
+      is_following: !!siguiendo,
+      is_blocked: !!bloqueado,
+    };
+  }
+
 export function registrarRutasSocial(router) {
   // ---------- Inicio ----------
   /**
@@ -536,27 +557,6 @@ export function registrarRutasSocial(router) {
   });
 
   // ---------- Personas ----------
-  function perfilPublico(u, { siguiendo = false, bloqueado = false } = {}) {
-    return {
-      id: Number(u.id),
-      username: u.username,
-      display_name: u.display_name || u.username,
-      avatar_url: u.avatar_url,
-      cover_url: u.cover_url,
-      bio: u.bio,
-      link: u.link,
-      location: u.location,
-      is_verified: !!u.is_verified,
-      is_private: !!u.is_private,
-      followers_count: Number(u.followers_count),
-      following_count: Number(u.following_count),
-      posts_count: Number(u.posts_count),
-      created_at: u.created_at ? String(u.created_at) : null,
-      is_following: !!siguiendo,
-      is_blocked: !!bloqueado,
-    };
-  }
-
   router.get('/api/users/suggestions', async (c) => {
     const yo = await c.exigir();
     const filas = await c.pool.query(
@@ -586,7 +586,17 @@ export function registrarRutasSocial(router) {
     if (bloqueo) throw new ApiErr('No puedes ver este perfil', 403, 'blocked');
     const siguiendo = await uno(c.pool, 'SELECT 1 FROM follows WHERE follower_id = $1 AND following_id = $2', [yo.id, objetivo.id]);
     if (objetivo.is_private && !siguiendo && Number(objetivo.id) !== Number(yo.id)) {
-      return { ...perfilPublico(objetivo, { siguiendo: false }), posts_count: 0, is_private: true };
+      const pedida = await uno(
+        c.pool,
+        `SELECT 1 AS pedida FROM follow_requests WHERE solicitante_id = $1 AND destino_id = $2 AND estado = 'pendiente'`,
+        [yo.id, objetivo.id]
+      );
+      return {
+        ...perfilPublico(objetivo, { siguiendo: false }),
+        posts_count: 0,
+        is_private: true,
+        solicitud_enviada: !!pedida,
+      };
     }
     return perfilPublico(objetivo, { siguiendo: !!siguiendo });
   });
@@ -612,23 +622,39 @@ export function registrarRutasSocial(router) {
     );
   });
 
-  router.get('/api/users/:id/followers', async (c) => {
-    const yo = await c.exigir();
-    const filas = await c.pool.query(
-      `SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id
-        WHERE f.following_id = $1 ORDER BY f.created_at DESC LIMIT 100`,
-      [Number(c.params.id)]
-    );
-    void yo;
-    return filas.rows.map((u) => perfilPublico(u));
-  });
-
   router.post('/api/users/:id/follow', async (c) => {
     const yo = await c.exigir();
     const objetivo = Number(c.params.id);
     if (objetivo === Number(yo.id)) throw new ApiErr('No puedes seguirte a ti mismo', 400);
-    const existe = await uno(c.pool, 'SELECT id FROM users WHERE id = $1', [objetivo]);
+    const existe = await uno(c.pool, 'SELECT id, username, display_name, is_private FROM users WHERE id = $1', [objetivo]);
     if (!existe) throw new ApiErr('Usuario no encontrado', 404);
+
+    // Cuenta privada: no se entra por la puerta, se pide permiso.
+    if (existe.is_private) {
+      const ya = await uno(
+        c.pool,
+        `SELECT 1 AS ya FROM follows WHERE follower_id = $1 AND following_id = $2`,
+        [yo.id, objetivo]
+      );
+      if (ya) return { ok: true, is_following: true, solicitado: false };
+      const pedida = await uno(
+        c.pool,
+        `SELECT 1 AS pedida FROM follow_requests WHERE solicitante_id = $1 AND destino_id = $2 AND estado = 'pendiente'`,
+        [yo.id, objetivo]
+      );
+      if (!pedida) {
+        await c.pool.query(
+          'INSERT INTO follow_requests (solicitante_id, destino_id) VALUES ($1, $2)',
+          [yo.id, objetivo]
+        );
+        await notificar(c.pool, {
+          userId: objetivo, tipo: 'follow', deUserId: Number(yo.id),
+          contenido: 'quiere seguirte',
+        }).catch(() => {});
+      }
+      return { ok: true, is_following: false, solicitado: true, privada: true };
+    }
+
     const r = await c.pool.query('INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [yo.id, objetivo]);
     if (r.rowCount > 0) {
       await c.pool.query('UPDATE users SET following_count = following_count + 1 WHERE id = $1', [yo.id]);
@@ -642,6 +668,11 @@ export function registrarRutasSocial(router) {
   router.del('/api/users/:id/follow', async (c) => {
     const yo = await c.exigir();
     const objetivo = Number(c.params.id);
+    // Si había una solicitud esperando, se retira con el mismo gesto.
+    await c.pool.query(
+      `DELETE FROM follow_requests WHERE solicitante_id = $1 AND destino_id = $2 AND estado = 'pendiente'`,
+      [yo.id, objetivo]
+    );
     const r = await c.pool.query('DELETE FROM follows WHERE follower_id = $1 AND following_id = $2', [yo.id, objetivo]);
     if (r.rowCount > 0) {
       await c.pool.query('UPDATE users SET following_count = GREATEST(0, following_count - 1) WHERE id = $1', [yo.id]);
@@ -672,6 +703,13 @@ export function registrarRutasSocial(router) {
     const yo = await c.exigir();
     const consulta = texto(qs(c.req, 'q', ''), { min: 0, max: 80, campo: 'búsqueda' });
     const tipo = qs(c.req, 'type', 'users');
+    // Lo que se busca queda en el historial (se puede borrar desde Ajustes).
+    if (consulta && consulta.trim().length >= 2 && qs(c.req, 'historial', '1') !== '0') {
+      const termino = consulta.trim();
+      c.pool.query('DELETE FROM search_history WHERE user_id = $1 AND termino = $2', [yo.id, termino])
+        .then(() => c.pool.query('INSERT INTO search_history (user_id, termino, tipo) VALUES ($1, $2, $3)', [yo.id, termino, tipo]))
+        .catch(() => {});
+    }
     if (!consulta) return [];
 
     if (tipo === 'posts') {
