@@ -210,6 +210,7 @@ const conversaciones = [
     id: 1,
     partnerId: 3,
     noLeidos: 2,
+    fijado: 4,
     mensajes: [
       { id: 1, de: 3, texto: '¿Ya subiste la versión con el nuevo diseño?', creada: 90, estado: 'read' },
       { id: 2, de: 1, texto: 'Sí, acabo de terminarlo. Se siente mucho más limpio y ordenado.', creada: 86, estado: 'read' },
@@ -217,6 +218,9 @@ const conversaciones = [
       { id: 4, de: 3, texto: 'Cuando quieras lo reviso con calma y te dejo notas.', creada: 12, estado: 'delivered' },
       { id: 5, de: 3, texto: '', audio: 'VOZ', duracion: 2600, creada: 4, estado: 'delivered' },
       { id: 6, de: 1, texto: 'Sí: el oscuro quedó redondo. Ahí lo tienes.', creada: 3, estado: 'sent', respuestaA: 3 },
+      { id: 7, de: 1, texto: 'Mira la publicación del feed, te va a gustar:', creada: 2, estado: 'read', leidoHace: 1 },
+      { id: 8, de: 1, texto: '📎 Publicación compartida', creada: 2, estado: 'sent', post: 101 },
+      { id: 9, de: 3, texto: 'Justo eso quería ver. Muchas gracias 🙌', creada: 1, estado: 'delivered', editada: true },
     ],
   },
   {
@@ -280,6 +284,22 @@ export function emitirDemo(ev) {
   }
 }
 
+/** La tarjeta de una publicación compartida dentro del chat. */
+function tarjetaDePost(v) {
+  if (!v) return null;
+  if (typeof v === 'object') return v;
+  const p = publicaciones.find((x) => x.id === Number(v));
+  if (!p) return { id: Number(v), content: '', autor: '', username: '', imagen: '' };
+  const autor = perfiles.get(p.autor);
+  return {
+    id: p.id,
+    content: p.texto || '',
+    autor: (autor && autor.display_name) || '',
+    username: (autor && autor.username) || '',
+    imagen: (p.imagenes || [])[0] || '',
+  };
+}
+
 function mensajeJSON(c, m) {
   // Si el mensaje responde a otro, se manda su vista previa (quién y qué decía).
   const citado = m.respuestaA ? (c.mensajes || []).find((x) => x.id === m.respuestaA) : null;
@@ -294,8 +314,10 @@ function mensajeJSON(c, m) {
     duracion_ms: m.duracion || 0,
     created_at: hace(m.creada),
     status: m.estado || 'sent',
+    read_at: m.leidoHace !== undefined ? hace(m.leidoHace) : null,
     reaction: m.reaccion || null,
-    edited_at: null,
+    edited_at: m.editada ? hace(Math.max(0, m.creada)) : null,
+    post: tarjetaDePost(m.post),
     reply_to: citado
       ? {
         id: citado.id,
@@ -902,6 +924,7 @@ export function responder(metodo, ruta, cuerpo) {
           silenciada: !!conv.silenciada,
           archivada: !!conv.archivada,
           oculta: !!conv.oculta,
+          no_leida: !!conv.noLeida,
         };
       };
       let lista = conversaciones.map(fila);
@@ -914,6 +937,19 @@ export function responder(metodo, ruta, cuerpo) {
       const conv = conversaciones.find((x) => x.id === Number(c));
       if (!conv) return json({ error: 'Conversación no encontrada' }, 404);
       const socio = perfiles.get(conv.partnerId);
+
+      // Marcar la conversación como no leída
+      if (d === 'no-leida' && metodo === 'POST') {
+        conv.noLeida = cuerpo?.no === false ? false : true;
+        if (conv.noLeida) conv.noLeidos = Math.max(1, conv.noLeidos || 0);
+        return json({ ok: true, no_leida: conv.noLeida });
+      }
+
+      // Borrar la conversación (solo para mí)
+      if (!d && metodo === 'DELETE') {
+        conv.oculta = true;
+        return json({ ok: true });
+      }
 
       if (d === 'prefs' && metodo === 'POST') {
         if ('silenciada' in (cuerpo || {})) conv.silenciada = !!cuerpo.silenciada;
@@ -935,6 +971,8 @@ export function responder(metodo, ruta, cuerpo) {
           estado: 'sent',
           // Si se respondió citando, se guarda a quién (igual que el servidor real).
           respuestaA: Number(cuerpo?.reply_to_id) || undefined,
+          // Publicación compartida: se guarda a cuál (se arma al leer).
+          post: Number(cuerpo?.post_id) || null,
         };
         conv.mensajes.push(nuevo);
         // El contacto «responde» para que la demostración se sienta viva.
@@ -957,9 +995,40 @@ export function responder(metodo, ruta, cuerpo) {
         conversation_id: conv.id,
         partner: { id: socio.id, username: socio.username, display_name: socio.display_name, avatar_url: socio.avatar_url, is_verified: socio.is_verified },
         messages: conv.mensajes.map((m) => mensajeJSON(conv, m)),
+        pinned: conv.mensajes.find((m) => m.id === conv.fijado) ? mensajeJSON(conv, conv.mensajes.find((m) => m.id === conv.fijado)) : null,
         typing: false,
       });
     }
+    // Editar un mensaje enviado
+    if (b && !c && metodo === 'PATCH') {
+      const conv = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      const msg = conv?.mensajes.find((m) => m.id === Number(b));
+      if (!msg) return json({ error: 'Mensaje no encontrado' }, 404);
+      msg.texto = String(cuerpo?.content || msg.texto);
+      msg.editada = true;
+      return json(mensajeJSON(conv, msg));
+    }
+
+    // Reenviar a otra conversación
+    if (b && c === 'forward' && metodo === 'POST') {
+      const origen = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      const msg = origen?.mensajes.find((m) => m.id === Number(b));
+      const destino = conversaciones.find((x) => x.id === Number(cuerpo?.conversation_id));
+      if (!msg || !destino) return json({ error: 'No se pudo reenviar' }, 404);
+      const copia = { id: ++siguienteId, de: USUARIO.id, texto: msg.texto, audio: msg.audio || '', duracion: msg.duracion || 0, creada: 0, estado: 'sent', post: msg.post || null };
+      destino.mensajes.push(copia);
+      return json(mensajeJSON(destino, copia));
+    }
+
+    // Fijar (o soltar) un mensaje de la conversación
+    if (b && c === 'pin' && metodo === 'POST') {
+      const conv = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      if (!conv) return json({ error: 'Mensaje no encontrado' }, 404);
+      const fijar = Number(conv.fijado) !== Number(b);
+      conv.fijado = fijar ? Number(b) : null;
+      return json({ ok: true, fijado: fijar, message_id: conv.fijado });
+    }
+
     // Reacciones y borrado de mensajes
     if (b && c === 'react') {
       const conv = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));

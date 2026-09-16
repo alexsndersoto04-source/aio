@@ -18,7 +18,7 @@ import { ListSkeleton } from '../components/Skeleton.jsx';
 import {
   IconSend, IconSearch, IconChevronLeft, IconTrash, IconMail, IconCheck, IconAt,
   IconMore, IconBell, IconLayers, IconEye, IconComment, IconExplore, IconUsers,
-  IconResponder, IconX,
+  IconResponder, IconX, IconPin, IconEdit, IconLink,
 } from '../components/Icons.jsx';
 
 const REACCIONES = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
@@ -44,6 +44,10 @@ export default function MessagesView({ conversationId }) {
   const [respondiendo, setRespondiendo] = useState(null);
   const [buscarEnHilo, setBuscarEnHilo] = useState(false);
   const [qHilo, setQHilo] = useState('');
+  // Tanda 2: editar, reenviar y fijar.
+  const [editando, setEditando] = useState(null);   // { id, texto }
+  const [reenviando, setReenviando] = useState(null); // mensaje que se reenvía
+  const [menuMensaje, setMenuMensaje] = useState(null); // id del mensaje con el menú abierto
   // «Reproducir las notas de voz solas» (Ajustes → Mensajes)
   const notasSolas = useRef(leerPref('notas') === 'si');
   const endRef = useRef(null);
@@ -119,6 +123,18 @@ export default function MessagesView({ conversationId }) {
           ...t,
           messages: t.messages.map((m) => (m.id === ev.message_id ? { ...m, content: '', status: 'deleted' } : m)),
         } : t));
+      } else if (ev.type === 'message_edited' && ev.conversation_id === convId) {
+        setThread((t) => (t ? {
+          ...t,
+          messages: t.messages.map((m) => (m.id === ev.message.id ? { ...m, ...ev.message } : m)),
+        } : t));
+        loadConvs();
+      } else if (ev.type === 'message_pinned' && ev.conversation_id === convId) {
+        setThread((t) => {
+          if (!t) return t;
+          const cual = ev.message_id ? t.messages.find((m) => m.id === ev.message_id) : null;
+          return { ...t, pinned: cual || null };
+        });
       } else if (ev.type === 'typing') {
         setThread((t) => (t ? { ...t, typing: ev.user_id === t.partner?.id } : t));
       }
@@ -189,6 +205,103 @@ export default function MessagesView({ conversationId }) {
     api.del(`/api/messages/${msg.id}`)
       .then(() => toast.ok('Mensaje eliminado'))
       .catch(avisoError);
+  }
+
+  /** Copiar el texto del mensaje (menú de opciones). */
+  async function copiarMensaje(m) {
+    const t = m.content || (m.post ? `Publicación de ${m.post.autor}` : '');
+    if (!t) { toast.err('Ese mensaje no tiene texto'); return; }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(t);
+        toast.ok('Texto copiado');
+      } else {
+        toast.info(t);
+      }
+    } catch {
+      toast.info(t);
+    }
+  }
+
+  /** Editar un mensaje ya enviado (solo los míos). */
+  async function guardarEdicion(m) {
+    const nuevo = (editando?.texto || '').trim();
+    if (!nuevo || nuevo === m.content) { setEditando(null); return; }
+    try {
+      const res = await api.patch(`/api/messages/${m.id}`, { content: nuevo });
+      setThread((t) => (t ? { ...t, messages: t.messages.map((x) => (x.id === m.id ? { ...x, ...res } : x)) } : t));
+      setEditando(null);
+      toast.ok('Mensaje editado');
+      loadConvs();
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  /** Reenviar este mensaje a otra conversación. */
+  async function reenviar(m, destino) {
+    setReenviando(null);
+    if (Number(destino) === Number(convId)) {
+      toast.err('Ese es el mismo chat');
+      return;
+    }
+    try {
+      await api.post(`/api/messages/${m.id}/forward`, { conversation_id: Number(destino) });
+      toast.ok('Mensaje reenviado');
+      loadConvs();
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  /** Fijar (o soltar) un mensaje: queda arriba de la conversación para los dos. */
+  async function fijarMensaje(m) {
+    setMenuMensaje(null);
+    try {
+      const res = await api.post(`/api/messages/${m.id}/pin`, {});
+      setThread((t) => (t ? { ...t, pinned: res.fijado ? m : null } : t));
+      toast.ok(res.fijado ? 'Mensaje fijado arriba' : 'Mensaje suelto');
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  /** Marcar la conversación como no leída (vuelve el globito). */
+  async function marcarNoLeida(c) {
+    setMenuDe(null);
+    setConvs((lista) => (lista || []).map((x) => (x.id === c.id ? { ...x, no_leida: true, unread: Math.max(1, x.unread || 0) } : x)));
+    try {
+      await api.post(`/api/messages/conversations/${c.id}/no-leida`, { no: true });
+      toast.ok('Marcada como no leída');
+      loadConvs();
+    } catch (e) {
+      avisoError(e);
+      loadConvs();
+    }
+  }
+
+  /** Borrar la conversación: desaparece de mi lista (al otro no le pasa nada). */
+  async function borrarConversacion(c) {
+    setMenuDe(null);
+    const ok = await confirmar({
+      title: '¿Borrar esta conversación?',
+      message: 'Desaparece de tu lista. La otra persona la sigue viendo con sus mensajes.',
+      confirmText: 'Borrar',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.del(`/api/messages/conversations/${c.id}`);
+      setConvs((lista) => (lista || []).filter((x) => x.id !== c.id));
+      if (convId === c.id) {
+        setConvId(null);
+        setThread(null);
+        if (window.location.hash !== '#/messages') history.replaceState(null, '', '#/messages');
+      }
+      toast.ok('Conversación borrada');
+    } catch (e) {
+      avisoError(e);
+    }
   }
 
   /** La hora de la última vez: hoy → «9:55»; ayer → «ayer»; antes → fecha corta. */
@@ -317,7 +430,9 @@ export default function MessagesView({ conversationId }) {
                     <span className="last ellipsis">
                       {c.last_message ? c.last_message : `@${c.username}`}
                     </span>
-                    {c.unread > 0 ? <span className="sin-leer">{c.unread > 99 ? '99+' : c.unread}</span> : null}
+                    {c.unread > 0 || c.no_leida ? (
+                      <span className="sin-leer">{c.unread > 0 ? (c.unread > 99 ? '99+' : c.unread) : '•'}</span>
+                    ) : null}
                   </span>
                 </span>
               </button>
@@ -347,6 +462,12 @@ export default function MessagesView({ conversationId }) {
                   <a href={`#/user/${c.username}`} onClick={() => setMenuDe(null)}>
                     <IconUsers /> Ver el perfil
                   </a>
+                  <button type="button" onClick={() => marcarNoLeida(c)}>
+                    <IconMail /> Marcar como no leída
+                  </button>
+                  <button type="button" className="danger" onClick={() => borrarConversacion(c)}>
+                    <IconTrash /> Borrar conversación
+                  </button>
                   <button type="button" onClick={() => cambiarPref(c, { oculta: true })}>
                     <IconEye /> Ocultar de la lista
                   </button>
@@ -422,9 +543,15 @@ export default function MessagesView({ conversationId }) {
                   <button type="button" onClick={() => cambiarPref(thread.partner, { archivada: !(prefs[convId]?.archivada ?? false) })}>
                     <IconLayers /> Archivar conversación
                   </button>
+                  <button type="button" onClick={() => marcarNoLeida(thread.partner)}>
+                    <IconMail /> Marcar como no leída
+                  </button>
                   <a href={`#/user/${thread.partner?.username}`} onClick={() => setMenuDe(null)}>
                     <IconUsers /> Ver el perfil
                   </a>
+                  <button type="button" className="danger" onClick={() => borrarConversacion(thread.partner)}>
+                    <IconTrash /> Borrar conversación
+                  </button>
                   </div>
                 </>
               ) : null}
@@ -444,6 +571,34 @@ export default function MessagesView({ conversationId }) {
                   {qHilo.trim() ? `${(thread.messages || []).filter((m) => (m.content || '').toLowerCase().includes(qHilo.trim().toLowerCase())).length} resultados` : ''}
                 </span>
               </div>
+            ) : null}
+
+            {thread.pinned ? (
+              <button
+                type="button"
+                className="mensaje-fijado"
+                onClick={() => document.getElementById(`msg-${thread.pinned.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                title="Ir al mensaje fijado"
+              >
+                <IconPin />
+                <span className="texto">
+                  <b>Mensaje fijado</b>
+                  <span className="ellipsis">
+                    {thread.pinned.post ? '📎 Publicación compartida' : (thread.pinned.content || 'Nota de voz')}
+                  </span>
+                </span>
+                <span
+                  className="soltar"
+                  role="button"
+                  tabIndex={0}
+                  title="Soltar el mensaje"
+                  aria-label="Soltar el mensaje fijado"
+                  onClick={(e) => { e.stopPropagation(); fijarMensaje(thread.pinned); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); fijarMensaje(thread.pinned); } }}
+                >
+                  <IconX />
+                </span>
+              </button>
             ) : null}
 
             <div className="chat-messages">
@@ -467,6 +622,28 @@ export default function MessagesView({ conversationId }) {
                   <div className={`msg ${mio ? 'mine' : ''}`} key={m.id} id={`msg-${m.id}`}>
                     {borrado ? (
                       <em style={{ opacity: 0.65 }}>Mensaje eliminado</em>
+                    ) : editando?.id === m.id ? (
+                      <span className="editar-msg">
+                        <textarea
+                          className="textarea"
+                          rows={2}
+                          value={editando.texto}
+                          maxLength={2000}
+                          autoFocus
+                          aria-label="Editar el mensaje"
+                          onChange={(e) => setEditando({ ...editando, texto: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); guardarEdicion(m); }
+                            if (e.key === 'Escape') setEditando(null);
+                          }}
+                        />
+                        <span className="acciones">
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditando(null)}>Cancelar</button>
+                          <button type="button" className="btn btn-primary btn-sm" onClick={() => guardarEdicion(m)}>
+                            <IconCheck /> Guardar
+                          </button>
+                        </span>
+                      </span>
                     ) : (
                       <>
                         {m.reply_to ? (
@@ -485,6 +662,15 @@ export default function MessagesView({ conversationId }) {
                             </span>
                           </button>
                         ) : null}
+                        {m.post ? (
+                          <a className="post-en-chat" href={`#/post/${m.post.id}`}>
+                            {m.post.imagen ? <img src={imgUrl(m.post.imagen)} alt="" /> : null}
+                            <span className="cuerpo">
+                              <b>{m.post.autor}</b>
+                              <span className="texto">{m.post.content ? m.post.content.slice(0, 120) : 'Publicación con fotos'}</span>
+                            </span>
+                          </a>
+                        ) : null}
                         {m.audio_url ? (
                           <AudioMensaje
                             url={m.audio_url}
@@ -494,13 +680,18 @@ export default function MessagesView({ conversationId }) {
                           />
                         ) : null}
                         {m.image_url ? <img className="img-msg" src={imgUrl(m.image_url)} alt="" /> : null}
-                        {m.content ? <span className="texto-msg">{m.content}</span> : null}
+                        {m.content && !(m.post && /^📎?\s*Publicación compartida$/.test(m.content.trim())) ? (
+                          <span className="texto-msg">{m.content}</span>
+                        ) : null}
                       </>
                     )}
                     {m.reaction ? <span className="react">{m.reaction}</span> : null}
                     <span className="time">
                       {horaMensaje(m.created_at)}
-                      {mio && m.status === 'read' ? ' · leído' : null}
+                      {m.edited_at ? ' · editado' : null}
+                      {mio && m.read_at
+                        ? ` · visto ${horaMensaje(m.read_at)}`
+                        : mio && m.status === 'read' ? ' · leído' : null}
                     </span>
 
                     {borrado ? null : (
@@ -519,10 +710,43 @@ export default function MessagesView({ conversationId }) {
                         >
                           <IconResponder />
                         </button>
-                        {mio ? (
-                          <button onClick={() => delMsg(m)} aria-label="Eliminar mensaje" title="Eliminar">
-                            <IconTrash />
-                          </button>
+                        <button
+                          onClick={() => setMenuMensaje(menuMensaje === m.id ? null : m.id)}
+                          aria-label="Más opciones del mensaje"
+                          aria-expanded={menuMensaje === m.id}
+                          title="Más opciones"
+                        >
+                          <IconMore />
+                        </button>
+                        {menuMensaje === m.id ? (
+                          <>
+                            <span className="hoja-fondo" role="presentation" onClick={() => setMenuMensaje(null)} />
+                            <span
+                              className="menu menu-mensaje"
+                              role="menu"
+                              style={i >= todos.length - 3 ? { top: 'auto', bottom: 44 } : undefined}
+                            >
+                              {mio && m.content ? (
+                                <button role="menuitem" onClick={() => { setMenuMensaje(null); setEditando({ id: m.id, texto: m.content }); }}>
+                                  <IconEdit /> Editar mensaje
+                                </button>
+                              ) : null}
+                              <button role="menuitem" onClick={() => { setMenuMensaje(null); setReenviando(m); }}>
+                                <IconSend /> Reenviar a otro chat
+                              </button>
+                              <button role="menuitem" onClick={() => fijarMensaje(m)}>
+                                <IconPin /> {thread.pinned?.id === m.id ? 'Soltar el fijado' : 'Fijar arriba'}
+                              </button>
+                              <button role="menuitem" onClick={() => { setMenuMensaje(null); copiarMensaje(m); }}>
+                                <IconLink /> Copiar texto
+                              </button>
+                              {mio ? (
+                                <button role="menuitem" className="danger" onClick={() => { setMenuMensaje(null); delMsg(m); }}>
+                                  <IconTrash /> Eliminar
+                                </button>
+                              ) : null}
+                            </span>
+                          </>
                         ) : null}
                       </span>
                     )}
@@ -562,6 +786,38 @@ export default function MessagesView({ conversationId }) {
                   <IconX />
                 </button>
               </div>
+            ) : null}
+
+            {reenviando ? (
+              <>
+                <span className="hoja-fondo" role="presentation" onClick={() => setReenviando(null)} />
+                <div className="hoja-reenviar" role="dialog" aria-label="Reenviar a otra conversación">
+                  <div className="cabecera">
+                    <b>Reenviar a…</b>
+                    <button type="button" className="icon-btn" onClick={() => setReenviando(null)} aria-label="Cerrar">
+                      <IconX />
+                    </button>
+                  </div>
+                  <div className="vista-previa">
+                    <span className="ellipsis">{reenviando.content || (reenviando.post ? '📎 Publicación compartida' : 'Nota de voz')}</span>
+                  </div>
+                  <div className="lista">
+                    {(convs || []).filter((c) => c.id !== convId).map((c) => (
+                      <button type="button" key={c.id} onClick={() => reenviar(reenviando, c.id)}>
+                        <Avatar user={c} size="sm" />
+                        <span className="quien">
+                          <b>{c.display_name || c.username}</b>
+                          <span className="muted small ellipsis">{c.last_message || `@${c.username}`}</span>
+                        </span>
+                        <IconSend />
+                      </button>
+                    ))}
+                    {(convs || []).filter((c) => c.id !== convId).length === 0 ? (
+                      <p className="muted small" style={{ padding: '14px 4px' }}>Todavía no tienes otra conversación abierta.</p>
+                    ) : null}
+                  </div>
+                </div>
+              </>
             ) : null}
 
             <form className="chat-input" onSubmit={send}>

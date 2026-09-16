@@ -205,7 +205,7 @@ function Encuesta({ post, onCambio }) {
   );
 }
 
-function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onReaccionar }) {
+function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onReaccionar, onEnviarA }) {
   const { user } = useAuth();
   const [abierto, setAbierto] = useState(false);
   const caja = useRef(null);
@@ -284,6 +284,9 @@ function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onRea
               <hr />
             </>
           )}
+          <button role="menuitem" onClick={() => { setAbierto(false); onEnviarA(); }}>
+            <IconSend /> Enviar a un chat
+          </button>
           <button role="menuitem" onClick={copiarEnlace}>
             <IconLink /> Copiar enlace
           </button>
@@ -303,6 +306,9 @@ export default function PostCard({ post, onChanged, compact = false }) {
   // Selector de reacciones variadas (se abre al mantener pulsado o con el botón).
   const [reaccionando, setReaccionando] = useState(false);
   const [oculto, setOculto] = useState(false);
+  // Compartir al chat: se elige la conversación en una hoja.
+  const [enviandoA, setEnviandoA] = useState(false);
+  const [convs, setConvs] = useState(null);
   const reacciones = p.reacciones || null;
   const cajaReaccion = useRef(null);
 
@@ -450,6 +456,29 @@ export default function PostCard({ post, onChanged, compact = false }) {
     } catch { /* la persona canceló: no pasa nada */ }
   }
 
+  /** Abre la lista de conversaciones para mandarle esta publicación. */
+  async function abrirEnviarA() {
+    setEnviandoA(true);
+    if (convs) return;
+    try {
+      setConvs(await api.get('/api/messages/conversations') || []);
+    } catch (e) {
+      avisoError(e);
+      setConvs([]);
+    }
+  }
+
+  /** Manda la publicación como tarjeta al chat elegido. */
+  async function enviarA(conv) {
+    try {
+      await api.post(`/api/messages/conversations/${conv.id}/messages`, { post_id: p.id });
+      setEnviandoA(false);
+      toast.ok(`Enviado a ${conv.display_name || conv.username}`);
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
   async function reportar() {
     const motivo = await pedirTexto({
       title: 'Reportar publicación',
@@ -503,6 +532,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
             onPin={fijar}
             onNoInteresa={noInteresa}
             onReaccionar={() => setReaccionando(true)}
+            onEnviarA={abrirEnviarA}
           />
         )}
       </header>
@@ -628,6 +658,41 @@ export default function PostCard({ post, onChanged, compact = false }) {
           <span className="etiqueta">{p.is_saved ? 'Guardado' : 'Guardar'}</span>
         </button>
       </footer>
+
+      {enviandoA ? (
+        <>
+          <span className="hoja-fondo" role="presentation" onClick={() => setEnviandoA(false)} />
+          <div className="hoja-reenviar" role="dialog" aria-label="Enviar la publicación a un chat">
+            <div className="cabecera">
+              <b>Enviar a un chat</b>
+              <button type="button" className="icon-btn" onClick={() => setEnviandoA(false)} aria-label="Cerrar">
+                <IconX />
+              </button>
+            </div>
+            <div className="vista-previa">
+              <span className="ellipsis">{p.content || 'Publicación con fotos'}</span>
+            </div>
+            <div className="lista">
+              {convs === null ? <p className="muted small" style={{ padding: '14px 4px' }}>Cargando tus chats…</p> : null}
+              {convs && convs.map((c) => (
+                <button type="button" key={c.id} onClick={() => enviarA(c)}>
+                  <Avatar user={c} size="sm" />
+                  <span className="quien">
+                    <b>{c.display_name || c.username}</b>
+                    <span className="muted small ellipsis">{c.last_message || `@${c.username}`}</span>
+                  </span>
+                  <IconSend />
+                </button>
+              ))}
+              {convs && convs.length === 0 ? (
+                <p className="muted small" style={{ padding: '14px 4px' }}>
+                  Todavía no tienes conversaciones. Abre una desde el perfil de alguien.
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </>
+      ) : null}
     </article>
   );
 }

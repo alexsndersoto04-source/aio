@@ -13,8 +13,12 @@ import { demasiadoRapido } from './limites.mjs';
 // Columnas que traen, además del mensaje, el mensaje al que responde.
 export const COLUMNAS_CON_RESPUESTA = `m.id, m.conversation_id, m.sender_id, m.content, m.image_url,
   m.audio_url, m.duracion_ms, m.status, m.reaction, m.read_at, m.created_at::text AS created_at,
-  m.reply_to_id, r.content AS cita_texto, r.sender_id AS cita_de, r.status AS cita_estado,
-  ru.display_name AS cita_nombre, ru.username AS cita_usuario`;
+  m.edited_at::text AS edited_at, m.post_id, m.reply_to_id,
+  r.content AS cita_texto, r.sender_id AS cita_de, r.status AS cita_estado,
+  ru.display_name AS cita_nombre, ru.username AS cita_usuario,
+  pc.content AS post_texto, pc.status AS post_estado, pc.user_id AS post_autor_id,
+  pu.username AS post_usuario, pu.display_name AS post_nombre,
+  (SELECT pi.original_url FROM post_images pi WHERE pi.post_id = pc.id ORDER BY pi.position LIMIT 1) AS post_imagen`;
 
 function mensajePublico(m) {
   return {
@@ -28,8 +32,18 @@ function mensajePublico(m) {
     status: m.status,
     reaction: m.reaction || null,
     read_at: m.read_at ? String(m.read_at) : null,
-    edited_at: null,
+    edited_at: m.edited_at ? String(m.edited_at) : null,
     created_at: String(m.created_at),
+    // Publicación compartida al chat: una tarjeta con lo justo.
+    post: m.post_id
+      ? {
+        id: Number(m.post_id),
+        content: m.post_estado === 'deleted' ? '' : (m.post_texto || ''),
+        autor: m.post_nombre || m.post_usuario || '',
+        username: m.post_usuario || '',
+        imagen: m.post_imagen || '',
+      }
+      : null,
     // Respuesta citada: lo justo para pintarla (quién y qué decía).
     reply_to: m.reply_to_id
       ? {
@@ -83,6 +97,7 @@ export function registrarRutasMensajes(router) {
               u.username, u.display_name, u.avatar_url, u.is_verified,
               COALESCE(pr.silenciada, FALSE) AS silenciada,
               COALESCE(pr.archivada, FALSE) AS archivada,
+              COALESCE(pr.no_leida, FALSE) AS no_leida,
               COALESCE(pr.oculta, FALSE) AS oculta,
               (SELECT COUNT(*)::int FROM messages m
                 WHERE m.conversation_id = cv.id AND m.sender_id <> $1
@@ -109,6 +124,7 @@ export function registrarRutasMensajes(router) {
       silenciada: !!f.silenciada,
       archivada: !!f.archivada,
       oculta: !!f.oculta,
+      no_leida: !!f.no_leida,
     }));
     if (filtro === 'sin_leer') return lista.filter((cv) => cv.unread > 0 && !cv.archivada);
     if (filtro === 'archivadas') return lista.filter((cv) => cv.archivada);
@@ -183,10 +199,27 @@ export function registrarRutasMensajes(router) {
            FROM messages m
            LEFT JOIN messages r ON r.id = m.reply_to_id
            LEFT JOIN users ru ON ru.id = r.sender_id
+           LEFT JOIN posts pc ON pc.id = m.post_id
+           LEFT JOIN users pu ON pu.id = pc.user_id
           WHERE m.conversation_id = $1 ORDER BY m.created_at DESC LIMIT ${limit}
        ) AS recientes ORDER BY created_at ASC`,
       [conv.id]
     );
+    // Mensaje fijado (si lo hay): se manda aparte para pintarlo arriba.
+    let fijado = null;
+    if (conv.pinned_message_id) {
+      const f = await uno(
+        c.pool,
+        `SELECT ${COLUMNAS_CON_RESPUESTA} FROM messages m
+           LEFT JOIN messages r ON r.id = m.reply_to_id
+           LEFT JOIN users ru ON ru.id = r.sender_id
+           LEFT JOIN posts pc ON pc.id = m.post_id
+           LEFT JOIN users pu ON pu.id = pc.user_id
+          WHERE m.id = $1`,
+        [conv.pinned_message_id]
+      );
+      if (f) fijado = mensajePublico(f);
+    }
     return {
       conversation_id: Number(conv.id),
       partner: {
@@ -197,6 +230,7 @@ export function registrarRutasMensajes(router) {
         is_verified: !!otro.is_verified,
       },
       messages: mensajes.rows.map(mensajePublico),
+      pinned: fijado,
       typing: false,
     };
   });
@@ -212,7 +246,11 @@ export function registrarRutasMensajes(router) {
     const audio = typeof b.audio_url === 'string' && /^\/api\/media\/[A-Za-z0-9._-]+$/.test(b.audio_url) ? b.audio_url : '';
     const duracion = Math.min(Math.max(Number(b.duracion_ms || 0), 0), 600_000);
     const respondeA = Number(b.reply_to_id) > 0 ? Number(b.reply_to_id) : null;
-    if (!contenido && !imagen && !audio) throw new ApiErr('Escribe un mensaje o manda una nota de voz', 400);
+    // Publicación compartida al chat (llega como tarjeta, no como enlace suelto).
+    const publicacion = Number(b.post_id) > 0 ? Number(b.post_id) : null;
+    if (!contenido && !imagen && !audio && !publicacion) {
+      throw new ApiErr('Escribe un mensaje o manda una nota de voz', 400);
+    }
 
     const idConv = Number(c.params.id);
     if (!Number.isInteger(idConv) || idConv <= 0) throw new ApiErr('Conversación no encontrada', 404);
@@ -237,13 +275,18 @@ export function registrarRutasMensajes(router) {
       }
     }
 
+    if (publicacion) {
+      const existe = await uno(c.pool, "SELECT id FROM posts WHERE id = $1 AND status = 'active'", [publicacion]);
+      if (!existe) throw new ApiErr('Esa publicación ya no está disponible', 404, 'post_no_existe');
+    }
+
     const creado = await uno(
       c.pool,
-      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms, reply_to_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [conv.id, yo.id, contenido, imagen, audio, audio ? duracion : 0, respondeA]
+      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms, reply_to_id, post_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [conv.id, yo.id, contenido, imagen, audio, audio ? duracion : 0, respondeA, publicacion]
     );
-    const resumen = contenido || (audio ? '🎤 Nota de voz' : '📷 Imagen');
+    const resumen = contenido || (publicacion ? '📎 Publicación compartida' : audio ? '🎤 Nota de voz' : '📷 Imagen');
     await c.pool.query(
       'UPDATE conversations SET last_message = $1, last_sender_id = $2, last_message_at = NOW() WHERE id = $3',
       [resumen.slice(0, 200), yo.id, conv.id]
@@ -256,6 +299,8 @@ export function registrarRutasMensajes(router) {
       `SELECT ${COLUMNAS_CON_RESPUESTA} FROM messages m
          LEFT JOIN messages r ON r.id = m.reply_to_id
          LEFT JOIN users ru ON ru.id = r.sender_id
+         LEFT JOIN posts pc ON pc.id = m.post_id
+         LEFT JOIN users pu ON pu.id = pc.user_id
         WHERE m.id = $1`,
       [creado.id]
     );
@@ -275,7 +320,9 @@ export function registrarRutasMensajes(router) {
     const quien = await uno(c.pool, 'SELECT display_name, username FROM users WHERE id = $1', [yo.id]);
     empujarSiQuiere(c.pool, otroId, 'message', {
       titulo: quien?.display_name || quien?.username || 'Moon',
-      texto: contenido ? contenido.slice(0, 140) : (audio ? 'Te envió una nota de voz' : 'Te envió una imagen'),
+      texto: contenido ? contenido.slice(0, 140)
+        : publicacion ? 'Te compartió una publicación'
+        : audio ? 'Te envió una nota de voz' : 'Te envió una imagen',
       url: `#/messages/${conv.id}`,
       etiqueta: `mensaje-${conv.id}`,
     }).catch(() => {});
@@ -294,6 +341,12 @@ export function registrarRutasMensajes(router) {
       'UPDATE messages SET read_at = NOW(), status = $1 WHERE conversation_id = $2 AND sender_id <> $3 AND read_at IS NULL',
       ['read', conv.id, yo.id]
     );
+    await c.pool.query(
+      `INSERT INTO conversation_prefs (conversation_id, user_id, no_leida, updated_at)
+       VALUES ($1, $2, FALSE, NOW())
+       ON CONFLICT (conversation_id, user_id) DO UPDATE SET no_leida = FALSE, updated_at = NOW()`,
+      [conv.id, yo.id]
+    ).catch(() => {});
     const otroId = Number(conv.user_a) === Number(yo.id) ? Number(conv.user_b) : Number(conv.user_a);
     enviarA(otroId, { type: 'messages_read', conversation_id: Number(conv.id), user_id: Number(yo.id) });
     return { ok: true };
@@ -336,4 +389,165 @@ export function registrarRutasMensajes(router) {
   });
 
   void fila;
+
+  // ---------- Editar un mensaje enviado ----------
+  router.patch('/api/messages/:id', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new ApiErr('Mensaje no encontrado', 404);
+    const b = await c.cuerpo();
+    const contenido = texto(b.content || '', { min: 1, max: 2000, campo: 'mensaje' }).trim();
+    if (!contenido) throw new ApiErr('El mensaje no puede quedar vacío', 400);
+
+    const m = await uno(c.pool, 'SELECT * FROM messages WHERE id = $1', [id]);
+    if (!m) throw new ApiErr('Mensaje no encontrado', 404);
+    if (Number(m.sender_id) !== Number(yo.id)) throw new ApiErr('Solo puedes editar tus mensajes', 403, 'no_es_tuyo');
+    if (m.status === 'deleted') throw new ApiErr('Ese mensaje está eliminado', 400, 'eliminado');
+
+    await c.pool.query('UPDATE messages SET content = $1, edited_at = NOW() WHERE id = $2', [contenido, id]);
+    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [m.conversation_id]);
+    const otroId = Number(conv.user_a) === Number(yo.id) ? Number(conv.user_b) : Number(conv.user_a);
+
+    const completo = await uno(
+      c.pool,
+      `SELECT ${COLUMNAS_CON_RESPUESTA} FROM messages m
+         LEFT JOIN messages r ON r.id = m.reply_to_id
+         LEFT JOIN users ru ON ru.id = r.sender_id
+         LEFT JOIN posts pc ON pc.id = m.post_id
+         LEFT JOIN users pu ON pu.id = pc.user_id
+        WHERE m.id = $1`,
+      [id]
+    );
+    const publico = mensajePublico(completo);
+    // El último mensaje de la lista cambia si era este.
+    await c.pool.query(
+      `UPDATE conversations SET last_message = $1 WHERE id = $2 AND last_sender_id = $3 AND last_message_at IS NOT NULL`,
+      [contenido.slice(0, 200), conv.id, yo.id]
+    ).catch(() => {});
+    enviarA(otroId, { type: 'message_edited', conversation_id: Number(conv.id), message: publico });
+    return publico;
+  });
+
+  // ---------- Reenviar a otra conversación ----------
+  router.post('/api/messages/:id/forward', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const b = await c.cuerpo();
+    const destino = Number(b.conversation_id);
+    if (!Number.isInteger(destino) || destino <= 0) throw new ApiErr('Elige una conversación', 400, 'sin_destino');
+
+    const m = await uno(c.pool, 'SELECT * FROM messages WHERE id = $1', [id]);
+    if (!m) throw new ApiErr('Mensaje no encontrado', 404);
+    if (m.status === 'deleted') throw new ApiErr('Ese mensaje está eliminado', 400, 'eliminado');
+    const origen = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [m.conversation_id]);
+    const soyDeOrigen = [Number(origen.user_a), Number(origen.user_b)].includes(Number(yo.id));
+    if (!soyDeOrigen) throw new ApiErr('Mensaje no encontrado', 404);
+
+    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [destino]);
+    if (!conv) throw new ApiErr('Conversación no encontrada', 404);
+    if (![Number(conv.user_a), Number(conv.user_b)].includes(Number(yo.id))) {
+      throw new ApiErr('Conversación no encontrada', 404);
+    }
+    const otroId = Number(conv.user_a) === Number(yo.id) ? Number(conv.user_b) : Number(conv.user_a);
+    const bloqueo = await uno(
+      c.pool,
+      'SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)',
+      [yo.id, otroId]
+    );
+    if (bloqueo) throw new ApiErr('No puedes escribir en esa conversación', 403, 'blocked');
+
+    const creado = await uno(
+      c.pool,
+      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms, post_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [conv.id, yo.id, m.content || '', m.image_url || '', m.audio_url || '', Number(m.duracion_ms || 0), m.post_id || null]
+    );
+    const resumen = m.content || (m.post_id ? '📎 Publicación compartida' : m.audio_url ? '🎤 Nota de voz' : '📷 Imagen');
+    await c.pool.query(
+      'UPDATE conversations SET last_message = $1, last_sender_id = $2, last_message_at = NOW() WHERE id = $3',
+      [String(resumen).slice(0, 200), yo.id, conv.id]
+    );
+    await c.pool.query(
+      `INSERT INTO conversation_prefs (conversation_id, user_id, oculta, archivada, updated_at)
+       VALUES ($1, $2, FALSE, FALSE, NOW())
+       ON CONFLICT (conversation_id, user_id) DO UPDATE SET oculta = FALSE, archivada = FALSE, updated_at = NOW()`,
+      [conv.id, otroId]
+    ).catch(() => {});
+
+    const completo = await uno(
+      c.pool,
+      `SELECT ${COLUMNAS_CON_RESPUESTA} FROM messages m
+         LEFT JOIN messages r ON r.id = m.reply_to_id
+         LEFT JOIN users ru ON ru.id = r.sender_id
+         LEFT JOIN posts pc ON pc.id = m.post_id
+         LEFT JOIN users pu ON pu.id = pc.user_id
+        WHERE m.id = $1`,
+      [creado.id]
+    );
+    const publico = mensajePublico(completo);
+    enviarA(otroId, { type: 'message', conversation_id: Number(conv.id), message: publico });
+    await auditar(c.pool, Number(yo.id), 'mensaje_reenviado', `#${id} → #${conv.id}`, c.ip).catch(() => {});
+    return publico;
+  });
+
+  // ---------- Fijar (o soltar) un mensaje de la conversación ----------
+  router.post('/api/messages/:id/pin', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const m = await uno(c.pool, 'SELECT * FROM messages WHERE id = $1', [id]);
+    if (!m) throw new ApiErr('Mensaje no encontrado', 404);
+    if (m.status === 'deleted') throw new ApiErr('Ese mensaje está eliminado', 400, 'eliminado');
+    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [m.conversation_id]);
+    if (!conv) throw new ApiErr('Conversación no encontrada', 404);
+    if (![Number(conv.user_a), Number(conv.user_b)].includes(Number(yo.id))) {
+      throw new ApiErr('Conversación no encontrada', 404);
+    }
+    const fijar = Number(conv.pinned_message_id) !== id;
+    await c.pool.query('UPDATE conversations SET pinned_message_id = $2 WHERE id = $1', [conv.id, fijar ? id : null]);
+    const otroId = Number(conv.user_a) === Number(yo.id) ? Number(conv.user_b) : Number(conv.user_a);
+    enviarA(otroId, { type: 'message_pinned', conversation_id: Number(conv.id), message_id: fijar ? id : null });
+    return { ok: true, fijado: fijar, message_id: fijar ? id : null };
+  });
+
+  // ---------- Marcar la conversación como no leída ----------
+  router.post('/api/messages/conversations/:id/no-leida', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [id]);
+    if (!conv) throw new ApiErr('Conversación no encontrada', 404);
+    if (![Number(conv.user_a), Number(conv.user_b)].includes(Number(yo.id))) {
+      throw new ApiErr('Conversación no encontrada', 404);
+    }
+    const b = await c.cuerpo().catch(() => ({}));
+    const noLeida = b.no === undefined ? true : !!b.no;
+    await c.pool.query(
+      `INSERT INTO conversation_prefs (conversation_id, user_id, no_leida, oculta, updated_at)
+       VALUES ($1, $2, $3, FALSE, NOW())
+       ON CONFLICT (conversation_id, user_id)
+       DO UPDATE SET no_leida = $3, oculta = FALSE, updated_at = NOW()`,
+      [id, yo.id, noLeida]
+    );
+    return { ok: true, no_leida: noLeida };
+  });
+
+  // ---------- Borrar la conversación (solo para mí) ----------
+  router.del('/api/messages/conversations/:id', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const conv = await uno(c.pool, 'SELECT * FROM conversations WHERE id = $1', [id]);
+    if (!conv) throw new ApiErr('Conversación no encontrada', 404);
+    if (![Number(conv.user_a), Number(conv.user_b)].includes(Number(yo.id))) {
+      throw new ApiErr('Conversación no encontrada', 404);
+    }
+    // No se borra nada de la otra persona: solo desaparece de tu lista.
+    await c.pool.query(
+      `INSERT INTO conversation_prefs (conversation_id, user_id, oculta, no_leida, updated_at)
+       VALUES ($1, $2, TRUE, FALSE, NOW())
+       ON CONFLICT (conversation_id, user_id)
+       DO UPDATE SET oculta = TRUE, no_leida = FALSE, updated_at = NOW()`,
+      [id, yo.id]
+    );
+    await auditar(c.pool, Number(yo.id), 'conversacion_borrada', `#${id}`, c.ip).catch(() => {});
+    return { ok: true };
+  });
 }

@@ -3631,3 +3631,177 @@ html, body { max-width: 100%; overflow-x: hidden; }
   .post-actions > * { gap: 4px; }
   .post-actions .count { margin-left: 1px; }
 }
+
+/* ============================================================
+   §42 · Mensajería completa (tanda 2)
+   ============================================================
+   Editar un mensaje enviado, reenviarlo, compartir una publicación al
+   chat, fijar un mensaje arriba, marcar la conversación como no leída,
+   borrarla solo para mí y ver a qué hora lo leyó. Mismo lenguaje: sin
+   cajas, filos de 1 px y el acento aurora para lo que está activo.
+   ============================================================ */
+
+/* ---------- 42.1 Fijado: franja fina arriba del hilo ---------- */
+.mensaje-fijado {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+  border-left: 3px solid var(--accent);
+  background: rgba(99, 102, 241, 0.06);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mensaje-fijado > svg { width: 15px; height: 15px; color: var(--accent); flex: 0 0 auto; }
+.mensaje-fijado .texto { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.mensaje-fijado .texto b { font-size: 11.5px; color: var(--accent); letter-spacing: 0.02em; }
+.mensaje-fijado .texto .ellipsis { font-size: 12.5px; color: var(--ink-3); }
+.mensaje-fijado .soltar {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+}
+.mensaje-fijado .soltar:hover { background: rgba(17, 21, 50, 0.08); }
+.mensaje-fijado .soltar svg { width: 14px; height: 14px; }
+
+/* ---------- 42.2 Menú del mensaje ----------
+   Va por encima del velo que cierra al tocar fuera (si no, no se
+   podría pulsar ninguna opción: el velo se quedaría con el toque). */
+.msg-actions { position: absolute; z-index: 70; }
+.msg-actions .menu { z-index: 71; }
+.menu-mensaje { min-width: 214px; right: 0; }
+.msg:not(.mine) .menu-mensaje { right: auto; left: 0; }
+.menu-mensaje button { white-space: nowrap; }
+/* Las opciones van una debajo de otra (heredan el tamaño de los botones
+   redondos de la burbuja si no se corrige). */
+.msg-actions .menu button {
+  display: flex;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 11px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+.msg-actions .menu button svg { width: 16px; height: 16px; }
+.msg-actions .menu .row button { width: 32px; height: 32px; padding: 0; }
+
+/* ---------- 42.3 Editar en línea ---------- */
+.editar-msg { display: flex; flex-direction: column; gap: 8px; min-width: min(300px, 62vw); }
+.editar-msg .textarea {
+  width: 100%;
+  min-height: 62px;
+  max-height: 190px;
+  padding: 9px 11px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.26);
+  border: 0;
+  resize: none;
+  font-size: 14.5px;
+  line-height: 1.45;
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+}
+/* Primero los ajenos y luego los propios: `:not()` no suma especificidad.
+   El `!important` es para ganarle al relleno gris general de los campos. */
+.msg:not(.mine) .editar-msg .textarea { background: rgba(17, 21, 50, 0.07) !important; }
+.msg.mine .editar-msg .textarea { background: rgba(255, 255, 255, 0.32) !important; color: #fff !important; }
+.msg.mine .editar-msg .textarea::placeholder { color: rgba(255, 255, 255, 0.75) !important; }
+.editar-msg .acciones { display: flex; justify-content: flex-end; gap: 6px; }
+.msg.mine .editar-msg .btn-ghost { color: #fff; }
+
+/* ---------- 42.4 Publicación compartida dentro de una burbuja ---------- */
+.post-en-chat {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 2px 0 6px;
+  padding: 9px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: inherit;
+  text-decoration: none;
+  min-width: min(260px, 58vw);
+}
+.msg.mine .post-en-chat { background: rgba(255, 255, 255, 0.24); }
+[data-theme='dark'] .post-en-chat { background: rgba(255, 255, 255, 0.08); }
+.post-en-chat img { width: 52px; height: 52px; border-radius: 9px; object-fit: cover; flex: 0 0 auto; }
+.post-en-chat .cuerpo { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.post-en-chat .cuerpo b { font-size: 12.5px; font-weight: 640; }
+/* Dentro de una burbuja propia el texto va en blanco, sin azul de enlace. */
+.msg.mine .post-en-chat,
+.msg.mine .post-en-chat .cuerpo b,
+.msg.mine .post-en-chat .cuerpo .texto { color: var(--accent-ink); text-decoration: none; }
+.post-en-chat .cuerpo .texto {
+  font-size: 12.5px;
+  opacity: 0.85;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---------- 42.5 Hoja de «reenviar a…» y «enviar a un chat» ---------- */
+.hoja-reenviar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 70;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px calc(14px + env(safe-area-inset-bottom));
+  background: var(--superficie-firme, #fff);
+  border-radius: 18px 18px 0 0;
+  border-top: 1px solid var(--line-2, rgba(17, 21, 50, 0.1));
+  box-shadow: 0 -22px 48px -26px rgba(17, 21, 50, 0.55);
+  animation: subir-hoja 200ms ease-out;
+}
+@keyframes subir-hoja { from { transform: translateY(14px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+.hoja-reenviar .cabecera { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; }
+.hoja-reenviar .cabecera b { font-size: 15px; }
+.hoja-reenviar .vista-previa {
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.08);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.hoja-reenviar .vista-previa .ellipsis {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hoja-reenviar .lista { overflow-y: auto; }
+.hoja-reenviar .lista button {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 6px;
+  border: 0;
+  border-bottom: 1px solid var(--line-2, rgba(17, 21, 50, 0.08));
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.hoja-reenviar .lista button:last-child { border-bottom: 0; }
+.hoja-reenviar .lista button:hover { background: rgba(99, 102, 241, 0.07); }
+.hoja-reenviar .lista button > svg { width: 17px; height: 17px; color: var(--accent); margin-left: auto; flex: 0 0 auto; }
+.hoja-reenviar .quien { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
+
+@media (max-width: 860px) {
+  .mensaje-fijado { padding: 9px var(--gutter); }
+  .hoja-reenviar { border-radius: 16px 16px 0 0; }
+}
