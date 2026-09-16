@@ -18,6 +18,9 @@ export function AuthProvider({ children }) {
 
   const applySession = useCallback((resp) => {
     saveTokens(resp.access_token, resp.refresh_token);
+    // Quien entra con su contraseña (o su código de 2FA) ya probó quién es:
+    // el candado del PIN queda abierto en esta pestaña y siempre hay salida.
+    try { sessionStorage.setItem('moon_pin_abierto', 'si'); } catch { /* sin almacén */ }
     if (resp.user) {
       saveUser(resp.user);
       setUser(resp.user);

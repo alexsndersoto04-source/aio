@@ -4298,6 +4298,13 @@ html, body { max-width: 100%; overflow-x: hidden; }
 }
 
 /* ---------- 44.7 El candado del PIN ---------- */
+.bloqueo-ayuda {
+  font-size: 12.5px;
+  max-width: 280px;
+  text-align: center;
+  margin: 2px 0 0;
+}
+
 .bloqueo-pin {
   position: fixed;
   inset: 0;

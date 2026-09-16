@@ -86,6 +86,9 @@ export default function BloqueoPin({ onAbierto }) {
         >
           No soy yo: cerrar la sesión
         </button>
+        <p className="muted bloqueo-ayuda">
+          ¿Olvidaste el PIN? Cierra la sesión y entra con tu contraseña: Moon se abre igual.
+        </p>
       </div>
     </div>
   );
