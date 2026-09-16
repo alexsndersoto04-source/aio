@@ -6,6 +6,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './auth.jsx';
+import { api } from './api.js';
 import { parseHash } from './utils.js';
 import TopNav, { AccesosRapidos } from './components/TopNav.jsx';
 import LeftRail from './components/LeftRail.jsx';
@@ -28,6 +29,7 @@ import AdminView from './views/AdminView.jsx';
 import ContactosView from './views/ContactosView.jsx';
 import GruposView from './views/GruposView.jsx';
 import GrupoView from './views/GrupoView.jsx';
+import BloqueoPin, { desbloqueado } from './components/BloqueoPin.jsx';
 import { realtime } from './realtime.js';
 import { setUnread, bump, useUnread } from './unread.js';
 import { aplicarTema } from './theme.js';
@@ -230,8 +232,20 @@ function Gate() {
   const { parts } = route;
   const isAuthPage = ['login', 'register', 'reset'].includes(parts[0] || '');
   const ruta = parts.join('/') || 'feed';
+  const [candado, setCandado] = useState(() => (desbloqueado() ? 'no' : 'comprobando'));
 
   useEffect(() => { aplicarTema(); aplicarPrefs(); }, []);
+
+  // ¿Hay PIN puesto y encendido? Entonces Moon no enseña nada hasta teclearlo.
+  useEffect(() => {
+    if (!user) { setCandado('no'); return; }
+    if (desbloqueado()) { setCandado('no'); return; }
+    let vivo = true;
+    api.get('/api/me/ajustes')
+      .then((aj) => { if (vivo) setCandado(aj?.tiene_pin && aj?.bloqueo_activo ? 'si' : 'no'); })
+      .catch(() => { if (vivo) setCandado('no'); });
+    return () => { vivo = false; };
+  }, [user]);
 
   if (loading) return <Cargando />;
 
@@ -243,6 +257,12 @@ function Gate() {
   }
 
   if (isAuthPage) return <Navigate to="#/feed" />;
+
+  if (candado === 'si') {
+    return <BloqueoPin onAbierto={() => setCandado('no')} />;
+  }
+
+  if (candado === 'comprobando') return <Cargando />;
 
   return (
     <UnreadProvider>

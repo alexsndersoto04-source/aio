@@ -48,6 +48,8 @@ export function AuthProvider({ children }) {
   const logout = useCallback(async () => {
     try { await authApi.logout(); } catch { /* revocar ya es best-effort */ }
     clearTokens();
+    // El candado del PIN vuelve a pedirse en la próxima entrada.
+    try { sessionStorage.removeItem('moon_pin_abierto'); } catch { /* sin almacén */ }
     setUser(null);
     realtime.stop();
   }, []);

@@ -4296,3 +4296,45 @@ html, body { max-width: 100%; overflow-x: hidden; }
 @media (max-width: 420px) {
   .profile-row .row .btn { padding-left: 10px; padding-right: 10px; }
 }
+
+/* ---------- 44.7 El candado del PIN ---------- */
+.bloqueo-pin {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--aurora-grad-suave), var(--bg, #f6f7fb);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+}
+[data-theme='dark'] .bloqueo-pin { background: rgba(8, 8, 15, 0.92); }
+.bloqueo-caja {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.bloqueo-icono {
+  width: 62px;
+  height: 62px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 22px;
+  color: #fff;
+  background: var(--aurora-grad);
+  box-shadow: 0 18px 40px -22px rgba(99, 102, 241, 0.95);
+}
+.bloqueo-icono svg { width: 26px; height: 26px; }
+.bloqueo-caja h1 { margin: 6px 0 0; font-size: 22px; letter-spacing: -0.02em; }
+.bloqueo-caja .muted { margin: 0; }
+.bloqueo-forma { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
+.bloqueo-campo { max-width: 100%; width: 100%; font-size: 22px; letter-spacing: 0.5em; padding: 12px 14px; }
+.bloqueo-forma .btn { width: 100%; }
+.bloqueo-caja .error-nota { margin: 2px 0 0; }

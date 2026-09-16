@@ -30,8 +30,11 @@ await p.evaluateOnNewDocument(() => {
 const errores = [];
 p.on('pageerror', (e) => errores.push(`pageerror: ${String(e).slice(0, 160)}`));
 
-async function ir(ruta, espera = 2200) {
+async function ir(ruta, espera = 2200, recargar = false) {
   await p.goto(`${BASE}/?demo#/${ruta}`, { waitUntil: 'networkidle2', timeout: 60000 });
+  // Cambiar solo el hash no vuelve a cargar la página: cuando hace falta un
+  // arranque de verdad (el candado del PIN) se recarga a mano.
+  if (recargar) await p.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
   await dormir(espera);
 }
 
@@ -130,23 +133,32 @@ await dormir(900);
 await ver('.horas');
 await foto('T9-ajustes-idioma-horario');
 
-// 10. Ajustes → Seguridad: PIN de entrada puesto
+// 10. Ajustes → Datos: exportar, historial de búsqueda y etiquetas
+await ir('settings/datos');
+await ver('.rejilla-uso');
+await foto('T10-ajustes-datos');
+
+// 11. Cuenta privada de otra persona: pedir permiso
+await ir('user/elena');
+await foto('T11-perfil-privado');
+await pulsar('Pedir seguir', 'button', 1200);
+await foto('T12-solicitud-enviada');
+
+// 12. Ajustes → Seguridad: PIN de entrada puesto (se deja para el final)
 await ir('settings/seguridad');
 await p.type('.pin-campo', '4821');
 await dormir(250);
 await pulsar('Poner el PIN', '.pin-form button', 1300);
-await foto('T10-ajustes-pin');
+await foto('T13-ajustes-pin');
 
-// 11. Ajustes → Datos: exportar, historial de búsqueda y etiquetas
-await ir('settings/datos');
-await ver('.rejilla-uso');
-await foto('T11-ajustes-datos');
+// 13. Al volver a abrir Moon, el candado pide el PIN
+await ir('feed', 2400, true);
+await foto('T14-candado-pin');
 
-// 12. Cuenta privada de otra persona: pedir permiso
-await ir('user/elena');
-await foto('T12-perfil-privado');
-await pulsar('Pedir seguir', 'button', 1200);
-await foto('T13-solicitud-enviada');
+// 14. Con el PIN correcto, Moon entra
+await p.type('.bloqueo-campo', '4821');
+await dormir(1600);
+await foto('T15-pin-abierto');
 
 console.log(errores.length ? '\nErrores en la consola:' : '\nSin errores de consola');
 for (const e of errores.slice(0, 12)) console.log('  !', e);

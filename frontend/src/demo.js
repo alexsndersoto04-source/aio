@@ -347,7 +347,11 @@ const busquedas = [
 ];
 const etiquetasSeguidas = new Set(['diseno', 'fotografia']);
 
-// Ajustes que viven en el servidor (aquí solo en memoria).
+// Ajustes que viven en el servidor (aquí en memoria). El PIN se recuerda
+// solo mientras dure la pestaña: es lo que hace el candado de verdad.
+const guardado = (clave) => { try { return sessionStorage.getItem(clave) || ''; } catch { return ''; } };
+const recordar = (clave, valor) => { try { sessionStorage.setItem(clave, valor); } catch { /* sin almacén */ } };
+
 const ajustes = {
   idioma: 'es',
   tema_auto: false,
@@ -358,10 +362,10 @@ const ajustes = {
     me_gusta: true, comentarios: true, seguidores: true, menciones: true,
     mensajes: true, grupos: true, eventos: true, solicitudes: true,
   },
-  bloqueo_activo: false,
-  tiene_pin: false,
+  bloqueo_activo: guardado('moon_demo_pin') !== '' && guardado('moon_demo_pin_activo') !== 'no',
+  tiene_pin: guardado('moon_demo_pin') !== '',
 };
-let pinDemo = '';
+let pinDemo = guardado('moon_demo_pin');
 
 /** Ficha corta de una persona para las listas (con su estado de seguimiento). */
 function fichaGente(perfil, yoId) {
@@ -1112,6 +1116,8 @@ export function responder(metodo, ruta, cuerpo) {
       }
       if (d === 'activar') {
         ajustes.bloqueo_activo = cuerpo?.activo !== false;
+        recordar('moon_demo_pin_activo', ajustes.bloqueo_activo ? 'si' : 'no');
+        try { sessionStorage.removeItem('moon_pin_abierto'); } catch { /* sin almacén */ }
         return json({ ok: true, bloqueo_activo: ajustes.bloqueo_activo });
       }
       const pin = String(cuerpo?.pin || '');
@@ -1120,6 +1126,11 @@ export function responder(metodo, ruta, cuerpo) {
         pinDemo = '';
         ajustes.tiene_pin = false;
         ajustes.bloqueo_activo = false;
+        try {
+          sessionStorage.removeItem('moon_demo_pin');
+          sessionStorage.removeItem('moon_demo_pin_activo');
+          sessionStorage.removeItem('moon_pin_abierto');
+        } catch { /* sin almacén */ }
         return json({ ok: true, tiene_pin: false, bloqueo_activo: false });
       }
       if (ajustes.tiene_pin && String(cuerpo?.pin_actual || '') !== pinDemo) {
@@ -1128,6 +1139,9 @@ export function responder(metodo, ruta, cuerpo) {
       pinDemo = pin;
       ajustes.tiene_pin = true;
       ajustes.bloqueo_activo = true;
+      recordar('moon_demo_pin', pin);
+      recordar('moon_demo_pin_activo', 'si');
+      try { sessionStorage.removeItem('moon_pin_abierto'); } catch { /* sin almacén */ }
       return json({ ok: true, tiene_pin: true, bloqueo_activo: true });
     }
     if (metodo === 'PATCH' && cuerpo) {
