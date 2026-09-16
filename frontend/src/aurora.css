@@ -3805,3 +3805,276 @@ html, body { max-width: 100%; overflow-x: hidden; }
   .mensaje-fijado { padding: 9px var(--gutter); }
   .hoja-reenviar { border-radius: 16px 16px 0 0; }
 }
+
+/* ============================================================
+   §43 · Grupos completos (tanda 3)
+   ============================================================
+   Anuncio fijado, eventos con asistencia, archivos compartidos,
+   reglas y preguntas para entrar, sanciones y registro. Igual que
+   en el resto: superficie continua, filos de 1 px y el acento
+   aurora solo donde hay algo vivo.
+   ============================================================ */
+
+/* ---------- 43.1 Anuncio fijado del grupo ---------- */
+.anuncio-grupo {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 2px;
+  padding: 10px var(--gutter, 18px);
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+  border-left: 3px solid var(--accent);
+  background: rgba(99, 102, 241, 0.06);
+}
+.anuncio-grupo > svg { width: 16px; height: 16px; color: var(--accent); flex: 0 0 auto; margin-top: 2px; }
+.anuncio-grupo .texto { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.anuncio-grupo .texto b { font-size: 11.5px; color: var(--accent); letter-spacing: 0.02em; }
+.anuncio-grupo .texto .cuerpo { font-size: 14px; color: var(--ink-2); }
+.anuncio-grupo .icon-btn { flex: 0 0 auto; }
+
+/* ---------- 43.2 Bloques con cabecera ---------- */
+.bloque-grupo { display: flex; flex-direction: column; }
+.cabecera-bloque {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0 10px;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+}
+.cabecera-bloque h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.cabecera-bloque h2 svg { width: 18px; height: 18px; color: var(--accent); }
+.titulo-pequeno {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 18px 0 8px;
+  font-size: 12px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+.titulo-pequeno svg { width: 14px; height: 14px; }
+.sub-bloque { padding: 4px 0 8px; border-top: 1px solid var(--hair, rgba(17, 21, 50, 0.08)); margin-top: 16px; }
+.texto-reglas { white-space: pre-wrap; font-size: 14.5px; line-height: 1.6; color: var(--ink-2); margin: 12px 0; }
+
+/* ---------- 43.3 Eventos ---------- */
+.form-evento {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0 14px;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+}
+.form-evento .row { display: flex; }
+.form-evento .input, .form-evento .textarea { flex: 1; }
+.evento {
+  display: flex;
+  gap: 13px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.08));
+}
+.evento.pasado { opacity: 0.62; }
+.evento .fecha {
+  flex: 0 0 auto;
+  width: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+  border-radius: 12px;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.12));
+  color: var(--accent);
+  line-height: 1.1;
+}
+.evento .fecha b { font-size: 19px; }
+.evento .fecha span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.evento .cuerpo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.evento .titulo { font-size: 15.5px; }
+.evento .sobre { margin: 4px 0 2px; font-size: 14px; color: var(--ink-2); }
+.evento .respuestas { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.evento .respuestas button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border: 1px solid var(--line, rgba(17, 21, 50, 0.14));
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.evento .respuestas button:hover { background: rgba(99, 102, 241, 0.07); }
+.evento .respuestas button.activa {
+  border-color: var(--accent);
+  background: var(--accent-soft, rgba(99, 102, 241, 0.12));
+  color: var(--accent);
+  font-weight: 600;
+}
+.evento .respuestas button svg { width: 14px; height: 14px; }
+.evento .respuestas button i { font-style: normal; opacity: 0.8; }
+.evento .respuestas .btn-ghost { border: 0; padding: 6px 4px; color: var(--accent); }
+.evento .respuestas .icon-btn { margin-left: auto; }
+
+/* ---------- 43.4 Archivos ---------- */
+.fila-archivo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.08));
+}
+.fila-archivo .miniatura {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.12));
+}
+.fila-archivo .miniatura img { width: 100%; height: 100%; object-fit: cover; }
+.fila-archivo .miniatura.icono svg { width: 20px; height: 20px; color: var(--accent); }
+.fila-archivo .texto { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.fila-archivo .texto b { font-size: 14.5px; }
+
+/* ---------- 43.5 Personas en listas (asistentes, sanciones) ---------- */
+.fila-persona {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: inherit;
+  text-decoration: none;
+}
+.fila-persona .quien { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.fila-persona .quien b { font-size: 14px; }
+.grupo-asistentes { padding: 4px 0 10px; }
+
+/* ---------- 43.6 Preguntas y solicitudes ---------- */
+.fila-pregunta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.08));
+}
+.fila-pregunta .numero {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.12));
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 640;
+}
+.fila-pregunta .texto { flex: 1; min-width: 0; font-size: 14.5px; }
+.solicitud {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.09));
+}
+.solicitud .quien { display: flex; align-items: center; gap: 10px; }
+.solicitud .quien .texto { display: flex; flex-direction: column; line-height: 1.25; }
+.solicitud .respuestas {
+  margin: 9px 0 10px;
+  padding-left: 20px;
+  font-size: 14px;
+  color: var(--ink-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.solicitud .acciones { display: flex; gap: 8px; }
+
+/* ---------- 43.7 Sanciones y registro ---------- */
+.fila-sancion {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.08));
+}
+.fila-sancion .texto { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.fila-sancion .texto small { font-size: 12.5px; }
+.etiqueta {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(17, 21, 50, 0.08);
+  color: var(--ink-3);
+}
+.etiqueta.silencio { background: rgba(245, 158, 11, 0.16); color: #b45309; }
+.etiqueta.expulsion { background: rgba(239, 68, 68, 0.14); color: #b91c1c; }
+.lista-registro { list-style: none; margin: 0; padding: 0; }
+.lista-registro li {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--hair, rgba(17, 21, 50, 0.07));
+  font-size: 14px;
+}
+.lista-registro .punto {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.7;
+}
+.lista-registro .texto { min-width: 0; }
+.lista-miembros-sancion { margin: 8px 0 4px; }
+
+@media (max-width: 860px) {
+  .anuncio-grupo { padding: 10px var(--gutter); }
+  .evento { gap: 11px; }
+  .fila-archivo .miniatura { width: 42px; height: 42px; }
+}
+
+/* Preguntas de la hoja de entrada: rótulo pequeño y campo debajo. */
+.hoja-reenviar .campo { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; }
+.hoja-reenviar .etiqueta-pregunta {
+  font-size: 12px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-3);
+}
+.hoja-reenviar .campo .textarea { min-height: 58px; }
+
+/* ---------- 43.8 Pestañas del grupo: seis caben desplazándose ---------- */
+.pestanas-grupo {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+.pestanas-grupo::-webkit-scrollbar { display: none; }
+.pestanas-grupo button { flex: 0 0 auto; white-space: nowrap; }
+.pestanas-grupo button svg { flex: 0 0 auto; }
+@media (max-width: 860px) {
+  .pestanas-grupo { border-radius: 14px; padding: 4px; }
+  .pestanas-grupo button { padding: 9px 12px; }
+}

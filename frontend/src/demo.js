@@ -300,6 +300,47 @@ function tarjetaDePost(v) {
   };
 }
 
+/** Un evento del grupo con sus cuentas de asistencia. */
+function eventoJSON(ev) {
+  const autor = perfiles.get(ev.de);
+  return {
+    id: ev.id,
+    group_id: grupoDemo.id,
+    title: ev.titulo,
+    about: ev.sobre || '',
+    place: ev.lugar || '',
+    starts_at: new Date(ev.cuando).toISOString(),
+    creado_hace: 0,
+    autor: autor ? (autor.display_name || autor.username) : '',
+    autor_username: autor ? autor.username : '',
+    voy: ev.voy.length,
+    quizas: ev.quizas.length,
+    no_van: ev.no_van.length,
+    mi_estado: ev.voy.includes(USUARIO.id) ? 'voy'
+      : ev.quizas.includes(USUARIO.id) ? 'quizas'
+        : ev.no_van.includes(USUARIO.id) ? 'no' : '',
+    pasado: ev.cuando < Date.now(),
+    mio: ev.de === USUARIO.id,
+  };
+}
+
+/** Un archivo compartido en el grupo. */
+function archivoJSON(f) {
+  const autor = perfiles.get(f.de);
+  return {
+    id: f.id,
+    group_id: grupoDemo.id,
+    nombre: f.nombre,
+    url: f.url,
+    tipo: f.tipo || '',
+    peso: f.peso || 0,
+    created_at: hace(f.creada),
+    autor: autor ? (autor.display_name || autor.username) : '',
+    autor_username: autor ? autor.username : '',
+    puedo_borrar: f.de === USUARIO.id,
+  };
+}
+
 function mensajeJSON(c, m) {
   // Si el mensaje responde a otro, se manda su vista previa (quién y qué decía).
   const citado = m.respuestaA ? (c.mensajes || []).find((x) => x.id === m.respuestaA) : null;
@@ -375,6 +416,44 @@ const grupoDemo = {
   created_at: hace(14000),
 };
 
+// --- Grupos, tanda 3: eventos, archivos, reglas, solicitudes y sanciones ---
+const eventosDemo = [
+  {
+    id: 901, de: 1, titulo: 'Salida a fotografiar la luna', sobre: 'Nos vemos en la plaza y subimos al mirador.',
+    lugar: 'Plaza Mayor', cuando: AHORA + 2 * 86400000, voy: [1, 2, 4], quizas: [3], no_van: [],
+  },
+  {
+    id: 902, de: 3, titulo: 'Repaso de revelado', sobre: 'Trae tres fotos sin editar y las vemos juntos.',
+    lugar: 'Casa de Carla', cuando: AHORA + 6 * 86400000, voy: [3], quizas: [1], no_van: [],
+  },
+  {
+    id: 903, de: 1, titulo: 'Noche de la superluna', sobre: 'Salió nublado, pero guardamos las tomas.',
+    lugar: 'Mirador del río', cuando: AHORA - 9 * 86400000, voy: [1, 3, 4], quizas: [], no_van: [],
+  },
+];
+const archivosDemo = [
+  { id: 801, de: 3, nombre: 'ajustes-nocturnos.png', url: foto('#4f46e5', '#06b6d4', 2), tipo: 'image/png', peso: 184320, creada: 120 },
+  { id: 802, de: 2, nombre: 'mapa-del-mirador.png', url: foto('#0ea5e9', '#8b5cf6', 6), tipo: 'image/png', peso: 40200, creada: 700 },
+];
+const reglasDemo = {
+  rules: '1. Cuida el tono: aquí nadie viene a discutir.\n2. Una foto por publicación, con sus ajustes.\n3. Si sales de ruta, avisa en el chat.',
+  announcement: 'El sábado salimos a la luna: lleva batería de sobra.',
+  announcement_at: AHORA - 5400000,
+  join_questions: ['¿Qué cámara usas?', '¿Sales de noche a menudo?'],
+};
+const solicitudesDemo = [
+  { id: 501, de: 5, respuestas: ['Una Fujifilm X-T4', 'Casi todos los fines de semana'], creada: 900 },
+];
+const sancionesDemo = [
+  { id: 601, de: 2, tipo: 'aviso', motivo: 'Publicó tres veces seguidas lo mismo', creada: 7200, por: 1, vigente: true },
+];
+const registroDemo = [
+  { id: 701, accion: 'evento_creado', detalle: 'Salida a fotografiar la luna', de: 1, creada: 600 },
+  { id: 702, accion: 'archivo_compartido', detalle: 'ajustes-nocturnos.png', de: 3, creada: 120 },
+  { id: 703, accion: 'solicitud_enviada', detalle: '¿Qué cámara usas?', de: 5, creada: 900 },
+  { id: 704, accion: 'sancion_aviso', detalle: 'Publicó tres veces seguidas lo mismo', de: 2, creada: 7200 },
+];
+
 const chatDelGrupo = [
   { id: 701, de: 3, texto: '¿Alguien sale esta noche? La luna está enorme y quiero probar el 35 mm.', creada: 260 },
   { id: 702, de: 2, texto: 'Yo me apunto. Llevo el trípode y el filtro de densidad.', creada: 240 },
@@ -415,7 +494,7 @@ export function responder(metodo, ruta, cuerpo) {
   const [camino, consulta = ''] = ruta.split('?');
   const partes = camino.replace(/^\/api\//, '').split('/').filter(Boolean);
   const q = new URLSearchParams(consulta);
-  const [a, b, c, d] = partes;
+  const [a, b, c, d, e] = partes;
 
   // ---- Avisos al teléfono (modo demostración) ----
   if (a === 'push') {
@@ -1111,6 +1190,144 @@ export function responder(metodo, ruta, cuerpo) {
       return json({ mensajes: chatDelGrupo.map(mensajeDeGrupoJSON), hay_mas: false });
     }
 
+    // ---------- Tanda 3 en el modo demostración ----------
+    // Eventos: lista, crear, responder «voy / quizás / no» y ver quién va.
+    if (c === 'events' && !d) {
+      if (metodo === 'POST') {
+        const nuevo = {
+          id: ++siguienteId, de: USUARIO.id, titulo: cuerpo?.title || 'Evento',
+          sobre: cuerpo?.about || '', lugar: cuerpo?.place || '',
+          cuando: new Date(cuerpo?.starts_at || Date.now()).getTime(),
+          voy: [USUARIO.id], quizas: [], no_van: [],
+        };
+        eventosDemo.push(nuevo);
+        return json(eventoJSON(nuevo));
+      }
+      return json({ eventos: eventosDemo.map(eventoJSON) });
+    }
+    if (c === 'events' && d) {
+      const ev = eventosDemo.find((x) => x.id === Number(d));
+      if (!ev) return json({ error: 'Evento no encontrado' }, 404);
+      if (e === 'asistentes') {
+        const gente = [
+          ...ev.voy.map((id) => ({ id, estado: 'voy' })),
+          ...ev.quizas.map((id) => ({ id, estado: 'quizas' })),
+          ...ev.no_van.map((id) => ({ id, estado: 'no' })),
+        ].map((x) => ({ ...miembroJSON(x.id), estado: x.estado }));
+        return json({ asistentes: gente });
+      }
+      if (e === 'asistir') {
+        const estado = ['voy', 'quizas', 'no'].includes(cuerpo?.estado) ? cuerpo.estado : 'voy';
+        const listas = { voy: 'voy', quizas: 'quizas', no: 'no_van' };
+        Object.values(listas).forEach((k) => { ev[k] = ev[k].filter((id) => id !== USUARIO.id); });
+        if (!ev[listas[estado]].includes(USUARIO.id)) ev[listas[estado]].push(USUARIO.id);
+        return json(eventoJSON(ev));
+      }
+      if (metodo === 'DELETE') {
+        const i = eventosDemo.findIndex((x) => x.id === ev.id);
+        eventosDemo.splice(i, 1);
+        return json({ ok: true, borrado: ev.id });
+      }
+    }
+
+    // Archivos compartidos en el grupo.
+    if (c === 'files') {
+      if (metodo === 'POST') {
+        const f = {
+          id: ++siguienteId, de: USUARIO.id, nombre: cuerpo?.nombre || 'archivo',
+          url: cuerpo?.url || foto('#6366f1', '#22d3ee', 3), tipo: cuerpo?.tipo || 'image/png',
+          peso: Number(cuerpo?.peso || 0), creada: 0,
+        };
+        archivosDemo.unshift(f);
+        return json(archivoJSON(f));
+      }
+      if (metodo === 'DELETE' && d) {
+        const i = archivosDemo.findIndex((x) => x.id === Number(d));
+        if (i >= 0) archivosDemo.splice(i, 1);
+        return json({ ok: true });
+      }
+      return json({ archivos: archivosDemo.map(archivoJSON) });
+    }
+
+    // Reglas, anuncio y preguntas para entrar.
+    if (c === 'rules') {
+      if (metodo === 'PATCH') {
+        if (typeof cuerpo?.rules === 'string') reglasDemo.rules = cuerpo.rules;
+        if (typeof cuerpo?.announcement === 'string') {
+          reglasDemo.announcement = cuerpo.announcement;
+          reglasDemo.announcement_at = cuerpo.announcement ? Date.now() : null;
+        }
+        if (Array.isArray(cuerpo?.join_questions)) reglasDemo.join_questions = cuerpo.join_questions;
+        return json({ ...reglasDemo });
+      }
+      return json({ ...reglasDemo });
+    }
+    if (c === 'preguntas') {
+      return json({
+        pregunta: reglasDemo.join_questions.length > 0,
+        preguntas: reglasDemo.join_questions,
+        mi_solicitud: null,
+      });
+    }
+    if (c === 'solicitar') {
+      if (reglasDemo.join_questions.length === 0) {
+        const i = gruposDemo.findIndex((x) => x.id === gid);
+        if (i >= 0) gruposDemo[i] = { ...gruposDemo[i], soy_miembro: true };
+        return json({ ok: true, estado: 'dentro' });
+      }
+      const nueva = { id: ++siguienteId, de: USUARIO.id, respuestas: cuerpo?.answers || [], creada: 0 };
+      return json({ ok: true, estado: 'pendiente', solicitud_id: nueva.id });
+    }
+    if (c === 'solicitudes') {
+      if (d && metodo === 'POST') {
+        const i = solicitudesDemo.findIndex((x) => x.id === Number(d));
+        if (i >= 0) {
+          solicitudesDemo.splice(i, 1);
+          return json({ ok: true, aprobada: cuerpo?.aprobar !== false });
+        }
+        return json({ error: 'Esa solicitud no existe' }, 404);
+      }
+      return json({
+        solicitudes: solicitudesDemo.map((x) => ({
+          ...x, ...miembroJSON(x.de), user_id: x.de, created_at: hace(x.creada),
+        })),
+      });
+    }
+
+    // Sanciones y registro del grupo.
+    if (c === 'sanciones') {
+      if (metodo === 'POST') {
+        const nueva = {
+          id: ++siguienteId, de: Number(cuerpo?.user_id || 2), tipo: cuerpo?.tipo || 'aviso',
+          motivo: cuerpo?.motivo || '', creada: 0, por: USUARIO.id, vigente: true, created_at: hace(0),
+        };
+        sancionesDemo.unshift(nueva);
+        return json({ ok: true, id: nueva.id, tipo: nueva.tipo, hasta: null });
+      }
+      if (metodo === 'DELETE' && d) {
+        const i = sancionesDemo.findIndex((x) => x.id === Number(d));
+        if (i >= 0) sancionesDemo.splice(i, 1);
+        return json({ ok: true });
+      }
+      return json({
+        mando: true,
+        sanciones: sancionesDemo.map((x) => ({
+          ...x, ...miembroJSON(x.de), user_id: x.de,
+          username: miembroJSON(x.de).username,
+          display_name: miembroJSON(x.de).display_name,
+          hasta: null,
+          created_at: hace(x.creada),
+        })),
+      });
+    }
+    if (c === 'registro') {
+      return json({
+        registro: registroDemo.map((r) => ({
+          ...r, ...miembroJSON(r.de), display_name: miembroJSON(r.de).display_name, created_at: hace(r.creada),
+        })),
+      });
+    }
+
     if (c === 'posts') {
       if (metodo === 'POST') {
         const nueva = {
@@ -1140,8 +1357,16 @@ export function responder(metodo, ruta, cuerpo) {
     }
     if (metodo === 'POST') return json({ ok: true });
 
+    const elegido = gruposDemo.find((x) => x.id === gid) || grupoDemo;
     return json({
-      ...grupoDemo,
+      ...elegido,
+      mando: !!elegido.es_mio,
+      rules: reglasDemo.rules,
+      announcement: reglasDemo.announcement,
+      announcement_at: reglasDemo.announcement_at,
+      join_questions: reglasDemo.join_questions,
+      silenciado_hasta: null,
+      mi_solicitud: null,
       miembros_lista: [
         { ...miembroJSON(3), papel: 'owner' },
         { ...miembroJSON(4), papel: 'member' },

@@ -19,8 +19,13 @@ import { PostSkeleton } from '../components/Skeleton.jsx';
 import {
   IconUsers, IconPlus, IconCheck, IconSettings, IconLayers, IconChat, IconMore,
   IconEdit, IconLink, IconTrash, IconLogout, IconImage, IconShield,
+  IconCalendar, IconFile,
 } from '../components/Icons.jsx';
 import ChatGrupo from '../components/ChatGrupo.jsx';
+import {
+  AnuncioGrupo, EventosGrupo, ArchivosGrupo, ReglasGrupo,
+  SolicitudesGrupo, SancionesGrupo, HojaEntrar,
+} from '../components/GrupoExtra.jsx';
 
 export default function GrupoView({ id }) {
   const { user } = useAuth();
@@ -36,6 +41,8 @@ export default function GrupoView({ id }) {
   const [menu, setMenu] = useState(false);
   const [ocupadoMenu, setOcupadoMenu] = useState(false);
   const [ocupado, setOcupado] = useState(false);
+  // Hoja de preguntas para entrar (solo cuando el grupo las pide).
+  const [preguntando, setPreguntando] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -100,6 +107,10 @@ export default function GrupoView({ id }) {
         if (!ok) return;
         await api.del(`/api/groups/${grupo.id}/join`);
         toast.info('Has salido del grupo');
+      } else if ((grupo.join_questions || []).length > 0) {
+        // El grupo pide explicaciones: se contestan antes de entrar.
+        setPreguntando(true);
+        return;
       } else {
         await api.post(`/api/groups/${grupo.id}/join`, {});
         toast.ok('Ya estás dentro');
@@ -376,6 +387,14 @@ export default function GrupoView({ id }) {
           ))}
         </section>
 
+        {grupo.mando ? (
+          <section className="card ajustes-bloque">
+            <div className="titulo">Quién entra y quién cumple</div>
+            <SolicitudesGrupo grupoId={grupo.id} />
+            <SancionesGrupo grupoId={grupo.id} miembros={grupo.miembros_lista} />
+          </section>
+        ) : null}
+
         <section className="card ajustes-bloque">
           <div className="titulo">Zona sensible</div>
           {grupo.soy_miembro && !esMio ? (
@@ -513,6 +532,21 @@ export default function GrupoView({ id }) {
         </div>
       </header>
 
+      {grupo.announcement ? (
+        <AnuncioGrupo
+          texto={grupo.announcement}
+          cuando={grupo.announcement_at}
+          puedoQuitar={!!grupo.mando}
+          onQuitar={async () => {
+            try {
+              const r = await api.patch(`/api/groups/${grupo.id}/rules`, { announcement: '' });
+              setGrupo((g) => ({ ...g, announcement: r.announcement, announcement_at: r.announcement_at }));
+              toast.ok('Anuncio quitado');
+            } catch (e) { avisoError(e); }
+          }}
+        />
+      ) : null}
+
       <div className="cuerpo-grupo">
         <div className="columna-grupo">
           <div className="pestanas-grupo" role="tablist" aria-label="Secciones del grupo">
@@ -521,7 +555,7 @@ export default function GrupoView({ id }) {
               role="tab"
               aria-selected={vista === 'publicaciones'}
               className={vista === 'publicaciones' ? 'activa' : ''}
-              onClick={() => setVista('publicaciones')}
+              onClick={(e) => { setVista('publicaciones'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
             >
               <IconLayers /> Publicaciones
             </button>
@@ -530,7 +564,7 @@ export default function GrupoView({ id }) {
               role="tab"
               aria-selected={vista === 'chat'}
               className={vista === 'chat' ? 'activa' : ''}
-              onClick={() => setVista('chat')}
+              onClick={(e) => { setVista('chat'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
             >
               <IconChat /> Chat
               {chatNuevo ? <span className="punto-nuevo" aria-label="mensajes nuevos" /> : null}
@@ -538,9 +572,36 @@ export default function GrupoView({ id }) {
             <button
               type="button"
               role="tab"
+              aria-selected={vista === 'eventos'}
+              className={vista === 'eventos' ? 'activa' : ''}
+              onClick={(e) => { setVista('eventos'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
+            >
+              <IconCalendar /> Eventos
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={vista === 'archivos'}
+              className={vista === 'archivos' ? 'activa' : ''}
+              onClick={(e) => { setVista('archivos'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
+            >
+              <IconFile /> Archivos
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={vista === 'reglas'}
+              className={vista === 'reglas' ? 'activa' : ''}
+              onClick={(e) => { setVista('reglas'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
+            >
+              <IconShield /> Reglas
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={vista === 'ajustes'}
               className={vista === 'ajustes' ? 'activa' : ''}
-              onClick={() => setVista('ajustes')}
+              onClick={(e) => { setVista('ajustes'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
             >
               <IconSettings /> Ajustes
             </button>
@@ -569,6 +630,37 @@ export default function GrupoView({ id }) {
 
           {vista === 'ajustes' ? (
             <PanelAjustes />
+          ) : vista === 'eventos' ? (
+            grupo.soy_miembro || grupo.privacy !== 'private' ? (
+              <EventosGrupo grupoId={grupo.id} mando={!!grupo.mando} soyMiembro={!!grupo.soy_miembro} />
+            ) : (
+              <div className="aviso-grupo">
+                <IconCalendar />
+                <p>Este grupo es privado: entra para ver y crear eventos.</p>
+                <button type="button" className="btn btn-aurora btn-sm" onClick={entrarOSalir} disabled={ocupado}>
+                  Entrar al grupo
+                </button>
+              </div>
+            )
+          ) : vista === 'archivos' ? (
+            grupo.soy_miembro || grupo.privacy !== 'private' ? (
+              <ArchivosGrupo grupoId={grupo.id} soyMiembro={!!grupo.soy_miembro} />
+            ) : (
+              <div className="aviso-grupo">
+                <IconFile />
+                <p>Entra al grupo para compartir y descargar archivos.</p>
+                <button type="button" className="btn btn-aurora btn-sm" onClick={entrarOSalir} disabled={ocupado}>
+                  Entrar al grupo
+                </button>
+              </div>
+            )
+          ) : vista === 'reglas' ? (
+            <ReglasGrupo
+              grupoId={grupo.id}
+              grupo={grupo}
+              mando={!!grupo.mando}
+              onCambio={(r) => setGrupo((g) => ({ ...g, ...r }))}
+            />
           ) : vista === 'chat' ? (
             <ChatGrupo
               grupo={grupo}
@@ -647,6 +739,14 @@ export default function GrupoView({ id }) {
           ) : null}
         </aside>
       </div>
+
+      {preguntando ? (
+        <HojaEntrar
+          grupo={grupo}
+          onCerrar={() => setPreguntando(false)}
+          onDentro={() => cargar()}
+        />
+      ) : null}
     </>
   );
 }

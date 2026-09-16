@@ -12,6 +12,7 @@ import { notificar, enviarA } from './ws.mjs';
 import { empujarSiQuiere } from './empuje.mjs';
 import { demasiadoRapido } from './limites.mjs';
 import { SQL_POST, conImagenes, aPublicacion } from './rutas-social.mjs';
+import { silenciadoEn, ROLES_MANDO } from './rutas-grupos-extra.mjs';
 
 /** Convierte un nombre en su dirección corta (solo letras, números y guiones). */
 function aSlug(nombre) {
@@ -41,6 +42,11 @@ function aGrupo(g, yo) {
     owner_username: g.owner_username || '',
     owner_display_name: g.owner_display_name || g.owner_username || '',
     created_at: g.created_at,
+    // Reglas y anuncio: van en la ficha del grupo (los lee quien entra).
+    rules: g.rules || '',
+    announcement: g.announcement || '',
+    announcement_at: g.announcement_at ? String(g.announcement_at) : null,
+    preguntas_entrada: Array.isArray(g.join_questions) ? g.join_questions.length : 0,
   };
 }
 
@@ -155,8 +161,32 @@ export function registrarRutasGrupos(router) {
       [id]
     );
 
+    // Lo que se ve al abrir el grupo: reglas, anuncio fijado, con qué
+    // preguntas se entra y si tengo solicitud o sanción pendientes.
+    const solicitud = await uno(
+      c.pool,
+      `SELECT id, estado FROM group_join_requests
+        WHERE group_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`,
+      [id, yo.id]
+    );
+    const sancion = await silenciadoEn(c.pool, id, yo.id);
+    const mando = ROLES_MANDO.has(grupo.mi_papel || '');
+    // Lo que solo ve quien está dentro del grupo.
+    const privado = {
+      rules: grupo.rules || '',
+      announcement: grupo.announcement || '',
+      announcement_at: grupo.announcement_at ? String(grupo.announcement_at) : null,
+      join_questions: Array.isArray(grupo.join_questions) ? grupo.join_questions : [],
+    };
+
     return {
       ...aGrupo(grupo, yo.id),
+      mando,
+      silenciado_hasta: sancion?.hasta ? String(sancion.hasta) : null,
+      mi_solicitud: solicitud ? { id: Number(solicitud.id), estado: solicitud.estado } : null,
+      ...(grupo.soy_miembro || grupo.privacy !== 'private'
+        ? privado
+        : { rules: '', announcement: '', announcement_at: null, join_questions: privado.join_questions }),
       miembros_lista: miembros.map((m) => ({
         id: Number(m.id),
         username: m.username,
@@ -362,6 +392,9 @@ export function registrarRutasGrupos(router) {
     );
     if (!grupo) throw new ApiErr('Grupo no encontrado', 404);
     if (!grupo.soy_miembro) throw new ApiErr('Entra al grupo para publicar en él', 403);
+    if (await silenciadoEn(c.pool, id, yo.id)) {
+      throw new ApiErr('Estás en silencio en este grupo por un rato', 403, 'silenciado');
+    }
 
     const b = await c.cuerpo();
     const contenido = texto(b.content || '', { min: 0, max: 2000, campo: 'contenido' }).trim();
@@ -520,6 +553,9 @@ export function registrarRutasGrupos(router) {
   router.post('/api/groups/:id/messages', async (c) => {
     const id = Number(c.params.id);
     const { yo, grupo } = await grupoDeMiembro(c, id);
+    if (await silenciadoEn(c.pool, id, yo.id)) {
+      throw new ApiErr('Estás en silencio en este grupo por un rato', 403, 'silenciado');
+    }
     if (demasiadoRapido(`chat:${yo.id}`, 30, 60_000)) {
       throw new ApiErr('Vas demasiado rápido: espera unos segundos', 429, 'rate_limit');
     }

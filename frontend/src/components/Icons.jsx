@@ -122,6 +122,12 @@ export const IconGlobe = (p) => (
 export const IconCalendar = (p) => (
   <svg {...S(p)}><rect x="3.5" y="5" width="17" height="16" rx="3" /><path d="M8 3v4M16 3v4M3.5 10h17" /></svg>
 );
+export const IconFile = (p) => (
+  <svg {...S(p)}><path d="M14 3v5h5" /><path d="M19 8v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7Z" /></svg>
+);
+export const IconClock = (p) => (
+  <svg {...S(p)}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>
+);
 export const IconLink = (p) => (
   <svg {...S(p)}><path d="M10 13.5a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1.2 1.2" /><path d="M14 10.5a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1.2-1.2" /></svg>
 );
