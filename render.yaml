@@ -50,3 +50,8 @@ services:
         sync: false
       - key: MOON_UPLOADS
         value: /opt/render/project/src/uploads
+      # Canario de despliegue: si aparece en /api/health, confirma que este
+      # servicio se vuelve a publicar solo al subir código a esta rama y que
+      # Render aplica las variables de este archivo. (Sin secretos.)
+      - key: MOON_CANARIO
+        value: canario-20260917-a

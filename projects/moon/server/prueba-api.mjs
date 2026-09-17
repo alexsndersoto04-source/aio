@@ -224,6 +224,12 @@ if (esAdmin) {
 
   const sinPermiso = await pedir('GET', '/api/admin/dashboard', { token: tokenB, crudo: true });
   comprobar('una cuenta normal no entra a administración', sinPermiso.estado === 403, String(sinPermiso.estado));
+
+  const migracionSinDestino = await pedir('POST', '/api/admin/migrate', { token: tokenA, crudo: true });
+  comprobar('migración sin base nueva se rechaza con mensaje claro', migracionSinDestino.estado === 400, String(migracionSinDestino.estado));
+
+  const migracionSinPermiso = await pedir('POST', '/api/admin/migrate', { token: tokenB, crudo: true });
+  comprobar('una cuenta normal no puede migrar la base', migracionSinPermiso.estado === 403, String(migracionSinPermiso.estado));
 } else {
   console.log('  (omitido) administración: la cuenta de prueba no es administradora');
 }

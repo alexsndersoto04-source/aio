@@ -15,7 +15,7 @@ import pg from 'pg';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { filas, q, uno } from './db.mjs';
+import { filas, q, uno, migrar } from './db.mjs';
 
 const aqui = dirname(fileURLToPath(import.meta.url));
 const rutaEsquema = resolve(aqui, '../esquema.json');
@@ -117,15 +117,19 @@ export async function migrarA(pool, urlDestino) {
     throw new Error(`No se pudo conectar con la base nueva: ${e.message}`);
   }
 
-  const informe = { tablas: {}, fotos: { origen: 0, destino: 0 }, secuencias: 0 };
+  const informe = { tablas: {}, fotos: { origen: 0, destino: 0 }, secuencias: 0, esquema_creado: false };
 
   try {
-    // El esquema debe estar aplicado en la base nueva.
+    // Si la base nueva está completamente vacía (sin esquema), se crea el
+    // esquema SOLO: se aplican las mismas migraciones que usa el servidor.
+    // Así la mudanza a una base nueva (Neon) no requiere ningún paso manual.
     const tEsquema = await destino.query(
       `SELECT to_regclass('public.schema_migrations') AS existe`
     );
     if (!tEsquema.rows[0].existe) {
-      throw new Error('La base nueva todavía no tiene el esquema (las tablas). Aplica el archivo de esquema primero (Tarea 1).');
+      const nuevas = await migrar(dest);
+      console.log(`[migracion] esquema creado en la base nueva (${nuevas} migraciones)`);
+      informe.esquema_creado = true;
     }
 
     // Solo migramos a una base vacía: así nunca se pisan datos.

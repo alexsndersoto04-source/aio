@@ -35,7 +35,9 @@ import { servirWeb, estadoWeb } from './estatico.mjs';
 import { ApiErr } from './util.mjs';
 
 const PUERTO = Number(process.env.PORT || 3000);
-const URL_BD = process.env.DATABASE_URL || 'postgres://moon@127.0.0.1:5432/moon';
+// MOON_DB_OVERRIDE permite cambiar la base en uso sin tocar la variable del
+// panel (se fija desde render.yaml); si no existe, manda DATABASE_URL.
+const URL_BD = process.env.MOON_DB_OVERRIDE || process.env.DATABASE_URL || 'postgres://moon@127.0.0.1:5432/moon';
 const SECRETO = process.env.JWT_SECRET || '';
 const BASE_PUBLICA = process.env.PUBLIC_BASE_URL || '';
 const ORIGENES = (process.env.CORS_ORIGIN || '*').split(',').map((s) => s.trim()).filter(Boolean);
@@ -181,6 +183,8 @@ router.get('/api/health', async (c) => {
     app: 'moon',
     time: new Date().toISOString(),
     db: bd,
+    base: destinoVisible(URL_BD),
+    canario: process.env.MOON_CANARIO || null,
     fotos_en_base: fotosEnBase,
     correo: correoConfigurado() ? viaDeCorreo() : 'sin configurar',
   };
