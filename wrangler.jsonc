@@ -1,0 +1,13 @@
+// Moon — web estática en Cloudflare Workers
+// ============================================================
+// El frontend compilado (frontend/dist) se sirve desde la red de
+// Cloudflare. El API sigue viviendo en su propio servicio: cuando la
+// web corre aquí, VITE_API_URL apunta a él.
+{
+  "name": "moon",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./frontend/dist",
+    "not_found_handling": "single-page-application"
+  }
+}

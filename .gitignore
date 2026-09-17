@@ -48,3 +48,6 @@ projects/moon/uploads/
 projects/moon/server/.jwt-secret
 projects/moon/server/node_modules/
 projects/moon/uploads/
+
+# Cloudflare (builds locales)
+.wrangler/
