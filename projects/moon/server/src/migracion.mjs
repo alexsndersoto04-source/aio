@@ -20,8 +20,10 @@ import { filas, q, uno } from './db.mjs';
 const aqui = dirname(fileURLToPath(import.meta.url));
 const rutaEsquema = resolve(aqui, '../esquema.json');
 
-// Orden de copia = orden en que el esquema crea las tablas (respeta claves
-// foráneas). Se lee del propio esquema, no se hardcodea.
+// Orden de copia: primero el orden del esquema, luego se reordena según las
+// dependencias reales (claves foráneas). Así una tabla que referencia a otra
+// (p. ej. posts.group_id → groups, añadida por una migración tardía) se copia
+// DESPUÉS de la que referencia.
 function ordenTablas() {
   const migraciones = JSON.parse(readFileSync(rutaEsquema, 'utf8'));
   const orden = [];
@@ -36,6 +38,52 @@ function ordenTablas() {
     }
   }
   return orden;
+}
+
+/** Reordena `tablas` para que ninguna se copie antes de las que referencia. */
+async function ordenPorDependencias(pool, tablas) {
+  const enLista = new Set(tablas);
+  const dependeDe = {};
+  for (const t of tablas) {
+    const r = await filas(
+      pool,
+      `SELECT DISTINCT tgt.relname AS refiere
+         FROM pg_constraint con
+         JOIN pg_class src ON src.oid = con.conrelid
+         JOIN pg_class tgt ON tgt.oid = con.confrelid
+        WHERE con.contype = 'f' AND src.relname = $1 AND tgt.relname <> src.relname`,
+      [t]
+    );
+    dependeDe[t] = r.filter((x) => enLista.has(x.refiere)).map((x) => x.refiere);
+  }
+  const restantes = new Set(tablas);
+  const orden = [];
+  while (restantes.size) {
+    let avanzo = false;
+    for (const t of [...restantes]) {
+      if (dependeDe[t].every((d) => !restantes.has(d))) {
+        orden.push(t);
+        restantes.delete(t);
+        avanzo = true;
+      }
+    }
+    if (!avanzo) {
+      // Ciclo de referencias (no debería ocurrir): se agregan las restantes.
+      for (const t of [...restantes]) orden.push(t);
+      break;
+    }
+  }
+  return orden;
+}
+
+// Convierte el valor leído en un parámetro seguro para el INSERT:
+// Buffer (bytea) y Date los maneja pg; los objetos (columnas JSON/JSONB)
+// hay que serializarlos, porque pg no sabe qué hacer con un objeto.
+function valorParametro(v) {
+  if (v === null || v === undefined) return null;
+  if (Buffer.isBuffer(v) || v instanceof Date) return v;
+  if (typeof v === 'object') return JSON.stringify(v);
+  return v;
 }
 
 function esLocal(url) {
@@ -98,11 +146,14 @@ export async function migrarA(pool, urlDestino) {
        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`
     );
     const realesSet = new Set(reales.map((r) => r.table_name));
-    const copia = orden.filter((t) => realesSet.has(t));
+    let copia = orden.filter((t) => realesSet.has(t));
     // Por si apareció una tabla nueva que el esquema no conoce.
     for (const r of reales) {
       if (!copia.includes(r.table_name) && r.table_name !== 'schema_migrations') copia.push(r.table_name);
     }
+    // Reordena por dependencias reales (claves foráneas): posts no se copia
+    // antes que groups, aunque el esquema haya creado posts primero.
+    copia = await ordenPorDependencias(pool, copia);
 
     const LOTE = 200;
     for (const tabla of copia) {
@@ -128,7 +179,7 @@ export async function migrarA(pool, urlDestino) {
         for (const fila of filasLote) {
           const base = valores.length;
           marcadores.push(`(${cols.map((_, i) => '$' + (base + i + 1)).join(', ')})`);
-          for (const c of cols) valores.push(fila[c.column_name]);
+          for (const c of cols) valores.push(valorParametro(fila[c.column_name]));
         }
         try {
           await destino.query(

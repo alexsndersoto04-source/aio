@@ -12,7 +12,8 @@
 //   MOON_UPLOADS    carpeta de imágenes (por defecto ../../uploads)
 
 import { createServer } from 'node:http';
-import { crearPool, migrar } from './db.mjs';
+import { crearPool, migrar, auditar } from './db.mjs';
+import { migrarA } from './migracion.mjs';
 import { crearRouter, crearContexto, cors, manejadorErrores, json } from './nucleo.mjs';
 import { registrarRutasAuth } from './rutas-auth.mjs';
 import { registrarRutasSocial } from './rutas-social.mjs';
@@ -125,6 +126,27 @@ function destinoVisible(cadena) {
 }
 
 await prepararBase();
+
+// Migración automática (una sola vez): si MOON_MIGRATE_DEST está definido,
+// se copia todo a la base nueva al arrancar. Solo migra a una base VACÍA con
+// su esquema ya aplicado (ver migracion.mjs). Así la mudanza a Neon no
+// requiere tocar nada más: se pone la variable, se despliega, y se copia solo.
+const DESTINO_MIGRACION = process.env.MOON_MIGRATE_DEST || '';
+if (DESTINO_MIGRACION) {
+  migrarA(pool, DESTINO_MIGRACION)
+    .then((informe) => {
+      console.log(
+        `[migracion] automática lista: ${informe.total_filas} filas en ${Object.keys(informe.tablas).length} tablas, fotos ${informe.fotos.destino} bytes (verificado). ` +
+        'Ya se puede cambiar DATABASE_URL a la base nueva y quitar MOON_MIGRATE_DEST.'
+      );
+      auditar(pool, null, 'migracion_automatica', `${informe.total_filas} filas a la base nueva`).catch(() => {});
+    })
+    .catch((e) => {
+      // No tumba el servicio: si la base nueva no está lista (sin esquema o ya
+      // tiene datos), se queda tal cual y se corrige volviendo a desplegar.
+      console.error('[migracion] automática no se ejecutó:', e.message);
+    });
+}
 
 const router = crearRouter();
 registrarRutasAuth(router);
