@@ -7,6 +7,7 @@ import { ApiErr, texto, paginacion, qs, booleano } from './util.mjs';
 import { uno } from './db.mjs';
 import { auditar } from './db.mjs';
 import { volcarBase, copiaPorCorreo } from './copias.mjs';
+import { migrarA } from './migracion.mjs';
 import { enviarA } from './ws.mjs';
 import { demasiadoRapido } from './limites.mjs';
 
@@ -290,5 +291,32 @@ export function registrarRutasAdmin(router) {
       page,
       limit,
     };
+  });
+
+  // ---------- Migración a otra base de datos (una sola vez) ----------
+  // El servidor (que SÍ puede hablar con ambas bases) copia todo desde su
+  // base actual a la base nueva indicada en MOON_MIGRATE_DEST. Se usa una
+  // vez, para mudarse a Neon sin perder nada.
+  router.post('/api/admin/migrate', async (c) => {
+    await c.admin();
+    if (demasiadoRapido('migrar', 3, 600_000)) {
+      throw new ApiErr('Demasiados intentos seguidos: espera unos minutos', 429, 'rate_limit');
+    }
+    const destino = process.env.MOON_MIGRATE_DEST || '';
+    if (!destino) {
+      throw new ApiErr(
+        'Falta la variable MOON_MIGRATE_DEST en Render (pégala como se indica en la guía).',
+        400,
+        'sin_destino'
+      );
+    }
+    try {
+      const informe = await migrarA(c.pool, destino);
+      await auditar(c.pool, c.userId, 'base_migrada', `${informe.total_filas} filas a la base nueva`, c.ip);
+      console.log(`[migracion] ${informe.total_filas} filas copiadas a la base nueva (verificado)`);
+      return { ok: true, ...informe };
+    } catch (e) {
+      throw new ApiErr(e.message || 'No se pudo migrar', 400, 'migracion');
+    }
   });
 }

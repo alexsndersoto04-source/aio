@@ -14,6 +14,7 @@ const REPORT_PILL = { open: 'warn', resolved: 'ok', dismissed: 'info' };
 function SeccionCopias() {
   const [busy, setBusy] = useState('');
   const [hechas, setHechas] = useState([]);
+  const [migrado, setMigrado] = useState(null); // informe de la migración
 
   async function descargar() {
     setBusy('descargar');
@@ -57,8 +58,57 @@ function SeccionCopias() {
     }
   }
 
+  async function migrar() {
+    const ok = await confirmar({
+      title: '¿Migrar TODO a la base nueva?',
+      message:
+        'Se copian todos los datos (usuarios, publicaciones, mensajes, fotos) a la base nueva que está en MOON_MIGRATE_DEST. La base nueva debe estar vacía. Después de esto, en Render se cambia DATABASE_URL por la nueva. No se borra nada de la base actual.',
+      confirmText: 'Migrar todo',
+    });
+    if (!ok) return;
+    setBusy('migrar');
+    try {
+      const r = await api.post('/api/admin/migrate', {});
+      setMigrado(r);
+      toast.ok(`Migración lista: ${r.total_filas} filas copiadas y verificadas.`);
+    } catch (e) {
+      setMigrado(null);
+      avisoError(e);
+    } finally {
+      setBusy('');
+    }
+  }
+
   return (
     <>
+      <div className="card ajustes-bloque">
+        <div className="titulo">Migración a la base nueva (una sola vez)</div>
+        <div className="fila-ajuste">
+          <span className="icono"><IconShield /></span>
+          <span className="texto">
+            <b>Copiar todo a la base nueva</b>
+            <small>Copia usuarios, publicaciones, mensajes, grupos y fotos (incluidas) a la base de datos nueva. Sirve para mudarse a Neon sin perder nada. La base nueva debe estar vacía y con su esquema aplicado.</small>
+          </span>
+          <button className="btn btn-primary btn-sm" onClick={migrar} disabled={busy === 'migrar'}>
+            {busy === 'migrar' ? 'Copiando…' : 'Migrar todo'}
+          </button>
+        </div>
+        {migrado ? (
+          <div className="fila-ajuste">
+            <span className="icono"><IconCheck /></span>
+            <span className="texto">
+              <b>Migración completada y verificada</b>
+              <small>
+                {migrado.total_filas} filas copiadas · {Object.keys(migrado.tablas).length} tablas
+                {migrado.fotos && migrado.fotos.origen > 0
+                  ? ` · fotos ${migrado.fotos.destino === migrado.fotos.origen ? '✓ intactas' : '⚠ revisa'}`
+                  : ''}
+                . Ahora en Render: cambia DATABASE_URL por la de la base nueva y quita MOON_MIGRATE_DEST.
+              </small>
+            </span>
+          </div>
+        ) : null}
+      </div>
       <div className="card ajustes-bloque">
         <div className="titulo">Copia de seguridad</div>
         <div className="fila-ajuste">

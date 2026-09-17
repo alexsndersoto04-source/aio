@@ -39,7 +39,7 @@ async function pedir(metodo, ruta, { cuerpo, token, refresco, crudo } = {}) {
   const texto = await res.text();
   let datos = null;
   try { datos = texto ? JSON.parse(texto) : null; } catch { datos = texto; }
-  if (crudo) return { estado: res.status, datos };
+  if (crudo) return { estado: res.status, texto, datos };
   if (res.status >= 400) {
     const e = new Error(datos?.error || `HTTP ${res.status}`);
     e.estado = res.status;

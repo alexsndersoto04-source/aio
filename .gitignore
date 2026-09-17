@@ -51,3 +51,6 @@ projects/moon/uploads/
 
 # Cloudflare (builds locales)
 .wrangler/
+
+# Empaquetado para subida a Cloudflare (se entrega por el visor, no al repo)
+moon-web-cloudflare.zip
