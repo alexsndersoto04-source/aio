@@ -65,10 +65,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          html=$(curl -s -H 'Cache-Control: no-cache' 'https://moon.alexsndersoto04.workers.dev/?verifica=1')
+          nonce="$RANDOM$RANDOM$RANDOM"
+          html=$(curl -s -D /tmp/hdr.txt -H 'Cache-Control: no-cache' "https://moon.alexsndersoto04.workers.dev/?nocache=$nonce")
+          cache=$(grep -i '^cf-cache-status' /tmp/hdr.txt | tr -d '\r' || echo "cf-cache-status: (sin cabecera)")
           {
-            echo "### Lo que sirve la web en vivo ahora"
+            echo "### Verificación en vivo"
+            echo
+            echo "**Compilado por el runner (dist/index.html):**"
             echo '```'
+            grep -oE 'assets/[^"]+\.(css|js)' frontend/dist/index.html | sort -u || echo "(sin dist)"
+            echo '```'
+            echo "**Lo que sirve la URL ahora (nonce $nonce):**"
+            echo '```'
+            echo "$cache"
             echo "$html" | grep -oE 'assets/[^"]+\.(css|js)' | sort -u || echo "(no se detectaron assets)"
             echo '```'
           } > /tmp/vivo.md
