@@ -162,8 +162,17 @@ body, .marco { background: var(--bg); }
   border: 0 !important;
 }
 
-/* ---------- Historias: aro neutro compacto ---------- */
-.historia .aro { background: var(--line-strong) !important; }
+/* ---------- Historias: UNA fila, la tuya al lado del "+", sin hueco ---------- */
+.historias {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+  gap: 14px !important;
+  overflow-x: auto !important;
+  padding: 10px 12px !important;
+}
+.historia { flex: 0 0 auto !important; width: 76px !important; }
+.historia .aro { background: var(--line-strong) !important; width: 62px; height: 62px; }
 .historia.crear .relleno { background: var(--surface-3) !important; color: var(--accent); }
 
 /* ---------- Posts ---------- */
@@ -181,11 +190,7 @@ body, .marco { background: var(--bg); }
 .bottom-nav a svg { width: 24px; height: 24px; stroke-width: 1.6; }
 .bottom-nav a.active { color: var(--accent) !important; }
 .bottom-nav a.active::before { display: none; }
-.bottom-nav a.active::after {
-  content: ''; position: absolute; left: 50%; bottom: 5px;
-  width: 4px; height: 4px; border-radius: 50%;
-  background: var(--accent); transform: translateX(-50%);
-}
+.bottom-nav a.active::after { content: none; }
 
 /* ---------- Interruptores discretos ---------- */
 .switch .track { background: var(--line-strong) !important; }
