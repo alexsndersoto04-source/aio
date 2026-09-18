@@ -61,6 +61,19 @@ jobs:
           npx --yes wrangler@4 whoami 2>&1 | tee /tmp/subida.txt
           npx --yes wrangler@4 deploy 2>&1 | tee -a /tmp/subida.txt
 
+      - name: Leer lo que sirve la URL en vivo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          html=$(curl -s -H 'Cache-Control: no-cache' 'https://moon.alexsndersoto04.workers.dev/?verifica=1')
+          {
+            echo "### Lo que sirve la web en vivo ahora"
+            echo '```'
+            echo "$html" | grep -oE 'assets/[^"]+\.(css|js)' | sort -u || echo "(no se detectaron assets)"
+            echo '```'
+          } > /tmp/vivo.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/vivo.md --jq '.html_url'
+
       - name: Publicar el resultado en el commit
         if: always()
         env:
