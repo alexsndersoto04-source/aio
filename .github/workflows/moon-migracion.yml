@@ -1,0 +1,56 @@
+# Moon — migración a Cloudflare · Paso 1: crear D1 y R2
+# =================================================
+# Crea la base de datos D1 y el bucket R2 (para las fotos) en la cuenta de
+# Cloudflare, usando el token del secreto. No sube nada más ni toca lo que ya
+# funciona. El resultado (los identificadores reales que devuelve Cloudflare)
+# se publica como comentario del commit, para poder verificarlo desde fuera.
+name: Moon — crear D1 y R2 (paso 1)
+
+on:
+  push:
+    branches: ["arena/01a0b287-aio"]
+    paths: [".github/workflows/moon-migracion.yml"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moon-migracion
+  cancel-in-progress: false
+
+jobs:
+  crear:
+    name: Crear D1 y R2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Crear la base D1 y el bucket R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: deee939ddd994301e8c00525b3091cde
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          {
+            echo "### Paso 1 — D1 y R2 en Cloudflare"
+            echo '```'
+            echo "— Bases D1 actuales —"
+            npx --yes wrangler@4 d1 list 2>&1 | tee /tmp/d1.txt
+            if grep -q "moon-d1" /tmp/d1.txt; then
+              echo "moon-d1 ya existe, no se crea de nuevo."
+            else
+              echo "— Creando moon-d1 —"
+              npx --yes wrangler@4 d1 create moon-d1 2>&1
+            fi
+            echo
+            echo "— Buckets R2 actuales —"
+            npx --yes wrangler@4 r2 bucket list 2>&1
+            echo "— Creando moon-media —"
+            npx --yes wrangler@4 r2 bucket create moon-media 2>&1 || echo "(no se pudo crear; quizá ya existe o falta activar R2)"
+            echo '```'
+          } > /tmp/out.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/out.md --jq '.html_url'
