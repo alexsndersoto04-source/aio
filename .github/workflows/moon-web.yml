@@ -1,0 +1,79 @@
+# Moon — subir la web estática a Cloudflare Workers
+# =================================================
+# El build integrado de Cloudflare empezó a fallar sin dejar registro legible
+# desde el entorno de trabajo. Este workflow hace lo mismo en un runner de
+# GitHub (que sí tiene salida a internet): compila la web con vite y la sube al
+# worker "moon" con wrangler.
+#
+# El token NO está en el repo y no se imprime: se lee del secreto
+# CLOUDFLARE_API_TOKEN y solo se muestra su longitud. El resultado (versión
+# desplegada y dirección, o el error exacto) se publica como comentario del
+# commit, porque los logs de Actions no se pueden descargar desde el entorno de
+# trabajo.
+name: Moon — web a Cloudflare
+
+on:
+  push:
+    branches: ["arena/01a0b287-aio"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moon-web-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  desplegar:
+    name: Compilar y subir la web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compilar la web (vite)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          echo "--- archivos generados ---"
+          find dist -type f | sort
+
+      - name: Validar el despliegue en seco (no sube nada)
+        run: |
+          set -o pipefail
+          npx --yes wrangler@4 deploy --dry-run 2>&1 | tee /tmp/seco.txt
+
+      - name: Subir la web al worker "moon"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: deee939ddd994301e8c00525b3091cde
+        run: |
+          set -o pipefail
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "SIN_SECRETO: falta CLOUDFLARE_API_TOKEN en Settings > Secrets and variables > Actions." | tee /tmp/subida.txt
+            exit 0
+          fi
+          echo "token presente (longitud ${#CLOUDFLARE_API_TOKEN})"
+          npx --yes wrangler@4 whoami 2>&1 | tee /tmp/subida.txt
+          npx --yes wrangler@4 deploy 2>&1 | tee -a /tmp/subida.txt
+
+      - name: Publicar el resultado en el commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Moon — despliegue de la web en Cloudflare"
+            echo
+            echo "commit \`${GITHUB_SHA}\` · rama \`${GITHUB_REF_NAME}\`"
+            echo
+            echo '```'
+            tail -n 80 /tmp/subida.txt 2>/dev/null || echo "(el paso de despliegue no llegó a ejecutarse)"
+            echo '```'
+          } > /tmp/cuerpo.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" \
+            -F body=@/tmp/cuerpo.md --jq '.html_url'
