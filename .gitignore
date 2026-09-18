@@ -30,11 +30,7 @@ node_modules/
 
 # Frontend build
 frontend/node_modules/
-# frontend/dist NO se ignora a propósito:
-# el build de Cloudflare Workers no ejecuta "npm run build" (no hay comando de
-# build configurable desde aquí), así que la web compilada viaja en el repo para
-# que el despliegue tenga los archivos sin tocar ningún panel. Si algún día se
-# configura el comando de build en Cloudflare, vuelve a ignorar esta carpeta.
+frontend/dist/
 
 
 # Moon: artefactos locales (binario, secretos, cluster postgres)
