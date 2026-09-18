@@ -1,0 +1,16 @@
+// Moon — config de Cloudflare Workers dentro de frontend/
+// ============================================================
+// Espejo del wrangler.jsonc de la raíz, con rutas relativas a este
+// directorio. Existe para que Workers Builds de Cloudflare (que puede
+// ejecutar su pipeline con frontend/ como directorio raíz) encuentre
+// la config del worker "moon" y los assets ya compilados (dist/
+// se versiona a propósito). Si despliegas desde la raíz, manda el
+// wrangler.jsonc de la raíz; este archivo no estorba en ese caso.
+{
+  "name": "moon",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
