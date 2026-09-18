@@ -4,6 +4,8 @@
 // publicaciones, la rejilla de fotos, mis grupos y lo que guardé.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import Imagen from '../components/Imagen.jsx';
+import { IlustraInicio, IlustraFotos, IlustraMensajes, IlustraGrupos, IlustraBusqueda } from '../components/Ilustraciones.jsx';
 import { api, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import PostCard from '../components/PostCard.jsx';
@@ -74,7 +76,7 @@ function MisComentarios({ items }) {
   if (items.length === 0) {
     return (
       <div className="card empty">
-        <div className="moon-emoji">💬</div>
+        <IlustraMensajes />
         <h3>Todavía no comentaste nada</h3>
         <p>Cuando comentes una publicación aparecerá aquí, con su enlace.</p>
       </div>
@@ -100,7 +102,7 @@ function MisEtiquetas({ etiquetas, posts, onDejar }) {
   if (etiquetas.length === 0) {
     return (
       <div className="card empty">
-        <div className="moon-emoji">#️⃣</div>
+        <IlustraBusqueda />
         <h3>No sigues ninguna etiqueta</h3>
         <p>En Explorar puedes seguir #temas y verlos juntos aquí.</p>
         <a className="btn" href="#/explore">Explorar etiquetas</a>
@@ -135,7 +137,7 @@ function RejillaFotos({ posts, comentar }) {
   if (fotos.length === 0) {
     return (
       <div className="card empty">
-        <div className="moon-emoji">🌙</div>
+        <IlustraFotos />
         <h3>Sin fotos todavía</h3>
         <p>Cuando publiques imágenes aparecerán aquí, en rejilla.</p>
       </div>
@@ -145,7 +147,7 @@ function RejillaFotos({ posts, comentar }) {
     <div className="rejilla-perfil">
       {fotos.map((f, i) => (
         <a key={f.id || i} href={`#/post/${f.post.id}`} aria-label="Abrir la publicación">
-          <img src={imgUrl(f.original_url || f.url)} alt="" loading="lazy" />
+          <Imagen src={f.original_url || f.url} alt="" ratio="1 / 1" />
           <span className="me-gusta"><IconHeart filled /> {f.post.likes_count || 0}</span>
         </a>
       ))}
@@ -164,7 +166,7 @@ function MisGrupos() {
   if (grupos.length === 0) {
     return (
       <div className="card empty">
-        <div className="moon-emoji">👥</div>
+        <IlustraGrupos />
         <h3>Todavía no estás en grupos</h3>
         <p>Los grupos reúnen a la gente por tema. Puedes crear el tuyo.</p>
         <a className="btn" href="#/grupos">Ver grupos</a>
@@ -399,7 +401,7 @@ export default function ProfileView({ tab }) {
 
       {!loading && section === 'posts' && posts.length === 0 ? (
         <div className="card empty">
-          <div className="moon-emoji">🌙</div>
+          <IlustraInicio />
           <h3>Aún no publicaste nada</h3>
           <p>Tu primera publicación aparecerá aquí.</p>
         </div>
@@ -420,7 +422,7 @@ export default function ProfileView({ tab }) {
       {!loading && section === 'me-gusta' ? (
         likes.length === 0 ? (
           <div className="card empty">
-            <div className="moon-emoji">❤️</div>
+            <IlustraInicio />
             <h3>Sin me gusta todavía</h3>
             <p>Lo que te guste aparece aquí para volver a encontrarlo.</p>
           </div>

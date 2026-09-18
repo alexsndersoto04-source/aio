@@ -1,0 +1,172 @@
+/* ============================================================
+   Moon · Capa de acabado de producto
+   ============================================================
+   Se carga al final, por encima de styles/aurora/refinar: es la capa que
+   decide cómo se SIENTE la app al usarla. Cuatro cosas, todas medibles:
+
+   1. Las fotos nunca hacen saltar la pantalla: la caja nace con su
+      proporción definitiva y la imagen entra desenfocada hasta aterrizar.
+   2. Cambiar de pantalla es una transición, no un corte.
+   3. Lo que entra en el campo de vista, entra con un gesto corto.
+   4. Todo lo que se puede tocar responde al toque.
+
+   El movimiento dura entre 160 y 420 ms y se apaga solo si el sistema
+   pide menos animación.
+   ============================================================ */
+
+/* ---------- 1. Foto con carga progresiva ---------- */
+.foto {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--ratio, 4 / 5);
+  overflow: hidden;
+  background: var(--tono, var(--surface-3));
+  background-color: var(--surface-3);
+}
+.foto img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transform: scale(1.06);
+  filter: blur(18px);
+  transition:
+    opacity 340ms ease-out,
+    filter 420ms ease-out,
+    transform 720ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+.foto-lista img {
+  opacity: 1;
+  transform: scale(1);
+  filter: blur(0);
+}
+/* Cuando la foto no llega, la caja no se queda en blanco: avisa. */
+.foto-fallo {
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+}
+.foto-fallo img { display: none; }
+.foto-aviso svg { width: 28px; height: 28px; opacity: 0.7; }
+
+/* Avatares: la misma caja progresiva, pero sin proporción forzada. */
+.avatar .foto { aspect-ratio: 1 / 1; height: 100%; border-radius: inherit; }
+.avatar .foto img { filter: blur(10px); }
+
+/* ---------- 2. Rejilla de fotos: proporción conocida desde el primer momento ---------- */
+.post-images { aspect-ratio: var(--ratio-caja, 4 / 5); max-height: 660px; }
+.post-images.count-1 { --ratio-caja: 4 / 5; grid-template-columns: 1fr; }
+.post-images.count-2 { --ratio-caja: 16 / 10; grid-template-columns: 1fr 1fr; }
+.post-images.count-3 { --ratio-caja: 4 / 3; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.post-images.count-4 { --ratio-caja: 1 / 1; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.post-images .foto { aspect-ratio: auto; height: 100%; min-height: 0; }
+.post-images .foto img { max-height: none; transition:
+    opacity 340ms ease-out,
+    filter 420ms ease-out,
+    transform 720ms cubic-bezier(0.22, 1, 0.36, 1); }
+.post-images:hover .foto-lista img { transform: scale(1.02); }
+
+/* ---------- 3. Ilustraciones de los huecos vacíos ---------- */
+.ilustra {
+  display: inline-block;
+  width: 132px;
+  height: 106px;
+  margin-bottom: 14px;
+  color: var(--ink-3);
+  opacity: 0.9;
+  animation: ilustra-entra 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.ilustra svg { width: 100%; height: 100%; overflow: visible; }
+.ilustra-suave { opacity: 0.45; }
+.ilustra-acento { color: var(--accent); opacity: 0.85; }
+.ilustra-orbita {
+  stroke-dasharray: 3 5;
+  opacity: 0.5;
+  animation: orbita-gira 26s linear infinite;
+  transform-origin: 60px 50px;
+}
+@keyframes orbita-gira { to { transform: rotate(360deg); } }
+@keyframes ilustra-entra {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 0.9; transform: none; }
+}
+.empty .ilustra + h3 { margin-top: 2px; }
+
+/* ---------- 4. Cambiar de pantalla es una transición ---------- */
+.vista {
+  animation: vista-entra 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes vista-entra {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 5. Lo que entra en el campo de vista, entra con un gesto ---------- */
+.aparece {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 420ms ease-out, transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.aparece-visible { opacity: 1; transform: none; }
+
+/* ---------- 6. Todo lo que se toca, responde ---------- */
+button, .boton, .fila, .post-actions button {
+  transition:
+    transform 130ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color var(--rapido, 140ms) ease,
+    color var(--rapido, 140ms) ease,
+    border-color var(--rapido, 140ms) ease,
+    box-shadow 200ms ease;
+}
+button:active:not(:disabled), .boton:active { transform: scale(0.965); }
+
+/* Publicación: se levanta un pelo al pasar por encima (solo donde hay puntero). */
+@media (hover: hover) {
+  .post { transition: box-shadow 240ms ease, border-color 240ms ease; }
+  .post:hover { box-shadow: 0 18px 40px -34px rgba(12, 12, 20, 0.55); }
+}
+
+/* Me gusta: un latido, no un cambio de color seco. */
+@keyframes latido {
+  0% { transform: scale(1); }
+  34% { transform: scale(1.32); }
+  62% { transform: scale(0.92); }
+  100% { transform: scale(1); }
+}
+.post-actions button.liked svg,
+.post-actions button.liked .icono {
+  animation: latido 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Navegación: el indicador se desliza en vez de aparecer. */
+.bottom-nav a, .left-rail a, .tabs button, .segmentado button {
+  position: relative;
+  transition: color 160ms ease, background-color 160ms ease, transform 130ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Historias: el aro respira un instante al cargar la tira. */
+.historias-tira { animation: vista-entra 380ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* ---------- 7. Respeto al movimiento reducido ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .vista, .aparece, .ilustra, .historias-tira { animation: none !important; }
+  .aparece { opacity: 1 !important; transform: none !important; }
+  .foto img { transition: opacity 120ms linear !important; filter: none !important; transform: none !important; }
+  .ilustra-orbita { animation: none !important; }
+  button:active:not(:disabled), .boton:active { transform: none !important; }
+  .post-actions button.liked svg { animation: none !important; }
+}
+
+/* ---------- 8. Móvil: las fotos a sangre, sin marco ---------- */
+@media (max-width: 640px) {
+  .post-images { max-height: 78vh; }
+  .ilustra { width: 112px; height: 90px; }
+}
+
+/* ---------- 9. Rejillas que ya existían, ahora con la misma carga ---------- */
+.rejilla-perfil .foto,
+.rejilla-grupo .foto,
+.historia-tapa .foto { aspect-ratio: auto; height: 100%; min-height: 0; }

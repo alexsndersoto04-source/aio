@@ -11,6 +11,8 @@ import { useAuth } from '../auth.jsx';
 import { timeAgo, linkify } from '../utils.js';
 import { toast, confirmar, pedirTexto, avisoError } from '../ui.js';
 import Avatar, { VerifiedBadge } from './Avatar.jsx';
+import Imagen from './Imagen.jsx';
+import { useRevelar } from '../revelar.js';
 import {
   IconHeart, IconBookmark, IconComment, IconMore, IconTrash, IconEdit, IconReport,
   IconLink, IconX, IconGlobe, IconLock, IconSend, IconPin, IconEyeOff, IconCheck,
@@ -297,6 +299,8 @@ function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onRea
 }
 
 export default function PostCard({ post, onChanged, compact = false }) {
+  // La tarjeta entra en escena cuando aparece en el campo de vista.
+  const refPost = useRevelar();
   const { refreshMe } = useAuth();
   const [p, setP] = useState(post);
   const [busy, setBusy] = useState(false);
@@ -500,7 +504,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
   const imagenes = p.images || [];
 
   return (
-    <article className="post">
+    <article className="post aparece" ref={refPost}>
       <header className="post-head">
         <a href={`#/user/${p.author_username}`} aria-label={`Perfil de ${p.author_username}`}>
           <Avatar
@@ -568,11 +572,11 @@ export default function PostCard({ post, onChanged, compact = false }) {
             <span className="contador-fotos">1 / {imagenes.length}</span>
           ) : null}
           {imagenes.map((img, i) => (
-            <img
+            <Imagen
               key={i}
-              src={imgUrl(img.original_url || img.url)}
+              src={img.original_url || img.url}
               alt={`Imagen ${i + 1} de la publicación`}
-              loading="lazy"
+              ratio="auto"
             />
           ))}
         </div>

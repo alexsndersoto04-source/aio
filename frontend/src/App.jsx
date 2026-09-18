@@ -104,6 +104,20 @@ function RecordatorioDescanso() {
   return null;
 }
 
+/**
+ * Cada pantalla entra con un gesto corto y la página vuelve arriba: dos cosas
+ * que las apps grandes hacen siempre y que aquí faltaban.
+ */
+function Transicion({ children }) {
+  const route = useRoute();
+  const clave = route.parts.join('/');
+  useEffect(() => {
+    const prefierePoco = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: 0, behavior: prefierePoco ? 'auto' : 'smooth' });
+  }, [clave]);
+  return <div className="vista" key={clave}>{children}</div>;
+}
+
 function Shell({ children }) {
   const route = useRoute();
   const seccion = route.parts[0] || 'feed';
@@ -122,7 +136,7 @@ function Shell({ children }) {
         <LeftRail />
         <main className="main">
           <DemoBanner />
-          {children}
+          <Transicion>{children}</Transicion>
         </main>
         <RightRail />
       </div>
