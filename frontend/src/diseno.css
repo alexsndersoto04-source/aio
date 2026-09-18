@@ -1,0 +1,190 @@
+/* ============================================================
+   Moon · Capa de diseño única y coherente
+   ============================================================
+   Sustituye a las capas previas (que se pisaban entre sí). Define UN solo
+   sistema sobre la base (styles.css), sin degradados ni sombras pesadas:
+
+   · Fuente nativa del sistema, con antialiasing.
+   · Grilla de 4 px; radios y alturas consistentes.
+   · Feed acotado y centrado (608 px): app nativa también en escritorio.
+   · En el móvil, todo a sangre: una sola superficie con filetes de 1 px
+     entre secciones (nada de tarjetas flotando sobre huecos grises).
+   · Publicaciones en blanco puro separadas SOLO por un filete inferior.
+   · Barra superior fija y translúcida con filete inferior ultradelgado.
+   · Barra inferior de 56 px: iconos de 24 px sin etiquetas (gris inactivo,
+     color principal en el activo).
+   · Búsqueda en píldora gris ultraclara, sin contorno.
+   · El acento (índigo) queda reservado al estado activo y a la acción
+     principal. Sin títulos gigantes de pantalla.
+   ============================================================ */
+
+/* ---------- Tokens ---------- */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #fafafa;
+  --surface-3: #f2f2f3;
+
+  --ink: #111827;
+  --ink-2: #4b5563;
+  --ink-3: #9ca3af;
+
+  --line: #f3f4f6;
+  --line-2: #f7f7f8;
+  --line-strong: #e5e7eb;
+
+  --accent: #4f46e5;
+  --accent-2: #4f46e5;
+  --accent-3: #4f46e5;
+  --accent-ink: #ffffff;
+  --grad: var(--accent);            /* sin degradados: sólido */
+  --grad-2: var(--accent);
+  --like: #f91880;
+  --ok: #17bf63;
+  --warn: #ffad1f;
+  --danger: #ef4444;
+
+  --shadow-1: 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-2: 0 1px 3px rgba(17, 24, 39, 0.06);
+  --shadow-3: 0 6px 16px rgba(17, 24, 39, 0.10);
+}
+[data-theme='dark'] {
+  --bg: #000000;
+  --surface: #000000;
+  --surface-2: #0a0a0a;
+  --surface-3: #1c1c1e;
+  --ink: #f9fafb;
+  --ink-2: #b6bcc6;
+  --ink-3: #6b7280;
+  --line: #16181d;
+  --line-2: #101216;
+  --line-strong: #262a31;
+  --accent: #818cf8;
+  --grad: var(--accent);
+}
+
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+body, .marco { background: var(--bg); }
+
+/* ---------- Barra superior: fija, translúcida, filete ultradelgado ---------- */
+.topnav, .topbar, .topbar-app, .page-head {
+  position: sticky; top: 0; z-index: 50;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  margin: 0;
+  border-radius: 0;
+}
+.topbar h1, .topbar h2, .page-head h1, .page-head h2 {
+  font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
+}
+
+/* ---------- Tarjetas, posts, redactor: blanco puro + filete inferior ---------- */
+.main .post,
+.main .card,
+.main .composer,
+.main .historias,
+.main .grupo,
+.main .evento {
+  background: var(--surface);
+  box-shadow: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+}
+.main { background: var(--surface); }
+.post-body { color: var(--ink); line-height: 1.6; }
+.post-head .name a { color: var(--ink); font-weight: 600; font-size: 15px; }
+.post-head .at, .post-head .time { color: var(--ink-3); font-size: 13.5px; }
+.resumen-reacciones, .prueba-social { display: none; }
+
+/* Acciones del post: icono limpio + contador pequeño en gris */
+.post-actions { margin-top: 10px; justify-content: space-between; }
+.post-actions button, .post-actions a { color: var(--ink-3); gap: 6px; }
+.post-actions button span, .post-actions .cuenta { font-size: 12px; color: var(--ink-3); }
+.post-actions button.liked { color: var(--like); }
+
+/* ---------- Búsqueda: píldora gris ultraclara, sin contorno ---------- */
+.search input, .buscador input {
+  background: var(--surface-3);
+  border: 0; border-radius: 999px;
+  box-shadow: none; height: 40px;
+}
+.search input:focus, .buscador input:focus { box-shadow: none; }
+
+/* ---------- Pestañas: subrayado fino en el activo ---------- */
+.tabs, .segmentado {
+  background: transparent; border-bottom: 1px solid var(--line);
+  padding: 0 8px; border-radius: 0;
+}
+.tabs button, .segmentado button {
+  background: transparent; color: var(--ink-3);
+  font-weight: 500; box-shadow: none; border-radius: 0;
+}
+.tabs button.active, .segmentado button.active { color: var(--ink); font-weight: 600; }
+.tabs button.active::after, .segmentado button.active::after {
+  display: block; height: 2px; border-radius: 2px; background: var(--accent);
+}
+
+/* ---------- Botones: acción principal sólida; el resto, fantasma ---------- */
+.btn-aurora, .btn-primary { background: var(--accent); color: var(--accent-ink); box-shadow: none; border: 0; }
+.btn { background: transparent; border: 1px solid var(--line-strong); color: var(--ink); box-shadow: none; }
+.fab { display: none; }
+
+/* ---------- Barra inferior: 56 px, iconos 24, sin etiquetas ---------- */
+.bottom-nav { height: 56px; border-top: 1px solid var(--line); background: var(--surface); }
+.bottom-nav a { color: var(--ink-3); }
+.bottom-nav a span:not(.badge) { display: none; }
+.bottom-nav a svg { width: 24px; height: 24px; stroke-width: 1.5; }
+.bottom-nav a.active { color: var(--accent); }
+.bottom-nav a.active::after {
+  content: ''; position: absolute; left: 50%; bottom: 6px;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--accent); transform: translateX(-50%);
+}
+.bottom-nav a.active::before { display: none; }
+
+/* ---------- Historias: burbujas compactas con aro neutro ---------- */
+.historia.crear { display: none; }
+.historia { width: 72px; }
+.historia .aro { background: var(--line-strong); }
+.historia b { font-size: 11px; color: var(--ink-2); }
+
+/* ---------- Avatares y portada ---------- */
+.avatar { box-shadow: 0 0 0 1px var(--line); }
+.post-head .avatar, .post-head .foto { width: 40px; height: 40px; }
+.perfil .foto, .perfil .avatar { box-shadow: 0 0 0 3px var(--surface); }
+
+/* ---------- Perfil: métricas con jerarquía, botones fantasma ---------- */
+.profile-stats b, .profile-stats .num { font-size: 19px; font-weight: 800; color: var(--ink); }
+.profile-stats span:not(.num), .profile-stats .label { color: var(--ink-3); font-size: 13px; }
+
+/* ---------- Controles nativos ---------- */
+.switch .track { background: var(--line-strong); }
+.switch input:checked + .track { background: var(--accent); }
+
+/* ---------- Carga: skeletons con pulso, sin texto ---------- */
+.skeleton { background: var(--surface-3); animation: pulso 1.2s ease-in-out infinite; }
+@keyframes pulso { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.skeleton .etiqueta, .list-skeleton .etiqueta { display: none; }
+
+/* ============================ ESCRITORIO ============================ */
+@media (min-width: 1020px) {
+  .app { grid-template-columns: 232px minmax(0, 608px) 320px; justify-content: center; }
+  .main { background: var(--surface); }
+}
+
+/* ============================ MÓVIL: a sangre ============================ */
+@media (max-width: 700px) {
+  .app { padding: 0 0 84px; }
+  .main { background: var(--surface); min-height: 100vh; border: 0; }
+  .main .post, .main .card, .main .composer, .main .historias,
+  .main .grupo, .main .evento {
+    border-radius: 0; border-left: 0; border-right: 0; border-top: 0;
+    box-shadow: none; margin: 0;
+  }
+}
