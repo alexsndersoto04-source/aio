@@ -216,3 +216,64 @@ body, .marco { background: var(--bg); }
 @media (min-width: 1020px) {
   .app { grid-template-columns: 232px minmax(0, 608px) 320px !important; justify-content: center !important; }
 }
+
+/* ============================================================
+   GRUPOS — el fuerte de Moon, con el mismo lenguaje limpio
+   ============================================================ */
+/* Portada neutra, sin degradado */
+.cubierta-grupo, .portada-grupo, .trama { background: var(--surface-3) !important; }
+.cubierta-grupo::after, .portada-grupo::after { display: none !important; }
+
+/* Cabecera del grupo: nombre grande, datos en gris */
+.datos-grupo .titulo, .datos-grupo h1 { color: var(--ink); font-weight: 800; letter-spacing: -0.02em; }
+.datos-grupo .sobre, .datos-grupo .muted { color: var(--ink-2); }
+
+/* Rail de pestañas del grupo: horizontal, limpio, activo con acento */
+.pestanas-grupo {
+  display: flex; gap: 4px; overflow-x: auto;
+  background: var(--surface) !important;
+  border-bottom: 1px solid var(--line) !important;
+  padding: 0 8px;
+  scrollbar-width: none;
+}
+.pestanas-grupo::-webkit-scrollbar { display: none; }
+.pestanas-grupo button, .pestanas-grupo [role='tab'] {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  background: transparent !important; color: var(--ink-3) !important;
+  border: 0 !important; border-radius: 0 !important; box-shadow: none !important;
+  font-weight: 600; font-size: 14px; padding: 12px 12px;
+}
+.pestanas-grupo button.activa, .pestanas-grupo [aria-selected='true'] {
+  color: var(--accent) !important;
+}
+.pestanas-grupo button.activa::after, .pestanas-grupo [aria-selected='true']::after {
+  content: ''; position: absolute; left: 12px; right: 12px; bottom: 0;
+  height: 2px; background: var(--accent); border-radius: 2px;
+}
+.pestanas-grupo [role='tab'] { position: relative; }
+
+/* Chat del grupo: burbujas limpias */
+.chat-grupo { background: var(--bg) !important; }
+.burbuja-chat {
+  background: var(--surface-3) !important; color: var(--ink) !important;
+  border: 0 !important; border-radius: 16px !important; box-shadow: none !important;
+  max-width: 78%;
+}
+.burbuja-chat.mia, .burbuja-chat.propia { background: var(--accent) !important; color: #fff !important; }
+.chat-input, .chat-grupo-input { background: var(--surface) !important; border-top: 1px solid var(--line) !important; }
+
+/* Miembros: filas limpias con filete */
+.lista-miembros { background: var(--surface) !important; }
+.lista-miembros > * { border-bottom: 1px solid var(--line); padding: 10px 12px; }
+
+/* Ajustes del grupo: bloques limpios */
+.panel-ajustes-grupo, .ajustes-bloque { background: var(--surface) !important; border: 0 !important; box-shadow: none !important; border-radius: 0 !important; border-bottom: 1px solid var(--line) !important; }
+.fila-ajuste { border-bottom: 1px solid var(--line); padding: 14px 12px; }
+.fila-ajuste .titulo { font-weight: 700; color: var(--ink); }
+.fila-ajuste.peligro .titulo, .fila-ajuste.peligro { color: var(--danger) !important; }
+
+/* Tarjetas dentro del grupo (eventos, archivos, normas) */
+.tarjeta-rail, .aside-grupo { background: var(--surface) !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; border-radius: 0 !important; box-shadow: none !important; }
+
+/* Aviso / anuncio del grupo discreto */
+.aviso-grupo { background: var(--accent-soft) !important; border: 0 !important; color: var(--ink) !important; border-radius: var(--r) !important; }
