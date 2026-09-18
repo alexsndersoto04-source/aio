@@ -1,0 +1,149 @@
+/* ============================================================
+   Moon · Capa «limpia» — rigor de Design System (grado empresarial)
+   ============================================================
+   Reglas absolutas que aplica esta capa, por encima de todo lo anterior:
+
+   · Grilla estricta de 4 px en espaciados.
+   · Fuente nativa del sistema, con antialiasing.
+   · Feed acotado (máx. 608 px) y centrado: parece app nativa en escritorio.
+   · Publicaciones en blanco puro, separadas SOLO por un filete inferior
+     (nada de sombras ni bordes por los cuatro lados).
+   · Sin degradados ni sombras pesadas: el acento (índigo) se usa solo en el
+     estado activo y en la acción principal.
+   · Barra superior fija y translúcida con filete inferior ultradelgado.
+   · Barra inferior de 56 px, iconos de 24 px con trazo fino, sin etiquetas:
+     inactivos en gris, activo en el color principal.
+   · Búsqueda sin contorno: píldora de fondo gris ultraclaro.
+   · Sin títulos gigantes de pantalla.
+
+   Cargada al final: es la autoridad visual.
+   ============================================================ */
+
+/* ---------- Tokens limpios ---------- */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #fafafa;
+  --surface-3: #f2f2f3;          /* gris-100 para píldoras de búsqueda */
+
+  --ink: #111827;                /* gris-900 */
+  --ink-2: #4b5563;              /* gris-600 */
+  --ink-3: #9ca3af;              /* gris-400 */
+
+  --line: #f3f4f6;               /* gris-100 (filetes) */
+  --line-2: #f7f7f8;
+  --line-strong: #e5e7eb;        /* gris-200 */
+
+  --accent: #4f46e5;             /* índigo-600: solo activo / acción principal */
+  --accent-2: #4f46e5;
+  --accent-3: #4f46e5;
+  --grad: var(--accent);         /* anula los degradados: ahora es sólido */
+
+  --shadow-1: 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-2: 0 1px 3px rgba(17, 24, 39, 0.06);
+  --shadow-3: 0 4px 12px rgba(17, 24, 39, 0.08);
+}
+[data-theme='dark'] {
+  --bg: #000000;
+  --surface: #000000;
+  --surface-2: #0a0a0a;
+  --surface-3: #1c1c1e;
+  --ink: #f9fafb;
+  --ink-2: #b6bcc6;
+  --ink-3: #6b7280;
+  --line: #16181d;
+  --line-2: #101216;
+  --line-strong: #262a31;
+  --accent: #818cf8;
+  --grad: var(--accent);
+}
+
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+body, .marco { background: var(--bg); }
+
+/* ---------- Feed acotado y centrado (app nativa en escritorio) ---------- */
+@media (min-width: 1020px) {
+  .app { grid-template-columns: 232px minmax(0, 608px) 320px; justify-content: center; }
+}
+.main { background: var(--surface); }
+
+/* ---------- Títulos de pantalla: compactos, nunca gigantes ---------- */
+.topbar h1, .topbar h2, .page-head h1, .page-head h2 {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- Publicaciones: blanco puro + filete inferior ---------- */
+.main .post,
+.main .card,
+.main .composer,
+.main .historias {
+  background: var(--surface) !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--line) !important;
+  border-radius: 0 !important;
+}
+.post-body { color: var(--ink); line-height: 1.6; }
+.post-head .name a { color: var(--ink); font-weight: 600; font-size: 15px; }
+.post-head .at, .post-head .time, .post-head .at * { color: var(--ink-3); font-size: 13.5px; }
+
+/* Acciones: icono limpio + contador pequeño en gris */
+.post-actions button, .post-actions a { color: var(--ink-3); gap: 6px; }
+.post-actions .cuenta, .post-actions button span { font-size: 12px; color: var(--ink-3); }
+.post-actions button.liked { color: var(--like); }
+
+/* ---------- Búsqueda: píldora gris ultraclara, sin contorno ---------- */
+.search input, .buscador input {
+  background: var(--surface-3) !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  height: 40px;
+}
+.search input:focus, .buscador input:focus { box-shadow: none !important; }
+
+/* ---------- Barra superior: fija, translúcida, filete ultradelgado ---------- */
+.topnav, .topbar, .topbar-app, .page-head {
+  position: sticky; top: 0; z-index: 50;
+  background: color-mix(in srgb, var(--surface) 82%, transparent) !important;
+  backdrop-filter: blur(12px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(160%) !important;
+  border-bottom: 1px solid var(--line) !important;
+}
+
+/* ---------- Barra inferior: 56 px, iconos 24, sin etiquetas ---------- */
+.bottom-nav { height: 56px; border-top: 1px solid var(--line); background: var(--surface); }
+.bottom-nav a { color: var(--ink-3); }
+.bottom-nav a svg { width: 24px; height: 24px; stroke-width: 1.5; }
+.bottom-nav a.active { color: var(--accent); }
+.bottom-nav a.active::after { background: var(--accent); }
+
+/* ---------- Pestañas: subrayado fino en el activo, nada de pastillas ---------- */
+.tabs, .segmentado { background: transparent !important; border-bottom: 1px solid var(--line); }
+.tabs button, .segmentado button { background: transparent !important; color: var(--ink-3) !important; font-weight: 500; box-shadow: none !important; }
+.tabs button.active, .segmentado button.active { color: var(--ink) !important; font-weight: 600; }
+.tabs button.active::after, .segmentado button.active::after { background: var(--accent); height: 2px; }
+
+/* ---------- Botón principal: sólido, sin degradado ni brillo ---------- */
+.btn-aurora, .btn-primary {
+  background: var(--accent) !important;
+  box-shadow: none !important;
+}
+.fab { display: none !important; }
+
+/* ---------- Aros de historia y avatares: sin degradado ---------- */
+.historia .aro { background: var(--line-strong); }
+.avatar { box-shadow: 0 0 0 1px var(--line); }
+
+/* ---------- Carga: skeletons, sin texto «Cargando…» ---------- */
+.skeleton { background: var(--surface-3); animation: pulso 1.2s ease-in-out infinite; }
+@keyframes pulso { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+.list-skeleton .etiqueta, .skeleton .etiqueta { display: none; }
+
+/* ---------- Interruptores: discretos ---------- */
+.switch .track { background: var(--line-strong) !important; }
+.switch input:checked + .track { background: var(--accent) !important; }
