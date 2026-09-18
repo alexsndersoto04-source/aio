@@ -39,6 +39,48 @@ pub enum PgError {
     MigrationOrder,
     #[error("previously applied migration {version} has changed")]
     MigrationChanged { version: i64 },
+    #[error("migration {version} ({name}) failed: {detail}")]
+    MigrationFailed {
+        version: i64,
+        name: String,
+        detail: String,
+    },
+}
+
+impl PgError {
+    /// Mensaje con el detalle real del servidor PostgreSQL.
+    ///
+    /// `postgres::Error` sólo dice «db error» en su `Display`; el mensaje del
+    /// servidor (con la posición dentro del SQL) vive en `DbError`. Sin esto,
+    /// un fallo de migración en CI o en producción no dice qué sentencia
+    /// falló ni por qué.
+    pub fn detail(&self) -> String {
+        match self {
+            PgError::Postgres(error) => db_detail(error),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// Texto completo de un error del servidor: mensaje, SQLSTATE, detalle,
+/// pista y posición dentro de la sentencia.
+fn db_detail(error: &postgres::Error) -> String {
+    let Some(db) = error.as_db_error() else {
+        return error.to_string();
+    };
+    let mut text = format!("{} [{}]", db.message(), db.code().code());
+    if let Some(detail) = db.detail() {
+        text.push_str(" | detalle: ");
+        text.push_str(detail);
+    }
+    if let Some(hint) = db.hint() {
+        text.push_str(" | pista: ");
+        text.push_str(hint);
+    }
+    if let Some(position) = db.position() {
+        text.push_str(&format!(" | posición {position:?}"));
+    }
+    text
 }
 #[derive(Debug, Clone)]
 pub struct Migration {
@@ -154,7 +196,13 @@ impl Database {
                 if applied.contains_key(&migration.version) {
                     continue;
                 }
-                self.client.batch_execute(&migration.sql)?;
+                if let Err(error) = self.client.batch_execute(&migration.sql) {
+                    return Err(PgError::MigrationFailed {
+                        version: migration.version,
+                        name: migration.name.clone(),
+                        detail: db_detail(&error),
+                    });
+                }
                 self.client.execute(
                     "INSERT INTO _titan_migrations(version,name,checksum) VALUES ($1,$2,$3)",
                     &[
@@ -165,7 +213,7 @@ impl Database {
                 )?;
                 count += 1;
             }
-            Ok::<usize, postgres::Error>(count)
+            Ok::<usize, PgError>(count)
         })();
         match result {
             Ok(count) => {
@@ -174,7 +222,7 @@ impl Database {
             }
             Err(error) => {
                 let _ = self.rollback();
-                Err(error.into())
+                Err(error)
             }
         }
     }

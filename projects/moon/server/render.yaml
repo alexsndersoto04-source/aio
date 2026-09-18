@@ -1,0 +1,34 @@
+# Moon — API real (Node + PostgreSQL) para Render, plan gratuito
+# ============================================================
+# Uso: en Render, «New +» → «Blueprint» → elige este repositorio y este archivo
+# (o pega el contenido en un Web Service + una base de datos).
+#
+# La base de datos de Render en plan gratuito caduca a los 30 días. Para algo
+# permanente y también gratuito, usa Neon (https://neon.tech) y pega su cadena
+# de conexión en DATABASE_URL.
+
+services:
+  - type: web
+    name: moon-api
+    runtime: node
+    plan: free
+    rootDir: projects/moon/server
+    buildCommand: npm ci
+    startCommand: node src/index.mjs
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: PORT
+        value: "3000"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false          # cadena de conexión de Neon (o de Render)
+      - key: CORS_ORIGIN
+        sync: false          # la dirección del frontend, p. ej. https://moon-web.onrender.com
+      - key: PUBLIC_BASE_URL
+        sync: false          # la misma dirección del frontend (enlaces de correo)
+      - key: MOON_UPLOADS
+        value: /tmp/moon-uploads   # temporal en el plan gratuito; para permanente, usa Cloudinary

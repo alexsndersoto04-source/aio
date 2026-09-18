@@ -1,0 +1,1914 @@
+// Moon — Modo demostración
+// ============================================================
+// Permite abrir la aplicación sin servidor: intercepta las llamadas
+// `/api/...` y las responde con datos de ejemplo que viven únicamente en la
+// memoria del navegador. Nada se guarda, nada sale del dispositivo.
+//
+// Se activa de tres formas:
+//   · `window.MOON_DEMO = true`  (lo pone la página de demostración)
+//   · `?demo` en la dirección
+//   · `VITE_DEMO=1` al compilar
+//
+// En la aplicación real nunca se activa: `instalarDemo()` sale enseguida.
+
+const USUARIO = {
+  id: 1,
+  username: 'alice',
+  display_name: 'Alice Márquez',
+  email: 'alice@moon.test',
+  role: 'admin',
+  avatar_url: '',
+  cover_url: '',
+  is_verified: true,
+  is_private: false,
+  bio: 'Diseño interfaces y colecciono atardeceres. Aquí comparto lo que aprendo.',
+  location: 'Maracaibo, Venezuela',
+  created_at: '2024-03-11T10:00:00.000Z',
+  followers_count: 1284,
+  following_count: 312,
+  posts_count: 214,
+  is_following: false,
+  is_blocked: false,
+  is_private: false,
+  dm_privacy: 'all',
+  who_can_comment: 'all',
+  show_online: true,
+  searchable: true,
+  who_can_see_follows: true,
+};
+
+export function esDemo() {
+  if (typeof window === 'undefined') return false;
+  if (window.MOON_DEMO === true) return true;
+  try {
+    if (new URLSearchParams(window.location.search).has('demo')) return true;
+  } catch { /* sin parámetros */ }
+  try {
+    if (import.meta.env && import.meta.env.VITE_DEMO === '1') return true;
+  } catch { /* sin entorno */ }
+  return false;
+}
+
+// ---------- Utilidades ----------
+
+const SVG = (contenido) =>
+  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400">${contenido}</svg>`
+  )}`;
+
+// Imagen de ejemplo: degradado + formas suaves (se genera en el navegador).
+function foto(tono1, tono2, semilla = 1) {
+  const circulos = [
+    `<circle cx="${120 + semilla * 40}" cy="90" r="70" fill="rgba(255,255,255,.18)"/>`,
+    `<circle cx="${470 - semilla * 30}" cy="300" r="110" fill="rgba(255,255,255,.12)"/>`,
+    `<circle cx="${360 + semilla * 20}" cy="120" r="46" fill="rgba(255,255,255,.22)"/>`,
+  ].join('');
+  return SVG(
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+      `<stop offset="0" stop-color="${tono1}"/><stop offset="1" stop-color="${tono2}"/>` +
+      `</linearGradient></defs>` +
+      `<rect width="640" height="400" fill="url(#g)"/>${circulos}`
+  );
+}
+
+function retrato(iniciales, tono1, tono2) {
+  return SVG(
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+      `<stop offset="0" stop-color="${tono1}"/><stop offset="1" stop-color="${tono2}"/>` +
+      `</linearGradient></defs>` +
+      `<rect width="640" height="400" fill="url(#g)"/>` +
+      `<text x="50%" y="50%" dy=".35em" text-anchor="middle" fill="#fff" ` +
+      `font-family="Inter,Segoe UI,sans-serif" font-size="170" font-weight="700">${iniciales}</text>`
+  );
+}
+
+const AHORA = Date.now();
+const hace = (minutos) => new Date(AHORA - minutos * 60000).toISOString();
+
+// ---------- Datos de ejemplo ----------
+
+const personas = [
+  { id: 2, username: 'bruno', display_name: 'Bruno Salas', is_verified: false, iniciales: 'BS', color: ['#4f46e5', '#06b6d4'], bio: 'Fotógrafo urbano. Luz natural y aceras mojadas.', location: 'Caracas', followers_count: 842, following_count: 190, posts_count: 88 },
+  { id: 3, username: 'carla', display_name: 'Carla Ríos', is_verified: true, iniciales: 'CR', color: ['#8b5cf6', '#ec4899'], bio: 'Ingeniera de datos. Escribo sobre rendimiento y equipos pequeños.', location: 'Bogotá', followers_count: 5321, following_count: 401, posts_count: 356 },
+  { id: 4, username: 'diego', display_name: 'Diego Peña', is_verified: false, iniciales: 'DP', color: ['#0ea5e9', '#22c55e'], bio: 'Cocino y programo, en ese orden.', location: 'Maracaibo', followers_count: 233, following_count: 512, posts_count: 41 },
+  { id: 5, username: 'elena', display_name: 'Elena Duarte', is_verified: true, iniciales: 'ED', color: ['#f59e0b', '#ef4444'], bio: 'Periodista. Historias de barrio y datos abiertos.', location: 'Lima', followers_count: 9124, following_count: 288, posts_count: 611 },
+];
+
+const perfiles = new Map();
+for (const p of personas) {
+  perfiles.set(p.id, {
+    id: p.id,
+    username: p.username,
+    display_name: p.display_name,
+    avatar_url: retrato(p.iniciales, p.color[0], p.color[1]),
+    cover_url: '',
+    bio: p.bio,
+    location: p.location,
+    created_at: '2024-06-02T12:00:00.000Z',
+    is_verified: p.is_verified,
+    // Elena tiene la cuenta privada: hay que pedirle permiso para seguirla.
+    is_private: p.id === 5,
+    is_following: p.id === 2 || p.id === 3,
+    is_blocked: false,
+    followers_count: p.followers_count,
+    following_count: p.following_count,
+    posts_count: p.posts_count,
+  });
+}
+perfiles.set(1, {
+  ...USUARIO,
+  avatar_url: retrato('AM', '#4f46e5', '#8b5cf6'),
+});
+
+const publicaciones = [
+  { id: 101, autor: 1, creada: 22, likes: 128, comentarios: 14, guardados: 9, meGusta: true, guardada: true, texto: 'Terminé el rediseño de Moon con el sistema «Órbita». Menos ruido, más foco y por fin un modo oscuro de verdad. ¿Qué os parece? #diseño #moon', imagenes: [foto('#4f46e5', '#06b6d4', 1)] },
+  { id: 102, autor: 3, creada: 55, likes: 342, comentarios: 28, guardados: 40, meGusta: false, guardada: false, texto: 'Consejo del día: antes de optimizar, mide. Cambiamos una consulta y pasamos de 900 ms a 40 ms. El 80 % del trabajo estaba en índices mal puestos. #rendimiento', imagenes: [] },
+  { id: 103, autor: 2, creada: 130, likes: 89, comentarios: 6, guardados: 12, meGusta: false, guardada: false, texto: 'Amanecer en la avenida. La ciudad se ve distinta cuando nadie la mira. #fotografía #ciudad', imagenes: [foto('#0ea5e9', '#8b5cf6', 2), foto('#f59e0b', '#ef4444', 3)] },
+  { id: 108, autor: 4, creada: 90, likes: 62, comentarios: 11, guardados: 4, meGusta: false, guardada: false, texto: 'Necesito ayuda con una decisión importante para el grupo. ¿Qué hacemos el sábado? #cocina #encuesta', imagenes: [], encuesta: { pregunta: '¿Qué preparamos el sábado?', opciones: ['Pizza casera', 'Sushi', 'Asado', 'Lo que diga el grupo'], multiple: false, votos: [3, 1, 2, 4], miVoto: [] } },
+  { id: 104, autor: 5, creada: 260, likes: 512, comentarios: 63, guardados: 88, meGusta: true, guardada: false, texto: 'Tres meses visitando el mercado de San Juan. Esto es lo que aprendí sobre contar historias con respeto: pregunta, escucha y no robes el protagonismo. #periodismo #datos', imagenes: [foto('#22c55e', '#0ea5e9', 4)] },
+  { id: 105, autor: 4, creada: 400, likes: 41, comentarios: 3, guardados: 2, meGusta: false, guardada: false, texto: 'Pan de masa madre: 12 horas de espera para 900 g de felicidad. #cocina', imagenes: [] },
+  { id: 106, autor: 1, creada: 640, likes: 76, comentarios: 9, guardados: 15, meGusta: false, guardada: false, texto: 'Recordatorio: los esqueletos de carga hacen que la aplicación se sienta más rápida aunque tarde lo mismo. La gente percibe el tiempo, no los milisegundos. #diseño #producto', imagenes: [] },
+  { id: 107, autor: 3, creada: 1500, likes: 233, comentarios: 19, guardados: 52, meGusta: false, guardada: true, texto: 'Los equipos pequeños no ganan por trabajar más horas, ganan por tener menos cosas a la vez. Enfoque secuencial, entregas cortas. #equipos', imagenes: [] },
+];
+
+function publicacionJSON(p) {
+  const autor = perfiles.get(p.autor);
+  // Las publicaciones de ejemplo pueden no traer reacciones: se normaliza aquí.
+  p.reacciones = p.reacciones || {};
+  return {
+    id: p.id,
+    content: p.texto,
+    created_at: hace(p.creada),
+    edited_at: p.editada ? hace(Math.max(1, p.creada - 5)) : null,
+    deleted: !!p.borrada,
+    images: (p.imagenes || []).map((url, i) => ({ id: `${p.id}-${i}`, url, original_url: url })),
+    likes_count: p.likes,
+    comments_count: p.comentarios,
+    saves_count: p.guardados,
+    is_liked: !!p.meGusta,
+    is_saved: !!p.guardada,
+    is_mine: p.autor === USUARIO.id,
+    author_username: autor.username,
+    author_display_name: autor.display_name,
+    author_avatar_url: autor.avatar_url,
+    author_is_verified: autor.is_verified,
+    author_is_private: !!autor.is_private,
+    poll: p.encuesta ? encuestaJSON(p) : null,
+    pinned: !!p.fijada,
+    pinned_at: p.fijada ? hace(1) : null,
+    reacciones: (() => {
+      const conteo = p.reacciones || {};
+      const total = Object.values(conteo).reduce((n, v) => n + v, 0);
+      const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+      const orden = Object.entries(conteo).sort((x, y) => y[1] - x[1])
+        .map(([tipo, n]) => ({ tipo, emoji: EMOJI[tipo] || '👍', n }));
+      return { total, mi: p.miReaccion || null, conteo, orden };
+    })(),
+  };
+}
+
+function encuestaJSON(p) {
+  const e = p.encuesta;
+  const votos = e.votos || [];
+  const total = votos.reduce((n, v) => n + v, 0);
+  return {
+    pregunta: e.pregunta,
+    multiple: !!e.multiple,
+    cerrada: !!e.cerrada,
+    cierra: e.cierra || null,
+    total,
+    mi_voto: e.miVoto || [],
+    opciones: e.opciones.map((texto, i) => ({
+      texto,
+      votos: votos[i] || 0,
+      porcentaje: total > 0 ? Math.round(((votos[i] || 0) / total) * 100) : 0,
+    })),
+  };
+}
+
+const comentarios = {
+  101: [
+    { id: 1, autor: 2, texto: 'El modo oscuro quedó impecable. ¿Lo probaste en móvil?', creada: 18, reacciones: { me_gusta: 3, me_encanta: 1 } },
+    { id: 2, autor: 3, texto: 'Se nota el trabajo en los detalles: los avisos, los esqueletos… 👏', creada: 12, reacciones: { me_encanta: 5 }, fijado: true },
+    { id: 3, autor: 5, texto: 'Me gusta que el acento sea uno solo. Menos ruido visual.', creada: 4 },
+    { id: 5, autor: 1, texto: 'Gracias a los dos. Falta pulir la mensajería.', creada: 2, reacciones: { me_gusta: 1 } },
+  ],
+  102: [
+    { id: 4, autor: 4, texto: '¿Qué índice usaron al final?', creada: 30, reacciones: { risa: 2 } },
+  ],
+};
+
+const notificaciones = [
+  { id: 11, tipo: 'like', de: 3, post: 101, creada: 6, leida: false, texto: 'le gustó tu publicación' },
+  { id: 12, tipo: 'comment', de: 2, post: 101, creada: 18, leida: false, texto: 'comentó: «El modo oscuro quedó impecable»' },
+  { id: 13, tipo: 'follow', de: 5, creada: 120, leida: false, texto: 'empezó a seguirte' },
+  { id: 14, tipo: 'mention', de: 3, post: 107, creada: 700, leida: true, texto: 'te mencionó en una publicación' },
+  { id: 15, tipo: 'like', de: 4, post: 106, creada: 1400, leida: true, texto: 'le gustó tu publicación' },
+];
+
+const conversaciones = [
+  {
+    id: 1,
+    partnerId: 3,
+    noLeidos: 2,
+    fijado: 4,
+    mensajes: [
+      { id: 1, de: 3, texto: '¿Ya subiste la versión con el nuevo diseño?', creada: 90, estado: 'read' },
+      { id: 2, de: 1, texto: 'Sí, acabo de terminarlo. Se siente mucho más limpio y ordenado.', creada: 86, estado: 'read' },
+      { id: 3, de: 3, texto: 'Se nota muchísimo en el modo oscuro.', creada: 60, estado: 'delivered' },
+      { id: 4, de: 3, texto: 'Cuando quieras lo reviso con calma y te dejo notas.', creada: 12, estado: 'delivered' },
+      { id: 5, de: 3, texto: '', audio: 'VOZ', duracion: 2600, creada: 4, estado: 'delivered' },
+      { id: 6, de: 1, texto: 'Sí: el oscuro quedó redondo. Ahí lo tienes.', creada: 3, estado: 'sent', respuestaA: 3 },
+      { id: 7, de: 1, texto: 'Mira la publicación del feed, te va a gustar:', creada: 2, estado: 'read', leidoHace: 1 },
+      { id: 8, de: 1, texto: '📎 Publicación compartida', creada: 2, estado: 'sent', post: 101 },
+      { id: 9, de: 3, texto: 'Justo eso quería ver. Muchas gracias 🙌', creada: 1, estado: 'delivered', editada: true },
+    ],
+  },
+  {
+    id: 2,
+    partnerId: 2,
+    noLeidos: 0,
+    mensajes: [
+      { id: 5, de: 2, texto: 'Te paso las fotos del amanecer para el proyecto.', creada: 700, estado: 'read' },
+      { id: 6, de: 1, texto: 'Perfecto, mándalas cuando puedas 👍', creada: 690, estado: 'read' },
+    ],
+  },
+  {
+    id: 3,
+    partnerId: 4,
+    noLeidos: 0,
+    mensajes: [
+      { id: 7, de: 4, texto: '¿El viernes te apuntas a cocinar?', creada: 2600, estado: 'read' },
+    ],
+  },
+];
+
+const palabrasProhibidas = ['spam', 'estafa', 'insulto'];
+
+// Preferencias de avisos del modo demostración (solo en memoria).
+const avisos = { follow: true, like: true, comment: true, reply: true, mention: true, message: true, system: true };
+
+// ---------- Tanda 4: perfil completo (todo vive en memoria) ----------
+// Gente de relleno: así las listas de seguidores y seguidos se ven llenas.
+const RELLENO = [
+  { id: 20, username: 'gabriela', display_name: 'Gabriela Núñez', iniciales: 'GN', color: ['#6366f1', '#22d3ee'], bio: 'Front-end. Animaciones que no marean.', location: 'Valencia' },
+  { id: 21, username: 'hector', display_name: 'Héctor Bravo', iniciales: 'HB', color: ['#0ea5e9', '#22c55e'], bio: 'Back-end y bases de datos.', location: 'Caracas' },
+  { id: 22, username: 'ines', display_name: 'Inés Ochoa', iniciales: 'IO', color: ['#8b5cf6', '#ec4899'], bio: 'Ilustración y color.', location: 'Mérida' },
+  { id: 23, username: 'joaquin', display_name: 'Joaquín Vera', iniciales: 'JV', color: ['#f59e0b', '#ef4444'], bio: 'Música y sonido en vivo.', location: 'Maracaibo' },
+  { id: 24, username: 'karina', display_name: 'Karina López', iniciales: 'KL', color: ['#4f46e5', '#06b6d4'], bio: 'Producto. Preguntas antes que respuestas.', location: 'Barquisimeto' },
+  { id: 25, username: 'lautaro', display_name: 'Lautaro Gómez', iniciales: 'LG', color: ['#22c55e', '#0ea5e9'], bio: 'Datos abiertos y mapas.', location: 'Buenos Aires' },
+  { id: 26, username: 'micaela', display_name: 'Micaela Rey', iniciales: 'MR', color: ['#ec4899', '#8b5cf6'], bio: 'Periodista de barrio.', location: 'Montevideo' },
+  { id: 27, username: 'nicolas', display_name: 'Nicolás Parra', iniciales: 'NP', color: ['#06b6d4', '#6366f1'], bio: 'Seguridad y contraseñas fuertes.', location: 'Santiago' },
+  { id: 28, username: 'olivia', display_name: 'Olivia Duarte', iniciales: 'OD', color: ['#ef4444', '#f59e0b'], bio: 'Cocina de mercado.', location: 'Lima' },
+  { id: 29, username: 'pablo', display_name: 'Pablo Serrano', iniciales: 'PS', color: ['#3b82f6', '#8b5cf6'], bio: 'Fotografía de noche.', location: 'Quito' },
+  { id: 30, username: 'queralt', display_name: 'Queralt Soler', iniciales: 'QS', color: ['#14b8a6', '#6366f1'], bio: 'Accesibilidad y tipografía.', location: 'Barcelona' },
+  { id: 31, username: 'ramiro', display_name: 'Ramiro Ayala', iniciales: 'RA', color: ['#f97316', '#ec4899'], bio: 'Deporte y comunidad.', location: 'Bogotá' },
+  { id: 32, username: 'sofia', display_name: 'Sofía Márquez', iniciales: 'SM', color: ['#6366f1', '#ec4899'], bio: 'Bosquejos y prototipos rápidos.', location: 'Maracaibo' },
+  { id: 33, username: 'tomas', display_name: 'Tomás Herrera', iniciales: 'TH', color: ['#0ea5e9', '#14b8a6'], bio: 'Servidores pequeños y baratos.', location: 'Cali' },
+  { id: 34, username: 'ursula', display_name: 'Úrsula Peña', iniciales: 'UP', color: ['#8b5cf6', '#06b6d4'], bio: 'Textos claros, sin relleno.', location: 'Madrid' },
+  { id: 35, username: 'valentina', display_name: 'Valentina Ruiz', iniciales: 'VR', color: ['#f59e0b', '#8b5cf6'], bio: 'Cerámica y fotos de taller.', location: 'Valencia' },
+  { id: 36, username: 'wenceslao', display_name: 'Wenceslao Gil', iniciales: 'WG', color: ['#22c55e', '#0ea5e9'], bio: 'Bicicletas y ciudad.', location: 'Caracas' },
+  { id: 37, username: 'ximena', display_name: 'Ximena Cortés', iniciales: 'XC', color: ['#ec4899', '#f97316'], bio: 'Podcast sobre oficios.', location: 'Mérida' },
+  { id: 38, username: 'yamil', display_name: 'Yamil Rondón', iniciales: 'YR', color: ['#4f46e5', '#22c55e'], bio: 'Soporte y paciencia.', location: 'Maracay' },
+  { id: 39, username: 'zoe', display_name: 'Zoe Alarcón', iniciales: 'ZA', color: ['#06b6d4', '#8b5cf6'], bio: 'Dibujo urbano al mediodía.', location: 'San Cristóbal' },
+  { id: 40, username: 'adrian', display_name: 'Adrián Nava', iniciales: 'AN', color: ['#ef4444', '#6366f1'], bio: 'Café, código y madrugadas.', location: 'Barquisimeto' },
+  { id: 41, username: 'brigitte', display_name: 'Brigitte Salas', iniciales: 'BS', color: ['#14b8a6', '#4f46e5'], bio: 'Traducción y matices.', location: 'Puerto Ordaz' },
+];
+for (const r of RELLENO) {
+  perfiles.set(r.id, {
+    id: r.id,
+    username: r.username,
+    display_name: r.display_name,
+    avatar_url: retrato(r.iniciales, r.color[0], r.color[1]),
+    cover_url: '',
+    bio: r.bio,
+    location: r.location,
+    created_at: '2025-02-14T12:00:00.000Z',
+    is_verified: false,
+    is_private: false,
+    is_following: false,
+    is_blocked: false,
+    followers_count: 0,
+    following_count: 0,
+    posts_count: 4,
+  });
+}
+
+// Quién sigue a quién, para que las listas de seguidores y seguidos tengan sentido.
+const ALICE_SIGO = [2, 3, 20, 21, 22, 24, 25, 26, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41];
+const ALICE_SIGUEN = [2, 3, 4, 5, 20, 21, 23, 25, 27, 28, 29, 30, 31, 32, 33, 35, 36, 38, 40, 41];
+const relaciones = new Map([
+  [1, { sigo: ALICE_SIGO, meSiguen: ALICE_SIGUEN }],
+  [2, { sigo: [1, 3, 29, 30], meSiguen: [1, 3, 4, 20, 31] }],
+  [3, { sigo: [1, 25], meSiguen: [1, 2, 21, 26] }],
+  [4, { sigo: [5, 28], meSiguen: [1, 2, 23, 31] }],
+  [5, { sigo: [2, 26], meSiguen: [1, 3, 4, 27] }],
+]);
+// Cada persona de relleno sigue (y es seguida) según las dos listas de arriba.
+for (const r of RELLENO) {
+  relaciones.set(r.id, {
+    sigo: ALICE_SIGUEN.includes(r.id) ? [1] : [],
+    meSiguen: ALICE_SIGO.includes(r.id) ? [1] : [],
+  });
+}
+
+// Los números del perfil salen de estas listas: si dice 20 seguidores, hay 20.
+function ajustarContadores() {
+  for (const [id, rel] of relaciones) {
+    const perfil = perfiles.get(id);
+    if (perfil) {
+      perfil.followers_count = rel.meSiguen.length;
+      perfil.following_count = rel.sigo.length;
+    }
+    if (id === 1) {
+      USUARIO.followers_count = rel.meSiguen.length;
+      USUARIO.following_count = rel.sigo.length;
+    }
+  }
+}
+ajustarContadores();
+
+function relacionesDe(id) {
+  if (!relaciones.has(id)) relaciones.set(id, { sigo: [], meSiguen: [] });
+  return relaciones.get(id);
+}
+
+// Gente que quiere seguirme (cuenta privada) y búsquedas recientes.
+const solicitudes = [
+  { id: 61, de: 4, creada: 95 },
+  { id: 62, de: 2, creada: 640 },
+];
+// Lo que yo pedí para entrar a una cuenta privada (todavía sin respuesta).
+const enviadas = [];
+const busquedas = [
+  { id: 71, termino: 'rendimiento web', tipo: 'posts', creada: 40 },
+  { id: 72, termino: 'carla', tipo: 'users', creada: 320 },
+  { id: 73, termino: 'fotografia', tipo: 'tags', creada: 900 },
+];
+const etiquetasSeguidas = new Set(['diseno', 'fotografia']);
+
+// Ajustes que viven en el servidor (aquí en memoria). El PIN se recuerda
+// solo mientras dure la pestaña: es lo que hace el candado de verdad.
+const guardado = (clave) => { try { return sessionStorage.getItem(clave) || ''; } catch { return ''; } };
+const recordar = (clave, valor) => { try { sessionStorage.setItem(clave, valor); } catch { /* sin almacén */ } };
+
+const ajustes = {
+  idioma: 'es',
+  tema_auto: false,
+  tema_desde: '20:00',
+  tema_hasta: '07:00',
+  ahorro_datos: false,
+  avisos_tipos: {
+    me_gusta: true, comentarios: true, seguidores: true, menciones: true,
+    mensajes: true, grupos: true, eventos: true, solicitudes: true,
+  },
+  bloqueo_activo: guardado('moon_demo_pin') !== '' && guardado('moon_demo_pin_activo') !== 'no',
+  tiene_pin: guardado('moon_demo_pin') !== '',
+};
+let pinDemo = guardado('moon_demo_pin');
+
+/** Ficha corta de una persona para las listas (con su estado de seguimiento). */
+function fichaGente(perfil, yoId) {
+  return {
+    ...perfil,
+    le_sigo: relacionesDe(yoId).sigo.includes(perfil.id),
+    soy_yo: perfil.id === yoId,
+  };
+}
+
+// ---------- Respuestas ----------
+
+const json = (data, status = 200) => ({ status, data });
+
+// Respuesta con la forma que espera `api.js` (ok, status, json, text).
+function respuesta(data, status) {
+  const texto = JSON.stringify(data === undefined ? null : data);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => JSON.parse(texto),
+    text: async () => texto,
+  };
+}
+
+function paginado(items, ruta, extra = {}) {
+  const url = new URL(ruta, 'http://demo.local');
+  const page = Number(url.searchParams.get('page') || 1);
+  const limit = Number(url.searchParams.get('limit') || 10);
+  return {
+    items: items.slice((page - 1) * limit, page * limit),
+    total: items.length,
+    page,
+    limit,
+    ...extra,
+  };
+}
+
+// Sockets vivos de la aplicación: por aquí se empujan los eventos simulados.
+const socketsAbiertos = new Set();
+
+export function emitirDemo(ev) {
+  for (const socket of [...socketsAbiertos]) {
+    try { socket.recibir(ev); } catch { /* socket cerrado */ }
+  }
+}
+
+/** La tarjeta de una publicación compartida dentro del chat. */
+function tarjetaDePost(v) {
+  if (!v) return null;
+  if (typeof v === 'object') return v;
+  const p = publicaciones.find((x) => x.id === Number(v));
+  if (!p) return { id: Number(v), content: '', autor: '', username: '', imagen: '' };
+  const autor = perfiles.get(p.autor);
+  return {
+    id: p.id,
+    content: p.texto || '',
+    autor: (autor && autor.display_name) || '',
+    username: (autor && autor.username) || '',
+    imagen: (p.imagenes || [])[0] || '',
+  };
+}
+
+/** Un evento del grupo con sus cuentas de asistencia. */
+function eventoJSON(ev) {
+  const autor = perfiles.get(ev.de);
+  return {
+    id: ev.id,
+    group_id: grupoDemo.id,
+    title: ev.titulo,
+    about: ev.sobre || '',
+    place: ev.lugar || '',
+    starts_at: new Date(ev.cuando).toISOString(),
+    creado_hace: 0,
+    autor: autor ? (autor.display_name || autor.username) : '',
+    autor_username: autor ? autor.username : '',
+    voy: ev.voy.length,
+    quizas: ev.quizas.length,
+    no_van: ev.no_van.length,
+    mi_estado: ev.voy.includes(USUARIO.id) ? 'voy'
+      : ev.quizas.includes(USUARIO.id) ? 'quizas'
+        : ev.no_van.includes(USUARIO.id) ? 'no' : '',
+    pasado: ev.cuando < Date.now(),
+    mio: ev.de === USUARIO.id,
+  };
+}
+
+/** Un archivo compartido en el grupo. */
+function archivoJSON(f) {
+  const autor = perfiles.get(f.de);
+  return {
+    id: f.id,
+    group_id: grupoDemo.id,
+    nombre: f.nombre,
+    url: f.url,
+    tipo: f.tipo || '',
+    peso: f.peso || 0,
+    created_at: hace(f.creada),
+    autor: autor ? (autor.display_name || autor.username) : '',
+    autor_username: autor ? autor.username : '',
+    puedo_borrar: f.de === USUARIO.id,
+  };
+}
+
+function mensajeJSON(c, m) {
+  // Si el mensaje responde a otro, se manda su vista previa (quién y qué decía).
+  const citado = m.respuestaA ? (c.mensajes || []).find((x) => x.id === m.respuestaA) : null;
+  const autorCitado = citado ? personas.find((u) => u.id === citado.de) : null;
+  return {
+    id: m.id,
+    conversation_id: c.id,
+    sender_id: m.de,
+    content: m.texto,
+    image_url: m.imagen || '',
+    audio_url: m.audio === 'VOZ' ? vozDeEjemplo((m.duracion || 2600) / 1000) : (m.audio || ''),
+    duracion_ms: m.duracion || 0,
+    created_at: hace(m.creada),
+    status: m.estado || 'sent',
+    read_at: m.leidoHace !== undefined ? hace(m.leidoHace) : null,
+    reaction: m.reaccion || null,
+    edited_at: m.editada ? hace(Math.max(0, m.creada)) : null,
+    post: tarjetaDePost(m.post),
+    reply_to: citado
+      ? {
+        id: citado.id,
+        sender_id: citado.de,
+        autor: autorCitado ? (autorCitado.display_name || autorCitado.username) : '',
+        content: citado.texto || '',
+      }
+      : null,
+  };
+}
+
+/**
+ * Nota de voz de ejemplo: se genera aquí mismo, sin red.
+ * Un navegador puede reproducir WAV sin más, así que se arma la cabecera a
+ * mano y se rellena con una onda que sube y baja como una voz hablando.
+ */
+let vozDemo = null;
+function vozDeEjemplo(segundos = 3.4) {
+  if (vozDemo) return vozDemo;
+  const Hz = 8000;
+  const n = Math.max(1, Math.floor(Hz * segundos));
+  const datos = new DataView(new ArrayBuffer(44 + n));
+  const txt = (pos, t) => { for (let i = 0; i < t.length; i++) datos.setUint8(pos + i, t.charCodeAt(i)); };
+  txt(0, 'RIFF'); datos.setUint32(4, 36 + n, true); txt(8, 'WAVE');
+  txt(12, 'fmt '); datos.setUint32(16, 16, true); datos.setUint16(20, 1, true);
+  datos.setUint16(22, 1, true); datos.setUint32(24, Hz, true);
+  datos.setUint32(28, Hz, true); datos.setUint16(32, 1, true); datos.setUint16(34, 8, true);
+  txt(36, 'data'); datos.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) {
+    const t = i / Hz;
+    const envolvente = 0.35 + 0.65 * Math.abs(Math.sin(2 * Math.PI * (t / 1.05)));
+    const tono = 150 + 55 * Math.sin(2 * Math.PI * 0.9 * t) + 30 * Math.sin(2 * Math.PI * 3.1 * t);
+    datos.setUint8(44 + i, 128 + Math.round(58 * envolvente * Math.sin(2 * Math.PI * tono * t)));
+  }
+  try {
+    vozDemo = URL.createObjectURL(new Blob([datos.buffer], { type: 'audio/wav' }));
+  } catch {
+    vozDemo = '';
+  }
+  return vozDemo;
+}
+
+// ---------- Datos del grupo de ejemplo ----------
+const gruposDemo = [];
+
+const grupoDemo = {
+  id: 7,
+  name: 'Fotografía nocturna',
+  about: 'Salimos a fotografiar la ciudad cuando se apagan las luces. Comparte aquí tus tomas y tus ajustes.',
+  privacy: 'public',
+  miembros: 4,
+  owner_id: 1,
+  soy_miembro: true,
+  es_mio: true,
+  created_at: hace(14000),
+};
+
+// --- Grupos, tanda 3: eventos, archivos, reglas, solicitudes y sanciones ---
+const eventosDemo = [
+  {
+    id: 901, de: 1, titulo: 'Salida a fotografiar la luna', sobre: 'Nos vemos en la plaza y subimos al mirador.',
+    lugar: 'Plaza Mayor', cuando: AHORA + 2 * 86400000, voy: [1, 2, 4], quizas: [3], no_van: [],
+  },
+  {
+    id: 902, de: 3, titulo: 'Repaso de revelado', sobre: 'Trae tres fotos sin editar y las vemos juntos.',
+    lugar: 'Casa de Carla', cuando: AHORA + 6 * 86400000, voy: [3], quizas: [1], no_van: [],
+  },
+  {
+    id: 903, de: 1, titulo: 'Noche de la superluna', sobre: 'Salió nublado, pero guardamos las tomas.',
+    lugar: 'Mirador del río', cuando: AHORA - 9 * 86400000, voy: [1, 3, 4], quizas: [], no_van: [],
+  },
+];
+const archivosDemo = [
+  { id: 801, de: 3, nombre: 'ajustes-nocturnos.png', url: foto('#4f46e5', '#06b6d4', 2), tipo: 'image/png', peso: 184320, creada: 120 },
+  { id: 802, de: 2, nombre: 'mapa-del-mirador.png', url: foto('#0ea5e9', '#8b5cf6', 6), tipo: 'image/png', peso: 40200, creada: 700 },
+];
+const reglasDemo = {
+  rules: '1. Cuida el tono: aquí nadie viene a discutir.\n2. Una foto por publicación, con sus ajustes.\n3. Si sales de ruta, avisa en el chat.',
+  announcement: 'El sábado salimos a la luna: lleva batería de sobra.',
+  announcement_at: AHORA - 5400000,
+  join_questions: ['¿Qué cámara usas?', '¿Sales de noche a menudo?'],
+};
+const solicitudesDemo = [
+  { id: 501, de: 5, respuestas: ['Una Fujifilm X-T4', 'Casi todos los fines de semana'], creada: 900 },
+];
+const sancionesDemo = [
+  { id: 601, de: 2, tipo: 'aviso', motivo: 'Publicó tres veces seguidas lo mismo', creada: 7200, por: 1, vigente: true },
+];
+const registroDemo = [
+  { id: 701, accion: 'evento_creado', detalle: 'Salida a fotografiar la luna', de: 1, creada: 600 },
+  { id: 702, accion: 'archivo_compartido', detalle: 'ajustes-nocturnos.png', de: 3, creada: 120 },
+  { id: 703, accion: 'solicitud_enviada', detalle: '¿Qué cámara usas?', de: 5, creada: 900 },
+  { id: 704, accion: 'sancion_aviso', detalle: 'Publicó tres veces seguidas lo mismo', de: 2, creada: 7200 },
+];
+
+const chatDelGrupo = [
+  { id: 701, de: 3, texto: '¿Alguien sale esta noche? La luna está enorme y quiero probar el 35 mm.', creada: 260 },
+  { id: 702, de: 2, texto: 'Yo me apunto. Llevo el trípode y el filtro de densidad.', creada: 240 },
+  { id: 703, de: 4, texto: '', audio: 'VOZ', duracion: 3400, creada: 180 },
+  { id: 704, de: 3, texto: 'Escuchado, salimos a las 8 desde la plaza.', creada: 170 },
+];
+
+// El grupo de ejemplo y dos para descubrir, en una lista que se puede tocar
+// (renombrar, cambiar de privacidad o eliminar desde la demostración).
+gruposDemo.push(grupoDemo);
+gruposDemo.push({ ...grupoDemo, id: 8, name: 'Cocina de barrio', about: 'Recetas de todos los días, sin prisa.', miembros: 12, soy_miembro: false, es_mio: false });
+gruposDemo.push({ ...grupoDemo, id: 9, name: 'Rendimiento web', about: 'Medir antes de optimizar.', miembros: 31, privacy: 'private', soy_miembro: false, es_mio: false });
+
+function miembroJSON(id) {
+  const p = perfiles.get(id);
+  return { id, username: p.username, display_name: p.display_name, avatar_url: p.avatar_url, is_verified: p.is_verified };
+}
+
+function mensajeDeGrupoJSON(m) {
+  const p = perfiles.get(m.de) || USUARIO;
+  return {
+    id: m.id,
+    group_id: grupoDemo.id,
+    user_id: m.de,
+    content: m.texto || '',
+    audio_url: m.audio === 'VOZ' ? vozDeEjemplo((m.duracion || 3400) / 1000) : (m.audio || ''),
+    duracion_ms: m.duracion || 0,
+    created_at: hace(m.creada),
+    username: p.username,
+    display_name: p.display_name,
+    avatar_url: p.avatar_url,
+  };
+}
+
+let siguienteId = 900;
+
+export function responder(metodo, ruta, cuerpo) {
+  const [camino, consulta = ''] = ruta.split('?');
+  const partes = camino.replace(/^\/api\//, '').split('/').filter(Boolean);
+  const q = new URLSearchParams(consulta);
+  const [a, b, c, d, e] = partes;
+
+  // ---- Avisos al teléfono (modo demostración) ----
+  if (a === 'push') {
+    if (b === 'public-key') return json({ key: 'DEMO-DEMO-DEMO' });
+    if (b === 'estado') return json({ dispositivos: 1, ultimo: hace(30) });
+    if (b === 'test') return json({ ok: true, enviados: 1 });
+    return json({ ok: true, dispositivos: 1 });
+  }
+
+  // ---- Copias de seguridad (modo demostración) ----
+  if (a === 'admin' && b === 'backup') {
+    return json({ app: 'moon', fecha: new Date().toISOString(), resumen: { users: 1, posts: 8 }, tablas: {} });
+  }
+
+  // ---- Estado del servidor ----
+  if (a === 'health') {
+    return json({ status: 'ok', app: 'moon', time: new Date().toISOString(), db: true });
+  }
+
+  // ---- Sesión ----
+  if (a === 'auth') {
+    if (b === 'login' || b === 'register' || b === 'refresh') {
+      return json({ access_token: 'demo', refresh_token: 'demo', user: USUARIO });
+    }
+    if (b === 'logout') return json({ ok: true });
+    if (b === 'me') return json(USUARIO);
+    if (b === 'update') {
+      Object.assign(USUARIO, cuerpo || {});
+      return json(USUARIO);
+    }
+    if (b === 'privacy') {
+      Object.assign(USUARIO, {
+        is_private: !!cuerpo?.is_private,
+        dm_privacy: cuerpo?.dm_privacy || USUARIO.dm_privacy || 'all',
+        who_can_comment: cuerpo?.who_can_comment || 'all',
+        show_online: cuerpo?.show_online !== false,
+        searchable: cuerpo?.searchable !== false,
+        who_can_see_follows: cuerpo?.who_can_see_follows !== false,
+      });
+      return json(USUARIO);
+    }
+    if (b === 'change-password') return json({ ok: true });
+    if (b === 'sessions') {
+      if (metodo === 'DELETE') return json({ ok: true });
+      return json([
+        { id: 's1', user_agent: 'Chrome · Linux', ip: '190.0.0.2', created_at: hace(30), last_used_at: hace(2), current: true },
+        { id: 's2', user_agent: 'Safari · iPhone', ip: '190.0.0.9', created_at: hace(900), last_used_at: hace(200), current: false },
+      ]);
+    }
+    if (b === 'sessions-all') return json({ ok: true });
+    if (b === 'account') return json({ ok: true });
+    if (b === '2fa') {
+      if (c === 'enable') return json({ ok: true, secret: 'DEMO-DEMO-DEMO', otpauth_url: 'otpauth://totp/Moon:alice?secret=DEMODEMODEMO&issuer=Moon' });
+      return json({ ok: true });
+    }
+    if (b === 'recovery') return json({ ok: true });
+    return json({ ok: true });
+  }
+
+  // ---- Publicaciones ----
+  if (a === 'feed' && b === 'etiquetas') {
+    const sinAcentos = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const mias = publicaciones.filter((p) => !p.borrada).filter((p) => {
+      const texto = sinAcentos(p.texto);
+      return [...etiquetasSeguidas].some((t) => texto.includes(`#${sinAcentos(t)}`));
+    });
+    return json({ items: mias.map(publicacionJSON), total: mias.length, etiquetas: [...etiquetasSeguidas] });
+  }
+
+  if (a === 'feed') {
+    const tipo = q.get('tipo') || '';
+    const lista = publicaciones.filter((p) => !p.borrada).filter((p) => {
+      if (tipo === 'fotos') return (p.imagenes || []).length > 0;
+      if (tipo === 'encuestas') return !!p.encuesta;
+      if (tipo === 'texto') return (p.imagenes || []).length === 0 && !p.encuesta;
+      return true;
+    });
+    const orden =
+      b === 'trending' ? [...lista].sort((x, y) => y.likes - x.likes)
+      : b === 'latest' ? [...lista].sort((x, y) => x.creada - y.creada)
+      : lista;
+    return json(paginado(orden.map(publicacionJSON), ruta));
+  }
+
+  if (a === 'posts') {
+    if (!b && metodo === 'POST') {
+      const nueva = {
+        id: ++siguienteId,
+        autor: USUARIO.id,
+        creada: 0,
+        likes: 0,
+        comentarios: 0,
+        guardados: 0,
+        meGusta: false,
+        guardada: false,
+        reacciones: {},
+        miReaccion: null,
+        texto: cuerpo?.content || '',
+        imagenes: (cuerpo?.images || []).map((im) => im.url || im),
+        encuesta: cuerpo?.poll && Array.isArray(cuerpo.poll.opciones) && cuerpo.poll.opciones.filter(Boolean).length >= 2
+          ? {
+            pregunta: String(cuerpo.poll.pregunta || '').slice(0, 160),
+            opciones: cuerpo.poll.opciones.filter(Boolean).slice(0, 6),
+            multiple: !!cuerpo.poll.multiple,
+            votos: cuerpo.poll.opciones.filter(Boolean).map(() => 0),
+            miVoto: [],
+          }
+          : null,
+      };
+      publicaciones.unshift(nueva);
+      USUARIO.posts_count += 1;
+      return json(publicacionJSON(nueva));
+    }
+    const id = Number(b);
+    const post = publicaciones.find((p) => p.id === id);
+    const accion = c;
+    if (!post) return json({ error: 'Publicación no encontrada' }, 404);
+
+    if (!accion) {
+      if (metodo === 'DELETE') { post.borrada = true; return json({ ok: true }); }
+      if (metodo === 'PATCH') { post.texto = cuerpo?.content ?? post.texto; post.editada = true; }
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'vote' && post.encuesta) {
+      const opcion = Number(cuerpo?.opcion);
+      const e = post.encuesta;
+      if (!Number.isInteger(opcion) || opcion < 0 || opcion >= e.opciones.length) {
+        return json({ error: 'Voto inválido' }, 400);
+      }
+      e.votos = e.votos || e.opciones.map(() => 0);
+      e.miVoto = e.miVoto || [];
+      if (!e.multiple) {
+        for (const anterior of e.miVoto) e.votos[anterior] = Math.max(0, (e.votos[anterior] || 0) - 1);
+        e.miVoto = [];
+      }
+      if (!e.miVoto.includes(opcion)) {
+        e.votos[opcion] = (e.votos[opcion] || 0) + 1;
+        e.miVoto.push(opcion);
+      }
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'likes') {
+      const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id).slice(0, 3);
+      return json({
+        total: post.likes,
+        items: gente.map((u) => ({
+          id: u.id, username: u.username, display_name: u.display_name,
+          avatar_url: u.avatar_url, is_verified: u.is_verified,
+        })),
+      });
+    }
+    if (accion === 'react') {
+      const tipo = String(cuerpo?.tipo || 'me_gusta');
+      const previo = post.miReaccion || null;
+      if (previo) post.reacciones[previo] = Math.max(0, (post.reacciones[previo] || 1) - 1);
+      if (metodo === 'DELETE') {
+        post.miReaccion = null;
+        post.meGusta = false;
+        post.likes = Math.max(0, post.likes - (previo ? 1 : 0));
+      } else {
+        post.reacciones[tipo] = (post.reacciones[tipo] || 0) + 1;
+        post.miReaccion = tipo;
+        post.meGusta = true;
+        if (!previo) post.likes += 1;
+      }
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'pin') {
+      const fijarAhora = !post.fijada;
+      for (const otra of publicaciones) if (otra.autor === USUARIO.id) otra.fijada = false;
+      post.fijada = fijarAhora;
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'interesa') {
+      post.oculta = cuerpo?.no === false ? false : true;
+      return json({ ok: true, no_interesa: !!post.oculta });
+    }
+    if (accion === 'reacciones') {
+      const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+      const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id).slice(0, 3);
+      return json({
+        total: post.likes,
+        personas: gente.map((u) => ({
+          id: u.id, username: u.username, display_name: u.display_name,
+          avatar_url: u.avatar_url, is_verified: u.is_verified, tipo: 'me_gusta', is_mine: false,
+        })).map((x) => ({ ...x, emoji: EMOJI[x.tipo] })),
+      });
+    }
+    if (accion === 'poll') {
+      // /api/posts/:id/poll/votos
+      const e = post.encuesta;
+      if (!e) return json({ error: 'Sin encuesta' }, 404);
+      const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id);
+      return json({
+        total: (e.votos || []).reduce((n, v) => n + v, 0),
+        opciones: (e.opciones || []).map((texto, i) => ({
+          indice: i,
+          texto,
+          votos: e.votos?.[i] || 0,
+          personas: (e.votos?.[i] || 0) > 0
+            ? gente.slice(0, Math.min(e.votos[i], gente.length)).map((u) => ({
+              id: u.id, username: u.username, display_name: u.display_name,
+              avatar_url: u.avatar_url, is_verified: u.is_verified,
+            }))
+            : [],
+        })),
+      });
+    }
+    if (accion === 'like') {
+      const dando = metodo === 'POST';
+      post.meGusta = dando;
+      post.likes += dando ? 1 : -1;
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'save') {
+      post.guardada = true;
+      post.guardados += 1;
+      return json(publicacionJSON(post));
+    }
+    if (accion === 'comments') {
+      const lista = comentarios[id] || [];
+      const autorDelPost = post.autor === USUARIO.id;
+      const conForma = (com) => {
+        const autor = perfiles.get(com.autor);
+        const conteo = com.reacciones || {};
+        const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+        const total = Object.values(conteo).reduce((n, v) => n + v, 0);
+        const orden = Object.entries(conteo).sort((x, y) => y[1] - x[1]).map(([tipo, n]) => ({ tipo, emoji: EMOJI[tipo] || '👍', n }));
+        const esAutor = com.autor === post.autor;
+        return {
+          id: com.id,
+          content: com.texto,
+          created_at: hace(com.creada),
+          parent_id: com.padre || null,
+          pinned: !!com.fijado,
+          es_autor: esAutor,
+          username: autor.username,
+          display_name: autor.display_name,
+          avatar_url: autor.avatar_url,
+          is_verified: autor.is_verified,
+          is_mine: com.autor === USUARIO.id,
+          reacciones: { total, mi: com.miReaccion || null, conteo, orden },
+        };
+      };
+      if (metodo === 'POST') {
+        const autor = USUARIO;
+        const nuevo = { id: ++siguienteId, autor: autor.id, texto: cuerpo?.content || '', creada: 0 };
+        lista.push(nuevo);
+        comentarios[id] = lista;
+        post.comentarios += 1;
+        return json({
+          id: nuevo.id,
+          content: nuevo.texto,
+          created_at: hace(0),
+          username: autor.username,
+          display_name: autor.display_name,
+          avatar_url: perfiles.get(1).avatar_url,
+          is_verified: autor.is_verified,
+          is_mine: true,
+        });
+      }
+      // El orden lo pide el cliente: «mejores» por reacciones, «recientes» por hora.
+      if (q.get('orden') === 'mejores') {
+        lista.sort((x, y) => {
+          if (!!y.fijado !== !!x.fijado) return y.fijado ? 1 : -1;
+          return Object.values(y.reacciones || {}).reduce((n, v) => n + v, 0) - Object.values(x.reacciones || {}).reduce((n, v) => n + v, 0);
+        });
+      }
+      return json(
+        [...lista].map((com) => {
+          const autor = perfiles.get(com.autor);
+          return {
+            ...conForma(com),
+            id: com.id,
+            content: com.texto,
+            created_at: hace(com.creada),
+            username: autor.username,
+            display_name: autor.display_name,
+            avatar_url: autor.avatar_url,
+            is_verified: autor.is_verified,
+            is_mine: com.autor === USUARIO.id,
+          };
+        })
+      );
+    }
+  }
+
+  // ---- Comentarios: reacción y fijado (modo demostración) ----
+  if (a === 'comments') {
+    const idCom = Number(b);
+    const accionCom = c;
+    const EMOJI = { me_gusta: '👍', me_encanta: '❤️', risa: '😂', sorpresa: '😮', triste: '😢', enojo: '😠' };
+    let hallado = null;
+    for (const lista of Object.values(comentarios)) {
+      const com = lista.find((x) => x.id === idCom);
+      if (com) { hallado = com; break; }
+    }
+    if (!hallado) return json({ error: 'Comentario no encontrado' }, 404);
+
+    if (accionCom === 'react') {
+      const tipo = String(cuerpo?.tipo || 'me_gusta');
+      const previo = hallado.miReaccion || null;
+      hallado.reacciones = hallado.reacciones || {};
+      if (previo) hallado.reacciones[previo] = Math.max(0, (hallado.reacciones[previo] || 1) - 1);
+      if (metodo === 'DELETE') {
+        hallado.miReaccion = null;
+      } else {
+        hallado.reacciones[tipo] = (hallado.reacciones[tipo] || 0) + 1;
+        hallado.miReaccion = tipo;
+      }
+      const conteo = hallado.reacciones;
+      const total = Object.values(conteo).reduce((n, v) => n + v, 0);
+      const orden = Object.entries(conteo).sort((x, y) => y[1] - x[1]).map(([t, n]) => ({ tipo: t, emoji: EMOJI[t] || '👍', n }));
+      return json({ reacciones: { total, mi: hallado.miReaccion || null, conteo, orden } });
+    }
+
+    if (accionCom === 'pin') {
+      const fijarAhora = !hallado.fijado;
+      for (const lista of Object.values(comentarios)) for (const com of lista) com.fijado = false;
+      hallado.fijado = fijarAhora;
+      return json({ ok: true, fijado: fijarAhora });
+    }
+    return json({ error: 'Acción desconocida' }, 404);
+  }
+
+  if (a === 'users' && b === 'presence') {
+    const gente = [...perfiles.values()].filter((u) => u.id !== USUARIO.id);
+    const en_linea = gente.slice(0, 2).map((u) => ({
+      id: u.id, username: u.username, display_name: u.display_name,
+      avatar_url: u.avatar_url, is_verified: u.is_verified, online: true,
+    }));
+    const otros = gente.slice(2).map((u) => ({
+      id: u.id, username: u.username, display_name: u.display_name,
+      avatar_url: u.avatar_url, is_verified: u.is_verified, online: false,
+    }));
+    return json({ en_linea, otros, total_en_linea: en_linea.length });
+  }
+
+  if (a === 'notifications' && b === 'prefs') {
+    if (metodo === 'PATCH' && cuerpo) Object.assign(avisos, cuerpo);
+    return json(avisos);
+  }
+
+  if (a === 'me' && b === 'stats') {
+    return json({
+      posts: publicaciones.filter((x) => x.autor === USUARIO.id && !x.borrada).length,
+      comentarios: 24,
+      guardados: publicaciones.filter((x) => x.guardada).length,
+      me_gusta_recibidos: publicaciones.filter((x) => x.autor === USUARIO.id).reduce((n, x) => n + x.likes, 0),
+      reacciones: publicaciones.filter((x) => x.autor === USUARIO.id).reduce((n, x) => n + x.likes, 0),
+      comentarios_recibidos: publicaciones.filter((x) => x.autor === USUARIO.id).reduce((n, x) => n + x.comentarios, 0),
+      conversaciones: conversaciones.length,
+      mensajes: conversaciones.reduce((n, c) => n + c.mensajes.length, 0),
+      historias: 0,
+      grupos: 0,
+      seguidores: USUARIO.followers_count,
+      siguiendo: USUARIO.following_count,
+    });
+  }
+
+  if (a === 'me' && b === 'resumen') {
+    const mias = publicaciones.filter((x) => x.autor === USUARIO.id && !x.borrada);
+    const fotos = mias.reduce((n, x) => n + (x.imagenes || []).length, 0);
+    return json({
+      publicaciones: mias.length,
+      comentarios: 24,
+      fotos,
+      megabytes: Math.round((fotos * 0.42) * 10) / 10,
+      grupos: 3,
+      mensajes: conversaciones.reduce((n, c) => n + c.mensajes.length, 0),
+      archivos: fotos,
+      siguiendo: USUARIO.following_count,
+      seguidores: USUARIO.followers_count,
+      imagenes_en_publicaciones: fotos,
+    });
+  }
+
+  if (a === 'me' && b === 'blocked') {
+    if (metodo === 'DELETE') return json({ ok: true });
+    return json([]);
+  }
+
+  if (a === 'me' && b === 'saved') {
+    const guardadas = publicaciones.filter((p) => p.guardada && !p.borrada);
+    return json(paginado(guardadas.map(publicacionJSON), ruta));
+  }
+
+  // ---- Tanda 4: perfil completo ----
+  if (a === 'me' && b === 'solicitudes') {
+    if (metodo === 'GET') {
+      return json({
+        solicitudes: solicitudes.map((s) => ({
+          ...fichaGente(perfiles.get(s.de), USUARIO.id),
+          solicitud_id: s.id,
+          created_at: hace(s.creada),
+        })),
+      });
+    }
+    if (metodo === 'DELETE') {
+      const i = solicitudes.findIndex((s) => s.id === Number(c));
+      if (i >= 0) solicitudes.splice(i, 1);
+      return json({ ok: true });
+    }
+    if (metodo === 'POST') {
+      const s = solicitudes.find((x) => x.id === Number(c));
+      if (!s) return json({ error: 'Esa solicitud no existe' }, 404);
+      if (cuerpo?.aceptar !== false) {
+        const suyo = relacionesDe(s.de).sigo;
+        const mio = relacionesDe(USUARIO.id).meSiguen;
+        if (!suyo.includes(USUARIO.id)) suyo.push(USUARIO.id);
+        if (!mio.includes(s.de)) mio.push(s.de);
+        const perfil = perfiles.get(s.de);
+        perfil.is_following = true;
+        perfil.followers_count += 1;
+        USUARIO.followers_count += 1;
+      }
+      solicitudes.splice(solicitudes.indexOf(s), 1);
+      const perfil = perfiles.get(s.de);
+      perfil.solicitud_enviada = false;
+      return json({ ok: true, aceptada: cuerpo?.aceptar !== false });
+    }
+  }
+
+  if (a === 'me' && b === 'likes') {
+    const items = publicaciones.filter((p) => p.meGusta && !p.borrada).map(publicacionJSON);
+    return json({ items, total: items.length, page: 1, limit: items.length || 20 });
+  }
+
+  if (a === 'me' && b === 'comments') {
+    const mios = [];
+    for (const [postId, lista] of Object.entries(comentarios)) {
+      const post = publicaciones.find((p) => String(p.id) === String(postId));
+      const autor = post ? perfiles.get(post.autor) : null;
+      for (const cm of lista) {
+        if (cm.autor !== USUARIO.id) continue;
+        mios.push({
+          id: cm.id,
+          content: cm.texto,
+          created_at: hace(cm.creada),
+          post_id: Number(postId),
+          post_content: post ? post.texto : '',
+          post_autor: autor ? autor.username : '',
+          post_display_name: autor ? autor.display_name : '',
+          post_avatar_url: autor ? autor.avatar_url : '',
+          likes_count: Object.values(cm.reacciones || {}).reduce((n, v) => n + v, 0),
+        });
+      }
+    }
+    mios.sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
+    return json({ items: mios, total: mios.length, page: 1, limit: 20 });
+  }
+
+  if (a === 'me' && b === 'busquedas') {
+    if (metodo === 'POST') {
+      const termino = String(cuerpo?.termino || '').trim();
+      if (!termino) return json({ error: 'Escribe algo para buscar' }, 400);
+      const repetida = busquedas.find((x) => x.termino === termino);
+      if (repetida) busquedas.splice(busquedas.indexOf(repetida), 1);
+      busquedas.unshift({ id: ++siguienteId, termino, tipo: cuerpo?.tipo || 'users', creada: 0 });
+      return json({ ok: true, busquedas: busquedas.map((x) => ({ ...x, created_at: hace(x.creada) })) });
+    }
+    if (metodo === 'DELETE') {
+      if (c) {
+        const i = busquedas.findIndex((x) => x.id === Number(c));
+        if (i >= 0) busquedas.splice(i, 1);
+      } else {
+        busquedas.length = 0;
+      }
+      return json({ ok: true });
+    }
+    return json({ busquedas: busquedas.map((x) => ({ ...x, created_at: hace(x.creada) })) });
+  }
+
+  if (a === 'me' && b === 'hashtags') {
+    return json({
+      hashtags: [...etiquetasSeguidas].map((tag, i) => ({
+        tag,
+        posts_count: 128 - i * 46,
+        desde: hace(200 + i * 300),
+      })),
+    });
+  }
+
+  if (a === 'me' && b === 'ajustes') {
+    if (c === 'pin') {
+      if (d === 'verificar') {
+        if (!ajustes.tiene_pin) return json({ ok: true, correcto: true, tiene_pin: false });
+        if (String(cuerpo?.pin || '') !== pinDemo) return json({ error: 'PIN incorrecto' }, 403);
+        return json({ ok: true, correcto: true, tiene_pin: true });
+      }
+      if (d === 'activar') {
+        ajustes.bloqueo_activo = cuerpo?.activo !== false;
+        recordar('moon_demo_pin_activo', ajustes.bloqueo_activo ? 'si' : 'no');
+        try { sessionStorage.removeItem('moon_pin_abierto'); } catch { /* sin almacén */ }
+        return json({ ok: true, bloqueo_activo: ajustes.bloqueo_activo });
+      }
+      const pin = String(cuerpo?.pin || '');
+      if (pin && !/^\d{4,8}$/.test(pin)) return json({ error: 'El PIN son de 4 a 8 números' }, 400);
+      if (!pin) {
+        pinDemo = '';
+        ajustes.tiene_pin = false;
+        ajustes.bloqueo_activo = false;
+        try {
+          sessionStorage.removeItem('moon_demo_pin');
+          sessionStorage.removeItem('moon_demo_pin_activo');
+          sessionStorage.removeItem('moon_pin_abierto');
+        } catch { /* sin almacén */ }
+        return json({ ok: true, tiene_pin: false, bloqueo_activo: false });
+      }
+      if (ajustes.tiene_pin && String(cuerpo?.pin_actual || '') !== pinDemo) {
+        return json({ error: 'El PIN actual no es ese' }, 403);
+      }
+      pinDemo = pin;
+      ajustes.tiene_pin = true;
+      ajustes.bloqueo_activo = true;
+      recordar('moon_demo_pin', pin);
+      recordar('moon_demo_pin_activo', 'si');
+      try { sessionStorage.removeItem('moon_pin_abierto'); } catch { /* sin almacén */ }
+      return json({ ok: true, tiene_pin: true, bloqueo_activo: true });
+    }
+    if (metodo === 'PATCH' && cuerpo) {
+      const b2 = cuerpo;
+      if (['es', 'en', 'pt'].includes(b2.idioma)) ajustes.idioma = b2.idioma;
+      if (typeof b2.tema_auto === 'boolean') ajustes.tema_auto = b2.tema_auto;
+      if (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b2.tema_desde || ''))) ajustes.tema_desde = b2.tema_desde;
+      if (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b2.tema_hasta || ''))) ajustes.tema_hasta = b2.tema_hasta;
+      if (typeof b2.ahorro_datos === 'boolean') ajustes.ahorro_datos = b2.ahorro_datos;
+      if (b2.avisos_tipos && typeof b2.avisos_tipos === 'object') {
+        ajustes.avisos_tipos = { ...ajustes.avisos_tipos, ...b2.avisos_tipos };
+      }
+    }
+    return json({ ...ajustes });
+  }
+
+  if (a === 'me' && b === 'exportar') {
+    const mias = publicaciones.filter((p) => p.autor === USUARIO.id && !p.borrada);
+    const mios = [];
+    for (const [postId, lista] of Object.entries(comentarios)) {
+      for (const cm of lista) if (cm.autor === USUARIO.id) mios.push({ id: cm.id, post_id: Number(postId), content: cm.texto });
+    }
+    return json({
+      aplicacion: 'Moon',
+      exportado: new Date().toISOString(),
+      perfil: { ...USUARIO, password_hash: undefined },
+      publicaciones: mias.map((p) => ({ id: p.id, content: p.texto, created_at: hace(p.creada) })),
+      comentarios: mios,
+      mensajes: conversaciones.flatMap((cv) => cv.mensajes
+        .filter((m) => m.de === USUARIO.id)
+        .map((m) => ({ id: m.id, conversation_id: cv.id, content: m.texto, created_at: hace(m.creada) }))),
+      grupos: [{ id: grupoDemo.id, name: grupoDemo.name, privacy: grupoDemo.privacy, role: 'owner' }],
+      me_gusta: publicaciones.filter((p) => p.meGusta).map((p) => ({ post_id: p.id, created_at: hace(p.creada) })),
+      seguidores: relacionesDe(USUARIO.id).meSiguen.map((id) => perfiles.get(id)?.username).filter(Boolean),
+      siguiendo: relacionesDe(USUARIO.id).sigo.map((id) => perfiles.get(id)?.username).filter(Boolean),
+      etiquetas: [...etiquetasSeguidas],
+      ajustes: { ...ajustes },
+    });
+  }
+
+  if (a === 'me' && b === 'enviadas') {
+    return json({ enviadas: enviadas.map((id) => perfiles.get(id)?.username).filter(Boolean) });
+  }
+
+  // ---- Personas ----
+  if (a === 'users') {
+    if (b === 'suggestions') {
+      return json(
+        [...perfiles.values()]
+          .filter((p) => p.id !== USUARIO.id)
+          .map((p) => ({
+            id: p.id, username: p.username, display_name: p.display_name,
+            avatar_url: p.avatar_url, is_verified: p.is_verified,
+            followers_count: p.followers_count,
+          }))
+      );
+    }
+
+    const uid = Number(b);
+    if (c === 'followers' || c === 'following') {
+      const ids = c === 'followers' ? relacionesDe(uid).meSiguen : relacionesDe(uid).sigo;
+      const items = ids
+        .map((x) => perfiles.get(x))
+        .filter(Boolean)
+        .map((u) => fichaGente(u, USUARIO.id));
+      return json({ total: items.length, items });
+    }
+
+    const perfil = perfiles.get(uid);
+    if (!perfil) return json({ error: 'Usuario no encontrado' }, 404);
+    if (c === 'posts') {
+      const suyas = publicaciones.filter((p) => p.autor === perfil.id && !p.borrada).sort((x, y) => x.creada - y.creada);
+      return json(paginado(suyas.map(publicacionJSON), ruta));
+    }
+    if (c === 'follow') {
+      // Cuenta privada: no se entra, se pide permiso.
+      if (perfil.is_private && perfil.id !== USUARIO.id) {
+        if (metodo === 'DELETE') {
+          const i = enviadas.findIndex((x) => x === perfil.id);
+          if (i >= 0) enviadas.splice(i, 1);
+          perfil.solicitud_enviada = false;
+          return json({ ok: true, is_following: false, solicitado: false });
+        }
+        perfil.solicitud_enviada = true;
+        if (!enviadas.includes(perfil.id)) enviadas.push(perfil.id);
+        return json({ ok: true, is_following: false, solicitado: true, privada: true });
+      }
+      const dentro = relacionesDe(perfil.id).meSiguen.includes(USUARIO.id);
+      if (metodo === 'POST' && !dentro) {
+        relacionesDe(perfil.id).meSiguen.push(USUARIO.id);
+        if (!relacionesDe(USUARIO.id).sigo.includes(perfil.id)) relacionesDe(USUARIO.id).sigo.push(perfil.id);
+        perfil.followers_count += 1;
+        USUARIO.following_count += 1;
+      } else if (metodo === 'DELETE') {
+        relacionesDe(perfil.id).meSiguen = relacionesDe(perfil.id).meSiguen.filter((x) => x !== USUARIO.id);
+        relacionesDe(USUARIO.id).sigo = relacionesDe(USUARIO.id).sigo.filter((x) => x !== perfil.id);
+        perfil.followers_count = Math.max(0, perfil.followers_count - 1);
+        USUARIO.following_count = Math.max(0, USUARIO.following_count - 1);
+      }
+      perfil.is_following = metodo === 'POST';
+      return json({ ok: true, is_following: perfil.is_following, solicitado: false });
+    }
+    if (c === 'block') {
+      perfil.is_blocked = metodo === 'POST';
+      return json({ ok: true, is_blocked: perfil.is_blocked });
+    }
+    // Perfil privado sin permiso: se enseña quién es y nada más.
+    if (perfil.is_private && perfil.id !== USUARIO.id && !perfil.is_following) {
+      return json({
+        ...perfil,
+        posts_count: 0,
+        is_private: true,
+        is_following: false,
+        solicitud_enviada: !!perfil.solicitud_enviada,
+      });
+    }
+    return json({ ...perfil, solicitud_enviada: false });
+  }
+
+  if (a === 'search') {
+    const texto = (q.get('q') || '').toLowerCase();
+    const tipo = q.get('type') || 'users';
+    // Lo buscado queda en el historial (se puede borrar desde Ajustes → Datos).
+    if (texto.trim().length >= 2 && q.get('historial') !== '0') {
+      const termino = (q.get('q') || '').trim();
+      const repetida = busquedas.find((x) => x.termino === termino);
+      if (repetida) busquedas.splice(busquedas.indexOf(repetida), 1);
+      busquedas.unshift({ id: ++siguienteId, termino, tipo, creada: 0 });
+      if (busquedas.length > 40) busquedas.length = 40;
+    }
+    if (tipo === 'posts') {
+      const elegidas = publicaciones.filter((p) => !p.borrada && (p.texto.toLowerCase().includes(texto) || !texto));
+      const orden = q.get('orden') === 'populares'
+        ? [...elegidas].sort((x, y) => y.likes - x.likes)
+        : elegidas;
+      return json(orden.map(publicacionJSON));
+    }
+    if (tipo === 'groups') {
+      const todos = [grupoDemo, { ...grupoDemo, id: 8, name: 'Cocina de barrio', about: 'Recetas de todos los días, sin prisa.', miembros: 12 },
+        { ...grupoDemo, id: 9, name: 'Rendimiento web', about: 'Medir antes de optimizar.', miembros: 31, privacy: 'private' }];
+      return json(todos
+        .filter((g) => !texto || g.name.toLowerCase().includes(texto) || (g.about || '').toLowerCase().includes(texto))
+        .map((g) => ({ id: g.id, name: g.name, about: g.about, privacy: g.privacy, miembros: g.miembros, soy_miembro: g.id === grupoDemo.id })));
+    }
+    if (tipo === 'tags') {
+      const usadas = ['diseno', 'moon', 'rendimiento', 'fotografia', 'equipos', 'periodismo', 'ciudad', 'cocina'];
+      return json(usadas
+        .filter((t) => !texto || t.includes(texto.replace('#', '')))
+        .map((t, i) => ({ tag: t, posts_count: 128 - i * 17 })));
+    }
+    return json(
+      [...perfiles.values()]
+        .filter((p) => p.username.toLowerCase().includes(texto) || p.display_name.toLowerCase().includes(texto))
+        .map((p) => ({ id: p.id, username: p.username, display_name: p.display_name, avatar_url: p.avatar_url, is_verified: p.is_verified, followers_count: p.followers_count, bio: p.bio }))
+    );
+  }
+
+  // ---- Tendencias y etiquetas seguidas ----
+  if (a === 'hashtags' && c === 'follow') {
+    const tag = String(b || '').toLowerCase();
+    if (metodo === 'DELETE') {
+      etiquetasSeguidas.delete(tag);
+      return json({ ok: true, tag, siguiendo: false });
+    }
+    etiquetasSeguidas.add(tag);
+    return json({ ok: true, tag, siguiendo: true });
+  }
+
+  if (a === 'hashtags') {
+    return json([
+      { tag: 'diseno', posts_count: 128, last_used_at: hace(6) },
+      { tag: 'moon', posts_count: 96, last_used_at: hace(22) },
+      { tag: 'rendimiento', posts_count: 74, last_used_at: hace(55) },
+      { tag: 'fotografia', posts_count: 61, last_used_at: hace(130) },
+      { tag: 'equipos', posts_count: 48, last_used_at: hace(400) },
+      { tag: 'periodismo', posts_count: 33, last_used_at: hace(260) },
+    ]);
+  }
+
+  // ---- Notificaciones ----
+  if (a === 'notifications') {
+    if (b === 'read-all') {
+      notificaciones.forEach((n) => { n.leida = true; });
+      return json({ ok: true });
+    }
+    if (b && c === 'read') {
+      const n = notificaciones.find((x) => x.id === Number(b));
+      if (n) n.leida = true;
+      return json({ ok: true });
+    }
+    const items = notificaciones.map((n) => {
+      const de = perfiles.get(n.de);
+      return {
+        id: n.id,
+        type: n.tipo,
+        content: n.texto,
+        created_at: hace(n.creada),
+        is_read: n.leida,
+        post_id: n.post || null,
+        from_username: de.username,
+        from_display_name: de.display_name,
+        from_avatar_url: de.avatar_url,
+      };
+    });
+    return json(paginado(items, ruta));
+  }
+
+  // ---- Mensajería ----
+  if (a === 'messages') {
+    if (b === 'conversations' && !c) {
+      if (metodo === 'POST') {
+        const objetivo = Number(cuerpo?.user_id);
+        let conv = conversaciones.find((x) => x.partnerId === objetivo);
+        if (!conv) {
+          conv = { id: ++siguienteId, partnerId: objetivo, noLeidos: 0, mensajes: [] };
+          conversaciones.push(conv);
+        }
+        return json({ conversation_id: conv.id });
+      }
+      const filtro = q.get('filtro') || 'todas';
+      const fila = (conv) => {
+        const socio = perfiles.get(conv.partnerId);
+        const ultimo = conv.mensajes[conv.mensajes.length - 1];
+        return {
+          id: conv.id,
+          username: socio.username,
+          display_name: socio.display_name,
+          avatar_url: socio.avatar_url,
+          is_verified: socio.is_verified,
+          last_message: ultimo ? (ultimo.texto || (ultimo.audio ? '🎤 Nota de voz' : '')) : '',
+          updated_at: ultimo ? hace(ultimo.creada) : hace(9999),
+          unread: conv.noLeidos,
+          silenciada: !!conv.silenciada,
+          archivada: !!conv.archivada,
+          oculta: !!conv.oculta,
+          no_leida: !!conv.noLeida,
+        };
+      };
+      let lista = conversaciones.map(fila);
+      if (filtro === 'sin_leer') lista = lista.filter((c) => c.unread > 0 && !c.archivada);
+      else if (filtro === 'archivadas') lista = lista.filter((c) => c.archivada);
+      else lista = lista.filter((c) => !c.archivada && !c.oculta);
+      return json(lista);
+    }
+    if (b === 'conversations' && c) {
+      const conv = conversaciones.find((x) => x.id === Number(c));
+      if (!conv) return json({ error: 'Conversación no encontrada' }, 404);
+      const socio = perfiles.get(conv.partnerId);
+
+      // Marcar la conversación como no leída
+      if (d === 'no-leida' && metodo === 'POST') {
+        conv.noLeida = cuerpo?.no === false ? false : true;
+        if (conv.noLeida) conv.noLeidos = Math.max(1, conv.noLeidos || 0);
+        return json({ ok: true, no_leida: conv.noLeida });
+      }
+
+      // Borrar la conversación (solo para mí)
+      if (!d && metodo === 'DELETE') {
+        conv.oculta = true;
+        return json({ ok: true });
+      }
+
+      if (d === 'prefs' && metodo === 'POST') {
+        if ('silenciada' in (cuerpo || {})) conv.silenciada = !!cuerpo.silenciada;
+        if ('archivada' in (cuerpo || {})) conv.archivada = !!cuerpo.archivada;
+        if ('oculta' in (cuerpo || {})) conv.oculta = !!cuerpo.oculta;
+        return json({ silenciada: !!conv.silenciada, archivada: !!conv.archivada, oculta: !!conv.oculta });
+      }
+
+      if (d === 'read') { conv.noLeidos = 0; return json({ ok: true }); }
+
+      if (d === 'messages' && metodo === 'POST') {
+        const nuevo = {
+          id: ++siguienteId,
+          de: USUARIO.id,
+          texto: cuerpo?.content || '',
+          audio: cuerpo?.audio_url || '',
+          duracion: Number(cuerpo?.duracion_ms || 0),
+          creada: 0,
+          estado: 'sent',
+          // Si se respondió citando, se guarda a quién (igual que el servidor real).
+          respuestaA: Number(cuerpo?.reply_to_id) || undefined,
+          // Publicación compartida: se guarda a cuál (se arma al leer).
+          post: Number(cuerpo?.post_id) || null,
+        };
+        conv.mensajes.push(nuevo);
+        // El contacto «responde» para que la demostración se sienta viva.
+        setTimeout(() => emitirDemo({ type: 'typing', conversation_id: conv.id, user_id: socio.id }), 700);
+        setTimeout(() => {
+          const respuestas = [
+            'Totalmente de acuerdo 👍',
+            'Buena idea, lo anoto.',
+            'Te cuento en un rato, estoy con algo.',
+            '¡Qué bien! Se ve genial.',
+          ];
+          const respuesta = { id: ++siguienteId, de: socio.id, texto: respuestas[conv.mensajes.length % respuestas.length], creada: 0, estado: 'delivered' };
+          conv.mensajes.push(respuesta);
+          emitirDemo({ type: 'typing', conversation_id: conv.id, user_id: socio.id });
+          emitirDemo({ type: 'message', conversation_id: conv.id, message: mensajeJSON(conv, respuesta) });
+        }, 2200);
+        return json(mensajeJSON(conv, nuevo));
+      }
+      return json({
+        conversation_id: conv.id,
+        partner: { id: socio.id, username: socio.username, display_name: socio.display_name, avatar_url: socio.avatar_url, is_verified: socio.is_verified },
+        messages: conv.mensajes.map((m) => mensajeJSON(conv, m)),
+        pinned: conv.mensajes.find((m) => m.id === conv.fijado) ? mensajeJSON(conv, conv.mensajes.find((m) => m.id === conv.fijado)) : null,
+        typing: false,
+      });
+    }
+    // Editar un mensaje enviado
+    if (b && !c && metodo === 'PATCH') {
+      const conv = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      const msg = conv?.mensajes.find((m) => m.id === Number(b));
+      if (!msg) return json({ error: 'Mensaje no encontrado' }, 404);
+      msg.texto = String(cuerpo?.content || msg.texto);
+      msg.editada = true;
+      return json(mensajeJSON(conv, msg));
+    }
+
+    // Reenviar a otra conversación
+    if (b && c === 'forward' && metodo === 'POST') {
+      const origen = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      const msg = origen?.mensajes.find((m) => m.id === Number(b));
+      const destino = conversaciones.find((x) => x.id === Number(cuerpo?.conversation_id));
+      if (!msg || !destino) return json({ error: 'No se pudo reenviar' }, 404);
+      const copia = { id: ++siguienteId, de: USUARIO.id, texto: msg.texto, audio: msg.audio || '', duracion: msg.duracion || 0, creada: 0, estado: 'sent', post: msg.post || null };
+      destino.mensajes.push(copia);
+      return json(mensajeJSON(destino, copia));
+    }
+
+    // Fijar (o soltar) un mensaje de la conversación
+    if (b && c === 'pin' && metodo === 'POST') {
+      const conv = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      if (!conv) return json({ error: 'Mensaje no encontrado' }, 404);
+      const fijar = Number(conv.fijado) !== Number(b);
+      conv.fijado = fijar ? Number(b) : null;
+      return json({ ok: true, fijado: fijar, message_id: conv.fijado });
+    }
+
+    // Reacciones y borrado de mensajes
+    if (b && c === 'react') {
+      const conv = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      const msg = conv?.mensajes.find((m) => m.id === Number(b));
+      if (msg) msg.reaccion = msg.reaccion === cuerpo?.reaction ? null : cuerpo?.reaction;
+      return json({ ok: true });
+    }
+    if (b && !c && metodo === 'DELETE') {
+      const conv = conversaciones.find((x) => x.mensajes.some((m) => m.id === Number(b)));
+      const msg = conv?.mensajes.find((m) => m.id === Number(b));
+      if (msg) { msg.texto = ''; msg.estado = 'deleted'; }
+      return json({ ok: true });
+    }
+  }
+
+  // ---- Grupos (modo demostración) ----
+  if (a === 'groups') {
+    if (b === 'messages') return json({ error: 'Falta el grupo' }, 404);
+    if (!b && metodo === 'GET') {
+      // Lista de grupos: «tus grupos» y «grupos para descubrir».
+      const comoTarjeta = (g) => ({
+        ...g,
+        mi_papel: g.soy_miembro ? (g.es_mio ? 'owner' : 'member') : '',
+        owner_username: g.es_mio ? USUARIO.username : 'carla',
+        owner_display_name: g.es_mio ? USUARIO.display_name : 'Carla Ríos',
+      });
+      void ruta;
+      return json({
+        mios: gruposDemo.filter((g) => g.soy_miembro).map(comoTarjeta),
+        descubrir: gruposDemo.filter((g) => !g.soy_miembro).map(comoTarjeta),
+      });
+    }
+    const gid = Number(b) || grupoDemo.id;
+
+    // El chat del grupo: leer, escribir, borrar y contar.
+    if (c === 'messages') {
+      if (d === 'count') return json({ total: chatDelGrupo.length });
+      if (metodo === 'DELETE') {
+        const i = chatDelGrupo.findIndex((m) => m.id === Number(d));
+        if (i >= 0) {
+          chatDelGrupo.splice(i, 1);
+          emitirDemo({ type: 'group_message_deleted', group_id: gid, message_id: Number(d) });
+        }
+        return json({ ok: true });
+      }
+      if (metodo === 'POST') {
+        const nuevo = {
+          id: ++siguienteId,
+          de: USUARIO.id,
+          texto: cuerpo?.content || '',
+          audio: cuerpo?.audio_url || '',
+          duracion: Number(cuerpo?.duracion_ms || 0),
+          creada: 0,
+        };
+        chatDelGrupo.push(nuevo);
+        // Alguien del grupo contesta, para que se sienta vivo.
+        setTimeout(() => {
+          const quien = perfiles.get(2);
+          emitirDemo({ type: 'typing', group_id: gid, user_id: 2 });
+          setTimeout(() => {
+            const respuestas = [
+              '¡Buena! Lo vemos esta noche 👍',
+              'Anotado, llevo el objetivo largo.',
+              'Escucho tu nota en un momento.',
+              'Perfecto, nos vemos en la plaza.',
+            ];
+            const respuesta = {
+              id: ++siguienteId,
+              de: 2,
+              texto: respuestas[chatDelGrupo.length % respuestas.length],
+              creada: 0,
+            };
+            chatDelGrupo.push(respuesta);
+            emitirDemo({ type: 'group_message', group_id: gid, message: mensajeDeGrupoJSON(respuesta) });
+          }, 1900);
+        }, 900);
+        void quien;
+        return json(mensajeDeGrupoJSON(nuevo));
+      }
+      return json({ mensajes: chatDelGrupo.map(mensajeDeGrupoJSON), hay_mas: false });
+    }
+
+    // ---------- Tanda 3 en el modo demostración ----------
+    // Eventos: lista, crear, responder «voy / quizás / no» y ver quién va.
+    if (c === 'events' && !d) {
+      if (metodo === 'POST') {
+        const nuevo = {
+          id: ++siguienteId, de: USUARIO.id, titulo: cuerpo?.title || 'Evento',
+          sobre: cuerpo?.about || '', lugar: cuerpo?.place || '',
+          cuando: new Date(cuerpo?.starts_at || Date.now()).getTime(),
+          voy: [USUARIO.id], quizas: [], no_van: [],
+        };
+        eventosDemo.push(nuevo);
+        return json(eventoJSON(nuevo));
+      }
+      return json({ eventos: eventosDemo.map(eventoJSON) });
+    }
+    if (c === 'events' && d) {
+      const ev = eventosDemo.find((x) => x.id === Number(d));
+      if (!ev) return json({ error: 'Evento no encontrado' }, 404);
+      if (e === 'asistentes') {
+        const gente = [
+          ...ev.voy.map((id) => ({ id, estado: 'voy' })),
+          ...ev.quizas.map((id) => ({ id, estado: 'quizas' })),
+          ...ev.no_van.map((id) => ({ id, estado: 'no' })),
+        ].map((x) => ({ ...miembroJSON(x.id), estado: x.estado }));
+        return json({ asistentes: gente });
+      }
+      if (e === 'asistir') {
+        const estado = ['voy', 'quizas', 'no'].includes(cuerpo?.estado) ? cuerpo.estado : 'voy';
+        const listas = { voy: 'voy', quizas: 'quizas', no: 'no_van' };
+        Object.values(listas).forEach((k) => { ev[k] = ev[k].filter((id) => id !== USUARIO.id); });
+        if (!ev[listas[estado]].includes(USUARIO.id)) ev[listas[estado]].push(USUARIO.id);
+        return json(eventoJSON(ev));
+      }
+      if (metodo === 'DELETE') {
+        const i = eventosDemo.findIndex((x) => x.id === ev.id);
+        eventosDemo.splice(i, 1);
+        return json({ ok: true, borrado: ev.id });
+      }
+    }
+
+    // Archivos compartidos en el grupo.
+    if (c === 'files') {
+      if (metodo === 'POST') {
+        const f = {
+          id: ++siguienteId, de: USUARIO.id, nombre: cuerpo?.nombre || 'archivo',
+          url: cuerpo?.url || foto('#6366f1', '#22d3ee', 3), tipo: cuerpo?.tipo || 'image/png',
+          peso: Number(cuerpo?.peso || 0), creada: 0,
+        };
+        archivosDemo.unshift(f);
+        return json(archivoJSON(f));
+      }
+      if (metodo === 'DELETE' && d) {
+        const i = archivosDemo.findIndex((x) => x.id === Number(d));
+        if (i >= 0) archivosDemo.splice(i, 1);
+        return json({ ok: true });
+      }
+      return json({ archivos: archivosDemo.map(archivoJSON) });
+    }
+
+    // Reglas, anuncio y preguntas para entrar.
+    if (c === 'rules') {
+      if (metodo === 'PATCH') {
+        if (typeof cuerpo?.rules === 'string') reglasDemo.rules = cuerpo.rules;
+        if (typeof cuerpo?.announcement === 'string') {
+          reglasDemo.announcement = cuerpo.announcement;
+          reglasDemo.announcement_at = cuerpo.announcement ? Date.now() : null;
+        }
+        if (Array.isArray(cuerpo?.join_questions)) reglasDemo.join_questions = cuerpo.join_questions;
+        return json({ ...reglasDemo });
+      }
+      return json({ ...reglasDemo });
+    }
+    if (c === 'preguntas') {
+      return json({
+        pregunta: reglasDemo.join_questions.length > 0,
+        preguntas: reglasDemo.join_questions,
+        mi_solicitud: null,
+      });
+    }
+    if (c === 'solicitar') {
+      if (reglasDemo.join_questions.length === 0) {
+        const i = gruposDemo.findIndex((x) => x.id === gid);
+        if (i >= 0) gruposDemo[i] = { ...gruposDemo[i], soy_miembro: true };
+        return json({ ok: true, estado: 'dentro' });
+      }
+      const nueva = { id: ++siguienteId, de: USUARIO.id, respuestas: cuerpo?.answers || [], creada: 0 };
+      return json({ ok: true, estado: 'pendiente', solicitud_id: nueva.id });
+    }
+    if (c === 'solicitudes') {
+      if (d && metodo === 'POST') {
+        const i = solicitudesDemo.findIndex((x) => x.id === Number(d));
+        if (i >= 0) {
+          solicitudesDemo.splice(i, 1);
+          return json({ ok: true, aprobada: cuerpo?.aprobar !== false });
+        }
+        return json({ error: 'Esa solicitud no existe' }, 404);
+      }
+      return json({
+        solicitudes: solicitudesDemo.map((x) => ({
+          ...x, ...miembroJSON(x.de), user_id: x.de, created_at: hace(x.creada),
+        })),
+      });
+    }
+
+    // Sanciones y registro del grupo.
+    if (c === 'sanciones') {
+      if (metodo === 'POST') {
+        const nueva = {
+          id: ++siguienteId, de: Number(cuerpo?.user_id || 2), tipo: cuerpo?.tipo || 'aviso',
+          motivo: cuerpo?.motivo || '', creada: 0, por: USUARIO.id, vigente: true, created_at: hace(0),
+        };
+        sancionesDemo.unshift(nueva);
+        return json({ ok: true, id: nueva.id, tipo: nueva.tipo, hasta: null });
+      }
+      if (metodo === 'DELETE' && d) {
+        const i = sancionesDemo.findIndex((x) => x.id === Number(d));
+        if (i >= 0) sancionesDemo.splice(i, 1);
+        return json({ ok: true });
+      }
+      return json({
+        mando: true,
+        sanciones: sancionesDemo.map((x) => ({
+          ...x, ...miembroJSON(x.de), user_id: x.de,
+          username: miembroJSON(x.de).username,
+          display_name: miembroJSON(x.de).display_name,
+          hasta: null,
+          created_at: hace(x.creada),
+        })),
+      });
+    }
+    if (c === 'registro') {
+      return json({
+        registro: registroDemo.map((r) => ({
+          ...r, ...miembroJSON(r.de), display_name: miembroJSON(r.de).display_name, created_at: hace(r.creada),
+        })),
+      });
+    }
+
+    if (c === 'posts') {
+      if (metodo === 'POST') {
+        const nueva = {
+          id: ++siguienteId, autor: USUARIO.id, creada: 0, likes: 0, comentarios: 0, guardados: 0,
+          meGusta: false, guardada: false, texto: cuerpo?.content || '', imagenes: [],
+        };
+        publicaciones.unshift(nueva);
+        return json(publicacionJSON(nueva));
+      }
+      return json(paginado([publicaciones[0], publicaciones[2]], ruta));
+    }
+
+    if (metodo === 'PATCH') {
+      const g = gruposDemo.find((x) => x.id === gid);
+      if (g) {
+        if (typeof cuerpo?.name === 'string' && cuerpo.name.trim()) g.name = cuerpo.name.trim();
+        if (typeof cuerpo?.about === 'string') g.about = cuerpo.about;
+        if (['public', 'private'].includes(cuerpo?.privacy)) g.privacy = cuerpo.privacy;
+        if (typeof cuerpo?.cover_url === 'string') g.cover_url = cuerpo.cover_url;
+        return json({ ...g, soy_miembro: true, mi_papel: 'owner' });
+      }
+    }
+    if (metodo === 'DELETE') {
+      const i = gruposDemo.findIndex((x) => x.id === gid);
+      if (i >= 0) gruposDemo.splice(i, 1);
+      return json({ ok: true, eliminado: gid });
+    }
+    if (metodo === 'POST') return json({ ok: true });
+
+    const elegido = gruposDemo.find((x) => x.id === gid) || grupoDemo;
+    return json({
+      ...elegido,
+      mando: !!elegido.es_mio,
+      rules: reglasDemo.rules,
+      announcement: reglasDemo.announcement,
+      announcement_at: reglasDemo.announcement_at,
+      join_questions: reglasDemo.join_questions,
+      silenciado_hasta: null,
+      mi_solicitud: null,
+      miembros_lista: [
+        { ...miembroJSON(3), papel: 'owner' },
+        { ...miembroJSON(4), papel: 'member' },
+        { ...miembroJSON(2), papel: 'member' },
+        { ...miembroJSON(1), papel: 'member' },
+      ],
+    });
+  }
+
+  // ---- Reportes ----
+  if (a === 'reports') return json({ ok: true });
+
+  // ---- Subidas (además del XHR simulado) ----
+  if (a === 'upload') return json({ id: ++siguienteId, url: foto('#6366f1', '#22d3ee', 3) });
+
+  // ---- Administración ----
+  if (a === 'admin') {
+    if (b === 'dashboard') {
+      return json({
+        users_total: 1284, users_new_today: 12, users_new_7d: 84, suspended_users: 3,
+        posts_total: 9731, posts_today: 46, comments_total: 22140,
+        follows_total: 15872, messages_total: 42118, reports_open: 3,
+      });
+    }
+    if (b === 'stats') {
+      // Últimos 30 días de actividad (mismo formato que el servidor real).
+      return json(
+        Array.from({ length: 30 }, (_, i) => {
+          const dia = new Date(AHORA - (29 - i) * 86400000).toISOString().slice(0, 10);
+          const base = 4 + ((i * 7) % 11);
+          return {
+            stat_date: dia,
+            new_users: base,
+            new_posts: base * 3 + (i % 5),
+            new_messages: base * 9,
+            new_likes: base * 12,
+            new_comments: base * 2,
+            new_follows: base * 5,
+          };
+        })
+      );
+    }
+    if (b === 'users') {
+      if (c) return json({ ok: true }); // suspender / activar / verificar
+      const filtro = (q.get('q') || '').toLowerCase();
+      const items = [...perfiles.values()]
+        .filter((p) => !filtro || p.username.includes(filtro) || p.display_name.toLowerCase().includes(filtro))
+        .map((p, i) => ({
+          id: p.id, username: p.username, display_name: p.display_name, email: `${p.username}@moon.test`,
+          is_verified: p.is_verified, is_suspended: false, role: p.id === 1 ? 'admin' : 'user',
+          created_at: hace(1000 + i * 240), posts_count: p.posts_count, avatar_url: p.avatar_url,
+        }));
+      return json(paginado(items, ruta));
+    }
+    if (b === 'reports') {
+      return json(paginado([
+        { id: 1, target_type: 'post', target_id: 103, reason: 'spam', detail: '', status: 'open', created_at: hace(40), reporter_username: 'elena' },
+        { id: 2, target_type: 'post', target_id: 105, reason: 'contenido sensible', detail: '', status: 'open', created_at: hace(300), reporter_username: 'bruno' },
+        { id: 3, target_type: 'post', target_id: 102, reason: 'acoso', detail: '', status: 'resolved', created_at: hace(900), reporter_username: 'diego' },
+      ], ruta));
+    }
+    if (b === 'words') {
+      if (metodo === 'POST') { palabrasProhibidas.push((cuerpo?.word || '').toLowerCase()); return json({ ok: true }); }
+      if (metodo === 'DELETE') return json({ ok: true });
+      return json(palabrasProhibidas.map((w, i) => ({ id: i + 1, word: w, created_at: hace(2000) })));
+    }
+    return json({ items: [], total: 0, ok: true });
+  }
+
+  return json({ error: `Sin datos en la demostración para ${metodo} ${camino}` }, 404);
+}
+
+// ---------- Instalación ----------
+
+class SocketDemo {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
+  constructor() {
+    this.readyState = 1;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onclose = null;
+    this.onerror = null;
+    socketsAbiertos.add(this);
+    setTimeout(() => { if (this.onopen) this.onopen({}); }, 40);
+  }
+
+  recibir(ev) {
+    if (this.onmessage) this.onmessage({ data: JSON.stringify(ev) });
+  }
+
+  send(texto) {
+    let msg = null;
+    try { msg = JSON.parse(texto); } catch { return; }
+    if (msg.type === 'sync') {
+      setTimeout(() => this.recibir({
+        type: 'sync',
+        data: {
+          unread_notifications: notificaciones.filter((n) => !n.leida).length,
+          unread_messages: conversaciones.reduce((t, c2) => t + c2.noLeidos, 0),
+        },
+      }), 60);
+    }
+  }
+
+  close() {
+    this.readyState = 3;
+    socketsAbiertos.delete(this);
+    if (this.onclose) this.onclose({});
+  }
+}
+
+class SubidaDemo {
+  constructor() {
+    this.upload = {};
+    this.status = 0;
+    this.responseText = '';
+  }
+  open() {}
+  setRequestHeader() {}
+  abort() {}
+  send(formulario) {
+    const archivo = formulario && formulario.get ? formulario.get('file') : null;
+    const terminar = (url) => {
+      this.status = 200;
+      this.responseText = JSON.stringify({ id: ++siguienteId, url });
+      if (this.upload.onprogress) this.upload.onprogress({ lengthComputable: true, loaded: 1, total: 1 });
+      if (this.onload) this.onload();
+    };
+    if (archivo && typeof FileReader !== 'undefined') {
+      const lector = new FileReader();
+      lector.onload = () => terminar(lector.result);
+      lector.onerror = () => terminar(foto('#6366f1', '#22d3ee', 2));
+      lector.readAsDataURL(archivo);
+    } else {
+      setTimeout(() => terminar(foto('#6366f1', '#22d3ee', 2)), 300);
+    }
+  }
+}
+
+let instalado = false;
+
+export function instalarDemo() {
+  if (instalado || !esDemo()) return;
+  instalado = true;
+
+  // Algunos entornos no traen `fetch`; la demostración funciona igual.
+  const fetchReal = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+  window.fetch = async (entrada, opciones = {}) => {
+    const url = typeof entrada === 'string' ? entrada : (entrada && entrada.url) || '';
+    const ruta = url.replace(/^https?:\/\/[^/]+/, '');
+    if (!ruta.startsWith('/api/')) {
+      if (fetchReal) return fetchReal(entrada, opciones);
+      return respuesta({ error: 'Sin red en la demostración' }, 503);
+    }
+
+    let cuerpo = opciones.body;
+    if (typeof cuerpo === 'string' && cuerpo) {
+      try { cuerpo = JSON.parse(cuerpo); } catch { /* formulario */ }
+    }
+    await new Promise((r) => setTimeout(r, 140)); // latencia para ver los esqueletos
+    const { status, data } = responder((opciones.method || 'GET').toUpperCase(), ruta, cuerpo);
+    return respuesta(data, status);
+  };
+
+  window.XMLHttpRequest = SubidaDemo;
+  window.WebSocket = SocketDemo;
+}

@@ -1,17 +1,212 @@
 // Moon — Panel de administración (moderación real)
 
-import React, { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import React, { useEffect, useRef, useState } from 'react';
+import { api, getAccessToken, API_URL } from '../api.js';
+import { toast, confirmar, pedirTexto, avisoError } from '../ui.js';
 import { useAuth } from '../auth.jsx';
 import Avatar from '../components/Avatar.jsx';
+import { IconShield, IconBell, IconCheck } from '../components/Icons.jsx';
 import { timeAgo } from '../utils.js';
 
 const STATUS_PILL = { active: 'ok', suspended: 'err', deleted: 'info' };
 const REPORT_PILL = { open: 'warn', resolved: 'ok', dismissed: 'info' };
 
+function SeccionCopias() {
+  const [busy, setBusy] = useState('');
+  const [hechas, setHechas] = useState([]);
+  const [migrado, setMigrado] = useState(null); // informe de la migración
+  const [direccion, setDireccion] = useState(''); // dirección de la base nueva (pegada)
+  const [estadoMudanza, setEstadoMudanza] = useState(''); // estado en claro para el usuario
+
+  async function descargar() {
+    setBusy('descargar');
+    try {
+      const res = await fetch(`${API_URL}/api/admin/backup`, {
+        headers: { Authorization: `Bearer ${getAccessToken()}` },
+      });
+      if (!res.ok) throw new Error('El servidor no pudo preparar la copia');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `copia-moon-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setHechas((l) => [new Date().toLocaleString('es-VE'), ...l].slice(0, 5));
+      toast.ok('Copia descargada. Guárdala en un sitio seguro.');
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function porCorreo() {
+    const ok = await confirmar({
+      title: '¿Enviar la copia por correo?',
+      message: 'Se enviará el archivo completo a los correos de administración.',
+      confirmText: 'Enviar',
+    });
+    if (!ok) return;
+    setBusy('correo');
+    try {
+      const r = await api.post('/api/admin/backup/correo', {});
+      toast.ok(`Copia enviada a ${r.enviadas} correo(s)`);
+      setHechas((l) => [new Date().toLocaleString('es-VE') + ' (correo)', ...l].slice(0, 5));
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function migrar() {
+    const destino = direccion.trim();
+    if (!destino) {
+      toast.err('Pega primero la dirección de la base nueva (la de Neon).');
+      return;
+    }
+    const ok = await confirmar({
+      title: '¿Migrar TODO y pasar a la base nueva?',
+      message:
+        'Se copian todos los datos (cuentas, publicaciones, mensajes, grupos y fotos) a la base nueva que pegaste, y la app pasa a usarla. La base nueva debe estar vacía. No se borra nada de la base actual.',
+      confirmText: 'Migrar todo',
+    });
+    if (!ok) return;
+    setBusy('migrar');
+    setEstadoMudanza('');
+    try {
+      let host = '';
+      try { host = new URL(destino).hostname; } catch { host = ''; }
+      setEstadoMudanza('Copiando todo a la base nueva… puede tardar un par de minutos.');
+      const r = await api.post('/api/admin/migrate/activar', { destination: destino });
+      setMigrado(r);
+      setEstadoMudanza(
+        `Todo copiado y verificado (${r.total_filas ?? 'ya estaba'} filas). La app se está cambiando a la base nueva…`
+      );
+      // El servicio se reinicia solo; se espera a que vuelva a reportar la base nueva.
+      if (host) {
+        for (let i = 0; i < 30; i += 1) {
+          await new Promise((res) => setTimeout(res, 4000));
+          try {
+            const h = await fetch(`${API_URL}/api/health`);
+            if (!h.ok) continue;
+            const j = await h.json();
+            if (j.base && j.base.startsWith(host)) {
+              setEstadoMudanza('Listo: la app ya usa la base nueva.');
+              toast.ok('Mudanza completa: la app ya usa la base nueva.');
+              break;
+            }
+          } catch { /* el servicio sigue reiniciando */ }
+        }
+      } else {
+        setEstadoMudanza('Migración lista. La app pasará a usar la base nueva al reiniciarse.');
+      }
+    } catch (e) {
+      setMigrado(null);
+      setEstadoMudanza('');
+      avisoError(e);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <>
+      <div className="card ajustes-bloque">
+        <div className="titulo">Mudanza a la base nueva (una sola vez)</div>
+        <div className="fila-ajuste">
+          <span className="icono"><IconShield /></span>
+          <span className="texto">
+            <b>Usar una base de datos nueva</b>
+            <small>Copia todo (cuentas, publicaciones, mensajes, grupos y fotos) a una base de datos nueva —por ejemplo Neon— y la app pasa a usarla sin perder nada. Se hace una sola vez.</small>
+          </span>
+        </div>
+        <div className="fila-ajuste">
+          <input
+            type="password"
+            className="input"
+            placeholder="Pega aquí la dirección de la base nueva (empieza por postgres://)"
+            value={direccion}
+            onChange={(e) => setDireccion(e.target.value)}
+            autoComplete="off"
+            spellCheck="false"
+          />
+          <button className="btn btn-primary btn-sm" onClick={migrar} disabled={busy === 'migrar'}>
+            {busy === 'migrar' ? 'Copiando todo…' : 'Migrar y usar la base nueva'}
+          </button>
+        </div>
+        {estadoMudanza ? (
+          <div className="fila-ajuste">
+            <span className="icono">{busy === 'migrar' ? <IconShield /> : <IconCheck />}</span>
+            <span className="texto">
+              <b>{estadoMudanza}</b>
+            </span>
+          </div>
+        ) : null}
+        {migrado ? (
+          <div className="fila-ajuste">
+            <span className="icono"><IconCheck /></span>
+            <span className="texto">
+              <b>Migración completada y verificada</b>
+              <small>
+                {migrado.total_filas ?? 'los datos ya estaban'} filas copiadas · {Object.keys(migrado.tablas || {}).length || '—'} tablas
+                {migrado.fotos && migrado.fotos.origen > 0
+                  ? ` · fotos ${migrado.fotos.destino === migrado.fotos.origen ? '✓ intactas' : '⚠ revisa'}`
+                  : ''}
+              </small>
+            </span>
+          </div>
+        ) : null}
+      </div>
+      <div className="card ajustes-bloque">
+        <div className="titulo">Copia de seguridad</div>
+        <div className="fila-ajuste">
+          <span className="icono"><IconShield /></span>
+          <span className="texto">
+            <b>Descargar todo ahora</b>
+            <small>Un archivo con usuarios, publicaciones, comentarios, mensajes, grupos y estadísticas. Las contraseñas nunca se incluyen.</small>
+          </span>
+          <button className="btn btn-primary btn-sm" onClick={descargar} disabled={busy === 'descargar'}>
+            {busy === 'descargar' ? 'Preparando…' : 'Descargar'}
+          </button>
+        </div>
+        <div className="fila-ajuste">
+          <span className="icono"><IconBell /></span>
+          <span className="texto">
+            <b>Enviarla a mi correo</b>
+            <small>Llega como archivo adjunto a las cuentas de administración. Todos los días a las 4 de la mañana se envía sola (si el correo está configurado).</small>
+          </span>
+          <button className="btn btn-outline btn-sm" onClick={porCorreo} disabled={busy === 'correo'}>
+            {busy === 'correo' ? 'Enviando…' : 'Enviar por correo'}
+          </button>
+        </div>
+        {hechas.length > 0 ? (
+          <div className="fila-ajuste">
+            <span className="icono"><IconCheck /></span>
+            <span className="texto">
+              <b>Últimas copias de esta sesión</b>
+              <small>{hechas.join(' · ')}</small>
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 export default function AdminView({ tab }) {
   const { isAdmin } = useAuth();
   const [section, setSection] = useState(tab || 'dashboard');
+  const migas = useRef(null);
+
+  // La pestaña activa se trae a la vista (en el teléfono hay que deslizar).
+  useEffect(() => {
+    const activa = migas.current?.querySelector('button.active');
+    if (activa && activa.scrollIntoView) {
+      activa.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    }
+  }, [section]);
 
   if (!isAdmin) {
     return <div className="card empty"><h3>Acceso restringido</h3><p>Necesitas rol de administrador.</p></div>;
@@ -20,8 +215,8 @@ export default function AdminView({ tab }) {
   return (
     <>
       <div className="topbar"><h1>Panel de administración</h1></div>
-      <div className="tabs">
-        {[['dashboard', 'Resumen'], ['users', 'Usuarios'], ['reports', 'Reportes'], ['words', 'Palabras'], ['activity', 'Actividad']].map(([id, label]) => (
+      <div className="tabs" ref={migas}>
+        {[['dashboard', 'Resumen'], ['users', 'Usuarios'], ['reports', 'Reportes'], ['words', 'Palabras'], ['activity', 'Actividad'], ['copias', 'Copias']].map(([id, label]) => (
           <button key={id} className={section === id ? 'active' : ''} onClick={() => setSection(id)}>{label}</button>
         ))}
       </div>
@@ -30,6 +225,7 @@ export default function AdminView({ tab }) {
       {section === 'reports' ? <ReportsAdmin /> : null}
       {section === 'words' ? <WordsAdmin /> : null}
       {section === 'activity' ? <ActivityAdmin /> : null}
+      {section === 'copias' ? <SeccionCopias /> : null}
     </>
   );
 }
@@ -37,7 +233,7 @@ export default function AdminView({ tab }) {
 function Dashboard() {
   const [d, setD] = useState(null);
   useEffect(() => {
-    api.get('/api/admin/dashboard').then(setD).catch((e) => alert(e.message));
+    api.get('/api/admin/dashboard').then(setD).catch(avisoError);
   }, []);
   if (!d) return <div className="spinner" />;
   const stats = [
@@ -94,7 +290,7 @@ function UsersAdmin() {
       const res = await api.get(`/api/admin/users?q=${encodeURIComponent(query)}&page=${page}&limit=20`);
       setRows(res.items || []);
       setTotal(res.total || 0);
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
   useEffect(() => { load(''); /* eslint-disable-next-line */ }, []);
   useEffect(() => {
@@ -105,7 +301,12 @@ function UsersAdmin() {
   async function act(id, kind) {
     try {
       if (kind === 'suspend') {
-        const reason = window.prompt('Motivo de suspensión:', '');
+        const reason = await pedirTexto({
+          title: 'Suspender usuario',
+          label: 'Motivo de la suspensión',
+          placeholder: 'Incumplimiento de las normas…',
+          confirmText: 'Suspender',
+        });
         if (!reason) return;
         await api.post(`/api/admin/users/${id}/suspend`, { reason });
       } else if (kind === 'activate') {
@@ -114,7 +315,7 @@ function UsersAdmin() {
         await api.post(`/api/admin/users/${id}/verify`, { verified: true });
       }
       load(q);
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
 
   return (
@@ -163,16 +364,26 @@ function ReportsAdmin() {
     try {
       const res = await api.get(`/api/admin/reports?status=${status}&page=1&limit=20`);
       setRows(res.items || []);
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [status]);
 
   async function resolve(id, action) {
-    const note = action === 'resolve' ? window.prompt('Nota de resolución:', 'Contenido eliminado') : '';
+    let note = '';
+    if (action === 'resolve') {
+      note = await pedirTexto({
+        title: 'Resolver reporte',
+        label: 'Nota de resolución',
+        value: 'Contenido eliminado',
+        confirmText: 'Resolver',
+      });
+      if (note === null) return;
+    }
     try {
       await api.post(`/api/admin/reports/${id}/resolve`, { action, note: note || '' });
+      toast.ok(action === 'resolve' ? 'Reporte resuelto' : 'Reporte descartado');
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
 
   return (
@@ -214,7 +425,7 @@ function WordsAdmin() {
   const [word, setWord] = useState('');
 
   async function load() {
-    try { setWords(await api.get('/api/admin/words')); } catch (e) { alert(e.message); }
+    try { setWords(await api.get('/api/admin/words')); } catch (e) { avisoError(e); }
   }
   useEffect(() => { load(); }, []);
 
@@ -225,14 +436,14 @@ function WordsAdmin() {
       await api.post('/api/admin/words', { word: word.trim().toLowerCase() });
       setWord('');
       load();
-    } catch (err) { alert(err.message); }
+    } catch (err) { avisoError(err); }
   }
 
   async function remove(id) {
     try {
       await api.del(`/api/admin/words/${id}`);
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { avisoError(e); }
   }
 
   return (
@@ -266,7 +477,7 @@ function ActivityAdmin() {
   useEffect(() => {
     api.get('/api/admin/activity?page=1&limit=30')
       .then((res) => setRows(res.items || []))
-      .catch((e) => alert(e.message));
+      .catch(avisoError);
   }, []);
   return (
     <div className="card" style={{ padding: 16, overflowX: 'auto' }}>

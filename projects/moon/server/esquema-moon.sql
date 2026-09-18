@@ -1,0 +1,238 @@
+-- Moon — esquema completo (generado; no editar a mano)
+-- 31 migraciones · 2026-09-17T20:25:28.373Z
+-- Ejecutar una sola vez en la base nueva (consola SQL de Neon o psql -f).
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version BIGINT PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- v1 create_users
+CREATE TABLE users (id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', is_private BOOLEAN NOT NULL DEFAULT FALSE, is_verified BOOLEAN NOT NULL DEFAULT FALSE, twofa_enabled BOOLEAN NOT NULL DEFAULT FALSE, status TEXT NOT NULL DEFAULT 'active', suspend_reason TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'user', followers_count INT NOT NULL DEFAULT 0, following_count INT NOT NULL DEFAULT 0, posts_count INT NOT NULL DEFAULT 0, images_count INT NOT NULL DEFAULT 0, images_bytes BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_login_at TIMESTAMPTZ);
+INSERT INTO schema_migrations (version, name) VALUES (1, 'create_users') ON CONFLICT (version) DO NOTHING;
+
+-- v2 create_users_indexes
+CREATE UNIQUE INDEX uq_users_username_lower ON users (LOWER(username));
+CREATE UNIQUE INDEX uq_users_email_lower ON users (LOWER(email));
+CREATE INDEX ix_users_status ON users (status);
+INSERT INTO schema_migrations (version, name) VALUES (2, 'create_users_indexes') ON CONFLICT (version) DO NOTHING;
+
+-- v3 create_refresh_tokens
+CREATE TABLE refresh_tokens (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, device TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_used_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ);
+CREATE INDEX ix_refresh_tokens_user ON refresh_tokens (user_id);
+INSERT INTO schema_migrations (version, name) VALUES (3, 'create_refresh_tokens') ON CONFLICT (version) DO NOTHING;
+
+-- v4 create_recovery_tokens
+CREATE TABLE recovery_tokens (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'recovery', code_hash TEXT NOT NULL DEFAULT '', expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ);
+CREATE INDEX ix_recovery_tokens_user ON recovery_tokens (user_id);
+INSERT INTO schema_migrations (version, name) VALUES (4, 'create_recovery_tokens') ON CONFLICT (version) DO NOTHING;
+
+-- v5 create_follows_blocks
+CREATE TABLE follows (follower_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, following_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (follower_id, following_id));
+CREATE INDEX ix_follows_following ON follows (following_id);
+CREATE TABLE blocks (blocker_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, blocked_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (blocker_id, blocked_id));
+CREATE INDEX ix_blocks_blocked ON blocks (blocked_id);
+INSERT INTO schema_migrations (version, name) VALUES (5, 'create_follows_blocks') ON CONFLICT (version) DO NOTHING;
+
+-- v6 create_posts
+CREATE TABLE posts (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, edited_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active', likes_count INT NOT NULL DEFAULT 0, comments_count INT NOT NULL DEFAULT 0, saves_count INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_posts_user ON posts (user_id, created_at DESC);
+CREATE INDEX ix_posts_created ON posts (created_at DESC);
+INSERT INTO schema_migrations (version, name) VALUES (6, 'create_posts') ON CONFLICT (version) DO NOTHING;
+
+-- v7 create_post_images
+CREATE TABLE post_images (id BIGSERIAL PRIMARY KEY, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, position INT NOT NULL DEFAULT 0, original_url TEXT NOT NULL, thumb_url TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_post_images_post ON post_images (post_id);
+INSERT INTO schema_migrations (version, name) VALUES (7, 'create_post_images') ON CONFLICT (version) DO NOTHING;
+
+-- v8 create_likes_comments
+CREATE TABLE likes (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id));
+CREATE INDEX ix_likes_post ON likes (post_id);
+CREATE TABLE comments (id BIGSERIAL PRIMARY KEY, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id BIGINT REFERENCES comments(id) ON DELETE CASCADE, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_comments_post ON comments (post_id, created_at);
+INSERT INTO schema_migrations (version, name) VALUES (8, 'create_likes_comments') ON CONFLICT (version) DO NOTHING;
+
+-- v9 create_saves_hashtags
+CREATE TABLE saves (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id));
+CREATE INDEX ix_saves_user ON saves (user_id, created_at DESC);
+CREATE TABLE hashtags (id BIGSERIAL PRIMARY KEY, tag TEXT NOT NULL UNIQUE, posts_count INT NOT NULL DEFAULT 0, last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE post_hashtags (post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, hashtag_id BIGINT NOT NULL REFERENCES hashtags(id) ON DELETE CASCADE, PRIMARY KEY (post_id, hashtag_id));
+CREATE INDEX ix_post_hashtags_tag ON post_hashtags (hashtag_id);
+INSERT INTO schema_migrations (version, name) VALUES (9, 'create_saves_hashtags') ON CONFLICT (version) DO NOTHING;
+
+-- v10 create_messages
+CREATE TABLE conversations (id BIGSERIAL PRIMARY KEY, user_a BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, user_b BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, last_message TEXT NOT NULL DEFAULT '', last_sender_id BIGINT, last_message_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (user_a, user_b));
+CREATE INDEX ix_conversations_user_a ON conversations (user_a, last_message_at DESC);
+CREATE INDEX ix_conversations_user_b ON conversations (user_b, last_message_at DESC);
+CREATE TABLE messages (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'sent', reaction TEXT NOT NULL DEFAULT '', read_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_messages_conversation ON messages (conversation_id, created_at);
+INSERT INTO schema_migrations (version, name) VALUES (10, 'create_messages') ON CONFLICT (version) DO NOTHING;
+
+-- v11 create_notifications
+CREATE TABLE notifications (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, from_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT REFERENCES posts(id) ON DELETE CASCADE, comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE, content TEXT NOT NULL DEFAULT '', is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_notifications_user ON notifications (user_id, created_at DESC);
+CREATE TABLE notification_prefs (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, follow BOOLEAN NOT NULL DEFAULT TRUE, "like" BOOLEAN NOT NULL DEFAULT TRUE, comment BOOLEAN NOT NULL DEFAULT TRUE, reply BOOLEAN NOT NULL DEFAULT TRUE, mention BOOLEAN NOT NULL DEFAULT TRUE, message BOOLEAN NOT NULL DEFAULT TRUE, system BOOLEAN NOT NULL DEFAULT TRUE);
+INSERT INTO schema_migrations (version, name) VALUES (11, 'create_notifications') ON CONFLICT (version) DO NOTHING;
+
+-- v12 create_reports_moderation
+CREATE TABLE reports (id BIGSERIAL PRIMARY KEY, reporter_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, target_type TEXT NOT NULL, target_id BIGINT NOT NULL, reason TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', resolution TEXT NOT NULL DEFAULT '', resolved_by BIGINT REFERENCES users(id), resolved_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_reports_status ON reports (status, created_at);
+CREATE TABLE blocked_words (id BIGSERIAL PRIMARY KEY, word TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+INSERT INTO schema_migrations (version, name) VALUES (12, 'create_reports_moderation') ON CONFLICT (version) DO NOTHING;
+
+-- v13 create_activity_stats_media
+CREATE TABLE activity_log (id BIGSERIAL PRIMARY KEY, user_id BIGINT, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_activity_log_user ON activity_log (user_id, created_at DESC);
+CREATE INDEX ix_activity_log_action ON activity_log (action, created_at DESC);
+CREATE TABLE app_stats (stat_date DATE PRIMARY KEY, new_users INT NOT NULL DEFAULT 0, new_posts INT NOT NULL DEFAULT 0, new_messages INT NOT NULL DEFAULT 0, new_likes INT NOT NULL DEFAULT 0, new_comments INT NOT NULL DEFAULT 0, new_follows INT NOT NULL DEFAULT 0);
+CREATE TABLE media (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, original_path TEXT NOT NULL, thumb_path TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, width INT NOT NULL DEFAULT 0, height INT NOT NULL DEFAULT 0, bytes BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_media_user ON media (user_id, created_at DESC);
+INSERT INTO schema_migrations (version, name) VALUES (13, 'create_activity_stats_media') ON CONFLICT (version) DO NOTHING;
+
+-- v14 add_dm_privacy
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dm_privacy TEXT NOT NULL DEFAULT 'all';
+INSERT INTO schema_migrations (version, name) VALUES (14, 'add_dm_privacy') ON CONFLICT (version) DO NOTHING;
+
+-- v15 enteros_a_bigint
+ALTER TABLE users ALTER COLUMN followers_count TYPE BIGINT;
+ALTER TABLE users ALTER COLUMN following_count TYPE BIGINT;
+ALTER TABLE users ALTER COLUMN posts_count TYPE BIGINT;
+ALTER TABLE users ALTER COLUMN images_count TYPE BIGINT;
+ALTER TABLE posts ALTER COLUMN likes_count TYPE BIGINT;
+ALTER TABLE posts ALTER COLUMN comments_count TYPE BIGINT;
+ALTER TABLE posts ALTER COLUMN saves_count TYPE BIGINT;
+ALTER TABLE post_images ALTER COLUMN position TYPE BIGINT;
+ALTER TABLE hashtags ALTER COLUMN posts_count TYPE BIGINT;
+ALTER TABLE media ALTER COLUMN width TYPE BIGINT;
+ALTER TABLE media ALTER COLUMN height TYPE BIGINT;
+ALTER TABLE app_stats ALTER COLUMN new_users TYPE BIGINT;
+ALTER TABLE app_stats ALTER COLUMN new_posts TYPE BIGINT;
+ALTER TABLE app_stats ALTER COLUMN new_messages TYPE BIGINT;
+ALTER TABLE app_stats ALTER COLUMN new_likes TYPE BIGINT;
+ALTER TABLE app_stats ALTER COLUMN new_comments TYPE BIGINT;
+ALTER TABLE app_stats ALTER COLUMN new_follows TYPE BIGINT;
+INSERT INTO schema_migrations (version, name) VALUES (15, 'enteros_a_bigint') ON CONFLICT (version) DO NOTHING;
+
+-- v16 create_stories
+CREATE TABLE stories (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, image_url TEXT NOT NULL, caption TEXT NOT NULL DEFAULT '', views_count INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours'));
+CREATE INDEX ix_stories_user ON stories (user_id, created_at DESC);
+CREATE INDEX ix_stories_vivas ON stories (expires_at DESC);
+CREATE TABLE story_views (story_id BIGINT NOT NULL REFERENCES stories(id) ON DELETE CASCADE, viewer_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (story_id, viewer_id));
+INSERT INTO schema_migrations (version, name) VALUES (16, 'create_stories') ON CONFLICT (version) DO NOTHING;
+
+-- v17 create_groups
+CREATE TABLE groups (id BIGSERIAL PRIMARY KEY, owner_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, about TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', privacy TEXT NOT NULL DEFAULT 'public', members_count INT NOT NULL DEFAULT 1, posts_count INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX ix_groups_owner ON groups (owner_id, created_at DESC);
+CREATE INDEX ix_groups_nombre ON groups (name);
+CREATE TABLE group_members (group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'member', joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (group_id, user_id));
+CREATE INDEX ix_group_members_user ON group_members (user_id, joined_at DESC);
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS group_id BIGINT REFERENCES groups(id) ON DELETE CASCADE;
+CREATE INDEX ix_posts_group ON posts (group_id, created_at DESC);
+ALTER TABLE groups ALTER COLUMN members_count TYPE BIGINT;
+ALTER TABLE groups ALTER COLUMN posts_count TYPE BIGINT;
+INSERT INTO schema_migrations (version, name) VALUES (17, 'create_groups') ON CONFLICT (version) DO NOTHING;
+
+-- v18 media_en_base_de_datos
+ALTER TABLE media ADD COLUMN IF NOT EXISTS original_data BYTEA;
+ALTER TABLE media ADD COLUMN IF NOT EXISTS mime TEXT NOT NULL DEFAULT 'image/jpeg';
+INSERT INTO schema_migrations (version, name) VALUES (18, 'media_en_base_de_datos') ON CONFLICT (version) DO NOTHING;
+
+-- v19 create_media_blobs
+CREATE TABLE IF NOT EXISTS media_blobs (media_id BIGINT PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE, mime TEXT NOT NULL DEFAULT 'image/jpeg', bytes BYTEA NOT NULL, ancho BIGINT NOT NULL DEFAULT 0, alto BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS ix_media_url ON media (url);
+CREATE INDEX IF NOT EXISTS ix_media_blobs_fecha ON media_blobs (created_at DESC);
+INSERT INTO schema_migrations (version, name) VALUES (19, 'create_media_blobs') ON CONFLICT (version) DO NOTHING;
+
+-- v20 create_app_settings
+CREATE TABLE IF NOT EXISTS app_settings (clave TEXT PRIMARY KEY, valor TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+INSERT INTO schema_migrations (version, name) VALUES (20, 'create_app_settings') ON CONFLICT (version) DO NOTHING;
+
+-- v21 create_push_subscriptions
+CREATE TABLE IF NOT EXISTS push_subscriptions (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL, device TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_ok_at TIMESTAMPTZ, last_error TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS ix_push_user ON push_subscriptions (user_id);
+INSERT INTO schema_migrations (version, name) VALUES (21, 'create_push_subscriptions') ON CONFLICT (version) DO NOTHING;
+
+-- v22 create_polls
+CREATE TABLE IF NOT EXISTS polls (post_id BIGINT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE, pregunta TEXT NOT NULL DEFAULT '', opciones JSONB NOT NULL DEFAULT '[]'::jsonb, multiple BOOLEAN NOT NULL DEFAULT FALSE, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS poll_votes (post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, opcion BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (post_id, user_id, opcion));
+CREATE INDEX IF NOT EXISTS ix_poll_votes_post ON poll_votes (post_id);
+INSERT INTO schema_migrations (version, name) VALUES (22, 'create_polls') ON CONFLICT (version) DO NOTHING;
+
+-- v23 create_group_messages
+CREATE TABLE IF NOT EXISTS group_messages (id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL DEFAULT '', audio_url TEXT NOT NULL DEFAULT '', duracion_ms BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS ix_group_messages_grupo ON group_messages (group_id, created_at DESC);
+INSERT INTO schema_migrations (version, name) VALUES (23, 'create_group_messages') ON CONFLICT (version) DO NOTHING;
+
+-- v24 mensajes_con_audio
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS audio_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS duracion_ms BIGINT NOT NULL DEFAULT 0;
+INSERT INTO schema_migrations (version, name) VALUES (24, 'mensajes_con_audio') ON CONFLICT (version) DO NOTHING;
+
+-- v25 conversation_prefs
+CREATE TABLE IF NOT EXISTS conversation_prefs (conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, silenciada BOOLEAN NOT NULL DEFAULT FALSE, archivada BOOLEAN NOT NULL DEFAULT FALSE, oculta BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (conversation_id, user_id));
+CREATE INDEX IF NOT EXISTS ix_conversation_prefs_usuario ON conversation_prefs (user_id);
+INSERT INTO schema_migrations (version, name) VALUES (25, 'conversation_prefs') ON CONFLICT (version) DO NOTHING;
+
+-- v26 privacidad_avanzada
+ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_comment TEXT NOT NULL DEFAULT 'all';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS show_online BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS searchable BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_see_follows BOOLEAN NOT NULL DEFAULT TRUE;
+INSERT INTO schema_migrations (version, name) VALUES (26, 'privacidad_avanzada') ON CONFLICT (version) DO NOTHING;
+
+-- v27 mensajes_con_respuesta
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id BIGINT REFERENCES messages(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to_id);
+INSERT INTO schema_migrations (version, name) VALUES (27, 'mensajes_con_respuesta') ON CONFLICT (version) DO NOTHING;
+
+-- v28 interaccion_rica
+ALTER TABLE likes ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'me_gusta';
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS post_hidden (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, post_id));
+CREATE INDEX IF NOT EXISTS ix_post_hidden_user ON post_hidden (user_id);
+CREATE TABLE IF NOT EXISTS comment_likes (comment_id BIGINT NOT NULL REFERENCES comments(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, tipo TEXT NOT NULL DEFAULT 'me_gusta', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (comment_id, user_id));
+CREATE INDEX IF NOT EXISTS ix_comment_likes_comment ON comment_likes (comment_id);
+INSERT INTO schema_migrations (version, name) VALUES (28, 'interaccion_rica') ON CONFLICT (version) DO NOTHING;
+
+-- v29 mensajeria_completa
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS post_id BIGINT REFERENCES posts(id) ON DELETE SET NULL;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL;
+ALTER TABLE conversation_prefs ADD COLUMN IF NOT EXISTS no_leida BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS ix_messages_post ON messages (post_id);
+INSERT INTO schema_migrations (version, name) VALUES (29, 'mensajeria_completa') ON CONFLICT (version) DO NOTHING;
+
+-- v30 grupos_completos
+CREATE TABLE IF NOT EXISTS group_events ( id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, about TEXT NOT NULL DEFAULT '', place TEXT NOT NULL DEFAULT '', starts_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS ix_group_events_grupo ON group_events (group_id, starts_at);
+CREATE TABLE IF NOT EXISTS group_event_asistencias ( event_id BIGINT NOT NULL REFERENCES group_events(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, estado TEXT NOT NULL DEFAULT 'voy', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (event_id, user_id));
+CREATE TABLE IF NOT EXISTS group_files ( id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, nombre TEXT NOT NULL, url TEXT NOT NULL, tipo TEXT NOT NULL DEFAULT '', peso BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS ix_group_files_grupo ON group_files (group_id, created_at DESC);
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS rules TEXT NOT NULL DEFAULT '';
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS announcement TEXT NOT NULL DEFAULT '';
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS announcement_at TIMESTAMPTZ;
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS join_questions JSONB NOT NULL DEFAULT '[]'::jsonb;
+CREATE TABLE IF NOT EXISTS group_join_requests ( id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, answers JSONB NOT NULL DEFAULT '[]'::jsonb, estado TEXT NOT NULL DEFAULT 'pendiente', resolved_by BIGINT REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), resolved_at TIMESTAMPTZ);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_group_join_pendiente ON group_join_requests (group_id, user_id) WHERE estado = 'pendiente';
+CREATE TABLE IF NOT EXISTS group_sanctions ( id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, por_id BIGINT REFERENCES users(id) ON DELETE SET NULL, tipo TEXT NOT NULL DEFAULT 'aviso', motivo TEXT NOT NULL DEFAULT '', hasta TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS ix_group_sanctions_grupo ON group_sanctions (group_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS group_log ( id BIGSERIAL PRIMARY KEY, group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, user_id BIGINT REFERENCES users(id) ON DELETE SET NULL, accion TEXT NOT NULL, detalle TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS ix_group_log_grupo ON group_log (group_id, created_at DESC);
+INSERT INTO schema_migrations (version, name) VALUES (30, 'grupos_completos') ON CONFLICT (version) DO NOTHING;
+
+-- v31 perfil_completo
+CREATE TABLE IF NOT EXISTS follow_requests ( id BIGSERIAL PRIMARY KEY, solicitante_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, destino_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, estado TEXT NOT NULL DEFAULT 'pendiente', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), resolved_at TIMESTAMPTZ);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_follow_request_pendiente ON follow_requests (solicitante_id, destino_id) WHERE estado = 'pendiente';
+CREATE TABLE IF NOT EXISTS hashtag_follows ( user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, tag));
+CREATE TABLE IF NOT EXISTS search_history ( id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, termino TEXT NOT NULL, tipo TEXT NOT NULL DEFAULT 'users', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS ix_search_history_usuario ON search_history (user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS user_settings ( user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, idioma TEXT NOT NULL DEFAULT 'es', tema_auto BOOLEAN NOT NULL DEFAULT FALSE, tema_desde TEXT NOT NULL DEFAULT '20:00', tema_hasta TEXT NOT NULL DEFAULT '07:00', ahorro_datos BOOLEAN NOT NULL DEFAULT FALSE, avisos_tipos JSONB NOT NULL DEFAULT '{}'::jsonb, pin_hash TEXT NOT NULL DEFAULT '', bloqueo_activo BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+INSERT INTO schema_migrations (version, name) VALUES (31, 'perfil_completo') ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+
+-- Listo: 31 migraciones aplicadas.

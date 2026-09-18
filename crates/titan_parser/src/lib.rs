@@ -864,6 +864,15 @@ impl Parser {
             if precedence < min_precedence {
                 break;
             }
+            // Spacing rule for operators that also exist as prefix operators:
+            // whitespace before the operator and none after it means it is a
+            // prefix operator (`-1`, `*pointer`, `&value`), not a continuation
+            // of the expression written on the previous line. Without this, a
+            // `-1` on its own line silently extended the previous statement:
+            // `print(msg)` followed by `-1` parsed as `print(msg) - 1`.
+            if self.operator_is_prefix_form() {
+                break;
+            }
             self.advance();
             let right = self.parse_binary(precedence + 1)?;
             let span = left.span();
@@ -953,6 +962,36 @@ impl Parser {
             final_expr: Some(Box::new(cmp)),
             span,
         }))
+    }
+
+    /// Whether the operator token at the cursor is written attached to its
+    /// right operand (`-1`, `*pointer`, `&value`) while having whitespace — or a
+    /// line break — before it. Such an operator is a prefix operator, so
+    /// `parse_binary` must not absorb it as a binary operator that continues the
+    /// expression on the previous line.
+    fn operator_is_prefix_form(&self) -> bool {
+        let Some(operator) = self.tokens.get(self.pos) else {
+            return false;
+        };
+        let prefix_capable = matches!(
+            operator.kind,
+            TokenKind::Minus | TokenKind::Star | TokenKind::Ampersand
+        );
+        if !prefix_capable {
+            return false;
+        }
+        let previous = self.tokens.get(self.pos.saturating_sub(1));
+        let spaced_before = match previous {
+            // The first token of the file has nothing before it.
+            None => true,
+            Some(previous) => previous.span.end < operator.span.start,
+        };
+        let following = self.tokens.get(self.pos + 1);
+        let attached_after = match following {
+            Some(token) => token.span.start == operator.span.end,
+            None => false,
+        };
+        spaced_before && attached_after
     }
 
     fn binary_op(&self) -> Option<(BinaryOp, u8)> {
@@ -1144,6 +1183,7 @@ impl Parser {
                 }
                 if self.at(TokenKind::LBrace)
                     && qualified.chars().next().is_some_and(char::is_uppercase)
+                    && self.brace_opens_struct_body()
                 {
                     self.advance();
                     let mut fields = Vec::new();
@@ -1682,6 +1722,33 @@ impl Parser {
     fn peek_kind(&self) -> Option<&TokenKind> {
         self.tokens.get(self.pos).map(|t| &t.kind)
     }
+    /// Kind of the token `offset` positions ahead (0 = the current one).
+    fn peek_kind_ahead(&self, offset: usize) -> Option<&TokenKind> {
+        self.tokens.get(self.pos + offset).map(|t| &t.kind)
+    }
+    /// Decides whether the `{` at the current position opens a struct literal
+    /// body, or is simply the brace of a block.
+    ///
+    /// `if limit > LIMIT { limit = LIMIT }` places an uppercase identifier —
+    /// a constant, the usual way to name one — right before the block's brace.
+    /// Reading that brace as the beginning of a struct literal made the parser
+    /// reject perfectly ordinary code with "expected RBrace, found Eq", and the
+    /// diagnostic pointed at the `=` inside the assignment, far from the cause.
+    ///
+    /// A struct body can only start with `}` (empty), a field name, or the
+    /// shorthand field (`name:` for a value, `name,` / `name}` for a binding).
+    /// Anything else means the brace belongs to a block, so the identifier is
+    /// an ordinary value and parsing continues as such.
+    fn brace_opens_struct_body(&self) -> bool {
+        match self.peek_kind_ahead(1) {
+            Some(TokenKind::RBrace) => true,
+            Some(TokenKind::Ident(_)) => matches!(
+                self.peek_kind_ahead(2),
+                Some(TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace)
+            ),
+            _ => false,
+        }
+    }
     fn span(&self) -> Span {
         self.tokens
             .get(self.pos)
@@ -1961,6 +2028,34 @@ mod tests {
     }
 
     #[test]
+    fn uppercase_value_before_a_block_brace_is_not_a_struct_literal() {
+        // Una constante en mayusculas justo antes de la llave del bloque:
+        // `if limit > LIMIT { limit = LIMIT }`. Antes se leia como un literal
+        // de struct y el parser fallaba con "expected RBrace, found Eq".
+        let source =
+            "const LIMIT = 10 fn main() { let mut limit = 1 if limit > LIMIT { limit = LIMIT } }";
+        assert!(parse(source).is_ok(), "{:?}", parse(source).err());
+
+        // Tambien en un `while` y con el identificador cualificado.
+        let source = "fn main() { let mut i = 0 while i < MAX { i = i + 1 } }";
+        assert!(parse(source).is_ok(), "{:?}", parse(source).err());
+    }
+
+    #[test]
+    fn struct_literals_keep_parsing() {
+        // El guardia que distingue una llave de bloque de un literal de struct
+        // no puede romper las formas legitimas: campos con `:`, sin campos y
+        // la forma corta (`Point { x }`, `Point { x, y }`).
+        let source = "struct Point { x: int, y: int } fn main() { \
+                      let a = Point { x: 1, y: 2 } \
+                      let b = Point { x: 1 } \
+                      let c = Point {} \
+                      let d = Point { x } \
+                      let e = Point { x: 1, y } }";
+        assert!(parse(source).is_ok(), "{:?}", parse(source).err());
+    }
+
+    #[test]
     fn distinguishes_json_braces_from_interpolation() {
         let program = parse(r#"fn main() { "{\"answer\":42}" }"#).unwrap();
         let Item::Function(function) = &program.items[0] else {
@@ -1999,5 +2094,52 @@ mod tests {
         } else {
             panic!("expected function");
         }
+    }
+
+    #[test]
+    fn an_operator_attached_to_its_operand_starts_a_new_expression() {
+        // `print(msg)` on one line and `-1` on the next used to parse as
+        // `print(msg) - 1`: the previous statement's result silently became the
+        // left operand of the subtraction.
+        let program = parse("fn main() { print(\"x\")\n-1 }").unwrap();
+        let Item::Function(function) = &program.items[0] else {
+            panic!("expected a function declaration");
+        };
+        let body = function.body.as_ref().expect("function body");
+        assert_eq!(body.stmts.len(), 1, "print must stay its own statement");
+        assert!(
+            matches!(
+                body.final_expr.as_deref(),
+                Some(Expr::Unary {
+                    op: UnaryOp::Neg,
+                    ..
+                })
+            ),
+            "expected the trailing `-1` to be the block's value, found {:?}",
+            body.final_expr
+        );
+    }
+
+    #[test]
+    fn an_operator_spaced_on_both_sides_still_continues_the_expression() {
+        let program = parse("fn main() { let total = 1\n + 2 }").unwrap();
+        let Item::Function(function) = &program.items[0] else {
+            panic!("expected a function declaration");
+        };
+        let body = function.body.as_ref().expect("function body");
+        assert_eq!(body.stmts.len(), 1, "the addition is part of the `let`");
+        let Stmt::Let { value, .. } = &body.stmts[0] else {
+            panic!("expected a let statement");
+        };
+        assert!(
+            matches!(
+                value,
+                Expr::Binary {
+                    op: BinaryOp::Add,
+                    ..
+                }
+            ),
+            "expected a binary addition, found {value:?}"
+        );
     }
 }

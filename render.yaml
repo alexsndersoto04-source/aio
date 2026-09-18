@@ -1,64 +1,57 @@
-# Moon — Despliegue en Render (backend Titan + PostgreSQL + frontend React)
-# Uso: crear un Blueprint nuevo en Render apuntando a este repo,
-# o conectar el repo ya conectado y aplicar este archivo.
+# Moon — despliegue gratuito y permanente
+# ============================================================
+# Un solo servicio: el servidor entrega la API y la aplicación web compilada,
+# así todo vive en una dirección única y no hay que configurar dominios.
 #
-# Servicios:
-#   moon-api    API en Titan (Docker) — servidor HTTP + WebSocket + imágenes
-#   moon-db     PostgreSQL 16 (free)   — fuente de verdad única
-#   moon-web    Frontend React (Node)  — SPA + servidor estático
-
-databases:
-  - name: moon-db
-    plan: free
-    databaseName: moon
-    user: moon
+# Plan gratuito de Render + base de datos gratuita de Neon (no piden tarjeta).
+# Pasos detallados, en lenguaje llano: ver DESPLEGAR.md en la raíz del proyecto.
 
 services:
-  # ---------------- API (Titan) ----------------
   - type: web
-    name: moon-api
-    runtime: docker
+    name: moon
+    runtime: node
     plan: free
-    rootDir: .
-    dockerfilePath: ./Dockerfile
+    buildCommand: >-
+      npm --prefix frontend ci &&
+      npm --prefix frontend run build &&
+      npm --prefix projects/moon/server ci --omit=dev
+    startCommand: node projects/moon/server/src/index.mjs
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
-      - key: PORT
-        value: "3000"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: moon-db
-          property: connectionString
+      - key: NODE_VERSION
+        value: "22"
+      # Secreto de las sesiones: Render lo inventa solo.
       - key: JWT_SECRET
         generateValue: true
+      # Cadena de conexión de la base de datos (Supabase o Neon). Se pega a
+      # mano al crear el servicio; no se guarda en el repositorio.
+      - key: DATABASE_URL
+        sync: false
+      # Cualquier origen: la aplicación se sirve desde el mismo servicio.
       - key: CORS_ORIGIN
-        sync: false            # URL del frontend (moon-web): https://moon-web.onrender.com
+        value: "*"
+      # Carpeta del sitio ya compilado (la crea el paso de compilación).
+      - key: MOON_WEB_DIR
+        value: /opt/render/project/src/frontend/dist
+      # Carpeta de caché de las fotos. Las imágenes se guardan DENTRO de la
+      # base de datos, así que esta carpeta solo acelera la entrega: si el
+      # servidor se reinicia y se vacía, no se pierde ninguna foto.
+      # Correo (recuperación de contraseña, códigos y copia de seguridad
+      # diaria). Basta con pegar aquí la clave gratuita de Resend.
+      - key: RESEND_API_KEY
+        sync: false
+      # Remitente de los correos. Con Resend gratis se usa onboarding@resend.dev
+      # hasta que se verifique un dominio propio.
+      - key: MAIL_FROM
+        value: Moon <onboarding@resend.dev>
+      # Desde dónde se generan los enlaces de los correos.
       - key: PUBLIC_BASE_URL
-        sync: false            # La MISMA URL del frontend (se usa para enlaces en emails): https://moon-web.onrender.com
-      - key: SMTP_HOST
         sync: false
-      - key: SMTP_PORT
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      - key: SMTP_FROM
-        sync: false
-
-  # ---------------- Frontend (React) ----------------
-  - type: web
-    name: moon-web
-    runtime: node
-    plan: free
-    rootDir: frontend
-    buildCommand: npm ci && npm run build
-    startCommand: npm start
-    healthCheckPath: /
-    autoDeploy: true
-    envVars:
-      - key: VITE_API_URL
-        sync: false            # https://moon-api.onrender.com
-      - key: API_PROXY_TARGET
-        sync: false            # https://moon-api.onrender.com (solo dev)
+      - key: MOON_UPLOADS
+        value: /opt/render/project/src/uploads
+      # Canario de despliegue: si aparece en /api/health, confirma que este
+      # servicio se vuelve a publicar solo al subir código a esta rama y que
+      # Render aplica las variables de este archivo. (Sin secretos.)
+      - key: MOON_CANARIO
+        value: canario-20260917-a

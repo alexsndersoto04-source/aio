@@ -509,7 +509,13 @@ mod tests {
         )
         .unwrap();
         let error = load_program(root.to_str().unwrap()).unwrap_err();
-        assert!(error.starts_with("2:5: invalid operands"), "{error}");
+        // El diagnostico nombra ahora el archivo antes de la linea y la
+        // columna, para que un proyecto de varios modulos no obligue a
+        // adivinar cual de las fuentes contiene el error.
+        assert!(
+            error.contains("main.titan:2:5: invalid operands"),
+            "{error}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
