@@ -297,26 +297,76 @@ export function registrarRutasAdmin(router) {
   // El servidor (que SÍ puede hablar con ambas bases) copia todo desde su
   // base actual a la base nueva indicada en MOON_MIGRATE_DEST. Se usa una
   // vez, para mudarse a Neon sin perder nada.
-  router.post('/api/admin/migrate', async (c) => {
-    await c.admin();
-    if (demasiadoRapido('migrar', 3, 600_000)) {
-      throw new ApiErr('Demasiados intentos seguidos: espera unos minutos', 429, 'rate_limit');
-    }
-    const destino = process.env.MOON_MIGRATE_DEST || '';
-    if (!destino) {
+  // El destino se pega en el panel (mudanza a Neon, una sola vez) o viene de
+  // la variable MOON_MIGRATE_DEST. Se valida que parezca una dirección real.
+  function direccionDestino(cuerpo) {
+    const d = String(cuerpo?.destination || process.env.MOON_MIGRATE_DEST || '').trim();
+    if (!d) {
       throw new ApiErr(
-        'Falta la variable MOON_MIGRATE_DEST en Render (pégala como se indica en la guía).',
+        'Indica la dirección de la base nueva (pega la de Neon) o define MOON_MIGRATE_DEST.',
         400,
         'sin_destino'
       );
     }
+    if (!/^postgres(ql)?:\/\//i.test(d) || d.length < 25 || d.length > 600) {
+      throw new ApiErr(
+        'La dirección pegada no parece válida: debe empezar por postgres:// (cópiala completa, como se muestra en Neon).',
+        400,
+        'direccion_invalida'
+      );
+    }
+    return d;
+  }
+
+  router.post('/api/admin/migrate', async (c) => {
+    const admin = await c.admin();
+    if (demasiadoRapido('migrar', 3, 600_000)) {
+      throw new ApiErr('Demasiados intentos seguidos: espera unos minutos', 429, 'rate_limit');
+    }
+    const destino = direccionDestino(await c.cuerpo().catch(() => ({})));
     try {
       const informe = await migrarA(c.pool, destino);
-      await auditar(c.pool, c.userId, 'base_migrada', `${informe.total_filas} filas a la base nueva`, c.ip);
+      await auditar(c.pool, admin.id, 'base_migrada', `${informe.total_filas} filas a la base nueva`, c.ip);
       console.log(`[migracion] ${informe.total_filas} filas copiadas a la base nueva (verificado)`);
       return { ok: true, ...informe };
     } catch (e) {
       throw new ApiErr(e.message || 'No se pudo migrar', 400, 'migracion');
+    }
+  });
+
+  // «Migrar y pasar a la base nueva»: copia todo (si falta), guarda la nueva
+  // dirección en los ajustes y reinicia el servicio para que la use desde ya.
+  router.post('/api/admin/migrate/activar', async (c) => {
+    const admin = await c.admin();
+    if (demasiadoRapido('migrar', 3, 600_000)) {
+      throw new ApiErr('Demasiados intentos seguidos: espera unos minutos', 429, 'rate_limit');
+    }
+    const destino = direccionDestino(await c.cuerpo().catch(() => ({})));
+    let informe;
+    try {
+      informe = await migrarA(c.pool, destino);
+    } catch (e) {
+      // Si ya se copió antes (la base nueva ya tiene datos), se activa igual.
+      if (!/ya tiene datos/.test(e.message)) throw e;
+      console.log('[migracion] la base nueva ya estaba copiada: se activa sin volver a copiar');
+      informe = { total_filas: null, ya_copiada: true };
+    }
+    try {
+      await c.pool.query(
+        `INSERT INTO app_settings (clave, valor) VALUES ('moon.db_override', $1)
+         ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, updated_at = NOW()`,
+        [destino]
+      );
+      await auditar(c.pool, admin.id, 'base_activada', 'la app ahora usa la base nueva', c.ip);
+      console.log(`[migracion] base nueva activada: reiniciando el servicio`);
+      // La respuesta llega al navegador antes de cerrar.
+      setTimeout(() => {
+        console.log('[api] cerrando para usar la base nueva desde ya');
+        process.exit(0);
+      }, 800);
+      return { ok: true, reiniciando: true, ...informe };
+    } catch (e) {
+      throw new ApiErr(e.message || 'No se pudo activar la base nueva', 400, 'migracion');
     }
   });
 }

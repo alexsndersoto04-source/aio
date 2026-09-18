@@ -47,7 +47,7 @@ if (!SECRETO || SECRETO.length < 32) {
   process.exit(1);
 }
 
-const pool = crearPool(URL_BD);
+let pool = crearPool(URL_BD);
 
 // Explica en palabras llanas qué hacer cuando la conexión con la base de datos
 // falla. Devuelve la lista de pistas, o vacía si es un fallo pasajero (que sí
@@ -129,6 +129,24 @@ function destinoVisible(cadena) {
 
 await prepararBase();
 
+// «Base en uso»: si una mudanza previa guardó la dirección de la base nueva
+// (moon.db_override), desde este momento es la que manda. Se lee de la base
+// de arranque y, de estar, se cambia todo a la base nueva.
+let URL_USO = URL_BD;
+try {
+  const nota = (await pool.query("SELECT valor FROM app_settings WHERE clave = 'moon.db_override'")).rows[0];
+  if (nota && nota.valor && nota.valor !== URL_BD) {
+    const nueva = crearPool(nota.valor);
+    await migrar(nueva); // garantiza que el esquema está al día en la base nueva
+    console.log(`[bd] base en uso cambiada a: ${destinoVisible(nota.valor)}`);
+    await pool.end().catch(() => {});
+    pool = nueva;
+    URL_USO = nota.valor;
+  }
+} catch (e) {
+  console.error('[bd] no se pudo leer la nota «base en uso» (se sigue con la actual):', e.message);
+}
+
 // Migración automática (una sola vez): si MOON_MIGRATE_DEST está definido,
 // se copia todo a la base nueva al arrancar. Solo migra a una base VACÍA con
 // su esquema ya aplicado (ver migracion.mjs). Así la mudanza a Neon no
@@ -183,7 +201,7 @@ router.get('/api/health', async (c) => {
     app: 'moon',
     time: new Date().toISOString(),
     db: bd,
-    base: destinoVisible(URL_BD),
+    base: destinoVisible(URL_USO),
     canario: process.env.MOON_CANARIO || null,
     fotos_en_base: fotosEnBase,
     correo: correoConfigurado() ? viaDeCorreo() : 'sin configurar',
@@ -278,7 +296,7 @@ servidor.listen(PUERTO, '0.0.0.0', () => {
   console.log(`[api] Moon escuchando en http://0.0.0.0:${PUERTO}`);
   console.log(`[api] WebSocket en /ws · ${router.rutas.length} rutas registradas`);
   console.log(`[api] Interfaz web: ${estadoWeb()}`);
-  console.log(`[api] Base de datos: ${destinoVisible(URL_BD)}`);
+  console.log(`[api] Base de datos: ${destinoVisible(URL_USO)}`);
 });
 
 async function apagar(senal) {

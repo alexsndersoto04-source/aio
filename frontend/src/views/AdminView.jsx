@@ -15,6 +15,8 @@ function SeccionCopias() {
   const [busy, setBusy] = useState('');
   const [hechas, setHechas] = useState([]);
   const [migrado, setMigrado] = useState(null); // informe de la migración
+  const [direccion, setDireccion] = useState(''); // dirección de la base nueva (pegada)
+  const [estadoMudanza, setEstadoMudanza] = useState(''); // estado en claro para el usuario
 
   async function descargar() {
     setBusy('descargar');
@@ -59,20 +61,50 @@ function SeccionCopias() {
   }
 
   async function migrar() {
+    const destino = direccion.trim();
+    if (!destino) {
+      toast.err('Pega primero la dirección de la base nueva (la de Neon).');
+      return;
+    }
     const ok = await confirmar({
-      title: '¿Migrar TODO a la base nueva?',
+      title: '¿Migrar TODO y pasar a la base nueva?',
       message:
-        'Se copian todos los datos (usuarios, publicaciones, mensajes, fotos) a la base nueva que está en MOON_MIGRATE_DEST. La base nueva debe estar vacía. Después de esto, en Render se cambia DATABASE_URL por la nueva. No se borra nada de la base actual.',
+        'Se copian todos los datos (cuentas, publicaciones, mensajes, grupos y fotos) a la base nueva que pegaste, y la app pasa a usarla. La base nueva debe estar vacía. No se borra nada de la base actual.',
       confirmText: 'Migrar todo',
     });
     if (!ok) return;
     setBusy('migrar');
+    setEstadoMudanza('');
     try {
-      const r = await api.post('/api/admin/migrate', {});
+      let host = '';
+      try { host = new URL(destino).hostname; } catch { host = ''; }
+      setEstadoMudanza('Copiando todo a la base nueva… puede tardar un par de minutos.');
+      const r = await api.post('/api/admin/migrate/activar', { destination: destino });
       setMigrado(r);
-      toast.ok(`Migración lista: ${r.total_filas} filas copiadas y verificadas.`);
+      setEstadoMudanza(
+        `Todo copiado y verificado (${r.total_filas ?? 'ya estaba'} filas). La app se está cambiando a la base nueva…`
+      );
+      // El servicio se reinicia solo; se espera a que vuelva a reportar la base nueva.
+      if (host) {
+        for (let i = 0; i < 30; i += 1) {
+          await new Promise((res) => setTimeout(res, 4000));
+          try {
+            const h = await fetch(`${API_URL}/api/health`);
+            if (!h.ok) continue;
+            const j = await h.json();
+            if (j.base && j.base.startsWith(host)) {
+              setEstadoMudanza('Listo: la app ya usa la base nueva.');
+              toast.ok('Mudanza completa: la app ya usa la base nueva.');
+              break;
+            }
+          } catch { /* el servicio sigue reiniciando */ }
+        }
+      } else {
+        setEstadoMudanza('Migración lista. La app pasará a usar la base nueva al reiniciarse.');
+      }
     } catch (e) {
       setMigrado(null);
+      setEstadoMudanza('');
       avisoError(e);
     } finally {
       setBusy('');
@@ -82,28 +114,46 @@ function SeccionCopias() {
   return (
     <>
       <div className="card ajustes-bloque">
-        <div className="titulo">Migración a la base nueva (una sola vez)</div>
+        <div className="titulo">Mudanza a la base nueva (una sola vez)</div>
         <div className="fila-ajuste">
           <span className="icono"><IconShield /></span>
           <span className="texto">
-            <b>Copiar todo a la base nueva</b>
-            <small>Copia usuarios, publicaciones, mensajes, grupos y fotos (incluidas) a la base de datos nueva. Sirve para mudarse a Neon sin perder nada. La base nueva debe estar vacía y con su esquema aplicado.</small>
+            <b>Usar una base de datos nueva</b>
+            <small>Copia todo (cuentas, publicaciones, mensajes, grupos y fotos) a una base de datos nueva —por ejemplo Neon— y la app pasa a usarla sin perder nada. Se hace una sola vez.</small>
           </span>
+        </div>
+        <div className="fila-ajuste">
+          <input
+            type="password"
+            className="input"
+            placeholder="Pega aquí la dirección de la base nueva (empieza por postgres://)"
+            value={direccion}
+            onChange={(e) => setDireccion(e.target.value)}
+            autoComplete="off"
+            spellCheck="false"
+          />
           <button className="btn btn-primary btn-sm" onClick={migrar} disabled={busy === 'migrar'}>
-            {busy === 'migrar' ? 'Copiando…' : 'Migrar todo'}
+            {busy === 'migrar' ? 'Copiando todo…' : 'Migrar y usar la base nueva'}
           </button>
         </div>
+        {estadoMudanza ? (
+          <div className="fila-ajuste">
+            <span className="icono">{busy === 'migrar' ? <IconShield /> : <IconCheck />}</span>
+            <span className="texto">
+              <b>{estadoMudanza}</b>
+            </span>
+          </div>
+        ) : null}
         {migrado ? (
           <div className="fila-ajuste">
             <span className="icono"><IconCheck /></span>
             <span className="texto">
               <b>Migración completada y verificada</b>
               <small>
-                {migrado.total_filas} filas copiadas · {Object.keys(migrado.tablas).length} tablas
+                {migrado.total_filas ?? 'los datos ya estaban'} filas copiadas · {Object.keys(migrado.tablas || {}).length || '—'} tablas
                 {migrado.fotos && migrado.fotos.origen > 0
                   ? ` · fotos ${migrado.fotos.destino === migrado.fotos.origen ? '✓ intactas' : '⚠ revisa'}`
                   : ''}
-                . Ahora en Render: cambia DATABASE_URL por la de la base nueva y quita MOON_MIGRATE_DEST.
               </small>
             </span>
           </div>
