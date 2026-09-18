@@ -30,7 +30,8 @@ node_modules/
 
 # Frontend build
 frontend/node_modules/
-frontend/dist/
+# Nota: frontend/dist SÍ se commitea (la web compilada es lo que despliega
+# Cloudflare Workers, así el build no depende del panel de CF).
 
 
 # Moon: artefactos locales (binario, secretos, cluster postgres)
