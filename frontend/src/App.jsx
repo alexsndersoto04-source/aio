@@ -119,6 +119,18 @@ function Transicion({ children }) {
 }
 
 function Shell({ children }) {
+  // Inmersivo: al bajar, la barra superior se aparta; al subir, vuelve.
+  useEffect(() => {
+    let ultima = window.scrollY;
+    const alScroll = () => {
+      const y = window.scrollY;
+      document.body.classList.toggle('baja', y > ultima && y > 80);
+      ultima = y;
+    };
+    window.addEventListener('scroll', alScroll, { passive: true });
+    return () => window.removeEventListener('scroll', alScroll);
+  }, []);
+
   const route = useRoute();
   const seccion = route.parts[0] || 'feed';
   const enHilo = seccion === 'messages' && !!route.parts[1];

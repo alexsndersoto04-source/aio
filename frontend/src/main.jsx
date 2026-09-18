@@ -7,6 +7,7 @@ import './aurora.css';
 import './refinar.css';
 import './acabado.css';
 import './identidad.css';
+import './minimal.css';
 import { registrarServicio } from './push.js';
 
 // Sin servidor (página de demostración): responde la API con datos de ejemplo.
