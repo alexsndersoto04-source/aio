@@ -1,0 +1,213 @@
+/* ============================================================
+   Moon · Tema limpio «Nivel grande» — HOJA ÚNICA DE DISEÑO
+   ============================================================
+   Esta es la única autoridad visual. Neutraliza el acabado "aurora/cristal"
+   (degradados, vidrio, brillos) y aplica el lenguaje de las grandes redes:
+
+   · Fondo blanco puro, secciones separadas por filetes de 1 px.
+   · Tinta casi negra; grises para lo secundario.
+   · Un solo acento (índigo), usado con cuentagotas (activo/acción principal).
+   · Sin degradados ni cristales: todo sólido y plano.
+   · Radios pequeños y consistentes; sombras mínimas.
+   · Barra superior fina y translúcida; barra inferior solo-iconos.
+   · Feed con posts limpios y fila de acciones con contador pequeño.
+
+   Cargada al final: por encima de styles y aurora. No hay más capas.
+   ============================================================ */
+
+/* ---------- Tokens limpios (mandan sobre todo) ---------- */
+:root {
+  --bg: #ffffff;
+  --bg-2: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #fafafa;
+  --surface-3: #f2f2f3;
+  --surface-glass: rgba(255, 255, 255, 0.86);
+  --overlay: rgba(0, 0, 0, 0.55);
+
+  --ink: #0f1419;
+  --ink-2: #536471;
+  --ink-3: #8b98a5;
+
+  --line: #eff3f4;
+  --line-2: #f7f9f9;
+  --line-strong: #e1e8ed;
+
+  --accent: #4f46e5;
+  --accent-2: #4f46e5;
+  --accent-3: #4f46e5;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(79, 70, 229, 0.07);
+  --accent-line: rgba(79, 70, 229, 0.3);
+  --grad: var(--accent);        /* sin degradados: sólido */
+
+  --ok: #0f8a5f;
+  --warn: #b45309;
+  --danger: #d92d3f;
+  --like: #f91880;
+
+  --shadow-1: 0 1px 2px rgba(15, 20, 25, 0.05);
+  --shadow-2: 0 2px 6px rgba(15, 20, 25, 0.07);
+  --shadow-3: 0 6px 20px rgba(15, 20, 25, 0.10);
+
+  --r-sm: 8px;
+  --r: 12px;
+  --r-lg: 16px;
+
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+[data-theme='dark'] {
+  --bg: #000000;
+  --surface: #000000;
+  --surface-2: #0a0a0a;
+  --surface-3: #16181c;
+  --surface-glass: rgba(0, 0, 0, 0.8);
+  --ink: #e7e9ea;
+  --ink-2: #a8b3bd;
+  --ink-3: #6b7a86;
+  --line: #16181c;
+  --line-2: #101214;
+  --line-strong: #2f3335;
+  --accent: #818cf8;
+  --grad: var(--accent);
+}
+
+body { -webkit-font-smoothing: antialiased; }
+body, .marco { background: var(--bg); }
+
+/* ---------- Neutraliza el decorado aurora ---------- */
+.cielo, .cielo::before, .cielo::after, .cielo-estrellas, .cielo-estrellas-2 { display: none !important; }
+* { text-shadow: none !important; }
+
+/* El logo "Moon" en tinta sólida, no en degradado */
+.logo, .logo-texto, .brand, .marca {
+  background: none !important;
+  -webkit-background-clip: initial !important;
+  -webkit-text-fill-color: initial !important;
+  color: var(--ink) !important;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* ---------- Barra superior: fina, translúcida, filete ---------- */
+.topnav, .topbar, .topbar-app, .page-head, .barra-superior {
+  background: var(--surface-glass) !important;
+  backdrop-filter: blur(14px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(160%) !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--line) !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+.topbar h1, .page-head h1 { font-size: 0; }  /* sin títulos gigantes */
+.topbar, .page-head { min-height: 0; }
+
+/* ---------- Tarjetas y secciones: blanco + filete, sin sombra ---------- */
+.card, .post, .composer, .historias, .grupo, .bloque, .lista-item, .panel {
+  background: var(--surface) !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--line) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* ---------- Búsqueda: píldora gris ultraclara ---------- */
+.search input, .buscador input, .campo-busqueda input {
+  background: var(--surface-3) !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  height: 42px;
+}
+
+/* ---------- Pestañas: subrayado fino, sin pastillas de color ---------- */
+.tabs, .segmentado, .pestanas { background: transparent !important; border-bottom: 1px solid var(--line); border-radius: 0 !important; }
+.tabs button, .segmentado button, .pestana {
+  background: transparent !important;
+  color: var(--ink-3) !important;
+  font-weight: 500 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.tabs button.active, .segmentado button.active, .pestana.activa {
+  color: var(--ink) !important;
+  font-weight: 700 !important;
+  background: transparent !important;
+}
+.tabs button.active::after, .segmentado button.active::after, .pestana.activa::after {
+  background: var(--accent) !important;
+  height: 2px !important;
+  border-radius: 2px;
+}
+
+/* ---------- Botones: principal sólido; resto, fantasma ---------- */
+.btn-aurora, .btn-primary, .btn-grad, .btn-solido {
+  background: var(--accent) !important;
+  color: #fff !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  border-radius: var(--r) !important;
+}
+.btn, .btn-ghost, .btn-sec {
+  background: transparent !important;
+  border: 1px solid var(--line-strong) !important;
+  color: var(--ink) !important;
+  box-shadow: none !important;
+}
+
+/* ---------- FAB: sólido y discreto ---------- */
+.fab {
+  background: var(--accent) !important;
+  box-shadow: var(--shadow-2) !important;
+  border: 0 !important;
+}
+
+/* ---------- Historias: aro neutro compacto ---------- */
+.historia .aro { background: var(--line-strong) !important; }
+.historia.crear .relleno { background: var(--surface-3) !important; color: var(--accent); }
+
+/* ---------- Posts ---------- */
+.post-head .name a { color: var(--ink); font-weight: 700; }
+.post-head .at, .post-head .time { color: var(--ink-3); }
+.post-body { color: var(--ink); line-height: 1.55; }
+.post-actions button, .post-actions a { color: var(--ink-3); }
+.post-actions button.liked { color: var(--like); }
+.post-actions .cuenta, .post-actions button span { font-size: 12.5px; color: var(--ink-3); }
+
+/* ---------- Barra inferior: solo iconos + punto activo ---------- */
+.bottom-nav { background: var(--surface) !important; border-top: 1px solid var(--line) !important; height: 56px; }
+.bottom-nav a { color: var(--ink-3) !important; }
+.bottom-nav a span:not(.badge) { display: none; }
+.bottom-nav a svg { width: 24px; height: 24px; stroke-width: 1.6; }
+.bottom-nav a.active { color: var(--accent) !important; }
+.bottom-nav a.active::before { display: none; }
+.bottom-nav a.active::after {
+  content: ''; position: absolute; left: 50%; bottom: 5px;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--accent); transform: translateX(-50%);
+}
+
+/* ---------- Interruptores discretos ---------- */
+.switch .track { background: var(--line-strong) !important; }
+.switch input:checked + .track { background: var(--accent) !important; }
+
+/* ---------- Avatares ---------- */
+.avatar { box-shadow: 0 0 0 1px var(--line) !important; }
+
+/* ---------- Portadas: neutras, sin degradado ---------- */
+.portada, .cover, .perfil-portada, .grupo-portada { background: var(--surface-3) !important; }
+
+/* ---------- Skeletons ---------- */
+.skeleton { background: var(--surface-3) !important; }
+
+/* ---------- Móvil a sangre ---------- */
+@media (max-width: 700px) {
+  .app { padding: 0 0 84px !important; }
+  .main { background: var(--surface) !important; border: 0 !important; }
+  .main .card, .main .post, .main .composer, .main .historias { border-radius: 0 !important; margin: 0 !important; }
+}
+
+/* ---------- Escritorio: feed acotado ---------- */
+@media (min-width: 1020px) {
+  .app { grid-template-columns: 232px minmax(0, 608px) 320px !important; justify-content: center !important; }
+}
