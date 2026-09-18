@@ -34,6 +34,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: deee939ddd994301e8c00525b3091cde
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           {
             echo "### Paso 1 — D1 y R2 en Cloudflare"
             echo '```'
