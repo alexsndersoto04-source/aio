@@ -34,23 +34,17 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: deee939ddd994301e8c00525b3091cde
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -o pipefail
           {
             echo "### Paso 1 — D1 y R2 en Cloudflare"
             echo '```'
             echo "— Bases D1 actuales —"
-            npx --yes wrangler@4 d1 list 2>&1 | tee /tmp/d1.txt
-            if grep -q "moon-d1" /tmp/d1.txt; then
-              echo "moon-d1 ya existe, no se crea de nuevo."
-            else
-              echo "— Creando moon-d1 —"
-              npx --yes wrangler@4 d1 create moon-d1 2>&1
-            fi
-            echo
+            npx --yes wrangler@4 d1 list 2>&1
+            echo "— Creando moon-d1 —"
+            npx --yes wrangler@4 d1 create moon-d1 2>&1 || echo "(d1 create devolvió un error; puede que ya exista)"
             echo "— Buckets R2 actuales —"
-            npx --yes wrangler@4 r2 bucket list 2>&1
+            npx --yes wrangler@4 r2 bucket list 2>&1 || echo "(r2 list devolvió un error)"
             echo "— Creando moon-media —"
-            npx --yes wrangler@4 r2 bucket create moon-media 2>&1 || echo "(no se pudo crear; quizá ya existe o falta activar R2)"
+            npx --yes wrangler@4 r2 bucket create moon-media 2>&1 || echo "(r2 create devolvió un error; puede que ya exista o falte activar R2)"
             echo '```'
           } > /tmp/out.md
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/out.md --jq '.html_url'
