@@ -1,5 +1,5 @@
 import React from 'react';
-import Imagen from './Imagen.jsx';
+import { imgUrl } from '../api.js';
 import { IconVerified } from './Icons.jsx';
 
 export default function Avatar({ user, size = '', verified = false, className = '' }) {
@@ -11,7 +11,7 @@ export default function Avatar({ user, size = '', verified = false, className = 
   return (
     <div className={cls} title={user?.username || ''}>
       {user?.avatar_url
-        ? <Imagen src={user.avatar_url} alt={user.username} ratio="1 / 1" />
+        ? <img src={imgUrl(user.avatar_url)} alt={user.username} loading="lazy" />
         : <span>{initials}</span>}
     </div>
   );

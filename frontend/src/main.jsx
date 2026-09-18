@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import { instalarDemo, esDemo } from './demo.js';
 import './styles.css';
-import './diseno.css';
+import './aurora.css';
+import './refinar.css';
 import { registrarServicio } from './push.js';
 
 // Sin servidor (página de demostración): responde la API con datos de ejemplo.

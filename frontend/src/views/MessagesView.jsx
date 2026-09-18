@@ -6,7 +6,6 @@
 // confirmación de lectura.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { IlustraMensajes } from '../components/Ilustraciones.jsx';
 import { Grabador, AudioMensaje, puedeGrabar } from '../components/NotaVoz.jsx';
 import { leer as leerPref } from '../prefs.js';
 import { api, uploadMedia, imgUrl } from '../api.js';
@@ -848,7 +847,7 @@ export default function MessagesView({ conversationId }) {
         ) : (
           <section className="chat-thread">
             <div className="empty empty-state">
-              <IlustraMensajes />
+              <span className="moon-emoji" style={{ fontSize: 30 }}>🌙</span>
               <h3>Elige una conversación</h3>
               <p>O empieza una nueva desde el perfil de alguien.</p>
               <a className="btn btn-outline btn-sm" href="#/explore">Explorar personas</a>

@@ -1,7 +1,6 @@
 // Moon — Notificaciones (tiempo real)
 
 import React, { useEffect, useState } from 'react';
-import { IlustraAvisos } from '../components/Ilustraciones.jsx';
 import { api } from '../api.js';
 import { avisoError } from '../ui.js';
 import Avatar from '../components/Avatar.jsx';
@@ -95,7 +94,7 @@ export default function NotificationsView() {
       <div className="card" style={{ padding: '4px 0' }}>
         {items.length === 0 ? (
           <div className="empty">
-            <IlustraAvisos />
+            <div className="moon-emoji">🔔</div>
             <h3>Sin notificaciones</h3>
             <p>Cuando alguien interactúe contigo, aparecerá aquí.</p>
           </div>

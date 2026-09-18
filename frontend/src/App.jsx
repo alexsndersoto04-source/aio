@@ -104,33 +104,7 @@ function RecordatorioDescanso() {
   return null;
 }
 
-/**
- * Cada pantalla entra con un gesto corto y la página vuelve arriba: dos cosas
- * que las apps grandes hacen siempre y que aquí faltaban.
- */
-function Transicion({ children }) {
-  const route = useRoute();
-  const clave = route.parts.join('/');
-  useEffect(() => {
-    const prefierePoco = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    window.scrollTo({ top: 0, behavior: prefierePoco ? 'auto' : 'smooth' });
-  }, [clave]);
-  return <div className="vista" key={clave}>{children}</div>;
-}
-
 function Shell({ children }) {
-  // Inmersivo: al bajar, la barra superior se aparta; al subir, vuelve.
-  useEffect(() => {
-    let ultima = window.scrollY;
-    const alScroll = () => {
-      const y = window.scrollY;
-      document.body.classList.toggle('baja', y > ultima && y > 80);
-      ultima = y;
-    };
-    window.addEventListener('scroll', alScroll, { passive: true });
-    return () => window.removeEventListener('scroll', alScroll);
-  }, []);
-
   const route = useRoute();
   const seccion = route.parts[0] || 'feed';
   const enHilo = seccion === 'messages' && !!route.parts[1];
@@ -148,7 +122,7 @@ function Shell({ children }) {
         <LeftRail />
         <main className="main">
           <DemoBanner />
-          <Transicion>{children}</Transicion>
+          {children}
         </main>
         <RightRail />
       </div>

@@ -1,7 +1,6 @@
 // Moon — Feed principal (Inicio)
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { IlustraInicio } from '../components/Ilustraciones.jsx';
 import { api } from '../api.js';
 import { avisoError } from '../ui.js';
 import PostCard from '../components/PostCard.jsx';
@@ -181,7 +180,7 @@ export default function FeedView() {
       {!loading && posts.length === 0 ? (
         <>
           <div className="card empty">
-            <IlustraInicio />
+            <div className="moon-emoji">🌙</div>
             <h3>Sin publicaciones todavía</h3>
             <p>Sigue a personas para llenar tu feed, o publica algo tú mismo.</p>
             <a className="btn btn-aurora" href="#/explore">Explorar</a>
