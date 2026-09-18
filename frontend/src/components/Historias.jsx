@@ -9,7 +9,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, uploadMedia, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { toast, avisoError, pedirTexto, confirmar } from '../ui.js';
+import { toast, avisoError, confirmar } from '../ui.js';
+import StoryEditor from './StoryEditor.jsx';
 import Avatar from './Avatar.jsx';
 import { IconPlus, IconX, IconChevronLeft, IconTrash, IconEye } from './Icons.jsx';
 
@@ -192,6 +193,7 @@ export default function Historias({ onNovedad }) {
   const [grupos, setGrupos] = useState([]);
   const [abierto, setAbierto] = useState(null);
   const [subiendo, setSubiendo] = useState(false);
+  const [editando, setEditando] = useState(null);
   const archivoRef = useRef(null);
 
   const cargar = useCallback(() => {
@@ -200,24 +202,25 @@ export default function Historias({ onNovedad }) {
 
   useEffect(() => { cargar(); }, [cargar]);
 
-  async function elegirArchivo(e) {
+  function elegirArchivo(e) {
     const archivo = e.target.files?.[0];
     e.target.value = '';
     if (!archivo) return;
+    setEditando(archivo);            // abre el editor; se sube al publicar
+  }
+
+  // El editor entrega la foto ya compuesta (con el texto dibujado) y el texto.
+  async function publicarDesdeEditor(file, texto) {
     setSubiendo(true);
     try {
-      const subida = await uploadMedia('story', archivo);
-      const pie = await pedirTexto({
-        title: 'Tu historia',
-        label: '¿Quieres escribir algo? (opcional)',
-        placeholder: 'Lo que quieras contar…',
-        confirmText: 'Publicar historia',
-        requerido: false,
-      });
-      if (pie === null) { toast.info('Historia cancelada'); return; }
-      await api.post('/api/stories', { image_url: subida.url, caption: pie || '' });
+      const subida = await uploadMedia('story', file);
+      await api.post('/api/stories', { image_url: subida.url, caption: texto || '' });
       toast.ok('Historia publicada. Durará 24 horas.');
-      cargar();
+      setEditando(null);
+      const nuevos = await api.get('/api/stories');
+      setGrupos(nuevos);
+      const mia = nuevos.find((g) => g.mine);
+      if (mia) setAbierto(mia);       // se abre sola para que la veas al instante
       if (onNovedad) onNovedad();
     } catch (err) {
       avisoError(err);
@@ -272,6 +275,14 @@ export default function Historias({ onNovedad }) {
           </button>
         ))}
       </section>
+
+      {editando ? (
+        <StoryEditor
+          archivo={editando}
+          onCancelar={() => setEditando(null)}
+          onListo={publicarDesdeEditor}
+        />
+      ) : null}
 
       {abierto ? (
         <Visor
