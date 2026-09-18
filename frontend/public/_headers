@@ -1,0 +1,7 @@
+# Los assets llevan hash: se pueden cachear para siempre.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# El HTML (la entrada de la app) NUNCA se cachea: siempre la versión nueva.
+/*
+  Cache-Control: no-cache, no-store, must-revalidate
