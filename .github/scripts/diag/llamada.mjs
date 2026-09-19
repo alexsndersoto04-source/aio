@@ -118,22 +118,31 @@ async function abrirNavegador(sesion, etiqueta) {
   });
   pagina.on('pageerror', (e) => console.log(`[${etiqueta}] error en la página:`, String(e).slice(0, 160)));
   await pagina.goto(`${WEB}/#/messages/${convId}`, { waitUntil: 'domcontentloaded' });
-  // Espera a que el chat esté en pantalla (el hilo tarda en cargar).
-  try {
-    await pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 45000 });
-  } catch (e) {
-    const pista = await pagina.evaluate(() => ({
-      ruta: location.hash,
-      direccion: location.href,
-      titulo: document.title,
-      texto: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 300),
-      hayHilo: !!document.querySelector('.chat-thread'),
-      hayEntrada: !!document.querySelector('input[type="password"]'),
-      conversaciones: document.querySelectorAll('.fila-conv, .chat-list > *').length,
-    })).catch(() => null);
-    console.log(`[${etiqueta}] no apareció el hilo:`, JSON.stringify(pista));
-    throw new Error(`sin hilo de chat: ${JSON.stringify(pista)}`);
+  // Espera a que el chat esté en pantalla (el hilo tarda en cargar). Si la API
+  // viene despertando, la pantalla se queda en blanco: se recarga y se repite.
+  let pista = null;
+  for (let intento = 1; intento <= 3; intento += 1) {
+    try {
+      await pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 60000 });
+      pista = null;
+      break;
+    } catch (e) {
+      pista = await pagina.evaluate(() => ({
+        ruta: location.hash,
+        direccion: location.href,
+        titulo: document.title,
+        texto: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 300),
+        hayHilo: !!document.querySelector('.chat-thread'),
+        hayEntrada: !!document.querySelector('input[type="password"]'),
+        conversaciones: document.querySelectorAll('.fila-conv, .chat-list > *').length,
+      })).catch(() => null);
+      console.log(`[${etiqueta}] intento ${intento} sin hilo:`, JSON.stringify(pista));
+      if (intento === 3) break;
+      await pagina.reload({ waitUntil: 'domcontentloaded' });
+      await pagina.waitForTimeout(2000);
+    }
   }
+  if (pista) throw new Error(`sin hilo de chat: ${JSON.stringify(pista)}`);
   await pagina.waitForTimeout(1200);
   return { contexto, pagina, tubos, seCerraron };
 }
