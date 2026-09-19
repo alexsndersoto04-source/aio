@@ -84,6 +84,26 @@ async function enviarConResend(destino, asunto, cuerpoTexto, adjunto) {
  * Envía un correo. `adjunto` es opcional: { nombre, contenido (Buffer) }.
  * Nunca lanza: devuelve { enviado: true|false }.
  */
+/** Envía por la API de Elastic Email (gratis: 100/día; remitente verificado por correo). */
+async function enviarConElastic(destino, asunto, cuerpoTexto) {
+  const desde = process.env.MAIL_FROM || process.env.ELASTIC_FROM || '';
+  if (!desde) throw new Error('Elastic requiere MAIL_FROM o ELASTIC_FROM (el correo verificado)');
+  const res = await fetch('https://api.elasticemail.com/v4/emails', {
+    method: 'POST',
+    headers: { 'x-elasticemail-apikey': process.env.ELASTIC_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      Recipients: [{ Email: destino }],
+      Content: { Body: [{ ContentType: 'PlainText', Content: cuerpoTexto }], Subject: asunto },
+      From: desde,
+    }),
+  });
+  if (!res.ok) {
+    const detalle = await res.text().catch(() => '');
+    throw new Error(`Elastic respondió ${res.status}: ${detalle.slice(0, 200)}`);
+  }
+  return true;
+}
+
 /** Envía por la API de Brevo (gratis: 300/día; remitente verificado por correo). */
 async function enviarConBrevo(destino, asunto, cuerpoTexto) {
   const desde = process.env.MAIL_FROM || process.env.BREVO_FROM || '';
@@ -110,6 +130,14 @@ async function enviarConBrevo(destino, asunto, cuerpoTexto) {
 
 /** Intenta enviar por el proveedor configurado. Nunca lanza. */
 async function intentarEnvio(destino, asunto, cuerpoTexto, adjunto) {
+  if (process.env.ELASTIC_API_KEY && !adjunto) {
+    try {
+      await enviarConElastic(destino, asunto, cuerpoTexto);
+      return { enviado: true, via: 'elastic' };
+    } catch (e) {
+      console.error('[correo] Elastic falló:', e.message);
+    }
+  }
   if (process.env.BREVO_API_KEY && !adjunto) {
     try {
       await enviarConBrevo(destino, asunto, cuerpoTexto);
