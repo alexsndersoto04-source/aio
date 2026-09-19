@@ -39,6 +39,18 @@ function reloj(ms) {
 }
 
 // ---------- Timbre (sin archivos de sonido) ----------
+// El navegador solo deja sonar si la persona ya tocó la pantalla alguna vez:
+// se prepara un «altavoz» al primer toque y el timbre lo reutiliza.
+let altavoz = null;
+function desbloquearSonido() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!altavoz) altavoz = new AC();
+    if (altavoz.state === 'suspended') altavoz.resume().catch(() => {});
+  } catch { /* sin sonido */ }
+}
+
 // Dos notas suaves que se repiten. El de entrada es más «llamativo» y el de
 // salida, más bajito, como cuando esperas a que contesten.
 function crearTimbre(tipo) {
@@ -47,7 +59,8 @@ function crearTimbre(tipo) {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return { parar() {} };
   let ctx;
-  try { ctx = new AC(); } catch { return { parar() {} }; }
+  try { ctx = altavoz || new AC(); } catch { return { parar() {} }; }
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   const notas = tipo === 'entrante' ? [660, 880, 660, 880] : [440, 480];
   const volumen = tipo === 'entrante' ? 0.09 : 0.045;
   let vivo = true;
@@ -478,6 +491,19 @@ export function LlamadasProvider({ children }) {
     });
     return quitar;
   }, [estado, configurarConexion, aplicarSobre, aplicarPendientes, anotar, pararTimbre, arrancarCronometro, terminar]);
+
+  // El primer toque en la pantalla deja listo el altavoz del timbre.
+  useEffect(() => {
+    const despertar = () => desbloquearSonido();
+    window.addEventListener('pointerdown', despertar);
+    window.addEventListener('touchstart', despertar);
+    window.addEventListener('keydown', despertar);
+    return () => {
+      window.removeEventListener('pointerdown', despertar);
+      window.removeEventListener('touchstart', despertar);
+      window.removeEventListener('keydown', despertar);
+    };
+  }, []);
 
   // Marca de tiempo del cronómetro al cerrar la pestaña.
   useEffect(() => {
