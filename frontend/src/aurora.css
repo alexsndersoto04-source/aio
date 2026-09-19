@@ -1136,44 +1136,6 @@ body { background: var(--bg); }
    ============================================================ */
 
 /* --- Pestañas dentro del grupo: Publicaciones | Chat --- */
-.pestanas-grupo {
-  display: flex;
-  gap: 6px;
-  padding: 5px;
-  border-radius: 999px;
-  background: var(--vidrio-fondo);
-  border: 1px solid var(--vidrio-borde);
-  backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
-  -webkit-backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
-  box-shadow: 0 10px 26px -20px rgba(15, 18, 45, 0.5);
-  margin-bottom: var(--aire);
-}
-.pestanas-grupo button {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 9px 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ink-3);
-  font: inherit;
-  font-weight: 620;
-  font-size: 13.5px;
-  cursor: pointer;
-  transition: color var(--fast), background var(--fast), transform var(--fast);
-}
-.pestanas-grupo button svg { width: 16px; height: 16px; }
-.pestanas-grupo button:hover { color: var(--ink); }
-.pestanas-grupo button.activa {
-  color: #fff;
-  background: var(--aurora-grad);
-  box-shadow: var(--aurora-halo);
-}
-.pestanas-grupo button:active { transform: scale(0.985); }
-
 /* --- Chat del grupo --- */
 .chat-grupo {
   display: flex;
@@ -1303,7 +1265,6 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
 }
 
 /* Punto de «hay mensajes nuevos» en la pestaña Chat del grupo */
-.pestanas-grupo button { position: relative; }
 .punto-nuevo {
   width: 8px;
   height: 8px;
@@ -1312,7 +1273,6 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
   background: #22d3ee;
   box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.25);
 }
-.pestanas-grupo button.activa .punto-nuevo { background: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.3); }
 
 /* Aviso de que la nota de voz está llegando al tope */
 .grabador .aviso-tope {
@@ -2355,16 +2315,6 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .aviso-silenciadas a { color: var(--accent); font-weight: 650; text-decoration: none; }
 
 /* El panel de ajustes del grupo */
-.panel-ajustes-grupo { display: flex; flex-direction: column; gap: var(--aire); }
-.panel-ajustes-grupo .campo { display: block; padding: 6px 12px 12px; }
-.panel-ajustes-grupo .campo > span {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--ink-2);
-}
-.panel-ajustes-grupo .tabs { margin-top: 0; }
 .panel-ajustes-grupo .fila-ajuste { align-items: center; }
 .panel-ajustes-grupo .menu-grupo-caja { margin-left: 8px; }
 

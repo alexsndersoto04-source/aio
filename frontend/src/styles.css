@@ -3853,40 +3853,72 @@ svg { flex: 0 0 auto; }
 }
 .tarjeta-grupo .acciones { margin-top: auto; padding-top: 6px; }
 
-.portada-grupo { border: 1px solid var(--line); border-radius: var(--r-tarjeta); overflow: hidden; background: var(--surface); box-shadow: var(--elev-1); }
-.cubierta-grupo { height: 148px; background: var(--grad); position: relative; }
-.cubierta-grupo img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.cubierta-grupo .trama {
+/* ---------- Grupo pantalla por pantalla (sistema limpio) ---------- */
+.g-portada { border: 1px solid var(--line); border-radius: var(--r-tarjeta); overflow: hidden; background: var(--surface); box-shadow: var(--elev-1); }
+.g-cubierta { height: 148px; background: var(--grad); position: relative; }
+.g-cubierta img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.g-cubierta .trama {
   position: absolute;
   inset: 0;
   background-image:
     radial-gradient(40% 60% at 15% 20%, rgba(255, 255, 255, 0.3), transparent 60%),
     repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.08) 0 2px, transparent 2px 14px);
 }
-.datos-grupo { padding: 20px 22px 22px; }
-.datos-grupo h1 { margin: 0 0 8px; font-size: 27px; font-weight: 750; letter-spacing: -0.04em; }
-.datos-grupo .muted { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 13.5px; }
-.datos-grupo .muted svg { width: 16px; height: 16px; }
-.datos-grupo .sobre { font-size: 15.5px; line-height: 1.6; max-width: 66ch; margin: 12px 0 0; }
-.acciones-grupo { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.g-datos { padding: 20px 22px 22px; display: flex; flex-direction: column; gap: 8px; }
+.g-datos h1 { margin: 0; font-size: 27px; font-weight: 750; letter-spacing: -0.04em; }
+.g-datos .muted { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 13.5px; margin: 0; }
+.g-datos .muted svg { width: 16px; height: 16px; }
+.g-sobre { font-size: 15.5px; line-height: 1.6; max-width: 66ch; margin: 4px 0 0; }
+.g-acciones { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 
-.cuerpo-grupo { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; margin-top: 18px; align-items: start; }
-.columna-grupo { min-width: 0; }
-.aside-grupo { position: sticky; top: 84px; }
-.lista-miembros { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.lista-miembros li a {
+.g-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; margin-top: 16px; }
+.g-card {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 9px 8px;
-  border-radius: 14px;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-tarjeta);
+  background: var(--surface);
+  box-shadow: var(--elev-1);
   color: inherit;
   text-decoration: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
-.lista-miembros li a:hover { background: var(--surface-3); }
-.lista-miembros .quien { min-width: 0; }
-.lista-miembros b { display: flex; align-items: center; gap: 5px; font-size: 14.5px; font-weight: 620; letter-spacing: -0.02em; }
-.lista-miembros small { color: var(--ink-3); font-size: 12.5px; }
+.g-card:hover { transform: translateY(-2px); box-shadow: var(--elev-2); border-color: var(--line-strong); }
+.g-card-ic { flex: none; width: 42px; height: 42px; display: grid; place-items: center; border-radius: 14px; background: var(--surface-3); color: var(--accent); }
+.g-card-ic svg { width: 20px; height: 20px; }
+.g-card-tx { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-right: 26px; }
+.g-card-tx b { font-size: 15.5px; letter-spacing: -0.02em; }
+.g-card-tx small { color: var(--ink-3); font-size: 12.8px; line-height: 1.45; }
+.g-card-caras { position: absolute; top: 16px; right: 40px; display: flex; }
+.g-card-caras .avatar { width: 26px; height: 26px; border: 2px solid var(--surface); margin-left: -8px; }
+.g-card-caras .avatar:first-child { margin-left: 0; }
+.g-card .punto-nuevo { position: absolute; top: 16px; right: 16px; }
+.g-card-flecha { position: absolute; right: 14px; bottom: 14px; width: 16px; height: 16px; transform: rotate(180deg); color: var(--ink-3); }
+
+.g-cab {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 4px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+.g-cab h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; }
+.g-cab h2 svg { width: 18px; height: 18px; color: var(--accent); }
+.g-volver { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--ink-2); text-decoration: none; padding: 6px 10px; border-radius: 10px; }
+.g-volver:hover { background: var(--surface-3); color: var(--ink); }
+.g-volver svg { width: 16px; height: 16px; }
+
+.g-pantalla { display: flex; flex-direction: column; gap: 14px; max-width: 760px; margin: 0 auto; }
+.g-pantalla-chat { min-height: calc(100dvh - 170px); }
+
 .aviso-grupo {
   display: flex;
   align-items: center;
@@ -3948,8 +3980,9 @@ svg { flex: 0 0 auto; }
 
 /* ---------- 29.9 Pantallas pequeñas otra vez, ahora con las nuevas ---------- */
 @media (max-width: 1024px) {
-  .cuerpo-grupo { grid-template-columns: minmax(0, 1fr); }
-  .aside-grupo { position: static; }
+  .g-cards { grid-template-columns: 1fr; }
+  .g-datos { padding: 16px; }
+  .g-datos h1 { font-size: 22px; }
   .chat { grid-template-columns: 1fr; height: auto; min-height: 0; }
   .chat-list { border-right: 0; }
 }

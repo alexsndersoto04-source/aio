@@ -204,7 +204,7 @@ function Router() {
     case 'grupos':
       return <GruposView />;
     case 'grupo':
-      return <GrupoView id={parts[1]} />;
+      return <GrupoView id={parts[1]} seccion={parts[2]} />;
     case 'admin':
       return <AdminView tab={parts[1]} />;
     default:
