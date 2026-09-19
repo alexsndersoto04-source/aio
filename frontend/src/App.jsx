@@ -10,7 +10,7 @@ import { api } from './api.js';
 import { parseHash } from './utils.js';
 import TopNav, { AccesosRapidos } from './components/TopNav.jsx';
 import LeftRail from './components/LeftRail.jsx';
-import BottomNav, { FloatingCompose } from './components/BottomNav.jsx';
+import BottomNav from './components/BottomNav.jsx';
 import RightRail from './components/RightRail.jsx';
 import Overlays from './components/Overlays.jsx';
 import DemoBanner from './components/DemoBanner.jsx';
@@ -127,7 +127,6 @@ function Shell({ children }) {
         <RightRail />
       </div>
       <BottomNav />
-      <FloatingCompose />
       <RecordatorioDescanso />
     </div>
   );

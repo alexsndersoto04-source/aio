@@ -1,8 +1,7 @@
 // Moon — Navegación inferior (móvil)
 // ============================================================
 // Cinco destinos como máximo, con el contador de no leídos y el estado
-// activo marcado. La acción de publicar vive en el botón flotante
-// (`FloatingCompose`), que es lo natural con el pulgar.
+// activo marcado. Para publicar se usa el redactor de la pantalla de inicio.
 
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../auth.jsx';
@@ -45,35 +44,4 @@ export default function BottomNav() {
   );
 }
 
-/** Botón flotante de publicar (solo móvil). */
-export function FloatingCompose() {
-  const { user } = useAuth();
-  const [hash, setHash] = useState(() => (typeof window === 'undefined' ? '' : window.location.hash));
-  useEffect(() => {
-    const h = () => setHash(window.location.hash);
-    window.addEventListener('hashchange', h);
-    return () => window.removeEventListener('hashchange', h);
-  }, []);
-  if (!user) return null;
-  // Donde «publicar» no pinta nada (ajustes, panel, mensajes, avisos…), se quita:
-  // así no tapa botones ni campos en el teléfono.
-  const seccion = hash.replace(/^#\/?/, '').split('/')[0];
-  const sinBoton = ['settings', 'admin', 'messages', 'notifications', 'contactos', 'amigos', 'contacts', 'login', 'register', 'reset'];
-  if (sinBoton.includes(seccion)) return null;
-  return (
-    <button
-      className="fab"
-      aria-label="Escribir una publicación"
-      onClick={() => {
-        if (window.location.hash.replace(/^#\/?/, '').split('/')[0] !== 'feed') {
-          window.location.hash = '#/feed';
-        }
-        setTimeout(() => window.dispatchEvent(new CustomEvent('moon:componer')), 60);
-      }}
-    >
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-        <path d="M12 5v14M5 12h14" />
-      </svg>
-    </button>
-  );
-}
+
