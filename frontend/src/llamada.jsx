@@ -59,7 +59,11 @@ function crearTimbre(tipo) {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return { parar() {} };
   let ctx;
-  try { ctx = altavoz || new AC(); } catch { return { parar() {} }; }
+  try {
+    if (altavoz && altavoz.state === 'closed') altavoz = null;
+    ctx = altavoz || new AC();
+  } catch { return { parar() {} }; }
+  const compartido = ctx === altavoz;
   if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   const notas = tipo === 'entrante' ? [660, 880, 660, 880] : [440, 480];
   const volumen = tipo === 'entrante' ? 0.09 : 0.045;
@@ -90,7 +94,10 @@ function crearTimbre(tipo) {
     parar() {
       vivo = false;
       clearInterval(timer);
-      try { ctx.close(); } catch { /* ya cerrado */ }
+      // El altavoz compartido sigue vivo: se reutiliza en la próxima llamada.
+      if (!compartido) {
+        try { ctx.close(); } catch { /* ya cerrado */ }
+      }
     },
   };
 }
