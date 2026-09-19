@@ -58,7 +58,9 @@ for nombre in CUENTAS:
 
 a, b = salida[CUENTAS[0]], salida[CUENTAS[1]]
 conv = pedir('POST', '/api/messages/conversations', {'user_id': b['user']['id']}, tok=a['access_token'])
-salida['conversacion'] = conv
+if not conv or conv.get('_error') or not conv.get('conversation_id'):
+    raise SystemExit('no se pudo abrir la conversación entre las cuentas: %s' % conv)
+salida['conversacion'] = {'id': conv['conversation_id']}
 
 with open(SALIDA, 'w', encoding='utf-8') as f:
     json.dump(salida, f, ensure_ascii=False)

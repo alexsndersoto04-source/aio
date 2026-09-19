@@ -35,7 +35,13 @@ const B = sesiones.prueballamada;
 const convId = sesiones.conversacion.id;
 const API = sesiones.api;
 
-const informe = { conversacion: convId, pasos: [] };
+const informe = {
+  conversacion: convId,
+  quienLlama: { usuario: A?.user?.username, id: A?.user?.id },
+  quienRecibe: { usuario: B?.user?.username, id: B?.user?.id },
+  direccionWeb: WEB,
+  pasos: [],
+};
 // El informe se deja escrito desde el arranque: si algo revienta después,
 // igual queda constancia en el comentario del commit.
 fs.writeFileSync(SALIDA, JSON.stringify({ ok: false, error: 'arrancando' }, null, 1));
@@ -68,7 +74,21 @@ async function abrirNavegador(sesion, etiqueta) {
   pagina.on('pageerror', (e) => console.log(`[${etiqueta}] error en la página:`, String(e).slice(0, 160)));
   await pagina.goto(`${WEB}/#/messages/${convId}`, { waitUntil: 'domcontentloaded' });
   // Espera a que el chat esté en pantalla (el hilo tarda en cargar).
-  await pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 45000 });
+  try {
+    await pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 45000 });
+  } catch (e) {
+    const pista = await pagina.evaluate(() => ({
+      ruta: location.hash,
+      direccion: location.href,
+      titulo: document.title,
+      texto: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 300),
+      hayHilo: !!document.querySelector('.chat-thread'),
+      hayEntrada: !!document.querySelector('input[type="password"]'),
+      conversaciones: document.querySelectorAll('.fila-conv, .chat-list > *').length,
+    })).catch(() => null);
+    console.log(`[${etiqueta}] no apareció el hilo:`, JSON.stringify(pista));
+    throw new Error(`sin hilo de chat: ${JSON.stringify(pista)}`);
+  }
   await pagina.waitForTimeout(1200);
   return { contexto, pagina };
 }

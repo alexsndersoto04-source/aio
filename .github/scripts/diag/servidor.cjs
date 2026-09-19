@@ -37,7 +37,9 @@ function puente(req, res) {
   req.pipe(salida);
 }
 
-http.createServer((req, res) => {
+// El tubo del tiempo real (las llamadas y el «escribiendo…» viajan por aquí):
+// se pasa tal cual hacia la API, como hace Cloudflare en el sitio en vivo.
+const servidor = http.createServer((req, res) => {
   if (req.url.startsWith('/api')) return puente(req, res);
   if (req.url.startsWith('/ws')) { res.writeHead(404); return res.end(); }
   let ruta = decodeURIComponent(req.url.split('?')[0]);
@@ -49,4 +51,30 @@ http.createServer((req, res) => {
     'Cache-Control': 'no-store',
   });
   res.end(fs.readFileSync(archivo));
-}).listen(PUERTO, '127.0.0.1', () => console.log('servidor listo en http://127.0.0.1:' + PUERTO));
+});
+
+servidor.on('upgrade', (req, socket, cabeza) => {
+  if (!req.url.startsWith('/ws')) { socket.destroy(); return; }
+  const peticion = https.request({
+    host: 'moon-dal0.onrender.com',
+    port: 443,
+    path: req.url,
+    method: 'GET',
+    headers: Object.assign({}, req.headers, { host: 'moon-dal0.onrender.com' }),
+  });
+  peticion.on('upgrade', (respuesta, socketRemoto) => {
+    const cabeceras = Object.entries(respuesta.headers)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\r\n');
+    socket.write('HTTP/1.1 101 Switching Protocols\r\n' + cabeceras + '\r\n\r\n');
+    socketRemoto.pipe(socket);
+    socket.pipe(socketRemoto);
+    socket.on('error', () => socketRemoto.destroy());
+    socketRemoto.on('error', () => socket.destroy());
+  });
+  peticion.on('error', () => socket.destroy());
+  peticion.end();
+  void cabeza;
+});
+
+servidor.listen(PUERTO, '127.0.0.1', () => console.log('servidor listo (web + api + tubo) en http://127.0.0.1:' + PUERTO));
