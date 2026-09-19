@@ -49,7 +49,7 @@ except Exception:
     partes += ['```', traceback.format_exc()[-1200:], '```']
 
 salida = ''
-for ruta in ('/tmp/salida-llamada.txt', '/tmp/servidor.log'):
+for ruta in ('/tmp/salida-llamada.txt', '/tmp/servidor.log', '/tmp/preparar.log'):
     try:
         texto = open(ruta, encoding='utf-8', errors='replace').read().strip()
     except OSError:

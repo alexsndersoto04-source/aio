@@ -8,6 +8,7 @@ inicio, ni en sugerencias, ni en búsquedas.
 """
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -52,12 +53,32 @@ def entrar(nombre):
     return datos
 
 
+def conseguir(nombre, intentos=6, espera=6):
+    ultimo = None
+    for i in range(1, intentos + 1):
+        try:
+            datos = entrar(nombre)
+            print('%s: entró (intento %d)' % (nombre, i))
+            return datos
+        except SystemExit as e:
+            ultimo = e
+            print('%s: no entró todavía (intento %d): %s' % (nombre, i, e))
+            time.sleep(espera)
+    raise SystemExit('no se pudo entrar con %s: %s' % (nombre, ultimo))
+
+
 salida = {}
 for nombre in CUENTAS:
-    salida[nombre] = entrar(nombre)
+    salida[nombre] = conseguir(nombre)
 
 a, b = salida[CUENTAS[0]], salida[CUENTAS[1]]
-conv = pedir('POST', '/api/messages/conversations', {'user_id': b['user']['id']}, tok=a['access_token'])
+conv = None
+for i in range(1, 5):
+    conv = pedir('POST', '/api/messages/conversations', {'user_id': b['user']['id']}, tok=a['access_token'])
+    if conv and not conv.get('_error') and conv.get('conversation_id'):
+        break
+    print('conversación: reintento %d -> %s' % (i, conv))
+    time.sleep(5)
 if not conv or conv.get('_error') or not conv.get('conversation_id'):
     raise SystemExit('no se pudo abrir la conversación entre las cuentas: %s' % conv)
 salida['conversacion'] = {'id': conv['conversation_id']}

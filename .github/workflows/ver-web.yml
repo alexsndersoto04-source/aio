@@ -50,15 +50,26 @@ jobs:
         env:
           API: https://moon-dal0.onrender.com
         run: |
-          set -e
-          for i in $(seq 1 20); do
-            salud=$(curl -s --max-time 30 "$API/api/health" || true)
-            echo "$salud" | grep -q '"status":"ok"' && break
-            echo "esperando a la API… ($i)"; sleep 8
+          echo "esperando a la API…"
+          listo=no
+          for i in $(seq 1 45); do
+            codigo=$(curl -s --max-time 30 -o /tmp/salud.json -w '%{http_code}' "$API/api/health" || true)
+            echo "intento $i: codigo $codigo $(head -c 120 /tmp/salud.json 2>/dev/null)"
+            if grep -q '"status":"ok"' /tmp/salud.json 2>/dev/null; then listo=si; break; fi
+            sleep 6
           done
-          echo "salud: ${salud:0:120}"
-          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/preparar-llamadas.py" "$API" /tmp/sesiones.json
-          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/anadir-api.py" /tmp/sesiones.json "$API"
+          echo "API lista: $listo"
+          if [ "$listo" != "si" ]; then
+            echo "la API no despertó a tiempo" | tee /tmp/preparar.log
+            exit 1
+          fi
+          if ! python3 "$GITHUB_WORKSPACE/.github/scripts/diag/preparar-llamadas.py" "$API" /tmp/sesiones.json > /tmp/preparar.log 2>&1; then
+            echo "falló la preparación de las cuentas:"
+            cat /tmp/preparar.log
+            exit 1
+          fi
+          cat /tmp/preparar.log
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/anadir-api.py" /tmp/sesiones.json "$API" >> /tmp/preparar.log 2>&1
 
       - name: Servir la web compilada (y la API por el mismo puente)
         run: |
