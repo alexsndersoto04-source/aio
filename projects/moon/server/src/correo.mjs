@@ -86,7 +86,8 @@ async function enviarConResend(destino, asunto, cuerpoTexto, adjunto) {
  */
 /** Envía por la API de Brevo (gratis: 300/día; remitente verificado por correo). */
 async function enviarConBrevo(destino, asunto, cuerpoTexto) {
-  const desde = process.env.MAIL_FROM || process.env.BREVO_FROM || 'Moon <no-responder@brevo.com>';
+  const desde = process.env.MAIL_FROM || process.env.BREVO_FROM || '';
+  if (!desde) throw new Error('Brevo requiere MAIL_FROM o BREVO_FROM (el correo verificado)');
   const [nombre, correoFrom] = desde.includes('<')
     ? [desde.split('<')[0].trim(), desde.split('<')[1].replace('>', '')]
     : ['Moon', desde];
