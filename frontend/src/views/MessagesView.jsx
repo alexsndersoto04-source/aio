@@ -176,6 +176,22 @@ export default function MessagesView({ conversationId }) {
     return off;
   }, [convId, user?.id, loadConvs]);
 
+  // La fila de una llamada la escribe el propio teléfono: no llega por el
+  // tubo (es tuya), así que se mete en el hilo al momento.
+  useEffect(() => {
+    function alAnotar(e) {
+      const d = e.detail || {};
+      if (!d.message?.id || Number(d.conversation_id) !== Number(convId)) return;
+      setThread((t) => {
+        if (!t || t.messages.some((m) => Number(m.id) === Number(d.message.id))) return t;
+        return { ...t, messages: [...t.messages, d.message] };
+      });
+      loadConvs();
+    }
+    window.addEventListener('moon:mensaje-propio', alAnotar);
+    return () => window.removeEventListener('moon:mensaje-propio', alAnotar);
+  }, [convId, loadConvs]);
+
   async function send(e) {
     e.preventDefault();
     if (!draft.trim() || !convId) return;

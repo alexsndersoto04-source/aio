@@ -105,6 +105,7 @@ export function LlamadasProvider({ children }) {
   const timbre = useRef(null);
   const cronometro = useRef(null);
   const espera = useRef(null);
+  const anotadas = useRef(new Set());  // llamadas ya anotadas en el chat
   const vivo = useRef(true);
   // Lo que llega antes de tiempo (la otra parte contesta muy rápido) se guarda
   // y se usa en cuanto la llamada está lista.
@@ -151,18 +152,29 @@ export function LlamadasProvider({ children }) {
 
   // ---------- Anotar la llamada en el chat ----------
   // Queda como una fila más del hilo: «Llamada de voz · 02:14» o «Llamada
-  // perdida». La escribe cada teléfono en su propio lado, como hace WhatsApp.
-  const anotar = useCallback(async (conversacionId, clase, duracionMs, quien) => {
-    if (!conversacionId) return;
-    // La anota solo quien empezo la llamada: asi queda UNA fila en el hilo y
-    // no dos (una por cada telefono), como pasa en las apps grandes.
-    if (!llamada.current?.soyQuienLlama) return;
+  // perdida». La escribe UNA vez quien empezó la llamada, así no salen dos
+  // filas iguales; el otro lado la ve llegar por el tubo en vivo.
+  const anotar = useCallback(async (datos, clase, duracionMs, quien) => {
+    if (!datos?.conversacion || !datos.soyQuienLlama) return;
+    // Una sola fila por llamada, aunque lleguen dos avisos a la vez.
+    if (datos.id) {
+      if (anotadas.current.has(datos.id)) return;
+      if (anotadas.current.size > 50) anotadas.current.clear();
+      anotadas.current.add(datos.id);
+    }
     try {
-      await api.post(`/api/messages/conversations/${conversacionId}/messages`, {
+      const creada = await api.post(`/api/messages/conversations/${datos.conversacion}/messages`, {
         kind: clase,
         duracion_ms: Math.max(0, Math.round(duracionMs)),
         reply_to_id: quien?.id || undefined,
       });
+      // Quien hizo la llamada no recibe su propio mensaje por el tubo: se le
+      // avisa aqui para que la fila salga en su hilo en el momento.
+      if (creada?.id) {
+        window.dispatchEvent(new CustomEvent('moon:mensaje-propio', {
+          detail: { conversation_id: Number(datos.conversacion), message: creada },
+        }));
+      }
     } catch { /* si falla el registro, la llamada no se rompe */ }
   }, []);
 
@@ -298,7 +310,7 @@ export function LlamadasProvider({ children }) {
     timbre.current = crearTimbre('saliendo');
     espera.current = setTimeout(() => {
       realtime.send({ type: 'call_end', call_id: id, to: Number(partnerDatos.id), segundos: 0 });
-      anotar(conversacionId, tipoLlamada === 'video' ? 'llamada_video' : 'llamada_voz', 0);
+      anotar({ id, conversacion: conversacionId, soyQuienLlama: true }, 'llamada_perdida', 0);
       terminar('No contestó');
     }, ESPERA_TIMBRADO_MS);
   }, [estado, anotar, terminar]);
@@ -333,7 +345,7 @@ export function LlamadasProvider({ children }) {
       const clase = hablado > 0
         ? (datos.tipo === 'video' ? 'llamada_video' : 'llamada_voz')
         : 'llamada_perdida';
-      anotar(datos.conversacion, clase, hablado * 1000);
+      anotar(datos, clase, hablado * 1000);
     }
     void motivo;
     terminar();
@@ -344,7 +356,7 @@ export function LlamadasProvider({ children }) {
     pararTimbre();
     if (datos) {
       realtime.send({ type: 'call_reject', call_id: datos.id, to: datos.partner.id, motivo: 'rechazada' });
-      anotar(datos.conversacion, 'llamada_perdida', 0);
+      anotar(datos, 'llamada_perdida', 0);
     }
     terminar();
   }, [anotar, pararTimbre, terminar]);
@@ -394,7 +406,6 @@ export function LlamadasProvider({ children }) {
         if (navigator.vibrate) { try { navigator.vibrate([280, 140, 280, 140, 280]); } catch { /* sin vibrador */ } }
         espera.current = setTimeout(() => {
           realtime.send({ type: 'call_reject', call_id: ev.call_id, to: ev.de?.id, motivo: 'sin_respuesta' });
-          anotar(ev.conversation_id, 'llamada_perdida', 0);
           terminar('Llamada perdida');
         }, ESPERA_TIMBRADO_MS);
         return;
@@ -443,6 +454,11 @@ export function LlamadasProvider({ children }) {
           tu_llamada: 'Ya tienes una llamada en curso',
         };
         if (motivos[ev.motivo]) toast.info(motivos[ev.motivo]);
+        // Llamada perdida para quien llamó (salvo si ni alcanzó a sonar).
+        const perdidas = ['ocupado', 'sin_respuesta', 'sin_permiso', 'rechazada'];
+        if (ev.call_id === datos.id && datos.soyQuienLlama && perdidas.includes(String(ev.motivo))) {
+          anotar(datos, 'llamada_perdida', 0);
+        }
         terminar();
         return;
       }
@@ -455,8 +471,8 @@ export function LlamadasProvider({ children }) {
       if (ev.type === 'call_terminada') {
         const hablado = Number(ev.segundos || 0);
         // Si la otra parte cuelga, aquí se anota lo que duró.
-        if (estado === 'activa') anotar(datos.conversacion, datos.tipo === 'video' ? 'llamada_video' : 'llamada_voz', hablado * 1000);
-        else if (estado === 'entrando') anotar(datos.conversacion, 'llamada_perdida', 0);
+        if (estado === 'activa') anotar(datos, datos.tipo === 'video' ? 'llamada_video' : 'llamada_voz', hablado * 1000);
+        else if (estado === 'entrando') anotar(datos, 'llamada_perdida', 0);
         terminar(ev.motivo === 'se_fue' ? 'La otra persona salió de Moon' : (estado === 'activa' ? 'Llamada terminada' : ''));
       }
     });

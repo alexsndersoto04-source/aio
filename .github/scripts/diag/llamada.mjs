@@ -158,7 +158,11 @@ try {
   await b.pagina.waitForTimeout(1500);
   const filasB = await b.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
   const filasA = await a.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
-  anota('anotada en el chat', { enB: filasB, enA: filasA });
+  anota('anotada en el chat', { enA: filasA, enB: filasB });
+  const filaLlamada = (filas) => filas.some((t) => t.includes('Llamada de voz'));
+  if (!filaLlamada(filasA) || !filaLlamada(filasB)) {
+    throw new Error(`la fila de la llamada no salio en los dos lados: A=${JSON.stringify(filasA)} B=${JSON.stringify(filasB)}`);
+  }
   await b.pagina.screenshot({ path: path.join(FOTOS, '3-anotada-en-el-chat.png') });
 
   // ---------- Videollamada ----------
@@ -202,6 +206,16 @@ try {
   await b.pagina.waitForSelector('.llamada', { state: 'detached', timeout: 15000 });
   anota('videollamada terminada', { pantallasCerradas: true });
 
+  // La fila de la videollamada tambien queda en los dos lados.
+  await a.pagina.waitForTimeout(1500);
+  const videoA = await a.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
+  const videoB = await b.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
+  anota('videollamada anotada', { enA: videoA, enB: videoB });
+  const filaVideo = (filas) => filas.some((t) => t.includes('Videollamada'));
+  if (!filaVideo(videoA) || !filaVideo(videoB)) {
+    throw new Error(`la fila de la videollamada no salio en los dos lados: A=${JSON.stringify(videoA)} B=${JSON.stringify(videoB)}`);
+  }
+
   informe.ok = true;
 } catch (e) {
   informe.ok = false;
@@ -212,17 +226,20 @@ try {
   // Limpieza: las llamadas de prueba se borran del hilo (quedan solo en el
   // informe) y las cuentas se dejan ocultas de nuevo.
   try {
-    const tok = A.access_token;
-    const hilo = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, tok);
+    const hilo = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, A.access_token);
     const mensajes = (hilo && (hilo.messages || hilo.items)) || [];
+    const rastros = mensajes.filter((m) => m.kind);
+    anota('rastros de llamadas en el hilo', rastros.map((m) => ({ id: m.id, kind: m.kind, de: m.sender_id })));
     let borrados = 0;
-    for (const m of mensajes) {
-      if (m.kind) {
-        const r = await fetch(`${API}/api/messages/${m.id}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } });
-        if (r.ok) borrados += 1;
-      }
+    for (const m of rastros) {
+      // Cada quien borra lo suyo (el servidor no deja tocar lo del otro).
+      const tok = Number(m.sender_id) === Number(A.user.id) ? A.access_token : B.access_token;
+      const r = await fetch(`${API}/api/messages/${m.id}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } });
+      if (r.ok) borrados += 1;
     }
-    anota('limpieza', { mensajesDeLlamadaBorrados: borrados, quedaban: mensajes.filter((m) => m.kind).length });
+    const despues = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, A.access_token);
+    const restos = (((despues && (despues.messages || despues.items)) || []).filter((m) => m.kind)).length;
+    anota('limpieza', { rastros: rastros.length, borrados, quedan: restos });
   } catch (e) {
     anota('limpieza con problema', { detalle: String(e).slice(0, 160) });
   }
