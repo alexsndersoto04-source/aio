@@ -20,7 +20,7 @@ import {
   IconTrash, IconLogout, IconImage, IconShield, IconCalendar, IconFile,
   IconChevronLeft, IconLink,
 } from '../components/Icons.jsx';
-import ChatGrupo from '../components/ChatGrupo.jsx';
+import ChatGrupo, { AjustesChatGrupo } from '../components/ChatGrupo.jsx';
 import {
   AnuncioGrupo, EventosGrupo, ArchivosGrupo, ReglasGrupo,
   SolicitudesGrupo, SancionesGrupo, HojaEntrar,
@@ -30,7 +30,7 @@ const SECCIONES = [
   'publicaciones', 'chat', 'eventos', 'archivos', 'miembros', 'reglas', 'ajustes',
 ];
 
-export default function GrupoView({ id, seccion }) {
+export default function GrupoView({ id, seccion, sub }) {
   const { user } = useAuth();
   const [grupo, setGrupo] = useState(null);
   const [posts, setPosts] = useState([]);
@@ -144,6 +144,7 @@ export default function GrupoView({ id, seccion }) {
         <PantallaSeccion
           grupo={grupo}
           seccion={activa}
+          sub={sub}
           posts={posts}
           cargar={cargar}
           entrarOSalir={entrarOSalir}
@@ -261,13 +262,14 @@ function PortadaGrupo({ grupo, chatNuevo, entrarOSalir, ocupado }) {
 
 /* ------------------------------------------------------- pantalla compartida */
 
-function CabGrupo({ grupo, icono, titulo }) {
+function CabGrupo({ grupo, icono, titulo, extra }) {
   return (
     <header className="g-cab">
       <a className="g-volver" href={`#/grupo/${grupo.id}`}>
         <IconChevronLeft /> Volver al grupo
       </a>
       <h2>{icono} {titulo}</h2>
+      {extra}
     </header>
   );
 }
@@ -285,7 +287,7 @@ function AvisoEntrar({ grupo, icono, texto, entrarOSalir, ocupado }) {
 }
 
 function PantallaSeccion(props) {
-  const { grupo, seccion, posts, cargar, entrarOSalir, ocupado, marcarChatVisto } = props;
+  const { grupo, seccion, sub, posts, cargar, entrarOSalir, ocupado, marcarChatVisto } = props;
   const abiertoOPublico = grupo.soy_miembro || grupo.privacy !== 'private';
 
   if (seccion === 'publicaciones') {
@@ -321,9 +323,26 @@ function PantallaSeccion(props) {
   }
 
   if (seccion === 'chat') {
+    if (sub === 'ajustes') {
+      return (
+        <div className="g-pantalla">
+          <CabGrupo grupo={grupo} icono={<IconSettings />} titulo="Ajustes del chat" />
+          <AjustesChatGrupo />
+        </div>
+      );
+    }
     return (
       <div className="g-pantalla g-pantalla-chat">
-        <CabGrupo grupo={grupo} icono={<IconChat />} titulo="Chat del grupo" />
+        <CabGrupo
+          grupo={grupo}
+          icono={<IconChat />}
+          titulo="Chat del grupo"
+          extra={(
+            <a className="g-cab-extra" href={`#/grupo/${grupo.id}/chat/ajustes`}>
+              <IconSettings /> Ajustes
+            </a>
+          )}
+        />
         {grupo.soy_miembro ? (
           <ChatGrupo grupo={grupo} esMiembro onVistos={marcarChatVisto} />
         ) : (

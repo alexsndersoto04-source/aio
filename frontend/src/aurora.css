@@ -1140,19 +1140,18 @@ body { background: var(--bg); }
 .chat-grupo {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
-  border-radius: var(--r-tarjeta, 18px);
-  background: var(--vidrio-fondo);
-  border: 1px solid var(--vidrio-borde);
-  backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
-  -webkit-backdrop-filter: blur(var(--vidrio-blur)) saturate(var(--vidrio-sat));
-  box-shadow: 0 22px 50px -34px rgba(15, 18, 45, 0.6);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   overflow: hidden;
 }
+.chat-fondo-suave { background: var(--surface-3); border-radius: 14px; }
 .chat-grupo-mensajes {
   flex: 1;
-  min-height: 240px;
-  max-height: min(58vh, 560px);
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 16px 14px 6px;
@@ -1195,9 +1194,9 @@ body { background: var(--bg); }
   max-width: min(76%, 520px);
   padding: 9px 12px;
   border-radius: 16px 16px 16px 5px;
-  background: var(--surface-2, rgba(255, 255, 255, 0.72));
-  border: 1px solid var(--vidrio-borde);
-  box-shadow: 0 10px 24px -22px rgba(15, 18, 45, 0.55);
+  background: var(--surface-3);
+  border: 0;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1207,9 +1206,7 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
 .fila-chat.mia .burbuja-chat {
   border-radius: 16px 16px 5px 16px;
   background: var(--aurora-grad);
-  border-color: transparent;
   color: #fff;
-  box-shadow: var(--aurora-halo);
 }
 .burbuja-chat .quien {
   font-size: 11.5px;
@@ -1253,9 +1250,9 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--vidrio-borde);
-  background: linear-gradient(180deg, transparent, rgba(99, 102, 241, 0.05));
+  padding: 8px 4px calc(8px + env(safe-area-inset-bottom, 0px));
+  border: 0;
+  background: transparent;
 }
 .chat-grupo-input .textarea { flex: 1; }
 .subiendo-nota {
@@ -1263,6 +1260,21 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
   padding: 0 14px 10px;
   font-size: 12px;
 }
+
+/* --- Opciones por mensaje y preferencias del chat --- */
+.pie-burbuja { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mas-burbuja { background: transparent; border: 0; color: inherit; opacity: 0.55; width: 22px; height: 22px; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.mas-burbuja svg { width: 14px; height: 14px; }
+.acciones-burbuja { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 5px; }
+.acciones-burbuja button { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--ink-2); background: var(--surface); border: 0; border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+.acciones-burbuja button svg { width: 13px; height: 13px; }
+.acciones-burbuja .peligro { color: #e5484d; }
+.chat-texto-grande .texto-chat { font-size: 16.5px; }
+.chat-denso .fila-chat { margin-top: 4px; }
+.chat-denso .burbuja-chat { padding: 6px 10px; }
+.g-cab-extra { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); text-decoration: none; padding: 6px 10px; border-radius: 10px; }
+.g-cab-extra:active { background: var(--surface-3); }
+.g-cab-extra svg { width: 15px; height: 15px; }
 
 /* Punto de «hay mensajes nuevos» en la pestaña Chat del grupo */
 .punto-nuevo {
@@ -1454,7 +1466,7 @@ html[data-tema='oscuro'] .burbuja-chat { background: rgba(255, 255, 255, 0.07); 
 .msg .nota-voz { margin: 1px 0; }
 
 @media (max-width: 560px) {
-  .chat-grupo-mensajes { max-height: 62vh; padding: 12px 10px 4px; }
+  .chat-grupo-mensajes { padding: 12px 10px 4px; }
   .burbuja-chat { max-width: 84%; }
   .chat-grupo-input { padding: 9px 10px 10px; gap: 6px; }
   .btn-grabar { width: 38px; height: 38px; }

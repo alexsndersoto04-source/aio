@@ -3918,7 +3918,7 @@ svg { flex: 0 0 auto; }
 
 .g-pantalla { display: flex; flex-direction: column; gap: 12px; max-width: 720px; margin: 0 auto; }
 .g-pantalla .card { border: 0; box-shadow: none; background: transparent; padding: 2px; }
-.g-pantalla-chat { min-height: calc(100dvh - 170px); }
+.g-pantalla-chat { height: calc(100dvh - 138px); }
 .aviso-grupo { border: 0; box-shadow: none; background: var(--surface-3); }
 
 .aviso-grupo {
