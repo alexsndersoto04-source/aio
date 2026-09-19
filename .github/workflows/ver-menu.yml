@@ -1,0 +1,81 @@
+# Diagnóstico temporal: abre la web en un navegador de verdad (Chrome sin
+# ventana) dentro del runner, toca el menú «⋯», elige «Elegir reacción» y
+# escribe en el registro qué se ve (posiciones, capas y quién tapa a quién).
+# Deja una captura como archivo adjunto del run. Es de quitar cuando el
+# problema esté resuelto.
+name: Ver el menú de reacciones
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ver:
+    name: Mirar el menú con un navegador
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compilar la web
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Entrar con la cuenta de pruebas y dejar el token que usará la sonda
+        env:
+          API: https://moon-dal0.onrender.com
+        run: |
+          set -e
+          curl -s --max-time 40 -X POST "$API/api/auth/register" -H 'Content-Type: application/json' \
+            -d '{"username":"pruebafotos","email":"pruebafotos@prueba.test","password":"clave-de-moon-2026"}' > /tmp/reg.json || true
+          token=$(sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p' /tmp/reg.json)
+          if [ -z "$token" ]; then
+            curl -s --max-time 40 -X POST "$API/api/auth/login" -H 'Content-Type: application/json' \
+              -d '{"username":"pruebafotos","password":"clave-de-moon-2026"}' > /tmp/log.json
+            token=$(sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p' /tmp/log.json)
+          fi
+          if [ -z "$token" ]; then echo "SIN TOKEN"; head -c 300 /tmp/log.json; exit 1; fi
+          printf 'window.__DIAG = { token: "%s" };\n' "$token" > frontend/dist/diag-datos.js
+          cp "$GITHUB_WORKSPACE/.github/scripts/diag/diag.js" frontend/dist/diag.js
+          echo "token listo (longitud ${#token})"
+
+      - name: Levantar la web y la API juntas
+        run: |
+          node "$GITHUB_WORKSPACE/.github/scripts/diag/servidor.cjs" "$GITHUB_WORKSPACE/frontend/dist" 4173 > /tmp/servidor.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w 'sirviendo: %{http_code}\n' http://127.0.0.1:4173/
+          curl -s -o /dev/null -w 'api por el puente: %{http_code}\n' http://127.0.0.1:4173/api/health
+
+      - name: Abrir con Chrome sin ventana (teléfono y computadora)
+        run: |
+          set +e
+          chrome() { google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 "$@"; }
+          chrome --window-size=390,844 --virtual-time-budget=45000 \
+            --screenshot=/tmp/menu-telefono.png --dump-dom "http://127.0.0.1:4173/?v=1" > /tmp/dom-telefono.html 2>/tmp/chrome-telefono.log
+          chrome --window-size=1280,900 --virtual-time-budget=45000 \
+            --screenshot=/tmp/menu-computadora.png --dump-dom "http://127.0.0.1:4173/?v=2" > /tmp/dom-computadora.html 2>/tmp/chrome-computadora.log
+          echo "=== TELÉFONO 390x844 ==="
+          sed -n '/DIAG-INICIO/,/DIAG-FIN/p' /tmp/dom-telefono.html || tail -c 500 /tmp/chrome-telefono.log
+          echo
+          echo "=== COMPUTADORA 1280x900 ==="
+          sed -n '/DIAG-INICIO/,/DIAG-FIN/p' /tmp/dom-computadora.html || tail -c 500 /tmp/chrome-computadora.log
+          ls -la /tmp/menu-*.png 2>/dev/null
+
+      - name: Guardar las capturas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-menu
+          path: |
+            /tmp/menu-telefono.png
+            /tmp/menu-computadora.png
+            /tmp/dom-telefono.html
+            /tmp/dom-computadora.html
+          if-no-files-found: warn
