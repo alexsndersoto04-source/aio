@@ -1,4 +1,4 @@
-# Verificación con un navegador de verdad (revision: 6)
+# Verificación con un navegador de verdad (revision: 7)
 # ============================================================
 # Compila la web, la sirve junto a la API y la abre con dos navegadores que se
 # llaman entre ellos (micrófono y cámara simulados). Sirve para comprobar las
@@ -62,8 +62,10 @@ jobs:
 
       - name: Servir la web compilada (y la API por el mismo puente)
         run: |
+          set -x
           node "$GITHUB_WORKSPACE/.github/scripts/diag/servidor.cjs" "$GITHUB_WORKSPACE/frontend/dist" 4173 > /tmp/servidor.log 2>&1 &
           sleep 2
+          cat /tmp/servidor.log
           curl -s -o /dev/null -w 'web: %{http_code}\n' http://127.0.0.1:4173/
           curl -s -o /dev/null -w 'api por el puente: %{http_code}\n' http://127.0.0.1:4173/api/health
 
@@ -82,3 +84,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 "$GITHUB_WORKSPACE/.github/scripts/diag/publicar-llamadas.py" "$GITHUB_SHA" /tmp/llamada.json /tmp/fotos
+
+      - name: Guardar los registros y las capturas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verificacion-llamadas
+          path: |
+            /tmp/llamada.json
+            /tmp/fotos/*.png
+            /tmp/servidor.log
+            /tmp/sesiones.json
+          if-no-files-found: warn
