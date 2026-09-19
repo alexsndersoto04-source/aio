@@ -3853,9 +3853,9 @@ svg { flex: 0 0 auto; }
 }
 .tarjeta-grupo .acciones { margin-top: auto; padding-top: 6px; }
 
-/* ---------- Grupo pantalla por pantalla (sistema limpio) ---------- */
-.g-portada { border: 1px solid var(--line); border-radius: var(--r-tarjeta); overflow: hidden; background: var(--surface); box-shadow: var(--elev-1); }
-.g-cubierta { height: 148px; background: var(--grad); position: relative; }
+/* ---------- Grupo pantalla por pantalla: plano, sin marcos, compacto ---------- */
+.g-portada { padding: 0 0 4px; border: 0; box-shadow: none; background: transparent; border-radius: 0; overflow: visible; }
+.g-cubierta { height: 118px; background: var(--grad); position: relative; border-radius: 0; }
 .g-cubierta img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .g-cubierta .trama {
   position: absolute;
@@ -3864,39 +3864,39 @@ svg { flex: 0 0 auto; }
     radial-gradient(40% 60% at 15% 20%, rgba(255, 255, 255, 0.3), transparent 60%),
     repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.08) 0 2px, transparent 2px 14px);
 }
-.g-datos { padding: 20px 22px 22px; display: flex; flex-direction: column; gap: 8px; }
-.g-datos h1 { margin: 0; font-size: 27px; font-weight: 750; letter-spacing: -0.04em; }
-.g-datos .muted { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 13.5px; margin: 0; }
-.g-datos .muted svg { width: 16px; height: 16px; }
-.g-sobre { font-size: 15.5px; line-height: 1.6; max-width: 66ch; margin: 4px 0 0; }
-.g-acciones { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.g-datos { padding: 12px 2px 4px; display: flex; flex-direction: column; gap: 6px; }
+.g-datos h1 { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: -0.03em; }
+.g-datos .muted { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.5px; margin: 0; }
+.g-datos .muted svg { width: 15px; height: 15px; }
+.g-sobre { font-size: 14px; line-height: 1.55; max-width: 66ch; margin: 2px 0 0; }
+.g-acciones { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.g-acciones .btn { padding: 8px 12px; font-size: 13.5px; }
 
-.g-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; margin-top: 16px; }
+.g-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 2px 8px; margin-top: 8px; }
 .g-card {
   position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-tarjeta);
-  background: var(--surface);
-  box-shadow: var(--elev-1);
+  gap: 10px;
+  padding: 12px 8px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
   color: inherit;
   text-decoration: none;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
-.g-card:hover { transform: translateY(-2px); box-shadow: var(--elev-2); border-color: var(--line-strong); }
-.g-card-ic { flex: none; width: 42px; height: 42px; display: grid; place-items: center; border-radius: 14px; background: var(--surface-3); color: var(--accent); }
-.g-card-ic svg { width: 20px; height: 20px; }
-.g-card-tx { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-right: 26px; }
-.g-card-tx b { font-size: 15.5px; letter-spacing: -0.02em; }
-.g-card-tx small { color: var(--ink-3); font-size: 12.8px; line-height: 1.45; }
-.g-card-caras { position: absolute; top: 16px; right: 40px; display: flex; }
-.g-card-caras .avatar { width: 26px; height: 26px; border: 2px solid var(--surface); margin-left: -8px; }
+.g-card:active { background: var(--surface-3); }
+.g-card-ic { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 12px; background: var(--surface-3); color: var(--accent); }
+.g-card-ic svg { width: 18px; height: 18px; }
+.g-card-tx { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-right: 22px; }
+.g-card-tx b { font-size: 14.5px; letter-spacing: -0.02em; }
+.g-card-tx small { color: var(--ink-3); font-size: 12px; line-height: 1.4; }
+.g-card-caras { position: absolute; top: 14px; right: 34px; display: flex; }
+.g-card-caras .avatar { width: 24px; height: 24px; border: 2px solid var(--surface); margin-left: -7px; }
 .g-card-caras .avatar:first-child { margin-left: 0; }
-.g-card .punto-nuevo { position: absolute; top: 16px; right: 16px; }
-.g-card-flecha { position: absolute; right: 14px; bottom: 14px; width: 16px; height: 16px; transform: rotate(180deg); color: var(--ink-3); }
+.g-card .punto-nuevo { position: absolute; top: 14px; right: 12px; }
+.g-card-flecha { position: absolute; right: 10px; bottom: 12px; width: 14px; height: 14px; transform: rotate(180deg); color: var(--ink-3); }
 
 .g-cab {
   position: sticky;
@@ -3904,20 +3904,22 @@ svg { flex: 0 0 auto; }
   z-index: 30;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 4px;
+  gap: 10px;
+  padding: 10px 2px;
   background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 16px;
+  border: 0;
+  margin-bottom: 10px;
 }
-.g-cab h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; }
-.g-cab h2 svg { width: 18px; height: 18px; color: var(--accent); }
-.g-volver { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--ink-2); text-decoration: none; padding: 6px 10px; border-radius: 10px; }
-.g-volver:hover { background: var(--surface-3); color: var(--ink); }
-.g-volver svg { width: 16px; height: 16px; }
+.g-cab h2 { margin: 0; min-width: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 7px; }
+.g-cab h2 svg { width: 17px; height: 17px; color: var(--accent); flex: none; }
+.g-volver { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 600; color: var(--ink-2); text-decoration: none; padding: 6px 9px; border-radius: 10px; }
+.g-volver:active { background: var(--surface-3); color: var(--ink); }
+.g-volver svg { width: 15px; height: 15px; }
 
-.g-pantalla { display: flex; flex-direction: column; gap: 14px; max-width: 760px; margin: 0 auto; }
+.g-pantalla { display: flex; flex-direction: column; gap: 12px; max-width: 720px; margin: 0 auto; }
+.g-pantalla .card { border: 0; box-shadow: none; background: transparent; padding: 2px; }
 .g-pantalla-chat { min-height: calc(100dvh - 170px); }
+.aviso-grupo { border: 0; box-shadow: none; background: var(--surface-3); }
 
 .aviso-grupo {
   display: flex;
@@ -3980,9 +3982,9 @@ svg { flex: 0 0 auto; }
 
 /* ---------- 29.9 Pantallas pequeñas otra vez, ahora con las nuevas ---------- */
 @media (max-width: 1024px) {
-  .g-cards { grid-template-columns: 1fr; }
-  .g-datos { padding: 16px; }
-  .g-datos h1 { font-size: 22px; }
+  .g-cards { grid-template-columns: 1fr; gap: 0; }
+  .g-datos { padding: 10px 2px 4px; }
+  .g-datos h1 { font-size: 19px; }
   .chat { grid-template-columns: 1fr; height: auto; min-height: 0; }
   .chat-list { border-right: 0; }
 }
