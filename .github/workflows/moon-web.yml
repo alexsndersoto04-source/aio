@@ -76,8 +76,8 @@ jobs:
           cache=$(grep -i '^cf-cache-status' /tmp/hdr.txt | tr -d '\r' || echo "cf-cache-status: (sin cabecera)")
           salud_api=$(curl -s --max-time 30 "https://moon-dal0.onrender.com/api/health" || echo "(no se pudo consultar la API)")
           redir=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-dal0.onrender.com/" || echo "(no se pudo consultar)")
-          salud_api2=$(curl -s --max-time 30 "https://moon-api.onrender.com/api/health" || echo "(no se pudo consultar la API)")
-          redir2=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-api.onrender.com/" || echo "(no se pudo consultar)")
+          salud_api2=$(curl -s --max-time 30 "https://moon-dal0-zsyg.onrender.com/api/health" || echo "(no se pudo consultar la API)")
+          redir2=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-dal0-zsyg.onrender.com/" || echo "(no se pudo consultar)")
           {
             echo "### Verificación en vivo"
             echo
@@ -98,11 +98,11 @@ jobs:
             echo '```'
             echo "$redir"
             echo '```'
-            echo "**Servicio moon-api.onrender.com — /api/health:**"
+            echo "**Servicio moon-dal0-zsyg.onrender.com — /api/health:**"
             echo '```'
             echo "$salud_api2"
             echo '```'
-            echo "**Servicio moon-api.onrender.com — redirección:**"
+            echo "**Servicio moon-dal0-zsyg.onrender.com — redirección:**"
             echo '```'
             echo "$redir2"
             echo '```'
