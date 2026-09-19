@@ -429,8 +429,8 @@ export default function PostCard({ post, onChanged, compact = false }) {
     const texto = borrador.trim();
     if (!texto) { toast.err('La publicación no puede quedar vacía'); return; }
     try {
-      await api.patch(`/api/posts/${p.id}`, { content: texto });
-      aplicar({ ...p, content: texto });
+      const res = await api.patch(`/api/posts/${p.id}`, { content: texto });
+      aplicar(res && res.id ? res : { ...p, content: texto, edited_at: new Date().toISOString() });
       setEditando(false);
       toast.ok('Publicación actualizada');
     } catch (e) {

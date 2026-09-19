@@ -112,14 +112,18 @@ jobs:
               else
                 fotopost="el feed NO devuelve la imagen (post: ${postcreado:0:140})"
               fi
-              limpieza=$(python3 "$GITHUB_WORKSPACE/.github/scripts/limpiar-pruebas.py" "$API" "$token" "$idpost")
+              idpublicado=$(echo "$postcreado" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+              opciones=$(python3 "$GITHUB_WORKSPACE/.github/scripts/probar-opciones.py" "$API" "$token" "$idpublicado")
+              limpieza=$(python3 "$GITHUB_WORKSPACE/.github/scripts/limpiar-pruebas.py" "$API" "$token" "$idpublicado")
             else
               fotoviva="(la subida no devolvio url: ${subida:0:120})"
               fotopost="(sin foto que publicar)"
+              opciones="(sin prueba)"
               limpieza="(sin limpieza)"
             fi
           else
             fotoviva="(no se pudo crear la cuenta de prueba: ${respuesta_login:0:160})"
+            opciones="(sin prueba)"
             limpieza="(sin limpieza)"
           fi
           {
@@ -168,6 +172,7 @@ jobs:
             echo '```'
             echo "$fotoviva"
             echo "post con foto en el feed: $fotopost"
+            echo "opciones del menu de la publicacion: $opciones"
             echo "$limpieza"
             echo '```'
           } > /tmp/vivo.md

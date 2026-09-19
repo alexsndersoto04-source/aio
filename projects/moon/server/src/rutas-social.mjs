@@ -214,14 +214,16 @@ export function registrarRutasSocial(router) {
     const { page, limit, offset } = paginacion(c.req, 10, 50);
     const tipoTrending = condicionDeTipo(String(c.query.get('tipo') || ''));
     const filas = await c.pool.query(
-      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND p.created_at > NOW() - INTERVAL '7 days'
+      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND ${SQL_NO_OCULTOS}
+        AND p.created_at > NOW() - INTERVAL '7 days'
         ${tipoTrending ? `AND ${tipoTrending}` : ''}
         ORDER BY (p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       [yo.id]
     );
     const total = await contarPublicaciones(
       c.pool,
-      "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND p.created_at > NOW() - INTERVAL '7 days'"
+      "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND " + SQL_NO_OCULTOS
+        + " AND p.created_at > NOW() - INTERVAL '7 days'"
         + (tipoTrending ? ` AND ${tipoTrending}` : ''),
       [yo.id]
     );
@@ -233,11 +235,11 @@ export function registrarRutasSocial(router) {
     const { page, limit, offset } = paginacion(c.req, 10, 50);
     const tipoNuevo = condicionDeTipo(String(c.query.get('tipo') || ''));
     const filas = await c.pool.query(
-      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} ${tipoNuevo ? `AND ${tipoNuevo}` : ''}
+      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND ${SQL_NO_OCULTOS} ${tipoNuevo ? `AND ${tipoNuevo}` : ''}
         ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
       [yo.id]
     );
-    const total = await contarPublicaciones(c.pool, "p.status = 'active' AND " + SQL_NO_BLOQUEADOS, [yo.id]);
+    const total = await contarPublicaciones(c.pool, "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND " + SQL_NO_OCULTOS, [yo.id]);
     return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
   });
 
@@ -723,7 +725,7 @@ export function registrarRutasSocial(router) {
         ? '(p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC'
         : 'p.created_at DESC';
       const filas = await c.pool.query(
-        `${SQL_POST} WHERE p.status = 'active' AND (p.content ILIKE $2 OR EXISTS (
+        `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_OCULTOS} AND (p.content ILIKE $2 OR EXISTS (
             SELECT 1 FROM post_hashtags ph JOIN hashtags h ON h.id = ph.hashtag_id
              WHERE ph.post_id = p.id AND h.tag ILIKE $3))
            ORDER BY ${orden} LIMIT 40`,
