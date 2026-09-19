@@ -87,10 +87,15 @@ jobs:
           # sube una imagen chiquita y la lee de vuelta. Si vuelve con 200 y
           # tipo image/, el almacén de fotos funciona en vivo.
           API="https://moon-dal0.onrender.com"
-          # Cuenta nueva en cada verificacion: no depende de cuentas viejas.
-          NOMBRE="prueba$RANDOM"
+          # Una sola cuenta de prueba fija: se crea la primera vez y se
+          # reutiliza siempre, para no llenar la base de cuentas nuevas.
+          NOMBRE="pruebafotos"
           respuesta_login=$(curl -s --max-time 30 -X POST "$API/api/auth/register" -H 'Content-Type: application/json' -d "{\"username\":\"$NOMBRE\",\"email\":\"$NOMBRE@prueba.test\",\"password\":\"clave-de-moon-2026\"}")
           token=$(echo "$respuesta_login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+          if [ -z "$token" ]; then
+            respuesta_login=$(curl -s --max-time 30 -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"$NOMBRE\",\"password\":\"clave-de-moon-2026\"}")
+            token=$(echo "$respuesta_login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+          fi
           if [ -n "$token" ]; then
             echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" | base64 -d > /tmp/px.png
             subida=$(curl -s --max-time 60 -X POST "$API/api/upload" -H "Authorization: Bearer $token" -F "name=post" -F "file=@/tmp/px.png;type=image/png")
