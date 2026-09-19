@@ -67,6 +67,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
+          # Da tiempo a Render a terminar de desplegar este mismo commit antes
+          # de consultar la API en vivo, para que la evidencia sea del código nuevo.
+          echo "Esperando 240 s a que Render despliegue este commit…"
+          sleep 240
           nonce="$RANDOM$RANDOM$RANDOM"
           html=$(curl -s -D /tmp/hdr.txt -H 'Cache-Control: no-cache' "https://moon.alexsndersoto04.workers.dev/?nocache=$nonce")
           cache=$(grep -i '^cf-cache-status' /tmp/hdr.txt | tr -d '\r' || echo "cf-cache-status: (sin cabecera)")
