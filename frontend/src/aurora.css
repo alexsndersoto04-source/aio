@@ -4307,3 +4307,18 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .bloqueo-campo { max-width: 100%; width: 100%; font-size: 22px; letter-spacing: 0.5em; padding: 12px 14px; }
 .bloqueo-forma .btn { width: 100%; }
 .bloqueo-caja .error-nota { margin: 2px 0 0; }
+
+/* ---------- §43 · Menús que flotan sobre la pantalla ----------
+   El menú «⋯» de una publicación se dibuja fuera del post (ver flotante.js):
+   así nunca queda recortado por el final de la lista ni tapado por el fondo
+   oscurecido. Aquí solo su aspecto. */
+.menu.opciones-flotantes {
+  position: fixed;
+  right: auto;
+  top: auto;
+  z-index: 63;
+  min-width: 214px;
+  background: var(--superficie-firme, #fff);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}

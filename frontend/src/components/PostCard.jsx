@@ -209,13 +209,18 @@ function Encuesta({ post, onCambio }) {
 function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onReaccionar, onEnviarA }) {
   const { user } = useAuth();
   const [abierto, setAbierto] = useState(false);
+  // El menú se coloca siempre dentro de la pantalla (ver flotante.js).
+  const { anclaRef, cajaRef, menu: menuFlotante } =
+    useFlotante(abierto, { clase: 'menu opciones-flotantes', etiqueta: 'Opciones de la publicación' });
   const caja = useRef(null);
   const esMio = user && post.is_mine;
 
   useEffect(() => {
     if (!abierto) return;
     function fuera(e) {
-      if (caja.current && !caja.current.contains(e.target)) setAbierto(false);
+      const dentroDelBoton = caja.current && caja.current.contains(e.target);
+      const dentroDelMenu = cajaRef.current && cajaRef.current.contains(e.target);
+      if (!dentroDelBoton && !dentroDelMenu) setAbierto(false);
     }
     function escape(e) { if (e.key === 'Escape') setAbierto(false); }
     document.addEventListener('mousedown', fuera);
@@ -244,6 +249,7 @@ function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onRea
   return (
     <div ref={caja} style={{ position: 'relative' }}>
       <button
+        ref={anclaRef}
         className="icon-btn"
         onClick={() => setAbierto((v) => !v)}
         aria-label="Más opciones de la publicación"
@@ -253,8 +259,8 @@ function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onRea
         <IconMore />
       </button>
 
-      {abierto ? (
-        <div className="menu" role="menu">
+      {abierto ? menuFlotante(
+        <div className="menu opciones-flotantes" role="menu">
           {esMio ? (
             <>
               <button role="menuitem" onClick={() => { setAbierto(false); onReaccionar(); }}>
@@ -291,7 +297,7 @@ function PostMenu({ post, onDelete, onEdit, onReport, onPin, onNoInteresa, onRea
           <button role="menuitem" onClick={copiarEnlace}>
             <IconLink /> Copiar enlace
           </button>
-        </div>
+        </div>,
       ) : null}
     </div>
   );

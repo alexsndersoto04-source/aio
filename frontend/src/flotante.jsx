@@ -11,7 +11,9 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-export function useFlotante(abierto, { margen = 8, distancia = 8 } = {}) {
+export function useFlotante(abierto, {
+  margen = 8, distancia = 8, clase = 'reacciones-menu', etiqueta = 'Reacciones',
+} = {}) {
   const anclaRef = useRef(null);
   const cajaRef = useRef(null);
   const [estilo, setEstilo] = useState(null);
@@ -56,19 +58,21 @@ export function useFlotante(abierto, { margen = 8, distancia = 8 } = {}) {
 
   const menu = (contenido) => (abierto
     ? createPortal(
-      <span
+      <div
         ref={cajaRef}
-        className="reacciones-menu"
+        className={clase}
         role="menu"
-        aria-label="Reacciones"
+        aria-label={etiqueta}
         // Hasta tener la medida, queda listo pero invisible: dura un parpadeo.
         style={estilo ? estilo : { visibility: 'hidden', left: 0, top: 0 }}
       >
         {contenido}
-      </span>,
+      </div>,
       document.body,
     )
     : null);
 
-  return { anclaRef, menu };
+  // El menú vive fuera del componente que lo abre: quien escuche clics «fuera»
+  // tiene que preguntar también por cajaRef (si no, se cierra antes de usarlo).
+  return { anclaRef, cajaRef, menu };
 }

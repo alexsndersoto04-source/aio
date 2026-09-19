@@ -45,7 +45,22 @@
       const boton = post.querySelector('button[aria-label="Más opciones de la publicación"]');
       info.hayBotonTresPuntos = !!boton;
       if (boton) boton.click();
-      const item = await hasta(() => Array.from(document.querySelectorAll('.post .menu button')).find((b) => /Elegir reacci/.test(b.textContent)));
+      // El menú de opciones se dibuja fuera del post: se busca en toda la página.
+      const item = await hasta(() => Array.from(document.querySelectorAll('.menu button')).find((b) => /Elegir reacci/.test(b.textContent)));
+      const cajaOpciones = document.querySelector('.menu.opciones-flotantes');
+      if (cajaOpciones) {
+        const ro = cajaOpciones.getBoundingClientRect();
+        info.menuOpciones = {
+          rect: { x: Math.round(ro.x), y: Math.round(ro.y), ancho: Math.round(ro.width), alto: Math.round(ro.height), abajo: Math.round(ro.bottom) },
+          dentroDePantalla: ro.top >= 0 && ro.left >= 0 && ro.bottom <= innerHeight + 1 && ro.right <= innerWidth + 1,
+          recibeElToque: (() => {
+            const el = document.elementFromPoint(Math.round(ro.left + ro.width / 2), Math.round(ro.top + 24));
+            return el === cajaOpciones || !!(cajaOpciones.contains(el));
+          })(),
+          position: getComputedStyle(cajaOpciones).position,
+          botones: cajaOpciones.querySelectorAll('button').length,
+        };
+      }
       info.hayOpcionElegirReaccion = !!item;
       if (item) {
         item.click();
