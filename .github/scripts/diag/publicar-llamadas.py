@@ -48,6 +48,17 @@ try:
 except Exception:
     partes += ['```', traceback.format_exc()[-1200:], '```']
 
+salida = ''
+for ruta in ('/tmp/salida-llamada.txt', '/tmp/servidor.log'):
+    try:
+        texto = open(ruta, encoding='utf-8', errors='replace').read().strip()
+    except OSError:
+        continue
+    if texto:
+        salida += '\n\n**%s**\n\n```\n%s\n```' % (os.path.basename(ruta), texto[-2600:])
+if salida:
+    partes += ['', '**Lo que dijo la prueba**', salida]
+
 for foto in sorted(glob.glob(os.path.join(FOTOS, '[0-9]-*.png'))):
     b64 = miniatura(foto)
     if b64:

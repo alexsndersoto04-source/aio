@@ -1,4 +1,4 @@
-# Verificación con un navegador de verdad (revision: 7)
+# Verificación con un navegador de verdad (revision: 8)
 # ============================================================
 # Compila la web, la sirve junto a la API y la abre con dos navegadores que se
 # llaman entre ellos (micrófono y cámara simulados). Sirve para comprobar las
@@ -74,9 +74,10 @@ jobs:
         run: |
           mkdir -p /tmp/fotos
           node "$GITHUB_WORKSPACE/.github/scripts/diag/llamada.mjs" \
-            "http://127.0.0.1:4173" /tmp/sesiones.json /tmp/fotos /tmp/llamada.json || true
+            "http://127.0.0.1:4173" /tmp/sesiones.json /tmp/fotos /tmp/llamada.json \
+            > /tmp/salida-llamada.txt 2>&1 || true
+          cat /tmp/salida-llamada.txt | tail -40
           ls -la /tmp/fotos || true
-          cat /tmp/llamada.json 2>/dev/null | head -60 || echo "(sin informe)"
 
       - name: Publicar el resultado en el commit
         if: always()
@@ -94,5 +95,6 @@ jobs:
             /tmp/llamada.json
             /tmp/fotos/*.png
             /tmp/servidor.log
+            /tmp/salida-llamada.txt
             /tmp/sesiones.json
           if-no-files-found: warn

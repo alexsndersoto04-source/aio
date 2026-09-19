@@ -6,7 +6,27 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { chromium } from 'playwright';
+
+// El navegador de pruebas vive en la carpeta de la web; se busca donde esté.
+async function cargarChromium() {
+  const intentos = [
+    process.env.PLAYWRIGHT,
+    path.join(process.cwd(), 'node_modules', 'playwright', 'index.mjs'),
+    path.join(process.cwd(), 'frontend', 'node_modules', 'playwright', 'index.mjs'),
+    'playwright',
+  ].filter(Boolean);
+  let ultimo = null;
+  for (const ruta of intentos) {
+    try {
+      const mod = await import(ruta);
+      console.log('playwright cargado desde', ruta);
+      return mod.chromium;
+    } catch (e) {
+      ultimo = e;
+    }
+  }
+  throw ultimo || new Error('no se encontro playwright');
+}
 
 const [WEB, SESIONES, FOTOS, SALIDA] = process.argv.slice(2);
 const sesiones = JSON.parse(fs.readFileSync(SESIONES, 'utf8'));
@@ -16,6 +36,9 @@ const convId = sesiones.conversacion.id;
 const API = sesiones.api;
 
 const informe = { conversacion: convId, pasos: [] };
+// El informe se deja escrito desde el arranque: si algo revienta después,
+// igual queda constancia en el comentario del commit.
+fs.writeFileSync(SALIDA, JSON.stringify({ ok: false, error: 'arrancando' }, null, 1));
 const anota = (paso, datos) => {
   informe.pasos.push({ paso, ...datos });
   console.log(paso, JSON.stringify(datos));
@@ -50,6 +73,7 @@ async function abrirNavegador(sesion, etiqueta) {
   return { contexto, pagina };
 }
 
+const chromium = await cargarChromium();
 const navegador = await chromium.launch({
   args: [
     '--use-fake-ui-for-media-stream',          // acepta micrófono y cámara solos
@@ -161,8 +185,9 @@ try {
   informe.ok = true;
 } catch (e) {
   informe.ok = false;
-  informe.error = String(e && e.message ? e.message : e).slice(0, 400);
+  informe.error = String(e && e.stack ? e.stack.split('\n').slice(0, 4).join(' | ') : e).slice(0, 600);
   console.log('FALLO:', informe.error);
+  fs.writeFileSync(SALIDA, JSON.stringify(informe, null, 1));
 } finally {
   // Limpieza: las llamadas de prueba se borran del hilo (quedan solo en el
   // informe) y las cuentas se dejan ocultas de nuevo.
