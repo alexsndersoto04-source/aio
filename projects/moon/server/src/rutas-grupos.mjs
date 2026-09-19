@@ -411,8 +411,14 @@ export function registrarRutasGrupos(router) {
       `INSERT INTO posts (user_id, content, group_id) VALUES ($1, $2, $3) RETURNING *`,
       [yo.id, contenido, id]
     );
-    for (const [i, im] of imagenes.entries()) {
-      const url = typeof im === 'string' ? im : im.url || im.original_url || '';
+    for (const [i, imRaw] of imagenes.entries()) {
+      let im = imRaw;
+      // Compatibilidad: si el cliente solo mandó el id del medio, se busca su url.
+      if (im !== null && typeof im !== 'string' && !(im && (im.url || im.original_url)) && /^\d+$/.test(String(im))) {
+        const m = await uno(c.pool, 'SELECT url FROM media WHERE id = $1', [Number(im)]);
+        im = m ? { id: Number(im), url: m.url } : null;
+      }
+      const url = typeof im === 'string' ? im : (im && (im.url || im.original_url)) || '';
       if (!url) continue;
       await c.pool.query(
         'INSERT INTO post_images (post_id, position, original_url, thumb_url) VALUES ($1, $2, $3, $3)',

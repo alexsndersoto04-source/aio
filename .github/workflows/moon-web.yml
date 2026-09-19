@@ -97,8 +97,19 @@ jobs:
             urlfoto=$(echo "$subida" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
             if [ -n "$urlfoto" ]; then
               fotoviva=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 30 "$API$urlfoto")
+              # El caso exacto del usuario: publicar un post con la foto y
+              # comprobar que el feed la devuelve.
+              idfoto=$(echo "$subida" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+              postcreado=$(curl -s --max-time 30 -X POST "$API/api/posts" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "{\"content\":\"prueba de foto $NOMBRE\",\"images\":[{\"id\":$idfoto,\"url\":\"$urlfoto\"}]}")
+              feed=$(curl -s --max-time 30 "$API/api/feed?limit=8" -H "Authorization: Bearer $token")
+              if echo "$feed" | grep -q "$urlfoto"; then
+                fotopost="el feed SI devuelve la imagen del post"
+              else
+                fotopost="el feed NO devuelve la imagen (post: ${postcreado:0:140})"
+              fi
             else
               fotoviva="(la subida no devolvio url: ${subida:0:120})"
+              fotopost="(sin foto que publicar)"
             fi
           else
             fotoviva="(no se pudo crear la cuenta de prueba: ${respuesta_login:0:160})"
@@ -148,6 +159,7 @@ jobs:
             echo "**Prueba de foto en vivo (subir y leerla de vuelta):**"
             echo '```'
             echo "$fotoviva"
+            echo "post con foto en el feed: $fotopost"
             echo '```'
           } > /tmp/vivo.md
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/vivo.md --jq '.html_url'

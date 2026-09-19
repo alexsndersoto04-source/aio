@@ -82,7 +82,7 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
     try {
       const creado = await api.post(destino, {
         content: texto,
-        images: imagenes.map((i) => i.id),
+        images: imagenes.map((i) => ({ id: i.id, url: i.url })),
         poll: hayEncuesta
           ? { pregunta: (encuesta.pregunta || '').trim(), opciones, horas: encuesta.horas }
           : undefined,
