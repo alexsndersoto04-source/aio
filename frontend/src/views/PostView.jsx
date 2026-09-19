@@ -12,12 +12,15 @@ import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import PostCard, { REACCIONES } from '../components/PostCard.jsx';
 import { timeAgo } from '../utils.js';
 import { IconMore, IconPin, IconHeart, IconTrash, IconReport, IconCheck } from '../components/Icons.jsx';
+import { useFlotante } from '../flotante.jsx';
 
 /** Un comentario con su reacción, su menú y su etiqueta de autor. */
 function CommentRow({ creador, onCambio, onEliminar }) {
   const { user } = useAuth();
   const [c, setC] = useState(creador);
   const [reaccionando, setReaccionando] = useState(false);
+  // El selector del comentario también cae siempre dentro de la pantalla.
+  const { anclaRef, menu: menuReacciones } = useFlotante(reaccionando);
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -100,6 +103,7 @@ function CommentRow({ creador, onCambio, onEliminar }) {
           </span>
           <button
             type="button"
+            ref={anclaRef}
             className={`icon-btn reaccionar-comentario ${(mios || (c.reacciones?.total || 0) > 0) ? 'activo' : ''}`}
             onClick={() => (mios ? quitarReaccion() : reaccionar('me_gusta'))}
             onContextMenu={(e) => { e.preventDefault(); setReaccionando(true); }}
@@ -151,20 +155,18 @@ function CommentRow({ creador, onCambio, onEliminar }) {
         {reaccionando ? (
           <>
             <span className="hoja-fondo" role="presentation" onClick={() => setReaccionando(false)} />
-            <span className="reacciones-menu arriba" role="menu" aria-label="Reacciones">
-              {REACCIONES.map((r) => (
-                <button
-                  key={r.tipo}
-                  role="menuitem"
-                  className={mios === r.tipo ? 'activa' : ''}
-                  onClick={() => reaccionar(r.tipo)}
-                  title={r.nombre}
-                  aria-label={r.nombre}
-                >
-                  <span className="moon-emoji">{r.emoji}</span>
-                </button>
-              ))}
-            </span>
+            {menuReacciones(REACCIONES.map((r) => (
+              <button
+                key={r.tipo}
+                role="menuitem"
+                className={mios === r.tipo ? 'activa' : ''}
+                onClick={() => reaccionar(r.tipo)}
+                title={r.nombre}
+                aria-label={r.nombre}
+              >
+                <span className="moon-emoji">{r.emoji}</span>
+              </button>
+            )))}
           </>
         ) : null}
       </div>

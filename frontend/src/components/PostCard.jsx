@@ -10,6 +10,7 @@ import { api, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { timeAgo, linkify } from '../utils.js';
 import { toast, confirmar, pedirTexto, avisoError } from '../ui.js';
+import { useFlotante } from '../flotante.jsx';
 import Avatar, { VerifiedBadge } from './Avatar.jsx';
 import {
   IconHeart, IconBookmark, IconComment, IconMore, IconTrash, IconEdit, IconReport,
@@ -305,20 +306,13 @@ export default function PostCard({ post, onChanged, compact = false }) {
   const [animarLike, setAnimarLike] = useState(false);
   // Selector de reacciones variadas (se abre al mantener pulsado o con el botón).
   const [reaccionando, setReaccionando] = useState(false);
+  // Selector de reacciones: siempre dentro de la pantalla (ver flotante.js).
+  const { anclaRef, menu: menuReacciones } = useFlotante(reaccionando);
   const [oculto, setOculto] = useState(false);
   // Compartir al chat: se elige la conversación en una hoja.
   const [enviandoA, setEnviandoA] = useState(false);
   const [convs, setConvs] = useState(null);
   const reacciones = p.reacciones || null;
-  const cajaReaccion = useRef(null);
-
-  // Si el selector se abre desde el menú ⋯ (que está arriba), la barra de
-  // acciones queda fuera de la pantalla: se baja a la vista para que el
-  // selector aparezca donde la persona está mirando.
-  useEffect(() => {
-    if (!reaccionando) return;
-    cajaReaccion.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [reaccionando]);
 
   useEffect(() => { setP(post); }, [post]);
 
@@ -595,7 +589,7 @@ export default function PostCard({ post, onChanged, compact = false }) {
       <PruebaSocial post={p} />
 
       <footer className="post-actions">
-        <span className="reaccion-caja" ref={cajaReaccion}>
+        <span className="reaccion-caja" ref={anclaRef}>
           <button
             className={p.is_liked ? 'liked' : ''}
             onClick={() => (p.is_liked ? quitarReaccion() : reaccionar('me_gusta'))}
@@ -617,20 +611,18 @@ export default function PostCard({ post, onChanged, compact = false }) {
           {reaccionando ? (
             <>
               <span className="hoja-fondo" role="presentation" onClick={() => setReaccionando(false)} />
-              <span className="reacciones-menu" role="menu" aria-label="Reacciones">
-                {REACCIONES.map((r) => (
-                  <button
-                    key={r.tipo}
-                    role="menuitem"
-                    className={reacciones?.mi === r.tipo ? 'activa' : ''}
-                    onClick={() => reaccionar(r.tipo)}
-                    title={r.nombre}
-                    aria-label={r.nombre}
-                  >
-                    <span className="moon-emoji">{r.emoji}</span>
-                  </button>
-                ))}
-              </span>
+              {menuReacciones(REACCIONES.map((r) => (
+                <button
+                  key={r.tipo}
+                  role="menuitem"
+                  className={reacciones?.mi === r.tipo ? 'activa' : ''}
+                  onClick={() => reaccionar(r.tipo)}
+                  title={r.nombre}
+                  aria-label={r.nombre}
+                >
+                  <span className="moon-emoji">{r.emoji}</span>
+                </button>
+              )))}
             </>
           ) : null}
         </span>

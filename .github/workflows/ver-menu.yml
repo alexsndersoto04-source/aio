@@ -3,7 +3,7 @@
 # Abre la web compilada en un navegador de verdad (Chrome sin ventana) dentro
 # del runner, toca el menú «⋯», elige «Elegir reacción» y publica en el commit
 # qué se ve (posiciones, capas, quién tapa a quién) junto con una captura
-# reducida. Se dispara al tocar estos archivos (revision: 1). Es de quitar
+# reducida. Se dispara al tocar estos archivos (revision: 4). Es de quitar
 # cuando el problema esté resuelto.
 name: Ver el menú de reacciones
 

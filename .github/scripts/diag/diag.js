@@ -27,7 +27,13 @@
     }
     if (location.hash !== '#/feed') location.hash = '#/feed';
 
-    const post = await hasta(() => document.querySelector('.post'));
+    await hasta(() => document.querySelector('.post'));
+    // El caso que falla es el de abajo del todo: se baja la página y se usa la
+    // última publicación, cuya barra de acciones queda contra el borde.
+    window.scrollTo(0, document.body.scrollHeight);
+    await esperar(900);
+    const todos = document.querySelectorAll('.post');
+    const post = todos[todos.length - 1] || document.querySelector('.post');
     info.ruta = location.hash;
     info.hayFormularioDeEntrada = !!document.querySelector('input[type="password"]');
     info.raiz = (() => { const r = document.getElementById('root'); return r ? r.children.length + ' hijos: ' + Array.from(r.children).slice(0, 3).map(nombre).join(', ') : 'sin #root'; })();
@@ -67,6 +73,8 @@
           const cx = Math.round(r.left + r.width / 2);
           const cy = Math.round(r.top + r.height / 2);
           info.arribaEnElCentroDelMenu = nombre(document.elementFromPoint(cx, cy));
+          info.elMenuRecibeElToque = document.elementFromPoint(cx, cy) === menu
+            || (document.elementFromPoint(cx, cy) && menu.contains(document.elementFromPoint(cx, cy)));
           info.arribaEnBotonEmoji = (() => {
             const b = menu.querySelector('button');
             if (!b) return null;
@@ -99,7 +107,7 @@
 
   const pre = document.createElement('pre');
   pre.id = 'diag';
-  pre.style.cssText = 'position:fixed;left:0;top:0;z-index:99999';
+  pre.style.cssText = 'position:fixed;left:-99999px;top:0;z-index:-1';
   pre.textContent = 'DIAG-INICIO' + JSON.stringify(info, null, 1) + 'DIAG-FIN';
   document.body.appendChild(pre);
 })();
