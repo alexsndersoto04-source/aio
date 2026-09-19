@@ -15,6 +15,7 @@ name: Moon — web a Cloudflare
 on:
   push:
     branches: ["arena/01a0b287-aio"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -70,6 +71,7 @@ jobs:
           html=$(curl -s -D /tmp/hdr.txt -H 'Cache-Control: no-cache' "https://moon.alexsndersoto04.workers.dev/?nocache=$nonce")
           cache=$(grep -i '^cf-cache-status' /tmp/hdr.txt | tr -d '\r' || echo "cf-cache-status: (sin cabecera)")
           salud_api=$(curl -s --max-time 30 "https://moon-dal0.onrender.com/api/health" || echo "(no se pudo consultar la API)")
+          redir=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-dal0.onrender.com/" || echo "(no se pudo consultar)")
           {
             echo "### Verificación en vivo"
             echo
@@ -85,6 +87,10 @@ jobs:
             echo "**API en Render — respuesta de /api/health en vivo:**"
             echo '```'
             echo "$salud_api"
+            echo '```'
+            echo "**Redirección de la web vieja (esperado: 301 a Cloudflare):**"
+            echo '```'
+            echo "$redir"
             echo '```'
           } > /tmp/vivo.md
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/vivo.md --jq '.html_url'
