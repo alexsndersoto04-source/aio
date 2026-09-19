@@ -1,15 +1,25 @@
-# Diagnóstico temporal: abre la web en un navegador de verdad (Chrome sin
-# ventana) dentro del runner, toca el menú «⋯», elige «Elegir reacción» y
-# escribe en el registro qué se ve (posiciones, capas y quién tapa a quién).
-# Deja una captura como archivo adjunto del run. Es de quitar cuando el
-# problema esté resuelto.
+# Diagnóstico temporal del menú de reacciones.
+# ============================================================
+# Abre la web compilada en un navegador de verdad (Chrome sin ventana) dentro
+# del runner, toca el menú «⋯», elige «Elegir reacción» y publica en el commit
+# qué se ve (posiciones, capas, quién tapa a quién) junto con una captura
+# reducida. Se dispara al tocar estos archivos (revision: 1). Es de quitar
+# cuando el problema esté resuelto.
 name: Ver el menú de reacciones
 
 on:
-  workflow_dispatch:
+  push:
+    branches: ["arena/01a0b287-aio"]
+    paths:
+      - ".github/scripts/diag/**"
+      - ".github/workflows/ver-menu.yml"
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: ver-menu
+  cancel-in-progress: false
 
 jobs:
   ver:
@@ -28,11 +38,17 @@ jobs:
           npm ci
           npm run build
 
-      - name: Entrar con la cuenta de pruebas y dejar el token que usará la sonda
+      - name: Despertar la API y entrar con la cuenta de pruebas
         env:
           API: https://moon-dal0.onrender.com
         run: |
           set -e
+          for i in $(seq 1 20); do
+            salud=$(curl -s --max-time 30 "$API/api/health" || true)
+            echo "$salud" | grep -q '"status":"ok"' && break
+            echo "esperando a la API… ($i)"; sleep 8
+          done
+          echo "salud: ${salud:0:120}"
           curl -s --max-time 40 -X POST "$API/api/auth/register" -H 'Content-Type: application/json' \
             -d '{"username":"pruebafotos","email":"pruebafotos@prueba.test","password":"clave-de-moon-2026"}' > /tmp/reg.json || true
           token=$(sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p' /tmp/reg.json)
@@ -50,32 +66,25 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/.github/scripts/diag/servidor.cjs" "$GITHUB_WORKSPACE/frontend/dist" 4173 > /tmp/servidor.log 2>&1 &
           sleep 2
-          curl -s -o /dev/null -w 'sirviendo: %{http_code}\n' http://127.0.0.1:4173/
+          curl -s -o /dev/null -w 'web: %{http_code}\n' http://127.0.0.1:4173/
           curl -s -o /dev/null -w 'api por el puente: %{http_code}\n' http://127.0.0.1:4173/api/health
 
       - name: Abrir con Chrome sin ventana (teléfono y computadora)
         run: |
           set +e
-          chrome() { google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 "$@"; }
-          chrome --window-size=390,844 --virtual-time-budget=45000 \
-            --screenshot=/tmp/menu-telefono.png --dump-dom "http://127.0.0.1:4173/?v=1" > /tmp/dom-telefono.html 2>/tmp/chrome-telefono.log
-          chrome --window-size=1280,900 --virtual-time-budget=45000 \
-            --screenshot=/tmp/menu-computadora.png --dump-dom "http://127.0.0.1:4173/?v=2" > /tmp/dom-computadora.html 2>/tmp/chrome-computadora.log
-          echo "=== TELÉFONO 390x844 ==="
-          sed -n '/DIAG-INICIO/,/DIAG-FIN/p' /tmp/dom-telefono.html || tail -c 500 /tmp/chrome-telefono.log
-          echo
-          echo "=== COMPUTADORA 1280x900 ==="
-          sed -n '/DIAG-INICIO/,/DIAG-FIN/p' /tmp/dom-computadora.html || tail -c 500 /tmp/chrome-computadora.log
-          ls -la /tmp/menu-*.png 2>/dev/null
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+            --window-size=390,844 --virtual-time-budget=60000 \
+            --screenshot=/tmp/menu-telefono.png --dump-dom "http://127.0.0.1:4173/?v=telefono" \
+            > /tmp/dom-telefono.html 2>/tmp/chrome-telefono.log
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+            --window-size=1280,900 --virtual-time-budget=60000 \
+            --screenshot=/tmp/menu-computadora.png --dump-dom "http://127.0.0.1:4173/?v=computadora" \
+            > /tmp/dom-computadora.html 2>/tmp/chrome-computadora.log
+          ls -la /tmp/menu-*.png /tmp/dom-*.html 2>/dev/null
 
-      - name: Guardar las capturas
+      - name: Publicar el resultado en el commit
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: capturas-menu
-          path: |
-            /tmp/menu-telefono.png
-            /tmp/menu-computadora.png
-            /tmp/dom-telefono.html
-            /tmp/dom-computadora.html
-          if-no-files-found: warn
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/publicar.py" "$GITHUB_SHA"
