@@ -56,6 +56,23 @@ async function llamarAlApi(metodo, ruta, token) {
   return r.json().catch(() => null);
 }
 
+async function limpiarRastros(etiqueta) {
+  // El servidor no deja borrar lo del otro: cada fila se borra con su token.
+  const hilo = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, A.access_token);
+  const mensajes = (hilo && (hilo.messages || hilo.items)) || [];
+  const rastros = mensajes.filter((m) => m.kind && m.status !== 'deleted');
+  let borrados = 0;
+  for (const m of rastros) {
+    const tok = Number(m.sender_id) === Number(A.user.id) ? A.access_token : B.access_token;
+    const r = await fetch(`${API}/api/messages/${m.id}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } });
+    if (r.ok) borrados += 1;
+  }
+  anota(`limpieza ${etiqueta}`, { rastros: rastros.length, borrados });
+  const despues = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, A.access_token);
+  const quedan = (((despues && (despues.messages || despues.items)) || []).filter((m) => m.kind && m.status !== 'deleted')).length;
+  return quedan;
+}
+
 async function abrirNavegador(sesion, etiqueta) {
   const contexto = await navegador.newContext({
     viewport: { width: 390, height: 844 },
@@ -108,6 +125,11 @@ try {
   const b = await abrirNavegador(B, 'B');
   anota('chats abiertos', { a: !!a.pagina, b: !!b.pagina });
 
+  // Nada de pruebas anteriores a la vista: si el hilo trae filas de llamadas
+  // viejas, lo que se mire despues no probaria nada.
+  const restosIniciales = await limpiarRastros('antes de empezar');
+  if (restosIniciales) throw new Error(`el hilo no quedo limpio: quedan ${restosIniciales} filas`);
+
   // ---------- Llamada de voz ----------
   await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
   await a.pagina.waitForSelector('.llamada[data-llamada="saliendo"]', { timeout: 10000 });
@@ -159,9 +181,10 @@ try {
   const filasB = await b.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
   const filasA = await a.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
   anota('anotada en el chat', { enA: filasA, enB: filasB });
-  const filaLlamada = (filas) => filas.some((t) => t.includes('Llamada de voz'));
-  if (!filaLlamada(filasA) || !filaLlamada(filasB)) {
-    throw new Error(`la fila de la llamada no salio en los dos lados: A=${JSON.stringify(filasA)} B=${JSON.stringify(filasB)}`);
+  const cuantas = (filas, texto) => filas.filter((t) => t.includes(texto)).length;
+  if (filasA.length !== 1 || filasB.length !== 1
+      || cuantas(filasA, 'Llamada de voz') !== 1 || cuantas(filasB, 'Llamada de voz') !== 1) {
+    throw new Error(`la fila de la llamada salio mal: A=${JSON.stringify(filasA)} B=${JSON.stringify(filasB)}`);
   }
   await b.pagina.screenshot({ path: path.join(FOTOS, '3-anotada-en-el-chat.png') });
 
@@ -211,9 +234,11 @@ try {
   const videoA = await a.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
   const videoB = await b.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
   anota('videollamada anotada', { enA: videoA, enB: videoB });
-  const filaVideo = (filas) => filas.some((t) => t.includes('Videollamada'));
-  if (!filaVideo(videoA) || !filaVideo(videoB)) {
-    throw new Error(`la fila de la videollamada no salio en los dos lados: A=${JSON.stringify(videoA)} B=${JSON.stringify(videoB)}`);
+  const cuantasV = (filas, texto) => filas.filter((t) => t.includes(texto)).length;
+  if (videoA.length !== 2 || videoB.length !== 2
+      || cuantasV(videoA, 'Videollamada') !== 1 || cuantasV(videoB, 'Videollamada') !== 1
+      || cuantasV(videoA, 'Llamada de voz') !== 1 || cuantasV(videoB, 'Llamada de voz') !== 1) {
+    throw new Error(`las filas de las llamadas salieron mal: A=${JSON.stringify(videoA)} B=${JSON.stringify(videoB)}`);
   }
 
   informe.ok = true;
@@ -226,20 +251,11 @@ try {
   // Limpieza: las llamadas de prueba se borran del hilo (quedan solo en el
   // informe) y las cuentas se dejan ocultas de nuevo.
   try {
-    const hilo = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, A.access_token);
-    const mensajes = (hilo && (hilo.messages || hilo.items)) || [];
-    const rastros = mensajes.filter((m) => m.kind);
-    anota('rastros de llamadas en el hilo', rastros.map((m) => ({ id: m.id, kind: m.kind, de: m.sender_id })));
-    let borrados = 0;
-    for (const m of rastros) {
-      // Cada quien borra lo suyo (el servidor no deja tocar lo del otro).
-      const tok = Number(m.sender_id) === Number(A.user.id) ? A.access_token : B.access_token;
-      const r = await fetch(`${API}/api/messages/${m.id}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } });
-      if (r.ok) borrados += 1;
+    const quedan = await limpiarRastros('al terminar');
+    if (quedan > 0) {
+      informe.ok = false;
+      informe.error = `quedaron ${quedan} filas de llamada a la vista en el hilo de prueba`;
     }
-    const despues = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, A.access_token);
-    const restos = (((despues && (despues.messages || despues.items)) || []).filter((m) => m.kind)).length;
-    anota('limpieza', { rastros: rastros.length, borrados, quedan: restos });
   } catch (e) {
     anota('limpieza con problema', { detalle: String(e).slice(0, 160) });
   }
