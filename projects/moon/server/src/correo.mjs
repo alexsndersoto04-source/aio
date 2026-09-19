@@ -84,6 +84,31 @@ async function enviarConResend(destino, asunto, cuerpoTexto, adjunto) {
  * Envía un correo. `adjunto` es opcional: { nombre, contenido (Buffer) }.
  * Nunca lanza: devuelve { enviado: true|false }.
  */
+/** Envía por EmailJS (gratis 200/mes; usa tu Gmail por OAuth, sin telefono ni tarjeta). */
+async function enviarConEmailjs(destino, asunto, cuerpoTexto) {
+  const service = process.env.EMAILJS_SERVICE || '';
+  const template = process.env.EMAILJS_TEMPLATE || '';
+  const user = process.env.EMAILJS_USER || '';
+  if (!service || !template || !user) {
+    throw new Error('EmailJS requiere EMAILJS_SERVICE, EMAILJS_TEMPLATE y EMAILJS_USER');
+  }
+  const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      service_id: service,
+      template_id: template,
+      user_id: user,
+      template_params: { to_email: destino, subject: asunto, message: cuerpoTexto, reply_to: destino },
+    }),
+  });
+  if (!res.ok) {
+    const detalle = await res.text().catch(() => '');
+    throw new Error(`EmailJS respondió ${res.status}: ${detalle.slice(0, 200)}`);
+  }
+  return true;
+}
+
 /** Envía por la API de Elastic Email (gratis: 100/día; remitente verificado por correo). */
 async function enviarConElastic(destino, asunto, cuerpoTexto) {
   const desde = process.env.MAIL_FROM || process.env.ELASTIC_FROM || '';
@@ -130,6 +155,14 @@ async function enviarConBrevo(destino, asunto, cuerpoTexto) {
 
 /** Intenta enviar por el proveedor configurado. Nunca lanza. */
 async function intentarEnvio(destino, asunto, cuerpoTexto, adjunto) {
+  if (process.env.EMAILJS_USER && !adjunto) {
+    try {
+      await enviarConEmailjs(destino, asunto, cuerpoTexto);
+      return { enviado: true, via: 'emailjs' };
+    } catch (e) {
+      console.error('[correo] EmailJS falló:', e.message);
+    }
+  }
   if (process.env.ELASTIC_API_KEY && !adjunto) {
     try {
       await enviarConElastic(destino, asunto, cuerpoTexto);
