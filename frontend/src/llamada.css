@@ -1,0 +1,287 @@
+/* ============================================================
+   Moon — Llamadas de voz y video (dentro del chat)
+   ============================================================
+   Pantalla completa con el cielo de Moon: el avatar de la otra
+   persona con ondas mientras timbra, el video a pantalla completa
+   cuando ya están hablando y los controles en una pastilla de
+   vidrio. Nada de cajas: filos finos y el acento aurora.
+   ============================================================ */
+
+.llamada {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(120% 80% at 50% 0%, #1b1740 0%, #0e0c22 55%, #08070f 100%);
+  color: #fff;
+  overflow: hidden;
+  animation: entrarLlamada 220ms ease-out;
+}
+@keyframes entrarLlamada { from { opacity: 0; transform: scale(1.02); } to { opacity: 1; transform: none; } }
+
+.cielo-llamada {
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(38% 30% at 22% 24%, rgba(99, 102, 241, 0.55), transparent 70%),
+    radial-gradient(34% 28% at 78% 30%, rgba(168, 85, 247, 0.5), transparent 70%),
+    radial-gradient(40% 32% at 50% 82%, rgba(34, 211, 238, 0.32), transparent 72%);
+  filter: blur(6px);
+  animation: moverCielo 18s ease-in-out infinite alternate;
+}
+@keyframes moverCielo {
+  0% { transform: translate3d(-2%, -1%, 0) scale(1); }
+  100% { transform: translate3d(2%, 2%, 0) scale(1.06); }
+}
+.llamada-velo {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(6, 6, 16, 0.35), rgba(6, 6, 16, 0.1) 40%, rgba(6, 6, 16, 0.75));
+  pointer-events: none;
+}
+
+/* ---------- Mientras timbra (entrante y saliente) ---------- */
+.llamada-quien {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+.llamada-avatar { position: relative; display: inline-flex; }
+.llamada-avatar .avatar { width: 132px; height: 132px; }
+.llamada-avatar.con-ondas .onda {
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  animation: ondaLlamada 2.4s ease-out infinite;
+}
+.llamada-avatar.con-ondas .onda.dos { animation-delay: 1.2s; }
+@keyframes ondaLlamada {
+  0% { transform: scale(0.86); opacity: 0.7; }
+  70% { opacity: 0.06; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+.llamada-avatar.halo { filter: drop-shadow(0 0 34px rgba(129, 120, 255, 0.75)); }
+.llamada-nombre {
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 10px;
+}
+.llamada-estado { color: rgba(255, 255, 255, 0.78); font-size: 14.5px; }
+.llamada-nota {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-top: 2px;
+}
+.llamada-reloj {
+  font-variant-numeric: tabular-nums;
+  font-size: 19px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.95);
+  letter-spacing: 0.06em;
+}
+
+/* ---------- Botones de aceptar y rechazar ---------- */
+.llamada-botones {
+  display: flex;
+  gap: 30px;
+  margin-top: 34px;
+}
+.boton-llamada {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  background: none;
+  border: 0;
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.boton-llamada svg {
+  width: 30px;
+  height: 30px;
+  padding: 17px;
+  border-radius: 50%;
+  box-sizing: content-box;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.boton-llamada:active svg { transform: scale(0.94); }
+.boton-llamada.rojo svg {
+  background: linear-gradient(160deg, #ff5d6c, #d92f45);
+  box-shadow: 0 18px 40px -16px rgba(217, 47, 69, 0.85);
+}
+.boton-llamada.verde svg {
+  background: linear-gradient(160deg, #38e07b, #12a250);
+  box-shadow: 0 18px 40px -14px rgba(18, 162, 80, 0.85);
+}
+.boton-llamada.latir svg { animation: latirLlamada 1.5s ease-in-out infinite; }
+@keyframes latirLlamada {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.07); }
+}
+
+/* ---------- Llamada en curso: controles ---------- */
+.llamada-controles {
+  position: absolute;
+  left: 50%;
+  bottom: calc(30px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(18, 18, 32, 0.5);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 22px 50px -22px rgba(0, 0, 0, 0.9);
+}
+.control {
+  width: 56px;
+  height: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease;
+}
+.control svg { width: 24px; height: 24px; }
+.control:hover { background: rgba(255, 255, 255, 0.2); }
+.control:active { transform: scale(0.94); }
+.control.apagado { background: rgba(255, 255, 255, 0.92); color: #14142b; }
+.control.colgar {
+  width: 64px;
+  height: 64px;
+  background: linear-gradient(160deg, #ff5d6c, #d92f45);
+  border-color: transparent;
+  box-shadow: 0 18px 40px -16px rgba(217, 47, 69, 0.9);
+}
+.control.colgar svg { width: 27px; height: 27px; }
+
+/* ---------- Videollamada: video a pantalla completa ---------- */
+.video-remoto {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #0a0a15;
+}
+.video-local {
+  position: absolute;
+  right: 14px;
+  top: calc(14px + env(safe-area-inset-top));
+  z-index: 3;
+  width: 30vw;
+  max-width: 168px;
+  aspect-ratio: 3 / 4;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.95);
+  background: #12121f;
+  transition: transform 180ms ease;
+}
+.video-local video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+.video-local.apagada { transform: scale(0.94); }
+.video-local-tapa {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.72);
+  text-align: center;
+  padding: 8px;
+}
+.llamada-cabecera {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  left: 16px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 15px;
+  border-radius: 16px;
+  background: rgba(18, 18, 32, 0.46);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.llamada-cabecera b { font-size: 15px; }
+.llamada-aviso { font-size: 12px; color: rgba(255, 255, 255, 0.75); }
+.llamada-error {
+  position: absolute;
+  bottom: calc(108px + env(safe-area-inset-bottom));
+  z-index: 4;
+  font-size: 13px;
+  color: #ffd9dd;
+  background: rgba(217, 47, 69, 0.28);
+  padding: 6px 14px;
+  border-radius: 999px;
+}
+
+/* ---------- Botones de llamar en la cabecera del chat ---------- */
+.chat-thread .head .boton-llamar {
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.1);
+}
+.chat-thread .head .boton-llamar:hover { background: rgba(99, 102, 241, 0.18); }
+.chat-thread .head .boton-llamar:disabled { opacity: 0.4; }
+
+/* ---------- La llamada anotada en el hilo ---------- */
+.fila-llamada {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: 14px;
+  background: rgba(99, 102, 241, 0.09);
+  border: 1px solid rgba(99, 102, 241, 0.16);
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.fila-llamada .icono-llamada {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--aurora-grad-suave);
+  color: var(--accent);
+}
+.fila-llamada .icono-llamada svg { width: 15px; height: 15px; }
+.fila-llamada .texto { display: inline-flex; align-items: baseline; gap: 7px; }
+.fila-llamada .texto b { font-weight: 620; }
+.fila-llamada .duracion { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.fila-llamada.perdida { background: rgba(217, 47, 69, 0.08); border-color: rgba(217, 47, 69, 0.18); }
+.fila-llamada.perdida .icono-llamada { background: rgba(217, 47, 69, 0.14); color: #d92f45; }
+
+/* En pantalla grande: más aire y el video propio más grande. */
+@media (min-width: 900px) {
+  .llamada-nombre { font-size: 32px; }
+  .llamada-avatar .avatar { width: 156px; height: 156px; }
+  .video-local { width: 15vw; max-width: 210px; }
+}

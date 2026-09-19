@@ -9,8 +9,28 @@ import { WebSocketServer } from 'ws';
 import { verificarJwt } from './auth.mjs';
 import { uno } from './db.mjs';
 import { empujarSiQuiere } from './empuje.mjs';
+import { demasiadoRapido } from './limites.mjs';
 
 const conexiones = new Map(); // userId -> Set(socket)
+
+// Llamadas en curso, por id: { de, para, tipo }. Sirve para avisar si alguien
+// se queda sin conexión y para no encimar dos llamadas a la misma persona.
+const llamadas = new Map();
+
+const TIPOS_LLAMADA = new Set(['call_start', 'call_accept', 'call_reject', 'call_end', 'call_signal']);
+
+// ¿Estas dos personas tienen una conversación abierta? Solo entre ellas se
+// permite pasar sobres de llamada (nadie puede llamar a un desconocido).
+async function sonPareja(pool, uno_, otro) {
+  if (!Number.isInteger(Number(otro)) || Number(otro) <= 0) return false;
+  const fila = await uno(
+    pool,
+    `SELECT 1 FROM conversations
+      WHERE (user_a = $1 AND user_b = $2) OR (user_a = $2 AND user_b = $1)`,
+    [Number(uno_), Number(otro)]
+  );
+  return !!fila;
+}
 
 export function montarWs(servidorHttp, pool, secreto) {
   const wss = new WebSocketServer({ noServer: true });
@@ -46,6 +66,7 @@ export function montarWs(servidorHttp, pool, secreto) {
 
   wss.on('connection', (ws, req) => {
     const uid = Number(req._uid);
+    ws._pool = pool; // para las consultas de las llamadas
     if (!conexiones.has(uid)) conexiones.set(uid, new Set());
     conexiones.get(uid).add(ws);
     ws.enviar = (evento) => {
@@ -119,10 +140,25 @@ export function montarWs(servidorHttp, pool, secreto) {
         if (!conv) return;
         const otro = Number(conv.user_a) === uid ? Number(conv.user_b) : Number(conv.user_a);
         enviarA(otro, { type: 'typing', conversation_id: Number(msg.conversation_id), user_id: uid });
+        return;
+      }
+      // ---------- Llamadas de voz y video ----------
+      // El servidor no toca la voz ni la imagen: solo pasa los sobres entre los
+      // dos teléfonos (el aviso de llamada, aceptar, rechazar, colgar y los
+      // datos de conexión). La voz viaja directa entre ellos.
+      if (TIPOS_LLAMADA.has(msg.type)) {
+        await atenderLlamada(ws, uid, msg);
       }
     });
 
     ws.on('close', () => {
+      // Si esta persona tenía una llamada en curso o timbrando, la otra se
+      // entera al instante (se cerró la app, se cayó la conexión…).
+      for (const [id, datos] of llamadas) {
+        if (datos.de === uid) enviarA(datos.para, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
+        else if (datos.para === uid) enviarA(datos.de, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
+      }
+      llamadas.clear();
       const conjunto = conexiones.get(uid);
       if (!conjunto) return;
       conjunto.delete(ws);
@@ -137,6 +173,94 @@ export function montarWs(servidorHttp, pool, secreto) {
   });
 
   return wss;
+}
+
+// Atiende un sobre de llamada y lo pasa al otro teléfono.
+//   call_start  → al otro: call_ring (con quién llama) o call_sin_conexion
+//   call_accept → al otro: call_aceptada
+//   call_reject → al otro: call_rechazada
+//   call_end    → al otro: call_terminada
+//   call_signal → al otro: call_senal (los datos de conexión de WebRTC)
+async function atenderLlamada(ws, uid, msg) {
+  const otro = Number(msg.to);
+  const id = String(msg.call_id || '').slice(0, 60);
+  if (!id) return;
+  if (!(await sonPareja(ws._pool, uid, otro))) return;
+
+  if (msg.type === 'call_start') {
+    if (demasiadoRapido(`llamada:${uid}`, 8, 60_000)) {
+      ws.enviar({ type: 'call_rechazada', call_id: id, motivo: 'rapido' });
+      return;
+    }
+    const tipo = msg.tipo === 'video' ? 'video' : 'voz';
+    // ¿Ya hay una llamada con alguna de las dos partes? Se avisa y no se encima.
+    for (const [otraId, datos] of llamadas) {
+      if (datos.de === otro || datos.para === otro) {
+        ws.enviar({ type: 'call_rechazada', call_id: id, motivo: 'ocupado' });
+        return;
+      }
+      if (datos.de === uid || datos.para === uid) {
+        ws.enviar({ type: 'call_rechazada', call_id: id, motivo: 'tu_llamada' });
+        return;
+      }
+      void otraId;
+    }
+    const vivos = conexiones.get(otro);
+    if (!vivos || vivos.size === 0) {
+      ws.enviar({ type: 'call_sin_conexion', call_id: id });
+      return;
+    }
+    const quien = await uno(ws._pool, 'SELECT id, username, display_name, avatar_url FROM users WHERE id = $1', [uid]);
+    llamadas.set(id, { de: uid, para: otro, tipo });
+    enviarA(otro, {
+      type: 'call_ring',
+      call_id: id,
+      tipo,
+      conversation_id: Number(msg.conversation_id) || null,
+      de: {
+        id: Number(uid),
+        username: quien?.username || '',
+        display_name: quien?.display_name || quien?.username || '',
+        avatar_url: quien?.avatar_url || '',
+      },
+    });
+    return;
+  }
+
+  const datos = llamadas.get(id);
+  // Sobres sueltos de una llamada que ya no existe: se ignoran.
+  if (!datos) {
+    if (msg.type === 'call_end') enviarA(otro, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'tarde' });
+    return;
+  }
+  if (datos.de !== uid && datos.para !== uid) return;
+
+  if (msg.type === 'call_accept') {
+    // El que contesta pasa a ser el segundo; la llamada sigue viva.
+    enviarA(datos.de, { type: 'call_aceptada', call_id: id, de: uid });
+    return;
+  }
+  if (msg.type === 'call_reject') {
+    llamadas.delete(id);
+    enviarA(datos.de === uid ? datos.para : datos.de, {
+      type: 'call_rechazada', call_id: id, motivo: String(msg.motivo || 'rechazada').slice(0, 20),
+    });
+    return;
+  }
+  if (msg.type === 'call_end') {
+    llamadas.delete(id);
+    const segundos = Math.min(Math.max(Number(msg.segundos || 0), 0), 86400);
+    enviarA(datos.de === uid ? datos.para : datos.de, {
+      type: 'call_terminada', call_id: id, segundos, motivo: 'colgo',
+    });
+    return;
+  }
+  if (msg.type === 'call_signal') {
+    // Datos de conexión: pasan tal cual, sin guardarse en ningún sitio.
+    enviarA(datos.de === uid ? datos.para : datos.de, {
+      type: 'call_senal', call_id: id, de: uid, sobre: msg.sobre || null,
+    });
+  }
 }
 
 export function enviarA(uid, evento) {

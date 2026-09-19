@@ -15,16 +15,49 @@ import Avatar, { VerifiedBadge } from '../components/Avatar.jsx';
 import { timeAgo, horaMensaje } from '../utils.js';
 import { realtime } from '../realtime.js';
 import { ListSkeleton } from '../components/Skeleton.jsx';
+import { useLlamadas } from '../llamada.jsx';
 import {
   IconSend, IconSearch, IconChevronLeft, IconTrash, IconMail, IconCheck, IconAt,
+  IconPhone, IconVideoLlamada,
   IconMore, IconBell, IconLayers, IconEye, IconComment, IconExplore, IconUsers,
   IconResponder, IconX, IconPin, IconEdit, IconLink,
 } from '../components/Icons.jsx';
 
 const REACCIONES = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
+// Una llamada dentro del hilo se pinta como una fila propia (no como burbuja):
+// icono, qué fue y cuánto duró. Lo guarda el servidor con «kind».
+const esLlamada = (m) => typeof m?.kind === 'string' && m.kind.startsWith('llamada_');
+
+function relojCorto(ms) {
+  const total = Math.max(0, Math.floor((ms || 0) / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function FilaLlamada({ mensaje }) {
+  const video = mensaje.kind === 'llamada_video';
+  const perdida = mensaje.kind === 'llamada_perdida';
+  const titulo = perdida ? 'Llamada perdida' : video ? 'Videollamada' : 'Llamada de voz';
+  return (
+    <span className={`fila-llamada${perdida ? ' perdida' : ''}`}>
+      <span className="icono-llamada" aria-hidden="true">
+        {video ? <IconVideoLlamada /> : <IconPhone />}
+      </span>
+      <span className="texto">
+        <b>{titulo}</b>
+        {!perdida && mensaje.duracion_ms > 0 ? <span className="duracion">{relojCorto(mensaje.duracion_ms)}</span> : null}
+        {perdida ? <span className="duracion">No contestada</span> : null}
+      </span>
+    </span>
+  );
+}
+
 export default function MessagesView({ conversationId }) {
   const { user } = useAuth();
+  // Llamadas de voz y video del chat (ver llamada.jsx).
+  const { llamar, estado: estadoLlamada } = useLlamadas();
   const [convs, setConvs] = useState(null);
   const [convId, setConvId] = useState(conversationId ? Number(conversationId) : null);
   // Quién está conectado ahora mismo (presencia real del servidor).
@@ -516,6 +549,26 @@ export default function MessagesView({ conversationId }) {
               <span className="spacer" />
               <button
                 type="button"
+                className="icon-btn boton-llamar"
+                onClick={() => llamar(thread.partner, 'voz', convId)}
+                disabled={estadoLlamada !== 'inactiva'}
+                aria-label={`Llamar por voz a ${thread.partner?.display_name || thread.partner?.username}`}
+                title="Llamada de voz"
+              >
+                <IconPhone />
+              </button>
+              <button
+                type="button"
+                className="icon-btn boton-llamar"
+                onClick={() => llamar(thread.partner, 'video', convId)}
+                disabled={estadoLlamada !== 'inactiva'}
+                aria-label={`Videollamada con ${thread.partner?.display_name || thread.partner?.username}`}
+                title="Videollamada"
+              >
+                <IconVideoLlamada />
+              </button>
+              <button
+                type="button"
                 className="icon-btn"
                 onClick={() => { setBuscarEnHilo((v) => !v); setQHilo(''); }}
                 aria-label={buscarEnHilo ? 'Cerrar la búsqueda' : 'Buscar en la conversación'}
@@ -680,7 +733,10 @@ export default function MessagesView({ conversationId }) {
                           />
                         ) : null}
                         {m.image_url ? <img className="img-msg" src={imgUrl(m.image_url)} alt="" /> : null}
-                        {m.content && !(m.post && /^📎?\s*Publicación compartida$/.test(m.content.trim())) ? (
+                        {esLlamada(m) ? (
+                          <FilaLlamada mensaje={m} />
+                        ) : null}
+                        {!esLlamada(m) && m.content && !(m.post && /^📎?\s*Publicación compartida$/.test(m.content.trim())) ? (
                           <span className="texto-msg">{m.content}</span>
                         ) : null}
                       </>

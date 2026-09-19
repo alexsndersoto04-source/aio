@@ -153,5 +153,10 @@
     "version": 31,
     "name": "perfil_completo",
     "sql": "CREATE TABLE IF NOT EXISTS follow_requests ( id BIGSERIAL PRIMARY KEY, solicitante_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, destino_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, estado TEXT NOT NULL DEFAULT 'pendiente', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), resolved_at TIMESTAMPTZ); CREATE UNIQUE INDEX IF NOT EXISTS ux_follow_request_pendiente ON follow_requests (solicitante_id, destino_id) WHERE estado = 'pendiente'; CREATE TABLE IF NOT EXISTS hashtag_follows ( user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, tag)); CREATE TABLE IF NOT EXISTS search_history ( id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, termino TEXT NOT NULL, tipo TEXT NOT NULL DEFAULT 'users', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); CREATE INDEX IF NOT EXISTS ix_search_history_usuario ON search_history (user_id, created_at DESC); CREATE TABLE IF NOT EXISTS user_settings ( user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, idioma TEXT NOT NULL DEFAULT 'es', tema_auto BOOLEAN NOT NULL DEFAULT FALSE, tema_desde TEXT NOT NULL DEFAULT '20:00', tema_hasta TEXT NOT NULL DEFAULT '07:00', ahorro_datos BOOLEAN NOT NULL DEFAULT FALSE, avisos_tipos JSONB NOT NULL DEFAULT '{}'::jsonb, pin_hash TEXT NOT NULL DEFAULT '', bloqueo_activo BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+  },
+  {
+    "version": 32,
+    "name": "llamadas_en_el_chat",
+    "sql": "ALTER TABLE messages ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT ''; CREATE INDEX IF NOT EXISTS ix_messages_llamadas ON messages (conversation_id, kind) WHERE kind <> ''"
   }
 ]

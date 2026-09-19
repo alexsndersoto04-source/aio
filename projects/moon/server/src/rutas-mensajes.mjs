@@ -12,7 +12,7 @@ import { demasiadoRapido } from './limites.mjs';
 
 // Columnas que traen, además del mensaje, el mensaje al que responde.
 export const COLUMNAS_CON_RESPUESTA = `m.id, m.conversation_id, m.sender_id, m.content, m.image_url,
-  m.audio_url, m.duracion_ms, m.status, m.reaction, m.read_at, m.created_at::text AS created_at,
+  m.audio_url, m.duracion_ms, m.status, m.reaction, m.read_at, m.created_at::text AS created_at, m.kind,
   m.edited_at::text AS edited_at, m.post_id, m.reply_to_id,
   r.content AS cita_texto, r.sender_id AS cita_de, r.status AS cita_estado,
   ru.display_name AS cita_nombre, ru.username AS cita_usuario,
@@ -29,6 +29,8 @@ function mensajePublico(m) {
     image_url: m.image_url || '',
     audio_url: m.status === 'deleted' ? '' : (m.audio_url || ''),
     duracion_ms: Number(m.duracion_ms || 0),
+    // «kind» distingue una llamada (voz o video) de un mensaje normal.
+    kind: m.kind || '',
     status: m.status,
     reaction: m.reaction || null,
     read_at: m.read_at ? String(m.read_at) : null,
@@ -54,6 +56,34 @@ function mensajePublico(m) {
       }
       : null,
   };
+}
+
+// ---------- Llamadas: la dirección del «puente» ----------
+// El servidor solo presenta a los dos teléfonos; la voz viaja entre ellos.
+// «STUN» es la guía de direcciones (gratis, de Google). «TURN» es el puente
+// que repite la voz cuando la operadora no deja que los dos teléfonos se vean:
+// si algún día se pone un puente propio, basta con rellenar TURN_URLS,
+// TURN_USUARIO y TURN_CLAVE en el panel del servidor, sin tocar el código.
+function servidoresDeConexion() {
+  const lista = [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  ];
+  const urls = String(process.env.TURN_URLS || '').split(',').map((u) => u.trim()).filter(Boolean);
+  const usuario = String(process.env.TURN_USUARIO || '').trim();
+  const clave = String(process.env.TURN_CLAVE || '').trim();
+  if (urls.length > 0 && usuario) {
+    lista.push({ urls, username: usuario, credential: clave });
+  } else {
+    // Puente público de siempre: funciona en port 80 y 443 (atraviesa
+    // cortafuegos). Si algún día deja de responder, las llamadas siguen
+    // funcionando cuando los dos teléfonos se ven directo.
+    lista.push({
+      urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    });
+  }
+  return lista;
 }
 
 // Una conversación por pareja, siempre con user_a < user_b.
@@ -235,6 +265,12 @@ export function registrarRutasMensajes(router) {
     };
   });
 
+  // Direcciones de conexión para una llamada (lo consulta la app al abrir el chat).
+  router.get('/api/llamadas/config', async (c) => {
+    await c.exigir();
+    return { iceServers: servidoresDeConexion() };
+  });
+
   router.post('/api/messages/conversations/:id/messages', async (c) => {
     const yo = await c.exigir();
     if (demasiadoRapido(`msg:${yo.id}`, 30, 60_000)) {
@@ -248,7 +284,12 @@ export function registrarRutasMensajes(router) {
     const respondeA = Number(b.reply_to_id) > 0 ? Number(b.reply_to_id) : null;
     // Publicación compartida al chat (llega como tarjeta, no como enlace suelto).
     const publicacion = Number(b.post_id) > 0 ? Number(b.post_id) : null;
-    if (!contenido && !imagen && !audio && !publicacion) {
+    // Registro de una llamada en el chat: el texto lo pone el servidor, para
+    // que nadie pueda escribir cualquier cosa en su lugar.
+    const tiposLlamada = { llamada_voz: 'Llamada de voz', llamada_video: 'Videollamada', llamada_perdida: 'Llamada perdida' };
+    const clase = Object.prototype.hasOwnProperty.call(tiposLlamada, b.kind) ? String(b.kind) : '';
+    const esLlamada = !!clase;
+    if (!contenido && !imagen && !audio && !publicacion && !esLlamada) {
       throw new ApiErr('Escribe un mensaje o manda una nota de voz', 400);
     }
 
@@ -282,11 +323,14 @@ export function registrarRutasMensajes(router) {
 
     const creado = await uno(
       c.pool,
-      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms, reply_to_id, post_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [conv.id, yo.id, contenido, imagen, audio, audio ? duracion : 0, respondeA, publicacion]
+      `INSERT INTO messages (conversation_id, sender_id, content, image_url, audio_url, duracion_ms, reply_to_id, post_id, kind)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [conv.id, yo.id, esLlamada ? tiposLlamada[clase] : contenido, imagen, audio,
+        audio || esLlamada ? duracion : 0, respondeA, publicacion, clase]
     );
-    const resumen = contenido || (publicacion ? '📎 Publicación compartida' : audio ? '🎤 Nota de voz' : '📷 Imagen');
+    const resumen = esLlamada
+      ? `${clase === 'llamada_video' ? '📹' : '📞'} ${tiposLlamada[clase]}`
+      : (contenido || (publicacion ? '📎 Publicación compartida' : audio ? '🎤 Nota de voz' : '📷 Imagen'));
     await c.pool.query(
       'UPDATE conversations SET last_message = $1, last_sender_id = $2, last_message_at = NOW() WHERE id = $3',
       [resumen.slice(0, 200), yo.id, conv.id]

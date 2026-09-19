@@ -1,0 +1,84 @@
+# Verificación con un navegador de verdad (revision: 6)
+# ============================================================
+# Compila la web, la sirve junto a la API y la abre con dos navegadores que se
+# llaman entre ellos (micrófono y cámara simulados). Sirve para comprobar las
+# llamadas de voz y video y para dejar capturas, sin tocar el sitio en vivo.
+#
+# Se dispara al tocar estos archivos. No deja nada visible: usa dos cuentas de
+# prueba ocultas y borra sus llamadas al terminar.
+name: Ver la web con un navegador
+
+on:
+  push:
+    branches: ["arena/01a0b287-aio"]
+    paths:
+      - ".github/scripts/diag/**"
+      - ".github/workflows/ver-web.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ver-web
+  cancel-in-progress: false
+
+jobs:
+  ver:
+    name: Mirar la web con un navegador
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compilar la web
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Instalar el navegador y sus herramientas
+        working-directory: frontend
+        run: |
+          npm install --no-save playwright@1.47.2
+          npx --yes playwright@1.47.2 install --with-deps chromium
+          python3 -m pip install --quiet --disable-pip-version-check pillow || echo "(sin pillow)"
+
+      - name: Despertar la API y preparar las dos cuentas de prueba
+        env:
+          API: https://moon-dal0.onrender.com
+        run: |
+          set -e
+          for i in $(seq 1 20); do
+            salud=$(curl -s --max-time 30 "$API/api/health" || true)
+            echo "$salud" | grep -q '"status":"ok"' && break
+            echo "esperando a la API… ($i)"; sleep 8
+          done
+          echo "salud: ${salud:0:120}"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/preparar-llamadas.py" "$API" /tmp/sesiones.json
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/anadir-api.py" /tmp/sesiones.json "$API"
+
+      - name: Servir la web compilada (y la API por el mismo puente)
+        run: |
+          node "$GITHUB_WORKSPACE/.github/scripts/diag/servidor.cjs" "$GITHUB_WORKSPACE/frontend/dist" 4173 > /tmp/servidor.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w 'web: %{http_code}\n' http://127.0.0.1:4173/
+          curl -s -o /dev/null -w 'api por el puente: %{http_code}\n' http://127.0.0.1:4173/api/health
+
+      - name: Llamadas de voz y video entre dos navegadores
+        working-directory: frontend
+        run: |
+          mkdir -p /tmp/fotos
+          node "$GITHUB_WORKSPACE/.github/scripts/diag/llamada.mjs" \
+            "http://127.0.0.1:4173" /tmp/sesiones.json /tmp/fotos /tmp/llamada.json || true
+          ls -la /tmp/fotos || true
+          cat /tmp/llamada.json 2>/dev/null | head -60 || echo "(sin informe)"
+
+      - name: Publicar el resultado en el commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/publicar-llamadas.py" "$GITHUB_SHA" /tmp/llamada.json /tmp/fotos

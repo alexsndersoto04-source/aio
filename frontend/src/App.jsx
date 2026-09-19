@@ -31,6 +31,7 @@ import GruposView from './views/GruposView.jsx';
 import GrupoView from './views/GrupoView.jsx';
 import BloqueoPin, { desbloqueado } from './components/BloqueoPin.jsx';
 import { realtime } from './realtime.js';
+import { LlamadasProvider } from './llamada.jsx';
 import { setUnread, bump, useUnread } from './unread.js';
 import { aplicarTema } from './theme.js';
 import { aplicar as aplicarPrefs, sonar, leer as leerPref } from './prefs.js';
@@ -277,9 +278,13 @@ function Gate() {
 export default function App() {
   return (
     <AuthProvider>
-      <BarraProgreso />
-      <Gate />
-      <Overlays />
+      {/* Las llamadas viven fuera de las pantallas: si te llaman mientras ves
+          el inicio o un grupo, suena igual y sale la pantalla de llamada. */}
+      <LlamadasProvider>
+        <BarraProgreso />
+        <Gate />
+        <Overlays />
+      </LlamadasProvider>
     </AuthProvider>
   );
 }

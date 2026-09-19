@@ -198,3 +198,23 @@ export const IconPlay = (p) => (
 export const IconPause = (p) => (
   <svg {...S(p)}><path d="M9 5v14M15 5v14" /></svg>
 );
+
+// --- Llamadas (voz y video) ---
+export const IconPhone = (p) => (
+  <svg {...S(p)}><path d="M6.5 3.5h3l1.5 4-2 1.5a12 12 0 0 0 5 5L15.5 12l4 1.5v3a2 2 0 0 1-2.2 2A15.5 15.5 0 0 1 4.5 5.7 2 2 0 0 1 6.5 3.5Z" /></svg>
+);
+export const IconPhoneOff = (p) => (
+  <svg {...S(p)}><path d="M6.5 3.5h3l1.5 4-2 1.5a12 12 0 0 0 5 5L15.5 12l4 1.5v3a2 2 0 0 1-2.2 2A15.5 15.5 0 0 1 4.5 5.7 2 2 0 0 1 6.5 3.5Z" /><path d="m3 21 18-18" /></svg>
+);
+export const IconMicOff = (p) => (
+  <svg {...S(p)}><path d="M9 5.5A3 3 0 0 1 15 6v5" /><path d="M15 15a3 3 0 0 1-5.3-.5" /><path d="M5.5 11a6.5 6.5 0 0 0 10.2 5.3" /><path d="M18.5 11a6.5 6.5 0 0 1-.6 2.7" /><path d="M12 17.5V21M8.5 21h7" /><path d="m3 3 18 18" /></svg>
+);
+export const IconCameraOff = (p) => (
+  <svg {...S(p)}><path d="M4 8.5h2.6l1.5-2.5h5.4" /><path d="M20 19.5H4A1.5 1.5 0 0 1 2.5 18v-8c0-.5.2-.9.5-1.2" /><path d="M9.5 8.5H18l3-1.5v9" /><path d="m3 3 18 18" /></svg>
+);
+export const IconVideoLlamada = (p) => (
+  <svg {...S(p)}><rect x="2.5" y="6" width="13" height="12" rx="3" /><path d="m15.5 10.5 4-2.5v8l-4-2.5" /></svg>
+);
+export const IconPantalla = (p) => (
+  <svg {...S(p)}><path d="M3 12a9 9 0 0 1 18 0" /><path d="M6.5 12a5.5 5.5 0 0 1 11 0" /><circle cx="12" cy="12" r="1.6" /></svg>
+);

@@ -4,6 +4,7 @@ import App from './App.jsx';
 import { instalarDemo, esDemo } from './demo.js';
 import './styles.css';
 import './aurora.css';
+import './llamada.css';
 import './tema.css';
 import { registrarServicio } from './push.js';
 
