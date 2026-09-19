@@ -167,7 +167,6 @@ export function registrarRutasAuth(router) {
     const mapa = {
       display_name: { max: 60, min: 1 },
       bio: { max: 300, min: 0 },
-      link: { max: 200, min: 0 },
       location: { max: 80, min: 0 },
       avatar_url: { max: 500, min: 0 },
       cover_url: { max: 500, min: 0 },

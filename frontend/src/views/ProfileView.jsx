@@ -314,13 +314,6 @@ export default function ProfileView({ tab }) {
           <div className="profile-meta">
             {me.location ? <span className="dato"><IconMapPin /> {me.location}</span> : null}
             {me.created_at ? <span className="dato"><IconCalendar /> Se unió en {miembroDesde(me.created_at)}</span> : null}
-            {me.link ? (
-              <span className="dato"><IconLink />
-                <a href={me.link.startsWith('http') ? me.link : `https://${me.link}`} target="_blank" rel="noopener noreferrer">
-                  {me.link.replace(/^https?:\/\//, '')}
-                </a>
-              </span>
-            ) : null}
           </div>
 
           <div className="profile-stats">

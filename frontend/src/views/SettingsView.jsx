@@ -193,7 +193,7 @@ export default function SettingsView({ tab }) {
   useEffect(() => {
     api.get('/api/auth/me').then((u) => {
       setMe(u);
-      setForm({ display_name: u.display_name || '', bio: u.bio || '', link: u.link || '', location: u.location || '' });
+      setForm({ display_name: u.display_name || '', bio: u.bio || '', location: u.location || '' });
       setIsPrivate(!!u.is_private);
       setDmPrivacy(u.dm_privacy || 'all');
       setQuienComenta(u.who_can_comment || 'all');
@@ -486,7 +486,7 @@ export default function SettingsView({ tab }) {
 
   if (!me) return <div className="spinner" />;
 
-  const perfilCompleto = [me.display_name, me.bio, me.location, me.avatar_url, me.cover_url, me.link].filter(Boolean).length;
+  const perfilCompleto = [me.display_name, me.bio, me.location, me.avatar_url, me.cover_url].filter(Boolean).length;
 
   return (
     <>
@@ -544,9 +544,6 @@ export default function SettingsView({ tab }) {
             <div className="field"><label><IconMapPin /> Ubicación</label>
               <input className="input" value={form.location || ''} maxLength={80} placeholder="Ciudad, país"
                 onChange={(e) => setForm({ ...form, location: e.target.value })} /></div>
-            <div className="field"><label><IconLink /> Sitio web</label>
-              <input className="input" value={form.link || ''} maxLength={300} placeholder="https://…"
-                onChange={(e) => setForm({ ...form, link: e.target.value })} /></div>
             <button className="btn btn-primary" disabled={saving}>{saving ? 'Guardando…' : 'Guardar cambios'}</button>
           </form>
         </div>

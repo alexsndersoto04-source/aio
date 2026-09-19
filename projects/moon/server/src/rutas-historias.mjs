@@ -10,9 +10,14 @@ import { auditar } from './db.mjs';
 import { usuariosConectados } from './ws.mjs';
 
 export function registrarRutasHistorias(router) {
+  // Las historias caducan a las 24 horas exactas y, al cumplirse, se borran
+  // de la base (no solo se ocultan): esta limpieza corre en cada lectura.
+  const purgarVencidas = (pool) => pool.query('DELETE FROM stories WHERE expires_at <= NOW()').catch(() => {});
+
   // ---------- Historias ----------
   router.get('/api/stories', async (c) => {
     const yo = await c.exigir();
+    purgarVencidas(c.pool);
     // Se ven las historias propias y las de a quienes sigo.
     const grupos = await filas(
       c.pool,
@@ -47,6 +52,7 @@ export function registrarRutasHistorias(router) {
 
   router.get('/api/stories/:userId', async (c) => {
     const yo = await c.exigir();
+    purgarVencidas(c.pool);
     const objetivo = Number(c.params.userId);
     const lista = await filas(
       c.pool,
@@ -85,11 +91,13 @@ export function registrarRutasHistorias(router) {
     const pie = typeof b.caption === 'string' ? b.caption.slice(0, 200) : '';
     const creada = await uno(
       c.pool,
-      'INSERT INTO stories (user_id, image_url, caption) VALUES ($1, $2, $3) RETURNING id, created_at::text AS created_at',
+      `INSERT INTO stories (user_id, image_url, caption, expires_at)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours')
+       RETURNING id, created_at::text AS created_at, expires_at::text AS expires_at`,
       [yo.id, imagen, pie]
     );
     await auditar(c.pool, Number(yo.id), 'historia_creada', `#${creada.id}`, c.ip);
-    return { id: Number(creada.id), image_url: imagen, caption: pie, views_count: 0, created_at: creada.created_at, vista: false };
+    return { id: Number(creada.id), image_url: imagen, caption: pie, views_count: 0, created_at: creada.created_at, expires_at: creada.expires_at, vista: false };
   });
 
   router.post('/api/stories/:id/view', async (c) => {
