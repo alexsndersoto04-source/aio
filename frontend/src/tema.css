@@ -324,3 +324,77 @@ body, .marco { background: var(--bg); }
     border-radius: 0 !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; box-shadow: none !important;
   }
 }
+
+/* ============================================================
+   GRUPOS · Estructura por bloques independientes (estética)
+   ============================================================
+   Cada parte del grupo es su propia tarjeta, separada y con aire,
+   sobre un fondo suave para que se aprecien por partes. */
+
+/* Fondo suave solo en la página del grupo: las tarjetas blancas destacan */
+.main:has(.cuerpo-grupo) { background: var(--surface-2) !important; }
+
+/* Portada = tarjeta independiente */
+.portada-grupo {
+  margin: 12px 12px 0 !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 18px !important;
+  box-shadow: var(--shadow-1) !important;
+  overflow: hidden !important;
+}
+.cubierta-grupo { height: 120px !important; }
+.datos-grupo { padding: 16px !important; }
+
+/* Pestañas = control segmentado propio, fijo */
+.pestanas-grupo {
+  position: sticky !important; top: 56px; z-index: 30 !important;
+  margin: 12px 12px !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 14px !important;
+  box-shadow: var(--shadow-1) !important;
+  padding: 4px !important;
+}
+.pestanas-grupo button, .pestanas-grupo [role='tab'] {
+  border-radius: 10px !important; padding: 9px 12px !important;
+}
+.pestanas-grupo button.activa, .pestanas-grupo [aria-selected='true'] {
+  background: var(--accent-soft) !important; color: var(--accent) !important;
+}
+.pestanas-grupo button.activa::after, .pestanas-grupo [aria-selected='true']::after { content: none !important; }
+
+/* Cuerpo con aire; cada hijo = tarjeta separada */
+.cuerpo-grupo { display: block !important; padding: 0 12px 16px !important; max-width: 760px; margin: 0 auto; }
+.columna-grupo > * { margin-bottom: 12px !important; }
+
+.columna-grupo .composer,
+.columna-grupo .post,
+.columna-grupo .card,
+.columna-grupo .empty,
+.columna-grupo .aviso-grupo {
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 16px !important;
+  box-shadow: var(--shadow-1) !important;
+  padding: 14px !important;
+  overflow: hidden;
+}
+
+/* Miembros y rail = tarjetas independientes */
+.aside-grupo { position: static !important; }
+.aside-grupo .tarjeta-rail {
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 16px !important;
+  box-shadow: var(--shadow-1) !important;
+  padding: 14px !important;
+  margin-bottom: 12px !important;
+}
+@media (max-width: 1024px) {
+  .lista-miembros { flex-direction: row !important; overflow-x: auto; gap: 14px; padding: 6px 2px !important; }
+  .lista-miembros li { flex: 0 0 auto; }
+  .lista-miembros li a { flex-direction: column; align-items: center; gap: 6px; }
+  .lista-miembros .quien { text-align: center; }
+  .lista-miembros .quien small { display: none; }
+}
