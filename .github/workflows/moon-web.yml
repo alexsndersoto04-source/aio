@@ -69,8 +69,8 @@ jobs:
           set +e
           # Da tiempo a Render a terminar de desplegar este mismo commit antes
           # de consultar la API en vivo, para que la evidencia sea del código nuevo.
-          echo "Esperando 20 s antes de sondear…"
-          sleep 20
+          echo "Esperando 150 s a que Render despliegue el codigo nuevo…"
+          sleep 150
           nonce="$RANDOM$RANDOM$RANDOM"
           html=$(curl -s -D /tmp/hdr.txt -H 'Cache-Control: no-cache' "https://moon.alexsndersoto04.workers.dev/?nocache=$nonce")
           cache=$(grep -i '^cf-cache-status' /tmp/hdr.txt | tr -d '\r' || echo "cf-cache-status: (sin cabecera)")
@@ -83,6 +83,27 @@ jobs:
           h_moon=$(curl -s --max-time 30 "https://moon.onrender.com/api/health" | head -c 150 || echo "(no se pudo)")
           h_moonweb=$(curl -s --max-time 30 "https://moon-web.onrender.com/api/health" | head -c 150 || echo "(no se pudo)")
           h_aio=$(curl -s --max-time 30 "https://aio-frontend.onrender.com/api/health" | head -c 150 || echo "(no se pudo)")
+          # Prueba de foto de punta a punta: entra con la cuenta de pruebas,
+          # sube una imagen chiquita y la lee de vuelta. Si vuelve con 200 y
+          # tipo image/, el almacén de fotos funciona en vivo.
+          API="https://moon-dal0.onrender.com"
+          token=""
+          for u in valeria diego mariana; do
+            token=$(curl -s --max-time 30 -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"$u\",\"password\":\"clave-de-moon-2026\"}" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+            [ -n "$token" ] && break
+          done
+          if [ -n "$token" ]; then
+            echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" | base64 -d > /tmp/px.png
+            subida=$(curl -s --max-time 60 -X POST "$API/api/upload" -H "Authorization: Bearer $token" -F "name=post" -F "file=@/tmp/px.png;type=image/png")
+            urlfoto=$(echo "$subida" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+            if [ -n "$urlfoto" ]; then
+              fotoviva=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 30 "$API$urlfoto")
+            else
+              fotoviva="(la subida no devolvio url: ${subida:0:120})"
+            fi
+          else
+            fotoviva="(no se pudo entrar con la cuenta de pruebas)"
+          fi
           {
             echo "### Verificación en vivo"
             echo
@@ -124,6 +145,10 @@ jobs:
             echo "moon.onrender.com         -> $h_moon"
             echo "moon-web.onrender.com     -> $h_moonweb"
             echo "aio-frontend.onrender.com -> $h_aio"
+            echo '```'
+            echo "**Prueba de foto en vivo (subir y leerla de vuelta):**"
+            echo '```'
+            echo "$fotoviva"
             echo '```'
           } > /tmp/vivo.md
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/vivo.md --jq '.html_url'

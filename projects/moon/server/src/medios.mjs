@@ -62,6 +62,26 @@ export function mimeDeNombre(nombre) {
 }
 
 /**
+ * Bytes como parámetro bytea que aceptan los dos drivers: el TCP clásico y el
+ * HTTP de Neon (que no entiende objetos Buffer y los rompería en JSON).
+ */
+function paramBytes(bytes) {
+  return `\\x${Buffer.from(bytes).toString('hex')}`;
+}
+
+/**
+ * Lo contrario: normaliza lo que devuelve la base (Buffer por TCP, o texto
+ * «\x…» en hex por HTTP) a un Buffer de verdad para poder servirlo.
+ */
+export function aBuffer(v) {
+  if (Buffer.isBuffer(v)) return v;
+  if (v instanceof Uint8Array) return Buffer.from(v);
+  const s = String(v || '');
+  if (s.startsWith('\\x')) return Buffer.from(s.slice(2), 'hex');
+  return Buffer.from(s, 'base64');
+}
+
+/**
  * Lee la cabecera `Range` de una petición (la usan los reproductores de audio
  * del teléfono para poder avanzar dentro de la nota de voz).
  */
@@ -181,7 +201,7 @@ export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
   try {
     await pool.query(
       `INSERT INTO media_blobs (media_id, mime, bytes, ancho, alto) VALUES ($1, $2, $3, $4, $5)`,
-      [Number(media.id), listo.mime, listo.bytes, listo.ancho, listo.alto]
+      [Number(media.id), listo.mime, paramBytes(listo.bytes), listo.ancho, listo.alto]
     );
   } catch (e) {
     // Si la base de datos no acepta los bytes (por ejemplo, se llenó el
@@ -202,7 +222,7 @@ export async function leerImagen(pool, nombre) {
     `SELECT b.mime, b.bytes FROM media m JOIN media_blobs b ON b.media_id = m.id WHERE m.url = $1`,
     [url]
   );
-  if (fila) return fila;
+  if (fila) return { mime: fila.mime, bytes: aBuffer(fila.bytes) };
 
   // Compatibilidad: las fotos que se subieron con la versión anterior quedaron
   // en la columna `original_data` de la tabla `media`. Se siguen sirviendo
@@ -214,7 +234,7 @@ export async function leerImagen(pool, nombre) {
          FROM media WHERE url = $1 AND original_data IS NOT NULL`,
       [url]
     );
-    if (vieja && vieja.bytes) return { mime: vieja.mime, bytes: vieja.bytes };
+    if (vieja && vieja.bytes) return { mime: vieja.mime, bytes: aBuffer(vieja.bytes) };
   } catch { /* la columna no existe todavía: nada que recuperar */ }
 
   return null;
@@ -297,7 +317,7 @@ export async function importarDelDisco(pool, limite = 400) {
       }
       await pool.query(
         `INSERT INTO media_blobs (media_id, mime, bytes) VALUES ($1, $2, $3) ON CONFLICT (media_id) DO NOTHING`,
-        [mediaId, mime, datos]
+        [mediaId, mime, paramBytes(datos)]
       );
       importadas += 1;
     }
