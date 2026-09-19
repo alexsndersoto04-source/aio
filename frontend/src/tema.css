@@ -277,3 +277,50 @@ body, .marco { background: var(--bg); }
 
 /* Aviso / anuncio del grupo discreto */
 .aviso-grupo { background: var(--accent-soft) !important; border: 0 !important; color: var(--ink) !important; border-radius: var(--r) !important; }
+
+/* ============================================================
+   GRUPOS · Organización (tan limpio y estable como el Inicio)
+   ============================================================ */
+/* Cabecera compacta y plana */
+.portada-grupo {
+  border: 0 !important; border-radius: 0 !important; box-shadow: none !important;
+  background: var(--surface) !important;
+  border-bottom: 1px solid var(--line) !important;
+}
+.cubierta-grupo { height: 110px !important; background: var(--surface-3) !important; }
+.cubierta-grupo .trama { display: none !important; }
+.datos-grupo { padding: 14px 16px 12px !important; }
+.datos-grupo h1 { font-size: 20px !important; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 4px !important; }
+.datos-grupo .muted { font-size: 13px !important; }
+.datos-grupo .sobre { font-size: 14.5px !important; margin-top: 8px !important; }
+.acciones-grupo { margin-top: 12px !important; gap: 8px !important; }
+
+/* Pestañas FIJAS: siempre visibles, no te pierdes */
+.pestanas-grupo {
+  position: sticky !important; top: 52px; z-index: 30 !important;
+  background: var(--surface) !important;
+  border-bottom: 1px solid var(--line) !important;
+}
+
+/* Una sola columna estable */
+.cuerpo-grupo { display: block !important; margin-top: 0 !important; gap: 0 !important; }
+
+@media (max-width: 1024px) {
+  .aside-grupo { position: static !important; }
+  .aside-grupo .tarjeta-rail {
+    border: 0 !important; border-radius: 0 !important; box-shadow: none !important;
+    border-top: 1px solid var(--line) !important; padding: 12px 0 !important;
+  }
+  /* Miembros en tira horizontal: no alarga la página */
+  .lista-miembros { flex-direction: row !important; overflow-x: auto; gap: 16px; padding: 10px 14px !important; }
+  .lista-miembros li { flex: 0 0 auto; }
+  .lista-miembros li > * { border-bottom: 0 !important; padding: 0 !important; }
+  .lista-miembros li a { flex-direction: column; align-items: center; gap: 6px; }
+  .lista-miembros .quien { text-align: center; }
+  .lista-miembros .quien small { display: none; }
+
+  /* Secciones del grupo sin tarjetas flotantes */
+  .columna-grupo .card, .columna-grupo .composer, .columna-grupo .post {
+    border-radius: 0 !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; box-shadow: none !important;
+  }
+}
