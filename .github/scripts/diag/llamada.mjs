@@ -73,21 +73,18 @@ async function limpiarRastros(etiqueta) {
   return quedan;
 }
 
-async function esperarConectados(limiteMs = 60000) {
-  // El tubo avisa quien esta en linea: solo entonces una llamada puede sonar.
-  const ids = [Number(A.user.id), Number(B.user.id)];
+async function esperarTubo(quien, etiqueta, limiteMs = 45000) {
+  // El tubo (WebSocket) abierto es la señal de que una llamada puede sonar.
   const desde = Date.now();
-  let enLinea = [];
   while (Date.now() - desde < limiteMs) {
-    const res = await llamarAlApi('GET', '/api/users/presence', A.access_token);
-    enLinea = ((res && res.en_linea) || []).map((u) => Number(u.id));
-    if (ids.every((id) => enLinea.includes(id))) {
-      anota('los dos conectados', { enLinea, esperaMs: Date.now() - desde });
+    const abiertos = [...quien.tubos].filter((ws) => !ws.isClosed());
+    if (abiertos.length) {
+      anota(`${etiqueta} enganchado al tubo`, { tubos: abiertos.length, esperaMs: Date.now() - desde });
       return true;
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 500));
   }
-  anota('no quedaron los dos conectados', { enLinea, esperaMs: limiteMs });
+  anota(`${etiqueta} no se enganchó al tubo`, { cerrados: quien.seCerraron.slice(-3), esperaMs: limiteMs });
   return false;
 }
 
@@ -106,6 +103,19 @@ async function abrirNavegador(sesion, etiqueta) {
     } catch { /* sin almacén */ }
   }, { s: sesion });
   const pagina = await contexto.newPage();
+  // Se vigilan los tubos del navegador: sin WebSocket abierto, la llamada del
+  // otro lado no puede llegar.
+  const tubos = new Set();
+  const seCerraron = [];
+  pagina.on('websocket', (ws) => {
+    tubos.add(ws);
+    console.log(`[${etiqueta}] tubo abierto: ${ws.url().slice(0, 70)}`);
+    ws.on('close', () => {
+      tubos.delete(ws);
+      seCerraron.push(String(ws.url()).slice(0, 70));
+      console.log(`[${etiqueta}] tubo cerrado: ${ws.url().slice(0, 70)}`);
+    });
+  });
   pagina.on('pageerror', (e) => console.log(`[${etiqueta}] error en la página:`, String(e).slice(0, 160)));
   await pagina.goto(`${WEB}/#/messages/${convId}`, { waitUntil: 'domcontentloaded' });
   // Espera a que el chat esté en pantalla (el hilo tarda en cargar).
@@ -125,7 +135,7 @@ async function abrirNavegador(sesion, etiqueta) {
     throw new Error(`sin hilo de chat: ${JSON.stringify(pista)}`);
   }
   await pagina.waitForTimeout(1200);
-  return { contexto, pagina };
+  return { contexto, pagina, tubos, seCerraron };
 }
 
 const chromium = await cargarChromium();
@@ -148,14 +158,16 @@ try {
   const restosIniciales = await limpiarRastros('antes de empezar');
   if (restosIniciales) throw new Error(`el hilo no quedo limpio: quedan ${restosIniciales} filas`);
 
-  if (!(await esperarConectados())) {
+  if (!(await esperarTubo(a, 'A')) || !(await esperarTubo(b, 'B'))) {
     // Un repaso: se recargan las dos pantallas y se vuelve a esperar.
     anota('repaso de las dos pantallas', { intento: 2 });
     await a.pagina.reload({ waitUntil: 'domcontentloaded' });
     await b.pagina.reload({ waitUntil: 'domcontentloaded' });
     await a.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 45000 });
     await b.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 45000 });
-    if (!(await esperarConectados())) throw new Error('los dos navegadores no quedaron conectados al tubo');
+    if (!(await esperarTubo(a, 'A', 30000)) || !(await esperarTubo(b, 'B', 30000))) {
+      throw new Error('los dos navegadores no quedaron enganchados al tubo');
+    }
   }
 
   // ---------- Llamada de voz ----------
@@ -172,7 +184,12 @@ try {
     anota(`A llama por voz (intento ${intento})`, { estado: 'saliendo' });
     sonoEnB = await b.pagina.waitForSelector('.llamada[data-llamada="entrando"]', { timeout: 20000 })
       .then(() => true).catch(() => false);
-    if (!sonoEnB) anota(`el intento ${intento} no sono en el otro lado`, { conectados: await esperarConectados(20000) });
+    if (!sonoEnB) {
+      anota(`el intento ${intento} no sono en el otro lado`, {
+        tubosA: a.tubos.size, tubosB: b.tubos.size,
+        cerrados: [...a.seCerraron, ...b.seCerraron].slice(-3),
+      });
+    }
   }
   if (!sonoEnB) throw new Error('el otro navegador no recibio el aviso de la llamada en 3 intentos');
   const nombreB = await b.pagina.textContent('.llamada-nombre').catch(() => '');
