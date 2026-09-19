@@ -88,8 +88,10 @@ jobs:
           # tipo image/, el almacén de fotos funciona en vivo.
           API="https://moon-dal0.onrender.com"
           token=""
+          respuesta_login=""
           for u in valeria diego mariana; do
-            token=$(curl -s --max-time 30 -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"$u\",\"password\":\"clave-de-moon-2026\"}" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+            respuesta_login=$(curl -s --max-time 30 -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"$u\",\"password\":\"clave-de-moon-2026\"}")
+            token=$(echo "$respuesta_login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
             [ -n "$token" ] && break
           done
           if [ -n "$token" ]; then
@@ -102,7 +104,7 @@ jobs:
               fotoviva="(la subida no devolvio url: ${subida:0:120})"
             fi
           else
-            fotoviva="(no se pudo entrar con la cuenta de pruebas)"
+            fotoviva="(no se pudo entrar con la cuenta de pruebas: ${respuesta_login:0:160})"
           fi
           {
             echo "### Verificación en vivo"
