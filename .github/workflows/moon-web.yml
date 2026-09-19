@@ -69,8 +69,8 @@ jobs:
           set +e
           # Da tiempo a Render a terminar de desplegar este mismo commit antes
           # de consultar la API en vivo, para que la evidencia sea del código nuevo.
-          echo "Esperando 240 s a que Render despliegue este commit…"
-          sleep 240
+          echo "Esperando 20 s antes de sondear…"
+          sleep 20
           nonce="$RANDOM$RANDOM$RANDOM"
           html=$(curl -s -D /tmp/hdr.txt -H 'Cache-Control: no-cache' "https://moon.alexsndersoto04.workers.dev/?nocache=$nonce")
           cache=$(grep -i '^cf-cache-status' /tmp/hdr.txt | tr -d '\r' || echo "cf-cache-status: (sin cabecera)")
@@ -80,6 +80,9 @@ jobs:
           redir2=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-dal0-zsyg.onrender.com/" || echo "(no se pudo consultar)")
           salud_da10=$(curl -s --max-time 30 "https://moon-da10.onrender.com/api/health" || echo "(no se pudo consultar la API)")
           redir_da10=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-da10.onrender.com/" || echo "(no se pudo consultar)")
+          h_moon=$(curl -s --max-time 30 "https://moon.onrender.com/api/health" | head -c 150 || echo "(no se pudo)")
+          h_moonweb=$(curl -s --max-time 30 "https://moon-web.onrender.com/api/health" | head -c 150 || echo "(no se pudo)")
+          h_aio=$(curl -s --max-time 30 "https://aio-frontend.onrender.com/api/health" | head -c 150 || echo "(no se pudo)")
           {
             echo "### Verificación en vivo"
             echo
@@ -115,6 +118,12 @@ jobs:
             echo "**Direccion moon-da10.onrender.com — redirección:**"
             echo '```'
             echo "$redir_da10"
+            echo '```'
+            echo "**Sondeo de los otros servicios de la lista (para ubicar al dueno de moon-dal0.onrender.com):**"
+            echo '```'
+            echo "moon.onrender.com         -> $h_moon"
+            echo "moon-web.onrender.com     -> $h_moonweb"
+            echo "aio-frontend.onrender.com -> $h_aio"
             echo '```'
           } > /tmp/vivo.md
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/vivo.md --jq '.html_url'
