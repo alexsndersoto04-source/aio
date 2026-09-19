@@ -78,6 +78,8 @@ jobs:
           redir=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-dal0.onrender.com/" || echo "(no se pudo consultar)")
           salud_api2=$(curl -s --max-time 30 "https://moon-dal0-zsyg.onrender.com/api/health" || echo "(no se pudo consultar la API)")
           redir2=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-dal0-zsyg.onrender.com/" || echo "(no se pudo consultar)")
+          salud_da10=$(curl -s --max-time 30 "https://moon-da10.onrender.com/api/health" || echo "(no se pudo consultar la API)")
+          redir_da10=$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' --max-time 30 "https://moon-da10.onrender.com/" || echo "(no se pudo consultar)")
           {
             echo "### Verificación en vivo"
             echo
@@ -105,6 +107,14 @@ jobs:
             echo "**Servicio moon-dal0-zsyg.onrender.com — redirección:**"
             echo '```'
             echo "$redir2"
+            echo '```'
+            echo "**Direccion moon-da10.onrender.com (con numero 10) — /api/health:**"
+            echo '```'
+            echo "$salud_da10"
+            echo '```'
+            echo "**Direccion moon-da10.onrender.com — redirección:**"
+            echo '```'
+            echo "$redir_da10"
             echo '```'
           } > /tmp/vivo.md
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/vivo.md --jq '.html_url'
