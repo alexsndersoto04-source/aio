@@ -58,9 +58,13 @@ jobs:
             token=$(sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p' /tmp/log.json)
           fi
           if [ -z "$token" ]; then echo "SIN TOKEN"; head -c 300 /tmp/log.json; exit 1; fi
-          printf 'window.__DIAG = { token: "%s" };\n' "$token" > frontend/dist/diag-datos.js
           cp "$GITHUB_WORKSPACE/.github/scripts/diag/diag.js" frontend/dist/diag.js
-          echo "token listo (longitud ${#token})"
+          if [ -f /tmp/log.json ]; then cp /tmp/log.json /tmp/sesion.json; else cp /tmp/reg.json /tmp/sesion.json; fi
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/sesion.py" /tmp/sesion.json frontend/dist/diag-datos.js
+          echo "sesión lista"
+      - name: Preparar el reductor de capturas
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pillow || echo "(sin pillow; se publicará sin captura)"
 
       - name: Levantar la web y la API juntas
         run: |

@@ -36,15 +36,24 @@ def miniatura(ruta, ancho):
         notas.append('sin captura %s' % ruta)
         return ''
     destino = ruta.replace('.png', '.jpg')
-    for orden in (['convert', ruta, '-resize', '%dx' % ancho, '-quality', '45', destino],
-                  ['magick', ruta, '-resize', '%dx' % ancho, '-quality', '45', destino]):
-        try:
-            subprocess.run(orden, check=False, timeout=60,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError as e:
-            notas.append('%s no está: %s' % (orden[0], e))
-        if os.path.exists(destino):
-            break
+    try:
+        from PIL import Image
+        im = Image.open(ruta).convert('RGB')
+        if im.width > ancho:
+            im = im.resize((ancho, max(1, round(im.height * ancho / im.width))))
+        im.save(destino, 'JPEG', quality=45, optimize=True)
+    except Exception as e:
+        notas.append('pillow falló: %s' % e)
+    if not os.path.exists(destino):
+        for orden in (['convert', ruta, '-resize', '%dx' % ancho, '-quality', '45', destino],
+                      ['magick', ruta, '-resize', '%dx' % ancho, '-quality', '45', destino]):
+            try:
+                subprocess.run(orden, check=False, timeout=60,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+            if os.path.exists(destino):
+                break
     if not os.path.exists(destino):
         notas.append('no se pudo reducir %s' % ruta)
         return ''

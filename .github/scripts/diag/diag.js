@@ -19,10 +19,18 @@
   try {
     if (window.__DIAG && window.__DIAG.token) {
       localStorage.setItem('moon_access_token', window.__DIAG.token);
+      if (window.__DIAG.refresh) localStorage.setItem('moon_refresh_token', window.__DIAG.refresh);
       if (window.__DIAG.user) localStorage.setItem('moon_user', JSON.stringify(window.__DIAG.user));
+      info.sesionPuesta = 'si';
+    } else {
+      info.sesionPuesta = 'no (sin datos)';
     }
+    if (location.hash !== '#/feed') location.hash = '#/feed';
 
     const post = await hasta(() => document.querySelector('.post'));
+    info.ruta = location.hash;
+    info.hayFormularioDeEntrada = !!document.querySelector('input[type="password"]');
+    info.raiz = (() => { const r = document.getElementById('root'); return r ? r.children.length + ' hijos: ' + Array.from(r.children).slice(0, 3).map(nombre).join(', ') : 'sin #root'; })();
     info.publicacionesEnPantalla = document.querySelectorAll('.post').length;
     if (!post) {
       info.error = 'no apareció ninguna publicación (¿sin sesión?)';
