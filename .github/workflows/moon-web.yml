@@ -107,12 +107,47 @@ jobs:
               else
                 fotopost="el feed NO devuelve la imagen (post: ${postcreado:0:140})"
               fi
+              limpieza=$(python3 - "$API" "$token" "$idpost" <<'PYEOF'
+import json, sys, urllib.request
+api, token, mio = sys.argv[1], sys.argv[2], sys.argv[3]
+def req(metodo, ruta, cuerpo=None, tok=None):
+    r = urllib.request.Request(api + ruta, method=metodo)
+    if tok: r.add_header('Authorization', 'Bearer ' + tok)
+    datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
+    if datos: r.add_header('Content-Type', 'application/json')
+    try:
+        with urllib.request.urlopen(r, datos, timeout=30) as f:
+            return json.load(f)
+    except Exception:
+        return None
+borradas = 0
+if mio and mio.isdigit():
+    ok = req('DELETE', '/api/posts/' + mio, tok=token)
+    if ok and ok.get('ok'): borradas += 1
+posts = req('GET', '/api/search?q=prueba+de+foto&type=posts&historial=0', tok=token) or []
+por_autor = {}
+for p in posts:
+    if isinstance(p, dict) and 'id' in p:
+        por_autor.setdefault(p.get('author_username') or '', []).append(p['id'])
+for autor, ids in por_autor.items():
+    if not autor.startswith('prueba'): continue
+    ent = req('POST', '/api/auth/login', {'username': autor, 'password': 'clave-de-moon-2026'}) or {}
+    tk = ent.get('access_token')
+    if not tk: continue
+    for pid in ids:
+        ok = req('DELETE', '/api/posts/' + str(pid), tok=tk)
+        if ok and ok.get('ok'): borradas += 1
+print('pruebas borradas: ' + str(borradas))
+PYEOF
+)
             else
               fotoviva="(la subida no devolvio url: ${subida:0:120})"
               fotopost="(sin foto que publicar)"
+              limpieza="(sin limpieza)"
             fi
           else
             fotoviva="(no se pudo crear la cuenta de prueba: ${respuesta_login:0:160})"
+            limpieza="(sin limpieza)"
           fi
           {
             echo "### Verificación en vivo"
@@ -160,6 +195,7 @@ jobs:
             echo '```'
             echo "$fotoviva"
             echo "post con foto en el feed: $fotopost"
+            echo "$limpieza"
             echo '```'
           } > /tmp/vivo.md
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/vivo.md --jq '.html_url'
