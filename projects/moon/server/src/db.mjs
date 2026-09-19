@@ -31,6 +31,7 @@ export function crearPool(url) {
     // cuente contra el límite de conexiones del hosting).
     const pool = new NeonPool({ connectionString: url });
     pool.on('error', (e) => console.error('[bd] error de conexión:', e.message));
+    pool.motor = 'neon-http';
     return pool;
   }
 
@@ -46,6 +47,7 @@ export function crearPool(url) {
   if (!esLocal) ajustes.ssl = { rejectUnauthorized: false };
   const pool = new pg.Pool(ajustes);
   pool.on('error', (e) => console.error('[bd] error en conexión inactiva:', e.message));
+  pool.motor = 'pg-tcp';
   return pool;
 }
 

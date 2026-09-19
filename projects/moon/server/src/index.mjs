@@ -42,6 +42,12 @@ const SECRETO = process.env.JWT_SECRET || '';
 const BASE_PUBLICA = process.env.PUBLIC_BASE_URL || '';
 const ORIGENES = (process.env.CORS_ORIGIN || '*').split(',').map((s) => s.trim()).filter(Boolean);
 
+// La interfaz web vive en Cloudflare; todo lo que no sea /api se redirige allí
+// (301) para que nadie se quede en la copia vieja que este servidor podría
+// servir. Se apaga con MOON_WEB_REDIRECT=off o se cambia el destino.
+const destinoWeb = process.env.MOON_WEB_REDIRECT ?? 'https://moon.alexsndersoto04.workers.dev';
+const REDIR_WEB = destinoWeb === 'off' ? '' : destinoWeb.replace(/\/+$/, '');
+
 if (!SECRETO || SECRETO.length < 32) {
   console.error('[api] JWT_SECRET debe existir y tener al menos 32 caracteres.');
   process.exit(1);
@@ -202,6 +208,7 @@ router.get('/api/health', async (c) => {
     time: new Date().toISOString(),
     db: bd,
     base: destinoVisible(URL_USO),
+    motor: c.pool.motor || 'sin dato',
     canario: process.env.MOON_CANARIO || null,
     fotos_en_base: fotosEnBase,
     correo: correoConfigurado() ? viaDeCorreo() : 'sin configurar',
@@ -256,6 +263,12 @@ const servidor = createServer(async (req, res) => {
 
   const encontrado = router.buscar(req.method, camino);
   if (!encontrado) {
+    // La web vive en Cloudflare: lo que no sea API se reenvía allí.
+    if (REDIR_WEB) {
+      res.writeHead(301, { Location: REDIR_WEB + req.url, 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
     // No es una ruta de la API: puede ser la aplicación web compilada.
     if (servirWeb(req, res, camino)) return;
     json(res, 404, { error: `No existe ${req.method} ${camino}` });
