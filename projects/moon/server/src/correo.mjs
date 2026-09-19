@@ -84,9 +84,8 @@ async function enviarConResend(destino, asunto, cuerpoTexto, adjunto) {
  * Envía un correo. `adjunto` es opcional: { nombre, contenido (Buffer) }.
  * Nunca lanza: devuelve { enviado: true|false }.
  */
-export async function enviarCorreo(destino, asunto, cuerpoTexto, { adjunto = null } = {}) {
-  if (!destino) return { enviado: false, error: 'sin destinatario' };
-
+/** Intenta enviar por el proveedor configurado. Nunca lanza. */
+async function intentarEnvio(destino, asunto, cuerpoTexto, adjunto) {
   if (process.env.RESEND_API_KEY) {
     try {
       await enviarConResend(destino, asunto, cuerpoTexto, adjunto);
@@ -94,8 +93,7 @@ export async function enviarCorreo(destino, asunto, cuerpoTexto, { adjunto = nul
     } catch (e) {
       console.error('[correo] Resend falló:', e.message);
       // Resend en plan gratis solo entrega al dueño de la cuenta; si hay SMTP
-      // configurado (p. ej. Gmail con contraseña de aplicación), se intenta
-      // como respaldo antes de rendirse.
+      // configurado, se intenta como respaldo antes de rendirse.
       const t = obtenerTransporte();
       if (t) {
         try {
@@ -119,13 +117,33 @@ export async function enviarCorreo(destino, asunto, cuerpoTexto, { adjunto = nul
   }
   try {
     const mensaje = { from: remitentePorDefecto(), to: destino, subject: asunto, text: cuerpoTexto };
-    if (adjunto) {
-      mensaje.attachments = [{ filename: adjunto.nombre, content: adjunto.contenido }];
-    }
+    if (adjunto) mensaje.attachments = [{ filename: adjunto.nombre, content: adjunto.contenido }];
     await t.sendMail(mensaje);
     return { enviado: true, via: 'smtp' };
   } catch (e) {
     console.error('[correo] fallo al enviar:', e.message);
     return { enviado: false, error: e.message };
   }
+}
+
+/**
+ * Envía un correo. `adjunto` es opcional: { nombre, contenido (Buffer) }.
+ * Nunca lanza: devuelve { enviado: true|false, redirigido? }.
+ */
+export async function enviarCorreo(destino, asunto, cuerpoTexto, { adjunto = null } = {}) {
+  if (!destino) return { enviado: false, error: 'sin destinatario' };
+  const resultado = await intentarEnvio(destino, asunto, cuerpoTexto, adjunto);
+  if (resultado.enviado) return resultado;
+
+  // Los proveedores gratis (Resend sin dominio propio) solo entregan al correo
+  // dueño de la cuenta. Si MOON_MAIL_FALLBACK está definida, el correo se
+  // reenvía ahí con una nota: la app sigue funcionando sin pagar nada.
+  const respaldo = (process.env.MOON_MAIL_FALLBACK || '').trim();
+  if (respaldo && respaldo.toLowerCase() !== destino.toLowerCase()) {
+    const nota =
+      `AVISO: este correo era para ${destino}, pero el proveedor gratuito no permite enviar a esa direccion. Lo recibes tu en su lugar.\n\n`;
+    const r2 = await intentarEnvio(respaldo, asunto, nota + cuerpoTexto, adjunto);
+    if (r2.enviado) return { ...r2, redirigido: destino };
+  }
+  return resultado;
 }

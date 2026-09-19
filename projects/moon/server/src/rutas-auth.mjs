@@ -301,7 +301,10 @@ export function registrarRutasAuth(router) {
       'Restablece tu contraseña de Moon',
       `Abre este enlace para elegir una contraseña nueva (caduca en 60 minutos):\n${enlace}`
     );
-    if (!correo.enviado) {
+    if (correo.enviado && correo.redirigido) {
+      respuesta.message =
+        'Tu proveedor gratuito no entrega a ese correo: el enlace se envió al correo alternativo configurado en Render. Revisa esa bandeja.';
+    } else if (!correo.enviado) {
       if (correoConfigurado()) {
         // El correo está configurado pero no salió (clave vencida, sin red…).
         // Por seguridad NO se entrega el enlace: quien lo pidiera podría
