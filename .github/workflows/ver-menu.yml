@@ -1,0 +1,94 @@
+# Diagnóstico temporal del menú de reacciones.
+# ============================================================
+# Abre la web compilada en un navegador de verdad (Chrome sin ventana) dentro
+# del runner, toca el menú «⋯», elige «Elegir reacción» y publica en el commit
+# qué se ve (posiciones, capas, quién tapa a quién) junto con una captura
+# reducida. Se dispara al tocar estos archivos (revision: 5). Es de quitar
+# cuando el problema esté resuelto.
+name: Ver el menú de reacciones
+
+on:
+  push:
+    branches: ["arena/01a0b287-aio"]
+    paths:
+      - ".github/scripts/diag/**"
+      - ".github/workflows/ver-menu.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ver-menu
+  cancel-in-progress: false
+
+jobs:
+  ver:
+    name: Mirar el menú con un navegador
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compilar la web
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Despertar la API y entrar con la cuenta de pruebas
+        env:
+          API: https://moon-dal0.onrender.com
+        run: |
+          set -e
+          for i in $(seq 1 20); do
+            salud=$(curl -s --max-time 30 "$API/api/health" || true)
+            echo "$salud" | grep -q '"status":"ok"' && break
+            echo "esperando a la API… ($i)"; sleep 8
+          done
+          echo "salud: ${salud:0:120}"
+          curl -s --max-time 40 -X POST "$API/api/auth/register" -H 'Content-Type: application/json' \
+            -d '{"username":"pruebafotos","email":"pruebafotos@prueba.test","password":"clave-de-moon-2026"}' > /tmp/reg.json || true
+          token=$(sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p' /tmp/reg.json)
+          if [ -z "$token" ]; then
+            curl -s --max-time 40 -X POST "$API/api/auth/login" -H 'Content-Type: application/json' \
+              -d '{"username":"pruebafotos","password":"clave-de-moon-2026"}' > /tmp/log.json
+            token=$(sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p' /tmp/log.json)
+          fi
+          if [ -z "$token" ]; then echo "SIN TOKEN"; head -c 300 /tmp/log.json; exit 1; fi
+          cp "$GITHUB_WORKSPACE/.github/scripts/diag/diag.js" frontend/dist/diag.js
+          if [ -f /tmp/log.json ]; then cp /tmp/log.json /tmp/sesion.json; else cp /tmp/reg.json /tmp/sesion.json; fi
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/sesion.py" /tmp/sesion.json frontend/dist/diag-datos.js
+          echo "sesión lista"
+      - name: Preparar el reductor de capturas
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pillow || echo "(sin pillow; se publicará sin captura)"
+
+      - name: Levantar la web y la API juntas
+        run: |
+          node "$GITHUB_WORKSPACE/.github/scripts/diag/servidor.cjs" "$GITHUB_WORKSPACE/frontend/dist" 4173 > /tmp/servidor.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w 'web: %{http_code}\n' http://127.0.0.1:4173/
+          curl -s -o /dev/null -w 'api por el puente: %{http_code}\n' http://127.0.0.1:4173/api/health
+
+      - name: Abrir con Chrome sin ventana (teléfono y computadora)
+        run: |
+          set +e
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+            --window-size=390,844 --virtual-time-budget=60000 \
+            --screenshot=/tmp/menu-telefono.png --dump-dom "http://127.0.0.1:4173/?v=telefono" \
+            > /tmp/dom-telefono.html 2>/tmp/chrome-telefono.log
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+            --window-size=1280,900 --virtual-time-budget=60000 \
+            --screenshot=/tmp/menu-computadora.png --dump-dom "http://127.0.0.1:4173/?v=computadora" \
+            > /tmp/dom-computadora.html 2>/tmp/chrome-computadora.log
+          ls -la /tmp/menu-*.png /tmp/dom-*.html 2>/dev/null
+
+      - name: Publicar el resultado en el commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/scripts/diag/publicar.py" "$GITHUB_SHA"

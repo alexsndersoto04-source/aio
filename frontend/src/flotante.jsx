@@ -27,11 +27,20 @@ export function useFlotante(abierto, {
     const ancho = c.width || caja.offsetWidth || 0;
     const alto = c.height || caja.offsetHeight || 0;
 
+    // La barra de abajo de la app (Inicio, Buscar…) es de todos: el menú no se
+    // le monta encima. Si existe y está a la vista, ese es el límite de abajo.
+    const barraAbajo = document.querySelector('.bottom-nav');
+    let limiteAbajo = window.innerHeight;
+    if (barraAbajo) {
+      const rb = barraAbajo.getBoundingClientRect();
+      if (rb.height > 0 && rb.top > 0 && rb.top < window.innerHeight) limiteAbajo = rb.top;
+    }
+
     // Vertical: primero arriba del botón; si no cabe, debajo; si tampoco,
-    // pegado al borde (nunca fuera de la vista).
+    // pegado al límite (nunca fuera de la vista ni sobre la barra de abajo).
     let arriba = a.top - distancia - alto;
     if (arriba < margen) arriba = a.bottom + distancia;
-    arriba = Math.max(margen, Math.min(arriba, window.innerHeight - margen - alto));
+    arriba = Math.max(margen, Math.min(arriba, limiteAbajo - margen - alto));
 
     // Horizontal: alineado al botón, arrimado a los bordes si se sale.
     let izquierda = a.left;
