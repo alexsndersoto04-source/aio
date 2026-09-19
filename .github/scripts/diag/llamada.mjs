@@ -3,6 +3,9 @@
 // y la de video de punta a punta y deja capturas.
 //
 // Uso: node llamada.mjs <web> <sesiones.json> <carpeta-de-capturas> <salida.json>
+//
+// Nota: la web que se prueba se compila en el momento, asi que el timbre de
+// las llamadas sale tal como quedo en el codigo (con su desbloqueo de audio).
 
 import fs from 'node:fs';
 import path from 'node:path';
