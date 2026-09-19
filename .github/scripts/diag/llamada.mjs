@@ -73,6 +73,24 @@ async function limpiarRastros(etiqueta) {
   return quedan;
 }
 
+async function esperarConectados(limiteMs = 60000) {
+  // El tubo avisa quien esta en linea: solo entonces una llamada puede sonar.
+  const ids = [Number(A.user.id), Number(B.user.id)];
+  const desde = Date.now();
+  let enLinea = [];
+  while (Date.now() - desde < limiteMs) {
+    const res = await llamarAlApi('GET', '/api/users/presence', A.access_token);
+    enLinea = ((res && res.en_linea) || []).map((u) => Number(u.id));
+    if (ids.every((id) => enLinea.includes(id))) {
+      anota('los dos conectados', { enLinea, esperaMs: Date.now() - desde });
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  anota('no quedaron los dos conectados', { enLinea, esperaMs: limiteMs });
+  return false;
+}
+
 async function abrirNavegador(sesion, etiqueta) {
   const contexto = await navegador.newContext({
     viewport: { width: 390, height: 844 },
@@ -130,12 +148,33 @@ try {
   const restosIniciales = await limpiarRastros('antes de empezar');
   if (restosIniciales) throw new Error(`el hilo no quedo limpio: quedan ${restosIniciales} filas`);
 
-  // ---------- Llamada de voz ----------
-  await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
-  await a.pagina.waitForSelector('.llamada[data-llamada="saliendo"]', { timeout: 10000 });
-  anota('A llama por voz', { estado: 'saliendo' });
+  if (!(await esperarConectados())) {
+    // Un repaso: se recargan las dos pantallas y se vuelve a esperar.
+    anota('repaso de las dos pantallas', { intento: 2 });
+    await a.pagina.reload({ waitUntil: 'domcontentloaded' });
+    await b.pagina.reload({ waitUntil: 'domcontentloaded' });
+    await a.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 45000 });
+    await b.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 45000 });
+    if (!(await esperarConectados())) throw new Error('los dos navegadores no quedaron conectados al tubo');
+  }
 
-  await b.pagina.waitForSelector('.llamada[data-llamada="entrando"]', { timeout: 15000 });
+  // ---------- Llamada de voz ----------
+  let sonoEnB = false;
+  for (let intento = 1; intento <= 3 && !sonoEnB; intento += 1) {
+    if (intento > 1) {
+      // Se cuelga lo que quedo del intento anterior y se deja el hilo limpio.
+      await a.pagina.click('.control.colgar').catch(() => {});
+      await a.pagina.waitForTimeout(1500);
+      await limpiarRastros(`antes del intento ${intento}`);
+    }
+    await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
+    await a.pagina.waitForSelector('.llamada[data-llamada="saliendo"]', { timeout: 10000 });
+    anota(`A llama por voz (intento ${intento})`, { estado: 'saliendo' });
+    sonoEnB = await b.pagina.waitForSelector('.llamada[data-llamada="entrando"]', { timeout: 20000 })
+      .then(() => true).catch(() => false);
+    if (!sonoEnB) anota(`el intento ${intento} no sono en el otro lado`, { conectados: await esperarConectados(20000) });
+  }
+  if (!sonoEnB) throw new Error('el otro navegador no recibio el aviso de la llamada en 3 intentos');
   const nombreB = await b.pagina.textContent('.llamada-nombre').catch(() => '');
   anota('B recibe la llamada', { pantallaEntrante: true, quienLlama: (nombreB || '').trim() });
   await b.pagina.screenshot({ path: path.join(FOTOS, '1-entrante-voz.png') });
