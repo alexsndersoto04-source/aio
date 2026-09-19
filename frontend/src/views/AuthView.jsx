@@ -29,6 +29,7 @@ export default function AuthView({ mode }) {
     : { username: '', email: '', password: '', code: '' });
   const [twofa, setTwofa] = useState(null); // { temp_token }
   const [error, setError] = useState('');
+  const [dup, setDup] = useState(''); // correo ya registrado: ofrece atajos
   const [busy, setBusy] = useState(false);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -51,6 +52,7 @@ export default function AuthView({ mode }) {
       }
     } catch (err) {
       setError(err.message);
+      setDup(!isLogin && err.code === 'correo_duplicado' ? form.email.trim() : '');
     } finally {
       setBusy(false);
     }
@@ -103,6 +105,21 @@ export default function AuthView({ mode }) {
           </p>
 
           {error ? <div className="alert err" role="alert">{error}</div> : null}
+
+          {dup ? (
+            <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+              <a className="btn btn-outline" href="#/login" style={{ flex: 1, textAlign: 'center' }}>
+                Iniciar sesión
+              </a>
+              <a
+                className="btn btn-outline"
+                href={`#/reset?email=${encodeURIComponent(dup)}`}
+                style={{ flex: 1, textAlign: 'center' }}
+              >
+                Recuperar contraseña
+              </a>
+            </div>
+          ) : null}
 
           {twofa ? (
             <form onSubmit={submit2fa}>

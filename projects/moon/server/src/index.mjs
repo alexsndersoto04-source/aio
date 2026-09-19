@@ -275,7 +275,10 @@ const servidor = createServer(async (req, res) => {
     return;
   }
 
-  const c = crearContexto({ req, res, pool, secreto: SECRETO, basePublica: BASE_PUBLICA });
+  // Para los enlaces de correo, prefiere el origen confiable de la web en uso
+  // (Cloudflare) y cae en PUBLIC_BASE_URL si no está listado.
+  const baseCorreos = ORIGENES.find((o) => o.includes('workers.dev')) || ORIGENES.find((o) => o !== '*') || BASE_PUBLICA;
+  const c = crearContexto({ req, res, pool, secreto: SECRETO, basePublica: baseCorreos });
   c.params = encontrado.params;
   req._secreto = SECRETO;
 

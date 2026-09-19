@@ -259,6 +259,19 @@ export default function SettingsView({ tab }) {
     finally { setSaving(false); }
   }
 
+  const [nuevoUsuario, setNuevoUsuario] = useState('');
+  /** Cambia el nombre @ de la cuenta (valida el servidor que esté libre). */
+  async function cambiarUsuario(e) {
+    e.preventDefault();
+    try {
+      const res = await api.patch('/api/auth/update', { username: nuevoUsuario.trim() });
+      setMe(res);
+      await refreshMe();
+      setNuevoUsuario('');
+      flash('ok', 'Nombre de usuario actualizado');
+    } catch (err) { flash('err', err.message); }
+  }
+
   async function savePrivacy(e) {
     e.preventDefault();
     try {
@@ -561,7 +574,18 @@ export default function SettingsView({ tab }) {
             <div className="titulo">Datos de la cuenta</div>
             <div className="fila-ajuste">
               <span className="icono"><IconAt /></span>
-              <span className="texto"><b>@{me.username}</b><small>Tu nombre de usuario. Con él te encuentran.</small></span>
+              <span className="texto">
+                <b>@{me.username}</b>
+                <small>Tu nombre de usuario. Con él te encuentran. Si quieres aparecer con otro nombre, cámbialo aquí (tu correo y tus publicaciones se mantienen).</small>
+                <form onSubmit={cambiarUsuario} style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <input
+                    className="input" value={nuevoUsuario} placeholder="nuevo_nombre"
+                    onChange={(e) => setNuevoUsuario(e.target.value)}
+                    minLength={3} maxLength={24} style={{ flex: 1 }}
+                  />
+                  <button className="btn btn-outline btn-sm" disabled={!nuevoUsuario.trim()}>Cambiar</button>
+                </form>
+              </span>
             </div>
             <div className="fila-ajuste">
               <span className="icono"><IconInfo /></span>

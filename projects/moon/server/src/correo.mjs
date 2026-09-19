@@ -93,6 +93,21 @@ export async function enviarCorreo(destino, asunto, cuerpoTexto, { adjunto = nul
       return { enviado: true, via: 'resend' };
     } catch (e) {
       console.error('[correo] Resend falló:', e.message);
+      // Resend en plan gratis solo entrega al dueño de la cuenta; si hay SMTP
+      // configurado (p. ej. Gmail con contraseña de aplicación), se intenta
+      // como respaldo antes de rendirse.
+      const t = obtenerTransporte();
+      if (t) {
+        try {
+          const mensaje = { from: remitentePorDefecto(), to: destino, subject: asunto, text: cuerpoTexto };
+          if (adjunto) mensaje.attachments = [{ filename: adjunto.nombre, content: adjunto.contenido }];
+          await t.sendMail(mensaje);
+          return { enviado: true, via: 'smtp' };
+        } catch (e2) {
+          console.error('[correo] SMTP de respaldo también falló:', e2.message);
+          return { enviado: false, error: e2.message };
+        }
+      }
       return { enviado: false, error: e.message };
     }
   }

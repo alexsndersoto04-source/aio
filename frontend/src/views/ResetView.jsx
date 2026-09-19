@@ -3,8 +3,18 @@
 import React, { useState } from 'react';
 import { authApi } from '../api.js';
 
+/** Si se llega desde "Recuperar" con ?email=…, se deja escrito el correo. */
+function correoInicial() {
+  try {
+    const q = new URLSearchParams(window.location.hash.split('?')[1] || '');
+    return q.get('email') || '';
+  } catch {
+    return '';
+  }
+}
+
 export default function ResetView({ token }) {
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(correoInicial());
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [msg, setMsg] = useState('');

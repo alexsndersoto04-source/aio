@@ -47,8 +47,16 @@ export function registrarRutasAuth(router) {
       [username, email]
     );
     if (repetido) {
-      const campo = repetido.username.toLowerCase() === username.toLowerCase() ? 'usuario' : 'correo';
-      throw new ApiErr(`Ese ${campo} ya está registrado`, 409, 'duplicado');
+      if (repetido.email.toLowerCase() === email) {
+        // Como las grandes: un correo = una cuenta. En vez de callejón sin
+        // salida, se le indica el camino: entrar o recuperar, y renombrar después.
+        throw new ApiErr(
+          'Ese correo ya tiene una cuenta. Inicia sesión o recupera tu contraseña; después podrás cambiar tu nombre en Ajustes.',
+          409,
+          'correo_duplicado'
+        );
+      }
+      throw new ApiErr('Ese usuario ya está registrado. Prueba con otro.', 409, 'usuario_duplicado');
     }
 
     const primerUsuario = !(await hayUsuarios(c.pool));
@@ -147,6 +155,15 @@ export function registrarRutasAuth(router) {
     const b = await c.cuerpo();
     const campos = [];
     const valores = [];
+    // El nombre de usuario (@) va aparte: valida formato y que esté libre.
+    if (b.username !== undefined) {
+      const nuevo = texto(b.username, { min: 3, max: 24, campo: 'usuario' });
+      if (!usuarioValido(nuevo)) throw new ApiErr('El usuario solo admite letras, números y guion bajo (3 a 24)', 400);
+      const ocupado = await uno(c.pool, 'SELECT id FROM users WHERE LOWER(username) = LOWER($1) AND id <> $2', [nuevo, u.id]);
+      if (ocupado) throw new ApiErr('Ese usuario ya está registrado. Prueba con otro.', 409, 'usuario_duplicado');
+      valores.push(nuevo);
+      campos.push(`username = $${valores.length}`);
+    }
     const mapa = {
       display_name: { max: 60, min: 1 },
       bio: { max: 300, min: 0 },
