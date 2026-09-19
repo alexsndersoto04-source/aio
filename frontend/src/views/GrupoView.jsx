@@ -590,6 +590,15 @@ export default function GrupoView({ id }) {
             <button
               type="button"
               role="tab"
+              aria-selected={vista === 'miembros'}
+              className={vista === 'miembros' ? 'activa' : ''}
+              onClick={(e) => { setVista('miembros'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
+            >
+              <IconUsers /> Miembros
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={vista === 'reglas'}
               className={vista === 'reglas' ? 'activa' : ''}
               onClick={(e) => { setVista('reglas'); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'center' }); }}
@@ -661,6 +670,23 @@ export default function GrupoView({ id }) {
               mando={!!grupo.mando}
               onCambio={(r) => setGrupo((g) => ({ ...g, ...r }))}
             />
+          ) : vista === 'miembros' ? (
+            <div className="card seccion-miembros">
+              <div className="titulo">Miembros · {grupo.miembros}</div>
+              <ul className="lista-miembros-v">
+                {(grupo.miembros_lista || []).map((m) => (
+                  <li key={m.id}>
+                    <a href={`#/user/${m.id}`}>
+                      <Avatar user={m} size="md" />
+                      <span className="quien">
+                        <b>{m.display_name}<VerifiedBadge show={m.is_verified} /></b>
+                        <small>@{m.username}{m.papel === 'owner' ? ' · lo creó' : m.papel === 'admin' ? ' · administra' : ''}</small>
+                      </span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : vista === 'chat' ? (
             <ChatGrupo
               grupo={grupo}

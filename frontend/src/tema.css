@@ -398,3 +398,36 @@ body, .marco { background: var(--bg); }
   .lista-miembros .quien { text-align: center; }
   .lista-miembros .quien small { display: none; }
 }
+
+/* ============================================================
+   GRUPOS · Cada pestaña = su propia pantalla completa
+   ============================================================ */
+/* Sin barra lateral volcada: cada sección es un área independiente */
+@media (max-width: 1024px) {
+  .aside-grupo { display: none !important; }
+}
+
+/* Cabecera compacta para dar toda la pantalla a la sección activa */
+.portada-grupo { margin: 10px 10px 0 !important; }
+.cubierta-grupo { height: 88px !important; }
+.datos-grupo { padding: 12px 14px !important; }
+.datos-grupo h1 { font-size: 18px !important; }
+.datos-grupo .sobre { display: none !important; }
+.acciones-grupo { margin-top: 10px !important; }
+
+.pestanas-grupo { top: 52px !important; margin: 10px 10px !important; }
+
+/* Cada sección ocupa el ancho completo con aire */
+.cuerpo-grupo { padding: 0 10px 20px !important; max-width: none !important; }
+
+/* Miembros a pantalla completa: lista vertical limpia */
+.seccion-miembros { padding: 6px 0 !important; }
+.seccion-miembros .titulo { padding: 12px 16px; font-weight: 800; color: var(--ink); }
+.lista-miembros-v { list-style: none; margin: 0; padding: 0; }
+.lista-miembros-v li { border-top: 1px solid var(--line); }
+.lista-miembros-v li a {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  color: var(--ink); text-decoration: none;
+}
+.lista-miembros-v .quien b { display: flex; align-items: center; gap: 6px; font-weight: 700; }
+.lista-miembros-v .quien small { display: block; color: var(--ink-3); }
