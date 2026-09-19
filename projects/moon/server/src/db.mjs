@@ -6,6 +6,7 @@
 // desarrollo en Node y el servidor Titan en producción apliquen exactamente
 // el mismo esquema.
 
+import pg from 'pg';
 import { Pool as NeonPool, neonConfig } from '@neondatabase/serverless';
 import ws from 'ws';
 
@@ -21,12 +22,30 @@ const aqui = dirname(fileURLToPath(import.meta.url));
 const rutaEsquema = resolve(aqui, '../esquema.json');
 
 export function crearPool(url) {
-  // Driver serverless de Neon: las consultas van por HTTP (sin pool TCP que
-  // cuente contra el límite de conexiones del hosting). Mantiene la misma API
-  // (pool.query / pool.connect) para no tocar el resto del código.
-  const pool = new NeonPool({ connectionString: url });
-  // Un error de conexión no debe tumbar el servidor.
-  pool.on('error', (e) => console.error('[bd] error de conexión:', e.message));
+  let anfitrion = '';
+  try { anfitrion = new URL(url).hostname; } catch { anfitrion = ''; }
+  const esNeon = anfitrion.endsWith('.neon.tech') || anfitrion.includes('neon.tech');
+
+  if (esNeon) {
+    // Base de Neon: driver serverless, consultas por HTTP (sin pool TCP que
+    // cuente contra el límite de conexiones del hosting).
+    const pool = new NeonPool({ connectionString: url });
+    pool.on('error', (e) => console.error('[bd] error de conexión:', e.message));
+    return pool;
+  }
+
+  // Cualquier otra base (Supabase, Postgres propio…): pg como siempre.
+  const ajustes = {
+    connectionString: url,
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 15000,
+  };
+  const esLocal =
+    !anfitrion || ['localhost', '127.0.0.1', '::1'].includes(anfitrion) || anfitrion.endsWith('.local');
+  if (!esLocal) ajustes.ssl = { rejectUnauthorized: false };
+  const pool = new pg.Pool(ajustes);
+  pool.on('error', (e) => console.error('[bd] error en conexión inactiva:', e.message));
   return pool;
 }
 
