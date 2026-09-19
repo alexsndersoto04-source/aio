@@ -84,8 +84,39 @@ async function enviarConResend(destino, asunto, cuerpoTexto, adjunto) {
  * Envía un correo. `adjunto` es opcional: { nombre, contenido (Buffer) }.
  * Nunca lanza: devuelve { enviado: true|false }.
  */
+/** Envía por la API de Brevo (gratis: 300/día; remitente verificado por correo). */
+async function enviarConBrevo(destino, asunto, cuerpoTexto) {
+  const desde = process.env.MAIL_FROM || process.env.BREVO_FROM || 'Moon <no-responder@brevo.com>';
+  const [nombre, correoFrom] = desde.includes('<')
+    ? [desde.split('<')[0].trim(), desde.split('<')[1].replace('>', '')]
+    : ['Moon', desde];
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': process.env.BREVO_API_KEY, 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({
+      sender: { name: nombre || 'Moon', email: correoFrom },
+      to: [{ email: destino }],
+      subject: asunto,
+      textContent: cuerpoTexto,
+    }),
+  });
+  if (!res.ok) {
+    const detalle = await res.text().catch(() => '');
+    throw new Error(`Brevo respondió ${res.status}: ${detalle.slice(0, 200)}`);
+  }
+  return true;
+}
+
 /** Intenta enviar por el proveedor configurado. Nunca lanza. */
 async function intentarEnvio(destino, asunto, cuerpoTexto, adjunto) {
+  if (process.env.BREVO_API_KEY && !adjunto) {
+    try {
+      await enviarConBrevo(destino, asunto, cuerpoTexto);
+      return { enviado: true, via: 'brevo' };
+    } catch (e) {
+      console.error('[correo] Brevo falló:', e.message);
+    }
+  }
   if (process.env.RESEND_API_KEY) {
     try {
       await enviarConResend(destino, asunto, cuerpoTexto, adjunto);
