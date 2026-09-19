@@ -1410,6 +1410,17 @@ export default function SettingsView({ tab }) {
             <div className="divisor-aurora" />
             <div className="fila-ajuste">
               <span className="icono"><IconSpark /></span>
+              <span className="texto">
+                <b>Base de datos activa</b>
+                <small>
+                  {salud?.base
+                    ? ((salud.base.includes('neon.tech') ? 'Neon por HTTP (sin límite de conexiones) · ' : 'Postgres clásico · ') + salud.base)
+                    : 'Comprobando…'}
+                </small>
+              </span>
+            </div>
+            <div className="fila-ajuste">
+              <span className="icono"><IconSpark /></span>
               <span className="texto"><b>Aurora de cristal</b><small>El acabado de esta versión: cielo aurora, cristal y acento índigo → violeta → cian.</small></span>
             </div>
             <div className="fila-ajuste">
