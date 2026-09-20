@@ -137,9 +137,18 @@ async function abrirNavegador(sesion, etiqueta) {
   // otro lado no puede llegar.
   const tubos = new Set();
   const seCerraron = [];
+  const marcos = []; // lo que va y viene por el tubo (para poder mirar qué pasó)
+  const apuntarMarco = (direccion, carga) => {
+    const texto = String(carga || '').slice(0, 160);
+    if (!/call_|connected/.test(texto)) return;
+    marcos.push({ direccion, texto });
+    if (marcos.length > 80) marcos.shift();
+  };
   pagina.on('websocket', (ws) => {
     tubos.add(ws);
     console.log(`[${etiqueta}] tubo abierto: ${ws.url().slice(0, 70)}`);
+    ws.on('framereceived', (f) => apuntarMarco('entra', f.payload));
+    ws.on('framesent', (f) => apuntarMarco('sale', f.payload));
     ws.on('close', () => {
       tubos.delete(ws);
       seCerraron.push(String(ws.url()).slice(0, 70));
@@ -174,7 +183,7 @@ async function abrirNavegador(sesion, etiqueta) {
   }
   if (pista) throw new Error(`sin hilo de chat: ${JSON.stringify(pista)}`);
   await pagina.waitForTimeout(1200);
-  return { contexto, pagina, tubos, seCerraron };
+  return { contexto, pagina, tubos, seCerraron, marcos };
 }
 
 const chromium = await cargarChromium();
@@ -382,9 +391,11 @@ try {
     if (/tel[eé]fono/i.test(textoAviso)) break;
     await a.pagina.waitForTimeout(1000);
   }
-  anota('aviso en la pantalla del que llama', { texto: textoAviso });
+  const sigueEnPantalla = await a.pagina.isVisible('.llamada').catch(() => false);
+  anota('aviso en la pantalla del que llama', { texto: textoAviso, sigueEnPantalla });
   if (!/tel[eé]fono/i.test(textoAviso)) {
-    throw new Error(`no avisó de que le está sonando el teléfono: ${textoAviso}`);
+    anota('lo que pasó por el tubo (A)', { marcos: a.marcos.slice(-10) });
+    throw new Error(`no avisó de que le está sonando el teléfono (pantalla: ${sigueEnPantalla}): ${textoAviso}`);
   }
   await a.pagina.screenshot({ path: path.join(FOTOS, '7-sonando-en-su-telefono.png') });
 

@@ -138,6 +138,17 @@ export function montarWs(servidorHttp, pool, secreto) {
             unread_messages: Number(noLeidos?.count || 0),
           },
         });
+        // La app acaba de avisar que está lista: si le estaba entrando una
+        // llamada mientras no tenía Moon abierto, le timbra ahora mismo.
+        for (const [idLlamada, datos] of llamadas) {
+          if (datos.para !== uid) continue;
+          if (Date.now() - Number(datos.creada || 0) > VIDA_LLAMADA_SIN_TELEFONO_MS) {
+            llamadas.delete(idLlamada);
+            continue;
+          }
+          const quienLlama = await uno(pool, 'SELECT id, username, display_name, avatar_url FROM users WHERE id = $1', [datos.de]);
+          timbrarA(uid, { ...datos, id: idLlamada }, quienLlama);
+        }
         return;
       }
       if (msg.type === 'typing' && msg.group_id) {
@@ -179,13 +190,30 @@ export function montarWs(servidorHttp, pool, secreto) {
       // Si esta persona tenía una llamada en curso o timbrando, la otra se
       // entera al instante (se cerró la app, se cayó la conexión…).
       for (const [id, datos] of llamadas) {
-        if (datos.de === uid) {
-          enviarA(datos.para, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
-          llamadas.delete(id);
-        } else if (datos.para === uid) {
-          enviarA(datos.de, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
-          llamadas.delete(id);
+        if (datos.de !== uid && datos.para !== uid) continue;
+        // Si cerró la app sin contestar y todavía no había empezado la charla,
+        // no se corta en seco: si tiene teléfono, se le avisa y la llamada sigue
+        // esperando (abre Moon y le timbra).
+        if (datos.para === uid && !datos.aceptada) {
+          void (async () => {
+            const viva = llamadas.get(id);
+            if (!viva || viva.aceptada) return;
+            const quien = await uno(pool, 'SELECT id, username, display_name, avatar_url FROM users WHERE id = $1', [viva.de]);
+            const cuantos = await avisarAlTelefono(pool, viva, quien);
+            if (cuantos > 0) {
+              viva.avisado = true;
+              enviarA(viva.de, { type: 'call_avisando', call_id: id, dispositivos: cuantos });
+              return;
+            }
+            llamadas.delete(id);
+            enviarA(viva.de, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
+          })();
+          continue;
         }
+        enviarA(datos.de === uid ? datos.para : datos.de, {
+          type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue',
+        });
+        llamadas.delete(id);
       }
       const conjunto = conexiones.get(uid);
       if (!conjunto) return;
