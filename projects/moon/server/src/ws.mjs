@@ -395,6 +395,9 @@ async function atenderLlamada(ws, uid, msg) {
     return;
   }
   if (msg.type === 'call_reject') {
+    // Una llamada ya en curso no se rechaza: para terminarla se cuelga
+    // (call_end). Esto evita que un aviso atrasado corte la conversación.
+    if (datos.aceptada) return;
     llamadas.delete(id);
     limpiarRespiro(datos.de);
     limpiarRespiro(datos.para);

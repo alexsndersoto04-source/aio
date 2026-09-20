@@ -483,6 +483,9 @@ export function LlamadasProvider({ children }) {
     const datos = llamada.current;
     if (!datos) return;
     pararTimbre();
+    // Se apaga el reloj del timbre: si no, a los 35 segundos este mismo teléfono
+    // mandaba un «rechazo» de una llamada que ya estaba en curso y la cortaba.
+    if (espera.current) { clearTimeout(espera.current); espera.current = null; }
     setEstado('activa');
     try {
       await configurarConexion(false);
