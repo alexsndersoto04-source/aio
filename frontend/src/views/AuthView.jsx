@@ -10,6 +10,7 @@ import { toast } from '../ui.js';
 import {
   IconLock, IconSpark, IconGlobe, IconUsers, IconShield, IconCheck,
 } from '../components/Icons.jsx';
+import LogoMoon from '../components/LogoMoon.jsx';
 
 function Campo({ label, hint, ...props }) {
   return (
@@ -75,7 +76,7 @@ export default function AuthView({ mode }) {
     <div className="auth-shell">
       <div className="auth-layout">
         <section className="auth-pitch">
-          <div className="auth-orb" aria-hidden="true" />
+          <LogoMoon tamano={96} />
           <h1>Tu órbita,<br />tu conversación.</h1>
           <p>
             Moon reúne publicaciones, fotos, mensajes en vivo y comunidades en un

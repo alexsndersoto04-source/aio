@@ -361,6 +361,44 @@ try {
     }
   }
 
+  // ---------- La pantalla de inicio: el logo ----------
+  // Se abre Moon sin sesión, como quien llega por primera vez: se mira que el
+  // logo esté (media luna del color de la marca, aro de líneas girando y
+  // subrayado) y se deja captura de escritorio y de móvil.
+  for (const [nombre, vista] of [
+    ['0-inicio-escritorio', { width: 1280, height: 800 }],
+    ['0-inicio-movil', { width: 390, height: 844 }],
+  ]) {
+    const limpio = await navegador.newContext({ viewport: vista, locale: 'es-VE' });
+    const pagina = await limpio.newPage();
+    await pagina.goto(`${WEB}/#/login`, { waitUntil: 'domcontentloaded' });
+    await pagina.waitForSelector('.logo-moon', { timeout: 25000 });
+    await pagina.waitForTimeout(1500); // que el aro haya girado un poco
+    await pagina.screenshot({ path: path.join(FOTOS, `${nombre}.png`) });
+    const comoVa = await pagina.evaluate(() => {
+      const svg = document.querySelector('.logo-moon');
+      const aro = document.querySelector('.logo-moon .logo-moon__aro');
+      const estilo = aro ? getComputedStyle(aro) : null;
+      const caja = svg ? svg.getBoundingClientRect() : null;
+      return {
+        hayLogo: !!svg,
+        tamano: caja ? `${Math.round(caja.width)}x${Math.round(caja.height)}` : '',
+        colorDeLaLuna: svg ? getComputedStyle(svg).color : '',
+        giro: estilo ? `${estilo.animationName} ${estilo.animationDuration}` : '',
+        mediaLuna: !!document.querySelector('.logo-moon circle[mask]'),
+        aroDeLineas: !!document.querySelector('.logo-moon .logo-moon__aro circle'),
+        subrayado: !!document.querySelector('.logo-moon line'),
+        sigueElOrbe: !!document.querySelector('.auth-orb'),
+      };
+    });
+    anota(`pantalla de inicio (${nombre})`, comoVa);
+    if (!comoVa.hayLogo || !comoVa.mediaLuna || !comoVa.aroDeLineas || !comoVa.subrayado
+        || comoVa.giro.indexOf('logo-girar') !== 0 || comoVa.sigueElOrbe) {
+      throw new Error(`el logo de la pantalla de inicio no quedó como debe: ${JSON.stringify(comoVa)}`);
+    }
+    await limpio.close();
+  }
+
   // ---------- Llamada de voz ----------
   let sonoEnB = false;
   for (let intento = 1; intento <= 3 && !sonoEnB; intento += 1) {
