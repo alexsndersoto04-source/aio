@@ -1055,24 +1055,21 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .auth-pitch ul { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 12px; }
 .auth-pitch li { display: flex; align-items: center; gap: 11px; color: var(--ink-2); font-size: 15px; }
 .auth-pitch li svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
-/* El logo: la media luna quieta y el aro de líneas girando despacio. */
+/* El logo: la media luna quieta y el aro de líneas girando suavemente en perspectiva. */
 .logo-moon {
   display: block;
-  color: var(--accent);
   overflow: visible;
-  margin-bottom: 26px;
+  margin-bottom: 24px;
+}
+.logo-moon .logo-moon__cuerpo {
+  transform: none !important; /* La luna NO se mueve */
 }
 .logo-moon .logo-moon__aro {
   transform-box: view-box;
-  transform-origin: 60px 52px;
-  animation: logo-girar 14s linear infinite;
+  transform-origin: 80px 72px;
+  animation: aro-orbitar 12s linear infinite;
 }
-.logo-moon--c .logo-moon__aro .logo-moon__aro-exterior {
-  transform-box: view-box;
-  transform-origin: 60px 56px;
-  animation: logo-girar 26s linear infinite reverse;
-}
-@keyframes logo-girar {
+@keyframes aro-orbitar {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }

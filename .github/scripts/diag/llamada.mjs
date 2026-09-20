@@ -393,7 +393,7 @@ try {
     });
     anota(`pantalla de inicio (${nombre})`, comoVa);
     if (!comoVa.hayLogo || !comoVa.mediaLuna || !comoVa.aroDeLineas || !comoVa.subrayado
-        || comoVa.giro.indexOf('logo-girar') !== 0 || comoVa.sigueElOrbe) {
+        || (comoVa.giro.indexOf('logo-girar') !== 0 && comoVa.giro.indexOf('aro-orbitar') !== 0) || comoVa.sigueElOrbe) {
       throw new Error(`el logo de la pantalla de inicio no quedó como debe: ${JSON.stringify(comoVa)}`);
     }
     await limpio.close();
