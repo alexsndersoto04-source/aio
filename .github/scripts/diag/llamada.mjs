@@ -385,7 +385,7 @@ try {
         tamano: caja ? `${Math.round(caja.width)}x${Math.round(caja.height)}` : '',
         colorDeLaLuna: svg ? getComputedStyle(svg).color : '',
         giro: estilo ? `${estilo.animationName} ${estilo.animationDuration}` : '',
-        mediaLuna: !!document.querySelector('.logo-moon circle[mask]'),
+        mediaLuna: !!document.querySelector('.logo-moon path, .logo-moon circle[mask]'),
         aroDeLineas: !!document.querySelector('.logo-moon .logo-moon__aro circle'),
         subrayado: !!document.querySelector('.logo-moon line'),
         sigueElOrbe: !!document.querySelector('.auth-orb'),

@@ -1,71 +1,67 @@
 // Moon — el logo
 // ============================================================
-// Una media luna del color de la marca y, alrededor, un aro dibujado solo con
-// líneas (no es un círculo completo: tiene sus huecos) que gira despacio, más
-// un subrayado fino debajo. Sin rellenos de más ni brillos: la luna y las
-// líneas, nada más.
-//
-// Las tres variantes (a, b, c) existen para poder compararlas; la que se usa
-// en la pantalla de inicio es la «a».
+// Diseño en estilo lineal (outline / solo de líneas y subrayado):
+// 1. La media luna dibujada SOLO con línea de contorno (sin relleno sólido).
+// 2. Un aro alrededor en trazo lineal segmentado que gira en movimiento continuo.
+// 3. Una línea de subrayado elegante en la base.
+// Todo con el color característico de la marca Moon.
 
-import React, { useId } from 'react';
+import React from 'react';
 
-export default function LogoMoon({ variante = 'a', tamano = 96, titulo = 'Moon' }) {
-  // Cada logo necesita su propio nombre de máscara: si no, dos logos en la
-  // misma pantalla se pisarían el recorte.
-  const id = `luna-${String(useId()).replace(/[^a-zA-Z0-9]/g, '')}`;
-  const linea = {
+export default function LogoMoon({ tamano = 96, titulo = 'Moon' }) {
+  const trazo = {
     fill: 'none',
     stroke: 'currentColor',
     strokeLinecap: 'round',
+    strokeLinejoin: 'round',
   };
 
   return (
     <svg
-      className={`logo-moon logo-moon--${variante}`}
+      className="logo-moon"
       width={tamano}
       height={tamano}
       viewBox="0 0 120 120"
       role="img"
       aria-label={titulo}
     >
-      <defs>
-        <mask id={id}>
-          <rect width="120" height="120" fill="#000" />
-          <circle cx="60" cy="56" r="29" fill="#fff" />
-          <circle cx="75" cy="43" r="26.5" fill="#000" />
-        </mask>
-      </defs>
-
-      {/* El aro: solo líneas, con huecos, girando sin parar. */}
+      {/* 1. Aro exterior en movimiento continuo, solo trazo de líneas segmentado */}
       <g className="logo-moon__aro">
-        {variante === 'b' ? (
-          <>
-            <circle cx="60" cy="56" r="43" {...linea} strokeWidth="2.6" strokeDasharray="206 64" />
-            <circle cx="60" cy="56" r="43" {...linea} strokeWidth="2.6" strokeDasharray="7 263" strokeDashoffset="-238" />
-          </>
-        ) : variante === 'c' ? (
-          <>
-            <circle cx="60" cy="56" r="40" {...linea} strokeWidth="2.2" strokeDasharray="52 32 44 32 40 32" />
-            <circle cx="60" cy="56" r="48" {...linea} strokeWidth="1.6" strokeDasharray="90 40 70 40" opacity="0.7" className="logo-moon__aro-exterior" />
-          </>
-        ) : (
-          <circle cx="60" cy="56" r="43" {...linea} strokeWidth="2.6" strokeDasharray="60 37 52 37 48 36.2" />
-        )}
+        <circle
+          cx="60"
+          cy="54"
+          r="44"
+          {...trazo}
+          strokeWidth="2.5"
+          strokeDasharray="55 35 45 35 40 30"
+        />
       </g>
 
-      {/* La media luna, del color de la marca. */}
-      <circle cx="60" cy="56" r="29" fill="currentColor" mask={`url(#${id})`} />
+      {/* 2. Media luna: diseño SOLO DE LÍNEAS (contorno hueco, sin relleno sólido) */}
+      <path
+        d="M 60 25 A 29 29 0 0 0 60 83 A 24 24 0 0 1 60 25 Z"
+        {...trazo}
+        strokeWidth="3.2"
+      />
 
-      {/* El subrayado. */}
-      {variante === 'b' ? (
-        <>
-          <line x1="30" y1="111" x2="90" y2="111" {...linea} strokeWidth="1.6" opacity="0.75" />
-          <line x1="47" y1="116" x2="73" y2="116" {...linea} strokeWidth="3" />
-        </>
-      ) : (
-        <line x1="40" y1="112" x2="80" y2="112" {...linea} strokeWidth={variante === 'c' ? 3 : 4} />
-      )}
+      {/* 3. Subrayado de líneas en la base */}
+      <line
+        x1="38"
+        y1="110"
+        x2="82"
+        y2="110"
+        {...trazo}
+        strokeWidth="3"
+      />
+      <line
+        x1="48"
+        y1="115"
+        x2="72"
+        y2="115"
+        {...trazo}
+        strokeWidth="1.8"
+        opacity="0.6"
+      />
     </svg>
   );
 }
