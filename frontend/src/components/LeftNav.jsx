@@ -78,7 +78,7 @@ export default function LeftNav() {
   return (
     <aside className="sidebar">
       <a className="brand" href="#/feed" aria-label="Moon, ir al inicio">
-        <span className="dot" aria-hidden="true" />
+        <LogoMoon tamano={30} />
         <span>
           Moon
           <small>Red social</small>
