@@ -4,9 +4,10 @@
 //
 // Uso: node llamada.mjs <web> <sesiones.json> <carpeta-de-capturas> <salida.json>
 //
-// Nota: la web que se prueba se compila en el momento, asi que el timbre de
-// las llamadas sale tal como quedo en el codigo (altavoz que se prepara al
-// primer toque y se reutiliza en cada llamada).
+// Nota: la web que se prueba se compila en el momento, asi que todo sale tal
+// como quedo en el codigo: el timbre (altavoz que se prepara al primer toque y
+// se reutiliza en cada llamada) y el repaso del aviso si la conexion parpadea
+// justo al empezar a llamar.
 
 import fs from 'node:fs';
 import path from 'node:path';
