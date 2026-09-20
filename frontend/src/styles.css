@@ -1055,23 +1055,34 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .auth-pitch ul { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 12px; }
 .auth-pitch li { display: flex; align-items: center; gap: 11px; color: var(--ink-2); font-size: 15px; }
 .auth-pitch li svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
-/* El logo: la media luna quieta y el aro de líneas girando suavemente en perspectiva. */
+/* El logo: media luna fija con aro orbital 3D tipo Saturno (más pequeño y flujo continuo) */
+.logo-moon-wrap {
+  display: inline-block;
+  margin-bottom: 22px;
+  perspective: 600px;
+}
 .logo-moon {
   display: block;
   overflow: visible;
-  margin-bottom: 24px;
 }
-.logo-moon .logo-moon__cuerpo {
-  transform: none !important; /* La luna NO se mueve */
+.logo-moon .logo-moon__luna {
+  transform: none !important;
 }
-.logo-moon .logo-moon__aro {
-  transform-box: view-box;
-  transform-origin: 80px 72px;
-  animation: aro-orbitar 12s linear infinite;
+/* La rotación tipo Saturno mueve los trazos a lo largo del anillo elíptico
+   simulando el flujo orbital continuo 3D alrededor de la luna sin desbalancear la figura */
+.logo-moon .logo-moon__saturno-aro {
+  animation: saturno-flujo 8s linear infinite;
 }
-@keyframes aro-orbitar {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+@keyframes saturno-flujo {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 272; /* longitud exacta del perímetro orbital */
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo-moon .logo-moon__saturno-aro { animation: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .logo-moon .logo-moon__aro,

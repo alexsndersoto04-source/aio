@@ -1,85 +1,87 @@
 // Moon — el logo
 // ============================================================
-// Diseño definitivo inspirado en el vector aprobado:
-// 1. Media luna: fija (NO se mueve), trazo fino de contorno neón morado/índigo, sin relleno sólido.
-// 2. Aro orbital: en perspectiva 3D inclinada cruzando la luna, con trazo punteado/segmentado
-//    y animación de rotación continua y fluida que roba la atención.
-// 3. Subrayado: línea horizontal minimalista y centrada en la base.
+// 1. Media luna: fija en el centro, trazo neón morado/índigo de líneas finas, sin relleno sólido.
+// 2. Aro orbital tipo Saturno:
+//    - Proporción reducida y ajustada (no gigante).
+//    - Perspectiva 3D inclinada cruzando la luna.
+//    - El giro se realiza en el plano 3D (rotación horizontal sobre su propio eje orbital),
+//      dando la sensación de partículas orbitando alrededor de la luna en 3D.
+// 3. Subrayado: línea minimalista y limpia en la base.
 
 import React from 'react';
 
-export default function LogoMoon({ tamano = 110, titulo = 'Moon' }) {
+export default function LogoMoon({ tamano = 100, titulo = 'Moon' }) {
   return (
-    <svg
-      className="logo-moon"
-      width={tamano}
-      height={tamano}
-      viewBox="0 0 160 160"
-      role="img"
-      aria-label={titulo}
-    >
-      <defs>
-        {/* Gradiente neón de marca para los trazos */}
-        <linearGradient id="neonMoonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#c084fc" />
-          <stop offset="50%" stopColor="#818cf8" />
-          <stop offset="100%" stopColor="#4f46e5" />
-        </linearGradient>
+    <div className="logo-moon-wrap" style={{ width: tamano, height: tamano }}>
+      <svg
+        className="logo-moon"
+        width={tamano}
+        height={tamano}
+        viewBox="0 0 140 140"
+        role="img"
+        aria-label={titulo}
+      >
+        <defs>
+          <linearGradient id="lunaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#c084fc" />
+            <stop offset="50%" stopColor="#818cf8" />
+            <stop offset="100%" stopColor="#4f46e5" />
+          </linearGradient>
 
-        <linearGradient id="neonRingGrad" x1="100%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#e879f9" />
-          <stop offset="60%" stopColor="#818cf8" />
-          <stop offset="100%" stopColor="#38bdf8" />
-        </linearGradient>
+          <linearGradient id="aroGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#e879f9" />
+            <stop offset="50%" stopColor="#818cf8" />
+            <stop offset="100%" stopColor="#38bdf8" />
+          </linearGradient>
 
-        {/* Resplandor sutil estilo neón */}
-        <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
-          <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor="#818cf8" floodOpacity="0.45" />
-        </filter>
-      </defs>
+          <filter id="brilloNeon" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#818cf8" floodOpacity="0.4" />
+          </filter>
+        </defs>
 
-      {/* 1. MEDIA LUNA (COMPLETAMENTE FIJA, NO SE MUEVE) */}
-      <g className="logo-moon__cuerpo" filter="url(#neonGlow)">
-        <path
-          d="M 86 32 C 60 32 46 50 46 72 C 46 94 62 112 90 112 C 68 106 58 90 58 72 C 58 54 68 38 86 32 Z"
-          fill="none"
-          stroke="url(#neonMoonGrad)"
-          strokeWidth="3.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </g>
-
-      {/* 2. ARO ORBITAL EN MOVIMIENTO (GIRA CONTINUO ALREDEDOR DE LA LUNA) */}
-      <g className="logo-moon__aro-wrap">
-        <g className="logo-moon__aro" filter="url(#neonGlow)">
-          <ellipse
-            cx="80"
-            cy="72"
-            rx="66"
-            ry="24"
+        {/* 1. MEDIA LUNA (FIJA) */}
+        <g className="logo-moon__luna" filter="url(#brilloNeon)">
+          <path
+            d="M 76 26 C 54 26 42 42 42 62 C 42 82 56 98 80 98 C 60 92 52 78 52 62 C 52 46 60 32 76 26 Z"
             fill="none"
-            stroke="url(#neonRingGrad)"
-            strokeWidth="2.8"
+            stroke="url(#lunaGrad)"
+            strokeWidth="3.2"
             strokeLinecap="round"
-            strokeDasharray="140 24 35 24 20 20"
-            transform="rotate(-24 80 72)"
+            strokeLinejoin="round"
           />
         </g>
-      </g>
 
-      {/* 3. SUBRAYADO MINIMALISTA EN LA BASE (FIJO) */}
-      <g filter="url(#neonGlow)">
+        {/* 2. SUBRAYADO (FIJO) */}
         <line
-          x1="54"
-          y1="138"
-          x2="106"
-          y2="138"
-          stroke="url(#neonMoonGrad)"
-          strokeWidth="3"
+          x1="48"
+          y1="120"
+          x2="92"
+          y2="120"
+          stroke="url(#lunaGrad)"
+          strokeWidth="2.8"
           strokeLinecap="round"
+          filter="url(#brilloNeon)"
         />
-      </g>
-    </svg>
+
+        {/* 3. ARO ORBITAL 3D TIPO SATURNO (MÁS PEQUEÑO Y AJUSTADO A LA LUNA) */}
+        {/* El contenedor orbital tiene perspectiva y rota sus segmentos orbitales continuamente */}
+        <g className="logo-moon__saturno-escena">
+          <ellipse
+            className="logo-moon__saturno-aro"
+            cx="70"
+            cy="62"
+            rx="46"
+            ry="16"
+            fill="none"
+            stroke="url(#aroGrad)"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeDasharray="40 18 25 18 15 18"
+            transform="rotate(-22 70 62)"
+            filter="url(#brilloNeon)"
+          />
+        </g>
+      </svg>
+    </div>
   );
 }

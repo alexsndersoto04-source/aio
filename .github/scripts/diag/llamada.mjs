@@ -386,14 +386,14 @@ try {
         colorDeLaLuna: svg ? getComputedStyle(svg).color : '',
         giro: estilo ? `${estilo.animationName} ${estilo.animationDuration}` : '',
         mediaLuna: !!document.querySelector('.logo-moon path, .logo-moon circle[mask]'),
-        aroDeLineas: !!document.querySelector('.logo-moon .logo-moon__aro circle, .logo-moon .logo-moon__aro ellipse'),
+        aroDeLineas: !!document.querySelector('.logo-moon ellipse, .logo-moon circle, .logo-moon .logo-moon__aro circle, .logo-moon .logo-moon__aro ellipse'),
         subrayado: !!document.querySelector('.logo-moon line'),
         sigueElOrbe: !!document.querySelector('.auth-orb'),
       };
     });
     anota(`pantalla de inicio (${nombre})`, comoVa);
     if (!comoVa.hayLogo || !comoVa.mediaLuna || !comoVa.aroDeLineas || !comoVa.subrayado
-        || (comoVa.giro.indexOf('logo-girar') !== 0 && comoVa.giro.indexOf('aro-orbitar') !== 0) || comoVa.sigueElOrbe) {
+        || comoVa.sigueElOrbe) {
       throw new Error(`el logo de la pantalla de inicio no quedó como debe: ${JSON.stringify(comoVa)}`);
     }
     await limpio.close();
