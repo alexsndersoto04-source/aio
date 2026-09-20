@@ -74,7 +74,7 @@ async function limpiarRastros(etiqueta) {
   anota(`limpieza ${etiqueta}`, { rastros: rastros.length, borrados });
   const despues = await llamarAlApi('GET', `/api/messages/conversations/${convId}`, A.access_token);
   const quedan = (((despues && (despues.messages || despues.items)) || []).filter((m) => m.kind && m.status !== 'deleted')).length;
-  return quedan;
+  return { borrados, quedan };
 }
 
 async function esperarTubo(quien, etiqueta, limiteMs = 45000) {
@@ -168,8 +168,16 @@ try {
 
   // Nada de pruebas anteriores a la vista: si el hilo trae filas de llamadas
   // viejas, lo que se mire despues no probaria nada.
-  const restosIniciales = await limpiarRastros('antes de empezar');
-  if (restosIniciales) throw new Error(`el hilo no quedo limpio: quedan ${restosIniciales} filas`);
+  const inicio = await limpiarRastros('antes de empezar');
+  if (inicio.quedan) throw new Error(`el hilo no quedo limpio: quedan ${inicio.quedan} filas`);
+  if (inicio.borrados) {
+    // El borrado avisa al otro lado, no a quien borró: se recargan las dos
+    // pantallas para que no quede a la vista ninguna fila vieja.
+    await a.pagina.reload({ waitUntil: 'domcontentloaded' });
+    await b.pagina.reload({ waitUntil: 'domcontentloaded' });
+    await a.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 60000 });
+    await b.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 60000 });
+  }
 
   if (!(await esperarTubo(a, 'A')) || !(await esperarTubo(b, 'B'))) {
     // Un repaso: se recargan las dos pantallas y se vuelve a esperar.
@@ -320,10 +328,10 @@ try {
   // Limpieza: las llamadas de prueba se borran del hilo (quedan solo en el
   // informe) y las cuentas se dejan ocultas de nuevo.
   try {
-    const quedan = await limpiarRastros('al terminar');
-    if (quedan > 0) {
+    const fin = await limpiarRastros('al terminar');
+    if (fin.quedan > 0) {
       informe.ok = false;
-      informe.error = `quedaron ${quedan} filas de llamada a la vista en el hilo de prueba`;
+      informe.error = `quedaron ${fin.quedan} filas de llamada a la vista en el hilo de prueba`;
     }
   } catch (e) {
     anota('limpieza con problema', { detalle: String(e).slice(0, 160) });
