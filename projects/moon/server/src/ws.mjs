@@ -179,10 +179,14 @@ export function montarWs(servidorHttp, pool, secreto) {
       // Si esta persona tenía una llamada en curso o timbrando, la otra se
       // entera al instante (se cerró la app, se cayó la conexión…).
       for (const [id, datos] of llamadas) {
-        if (datos.de === uid) enviarA(datos.para, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
-        else if (datos.para === uid) enviarA(datos.de, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
+        if (datos.de === uid) {
+          enviarA(datos.para, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
+          llamadas.delete(id);
+        } else if (datos.para === uid) {
+          enviarA(datos.de, { type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue' });
+          llamadas.delete(id);
+        }
       }
-      llamadas.clear();
       const conjunto = conexiones.get(uid);
       if (!conjunto) return;
       conjunto.delete(ws);
@@ -197,6 +201,30 @@ export function montarWs(servidorHttp, pool, secreto) {
   });
 
   return wss;
+}
+
+/**
+ * Avisa al teléfono de una llamada: manda la notificación (con tono de llamada)
+ * y devuelve cuántos teléfonos tiene apuntados esa persona. Si no hay ninguno
+ * (o tiene los avisos apagados), devuelve 0.
+ */
+async function avisarAlTelefono(pool, datos, quien) {
+  const [telefonos, prefs] = await Promise.all([
+    uno(pool, 'SELECT COUNT(*)::int AS n FROM push_subscriptions WHERE user_id = $1', [datos.para]),
+    uno(pool, 'SELECT * FROM notification_prefs WHERE user_id = $1', [datos.para]),
+  ]);
+  const cuantos = Number(telefonos?.n || 0);
+  if (cuantos === 0 || (prefs && prefs.message === false)) return 0;
+  empujarSiQuiere(pool, datos.para, 'message', {
+    titulo: `${quien?.display_name || quien?.username || 'Moon'} te está llamando`,
+    texto: `${datos.tipo === 'video' ? 'Videollamada' : 'Llamada de voz'}. Toca para abrir Moon y contestar.`,
+    url: datos.conversation_id ? `#/messages/${datos.conversation_id}` : '#/messages',
+    etiqueta: `llamada-${datos.id}`,
+    urgente: true,
+    quedarse: true,
+    vibrar: [400, 200, 400, 200, 400],
+  }).catch(() => {});
+  return cuantos;
 }
 
 // Le manda el timbrazo a alguien: lo usa la llamada normal y también el
@@ -260,28 +288,30 @@ async function atenderLlamada(ws, uid, msg) {
     const vivos = conexiones.get(otro);
     if (vivos && vivos.size > 0) {
       timbrarA(otro, anotada, quien);
+      // Respaldo: si a los 8 segundos nadie contestó (puede tener Moon abierto
+      // pero dormido en segundo plano), se le manda el aviso al teléfono.
+      setTimeout(() => {
+        void (async () => {
+          const viva = llamadas.get(id);
+          if (!viva || viva.aceptada || viva.avisado) return;
+          if (Date.now() - Number(viva.creada || 0) > VIDA_LLAMADA_SIN_TELEFONO_MS) return;
+          const suyo = await uno(ws._pool, 'SELECT id, username, display_name, avatar_url FROM users WHERE id = $1', [viva.de]);
+          const cuantos = await avisarAlTelefono(ws._pool, viva, suyo);
+          if (cuantos > 0) {
+            viva.avisado = true;
+            enviarA(viva.de, { type: 'call_avisando', call_id: id, dispositivos: cuantos });
+          }
+        })();
+      }, 8000);
       return;
     }
 
     // No tiene Moon abierto: si tiene un teléfono apuntado (avisos encendidos),
     // se le manda el aviso y la llamada sigue viva esperando a que lo abra.
     // El aviso sale por detrás: el que llama no espera a que se entregue.
-    const [telefonos, prefs] = await Promise.all([
-      uno(ws._pool, 'SELECT COUNT(*)::int AS n FROM push_subscriptions WHERE user_id = $1', [otro]),
-      uno(ws._pool, 'SELECT * FROM notification_prefs WHERE user_id = $1', [otro]),
-    ]);
-    const cuantosTelefonos = Number(telefonos?.n || 0);
-    const avisosApagados = prefs ? prefs.message === false : false;
-    if (cuantosTelefonos > 0 && !avisosApagados) {
-      empujarSiQuiere(ws._pool, otro, 'message', {
-        titulo: `${quien?.display_name || quien?.username || 'Moon'} te está llamando`,
-        texto: `${tipo === 'video' ? 'Videollamada' : 'Llamada de voz'}. Toca para abrir Moon y contestar.`,
-        url: conversacion ? `#/messages/${conversacion}` : '#/messages',
-        etiqueta: `llamada-${id}`,
-        urgente: true,
-        quedarse: true,
-        vibrar: [400, 200, 400, 200, 400],
-      }).catch(() => {});
+    const cuantosTelefonos = await avisarAlTelefono(ws._pool, anotada, quien);
+    if (cuantosTelefonos > 0) {
+      anotada.avisado = true;
       ws.enviar({ type: 'call_avisando', call_id: id, dispositivos: cuantosTelefonos });
       return;
     }
@@ -303,6 +333,7 @@ async function atenderLlamada(ws, uid, msg) {
 
   if (msg.type === 'call_accept') {
     // El que contesta pasa a ser el segundo; la llamada sigue viva.
+    datos.aceptada = true;
     enviarA(datos.de, { type: 'call_aceptada', call_id: id, de: uid });
     return;
   }

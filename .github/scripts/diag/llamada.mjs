@@ -108,6 +108,16 @@ async function leerFilas(pagina, minimo = 1, limiteMs = 15000) {
   return filas;
 }
 
+async function versionDeLaApi() {
+  try {
+    const r = await fetch(`${API}/api/health`);
+    const d = await r.json();
+    return { commit: d.commit || null, canario: d.canario || null, motor: d.motor || null };
+  } catch {
+    return null;
+  }
+}
+
 async function abrirNavegador(sesion, etiqueta) {
   const contexto = await navegador.newContext({
     viewport: { width: 390, height: 844 },
@@ -181,6 +191,7 @@ try {
   const a = await abrirNavegador(A, 'A');
   let b = await abrirNavegador(B, 'B');
   anota('chats abiertos', { a: !!a.pagina, b: !!b.pagina });
+  anota('versión de la API', await versionDeLaApi());
 
   // Nada de pruebas anteriores a la vista: si el hilo trae filas de llamadas
   // viejas, lo que se mire despues no probaria nada.
@@ -364,9 +375,14 @@ try {
 
   await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
   await a.pagina.waitForSelector('.llamada[data-llamada="saliendo"]', { timeout: 10000 });
-  const hayAviso = await a.pagina.waitForSelector('.llamada-error', { timeout: 25000 }).then(() => true).catch(() => false);
-  const textoAviso = ((await a.pagina.textContent('.llamada-error').catch(() => '')) || '').trim();
-  anota('aviso en la pantalla del que llama', { hayAviso, texto: textoAviso });
+  // Se espera a que la pantalla diga que le está sonando el teléfono.
+  let textoAviso = '';
+  for (let i = 0; i < 25; i += 1) {
+    textoAviso = ((await a.pagina.textContent('.llamada-estado').catch(() => '')) || '').trim();
+    if (/tel[eé]fono/i.test(textoAviso)) break;
+    await a.pagina.waitForTimeout(1000);
+  }
+  anota('aviso en la pantalla del que llama', { texto: textoAviso });
   if (!/tel[eé]fono/i.test(textoAviso)) {
     throw new Error(`no avisó de que le está sonando el teléfono: ${textoAviso}`);
   }

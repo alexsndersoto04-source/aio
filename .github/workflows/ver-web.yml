@@ -73,6 +73,21 @@ jobs:
           cat /tmp/preparar.log
           python3 "$GITHUB_WORKSPACE/.github/scripts/diag/anadir-api.py" /tmp/sesiones.json "$API" >> /tmp/preparar.log 2>&1
 
+      - name: Esperar a que la API tenga el código nuevo
+        env:
+          API: https://moon-dal0.onrender.com
+        run: |
+          corto=$(echo "$GITHUB_SHA" | cut -c1-7)
+          echo "debe correr el commit: $corto"
+          visto=""
+          for i in $(seq 1 60); do
+            visto=$(curl -s --max-time 20 "$API/api/health" | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p')
+            echo "intento $i: la API dice «${visto}»"
+            if [ "$visto" = "$corto" ]; then break; fi
+            sleep 8
+          done
+          echo "la API quedó en: ${visto:-sin dato}"
+
       - name: Servir la web compilada (y la API por el mismo puente)
         run: |
           set -x

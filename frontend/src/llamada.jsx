@@ -674,7 +674,9 @@ function PantallaLlamada({
             <span className="onda dos" aria-hidden="true" />
           </span>
           <b className="llamada-nombre">{nombre}</b>
-          <span className="llamada-estado">{etiquetaConexion}</span>
+          {/* Mientras llama se muestra lo que va pasando: «Llamando…» o
+              «Le está sonando el teléfono…» si no tiene Moon abierto. */}
+          <span className="llamada-estado">{detalle || etiquetaConexion}</span>
           <div className="llamada-botones">
             <button type="button" className="boton-llamada rojo" onClick={() => onColgar()} aria-label="Cancelar">
               <IconPhoneOff />

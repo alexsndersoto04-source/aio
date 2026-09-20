@@ -210,6 +210,9 @@ router.get('/api/health', async (c) => {
     base: destinoVisible(URL_USO),
     motor: c.pool.motor || 'sin dato',
     canario: process.env.MOON_CANARIO || null,
+    // Qué versión del código está corriendo (lo pone Render al desplegar):
+    // sirve para saber si la API ya tiene los últimos cambios.
+    commit: String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '').slice(0, 7) || null,
     fotos_en_base: fotosEnBase,
     correo: correoConfigurado() ? viaDeCorreo() : 'sin configurar',
   };
