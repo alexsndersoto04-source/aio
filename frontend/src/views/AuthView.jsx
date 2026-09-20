@@ -10,7 +10,6 @@ import { toast } from '../ui.js';
 import {
   IconLock, IconSpark, IconGlobe, IconUsers, IconShield, IconCheck,
 } from '../components/Icons.jsx';
-import LogoMoon from '../components/LogoMoon.jsx';
 
 function Campo({ label, hint, ...props }) {
   return (
@@ -76,7 +75,7 @@ export default function AuthView({ mode }) {
     <div className="auth-shell">
       <div className="auth-layout">
         <section className="auth-pitch">
-          <LogoMoon tamano={96} />
+          <div className="auth-orb" aria-hidden="true" />
           <h1>Tu órbita,<br />tu conversación.</h1>
           <p>
             Moon reúne publicaciones, fotos, mensajes en vivo y comunidades en un
@@ -91,10 +90,9 @@ export default function AuthView({ mode }) {
         </section>
 
         <section className="auth-card">
-          <div className="brand-centrado" style={{ textAlign: 'center', marginBottom: 22 }}>
-            <span style={{ fontSize: '32px', fontWeight: '800', letterSpacing: '-0.03em', background: 'linear-gradient(135deg, #c084fc 0%, #818cf8 50%, #4f46e5 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', display: 'inline-block' }}>
-              Moon
-            </span>
+          <div className="brand" style={{ padding: 0, marginBottom: 18 }}>
+            <span className="dot" aria-hidden="true" />
+            <span>Moon<small>Red social</small></span>
           </div>
 
           <h2>{twofa ? 'Verificación en dos pasos' : (isLogin ? 'Bienvenido de vuelta' : 'Crea tu cuenta')}</h2>

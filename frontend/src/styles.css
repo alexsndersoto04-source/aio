@@ -262,12 +262,24 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
   letter-spacing: -0.035em;
   padding: 6px 12px 18px;
 }
-.brand .logo-moon {
-  margin-bottom: 0;
-  flex: none;
-}
 .brand .dot {
-  display: none !important;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex: none;
+  background:
+    radial-gradient(circle at 34% 30%, #fff 0 7%, rgba(255, 255, 255, 0.35) 8% 20%, transparent 21%),
+    var(--grad);
+  box-shadow: 0 2px 10px rgba(79, 70, 229, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+  position: relative;
+}
+.brand .dot::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 1px solid var(--accent-line);
+  transform: rotate(-24deg) scaleY(0.42);
 }
 .brand small {
   display: block;
@@ -1055,45 +1067,22 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .auth-pitch ul { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 12px; }
 .auth-pitch li { display: flex; align-items: center; gap: 11px; color: var(--ink-2); font-size: 15px; }
 .auth-pitch li svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
-/* El logo: media luna fija con aro orbital 3D tipo Saturno (más pequeño y flujo continuo) */
-.logo-moon-wrap {
-  display: inline-block;
-  margin-bottom: 22px;
-  perspective: 600px;
-}
-.logo-moon {
-  display: block;
-  overflow: visible;
-}
-.logo-moon .logo-moon__luna {
-  transform: none !important;
-}
-/* La rotación tipo Saturno mueve los trazos a lo largo del anillo elíptico
-   simulando el flujo orbital continuo 3D alrededor de la luna sin desbalancear la figura */
-.logo-moon .logo-moon__saturno-aro {
-  animation: saturno-flujo 8s linear infinite;
-}
-@keyframes saturno-flujo {
-  from {
-    stroke-dashoffset: 0;
-  }
-  to {
-    stroke-dashoffset: 272; /* longitud exacta del perímetro orbital */
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .logo-moon .logo-moon__saturno-aro { animation: none; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .logo-moon .logo-moon__aro,
-  .logo-moon--c .logo-moon__aro .logo-moon__aro-exterior { animation: none; }
+.auth-orb {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 30%, #fff 0 6%, rgba(255, 255, 255, 0.3) 7% 18%, transparent 19%),
+    var(--grad);
+  box-shadow: 0 20px 60px -18px rgba(79, 70, 229, 0.6);
+  margin-bottom: 26px;
 }
 @media (max-width: 900px) {
   .auth-layout { grid-template-columns: 1fr; gap: 28px; }
   .auth-pitch { text-align: center; }
   .auth-pitch p { margin-inline: auto; }
   .auth-pitch ul { justify-items: start; width: fit-content; margin-inline: auto; }
-  .logo-moon { margin-inline: auto; }
+  .auth-orb { margin-inline: auto; width: 76px; height: 76px; }
 }
 
 .auth-card {
@@ -3422,6 +3411,24 @@ svg { flex: 0 0 auto; }
     radial-gradient(38% 30% at 100% 0%, rgba(79, 209, 224, 0.12), transparent 70%),
     var(--bg);
 }
+.auth-orb {
+  background: var(--grad);
+  box-shadow: 0 20px 50px -18px var(--accent), 0 0 0 10px var(--accent-soft);
+  position: relative;
+}
+.auth-orb::after {
+  content: '';
+  position: absolute;
+  inset: 26% 26% 34% 34%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  mix-blend-mode: overlay;
+  animation: respirar 6s var(--ease) infinite;
+}
+@keyframes respirar {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.12); opacity: 1; }
+}
 .auth-card {
   border-radius: var(--r-panel);
   border: 1px solid var(--line);
@@ -3439,7 +3446,7 @@ svg { flex: 0 0 auto; }
 @media (max-width: 760px) {
   .auth-shell { padding: 18px 14px 40px; }
   .auth-card { padding: 20px 18px; border-radius: 20px; }
-  .logo-moon { width: 76px; height: 76px; }
+  .auth-orb { width: 68px; height: 68px; }
 }
 
 /* ============================================================

@@ -281,11 +281,8 @@ body { background: var(--bg); }
 
 /* ---------- 30.5 Marca y acento ---------- */
 .marca-app .punto {
-  display: none !important;
-}
-.marca-app .logo-moon {
-  margin-bottom: 0 !important;
-  flex: none;
+  background: var(--aurora-grad);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.14), 0 8px 18px -8px rgba(99, 102, 241, 0.9);
 }
 .marca-app .marca-texto {
   background: var(--aurora-grad);

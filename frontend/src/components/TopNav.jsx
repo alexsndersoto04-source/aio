@@ -10,7 +10,6 @@ import { useAuth } from '../auth.jsx';
 import { useUnread } from '../unread.js';
 import { ThemeToggle } from './LeftNav.jsx';
 import Avatar from './Avatar.jsx';
-import LogoMoon from './LogoMoon.jsx';
 import {
   IconHome, IconExplore, IconBookmark, IconBell, IconMail, IconUser,
   IconSettings, IconShield, IconSearch, IconX, IconLogout, IconLayers,
@@ -86,7 +85,7 @@ export default function TopNav() {
     <header className="topnav">
       <div className="topnav-izq">
         <a className="marca-app" href="#/feed" aria-label="Moon, ir al inicio">
-          <LogoMoon tamano={24} />
+          <span className="punto" aria-hidden="true" />
           <span className="marca-texto">Moon</span>
         </a>
         <form className={`buscador-top${buscando ? ' abierto' : ''}`} onSubmit={buscar} role="search">

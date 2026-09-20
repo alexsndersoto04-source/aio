@@ -1,7 +1,6 @@
 // Moon — Recuperación de contraseña (solicitar + restablecer)
 
 import React, { useState } from 'react';
-import LogoMoon from '../components/LogoMoon.jsx';
 import { authApi } from '../api.js';
 
 /** Si se llega desde "Recuperar" con ?email=…, se deja escrito el correo. */
@@ -61,7 +60,7 @@ export default function ResetView({ token }) {
   return (
     <div className="auth-shell">
       <div className="auth-card">
-        <div className="brand" style={{ padding: 0, marginBottom: 18 }}><LogoMoon tamano={32} /><span>Moon</span></div>
+        <div className="brand"><span className="dot" />Moon</div>
         <h2>{token ? 'Nueva contraseña' : 'Recuperar acceso'}</h2>
         <p className="sub">
           {token

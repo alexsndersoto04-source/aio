@@ -13,7 +13,7 @@
  *   · estáticos     → caché primero (los /assets/ llevan hash e son inmutables)
  */
 
-const VERSION = 'moon-shell-v3';
+const VERSION = 'moon-shell-v4';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/iconos/icono-192.png', '/iconos/icono-512.png'];
 
 self.addEventListener('install', (ev) => {
