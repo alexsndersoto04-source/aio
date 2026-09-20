@@ -1,11 +1,13 @@
-# Verificación con un navegador de verdad (revision: 8)
+# Verificación con un navegador de verdad (revision: 9)
 # ============================================================
 # Compila la web, la sirve junto a la API y la abre con dos navegadores que se
 # llaman entre ellos (micrófono y cámara simulados). Sirve para comprobar las
 # llamadas de voz y video y para dejar capturas, sin tocar el sitio en vivo.
 #
 # Se dispara al tocar estos archivos. No deja nada visible: usa dos cuentas de
-# prueba ocultas y borra sus llamadas al terminar.
+# prueba ocultas y borra sus llamadas al terminar. La prueba parte siempre de un
+# hilo limpio, espera a que los dos navegadores estén enganchados y, si un aviso
+# no llega, recarga las pantallas y lo repite (hasta 3 intentos).
 name: Ver la web con un navegador
 
 on:
