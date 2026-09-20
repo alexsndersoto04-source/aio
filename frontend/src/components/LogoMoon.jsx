@@ -1,10 +1,9 @@
 // Moon — el logo
 // ============================================================
 // Diseño en estilo lineal (outline / solo de líneas y subrayado):
-// 1. La media luna dibujada SOLO con línea de contorno (sin relleno sólido).
-// 2. Un aro alrededor en trazo lineal segmentado que gira en movimiento continuo.
-// 3. Una línea de subrayado elegante en la base.
-// Todo con el color característico de la marca Moon.
+// 1. Media luna: dibujada solo con trazos de líneas, sin relleno sólido, del mismo color del orbe.
+// 2. Aro: solo de líneas, rodeando e inclinando la luna, con animación de giro continuo.
+// 3. Subrayado: línea estilizada en la base.
 
 import React from 'react';
 
@@ -27,40 +26,33 @@ export default function LogoMoon({ tamano = 96, titulo = 'Moon' }) {
     >
       {/* 1. Aro exterior en movimiento continuo, solo trazo de líneas segmentado */}
       <g className="logo-moon__aro">
-        <circle
+        <ellipse
           cx="60"
-          cy="54"
-          r="44"
+          cy="52"
+          rx="46"
+          ry="32"
           {...trazo}
-          strokeWidth="2.5"
-          strokeDasharray="55 35 45 35 40 30"
+          strokeWidth="2.4"
+          strokeDasharray="65 30 50 30"
+          transform="rotate(-20 60 52)"
         />
       </g>
 
-      {/* 2. Media luna: diseño SOLO DE LÍNEAS (contorno hueco, sin relleno sólido) */}
+      {/* 2. Media luna: diseño SOLO DE LÍNEAS (contorno visible, sin relleno) */}
       <path
-        d="M 60 25 A 29 29 0 0 0 60 83 A 24 24 0 0 1 60 25 Z"
+        d="M 60 22 A 30 30 0 0 0 60 82 A 23 23 0 0 1 60 22 Z"
         {...trazo}
         strokeWidth="3.2"
       />
 
-      {/* 3. Subrayado de líneas en la base */}
+      {/* 3. Subrayado elegante en la base */}
       <line
-        x1="38"
-        y1="110"
-        x2="82"
-        y2="110"
+        x1="36"
+        y1="108"
+        x2="84"
+        y2="108"
         {...trazo}
         strokeWidth="3"
-      />
-      <line
-        x1="48"
-        y1="115"
-        x2="72"
-        y2="115"
-        {...trazo}
-        strokeWidth="1.8"
-        opacity="0.6"
       />
     </svg>
   );

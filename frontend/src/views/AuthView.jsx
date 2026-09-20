@@ -92,7 +92,6 @@ export default function AuthView({ mode }) {
 
         <section className="auth-card">
           <div className="brand" style={{ padding: 0, marginBottom: 18 }}>
-            <LogoMoon tamano={32} />
             <span>Moon<small>Red social</small></span>
           </div>
 
