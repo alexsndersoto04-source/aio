@@ -19,6 +19,10 @@ const llamadas = new Map();
 
 const TIPOS_LLAMADA = new Set(['call_start', 'call_accept', 'call_reject', 'call_end', 'call_signal']);
 
+// Cuánto aguanta una llamada esperando a que el otro abra Moon y conteste
+// (le suena el teléfono con el aviso).
+const VIDA_LLAMADA_SIN_TELEFONO_MS = 90_000;
+
 // ¿Estas dos personas tienen una conversación abierta? Solo entre ellas se
 // permite pasar sobres de llamada (nadie puede llamar a un desconocido).
 async function sonPareja(pool, uno_, otro) {
@@ -79,6 +83,26 @@ export function montarWs(servidorHttp, pool, secreto) {
         if (Number(otro) !== uid) enviarA(Number(otro), { type: 'presence', user_id: uid, online: true });
       }
     }, 50);
+
+    // ¿Le estaba entrando una llamada mientras no tenía Moon abierto? Ahora que
+    // lo abrió, le timbra. Se manda dos veces (al segundo y a los tres
+    // segundos) para que no se pierda si la app todavía está arrancando; la
+    // pantalla del que recibe sabe ignorar el repetido.
+    for (const retraso of [700, 3000]) {
+      setTimeout(() => {
+        void (async () => {
+          for (const [id, datos] of llamadas) {
+            if (datos.para !== uid) continue;
+            if (Date.now() - Number(datos.creada || 0) > VIDA_LLAMADA_SIN_TELEFONO_MS) {
+              llamadas.delete(id);
+              continue;
+            }
+            const quien = await uno(pool, 'SELECT id, username, display_name, avatar_url FROM users WHERE id = $1', [datos.de]);
+            timbrarA(uid, { ...datos, id }, quien);
+          }
+        })();
+      }, retraso);
+    }
 
     ws.on('message', async (datos) => {
       let msg;
@@ -175,8 +199,26 @@ export function montarWs(servidorHttp, pool, secreto) {
   return wss;
 }
 
+// Le manda el timbrazo a alguien: lo usa la llamada normal y también el
+// aviso que se repite cuando la persona abre Moon.
+function timbrarA(uid, datos, quien) {
+  enviarA(Number(uid), {
+    type: 'call_ring',
+    call_id: datos.id,
+    tipo: datos.tipo,
+    conversation_id: datos.conversation_id || null,
+    de: {
+      id: Number(datos.de),
+      username: quien?.username || '',
+      display_name: quien?.display_name || quien?.username || '',
+      avatar_url: quien?.avatar_url || '',
+    },
+  });
+}
+
 // Atiende un sobre de llamada y lo pasa al otro teléfono.
-//   call_start  → al otro: call_ring (con quién llama) o call_sin_conexion
+//   call_start  → al otro: call_ring (con quién llama), call_avisando (se le
+//                 avisó al teléfono y sigue sonando) o call_sin_conexion
 //   call_accept → al otro: call_aceptada
 //   call_reject → al otro: call_rechazada
 //   call_end    → al otro: call_terminada
@@ -208,25 +250,46 @@ async function atenderLlamada(ws, uid, msg) {
       }
       void otraId;
     }
+    const quien = await uno(ws._pool, 'SELECT id, username, display_name, avatar_url FROM users WHERE id = $1', [uid]);
+    const conversacion = Number(msg.conversation_id) || null;
+    // La llamada queda anotada aunque el otro no tenga Moon abierto: así, si lo
+    // abre dentro de un rato, le timbra igual (ver el aviso al conectar).
+    const anotada = { id, de: uid, para: otro, tipo, conversation_id: conversacion, creada: Date.now() };
+    llamadas.set(id, anotada);
+
     const vivos = conexiones.get(otro);
-    if (!vivos || vivos.size === 0) {
-      ws.enviar({ type: 'call_sin_conexion', call_id: id });
+    if (vivos && vivos.size > 0) {
+      timbrarA(otro, anotada, quien);
       return;
     }
-    const quien = await uno(ws._pool, 'SELECT id, username, display_name, avatar_url FROM users WHERE id = $1', [uid]);
-    llamadas.set(id, { de: uid, para: otro, tipo });
-    enviarA(otro, {
-      type: 'call_ring',
-      call_id: id,
-      tipo,
-      conversation_id: Number(msg.conversation_id) || null,
-      de: {
-        id: Number(uid),
-        username: quien?.username || '',
-        display_name: quien?.display_name || quien?.username || '',
-        avatar_url: quien?.avatar_url || '',
-      },
-    });
+
+    // No tiene Moon abierto: si tiene un teléfono apuntado (avisos encendidos),
+    // se le manda el aviso y la llamada sigue viva esperando a que lo abra.
+    // El aviso sale por detrás: el que llama no espera a que se entregue.
+    const [telefonos, prefs] = await Promise.all([
+      uno(ws._pool, 'SELECT COUNT(*)::int AS n FROM push_subscriptions WHERE user_id = $1', [otro]),
+      uno(ws._pool, 'SELECT * FROM notification_prefs WHERE user_id = $1', [otro]),
+    ]);
+    const cuantosTelefonos = Number(telefonos?.n || 0);
+    const avisosApagados = prefs ? prefs.message === false : false;
+    if (cuantosTelefonos > 0 && !avisosApagados) {
+      empujarSiQuiere(ws._pool, otro, 'message', {
+        titulo: `${quien?.display_name || quien?.username || 'Moon'} te está llamando`,
+        texto: `${tipo === 'video' ? 'Videollamada' : 'Llamada de voz'}. Toca para abrir Moon y contestar.`,
+        url: conversacion ? `#/messages/${conversacion}` : '#/messages',
+        etiqueta: `llamada-${id}`,
+        urgente: true,
+        quedarse: true,
+        vibrar: [400, 200, 400, 200, 400],
+      }).catch(() => {});
+      ws.enviar({ type: 'call_avisando', call_id: id, dispositivos: cuantosTelefonos });
+      return;
+    }
+
+    // Sin teléfono apuntado (o con los avisos apagados) no hay forma de
+    // avisarle: se dice tal cual y la llamada termina.
+    llamadas.delete(id);
+    ws.enviar({ type: 'call_sin_conexion', call_id: id });
     return;
   }
 

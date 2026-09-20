@@ -89,7 +89,10 @@ self.addEventListener('push', (evento) => {
     tag: datos.etiqueta || 'moon',
     renotify: true,
     data: { url: datos.url || '#/feed' },
-    vibrate: [40, 30, 40],
+    vibrate: Array.isArray(datos.vibrar) && datos.vibrar.length ? datos.vibrar : [40, 30, 40],
+    // Las llamadas se quedan en pantalla hasta que la persona las atienda o
+    // las quite, para que no se pierdan mientras suena el teléfono.
+    requireInteraction: datos.quedarse === true,
   };
   evento.waitUntil(self.registration.showNotification(titulo, opciones));
 });

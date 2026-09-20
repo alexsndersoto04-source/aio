@@ -57,6 +57,7 @@ export async function enviarEmpuje(pool, userId, aviso) {
     [Number(userId)]
   );
   let enviados = 0;
+  let dispositivos = 0;
   for (const s of subs.rows) {
     const suscripcion = { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } };
     const cuerpo = JSON.stringify({
@@ -66,34 +67,47 @@ export async function enviarEmpuje(pool, userId, aviso) {
       icon: '/iconos/icono-192.png',
       badge: '/iconos/icono-192.png',
       etiqueta: aviso.etiqueta || aviso.url || 'moon',
+      // Los avisos de llamada se quedan en pantalla y vibran más fuerte,
+      // como el timbre de una llamada de verdad.
+      vibrar: aviso.vibrar || null,
+      quedarse: aviso.quedarse === true,
     });
     try {
-      await webpush.sendNotification(suscripcion, cuerpo, { TTL: 12 * 3600 });
+      await webpush.sendNotification(suscripcion, cuerpo, {
+        TTL: aviso.quedarse ? 60 : 12 * 3600,
+        urgency: aviso.urgente ? 'high' : 'normal',
+      });
       enviados += 1;
+      dispositivos += 1;
       pool.query('UPDATE push_subscriptions SET last_ok_at = NOW(), last_error = \'\' WHERE id = $1', [s.id]).catch(() => {});
     } catch (e) {
       const codigo = e?.statusCode || 0;
       if (codigo === 404 || codigo === 410) {
+        // Ese navegador ya no existe: se borra de la lista y no cuenta.
         pool.query('DELETE FROM push_subscriptions WHERE id = $1', [s.id]).catch(() => {});
       } else {
+        // Problema pasajero: el teléfono sigue apuntado.
+        dispositivos += 1;
         pool.query('UPDATE push_subscriptions SET last_error = $2 WHERE id = $1', [s.id, String(e.message || e).slice(0, 200)]).catch(() => {});
       }
     }
   }
-  return { enviados };
+  return { enviados, dispositivos };
 }
 
-/** Avisa a alguien si tiene el aviso encendido, sin romper nada si falla. */
+/**
+ * Avisa a alguien si tiene el aviso encendido, sin romper nada si falla.
+ * Devuelve cuántos avisos salieron y cuántos teléfonos hay apuntados.
+ */
 export async function empujarSiQuiere(pool, userId, clave, aviso) {
   try {
     if (clave) {
       const prefs = await uno(pool, 'SELECT * FROM notification_prefs WHERE user_id = $1', [userId]);
-      if (prefs && prefs[clave] === false) return 0;
+      if (prefs && prefs[clave] === false) return { enviados: 0, dispositivos: 0 };
     }
-    const r = await enviarEmpuje(pool, userId, aviso);
-    return r.enviados;
+    return await enviarEmpuje(pool, userId, aviso);
   } catch (e) {
     console.error('[push] fallo al avisar:', e.message);
-    return 0;
+    return { enviados: 0, dispositivos: 0 };
   }
 }

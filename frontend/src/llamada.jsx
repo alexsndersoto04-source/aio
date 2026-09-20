@@ -26,6 +26,9 @@ const LlamadasContext = createContext(null);
 
 // Cuánto suena antes de darse por no contestada (35 s, como las demás apps).
 const ESPERA_TIMBRADO_MS = 35000;
+// Cuando el otro no tiene Moon abierto, se le avisa al teléfono: se le da más
+// tiempo para abrirlo y contestar (el servidor guarda la llamada 90 s).
+const ESPERA_AVISO_MS = 60000;
 
 function identificador() {
   return `L${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -424,6 +427,9 @@ export function LlamadasProvider({ children }) {
       const datos = llamada.current;
 
       if (ev.type === 'call_ring') {
+        // El mismo timbrazo repetido (pasa cuando se manda por segunda vez al
+        // abrir Moon) no es otra llamada: se ignora.
+        if (datos && datos.id === ev.call_id) return;
         if (estado !== 'inactiva') {
           realtime.send({ type: 'call_reject', call_id: ev.call_id, to: ev.de?.id, motivo: 'ocupado' });
           return;
@@ -451,6 +457,7 @@ export function LlamadasProvider({ children }) {
 
       if (ev.type === 'call_aceptada') {
         pararTimbre();
+        setDetalle('');
         if (espera.current) { clearTimeout(espera.current); espera.current = null; }
         (async () => {
           setEstado('activa');
@@ -499,8 +506,23 @@ export function LlamadasProvider({ children }) {
         return;
       }
 
+      if (ev.type === 'call_avisando') {
+        // No tiene Moon abierto, pero sí teléfono: se le avisó y la llamada
+        // sigue esperando a que lo abra y conteste.
+        if (ev.call_id !== datos.id) return;
+        setDetalle('Le está sonando el teléfono…');
+        toast.info('Le está sonando el teléfono');
+        if (espera.current) { clearTimeout(espera.current); espera.current = null; }
+        espera.current = setTimeout(() => {
+          realtime.send({ type: 'call_end', call_id: datos.id, to: datos.partner.id, segundos: 0 });
+          anotar(datos, 'llamada_perdida', 0);
+          terminar('No contestó');
+        }, ESPERA_AVISO_MS);
+        return;
+      }
+
       if (ev.type === 'call_sin_conexion') {
-        terminar('No tiene Moon abierto en este momento');
+        terminar('No tiene Moon abierto ni los avisos encendidos');
         return;
       }
 

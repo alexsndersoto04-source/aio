@@ -39,6 +39,9 @@ const A = sesiones.pruebafotos;
 const B = sesiones.prueballamada;
 const convId = sesiones.conversacion.id;
 const API = sesiones.api;
+// Teléfono de mentira, solo para la prueba del aviso (aquí no hay servicio de
+// avisos de verdad). Se borra al terminar.
+const TELEFONO_FALSO = `https://aviso-de-prueba.moon/${Date.now()}`;
 
 const informe = {
   conversacion: convId,
@@ -176,7 +179,7 @@ const navegador = await chromium.launch({
 
 try {
   const a = await abrirNavegador(A, 'A');
-  const b = await abrirNavegador(B, 'B');
+  let b = await abrirNavegador(B, 'B');
   anota('chats abiertos', { a: !!a.pagina, b: !!b.pagina });
 
   // Nada de pruebas anteriores a la vista: si el hilo trae filas de llamadas
@@ -340,6 +343,65 @@ try {
     throw new Error(`las filas de las llamadas salieron mal: A=${JSON.stringify(videoA)} B=${JSON.stringify(videoB)}`);
   }
 
+  // ---------- Llamada con el otro teléfono sin Moon abierto ----------
+  // Se le apunta a B un teléfono para el aviso (uno de mentira: aquí no hay
+  // servicio de avisos de verdad) y se cierra su pantalla. Es lo que vive una
+  // persona cuando le llaman con Moon cerrado.
+  await fetch(`${API}/api/push/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + B.access_token },
+    body: JSON.stringify({
+      endpoint: TELEFONO_FALSO,
+      keys: { p256dh: 'B'.repeat(40), auth: 'A'.repeat(22) },
+      device: 'prueba',
+    }),
+  }).then((r) => r.status).catch(() => 0);
+  const estadoAvisos = await llamarAlApi('GET', '/api/push/estado', B.access_token);
+  anota('B apunta un teléfono para el aviso', { telefonos: estadoAvisos?.dispositivos ?? null });
+
+  await b.contexto.close();
+  await a.pagina.waitForTimeout(2000); // que el servidor note que se fue
+
+  await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
+  await a.pagina.waitForSelector('.llamada[data-llamada="saliendo"]', { timeout: 10000 });
+  const hayAviso = await a.pagina.waitForSelector('.llamada-error', { timeout: 25000 }).then(() => true).catch(() => false);
+  const textoAviso = ((await a.pagina.textContent('.llamada-error').catch(() => '')) || '').trim();
+  anota('aviso en la pantalla del que llama', { hayAviso, texto: textoAviso });
+  if (!/tel[eé]fono/i.test(textoAviso)) {
+    throw new Error(`no avisó de que le está sonando el teléfono: ${textoAviso}`);
+  }
+  await a.pagina.screenshot({ path: path.join(FOTOS, '7-sonando-en-su-telefono.png') });
+
+  // La llamada tiene que seguir viva: no se cae sola mientras suena el teléfono.
+  await a.pagina.waitForTimeout(12000);
+  const sigueViva = await a.pagina.isVisible('.llamada').catch(() => false);
+  anota('la llamada sigue esperando', { sigueViva });
+  if (!sigueViva) throw new Error('la llamada se cerró en vez de esperar a que abriera Moon');
+
+  // Abre Moon: le tiene que timbrar en el momento.
+  b = await abrirNavegador(B, 'B2');
+  await b.pagina.waitForSelector('.llamada[data-llamada="entrando"]', { timeout: 25000 });
+  anota('al abrir Moon le timbra', { pantallaEntrante: true });
+  await b.pagina.screenshot({ path: path.join(FOTOS, '8-entrante-al-abrir-moon.png') });
+  await b.pagina.click('.boton-llamada.verde');
+  await a.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
+  await b.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
+  anota('voz conectada tras abrir Moon', { conexion: 'conectada' });
+
+  await a.pagina.click('.control.colgar');
+  await a.pagina.waitForSelector('.llamada', { state: 'detached', timeout: 15000 });
+  await b.pagina.waitForSelector('.llamada', { state: 'detached', timeout: 15000 });
+  await a.pagina.waitForTimeout(2000);
+  const tresA = await leerFilas(a.pagina, 3);
+  const tresB = await leerFilas(b.pagina, 3);
+  const cuantas3 = (filas, texto) => filas.filter((t) => t.includes(texto)).length;
+  anota('las tres llamadas anotadas', { enA: tresA, enB: tresB });
+  if (tresA.length !== 3 || tresB.length !== 3
+      || cuantas3(tresA, 'Llamada de voz') !== 2 || cuantas3(tresB, 'Llamada de voz') !== 2
+      || cuantas3(tresA, 'Videollamada') !== 1 || cuantas3(tresB, 'Videollamada') !== 1) {
+    throw new Error(`las tres llamadas no quedaron anotadas igual: A=${JSON.stringify(tresA)} B=${JSON.stringify(tresB)}`);
+  }
+
   informe.ok = true;
 } catch (e) {
   informe.ok = false;
@@ -357,6 +419,17 @@ try {
     }
   } catch (e) {
     anota('limpieza con problema', { detalle: String(e).slice(0, 160) });
+  }
+  // El teléfono de mentira se quita: ni rastro de la prueba.
+  try {
+    const r = await fetch(`${API}/api/push/subscribe`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + B.access_token },
+      body: JSON.stringify({ endpoint: TELEFONO_FALSO }),
+    });
+    anota('teléfono de prueba quitado', { ok: r.ok });
+  } catch (e) {
+    anota('no se pudo quitar el teléfono de prueba', { detalle: String(e).slice(0, 120) });
   }
   await navegador.close();
   fs.writeFileSync(SALIDA, JSON.stringify(informe, null, 1));
