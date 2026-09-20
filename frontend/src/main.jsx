@@ -16,7 +16,18 @@ instalarDemo();
 // demostración (en desarrollo o en la demo estorbaría con la caché).
 if (import.meta.env.PROD && !esDemo() && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    registrarServicio();
+    registrarServicio().then((reg) => {
+      if (reg) reg.update().catch(() => {});
+    });
+  });
+  // Si un service worker nuevo toma el control, recargar suavemente para que
+  // todo el usuario vea los cambios nuevos inmediatamente sin quedarse pegado.
+  let recargando = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!recargando) {
+      recargando = true;
+      window.location.reload();
+    }
   });
 }
 
