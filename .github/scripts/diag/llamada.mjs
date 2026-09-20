@@ -93,6 +93,18 @@ async function esperarTubo(quien, etiqueta, limiteMs = 45000) {
   return false;
 }
 
+async function leerFilas(pagina, minimo = 1, limiteMs = 15000) {
+  // Las filas pueden tardar un poco en pintarse: se esperan hasta 15 s.
+  const desde = Date.now();
+  let filas = [];
+  while (Date.now() - desde < limiteMs) {
+    filas = await pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
+    if (filas.length >= minimo) return filas;
+    await pagina.waitForTimeout(1000);
+  }
+  return filas;
+}
+
 async function abrirNavegador(sesion, etiqueta) {
   const contexto = await navegador.newContext({
     viewport: { width: 390, height: 844 },
@@ -265,8 +277,8 @@ try {
 
   // La llamada queda anotada una sola vez en el hilo.
   await b.pagina.waitForTimeout(1500);
-  const filasB = await b.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
-  const filasA = await a.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
+  const filasB = await leerFilas(b.pagina, 1);
+  const filasA = await leerFilas(a.pagina, 1);
   anota('anotada en el chat', { enA: filasA, enB: filasB });
   const cuantas = (filas, texto) => filas.filter((t) => t.includes(texto)).length;
   if (filasA.length !== 1 || filasB.length !== 1
@@ -318,8 +330,8 @@ try {
 
   // La fila de la videollamada tambien queda en los dos lados.
   await a.pagina.waitForTimeout(1500);
-  const videoA = await a.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
-  const videoB = await b.pagina.$$eval('.fila-llamada', (nodos) => nodos.map((n) => n.textContent.trim()));
+  const videoA = await leerFilas(a.pagina, 2);
+  const videoB = await leerFilas(b.pagina, 2);
   anota('videollamada anotada', { enA: videoA, enB: videoB });
   const cuantasV = (filas, texto) => filas.filter((t) => t.includes(texto)).length;
   if (videoA.length !== 2 || videoB.length !== 2

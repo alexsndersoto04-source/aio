@@ -350,6 +350,12 @@ export function registrarRutasMensajes(router) {
     );
     const publico = mensajePublico(conCita || creado);
     enviarA(otroId, { type: 'message', conversation_id: Number(conv.id), message: publico });
+    // Las filas de llamada se avisan también a quien las escribió: su teléfono
+    // no recibe sus propios mensajes, y así la fila le sale igual que al otro
+    // lado, sin depender de nada más.
+    if (esLlamada) {
+      enviarA(Number(yo.id), { type: 'message', conversation_id: Number(conv.id), message: publico });
+    }
 
     // Si el otro la había ocultado o archivado, un mensaje nuevo la devuelve a la lista.
     await c.pool.query(

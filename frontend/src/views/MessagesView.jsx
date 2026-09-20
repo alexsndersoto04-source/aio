@@ -143,9 +143,17 @@ export default function MessagesView({ conversationId }) {
   // Tiempo real: mensajes nuevos, lectura, reacciones, borrados
   useEffect(() => {
     const off = realtime.on((ev) => {
-      if (ev.type === 'message' && ev.conversation_id === convId && ev.message?.sender_id !== user?.id) {
-        setThread((t) => (t ? { ...t, messages: [...t.messages, ev.message] } : t));
-        api.post(`/api/messages/conversations/${convId}/read`, {}).catch(() => {});
+      if (ev.type === 'message' && ev.conversation_id === convId) {
+        const esMio = ev.message?.sender_id === user?.id;
+        if (!esMio) {
+          setThread((t) => (t ? { ...t, messages: [...t.messages, ev.message] } : t));
+          api.post(`/api/messages/conversations/${convId}/read`, {}).catch(() => {});
+        } else if (ev.message?.id) {
+          // Un mensaje propio repetido por el servidor (las filas de llamada):
+          // se pone una sola vez, sin duplicar lo que ya esté en pantalla.
+          setThread((t) => (t && !t.messages.some((m) => Number(m.id) === Number(ev.message.id))
+            ? { ...t, messages: [...t.messages, ev.message] } : t));
+        }
       } else if (ev.type === 'message_reacted' && ev.conversation_id === convId) {
         setThread((t) => (t ? {
           ...t,
