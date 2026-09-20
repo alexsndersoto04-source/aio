@@ -95,8 +95,12 @@ async function colarLaVoz(flujo) {
     const quitaSiseo = ctx.createBiquadFilter();
     quitaSiseo.type = 'lowpass'; quitaSiseo.frequency.value = 7800;
     const empareja = ctx.createDynamicsCompressor();
-    empareja.threshold.value = -26; empareja.knee.value = 12; empareja.ratio.value = 3;
+    empareja.threshold.value = -20; empareja.knee.value = 10; empareja.ratio.value = 2.5;
     empareja.attack.value = 0.004; empareja.release.value = 0.18;
+    // El emparejador deja la voz más pareja, pero también más bajita: aquí se
+    // le devuelve el volumen para que el otro la oiga igual de fuerte.
+    const realza = ctx.createGain();
+    realza.gain.value = 1.8;
     const puerta = ctx.createGain();
     puerta.gain.value = 1;
     const oreja = ctx.createAnalyser();
@@ -106,9 +110,10 @@ async function colarLaVoz(flujo) {
     fuente.connect(quitaRetumbe);
     quitaRetumbe.connect(quitaSiseo);
     quitaSiseo.connect(empareja);
-    empareja.connect(puerta);
+    empareja.connect(realza);
+    realza.connect(puerta);
     puerta.connect(destino);
-    empareja.connect(oreja); // se mide la voz ya limpia
+    realza.connect(oreja); // se mide la voz ya limpia
 
     // Puerta suave: con voz, se abre del todo; con solo ruido de fondo, se
     // baja a la mitad (no a cero, para no cortar el principio de las palabras).
