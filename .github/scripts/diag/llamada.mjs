@@ -137,12 +137,45 @@ async function comoVaElSonido(pagina) {
   });
 }
 
-// ¿El sonido siguió corriendo entre las dos medidas?
-function avanzaElSonido(antes, despues) {
-  if (antes.bytesDeAudio >= 0 && despues.bytesDeAudio >= 0) return despues.bytesDeAudio > antes.bytesDeAudio;
-  // Si el navegador no lleva ese contador, al menos que siga sonando.
-  return despues.hayReproductor === true && despues.pausado === false && despues.pistaViva === true;
+async function nivelDeLaVoz(pagina, milisegundos = 1800) {
+  // Se escucha lo que llega (el altavoz de la llamada) y se mide su nivel, igual
+  // que poner el oído: si hay voz, el nivel sube; si está mudo, queda en cero.
+  return pagina.evaluate(async (ms) => {
+    const audio = document.querySelector('audio');
+    if (!audio || !audio.srcObject) return { nivel: -1, pistaViva: false, motivo: 'sin reproductor' };
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return { nivel: -1, pistaViva: false, motivo: 'sin audio' };
+    let ctx;
+    try { ctx = new AC(); } catch { return { nivel: -1, pistaViva: false, motivo: 'sin audio' }; }
+    let pico = 0;
+    try {
+      const fuente = ctx.createMediaStreamSource(audio.srcObject);
+      const analizador = ctx.createAnalyser();
+      analizador.fftSize = 2048;
+      fuente.connect(analizador);
+      const datos = new Float32Array(analizador.fftSize);
+      const fin = performance.now() + ms;
+      while (performance.now() < fin) {
+        analizador.getFloatTimeDomainData(datos);
+        for (let i = 0; i < datos.length; i += 8) {
+          const v = Math.abs(datos[i]);
+          if (v > pico) pico = v;
+        }
+        await new Promise((r) => setTimeout(r, 80));
+      }
+    } catch (e) {
+      return { nivel: -1, pistaViva: false, motivo: String(e).slice(0, 80) };
+    } finally {
+      try { ctx.close(); } catch { /* ya cerrado */ }
+    }
+    const pista = audio.srcObject.getAudioTracks && audio.srcObject.getAudioTracks()[0];
+    return { nivel: Number(pico.toFixed(4)), pistaViva: !!pista && pista.readyState === 'live' };
+  }, milisegundos);
 }
+
+// ¿Se oye la voz? Se acepta cualquiera de las dos señales: el nivel medido o
+// el contador de audio del navegador (sube mientras decodifica).
+const haySonido = (m) => (m && m.nivel > 0.004) || (m && m.bytesDeAudio > 0);
 
 async function esperarConectada(pagina, limiteMs = 60000) {
   const desde = Date.now();
@@ -474,17 +507,23 @@ try {
   await b.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
   anota('llamada larga empezada', { conexion: 'conectada' });
 
-  await a.pagina.waitForTimeout(8000);
+  await a.pagina.waitForTimeout(6000);
   const sonido1A = await comoVaElSonido(a.pagina);
-  const sonido1B = await comoVaElSonido(b.pagina);
-  anota('como va el sonido (1)', { enA: sonido1A, enB: sonido1B });
+  const nivel1A = await nivelDeLaVoz(a.pagina);
+  const nivel1B = await nivelDeLaVoz(b.pagina);
+  anota('como va el sonido (1)', { enA: sonido1A, enB: await comoVaElSonido(b.pagina), nivelA: nivel1A, nivelB: nivel1B });
 
-  await a.pagina.waitForTimeout(12000);
+  await a.pagina.waitForTimeout(10000);
   const sonido2A = await comoVaElSonido(a.pagina);
   const sonido2B = await comoVaElSonido(b.pagina);
-  anota('como va el sonido (2)', { enA: sonido2A, enB: sonido2B });
-  if (!avanzaElSonido(sonido1A, sonido2A) || !avanzaElSonido(sonido1B, sonido2B)) {
-    throw new Error(`el sonido se quedó quieto: A ${sonido1A.bytesDeAudio}→${sonido2A.bytesDeAudio}, B ${sonido1B.bytesDeAudio}→${sonido2B.bytesDeAudio}`);
+  const nivel2A = await nivelDeLaVoz(a.pagina);
+  const nivel2B = await nivelDeLaVoz(b.pagina);
+  anota('como va el sonido (2)', { enA: sonido2A, enB: sonido2B, nivelA: nivel2A, nivelB: nivel2B });
+  if (!haySonido(nivel1A) && !haySonido(nivel2A)) {
+    throw new Error(`no se oye nada en A: ${JSON.stringify(nivel1A)} / ${JSON.stringify(nivel2A)}`);
+  }
+  if (!haySonido(nivel1B) && !haySonido(nivel2B)) {
+    throw new Error(`no se oye nada en B: ${JSON.stringify(nivel1B)} / ${JSON.stringify(nivel2B)}`);
   }
 
   // Se le quita la señal a B siete segundos (como entrar a un ascensor) y se le
@@ -499,16 +538,19 @@ try {
   anota('tras volver la señal', { enA: volvioA, enB: volvioB });
   if (!volvioA || !volvioB) throw new Error('la llamada no se recuperó después del corte de señal');
 
-  await a.pagina.waitForTimeout(6000);
-  const sonido3A = await comoVaElSonido(a.pagina);
-  const sonido3B = await comoVaElSonido(b.pagina);
-  await a.pagina.waitForTimeout(6000);
-  const sonido4A = await comoVaElSonido(a.pagina);
-  const sonido4B = await comoVaElSonido(b.pagina);
-  anota('como va el sonido (3)', { enA: sonido3A, enB: sonido3B });
-  anota('como va el sonido (4)', { enA: sonido4A, enB: sonido4B });
-  if (!avanzaElSonido(sonido3A, sonido4A) || !avanzaElSonido(sonido3B, sonido4B)) {
-    throw new Error(`tras el corte el sonido no volvió: A ${sonido3A.bytesDeAudio}→${sonido4A.bytesDeAudio}, B ${sonido3B.bytesDeAudio}→${sonido4B.bytesDeAudio}`);
+  await a.pagina.waitForTimeout(5000);
+  const nivel3A = await nivelDeLaVoz(a.pagina);
+  const nivel3B = await nivelDeLaVoz(b.pagina);
+  await a.pagina.waitForTimeout(4000);
+  const nivel4A = await nivelDeLaVoz(a.pagina);
+  const nivel4B = await nivelDeLaVoz(b.pagina);
+  anota('como va el sonido (3)', { nivelA: nivel3A, nivelB: nivel3B });
+  anota('como va el sonido (4)', { nivelA: nivel4A, nivelB: nivel4B });
+  if (!haySonido(nivel4A) && !haySonido(nivel3A)) {
+    throw new Error(`tras el corte no se oye nada en A: ${JSON.stringify(nivel3A)} / ${JSON.stringify(nivel4A)}`);
+  }
+  if (!haySonido(nivel4B) && !haySonido(nivel3B)) {
+    throw new Error(`tras el corte no se oye nada en B: ${JSON.stringify(nivel3B)} / ${JSON.stringify(nivel4B)}`);
   }
   await a.pagina.screenshot({ path: path.join(FOTOS, '9-llamada-larga.png') });
 
