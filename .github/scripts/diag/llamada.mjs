@@ -195,10 +195,19 @@ try {
   let sonoEnB = false;
   for (let intento = 1; intento <= 3 && !sonoEnB; intento += 1) {
     if (intento > 1) {
-      // Se cuelga lo que quedo del intento anterior y se deja el hilo limpio.
+      // Se cuelga lo que quedo del intento anterior, se borra del hilo y se
+      // recargan las dos pantallas: la fila «perdida» del intento fallido
+      // seguia pintada (el borrado solo avisa al otro lado), y el tubo suele
+      // quedar recien reconectado.
       await a.pagina.click('.control.colgar').catch(() => {});
       await a.pagina.waitForTimeout(1500);
       await limpiarRastros(`antes del intento ${intento}`);
+      await a.pagina.reload({ waitUntil: 'domcontentloaded' });
+      await b.pagina.reload({ waitUntil: 'domcontentloaded' });
+      await a.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 60000 });
+      await b.pagina.waitForSelector('.chat-thread .head .boton-llamar', { timeout: 60000 });
+      await esperarTubo(a, `A (intento ${intento})`, 30000);
+      await esperarTubo(b, `B (intento ${intento})`, 30000);
     }
     await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
     await a.pagina.waitForSelector('.llamada[data-llamada="saliendo"]', { timeout: 10000 });
