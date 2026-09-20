@@ -1,6 +1,7 @@
 // Verificación de llamadas con DOS navegadores de verdad que se llaman entre
 // ellos (micrófono y cámara simulados por Chrome). Comprueba la llamada de voz
-// y la de video de punta a punta y deja capturas.
+// y la de video de punta a punta, una videollamada larga con un corte de senal
+// en medio, y deja capturas.
 //
 // Uso: node llamada.mjs <web> <sesiones.json> <carpeta-de-capturas> <salida.json>
 //
@@ -127,7 +128,7 @@ async function comoVaElSonido(pagina) {
   // Se mira el reproductor de la voz: si está sonando, el navegador va
   // decodificando audio (el contador sube). También se mira la pista remota.
   return pagina.evaluate(() => {
-    const audio = document.querySelector('audio');
+    const audio = document.querySelector('audio') || document.querySelector('.video-remoto');
     const video = document.querySelector('.video-remoto');
     return {
       estado: document.querySelector('.llamada')?.dataset.conexion || '',
@@ -142,11 +143,38 @@ async function comoVaElSonido(pagina) {
   });
 }
 
+async function comoVaElVideo(pagina) {
+  // Mira la imagen que llega: si hay cuadro y si los cuadros van subiendo
+  // (subiendo = la imagen corre; quieto = quedó congelada).
+  return pagina.evaluate(() => {
+    const v = document.querySelector('.video-remoto');
+    if (!v) return { hayVideoRemoto: false, ancho: 0, alto: 0, cuadros: -1, corriendo: false };
+    let cuadros = -1;
+    try {
+      if (v.getVideoPlaybackQuality) cuadros = v.getVideoPlaybackQuality().totalVideoFrames;
+      else if (v.webkitDecodedFrameCount != null) cuadros = v.webkitDecodedFrameCount;
+    } catch { cuadros = -1; }
+    return {
+      hayVideoRemoto: true,
+      ancho: v.videoWidth || 0,
+      alto: v.videoHeight || 0,
+      cuadros,
+      corriendo: !v.paused && !v.ended,
+    };
+  });
+}
+
+// La imagen corre de verdad solo si hay cuadro y los cuadros suben entre las dos
+// medidas (con 3 s de diferencia).
+const imagenCorre = (antes, despues) => !!(antes && despues)
+  && antes.ancho > 0 && despues.ancho > 0
+  && antes.cuadros >= 0 && despues.cuadros > antes.cuadros;
+
 async function nivelDeLaVoz(pagina, milisegundos = 1800) {
   // Se escucha lo que llega (el altavoz de la llamada) y se mide su nivel, igual
   // que poner el oído: si hay voz, el nivel sube; si está mudo, queda en cero.
   return pagina.evaluate(async (ms) => {
-    const audio = document.querySelector('audio');
+    const audio = document.querySelector('audio') || document.querySelector('.video-remoto');
     if (!audio || !audio.srcObject) return { nivel: -1, pistaViva: false, motivo: 'sin reproductor' };
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return { nivel: -1, pistaViva: false, motivo: 'sin audio' };
@@ -537,26 +565,40 @@ try {
     throw new Error(`las tres llamadas no quedaron anotadas igual: A=${JSON.stringify(tresA)} B=${JSON.stringify(tresB)}`);
   }
 
-  // ---------- Llamada larga: que no se corte sola y que el sonido no pare ----------
-  await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
-  await b.pagina.waitForSelector('.llamada[data-llamada="entrando"]', { timeout: 25000 });
+  // ---------- Videollamada larga: que no se corte sola, que la imagen corra y
+  // que el sonido no pare. Es el caso más exigente: voz e imagen a la vez.
+  await a.pagina.click('.chat-thread .head .boton-llamar[title="Videollamada"]');
+  await b.pagina.waitForSelector('.llamada[data-llamada="entrando"][data-tipo="video"]', { timeout: 25000 });
   await b.pagina.click('.boton-llamada.verde');
   await a.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
   await b.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
-  anota('llamada larga empezada', { conexion: 'conectada' });
+  anota('videollamada larga empezada', { conexion: 'conectada' });
 
   await a.pagina.waitForTimeout(6000);
   const sonido1A = await comoVaElSonido(a.pagina);
   const nivel1A = await nivelDeLaVoz(a.pagina);
   const nivel1B = await nivelDeLaVoz(b.pagina);
-  anota('como va el sonido (1)', { enA: sonido1A, enB: await comoVaElSonido(b.pagina), nivelA: nivel1A, nivelB: nivel1B });
+  anota('como va (1)', {
+    enA: sonido1A, enB: await comoVaElSonido(b.pagina),
+    nivelA: nivel1A, nivelB: nivel1B,
+    videoA: await comoVaElVideo(a.pagina), videoB: await comoVaElVideo(b.pagina),
+  });
 
   await a.pagina.waitForTimeout(10000);
   const sonido2A = await comoVaElSonido(a.pagina);
   const sonido2B = await comoVaElSonido(b.pagina);
   const nivel2A = await nivelDeLaVoz(a.pagina);
   const nivel2B = await nivelDeLaVoz(b.pagina);
-  anota('como va el sonido (2)', { enA: sonido2A, enB: sonido2B, nivelA: nivel2A, nivelB: nivel2B });
+  anota('como va (2)', {
+    enA: sonido2A, enB: sonido2B, nivelA: nivel2A, nivelB: nivel2B,
+    videoA: await comoVaElVideo(a.pagina), videoB: await comoVaElVideo(b.pagina),
+  });
+  const videoAntesA = await comoVaElVideo(a.pagina);
+  const videoAntesB = await comoVaElVideo(b.pagina);
+  anota('imagen antes del corte', { enA: videoAntesA, enB: videoAntesB });
+  if (!videoAntesA.ancho || !videoAntesB.ancho) {
+    throw new Error(`la imagen no llegaba antes del corte: A=${JSON.stringify(videoAntesA)} B=${JSON.stringify(videoAntesB)}`);
+  }
   if (!haySonido(nivel1A) && !haySonido(nivel2A)) {
     throw new Error(`no se oye nada en A: ${JSON.stringify(nivel1A)} / ${JSON.stringify(nivel2A)}`);
   }
@@ -613,7 +655,22 @@ try {
   if (!haySonido(nivel4B) && !haySonido(nivel3B)) {
     throw new Error(`tras el corte no se oye nada en B: ${JSON.stringify(nivel3B)} / ${JSON.stringify(nivel4B)}`);
   }
-  await a.pagina.screenshot({ path: path.join(FOTOS, '9-llamada-larga.png') });
+  // La imagen tambien tiene que haber vuelto: se mira dos veces con 3 s de
+  // diferencia y los cuadros tienen que subir (si no, quedaria congelada).
+  const imagen1A = await comoVaElVideo(a.pagina);
+  const imagen1B = await comoVaElVideo(b.pagina);
+  await a.pagina.waitForTimeout(3000);
+  const imagen2A = await comoVaElVideo(a.pagina);
+  const imagen2B = await comoVaElVideo(b.pagina);
+  anota('como va la imagen (1)', { enA: imagen1A, enB: imagen1B });
+  anota('como va la imagen (2)', { enA: imagen2A, enB: imagen2B });
+  if (!imagenCorre(imagen1A, imagen2A)) {
+    throw new Error(`la imagen de A no volvio a correr tras el corte: ${JSON.stringify(imagen1A)} / ${JSON.stringify(imagen2A)}`);
+  }
+  if (!imagenCorre(imagen1B, imagen2B)) {
+    throw new Error(`la imagen de B no volvio a correr tras el corte: ${JSON.stringify(imagen1B)} / ${JSON.stringify(imagen2B)}`);
+  }
+  await a.pagina.screenshot({ path: path.join(FOTOS, '9-videollamada-larga.png') });
 
   await a.pagina.click('.control.colgar');
   await a.pagina.waitForSelector('.llamada', { state: 'detached', timeout: 20000 });
@@ -621,17 +678,21 @@ try {
   await a.pagina.waitForTimeout(2000);
   const cuatroA = await leerFilas(a.pagina, 4);
   const cuatroB = await leerFilas(b.pagina, 4);
-  anota('la llamada larga quedó anotada', { enA: cuatroA, enB: cuatroB });
+  anota('la videollamada larga quedó anotada', { enA: cuatroA, enB: cuatroB });
   if (cuatroA.length !== 4 || cuatroB.length !== 4
-      || cuatroA.filter((t) => t.includes('Llamada de voz')).length !== 3) {
-    throw new Error(`la llamada larga no quedó anotada igual: A=${JSON.stringify(cuatroA)} B=${JSON.stringify(cuatroB)}`);
+      || cuatroA.filter((t) => t.includes('Videollamada')).length !== 2
+      || cuatroA.filter((t) => t.includes('Llamada de voz')).length !== 2
+      || cuatroB.filter((t) => t.includes('Videollamada')).length !== 2
+      || cuatroB.filter((t) => t.includes('Llamada de voz')).length !== 2) {
+    throw new Error(`la videollamada larga no quedó anotada igual: A=${JSON.stringify(cuatroA)} B=${JSON.stringify(cuatroB)}`);
   }
   // Y con la duración de verdad (no unos segundos): duró toda la charla.
-  const minutos = cuatroA.map((t) => /(\d+):(\d+)/.exec(t)).filter(Boolean)
+  const minutos = cuatroA.filter((t) => t.includes('Videollamada'))
+    .map((t) => /(\d+):(\d+)/.exec(t)).filter(Boolean)
     .map((m) => Number(m[1]) * 60 + Number(m[2]));
   const masLarga = Math.max(...minutos, 0);
-  anota('duración de la llamada larga', { segundos: masLarga });
-  if (masLarga < 30) throw new Error(`la llamada larga duró solo ${masLarga} s: se cortó sola`);
+  anota('duración de la videollamada larga', { segundos: masLarga });
+  if (masLarga < 30) throw new Error(`la videollamada larga duró solo ${masLarga} s: se cortó sola`);
 
   informe.ok = true;
 } catch (e) {
