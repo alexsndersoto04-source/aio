@@ -282,6 +282,9 @@ async function abrirNavegador(sesion, etiqueta) {
   return { contexto, pagina, tubos, seCerraron, marcos };
 }
 
+// Se guardan las dos pantallas aquí para poder mirarlas si algo falla.
+const pantallas = { a: null, b: null };
+
 const chromium = await cargarChromium();
 const navegador = await chromium.launch({
   args: [
@@ -295,6 +298,8 @@ const navegador = await chromium.launch({
 try {
   const a = await abrirNavegador(A, 'A');
   let b = await abrirNavegador(B, 'B');
+  pantallas.a = a;
+  pantallas.b = b;
   anota('chats abiertos', { a: !!a.pagina, b: !!b.pagina });
   anota('versión de la API', await versionDeLaApi());
 
@@ -503,6 +508,7 @@ try {
 
   // Abre Moon: le tiene que timbrar en el momento.
   b = await abrirNavegador(B, 'B2');
+  pantallas.b = b;
   await b.pagina.waitForSelector('.llamada[data-llamada="entrando"]', { timeout: 25000 });
   anota('al abrir Moon le timbra', { pantallaEntrante: true });
   await b.pagina.screenshot({ path: path.join(FOTOS, '8-entrante-al-abrir-moon.png') });
@@ -559,6 +565,17 @@ try {
   await b.contexto.setOffline(true);
   await a.pagina.waitForTimeout(7000);
   await b.contexto.setOffline(false);
+  // Se mira la pantalla cada 2 segundos: así queda claro qué pasa si algo falla.
+  for (let i = 0; i < 12; i += 1) {
+    anota(`después del corte (${i})`, {
+      enA: await comoEstaLaPantalla(a.pagina),
+      enB: await comoEstaLaPantalla(b.pagina),
+    });
+    const listoA = await a.pagina.evaluate(() => document.querySelector('.llamada')?.dataset.conexion || '');
+    const listoB = await b.pagina.evaluate(() => document.querySelector('.llamada')?.dataset.conexion || '');
+    if (i >= 2 && listoA === 'conectada' && listoB === 'conectada') break;
+    await a.pagina.waitForTimeout(2000);
+  }
 
   const volvioA = await esperarConectada(a.pagina, 60000);
   const volvioB = await esperarConectada(b.pagina, 60000);
@@ -614,6 +631,8 @@ try {
   informe.ok = true;
 } catch (e) {
   informe.ok = false;
+  if (pantallas.a) anota('lo que dijo el tubo (A)', { marcos: pantallas.a.marcos.slice(-14) });
+  if (pantallas.b) anota('lo que dijo el tubo (B)', { marcos: pantallas.b.marcos.slice(-14) });
   informe.error = String(e && e.stack ? e.stack.split('\n').slice(0, 4).join(' | ') : e).slice(0, 600);
   console.log('FALLO:', informe.error);
   fs.writeFileSync(SALIDA, JSON.stringify(informe, null, 1));
