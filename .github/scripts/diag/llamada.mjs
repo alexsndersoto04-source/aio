@@ -766,5 +766,5 @@ try {
   await navegador.close();
   fs.writeFileSync(SALIDA, JSON.stringify(informe, null, 1));
 }
-# touch
-# touch
+
+// touch
