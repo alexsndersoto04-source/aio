@@ -29,7 +29,28 @@ class Realtime {
   start() {
     if (this.shouldRun) return;
     this.shouldRun = true;
+    // Cuando el teléfono recupera la señal, o la persona vuelve a la app, se
+    // reintenta de una: sin esto, se podía tardar hasta 30 s.
+    if (typeof window !== 'undefined' && !this.escuchando) {
+      this.escuchando = true;
+      window.addEventListener('online', () => this.despertar());
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') this.despertar();
+      });
+    }
     this._connect();
+  }
+
+  /** Reintenta la conexión ahora mismo (sin esperar el turno del reloj). */
+  despertar() {
+    if (!this.shouldRun || this.connected) return;
+    this.reconnectDelay = 1000;
+    if (this.timerReconexion) { clearTimeout(this.timerReconexion); this.timerReconexion = null; }
+    if (this.timerDespertar) clearTimeout(this.timerDespertar);
+    this.timerDespertar = setTimeout(() => {
+      this.timerDespertar = null;
+      this._connect();
+    }, 250);
   }
 
   stop() {
@@ -41,6 +62,9 @@ class Realtime {
 
   _connect() {
     if (!this.shouldRun) return;
+    if (this.timerReconexion) { clearTimeout(this.timerReconexion); this.timerReconexion = null; }
+    // Si ya hay un tubo abierto o abriéndose, no se abre otro.
+    if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) return;
     if (!getAccessToken()) {
       // Sin sesión: reintenta cuando haya token (el login llama start()).
       this.connected = false;
@@ -77,7 +101,8 @@ class Realtime {
         this._emit({ type: 'realtime_disconnected' });
         if (this.shouldRun) {
           // Reconexión exponencial (máx 30 s)
-          setTimeout(this._connect, this.reconnectDelay);
+          if (this.timerReconexion) clearTimeout(this.timerReconexion);
+          this.timerReconexion = setTimeout(this._connect, this.reconnectDelay);
           this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
         }
       };
@@ -85,7 +110,9 @@ class Realtime {
       socket.onerror = () => { /* onclose maneja la reconexión */ };
     } catch {
       this.connected = false;
-      if (this.shouldRun) setTimeout(this._connect, this.reconnectDelay);
+      if (this.shouldRun && !this.timerReconexion) {
+        this.timerReconexion = setTimeout(this._connect, this.reconnectDelay);
+      }
     }
   }
 

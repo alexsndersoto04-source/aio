@@ -23,6 +23,34 @@ const TIPOS_LLAMADA = new Set(['call_start', 'call_accept', 'call_reject', 'call
 // (le suena el teléfono con el aviso).
 const VIDA_LLAMADA_SIN_TELEFONO_MS = 90_000;
 
+// Respiro cuando alguien pierde la conexión en plena llamada: la red móvil
+// parpadea, se cambia de wifi a datos, el teléfono se queda sin señal un
+// momento… No se cuelga por eso. Si vuelve dentro de este rato, la llamada
+// sigue como si nada; si no vuelve, se avisa al otro lado.
+const RESPIRO_SIN_CONEXION_MS = 25_000;
+const respiros = new Map(); // userId -> reloj
+
+function limpiarRespiro(uid) {
+  const reloj = respiros.get(Number(uid));
+  if (reloj) { clearTimeout(reloj); respiros.delete(Number(uid)); }
+}
+
+function programarCierre(uid, idLlamada) {
+  const usuario = Number(uid);
+  limpiarRespiro(usuario);
+  respiros.set(usuario, setTimeout(() => {
+    respiros.delete(usuario);
+    const datos = llamadas.get(idLlamada);
+    if (!datos) return;
+    const vivo = conexiones.get(usuario);
+    if (vivo && vivo.size > 0) return; // volvió: la llamada sigue
+    llamadas.delete(idLlamada);
+    enviarA(datos.de === usuario ? datos.para : datos.de, {
+      type: 'call_terminada', call_id: idLlamada, segundos: 0, motivo: 'se_fue',
+    });
+  }, RESPIRO_SIN_CONEXION_MS));
+}
+
 // ¿Estas dos personas tienen una conversación abierta? Solo entre ellas se
 // permite pasar sobres de llamada (nadie puede llamar a un desconocido).
 async function sonPareja(pool, uno_, otro) {
@@ -71,6 +99,8 @@ export function montarWs(servidorHttp, pool, secreto) {
   wss.on('connection', (ws, req) => {
     const uid = Number(req._uid);
     ws._pool = pool; // para las consultas de las llamadas
+    // Volvió la conexión: la llamada que estaba esperando sigue en pie.
+    limpiarRespiro(uid);
     if (!conexiones.has(uid)) conexiones.set(uid, new Set());
     conexiones.get(uid).add(ws);
     ws.enviar = (evento) => {
@@ -210,10 +240,9 @@ export function montarWs(servidorHttp, pool, secreto) {
           })();
           continue;
         }
-        enviarA(datos.de === uid ? datos.para : datos.de, {
-          type: 'call_terminada', call_id: id, segundos: 0, motivo: 'se_fue',
-        });
-        llamadas.delete(id);
+        // Estaban hablando: en vez de colgar en seco, se le da un respiro por
+        // si fue un parpadeo de la red. Si vuelve, la llamada sigue igual.
+        programarCierre(uid, id);
       }
       const conjunto = conexiones.get(uid);
       if (!conjunto) return;
@@ -367,6 +396,8 @@ async function atenderLlamada(ws, uid, msg) {
   }
   if (msg.type === 'call_reject') {
     llamadas.delete(id);
+    limpiarRespiro(datos.de);
+    limpiarRespiro(datos.para);
     enviarA(datos.de === uid ? datos.para : datos.de, {
       type: 'call_rechazada', call_id: id, motivo: String(msg.motivo || 'rechazada').slice(0, 20),
     });
@@ -374,6 +405,8 @@ async function atenderLlamada(ws, uid, msg) {
   }
   if (msg.type === 'call_end') {
     llamadas.delete(id);
+    limpiarRespiro(datos.de);
+    limpiarRespiro(datos.para);
     const segundos = Math.min(Math.max(Number(msg.segundos || 0), 0), 86400);
     enviarA(datos.de === uid ? datos.para : datos.de, {
       type: 'call_terminada', call_id: id, segundos, motivo: 'colgo',

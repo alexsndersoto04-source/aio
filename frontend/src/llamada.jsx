@@ -41,6 +41,57 @@ function reloj(ms) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+// ---------- El micrófono, la cámara y cómo sale todo ----------
+// Se pide la voz con limpieza de ruido, quitar eco y volumen automático: es lo
+// que hace que se oiga limpio aunque haya ventilador, calle o altavoz.
+async function pedirMicro(tipo) {
+  const audio = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: 1,
+  };
+  const video = tipo === 'video'
+    ? {
+      facingMode: 'user',
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 24, max: 30 },
+    }
+    : false;
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio, video });
+  } catch {
+    // Si el teléfono no admite esos ajustes, se pide lo básico y se sigue.
+    return navigator.mediaDevices.getUserMedia({ audio: true, video });
+  }
+}
+
+// Marca las pistas y pone topes: la voz con prioridad alta y el video con un
+// tope sano, para que el video nunca se coma el sonido.
+async function ajustarEnvios(conexionPc) {
+  for (const emisor of conexionPc.getSenders()) {
+    const pista = emisor.track;
+    if (!pista) continue;
+    try { pista.contentHint = pista.kind === 'audio' ? 'speech' : 'motion'; } catch { /* sin soporte */ }
+    try {
+      const par = emisor.getParameters();
+      if (!par.encodings || par.encodings.length === 0) par.encodings = [{}];
+      if (pista.kind === 'audio') {
+        par.encodings[0].maxBitrate = 64000;
+        par.encodings[0].priority = 'high';
+        par.encodings[0].networkPriority = 'high';
+      } else {
+        par.encodings[0].maxBitrate = 1200000;
+        par.encodings[0].priority = 'high';
+        par.encodings[0].networkPriority = 'high';
+        par.degradationPreference = 'balanced';
+      }
+      await emisor.setParameters(par);
+    } catch { /* ajustes no admitidos: se sigue igual */ }
+  }
+}
+
 // ---------- Timbre (sin archivos de sonido) ----------
 // El navegador solo deja sonar si la persona ya tocó la pantalla alguna vez:
 // se prepara un «altavoz» al primer toque y el timbre lo reutiliza.
@@ -125,6 +176,11 @@ export function LlamadasProvider({ children }) {
   const local = useRef(null);
   const llamada = useRef(null); // { id, partner, tipo, conversacion }
   const candidatosPendientes = useRef([]);
+  // La conexión se cuida sola: si parpadea, se vuelve a buscar sin colgar.
+  const intentosConexion = useRef(0);
+  const relojConexion = useRef(null);
+  const reconectando = useRef(false);
+  const reconectarRef = useRef(null);
   const timbre = useRef(null);
   const cronometro = useRef(null);
   const espera = useRef(null);
@@ -202,7 +258,7 @@ export function LlamadasProvider({ children }) {
   }, []);
 
   // ---------- La conexión entre los dos teléfonos ----------
-  const configurarConexion = useCallback(async (esQuienLlama) => {
+  const configurarConexion = useCallback(async (esQuienLlama, flujoPrevio = null) => {
     const datos = llamada.current;
     if (!datos) return null;
     let ice = [{ urls: ['stun:stun.l.google.com:19302'] }];
@@ -228,37 +284,115 @@ export function LlamadasProvider({ children }) {
       setVideoRemoto(flujo || null);
     };
     conexionPc.onconnectionstatechange = () => {
+      if (pc.current !== conexionPc) return; // una conexión vieja: se ignora
       const st = conexionPc.connectionState;
-      if (st === 'connected') setConexion('conectada');
-      else if (st === 'connecting' || st === 'new') setConexion((v) => (v === 'conectada' ? v : 'conectando'));
-      else if (st === 'failed') {
-        setConexion('fallando');
-        setDetalle('Se cortó la conexión');
-      } else if (st === 'disconnected') setConexion('conectando');
+      if (st === 'connected') {
+        intentosConexion.current = 0;
+        setConexion('conectada');
+        setDetalle('');
+        if (relojConexion.current) { clearTimeout(relojConexion.current); relojConexion.current = null; }
+        return;
+      }
+      if (st === 'connecting' || st === 'new') {
+        setConexion((v) => (v === 'conectada' ? v : 'conectando'));
+        return;
+      }
+      if (st === 'disconnected' || st === 'failed') {
+        // No se cuelga: se le da un respiro y, si no vuelve, se busca la
+        // conexión otra vez por debajo (sin que nadie note nada).
+        setConexion('conectando');
+        if (relojConexion.current) clearTimeout(relojConexion.current);
+        relojConexion.current = setTimeout(() => {
+          relojConexion.current = null;
+          void reconectarRef.current?.();
+        }, st === 'failed' ? 900 : 4000);
+      }
     };
 
-    // El micrófono y la cámara se piden aquí (solo cuando ya hay llamada).
+    // El micrófono y la cámara se piden aquí (solo cuando ya hay llamada). Si
+    // ya había un flujo abierto (al reconectar), se reutiliza tal cual.
     const pistas = [];
     try {
-      const flujo = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: datos.tipo === 'video' ? { facingMode: 'user', width: { ideal: 1280 } } : false,
-      });
+      const flujo = flujoPrevio && flujoPrevio.getTracks().some((p) => p.readyState === 'live')
+        ? flujoPrevio
+        : await pedirMicro(datos.tipo);
       local.current = flujo;
       setVideoLocal(flujo);
       for (const pista of flujo.getTracks()) {
+        if (pista.readyState !== 'live') continue;
         pistas.push(pista);
         conexionPc.addTrack(pista, flujo);
       }
+      if (pistas.length === 0) throw new Error('sin pistas vivas');
     } catch (e) {
       setDetalle('No se pudo abrir el micrófono o la cámara');
       toast.err('Da permiso al micrófono y a la cámara para llamar');
       throw e;
     }
+    await ajustarEnvios(conexionPc);
     void esQuienLlama;
     setConexion('conectando');
     return conexionPc;
   }, []);
+
+  // ---------- Que la llamada no se caiga sola ----------
+  // Manda un sobre a la otra persona por el tubo (para rehacer la conexión).
+  const enviarSenal = useCallback((sobre) => {
+    const datos = llamada.current;
+    if (!datos?.partner?.id) return;
+    realtime.send({ type: 'call_signal', call_id: datos.id, to: datos.partner.id, sobre });
+  }, []);
+
+  // Vuelve a buscar los caminos de la conexión (los «caminos» son los datos
+  // móviles, el wifi…), sin colgar la llamada.
+  const reiniciarConexion = useCallback(async () => {
+    const datos = llamada.current;
+    const conexionPc = pc.current;
+    if (!datos || !conexionPc || reconectando.current) return;
+    reconectando.current = true;
+    try {
+      if (datos.soyQuienLlama) {
+        setDetalle('');
+        try { conexionPc.restartIce?.(); } catch { /* sin soporte */ }
+        const oferta = await conexionPc.createOffer({ iceRestart: true });
+        await conexionPc.setLocalDescription(oferta);
+        enviarSenal({ descripcion: conexionPc.localDescription.toJSON() });
+      } else {
+        // El que contesta no propone: le pide al otro que proponga de nuevo.
+        enviarSenal({ pedirReinicio: true });
+      }
+    } catch { /* se reintenta solo */ } finally {
+      reconectando.current = false;
+    }
+  }, [enviarSenal]);
+
+  // Si ya se intentó varias veces, se rehace la conexión desde cero con el
+  // mismo micrófono (nadie cuelga y el cronómetro sigue corriendo).
+  const rehacerConexion = useCallback(async () => {
+    const datos = llamada.current;
+    if (!datos) return;
+    const previa = pc.current;
+    try {
+      const nueva = await configurarConexion(datos.soyQuienLlama, local.current);
+      if (previa && previa !== nueva) { try { previa.close(); } catch { /* ya cerrada */ } }
+      if (datos.soyQuienLlama) {
+        const oferta = await nueva.createOffer();
+        await nueva.setLocalDescription(oferta);
+        enviarSenal({ descripcion: nueva.localDescription.toJSON() });
+      } else {
+        enviarSenal({ pedirReinicio: true });
+      }
+    } catch { /* si no se pudo, se sigue intentando */ }
+  }, [configurarConexion, enviarSenal]);
+
+  const conectarDeNuevo = useCallback(async () => {
+    if (estado !== 'activa') return;
+    intentosConexion.current += 1;
+    if (intentosConexion.current > 3) await rehacerConexion();
+    else await reiniciarConexion();
+  }, [estado, rehacerConexion, reiniciarConexion]);
+
+  useEffect(() => { reconectarRef.current = conectarDeNuevo; }, [conectarDeNuevo]);
 
   const aplicarPendientes = useCallback(async () => {
     const conexionPc = pc.current;
@@ -271,6 +405,12 @@ export function LlamadasProvider({ children }) {
   const aplicarSobre = useCallback(async (sobre, conexionPc = pc.current) => {
     if (!conexionPc || !sobre) return;
     try {
+      if (sobre.pedirReinicio) {
+        // La otra parte pide rehacer la conexión: propone quien empezó la
+        // llamada, que es el que lleva la voz cantante.
+        if (llamada.current?.soyQuienLlama) void reiniciarConexion();
+        return;
+      }
       if (sobre.descripcion) {
         const esOferta = sobre.descripcion.type === 'offer';
         await conexionPc.setRemoteDescription(sobre.descripcion);
@@ -296,7 +436,7 @@ export function LlamadasProvider({ children }) {
         }
       }
     } catch { /* sobre atrasado o repetido: no rompe la llamada */ }
-  }, []);
+  }, [reiniciarConexion]);
 
   const arrancarCronometro = useCallback(() => {
     if (cronometro.current) return;
@@ -458,6 +598,7 @@ export function LlamadasProvider({ children }) {
 
       if (ev.type === 'call_aceptada') {
         pararTimbre();
+        intentosConexion.current = 0;
         setDetalle('');
         if (espera.current) { clearTimeout(espera.current); espera.current = null; }
         (async () => {
@@ -551,17 +692,13 @@ export function LlamadasProvider({ children }) {
     };
   }, []);
 
-  // Marca de tiempo del cronómetro al cerrar la pestaña.
-  useEffect(() => {
-    function alSalir() {
-      const datos = llamada.current;
-      if (datos && (estado === 'activa' || estado === 'saliendo' || estado === 'entrando')) {
-        realtime.send({ type: 'call_end', call_id: datos.id, to: datos.partner.id, segundos: datos.segundos || 0 });
-      }
-    }
-    window.addEventListener('pagehide', alSalir);
-    return () => window.removeEventListener('pagehide', alSalir);
-  }, [estado]);
+  // Ojo: NO se cuelga al pasar la app a segundo plano. Antes, con solo cambiar
+  // de aplicación un momento, la llamada se caía sola. Ahora, si de verdad se
+  // cierra Moon, el servidor lo nota (el tubo se cierra) y avisa al otro lado
+  // con calma, dándole un respiro por si fue un parpadeo de la red.
+  useEffect(() => () => {
+    if (relojConexion.current) { clearTimeout(relojConexion.current); relojConexion.current = null; }
+  }, []);
 
   const valor = { estado, tipo, partner, llamar, colgar, contestar, rechazar, activa: estado !== 'inactiva' };
 
@@ -603,6 +740,7 @@ function PantallaLlamada({
   const conectada = conexion === 'conectada';
   const etiquetaConexion = conexion === 'conectada' ? 'En llamada'
     : conexion === 'fallando' ? 'Sin conexión'
+      : conexion === 'conectando' && detalle ? detalle
       : estado === 'entrando' ? (esVideo ? 'Videollamada entrante' : 'Llamada entrante')
         : estado === 'saliendo' ? 'Llamando…' : 'Conectando…';
 

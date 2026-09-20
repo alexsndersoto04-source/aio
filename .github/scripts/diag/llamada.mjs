@@ -118,6 +118,42 @@ async function versionDeLaApi() {
   }
 }
 
+async function comoVaElSonido(pagina) {
+  // Se mira el reproductor de la voz: si está sonando, el navegador va
+  // decodificando audio (el contador sube). También se mira la pista remota.
+  return pagina.evaluate(() => {
+    const audio = document.querySelector('audio');
+    const video = document.querySelector('.video-remoto');
+    return {
+      estado: document.querySelector('.llamada')?.dataset.conexion || '',
+      visible: !!document.querySelector('.llamada'),
+      hayReproductor: !!audio,
+      pausado: audio ? audio.paused : null,
+      bytesDeAudio: audio && audio.webkitAudioDecodedByteCount != null ? audio.webkitAudioDecodedByteCount : -1,
+      pistaViva: !!(audio && audio.srcObject && audio.srcObject.getAudioTracks
+        && audio.srcObject.getAudioTracks()[0] && audio.srcObject.getAudioTracks()[0].readyState === 'live'),
+      frames: video && video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality().totalVideoFrames : -1,
+    };
+  });
+}
+
+// ¿El sonido siguió corriendo entre las dos medidas?
+function avanzaElSonido(antes, despues) {
+  if (antes.bytesDeAudio >= 0 && despues.bytesDeAudio >= 0) return despues.bytesDeAudio > antes.bytesDeAudio;
+  // Si el navegador no lleva ese contador, al menos que siga sonando.
+  return despues.hayReproductor === true && despues.pausado === false && despues.pistaViva === true;
+}
+
+async function esperarConectada(pagina, limiteMs = 60000) {
+  const desde = Date.now();
+  while (Date.now() - desde < limiteMs) {
+    const lista = await pagina.evaluate(() => document.querySelector('.llamada')?.dataset.conexion || '');
+    if (lista === 'conectada') return true;
+    await pagina.waitForTimeout(1000);
+  }
+  return false;
+}
+
 async function abrirNavegador(sesion, etiqueta) {
   const contexto = await navegador.newContext({
     viewport: { width: 390, height: 844 },
@@ -429,6 +465,70 @@ try {
       || cuantas3(tresA, 'Videollamada') !== 1 || cuantas3(tresB, 'Videollamada') !== 1) {
     throw new Error(`las tres llamadas no quedaron anotadas igual: A=${JSON.stringify(tresA)} B=${JSON.stringify(tresB)}`);
   }
+
+  // ---------- Llamada larga: que no se corte sola y que el sonido no pare ----------
+  await a.pagina.click('.chat-thread .head .boton-llamar[title="Llamada de voz"]');
+  await b.pagina.waitForSelector('.llamada[data-llamada="entrando"]', { timeout: 25000 });
+  await b.pagina.click('.boton-llamada.verde');
+  await a.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
+  await b.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
+  anota('llamada larga empezada', { conexion: 'conectada' });
+
+  await a.pagina.waitForTimeout(8000);
+  const sonido1A = await comoVaElSonido(a.pagina);
+  const sonido1B = await comoVaElSonido(b.pagina);
+  anota('como va el sonido (1)', { enA: sonido1A, enB: sonido1B });
+
+  await a.pagina.waitForTimeout(12000);
+  const sonido2A = await comoVaElSonido(a.pagina);
+  const sonido2B = await comoVaElSonido(b.pagina);
+  anota('como va el sonido (2)', { enA: sonido2A, enB: sonido2B });
+  if (!avanzaElSonido(sonido1A, sonido2A) || !avanzaElSonido(sonido1B, sonido2B)) {
+    throw new Error(`el sonido se quedó quieto: A ${sonido1A.bytesDeAudio}→${sonido2A.bytesDeAudio}, B ${sonido1B.bytesDeAudio}→${sonido2B.bytesDeAudio}`);
+  }
+
+  // Se le quita la señal a B siete segundos (como entrar a un ascensor) y se le
+  // devuelve: la llamada NO se puede caer por eso.
+  anota('se le quita la señal a B', { segundos: 7 });
+  await b.contexto.setOffline(true);
+  await a.pagina.waitForTimeout(7000);
+  await b.contexto.setOffline(false);
+
+  const volvioA = await esperarConectada(a.pagina, 60000);
+  const volvioB = await esperarConectada(b.pagina, 60000);
+  anota('tras volver la señal', { enA: volvioA, enB: volvioB });
+  if (!volvioA || !volvioB) throw new Error('la llamada no se recuperó después del corte de señal');
+
+  await a.pagina.waitForTimeout(6000);
+  const sonido3A = await comoVaElSonido(a.pagina);
+  const sonido3B = await comoVaElSonido(b.pagina);
+  await a.pagina.waitForTimeout(6000);
+  const sonido4A = await comoVaElSonido(a.pagina);
+  const sonido4B = await comoVaElSonido(b.pagina);
+  anota('como va el sonido (3)', { enA: sonido3A, enB: sonido3B });
+  anota('como va el sonido (4)', { enA: sonido4A, enB: sonido4B });
+  if (!avanzaElSonido(sonido3A, sonido4A) || !avanzaElSonido(sonido3B, sonido4B)) {
+    throw new Error(`tras el corte el sonido no volvió: A ${sonido3A.bytesDeAudio}→${sonido4A.bytesDeAudio}, B ${sonido3B.bytesDeAudio}→${sonido4B.bytesDeAudio}`);
+  }
+  await a.pagina.screenshot({ path: path.join(FOTOS, '9-llamada-larga.png') });
+
+  await a.pagina.click('.control.colgar');
+  await a.pagina.waitForSelector('.llamada', { state: 'detached', timeout: 20000 });
+  await b.pagina.waitForSelector('.llamada', { state: 'detached', timeout: 20000 });
+  await a.pagina.waitForTimeout(2000);
+  const cuatroA = await leerFilas(a.pagina, 4);
+  const cuatroB = await leerFilas(b.pagina, 4);
+  anota('la llamada larga quedó anotada', { enA: cuatroA, enB: cuatroB });
+  if (cuatroA.length !== 4 || cuatroB.length !== 4
+      || cuatroA.filter((t) => t.includes('Llamada de voz')).length !== 3) {
+    throw new Error(`la llamada larga no quedó anotada igual: A=${JSON.stringify(cuatroA)} B=${JSON.stringify(cuatroB)}`);
+  }
+  // Y con la duración de verdad (no unos segundos): duró toda la charla.
+  const minutos = cuatroA.map((t) => /(\d+):(\d+)/.exec(t)).filter(Boolean)
+    .map((m) => Number(m[1]) * 60 + Number(m[2]));
+  const masLarga = Math.max(...minutos, 0);
+  anota('duración de la llamada larga', { segundos: masLarga });
+  if (masLarga < 30) throw new Error(`la llamada larga duró solo ${masLarga} s: se cortó sola`);
 
   informe.ok = true;
 } catch (e) {
