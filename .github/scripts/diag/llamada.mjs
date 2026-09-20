@@ -4,6 +4,11 @@
 //
 // Uso: node llamada.mjs <web> <sesiones.json> <carpeta-de-capturas> <salida.json>
 //
+// Con esta prueba se encontro el motivo de que las llamadas se cortaran solas:
+// el reloj del timbre (35 s) seguia armado despues de contestar, y al llegar a
+// esa hora el que habia contestado mandaba un «rechazo» de su propia llamada.
+// Ya esta apagado al contestar, y el servidor ignora un rechazo en curso.
+//
 // Nota: la web que se prueba se compila en el momento, asi que todo sale tal
 // como quedo en el codigo: el timbre (altavoz que se prepara al primer toque y
 // se reutiliza en cada llamada) y el repaso del aviso si la conexion parpadea

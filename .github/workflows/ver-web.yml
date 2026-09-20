@@ -16,6 +16,13 @@ on:
     paths:
       - ".github/scripts/diag/**"
       - ".github/workflows/ver-web.yml"
+      # Si se toca el código de las llamadas, se comprueba solo.
+      - "frontend/src/llamada.jsx"
+      - "frontend/src/llamada.css"
+      - "frontend/src/realtime.js"
+      - "frontend/src/views/MessagesView.jsx"
+      - "projects/moon/server/src/ws.mjs"
+      - "projects/moon/server/src/rutas-mensajes.mjs"
 
 permissions:
   contents: write
