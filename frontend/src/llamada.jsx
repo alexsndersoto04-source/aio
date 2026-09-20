@@ -363,9 +363,10 @@ export function LlamadasProvider({ children }) {
     pararTimbre();
     const hablado = datos.segundos || 0;
     realtime.send({ type: 'call_end', call_id: datos.id, to: datos.partner.id, segundos: hablado });
-    // Queda anotado en el chat: con duración si se habló, o como llamada perdida.
+    // Queda anotado en el chat: con duración si se habló (aunque fuera un
+    // segundo), o como llamada perdida si nadie contestó.
     if (estado === 'activa' || estado === 'saliendo') {
-      const clase = hablado > 0
+      const clase = (estado === 'activa' || hablado > 0)
         ? (datos.tipo === 'video' ? 'llamada_video' : 'llamada_voz')
         : 'llamada_perdida';
       anotar(datos, clase, hablado * 1000);

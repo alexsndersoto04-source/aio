@@ -414,6 +414,7 @@ try {
   await a.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
   await b.pagina.waitForSelector('.llamada[data-conexion="conectada"]', { timeout: 40000 });
   anota('voz conectada tras abrir Moon', { conexion: 'conectada' });
+  await a.pagina.waitForTimeout(3000); // unos segundos de charla, como en las otras
 
   await a.pagina.click('.control.colgar');
   await a.pagina.waitForSelector('.llamada', { state: 'detached', timeout: 15000 });
