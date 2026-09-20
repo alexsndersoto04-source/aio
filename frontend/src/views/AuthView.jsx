@@ -91,8 +91,10 @@ export default function AuthView({ mode }) {
         </section>
 
         <section className="auth-card">
-          <div className="brand" style={{ padding: 0, marginBottom: 18 }}>
-            <span>Moon<small>Red social</small></span>
+          <div className="brand-centrado" style={{ textAlign: 'center', marginBottom: 22 }}>
+            <span style={{ fontSize: '32px', fontWeight: '800', letterSpacing: '-0.03em', background: 'linear-gradient(135deg, #c084fc 0%, #818cf8 50%, #4f46e5 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', display: 'inline-block' }}>
+              Moon
+            </span>
           </div>
 
           <h2>{twofa ? 'Verificación en dos pasos' : (isLogin ? 'Bienvenido de vuelta' : 'Crea tu cuenta')}</h2>

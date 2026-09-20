@@ -4,8 +4,7 @@
 // 2. Aro orbital tipo Saturno:
 //    - Proporción reducida y ajustada (no gigante).
 //    - Perspectiva 3D inclinada cruzando la luna.
-//    - El giro se realiza en el plano 3D (rotación horizontal sobre su propio eje orbital),
-//      dando la sensación de partículas orbitando alrededor de la luna en 3D.
+//    - Flujo continuo alrededor de la luna en 3D.
 // 3. Subrayado: línea minimalista y limpia en la base.
 
 import React from 'react';
@@ -63,8 +62,7 @@ export default function LogoMoon({ tamano = 100, titulo = 'Moon' }) {
           filter="url(#brilloNeon)"
         />
 
-        {/* 3. ARO ORBITAL 3D TIPO SATURNO (MÁS PEQUEÑO Y AJUSTADO A LA LUNA) */}
-        {/* El contenedor orbital tiene perspectiva y rota sus segmentos orbitales continuamente */}
+        {/* 3. ARO ORBITAL 3D TIPO SATURNO */}
         <g className="logo-moon__saturno-escena">
           <ellipse
             className="logo-moon__saturno-aro"
