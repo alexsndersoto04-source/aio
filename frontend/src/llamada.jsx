@@ -60,10 +60,82 @@ async function pedirMicro(tipo) {
     }
     : false;
   try {
-    return await navigator.mediaDevices.getUserMedia({ audio, video });
+    // El aislamiento de voz pide al navegador que separe la voz del resto de
+    // ruidos: es lo más fino que ofrece hoy un teléfono.
+    return await navigator.mediaDevices.getUserMedia({ audio: { ...audio, voiceIsolation: true }, video });
   } catch {
-    // Si el teléfono no admite esos ajustes, se pide lo básico y se sigue.
-    return navigator.mediaDevices.getUserMedia({ audio: true, video });
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio, video });
+    } catch {
+      // Si el teléfono no admite esos ajustes, se pide lo básico y se sigue.
+      return navigator.mediaDevices.getUserMedia({ audio: true, video });
+    }
+  }
+}
+
+// Colador de la voz: antes de mandarla, se le quita el retumbe de los graves
+// (aire del ventilador, golpes en la mesa), el siseo muy agudo y el ruido de
+// fondo cuando nadie habla; ademas se empareja el volumen para que no haya
+// frases que suenen bajito. Es como pasar la voz por un colador fino: solo
+// sale lo que interesa. Si el navegador no lo admite, se manda el microfono
+// tal cual (nunca se queda sin voz por esto).
+async function colarLaVoz(flujo) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC || !flujo.getAudioTracks().length) return null;
+  let ctx;
+  try {
+    ctx = new AC();
+    if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* nada */ } }
+    if (ctx.state !== 'running') { try { ctx.close(); } catch { /* nada */ } return null; }
+  } catch { return null; }
+  try {
+    const fuente = ctx.createMediaStreamSource(flujo);
+    const quitaRetumbe = ctx.createBiquadFilter();
+    quitaRetumbe.type = 'highpass'; quitaRetumbe.frequency.value = 95; quitaRetumbe.Q.value = 0.7;
+    const quitaSiseo = ctx.createBiquadFilter();
+    quitaSiseo.type = 'lowpass'; quitaSiseo.frequency.value = 7800;
+    const empareja = ctx.createDynamicsCompressor();
+    empareja.threshold.value = -26; empareja.knee.value = 12; empareja.ratio.value = 3;
+    empareja.attack.value = 0.004; empareja.release.value = 0.18;
+    const puerta = ctx.createGain();
+    puerta.gain.value = 1;
+    const oreja = ctx.createAnalyser();
+    oreja.fftSize = 512;
+    const destino = ctx.createMediaStreamDestination();
+
+    fuente.connect(quitaRetumbe);
+    quitaRetumbe.connect(quitaSiseo);
+    quitaSiseo.connect(empareja);
+    empareja.connect(puerta);
+    puerta.connect(destino);
+    empareja.connect(oreja); // se mide la voz ya limpia
+
+    // Puerta suave: con voz, se abre del todo; con solo ruido de fondo, se
+    // baja a la mitad (no a cero, para no cortar el principio de las palabras).
+    const muestra = new Float32Array(oreja.fftSize);
+    const relojPuerta = setInterval(() => {
+      // Si el navegador durmió el audio (pasa al pasar a segundo plano), se le
+      // pide despertar: sin esto la voz saldría muda.
+      if (ctx.state === 'suspended') { try { void ctx.resume(); } catch { /* nada */ } }
+      try {
+        oreja.getFloatTimeDomainData(muestra);
+        let pico = 0;
+        for (let i = 0; i < muestra.length; i += 4) {
+          const v = Math.abs(muestra[i]);
+          if (v > pico) pico = v;
+        }
+        const objetivo = pico > 0.02 ? 1 : (pico > 0.008 ? 0.85 : 0.5);
+        puerta.gain.setTargetAtTime(objetivo, ctx.currentTime, 0.05);
+      } catch { /* si falla, se queda como esta */ }
+    }, 60);
+
+    return {
+      pista: destino.stream.getAudioTracks()[0],
+      cerrar: () => { clearInterval(relojPuerta); try { ctx.close(); } catch { /* ya cerrado */ } },
+    };
+  } catch {
+    try { ctx.close(); } catch { /* ya cerrado */ }
+    return null;
   }
 }
 
@@ -174,6 +246,7 @@ export function LlamadasProvider({ children }) {
 
   const pc = useRef(null);
   const local = useRef(null);
+  const limpieza = useRef(null); // el colador de la voz (AudioContext + puerta)
   const llamada = useRef(null); // { id, partner, tipo, conversacion }
   const candidatosPendientes = useRef([]);
   // La conexión se cuida sola: si parpadea, se vuelve a buscar sin colgar.
@@ -199,6 +272,7 @@ export function LlamadasProvider({ children }) {
 
   const limpiar = useCallback(() => {
     pararTimbre();
+    if (limpieza.current) { try { limpieza.current.cerrar(); } catch { /* ya cerrado */ } limpieza.current = null; }
     if (cronometro.current) { clearInterval(cronometro.current); cronometro.current = null; }
     if (espera.current) { clearTimeout(espera.current); espera.current = null; }
     if (pc.current) {
@@ -318,10 +392,18 @@ export function LlamadasProvider({ children }) {
         : await pedirMicro(datos.tipo);
       local.current = flujo;
       setVideoLocal(flujo);
+      // La voz pasa por el colador antes de salir; el video va tal cual.
+      if (limpieza.current) { try { limpieza.current.cerrar(); } catch { /* ya cerrado */ } limpieza.current = null; }
+      const limpio = await colarLaVoz(flujo);
+      limpieza.current = limpio;
+      const salida = new MediaStream();
       for (const pista of flujo.getTracks()) {
         if (pista.readyState !== 'live') continue;
+        salida.addTrack(limpio && pista.kind === 'audio' ? limpio.pista : pista);
+      }
+      for (const pista of salida.getTracks()) {
         pistas.push(pista);
-        conexionPc.addTrack(pista, flujo);
+        conexionPc.addTrack(pista, salida);
       }
       if (pistas.length === 0) throw new Error('sin pistas vivas');
     } catch (e) {
