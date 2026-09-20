@@ -4,6 +4,7 @@
 // sesión, perfil, privacidad, contraseña y recuperación.
 
 import { ApiErr, texto, booleano, usuarioValido, correoValido } from './util.mjs';
+import { demasiadoRapido } from './limites.mjs';
 import { fila, uno, filas } from './db.mjs';
 import { auditar } from './db.mjs';
 import {
@@ -34,6 +35,10 @@ async function hayUsuarios(pool) {
 
 export function registrarRutasAuth(router) {
   router.post('/api/auth/register', async (c) => {
+    // Blindaje contra creación masiva de cuentas falsas (bots)
+    if (demasiadoRapido(`reg:ip:${c.ip}`, 5, 3600_000)) {
+      throw new ApiErr('Demasiados registros desde esta conexión. Espera una hora.', 429, 'too_many_registers');
+    }
     const b = await c.cuerpo();
     const username = texto(b.username, { min: 3, max: 24, campo: 'usuario' });
     const email = texto(b.email, { min: 5, max: 120, campo: 'correo' }).toLowerCase();
@@ -75,6 +80,10 @@ export function registrarRutasAuth(router) {
   });
 
   router.post('/api/auth/login', async (c) => {
+    // Protección contra fuerza bruta: máx 5 intentos erróneos por IP cada 5 min
+    if (demasiadoRapido(`login:ip:${c.ip}`, 12, 300_000)) {
+      throw new ApiErr('Demasiados intentos de acceso desde esta red. Espera 5 minutos por seguridad.', 429, 'too_many_attempts');
+    }
     const b = await c.cuerpo();
     const identificador = texto(b.username, { min: 1, max: 120, campo: 'usuario' }).toLowerCase();
     const password = texto(b.password, { min: 1, max: 128, campo: 'contraseña' });
@@ -287,6 +296,10 @@ export function registrarRutasAuth(router) {
 
   // ---- Recuperación de contraseña ----
   router.post('/api/auth/recovery/request', async (c) => {
+    // Blindaje contra saturación y spam en recuperación de contraseña
+    if (demasiadoRapido(`rec:ip:${c.ip}`, 4, 900_000)) {
+      throw new ApiErr('Demasiadas solicitudes de recuperación. Espera 15 minutos.', 429, 'too_many_recoveries');
+    }
     const b = await c.cuerpo();
     const email = texto(b.email, { min: 5, max: 120, campo: 'correo' }).toLowerCase();
     const usuario = await uno(c.pool, 'SELECT * FROM users WHERE LOWER(email) = $1', [email]);
