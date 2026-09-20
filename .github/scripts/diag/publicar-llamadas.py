@@ -19,20 +19,20 @@ LIMITE = 60000
 notas = []
 
 
-def miniatura(ruta, ancho=300):
+def miniatura(ruta, ancho=250):
     destino = ruta.rsplit('.', 1)[0] + '.jpg'
     try:
         from PIL import Image
         im = Image.open(ruta).convert('RGB')
         if im.width > ancho:
             im = im.resize((ancho, max(1, round(im.height * ancho / im.width))))
-        im.save(destino, 'JPEG', quality=42, optimize=True)
+        im.save(destino, 'JPEG', quality=36, optimize=True)
     except Exception as e:
         notas.append('miniatura de %s: %s' % (os.path.basename(ruta), e))
         return ''
     datos = open(destino, 'rb').read()
     notas.append('%s %d bytes' % (os.path.basename(destino), len(datos)))
-    if len(datos) > 22000:
+    if len(datos) > 14000:
         return ''
     return base64.b64encode(datos).decode()
 

@@ -76,9 +76,17 @@ jobs:
       - name: Esperar a que la API tenga el código nuevo
         env:
           API: https://moon-dal0.onrender.com
+          GH_TOKEN: ${{ github.token }}
         run: |
           corto=$(echo "$GITHUB_SHA" | cut -c1-7)
           echo "debe correr el commit: $corto"
+          archivos=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" \
+            | grep -o '"filename": *"[^"]*"' | cut -d'"' -f4)
+          if ! echo "$archivos" | grep -q '^projects/moon/server/'; then
+            echo "este push no toca el servidor: no hay que esperar"
+            exit 0
+          fi
           visto=""
           for i in $(seq 1 60); do
             visto=$(curl -s --max-time 20 "$API/api/health" | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p')
