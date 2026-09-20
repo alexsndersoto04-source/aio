@@ -177,6 +177,33 @@ async function nivelDeLaVoz(pagina, milisegundos = 1800) {
 // el contador de audio del navegador (sube mientras decodifica).
 const haySonido = (m) => (m && m.nivel > 0.004) || (m && m.bytesDeAudio > 0);
 
+// Mira cómo está la pantalla de la llamada (para saber qué pasó si algo falla).
+async function comoEstaLaPantalla(pagina) {
+  return pagina.evaluate(() => {
+    const caja = document.querySelector('.llamada');
+    return {
+      hayPantalla: !!caja,
+      estado: caja ? caja.dataset.llamada : '',
+      conexion: caja ? caja.dataset.conexion : '',
+      tipo: caja ? caja.dataset.tipo : '',
+      hayAudio: !!document.querySelector('audio'),
+      hayVideoRemoto: !!document.querySelector('.video-remoto'),
+      texto: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 120),
+    };
+  });
+}
+
+async function esperarReproductor(pagina, limiteMs = 30000) {
+  // Tras un corte, el reproductor puede tardar en volver: se espera con calma.
+  const desde = Date.now();
+  while (Date.now() - desde < limiteMs) {
+    const hay = await pagina.evaluate(() => !!document.querySelector('audio') || !!document.querySelector('.video-remoto'));
+    if (hay) return true;
+    await pagina.waitForTimeout(1000);
+  }
+  return false;
+}
+
 async function esperarConectada(pagina, limiteMs = 60000) {
   const desde = Date.now();
   while (Date.now() - desde < limiteMs) {
@@ -537,6 +564,18 @@ try {
   const volvioB = await esperarConectada(b.pagina, 60000);
   anota('tras volver la señal', { enA: volvioA, enB: volvioB });
   if (!volvioA || !volvioB) throw new Error('la llamada no se recuperó después del corte de señal');
+
+  const hayReproductorA = await esperarReproductor(a.pagina, 30000);
+  const hayReproductorB = await esperarReproductor(b.pagina, 30000);
+  anota('los reproductores tras el corte', { enA: hayReproductorA, enB: hayReproductorB });
+  if (!hayReproductorA || !hayReproductorB) {
+    anota('como quedaron las pantallas', {
+      enA: await comoEstaLaPantalla(a.pagina), enB: await comoEstaLaPantalla(b.pagina),
+    });
+    anota('lo que dijo el tubo (A)', { marcos: a.marcos.slice(-12) });
+    anota('lo que dijo el tubo (B)', { marcos: b.marcos.slice(-12) });
+    throw new Error('el reproductor de la llamada no volvió después del corte de señal');
+  }
 
   await a.pagina.waitForTimeout(5000);
   const nivel3A = await nivelDeLaVoz(a.pagina);
