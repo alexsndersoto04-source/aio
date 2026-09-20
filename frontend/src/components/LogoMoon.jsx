@@ -1,9 +1,10 @@
 // Moon — el logo
 // ============================================================
-// 1. Media luna: dibujada SOLO de líneas (contorno hueco, sin relleno sólido),
-//    con el color morado de la marca (#4f46e5).
-// 2. Aro: una elipse/anillo de líneas que rodea la luna y GIRA en movimiento continuo.
-// 3. Subrayado: línea de trazo recto en la base.
+// Diseño profesional de alta gama para Moon:
+// - Media luna estilizada, geométrica y precisa, solo de líneas finas.
+// - Anillo orbital elíptico en perspectiva 3D que la rodea limpiamente.
+// - El aro gira suave y continuo.
+// - Subrayado de base sobrio, simétrico y elegante.
 
 import React from 'react';
 
@@ -24,44 +25,53 @@ export default function LogoMoon({ tamano = 96, titulo = 'Moon' }) {
       role="img"
       aria-label={titulo}
     >
-      {/* Aro en movimiento continuo de rotación */}
+      <defs>
+        {/* Degradado sutil para el brillo orbital */}
+        <linearGradient id="lunaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="currentColor" stopOpacity="1" />
+          <stop offset="100%" stopColor="currentColor" stopOpacity="0.75" />
+        </linearGradient>
+      </defs>
+
+      {/* 1. Aro orbital en perspectiva astronómica, con giro suave */}
       <g className="logo-moon__aro">
         <ellipse
           cx="60"
-          cy="50"
-          rx="48"
-          ry="32"
+          cy="52"
+          rx="47"
+          ry="19"
           {...trazo}
-          strokeWidth="2.8"
-          strokeDasharray="65 30 50 30"
-          transform="rotate(-22 60 50)"
+          strokeWidth="2"
+          strokeDasharray="95 18 25 18"
+          transform="rotate(-26 60 52)"
         />
       </g>
 
-      {/* Media luna en cuarto creciente, SOLO DE LÍNEAS (sin relleno sólido) */}
+      {/* 2. Media luna con geometría pura y curva suave (cuarto creciente pro) */}
       <path
-        d="M 68 18 A 32 32 0 1 0 68 82 A 25 25 0 0 1 68 18 Z"
-        {...trazo}
-        strokeWidth="3.4"
+        d="M 64 24 C 44 24 33 38 33 52 C 33 66 44 80 64 80 C 49 76 43 65 43 52 C 43 39 49 28 64 24 Z"
+        fill="none"
+        stroke="url(#lunaGrad)"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
 
-      {/* Subrayado de líneas en la base */}
+      {/* 3. Subrayado arquitectónico minimalista */}
       <line
-        x1="32"
-        y1="106"
-        x2="88"
-        y2="106"
-        {...trazo}
-        strokeWidth="3.4"
-      />
-      <line
-        x1="45"
-        y1="112"
-        x2="75"
-        y2="112"
+        x1="44"
+        y1="98"
+        x2="76"
+        y2="98"
         {...trazo}
         strokeWidth="2.2"
-        opacity="0.6"
+      />
+      <circle
+        cx="60"
+        cy="104"
+        r="1.2"
+        fill="currentColor"
+        opacity="0.8"
       />
     </svg>
   );

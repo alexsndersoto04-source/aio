@@ -1064,8 +1064,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 }
 .logo-moon .logo-moon__aro {
   transform-box: view-box;
-  transform-origin: 60px 56px;
-  animation: logo-girar 18s linear infinite;
+  transform-origin: 60px 52px;
+  animation: logo-girar 14s linear infinite;
 }
 .logo-moon--c .logo-moon__aro .logo-moon__aro-exterior {
   transform-box: view-box;
