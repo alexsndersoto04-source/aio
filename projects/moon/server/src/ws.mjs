@@ -188,6 +188,9 @@ async function atenderLlamada(ws, uid, msg) {
   if (!(await sonPareja(ws._pool, uid, otro))) return;
 
   if (msg.type === 'call_start') {
+    // El mismo aviso repetido (al reconectar) no se cuenta doble ni se
+    // contesta con «ocupado»: la llamada ya está timbrando.
+    if (llamadas.has(id)) return;
     if (demasiadoRapido(`llamada:${uid}`, 8, 60_000)) {
       ws.enviar({ type: 'call_rechazada', call_id: id, motivo: 'rapido' });
       return;

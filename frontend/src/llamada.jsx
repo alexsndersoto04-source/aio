@@ -404,7 +404,23 @@ export function LlamadasProvider({ children }) {
   // ---------- Lo que llega por el tubo ----------
   useEffect(() => {
     const quitar = realtime.on((ev) => {
-      if (!ev || typeof ev.type !== 'string' || !ev.type.startsWith('call_')) return;
+      if (!ev || typeof ev.type !== 'string') return;
+      // El tubo volvió: si la llamada sigue «saliendo», se repite el aviso por
+      // si el primero se perdió en el parpadeo de la conexión.
+      if (ev.type === 'realtime_connected') {
+        const enCurso = llamada.current;
+        if (enCurso?.soyQuienLlama && (estado === 'saliendo' || estado === 'activa')) {
+          realtime.send({
+            type: 'call_start',
+            call_id: enCurso.id,
+            to: Number(enCurso.partner.id),
+            tipo: enCurso.tipo,
+            conversation_id: enCurso.conversacion,
+          });
+        }
+        return;
+      }
+      if (!ev.type.startsWith('call_')) return;
       const datos = llamada.current;
 
       if (ev.type === 'call_ring') {
