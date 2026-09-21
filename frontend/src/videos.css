@@ -1,71 +1,163 @@
-/* Moon Watch — Diseño nativo estilo Facebook Watch a nivel de grandes aplicaciones */
-/* 100% responsivo, plano, sobrio, sin desbordes y con controles de video integrados */
+/* Moon Watch — Plataforma nativa de videos de Moon */
+/* ========================================================== */
+/* Diseño estético de alta fidelidad: limpio, sobrio, adaptable */
+/* al tema claro y oscuro de Moon, con controles nativos calibrados. */
 
 .videos-shell {
   width: 100%;
-  max-width: 620px;
+  max-width: 680px;
   margin: 0 auto;
-  padding: 0 0 80px 0;
-  background: #f0f2f5;
+  padding: 0 0 84px 0;
   box-sizing: border-box;
   min-height: 100vh;
+  background: var(--bg-main, #f0f2f5);
 }
 
-/* 1. Cabecera Moon Watch */
+/* ---------- 1. Cabecera Estilizada de Videos ---------- */
 .watch-fb-header {
-  background: #ffffff;
-  padding: 12px 14px 10px 14px;
-  border-bottom: 1px solid #e4e6eb;
+  background: var(--bg-surface, #ffffff);
+  border-bottom: 1px solid var(--border-subtle, #e4e6eb);
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: 30;
+  padding: 10px 16px 8px 16px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .watch-fb-title-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  gap: 12px;
+}
+
+.watch-brand-zone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .watch-fb-title {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 800;
-  color: #050505;
+  color: var(--text-main, #050505);
   margin: 0;
   letter-spacing: -0.02em;
+}
+
+.watch-badge-live {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: linear-gradient(135deg, #7c3aed, #3b82f6);
+  color: #ffffff;
+  padding: 2px 7px;
+  border-radius: 6px;
+  display: inline-block;
+}
+
+.watch-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watch-icon-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle, #e4e6eb);
+  background: var(--bg-alt, #f0f2f5);
+  color: var(--text-main, #050505);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.watch-icon-btn:hover {
+  background: var(--bg-hover, #e4e6eb);
+  transform: translateY(-1px);
+}
+
+.watch-icon-btn.active {
+  background: #1877f2;
+  color: #ffffff;
+  border-color: #1877f2;
+}
+
+.watch-icon-btn svg {
+  width: 17px !important;
+  height: 17px !important;
+  max-width: 17px !important;
+  max-height: 17px !important;
+  display: block;
 }
 
 .watch-subir-btn-hero {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: #1877f2;
+  background: linear-gradient(135deg, #1877f2, #2563eb);
   color: #ffffff;
   border: none;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
-  padding: 7px 14px;
-  border-radius: 18px;
+  padding: 8px 14px;
+  border-radius: 20px;
   cursor: pointer;
-  transition: background 0.2s;
+  box-shadow: 0 2px 8px rgba(24, 119, 242, 0.25);
+  transition: all 0.2s ease;
 }
 
 .watch-subir-btn-hero:hover {
-  background: #166fe5;
+  filter: brightness(1.08);
+  transform: translateY(-1px);
 }
 
 .watch-subir-btn-hero svg {
-  width: 16px;
-  height: 16px;
+  width: 15px !important;
+  height: 15px !important;
+  max-width: 15px !important;
+  max-height: 15px !important;
+}
+
+/* Buscador colapsable elegante */
+.watch-search-drawer {
+  margin-top: 8px;
+  animation: watch-slide-down 0.2s ease-out;
+}
+
+@keyframes watch-slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .watch-fb-searchbox {
   display: flex;
   align-items: center;
-  background: #f0f2f5;
+  background: var(--bg-alt, #f0f2f5);
+  border: 1px solid var(--border-subtle, #e4e6eb);
   border-radius: 20px;
   padding: 6px 12px;
+  gap: 8px;
+}
+
+/* El tamaño de la lupa nunca se desborda */
+.watch-fb-searchbox svg {
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+  max-width: 16px !important;
+  max-height: 16px !important;
+  color: var(--text-muted, #65676b);
+  flex-shrink: 0;
+  display: block;
 }
 
 .watch-fb-searchbox input {
@@ -73,74 +165,92 @@
   background: transparent;
   outline: none;
   font-size: 13.5px;
-  color: #050505;
+  color: var(--text-main, #050505);
   width: 100%;
-  margin-left: 6px;
 }
 
 .watch-fb-searchbox .clear-btn {
   background: none;
   border: none;
-  color: #65676b;
+  color: var(--text-muted, #65676b);
   cursor: pointer;
   padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* 2. Pestañas de categorías */
+.watch-fb-searchbox .clear-btn svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+/* ---------- 2. Pestañas de categorías ---------- */
 .watch-fb-tabs {
   display: flex;
   gap: 6px;
   overflow-x: auto;
-  padding: 8px 14px;
-  background: #ffffff;
-  border-bottom: 1px solid #e4e6eb;
+  padding: 10px 16px;
+  background: var(--bg-surface, #ffffff);
+  border-bottom: 1px solid var(--border-subtle, #e4e6eb);
   scrollbar-width: none;
 }
 .watch-fb-tabs::-webkit-scrollbar { display: none; }
 
 .watch-fb-pill {
-  background: #e4e6eb;
+  background: var(--bg-alt, #e4e6eb);
   border: none;
-  color: #050505;
+  color: var(--text-main, #050505);
   font-size: 13px;
   font-weight: 600;
   padding: 6px 14px;
-  border-radius: 16px;
+  border-radius: 18px;
   cursor: pointer;
   white-space: nowrap;
   flex: none;
-  transition: all 0.15s;
+  transition: all 0.15s ease;
+}
+
+.watch-fb-pill:hover {
+  filter: brightness(0.95);
 }
 
 .watch-fb-pill.active {
-  background: #e7f3ff;
-  color: #1877f2;
+  background: #1877f2;
+  color: #ffffff;
 }
 
-/* 3. Feed de videos */
+/* ---------- 3. Feed de videos ---------- */
 .watch-fb-feed {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-top: 8px;
-  background: #f0f2f5;
+  gap: 12px;
+  padding-top: 10px;
 }
 
 .watch-fb-card {
-  background: #ffffff;
-  border-top: 1px solid #e4e6eb;
-  border-bottom: 1px solid #e4e6eb;
-  padding: 0;
-  margin: 0;
+  background: var(--bg-surface, #ffffff);
+  border-top: 1px solid var(--border-subtle, #e4e6eb);
+  border-bottom: 1px solid var(--border-subtle, #e4e6eb);
+  position: relative;
   box-sizing: border-box;
 }
 
-/* Cabecera del video */
+@media (min-width: 681px) {
+  .watch-fb-card {
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle, #e4e6eb);
+    overflow: hidden;
+  }
+}
+
+/* Cabecera del creador */
 .watch-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px 8px 14px;
+  padding: 12px 14px 10px 14px;
+  position: relative;
 }
 
 .watch-creator-info {
@@ -157,37 +267,123 @@
 .watch-creator-name {
   font-size: 14px;
   font-weight: 700;
-  color: #050505;
+  color: var(--text-main, #050505);
   line-height: 1.2;
 }
 
 .watch-post-date {
   font-size: 12px;
-  color: #65676b;
+  color: var(--text-muted, #65676b);
   margin-top: 2px;
+}
+
+.watch-card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .watch-follow-btn {
   background: none;
   border: none;
   color: #1877f2;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.watch-follow-btn:hover {
+  background: var(--bg-alt, #f0f2f5);
 }
 
 .watch-follow-btn.siguiendo {
-  color: #65676b;
+  color: var(--text-muted, #65676b);
   font-weight: 600;
 }
 
-/* Texto del video */
+.watch-card-menu-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted, #65676b);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.watch-card-menu-btn:hover {
+  background: var(--bg-alt, #f0f2f5);
+  color: var(--text-main, #050505);
+}
+
+.watch-card-menu-btn svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+/* Menú desplegable contextual */
+.watch-card-dropdown {
+  position: absolute;
+  top: 48px;
+  right: 14px;
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-subtle, #e4e6eb);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  border-radius: 10px;
+  width: 200px;
+  z-index: 25;
+  overflow: hidden;
+  padding: 4px 0;
+  animation: watch-menu-in 0.15s ease-out;
+}
+
+@keyframes watch-menu-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.watch-dropdown-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: none;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-main, #050505);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.watch-dropdown-item:hover {
+  background: var(--bg-alt, #f0f2f5);
+}
+
+.watch-dropdown-item.danger {
+  color: #ef4444;
+}
+
+.watch-dropdown-item svg {
+  width: 16px !important;
+  height: 16px !important;
+  flex-shrink: 0;
+}
+
+/* Texto de la publicación */
 .watch-card-text {
   font-size: 14px;
-  color: #050505;
-  line-height: 1.4;
+  color: var(--text-main, #050505);
+  line-height: 1.45;
   padding: 0 14px 10px 14px;
   margin: 0;
   word-break: break-word;
@@ -220,7 +416,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(0, 0, 0, 0.2);
   cursor: pointer;
 }
 
@@ -228,14 +424,19 @@
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.72);
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 18px;
   padding-left: 3px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  transition: transform 0.15s ease;
+}
+
+.watch-play-button-overlay:hover .watch-play-circle-icon {
+  transform: scale(1.08);
 }
 
 /* Barra de control inferior nativa */
@@ -244,7 +445,7 @@
   bottom: 0;
   left: 0;
   right: 0;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0) 100%);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0) 100%);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -256,7 +457,7 @@
   background: none;
   border: none;
   color: #ffffff;
-  font-size: 14px;
+  font-size: 13px;
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -276,7 +477,7 @@
   height: 4px;
   -webkit-appearance: none;
   appearance: none;
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.35);
   border-radius: 2px;
   outline: none;
   cursor: pointer;
@@ -298,9 +499,9 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 14px;
-  border-bottom: 1px solid #e4e6eb;
+  border-bottom: 1px solid var(--border-subtle, #e4e6eb);
   font-size: 12.5px;
-  color: #65676b;
+  color: var(--text-muted, #65676b);
 }
 
 /* Botones de acción inferiores */
@@ -308,7 +509,7 @@
   display: flex;
   align-items: center;
   justify-content: space-around;
-  padding: 2px 4px;
+  padding: 3px 6px;
 }
 
 .watch-fb-action-button {
@@ -319,57 +520,64 @@
   gap: 6px;
   background: none;
   border: none;
-  color: #65676b;
+  color: var(--text-muted, #65676b);
   font-size: 13px;
   font-weight: 600;
   padding: 8px 0;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: all 0.15s ease;
 }
 
 .watch-fb-action-button:hover {
-  background: #f0f2f5;
+  background: var(--bg-alt, #f0f2f5);
 }
 
 .watch-fb-action-button svg {
-  width: 16px;
-  height: 16px;
+  width: 16px !important;
+  height: 16px !important;
+  max-width: 16px !important;
+  max-height: 16px !important;
 }
 
 .watch-fb-action-button.liked {
+  color: #ef4444;
+}
+
+.watch-fb-action-button.saved {
   color: #1877f2;
 }
 
 /* Sección de comentarios */
 .watch-comments-section {
-  padding: 10px 14px;
-  background: #fafbfc;
-  border-top: 1px solid #e4e6eb;
+  padding: 12px 14px;
+  background: var(--bg-alt, #fafbfc);
+  border-top: 1px solid var(--border-subtle, #e4e6eb);
 }
 
 .watch-comment-input-box {
   display: flex;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .watch-comment-input-box input {
   flex: 1;
-  border: 1px solid #ced0d4;
-  border-radius: 18px;
-  padding: 7px 14px;
+  border: 1px solid var(--border-subtle, #ced0d4);
+  border-radius: 20px;
+  padding: 8px 14px;
   font-size: 13.5px;
   outline: none;
-  background: #ffffff;
+  background: var(--bg-surface, #ffffff);
+  color: var(--text-main, #050505);
 }
 
 .watch-comment-input-box button {
   background: #1877f2;
   color: #ffffff;
   border: none;
-  border-radius: 16px;
-  padding: 0 14px;
+  border-radius: 18px;
+  padding: 0 16px;
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
@@ -387,7 +595,8 @@
 }
 
 .watch-comment-bubble {
-  background: #f0f2f5;
+  background: var(--bg-surface, #f0f2f5);
+  border: 1px solid var(--border-subtle, #e4e6eb);
   border-radius: 14px;
   padding: 8px 12px;
   max-width: 85%;
@@ -395,47 +604,125 @@
 
 .watch-comment-bubble b {
   font-size: 12.5px;
-  color: #050505;
+  color: var(--text-main, #050505);
   display: block;
 }
 
 .watch-comment-bubble p {
   font-size: 13px;
-  color: #1c1e21;
+  color: var(--text-main, #1c1e21);
   margin: 2px 0 0 0;
 }
 
 /* Pantalla vacía */
 .watch-empty-box {
-  background: #ffffff;
-  border: 1px solid #e4e6eb;
-  border-radius: 8px;
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-subtle, #e4e6eb);
+  border-radius: 12px;
   padding: 40px 20px;
   margin: 14px;
   text-align: center;
 }
 
 .watch-empty-icon {
-  font-size: 48px;
+  font-size: 44px;
   margin-bottom: 12px;
 }
 
 .watch-empty-box h3 {
   font-size: 18px;
   font-weight: 700;
-  color: #050505;
+  color: var(--text-main, #050505);
   margin: 0 0 8px 0;
 }
 
 .watch-empty-box p {
-  font-size: 14px;
-  color: #65676b;
+  font-size: 13.5px;
+  color: var(--text-muted, #65676b);
   margin: 0 auto 20px auto;
-  max-width: 400px;
-  line-height: 1.4;
+  max-width: 420px;
+  line-height: 1.45;
 }
 
-/* Modal de subida de video */
+/* ---------- 4. Modal de Ajustes de Video ---------- */
+.watch-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.watch-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.watch-setting-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.watch-setting-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main, #050505);
+}
+
+.watch-setting-desc {
+  font-size: 12px;
+  color: var(--text-muted, #65676b);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+/* Switch conmutador */
+.watch-toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.watch-toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.watch-toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--border-subtle, #ced0d4);
+  transition: 0.2s;
+  border-radius: 24px;
+}
+
+.watch-toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #ffffff;
+  transition: 0.2s;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.watch-toggle-switch input:checked + .watch-toggle-slider {
+  background-color: #1877f2;
+}
+
+.watch-toggle-switch input:checked + .watch-toggle-slider:before {
+  transform: translateX(20px);
+}
+
+/* ---------- 5. Modales comunes ---------- */
 .watch-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -449,12 +736,13 @@
 }
 
 .watch-modal-card {
-  background: #ffffff;
-  border-radius: 12px;
+  background: var(--bg-surface, #ffffff);
+  border-radius: 14px;
   width: 100%;
-  max-width: 500px;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  max-width: 480px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.3);
   overflow: hidden;
+  border: 1px solid var(--border-subtle, #e4e6eb);
 }
 
 .watch-modal-header {
@@ -462,31 +750,32 @@
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  border-bottom: 1px solid #e4e6eb;
+  border-bottom: 1px solid var(--border-subtle, #e4e6eb);
 }
 
 .watch-modal-header h2 {
-  font-size: 17px;
+  font-size: 16.5px;
   font-weight: 800;
-  color: #050505;
+  color: var(--text-main, #050505);
   margin: 0;
 }
 
 .watch-modal-header .close-btn {
-  background: #e4e6eb;
+  background: var(--bg-alt, #e4e6eb);
   border: none;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #050505;
+  color: var(--text-main, #050505);
 }
 
-.watch-modal-card form {
-  padding: 16px;
+.watch-modal-header .close-btn svg {
+  width: 14px !important;
+  height: 14px !important;
 }
 
 .watch-dropzone {
@@ -494,25 +783,25 @@
   border-radius: 10px;
   padding: 24px 14px;
   text-align: center;
-  background: #f7faff;
+  background: var(--bg-alt, #f7faff);
   cursor: pointer;
   margin-bottom: 14px;
 }
 
 .watch-dropzone .dropzone-icon {
-  font-size: 36px;
+  font-size: 34px;
   margin-bottom: 6px;
 }
 
 .watch-dropzone p {
   font-size: 14px;
-  color: #050505;
+  color: var(--text-main, #050505);
   margin: 0 0 4px 0;
 }
 
 .watch-dropzone span {
   font-size: 12px;
-  color: #65676b;
+  color: var(--text-muted, #65676b);
 }
 
 .watch-preview-container {
@@ -530,7 +819,8 @@
 }
 
 .btn-cambiar-video {
-  background: #e4e6eb;
+  background: var(--bg-alt, #e4e6eb);
+  color: var(--text-main, #050505);
   border: none;
   font-size: 12px;
   font-weight: 600;
@@ -546,7 +836,9 @@
 
 .watch-textarea {
   width: 100%;
-  border: 1px solid #ced0d4;
+  border: 1px solid var(--border-subtle, #ced0d4);
+  background: var(--bg-surface, #ffffff);
+  color: var(--text-main, #050505);
   border-radius: 8px;
   padding: 10px;
   font-size: 14px;
@@ -563,7 +855,7 @@
 .progress-info {
   display: flex;
   justify-content: space-between;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   color: #1877f2;
   margin-bottom: 4px;
@@ -572,7 +864,7 @@
 .progress-track {
   width: 100%;
   height: 6px;
-  background: #e4e6eb;
+  background: var(--border-subtle, #e4e6eb);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -587,13 +879,15 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-subtle, #e4e6eb);
 }
 
 .watch-skeleton-card {
   height: 380px;
-  background: #ffffff;
-  border-top: 1px solid #e4e6eb;
-  border-bottom: 1px solid #e4e6eb;
+  background: var(--bg-surface, #ffffff);
+  border-top: 1px solid var(--border-subtle, #e4e6eb);
+  border-bottom: 1px solid var(--border-subtle, #e4e6eb);
   animation: fb-skeleton 1.5s infinite;
 }
 

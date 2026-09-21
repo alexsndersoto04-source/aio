@@ -1,16 +1,17 @@
 // Moon Watch — Plataforma nativa de videos de Moon respaldada en Telegram
 // =========================================================================
-// Feed estilo Facebook Watch / Reels, 100% nativo y profesional.
-// Sin terceros, sin límites de bloqueo, con reproductor en pantalla completa,
-// comentarios en vivo, reacciones y subida directa de videos a tu biblioteca.
+// Feed estilo Facebook Watch / Reels, 100% nativo, sobrio y estético.
+// Con reproductor adaptativo, menú de opciones para cada video, ajustes
+// de reproducción/datos y subida directa de videos a tu biblioteca.
 
 import React, { useState, useEffect, useRef } from 'react';
 import { api, uploadMedia, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { toast, avisoError } from '../ui.js';
+import { toast, avisoError, confirmar } from '../ui.js';
 import Avatar from '../components/Avatar.jsx';
 import {
   IconSearch, IconX, IconHeart, IconComment, IconSend, IconVideo,
+  IconSettings, IconMore, IconTrash, IconBookmark, IconCopy, IconCheck,
 } from '../components/Icons.jsx';
 
 const PESTANAS = [
@@ -39,26 +40,32 @@ function formatearSegundos(s) {
   return `${min}:${sec < 10 ? '0' : ''}${sec}`;
 }
 
-/** Componente de reproducción y tarjeta de video individual */
-function TarjetaVideoWatch({ post, onActualizar }) {
+/** Componente de reproducción y tarjeta de video individual con menú de opciones */
+function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
   const { user: yo } = useAuth();
   const videoRef = useRef(null);
   const contenedorRef = useRef(null);
+  const menuRef = useRef(null);
 
   const [reproduciendo, setReproduciendo] = useState(false);
-  const [silenciado, setSilenciado] = useState(false);
+  const [silenciado, setSilenciado] = useState(config?.muteDefault !== false);
   const [progreso, setProgreso] = useState(0);
   const [duracion, setDuracion] = useState(0);
   const [tiempoActual, setTiempoActual] = useState(0);
 
+  // Menú de opciones de la tarjeta
+  const [mostrarMenu, setMostrarMenu] = useState(false);
+
   // Estados de interacción
   const [isLiked, setIsLiked] = useState(Boolean(post.is_liked));
   const [likesCount, setLikesCount] = useState(Number(post.likes_count || 0));
+  const [isSaved, setIsSaved] = useState(Boolean(post.is_saved));
   const autorId = post.user?.id || post.user_id || post.author_id;
   const autorUsername = post.author_username || post.user?.username || 'usuario';
   const autorNombre = post.author_display_name || post.user?.display_name || autorUsername;
   const autorAvatar = post.author_avatar_url || post.user?.avatar_url || '';
   const autorVerificado = Boolean(post.author_is_verified || post.user?.is_verified || post.user?.verified);
+  const esMio = Boolean(yo?.id && autorId && Number(yo.id) === Number(autorId));
   const [siguiendo, setSiguiendo] = useState(Boolean(post.user?.is_following));
 
   // Comentarios
@@ -67,6 +74,23 @@ function TarjetaVideoWatch({ post, onActualizar }) {
   const [cargandoComentarios, setCargandoComentarios] = useState(false);
   const [nuevoComentario, setNuevoComentario] = useState('');
   const [enviandoComentario, setEnviandoComentario] = useState(false);
+
+  // Cerrar menú al hacer clic fuera
+  useEffect(() => {
+    function handleClickFuera(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMostrarMenu(false);
+      }
+    }
+    if (mostrarMenu) {
+      document.addEventListener('mousedown', handleClickFuera);
+      document.addEventListener('touchstart', handleClickFuera);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickFuera);
+      document.removeEventListener('touchstart', handleClickFuera);
+    };
+  }, [mostrarMenu]);
 
   // Extraer el archivo de video de la publicación
   const archivoVideo = (post.images || []).find((im) => {
@@ -81,8 +105,7 @@ function TarjetaVideoWatch({ post, onActualizar }) {
     if (videoRef.current.paused) {
       videoRef.current.play()
         .then(() => setReproduciendo(true))
-        .catch((err) => {
-          console.warn('Reproduccion bloqueada por navegador, intentando silenciado:', err?.message || err);
+        .catch(() => {
           if (videoRef.current) {
             videoRef.current.muted = true;
             setSilenciado(true);
@@ -104,7 +127,6 @@ function TarjetaVideoWatch({ post, onActualizar }) {
     } else if (el.webkitRequestFullscreen) {
       el.webkitRequestFullscreen();
     } else if (el.webkitEnterFullscreen) {
-      // iOS Safari nativo para <video>
       el.webkitEnterFullscreen();
     }
   }
@@ -122,9 +144,59 @@ function TarjetaVideoWatch({ post, onActualizar }) {
         await api.del(`/api/posts/${post.id}/like`);
       }
     } catch {
-      // Revertir en caso de fallo
       setIsLiked(!nuevoEstado);
       setLikesCount((prev) => Math.max(0, prev + (nuevoEstado ? -1 : 1)));
+    }
+  }
+
+  // Alternar Guardar en colección
+  async function alternarGuardar() {
+    const nuevo = !isSaved;
+    setIsSaved(nuevo);
+    setMostrarMenu(false);
+    try {
+      if (nuevo) {
+        await api.post(`/api/posts/${post.id}/save`, {});
+        toast.ok('Video guardado en tu colección');
+      } else {
+        await api.del(`/api/posts/${post.id}/save`);
+        toast.info('Video removido de guardados');
+      }
+    } catch {
+      setIsSaved(!nuevo);
+    }
+  }
+
+  // Copiar enlace directo del video
+  function copiarEnlace() {
+    setMostrarMenu(false);
+    const shareUrl = `${window.location.origin}/#/post/${post.id}`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(shareUrl)
+        .then(() => toast.ok('Enlace del video copiado'))
+        .catch(() => toast.ok(shareUrl));
+    } else {
+      toast.ok('Enlace: ' + shareUrl);
+    }
+  }
+
+  // Eliminar video (si es del usuario)
+  async function borrarVideo() {
+    setMostrarMenu(false);
+    const seguro = await confirmar({
+      title: '¿Eliminar este video?',
+      message: 'Esta publicación y su video se eliminarán de forma permanente de Moon Watch.',
+      confirmText: 'Eliminar video',
+      danger: true,
+    });
+    if (!seguro) return;
+
+    try {
+      await api.del(`/api/posts/${post.id}`);
+      toast.ok('Video eliminado correctamente');
+      if (onEliminar) onEliminar(post.id);
+    } catch (e) {
+      avisoError(e);
     }
   }
 
@@ -183,7 +255,7 @@ function TarjetaVideoWatch({ post, onActualizar }) {
 
   return (
     <article className="watch-fb-card" ref={contenedorRef}>
-      {/* 1. Cabecera del creador */}
+      {/* 1. Cabecera del creador con menú de opciones */}
       <div className="watch-card-header">
         <a href={`#/user/${autorUsername}`} className="watch-creator-info" style={{ textDecoration: 'none', color: 'inherit' }}>
           <Avatar
@@ -206,15 +278,44 @@ function TarjetaVideoWatch({ post, onActualizar }) {
           </div>
         </a>
 
-        {yo?.id && autorId && yo.id !== autorId ? (
+        <div className="watch-card-header-actions" ref={menuRef}>
+          {yo?.id && autorId && yo.id !== autorId ? (
+            <button
+              type="button"
+              className={`watch-follow-btn ${siguiendo ? 'siguiendo' : ''}`}
+              onClick={alternarSeguir}
+            >
+              {siguiendo ? 'Siguiendo' : '+ Seguir'}
+            </button>
+          ) : null}
+
           <button
             type="button"
-            className={`watch-follow-btn ${siguiendo ? 'siguiendo' : ''}`}
-            onClick={alternarSeguir}
+            className="watch-card-menu-btn"
+            onClick={() => setMostrarMenu((v) => !v)}
+            title="Opciones de este video"
+            aria-label="Opciones de este video"
           >
-            {siguiendo ? 'Siguiendo' : '+ Seguir'}
+            <IconMore />
           </button>
-        ) : null}
+
+          {/* Menú contextual flotante */}
+          {mostrarMenu ? (
+            <div className="watch-card-dropdown" role="menu">
+              <button type="button" className="watch-dropdown-item" onClick={copiarEnlace}>
+                <IconCopy /> Copiar enlace
+              </button>
+              <button type="button" className="watch-dropdown-item" onClick={alternarGuardar}>
+                <IconBookmark filled={isSaved} /> {isSaved ? 'Quitar de guardados' : 'Guardar video'}
+              </button>
+              {esMio ? (
+                <button type="button" className="watch-dropdown-item danger" onClick={borrarVideo}>
+                  <IconTrash /> Eliminar video
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {/* 2. Título o descripción del video */}
@@ -222,13 +323,13 @@ function TarjetaVideoWatch({ post, onActualizar }) {
         <p className="watch-card-text">{post.content}</p>
       ) : null}
 
-      {/* 3. Área de reproducción de video profesional */}
+      {/* 3. Área de reproducción cinemática nativa */}
       <div className="watch-media-box">
         <video
           ref={videoRef}
           src={imgUrl(urlVideo)}
           playsInline
-          preload="metadata"
+          preload={config?.ahorroDatos ? 'none' : 'metadata'}
           muted={silenciado}
           onClick={alternarPlay}
           onTimeUpdate={() => {
@@ -306,7 +407,7 @@ function TarjetaVideoWatch({ post, onActualizar }) {
         <span>{post.comments_count || comentarios.length || 0} comentarios</span>
       </div>
 
-      {/* 5. Barra de interacciones estilo Facebook Watch */}
+      {/* 5. Barra de interacciones */}
       <div className="watch-fb-actions-bar">
         <button
           type="button"
@@ -326,14 +427,21 @@ function TarjetaVideoWatch({ post, onActualizar }) {
 
         <button
           type="button"
+          className={`watch-fb-action-button ${isSaved ? 'saved' : ''}`}
+          onClick={alternarGuardar}
+        >
+          <IconBookmark filled={isSaved} /> {isSaved ? 'Guardado' : 'Guardar'}
+        </button>
+
+        <button
+          type="button"
           className="watch-fb-action-button"
           onClick={() => {
-            const shareUrl = window.location.origin + `/p/${post.id}`;
+            const shareUrl = `${window.location.origin}/#/post/${post.id}`;
             if (navigator.share) {
               navigator.share({ title: post.content || 'Video en Moon Watch', url: shareUrl }).catch(() => {});
             } else {
-              navigator.clipboard?.writeText(shareUrl);
-              toast.ok('Enlace del video copiado al portapapeles');
+              copiarEnlace();
             }
           }}
         >
@@ -376,13 +484,117 @@ function TarjetaVideoWatch({ post, onActualizar }) {
   );
 }
 
+/** Modal de Ajustes y Preferencias de Moon Watch */
+function AjustesVideoModal({ config, onGuardar, onCerrar }) {
+  const [autoplay, setAutoplay] = useState(Boolean(config.autoplay));
+  const [muteDefault, setMuteDefault] = useState(Boolean(config.muteDefault));
+  const [ahorroDatos, setAhorroDatos] = useState(Boolean(config.ahorroDatos));
+
+  function guardar() {
+    onGuardar({ autoplay, muteDefault, ahorroDatos });
+    toast.ok('Ajustes de video guardados');
+    onCerrar();
+  }
+
+  return (
+    <div className="watch-modal-backdrop" onClick={onCerrar}>
+      <div className="watch-modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="watch-modal-header">
+          <h2>Ajustes de Moon Watch</h2>
+          <button type="button" className="close-btn" onClick={onCerrar}>
+            <IconX />
+          </button>
+        </div>
+
+        <div className="watch-settings-list">
+          {/* 1. Reproducción automática */}
+          <div className="watch-setting-row">
+            <div className="watch-setting-info">
+              <span className="watch-setting-title">Reproducción automática</span>
+              <span className="watch-setting-desc">
+                Iniciar reproducción al enfocar el video en pantalla.
+              </span>
+            </div>
+            <label className="watch-toggle-switch">
+              <input
+                type="checkbox"
+                checked={autoplay}
+                onChange={(e) => setAutoplay(e.target.checked)}
+              />
+              <span className="watch-toggle-slider" />
+            </label>
+          </div>
+
+          {/* 2. Iniciar en silencio */}
+          <div className="watch-setting-row">
+            <div className="watch-setting-info">
+              <span className="watch-setting-title">Iniciar en silencio</span>
+              <span className="watch-setting-desc">
+                Los videos arrancan silenciados para no interrumpir tu entorno.
+              </span>
+            </div>
+            <label className="watch-toggle-switch">
+              <input
+                type="checkbox"
+                checked={muteDefault}
+                onChange={(e) => setMuteDefault(e.target.checked)}
+              />
+              <span className="watch-toggle-slider" />
+            </label>
+          </div>
+
+          {/* 3. Ahorro de datos */}
+          <div className="watch-setting-row">
+            <div className="watch-setting-info">
+              <span className="watch-setting-title">Modo ahorro de datos</span>
+              <span className="watch-setting-desc">
+                Descargar metadatos solo al tocar play para ahorrar megas móviles.
+              </span>
+            </div>
+            <label className="watch-toggle-switch">
+              <input
+                type="checkbox"
+                checked={ahorroDatos}
+                onChange={(e) => setAhorroDatos(e.target.checked)}
+              />
+              <span className="watch-toggle-slider" />
+            </label>
+          </div>
+        </div>
+
+        <div className="watch-modal-actions">
+          <button type="button" className="btn btn-ghost" onClick={onCerrar}>
+            Cancelar
+          </button>
+          <button type="button" className="btn btn-aurora" onClick={guardar}>
+            Guardar cambios
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Pantalla principal de Moon Watch */
 export default function VideosView() {
   const [categoria, setCategoria] = useState('para_ti');
   const [busqueda, setBusqueda] = useState('');
   const [queryInput, setQueryInput] = useState('');
+  const [mostrarBuscador, setMostrarBuscador] = useState(false);
   const [videos, setVideos] = useState([]);
   const [cargando, setCargando] = useState(true);
+
+  // Configuración de usuario guardada localmente
+  const [config, setConfig] = useState(() => {
+    try {
+      const guardada = localStorage.getItem('moon_watch_config');
+      if (guardada) return JSON.parse(guardada);
+    } catch {}
+    return { autoplay: true, muteDefault: true, ahorroDatos: false };
+  });
+
+  // Modal de Ajustes
+  const [mostrarAjustes, setMostrarAjustes] = useState(false);
 
   // Modal de subida de video
   const [mostrarModal, setMostrarModal] = useState(false);
@@ -392,6 +604,14 @@ export default function VideosView() {
   const [subiendoPct, setSubiendoPct] = useState(0);
   const [publicando, setPublicando] = useState(false);
   const inputArchivoRef = useRef(null);
+
+  // Guardar configuración
+  function onGuardarConfig(nuevaConfig) {
+    setConfig(nuevaConfig);
+    try {
+      localStorage.setItem('moon_watch_config', JSON.stringify(nuevaConfig));
+    } catch {}
+  }
 
   // Cargar videos de Moon
   useEffect(() => {
@@ -487,41 +707,71 @@ export default function VideosView() {
 
   return (
     <div className="videos-shell">
-      {/* 1. Cabecera principal estilo Facebook Watch */}
+      {/* 1. Cabecera estilizada de Videos */}
       <div className="watch-fb-header">
         <div className="watch-fb-title-bar">
-          <div className="watch-title-brand">
-            <h1 className="watch-fb-title">Moon Watch</h1>
+          <div className="watch-brand-zone">
+            <h1 className="watch-fb-title">Videos</h1>
+            <span className="watch-badge-live">Watch</span>
           </div>
 
-          <button
-            type="button"
-            className="watch-subir-btn-hero"
-            onClick={() => setMostrarModal(true)}
-          >
-            <IconVideo /> Subir video
-          </button>
-        </div>
-
-        {/* Buscador plano */}
-        <form className="watch-fb-searchbox" onSubmit={buscar}>
-          <IconSearch />
-          <input
-            type="search"
-            value={queryInput}
-            onChange={(e) => setQueryInput(e.target.value)}
-            placeholder="Buscar videos en Moon Watch..."
-          />
-          {queryInput ? (
+          <div className="watch-header-actions">
             <button
               type="button"
-              className="clear-btn"
-              onClick={() => { setQueryInput(''); setBusqueda(''); }}
+              className={`watch-icon-btn ${mostrarBuscador ? 'active' : ''}`}
+              onClick={() => {
+                setMostrarBuscador((v) => !v);
+              }}
+              title="Buscar videos"
+              aria-label="Buscar videos"
             >
-              <IconX />
+              <IconSearch />
             </button>
-          ) : null}
-        </form>
+
+            <button
+              type="button"
+              className="watch-icon-btn"
+              onClick={() => setMostrarAjustes(true)}
+              title="Ajustes de la sección de videos"
+              aria-label="Ajustes de la sección de videos"
+            >
+              <IconSettings />
+            </button>
+
+            <button
+              type="button"
+              className="watch-subir-btn-hero"
+              onClick={() => setMostrarModal(true)}
+            >
+              <IconVideo /> <span>Subir</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Buscador colapsable elegante */}
+        {mostrarBuscador ? (
+          <div className="watch-search-drawer">
+            <form className="watch-fb-searchbox" onSubmit={buscar}>
+              <IconSearch />
+              <input
+                type="search"
+                autoFocus
+                value={queryInput}
+                onChange={(e) => setQueryInput(e.target.value)}
+                placeholder="Buscar videos, temas o creadores…"
+              />
+              {queryInput ? (
+                <button
+                  type="button"
+                  className="clear-btn"
+                  onClick={() => { setQueryInput(''); setBusqueda(''); }}
+                >
+                  <IconX />
+                </button>
+              ) : null}
+            </form>
+          </div>
+        ) : null}
       </div>
 
       {/* 2. Pestañas de categorías */}
@@ -570,12 +820,25 @@ export default function VideosView() {
           <TarjetaVideoWatch
             key={v.id}
             post={v}
+            config={config}
+            onEliminar={(idEliminado) => {
+              setVideos((prev) => prev.filter((p) => p.id !== idEliminado));
+            }}
             onActualizar={() => {}}
           />
         ))}
       </div>
 
-      {/* 4. Modal de Subida de Video */}
+      {/* 4. Modal de Ajustes de Video */}
+      {mostrarAjustes ? (
+        <AjustesVideoModal
+          config={config}
+          onGuardar={onGuardarConfig}
+          onCerrar={() => setMostrarAjustes(false)}
+        />
+      ) : null}
+
+      {/* 5. Modal de Subida de Video */}
       {mostrarModal ? (
         <div className="watch-modal-backdrop" onClick={() => !publicando && setMostrarModal(false)}>
           <div className="watch-modal-card" onClick={(e) => e.stopPropagation()}>
