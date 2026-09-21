@@ -20,7 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { createWriteStream, mkdirSync, existsSync, statSync, createReadStream, readdirSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { uno } from './db.mjs';
-import { subirATelegram, descargarDeTelegram } from './almacen-telegram.mjs';
+import { subirATelegram, descargarDeTelegram, recuperarVideoPorNombre } from './almacen-telegram.mjs';
 
 export const CARPETA = process.env.MOON_UPLOADS || resolve(process.cwd(), 'uploads');
 
@@ -294,6 +294,17 @@ export async function leerImagen(pool, nombre) {
         const mime = mimeDeNombre(nombre);
         return { mime, bytes: bajado };
       }
+    }
+
+    // Si no tenía 'tg:' o falló por ID, buscar por nombre en el canal de videos:
+    const rescatado = await recuperarVideoPorNombre(nombre);
+    if (rescatado && rescatado.bytes) {
+      copiaEnDisco(nombre, rescatado.bytes);
+      if (med && med.id && rescatado.tg_id) {
+        await pool.query('UPDATE media SET thumb_path = $1 WHERE id = $2', [`tg:${rescatado.tg_id}`, med.id]).catch(() => {});
+      }
+      const mime = mimeDeNombre(nombre);
+      return { mime, bytes: rescatado.bytes };
     }
   } catch (errTg) {
     console.error('[medios] error recuperando de telegram:', errTg?.message || errTg);

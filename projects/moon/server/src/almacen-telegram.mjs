@@ -121,3 +121,29 @@ export async function descargarDeTelegram(tgId, { tipo = 'video' } = {}) {
   }
 }
 
+/**
+ * Rescata un video de Telegram buscando su nombre en el canal si no tenemos el ID guardado.
+ */
+export async function recuperarVideoPorNombre(nombre) {
+  const tg = await obtenerClienteTelegram();
+  if (!tg) return null;
+
+  try {
+    const canal = await resolverCanal(tg, 'video');
+    if (!canal) return null;
+
+    const mensajes = await tg.getMessages(canal, { limit: 40 });
+    for (const msg of mensajes) {
+      if (msg.message && msg.message.includes(nombre) && msg.media) {
+        console.log(`[tg-almacen] Rescatando video ${nombre} desde Telegram...`);
+        const buffer = await tg.downloadMedia(msg, {});
+        return buffer ? { bytes: Buffer.from(buffer), tg_id: msg.id } : null;
+      }
+    }
+  } catch (err) {
+    console.error('[tg-almacen] Error buscando video por nombre en Telegram:', err.message);
+  }
+  return null;
+}
+
+

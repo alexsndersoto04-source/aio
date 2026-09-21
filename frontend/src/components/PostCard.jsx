@@ -84,169 +84,17 @@ function PruebaSocial({ post }) {
   );
 }
 
-function formatearSegundos(s) {
-  if (isNaN(s) || s === Infinity) return '0:00';
-  const min = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${min}:${sec < 10 ? '0' : ''}${sec}`;
-}
-
 function ReproductorVideoMoon({ url }) {
-  const videoRef = useRef(null);
-  const [reproduciendo, setReproduciendo] = useState(false);
-  const [silenciado, setSilenciado] = useState(false);
-  const [progreso, setProgreso] = useState(0);
-  const [duracion, setDuracion] = useState(0);
-  const [tiempo, setTiempo] = useState(0);
-  const [mostrarControles, setMostrarControles] = useState(true);
-  const [errorVideo, setErrorVideo] = useState(false);
-  const timer = useRef(null);
-
-  function refrescarControles() {
-    clearTimeout(timer.current);
-    setMostrarControles(true);
-    timer.current = setTimeout(() => {
-      if (videoRef.current && !videoRef.current.paused) {
-        setMostrarControles(false);
-      }
-    }, 2800);
-  }
-
-  function alternarPlay(e) {
-    if (e) e.stopPropagation();
-    if (!videoRef.current) return;
-    if (videoRef.current.paused) {
-      videoRef.current.play()
-        .then(() => {
-          setReproduciendo(true);
-          refrescarControles();
-        })
-        .catch((err) => {
-          console.warn('Reproduccion fallida, intentando con mute:', err?.message || err);
-          if (videoRef.current) {
-            videoRef.current.muted = true;
-            setSilenciado(true);
-            videoRef.current.play().then(() => {
-              setReproduciendo(true);
-              refrescarControles();
-            }).catch(() => {});
-          }
-        });
-    } else {
-      videoRef.current.pause();
-      setReproduciendo(false);
-      setMostrarControles(true);
-    }
-  }
-
-  function pantallaCompleta(e) {
-    if (e) e.stopPropagation();
-    const el = videoRef.current;
-    if (!el) return;
-    if (el.requestFullscreen) {
-      el.requestFullscreen().catch(() => {});
-    } else if (el.webkitEnterFullscreen) {
-      el.webkitEnterFullscreen();
-    }
-  }
-
-  if (errorVideo) {
-    return (
-      <div className="moon-video-error-box">
-        <span>⚠️ Este video anterior no se pudo cargar. Los nuevos videos se guardan de forma permanente.</span>
-      </div>
-    );
-  }
-
+  if (!url) return null;
   return (
-    <div
-      className="moon-post-video"
-      onMouseMove={refrescarControles}
-      onClick={alternarPlay}
-    >
+    <div className="moon-post-video-wrap">
       <video
-        ref={videoRef}
         src={url}
+        controls
         playsInline
-        crossOrigin="anonymous"
         preload="metadata"
-        muted={silenciado}
-        onError={() => setErrorVideo(true)}
-        onTimeUpdate={() => {
-          if (videoRef.current) {
-            const c = videoRef.current.currentTime;
-            const d = videoRef.current.duration || 1;
-            setTiempo(c);
-            setProgreso((c / d) * 100);
-          }
-        }}
-        onLoadedMetadata={() => {
-          if (videoRef.current) setDuracion(videoRef.current.duration || 0);
-        }}
-        onPlay={() => setReproduciendo(true)}
-        onPause={() => setReproduciendo(false)}
-        onEnded={() => {
-          setReproduciendo(false);
-          setMostrarControles(true);
-        }}
+        className="moon-post-video-el"
       />
-
-      {!reproduciendo && (
-        <div className="moon-video-play-badge">
-          <div className="moon-video-play-btn">▶</div>
-        </div>
-      )}
-
-      <div
-        className={`moon-video-bar ${mostrarControles || !reproduciendo ? 'visible' : ''}`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          type="button"
-          className="moon-video-btn"
-          onClick={alternarPlay}
-          aria-label={reproduciendo ? 'Pausa' : 'Reproducir'}
-        >
-          {reproduciendo ? '❚❚' : '▶'}
-        </button>
-
-        <span className="moon-video-time">
-          {formatearSegundos(tiempo)} / {formatearSegundos(duracion)}
-        </span>
-
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={progreso}
-          className="moon-video-seeker"
-          onChange={(e) => {
-            const pct = Number(e.target.value);
-            setProgreso(pct);
-            if (videoRef.current && duracion > 0) {
-              videoRef.current.currentTime = (pct / 100) * duracion;
-            }
-          }}
-        />
-
-        <button
-          type="button"
-          className="moon-video-btn"
-          onClick={() => setSilenciado(!silenciado)}
-          aria-label={silenciado ? 'Activar sonido' : 'Silenciar'}
-        >
-          {silenciado ? '🔇' : '🔊'}
-        </button>
-
-        <button
-          type="button"
-          className="moon-video-btn"
-          onClick={pantallaCompleta}
-          aria-label="Pantalla completa"
-        >
-          ⛶
-        </button>
-      </div>
     </div>
   );
 }
