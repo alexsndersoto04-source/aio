@@ -40,8 +40,14 @@ export async function conImagenes(pool, filas) {
   const porPost = new Map();
   for (const im of imagenes) {
     if (!porPost.has(Number(im.post_id))) porPost.set(Number(im.post_id), []);
+    const urlLimpia = (im.original_url || im.thumb_url || '').toLowerCase();
+    const esVid = /\.(mp4|webm|mov|mkv|3gp|ogv)(\?.*)?$/i.test(urlLimpia) || urlLimpia.includes('video');
     porPost.get(Number(im.post_id)).push({
-      id: im.id, url: im.original_url, original_url: im.original_url, thumb_url: im.thumb_url || im.original_url,
+      id: im.id,
+      url: im.original_url,
+      original_url: im.original_url,
+      thumb_url: im.thumb_url || im.original_url,
+      kind: esVid ? 'video' : 'image',
     });
   }
   for (const f of filas) f.images = porPost.get(Number(f.id)) || [];
@@ -109,8 +115,15 @@ async function marcarConEncuesta(pool, posts) {
 }
 
 export function aPublicacion(f, yo) {
+  const authorId = Number(f.user_id);
+  const autorUsername = f.author_username || '';
+  const autorNombre = f.author_display_name || autorUsername;
+  const autorAvatar = f.author_avatar_url || '';
+  const verificado = !!f.author_is_verified;
   return {
     id: Number(f.id),
+    user_id: authorId,
+    author_id: authorId,
     content: f.status === 'deleted' ? '' : f.content,
     deleted: f.status === 'deleted',
     created_at: f.created_at,
@@ -123,12 +136,20 @@ export function aPublicacion(f, yo) {
     is_saved: !!f.is_saved,
     pinned: !!f.pinned_at,
     pinned_at: f.pinned_at || null,
-    is_mine: Number(f.user_id) === Number(yo),
-    author_username: f.author_username,
-    author_display_name: f.author_display_name || f.author_username,
-    author_avatar_url: f.author_avatar_url,
-    author_is_verified: !!f.author_is_verified,
+    is_mine: authorId === Number(yo),
+    author_username: autorUsername,
+    author_display_name: autorNombre,
+    author_avatar_url: autorAvatar,
+    author_is_verified: verificado,
     author_is_private: !!f.author_is_private,
+    user: {
+      id: authorId,
+      username: autorUsername,
+      display_name: autorNombre,
+      avatar_url: autorAvatar,
+      is_verified: verificado,
+      verified: verificado,
+    },
   };
 }
 
@@ -177,7 +198,27 @@ export function registrarRutasSocial(router) {
    * Se usa en las tres vistas del inicio (Para ti, Tendencias y Recientes).
    */
   function condicionDeTipo(tipo) {
-    if (tipo === 'videos') return "EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id AND (pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%' OR pi.original_url ILIKE '%.mov%'))";
+    if (tipo === 'videos') return `(
+      EXISTS (
+        SELECT 1 FROM post_images pi
+        WHERE pi.post_id = p.id
+          AND (
+            pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%'
+            OR pi.original_url ILIKE '%.mov%' OR pi.original_url ILIKE '%.mkv%'
+            OR pi.original_url ILIKE '%.3gp%' OR pi.original_url ILIKE '%.ogv%'
+            OR pi.original_url ILIKE '%video%'
+            OR pi.thumb_url ILIKE '%.mp4%' OR pi.thumb_url ILIKE '%.webm%'
+            OR pi.thumb_url ILIKE '%.mov%' OR pi.thumb_url ILIKE '%.mkv%'
+            OR pi.thumb_url ILIKE '%.3gp%' OR pi.thumb_url ILIKE '%.ogv%'
+            OR pi.thumb_url ILIKE '%video%'
+          )
+      )
+      OR EXISTS (
+        SELECT 1 FROM media m
+        WHERE (m.kind = 'video' OR m.kind = ('post_' || p.id))
+          AND (m.original_path ILIKE '%.mp4%' OR m.original_path ILIKE '%.webm%' OR m.original_path ILIKE '%.mov%' OR m.original_path ILIKE '%.mkv%' OR m.original_path ILIKE '%.3gp%')
+      )
+    )`;
     if (tipo === 'fotos') return 'EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id)';
     if (tipo === 'encuestas') return 'EXISTS (SELECT 1 FROM polls pl WHERE pl.post_id = p.id)';
     if (tipo === 'texto') return 'NOT EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id) AND NOT EXISTS (SELECT 1 FROM polls pl WHERE pl.post_id = p.id)';
@@ -247,45 +288,73 @@ export function registrarRutasSocial(router) {
   // ---------- Moon Watch (Videos de la comunidad) ----------
   router.get('/api/videos', async (c) => {
     const yo = await c.yoOpcional();
-    const yoId = yo?.id || 0;
-    const { page, limit, offset } = paginacion(c.req, 12, 50);
-    const busqueda = (c.query.get('q') || '').trim().toLowerCase();
+    const yoId = yo ? Number(yo.id) : 0;
+    const { page, limit, offset } = paginacion(c.req, 20, 50);
+    const busqueda = (c.query.get('q') || '').trim();
     const categoria = (c.query.get('cat') || 'para_ti').trim();
 
-    let conds = [
-      "p.status = 'active'",
-      "EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id AND (pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%' OR pi.original_url ILIKE '%.mov%' OR pi.original_url ILIKE '%.mkv%' OR pi.original_url ILIKE '%.3gp%'))",
-    ];
-    let args = [yoId];
+    const condVideo = `(
+      EXISTS (
+        SELECT 1 FROM post_images pi
+        WHERE pi.post_id = p.id
+          AND (
+            pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%'
+            OR pi.original_url ILIKE '%.mov%' OR pi.original_url ILIKE '%.mkv%'
+            OR pi.original_url ILIKE '%.3gp%' OR pi.original_url ILIKE '%.ogv%'
+            OR pi.original_url ILIKE '%video%'
+            OR pi.thumb_url ILIKE '%.mp4%' OR pi.thumb_url ILIKE '%.webm%'
+            OR pi.thumb_url ILIKE '%.mov%' OR pi.thumb_url ILIKE '%.mkv%'
+            OR pi.thumb_url ILIKE '%.3gp%' OR pi.thumb_url ILIKE '%.ogv%'
+            OR pi.thumb_url ILIKE '%video%'
+          )
+      )
+      OR EXISTS (
+        SELECT 1 FROM media m
+        WHERE (m.kind = 'video' OR m.kind = ('post_' || p.id))
+          AND (m.original_path ILIKE '%.mp4%' OR m.original_path ILIKE '%.webm%' OR m.original_path ILIKE '%.mov%' OR m.original_path ILIKE '%.mkv%' OR m.original_path ILIKE '%.3gp%')
+      )
+    )`;
+
+    const condiciones = ["p.status = 'active'", condVideo];
+    const args = [yoId];
+
+    if (yoId) {
+      condiciones.push(SQL_NO_BLOQUEADOS);
+      condiciones.push(SQL_NO_OCULTOS);
+    }
+
+    if (categoria === 'siguiendo' && yoId) {
+      condiciones.push(`p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)`);
+    } else if (categoria === 'mis_videos' && yoId) {
+      condiciones.push(`p.user_id = $1`);
+    }
 
     if (busqueda) {
-      args.push(`%${busqueda}%`);
-      conds.push(`(LOWER(p.content) LIKE $${args.length} OR LOWER(u.username) LIKE $${args.length} OR LOWER(u.display_name) LIKE $${args.length})`);
+      args.push(`%${busqueda.toLowerCase()}%`);
+      const bIdx = args.length;
+      condiciones.push(`(
+        LOWER(p.content) LIKE $${bIdx}
+        OR LOWER(u.username) LIKE $${bIdx}
+        OR LOWER(u.display_name) LIKE $${bIdx}
+      )`);
     }
 
     let orden = 'p.created_at DESC';
     if (categoria === 'tendencias') {
       orden = '(p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC';
-    } else if (categoria === 'siguiendo' && yoId) {
-      conds.push(`p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ${yoId})`);
-    } else if (categoria === 'mis_videos' && yoId) {
-      conds.push(`p.user_id = ${yoId}`);
+    } else if (categoria === 'para_ti' && yoId) {
+      orden = `${ordenParaTi(yoId)}`;
     }
 
+    const where = condiciones.join(' AND ');
     const total = await uno(
       c.pool,
-      `SELECT COUNT(*)::int AS count FROM posts p JOIN users u ON u.id = p.user_id WHERE ${conds.join(' AND ')}`,
+      `SELECT COUNT(*)::int AS count FROM posts p JOIN users u ON u.id = p.user_id WHERE ${where}`,
       args
     );
 
     const filas = await c.pool.query(
-      `SELECT p.id, p.content, p.status, p.likes_count, p.comments_count, p.saves_count,
-              p.created_at, p.user_id,
-              (SELECT COUNT(*)::int FROM likes l WHERE l.post_id = p.id AND l.user_id = $1) > 0 AS is_liked,
-              u.username, u.display_name, u.avatar_url, u.verified
-         FROM posts p
-         JOIN users u ON u.id = p.user_id
-        WHERE ${conds.join(' AND ')}
+      `${SQL_POST} WHERE ${where}
         ORDER BY ${orden}
         LIMIT ${limit} OFFSET ${offset}`,
       args

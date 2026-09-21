@@ -54,6 +54,11 @@ function TarjetaVideoWatch({ post, onActualizar }) {
   // Estados de interacción
   const [isLiked, setIsLiked] = useState(Boolean(post.is_liked));
   const [likesCount, setLikesCount] = useState(Number(post.likes_count || 0));
+  const autorId = post.user?.id || post.user_id || post.author_id;
+  const autorUsername = post.author_username || post.user?.username || 'usuario';
+  const autorNombre = post.author_display_name || post.user?.display_name || autorUsername;
+  const autorAvatar = post.author_avatar_url || post.user?.avatar_url || '';
+  const autorVerificado = Boolean(post.author_is_verified || post.user?.is_verified || post.user?.verified);
   const [siguiendo, setSiguiendo] = useState(Boolean(post.user?.is_following));
 
   // Comentarios
@@ -65,10 +70,10 @@ function TarjetaVideoWatch({ post, onActualizar }) {
 
   // Extraer el archivo de video de la publicación
   const archivoVideo = (post.images || []).find((im) => {
-    const u = im.original_url || im.url || '';
-    return im.kind === 'video' || /\.(mp4|webm|mov|mkv|3gp)(\?.*)?$/i.test(u);
+    const u = (im.original_url || im.url || im.thumb_url || '').toLowerCase();
+    return im.kind === 'video' || /\.(mp4|webm|mov|mkv|3gp|ogv)(\?.*)?$/i.test(u) || u.includes('video');
   });
-  const urlVideo = archivoVideo ? (archivoVideo.original_url || archivoVideo.url) : '';
+  const urlVideo = archivoVideo ? (archivoVideo.original_url || archivoVideo.url || archivoVideo.thumb_url) : '';
 
   // Control de play / pause
   function alternarPlay() {
@@ -125,14 +130,14 @@ function TarjetaVideoWatch({ post, onActualizar }) {
 
   // Alternar Seguir al creador
   async function alternarSeguir() {
-    if (!post.user?.id || post.user.id === yo?.id) return;
+    if (!autorId || autorId === yo?.id) return;
     const nuevo = !siguiendo;
     setSiguiendo(nuevo);
     try {
       if (nuevo) {
-        await api.post(`/api/users/${post.user.id}/follow`, {});
+        await api.post(`/api/users/${autorId}/follow`, {});
       } else {
-        await api.del(`/api/users/${post.user.id}/follow`);
+        await api.del(`/api/users/${autorId}/follow`);
       }
     } catch {
       setSiguiendo(!nuevo);
@@ -180,20 +185,28 @@ function TarjetaVideoWatch({ post, onActualizar }) {
     <article className="watch-fb-card" ref={contenedorRef}>
       {/* 1. Cabecera del creador */}
       <div className="watch-card-header">
-        <div className="watch-creator-info">
-          <Avatar user={post.user} size="sm" />
+        <a href={`#/user/${autorUsername}`} className="watch-creator-info" style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Avatar
+            user={{
+              username: autorUsername,
+              display_name: autorNombre,
+              avatar_url: autorAvatar,
+              is_verified: autorVerificado,
+            }}
+            size="sm"
+          />
           <div className="watch-creator-texts">
             <span className="watch-creator-name">
-              {post.user?.display_name || post.user?.username || 'Creador Moon'}
-              {post.user?.verified ? ' ✓' : ''}
+              {autorNombre}
+              {autorVerificado ? ' ✓' : ''}
             </span>
             <span className="watch-post-date">
-              @{post.user?.username || 'usuario'} · {tiempoRelativo(post.created_at)}
+              @{autorUsername} · {tiempoRelativo(post.created_at)}
             </span>
           </div>
-        </div>
+        </a>
 
-        {yo?.id !== post.user?.id ? (
+        {yo?.id && autorId && yo.id !== autorId ? (
           <button
             type="button"
             className={`watch-follow-btn ${siguiendo ? 'siguiendo' : ''}`}
@@ -389,12 +402,13 @@ export default function VideosView() {
     const params = new URLSearchParams();
     params.set('cat', categoria);
     if (busqueda) params.set('q', busqueda);
-    params.set('limit', '25');
+    params.set('limit', '30');
 
     api.get(`/api/videos?${params.toString()}`)
       .then((res) => {
         if (!activo) return;
-        setVideos(res?.items || res || []);
+        const lista = Array.isArray(res) ? res : (res?.items || []);
+        setVideos(lista);
       })
       .catch((err) => {
         console.error('[watch] error cargando videos:', err);
