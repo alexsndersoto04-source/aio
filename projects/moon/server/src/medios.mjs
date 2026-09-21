@@ -211,6 +211,11 @@ export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
 
   copiaEnDisco(nombre, listo.bytes);
 
+  // Enviar a la bodega del canal privado en Telegram
+  subirATelegram(listo.bytes, { nombre, tipo: listo.mime }).catch((err) => {
+    console.error('[medios] error enviando a telegram:', err);
+  });
+
   return { id: Number(media.id), url, bytes: listo.bytes.length, kind: clase, mime: listo.mime, ancho: listo.ancho, alto: listo.alto };
 }
 
