@@ -19,6 +19,8 @@ import AuthView from './views/AuthView.jsx';
 import ResetView from './views/ResetView.jsx';
 import FeedView from './views/FeedView.jsx';
 import ExploreView from './views/ExploreView.jsx';
+import VideosView from './views/VideosView.jsx';
+import './videos.css';
 import ProfileView from './views/ProfileView.jsx';
 import UserView from './views/UserView.jsx';
 import PostView from './views/PostView.jsx';
@@ -185,6 +187,8 @@ function Router() {
       return <FeedView />;
     case 'explore':
       return <ExploreView initialQ={params.q} initialType={params.type} />;
+    case 'videos':
+      return <VideosView />;
     case 'post':
       return <PostView id={parts[1]} />;
     case 'user':

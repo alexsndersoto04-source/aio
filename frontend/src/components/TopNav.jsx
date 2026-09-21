@@ -12,7 +12,7 @@ import { ThemeToggle } from './LeftNav.jsx';
 import Avatar from './Avatar.jsx';
 import {
   IconHome, IconExplore, IconBookmark, IconBell, IconMail, IconUser,
-  IconSettings, IconShield, IconSearch, IconX, IconLogout, IconLayers,
+  IconSettings, IconShield, IconSearch, IconX, IconLogout, IconLayers, IconPlay,
   IconGrid, IconPlus, IconUsers, IconMoon,
 } from './Icons.jsx';
 
@@ -109,6 +109,7 @@ export default function TopNav() {
       <nav className="topnav-centro" aria-label="Secciones principales">
         {pestaña('feed', 'Inicio', <IconHome />)}
         {pestaña('explore', 'Explorar', <IconExplore />)}
+        {pestaña('videos', 'Videos', <IconPlay />)}
         {pestaña('profile', 'Guardados', <IconBookmark />)}
         {pestaña('notifications', 'Notificaciones', <IconBell />, unread.notifications)}
         {pestaña('messages', 'Mensajes', <IconMail />, unread.messages)}
@@ -170,6 +171,7 @@ export default function TopNav() {
                 <IconMail /> Mensajes
                 {unread.messages > 0 ? <span className="badge" style={{ marginLeft: 'auto' }}>{numero(unread.messages)}</span> : null}
               </a>
+              <a href="#/videos" role="menuitem" onClick={() => setMenuAbierto(false)}><IconPlay /> Videos</a>
               <a href="#/grupos" role="menuitem" onClick={() => setMenuAbierto(false)}><IconLayers /> Grupos</a>
               <a href="#/amigos" role="menuitem" onClick={() => setMenuAbierto(false)}><IconUsers /> Contactos</a>
               <a href="#/profile/saved" role="menuitem" onClick={() => setMenuAbierto(false)}><IconBookmark /> Guardados</a>
@@ -220,6 +222,7 @@ export function AccesosRapidos() {
           <div className="hoja-cuerpo">
             <span className="eyebrow">Ir a</span>
             <div className="hoja-rejilla">
+              <a href="#/videos" onClick={() => setAbierto(false)}><IconPlay /> Videos</a>
               <a href="#/grupos" onClick={() => setAbierto(false)}><IconLayers /> Grupos</a>
               <a href="#/amigos" onClick={() => setAbierto(false)}><IconUsers /> Contactos</a>
               <a href={`#/user/${user.id}`} onClick={() => setAbierto(false)}><IconUser /> Mi perfil</a>
