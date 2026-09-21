@@ -19,5 +19,11 @@ async function main() {
 
 main().catch(err => {
   console.error('ERROR:', err);
-  execSync(`gh api -X POST "repos/${process.env.GITHUB_REPOSITORY}/commits/${process.env.GITHUB_SHA}/comments" -f body="ERROR_TG: ${err.message}"`);
+  try {
+    const texto = ('ERROR_TG: ' + (err.stack || err.message)).replace(/["`$]/g, '');
+    execSync(`gh api -X POST "repos/${process.env.GITHUB_REPOSITORY}/commits/${process.env.GITHUB_SHA}/comments" -f body="${texto}"`);
+  } catch (e2) {
+    console.error('Fallo al comentar:', e2);
+  }
+  process.exit(1);
 });
