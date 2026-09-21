@@ -9,7 +9,7 @@ import { api, uploadMedia, imgUrl } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { toast, avisoError } from '../ui.js';
 import Avatar from './Avatar.jsx';
-import { IconImage, IconX, IconSend, IconTrend } from './Icons.jsx';
+import { IconImage, IconVideo, IconX, IconSend, IconTrend } from './Icons.jsx';
 
 const MAX_CHARS = 2000;
 const MAX_IMAGENES = 4;
@@ -17,9 +17,10 @@ const MAX_IMAGENES = 4;
 export default function Composer({ onCreated, destino = '/api/posts', placeholder, etiquetaBoton }) {
   const { user } = useAuth();
   const [contenido, setContenido] = useState('');
-  const [imagenes, setImagenes] = useState([]); // { id, url }
+  const [imagenes, setImagenes] = useState([]); // { id, url, kind }
   const [enviando, setEnviando] = useState(false);
   const [subiendo, setSubiendo] = useState(0);
+  const [progresoVideo, setProgresoVideo] = useState(0);
   const [arrastrando, setArrastrando] = useState(false);
   // Encuesta opcional: una pregunta con dos a cuatro respuestas.
   const [encuesta, setEncuesta] = useState(null); // null = sin encuesta
@@ -28,6 +29,7 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
   const [gente, setGente] = useState([]);
   const area = useRef(null);
   const archivos = useRef(null);
+  const archivosVideo = useRef(null);
 
   // El menú y el botón flotante piden el foco con este evento.
   useEffect(() => {
@@ -42,18 +44,42 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
   }, []);
 
   async function subir(file) {
-    if (!file.type.startsWith('image/')) {
-      toast.err('Solo se pueden adjuntar imágenes (JPEG, PNG o WebP)');
+    const esVid = file.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|3gp)$/i.test(file.name || '');
+    const esImg = file.type.startsWith('image/');
+
+    if (!esVid && !esImg) {
+      toast.err('Solo se permiten imágenes (JPEG, PNG, WebP) o videos (MP4, WebM, MOV)');
       return;
     }
+
+    if (esVid && file.size > 120 * 1024 * 1024) {
+      toast.err('El video supera el límite de 120 MB');
+      return;
+    }
+    if (esImg && file.size > 15 * 1024 * 1024) {
+      toast.err('La imagen supera los 15 MB');
+      return;
+    }
+
     setSubiendo((n) => n + 1);
+    if (esVid) setProgresoVideo(1);
+
     try {
-      const res = await uploadMedia('post', file);
-      setImagenes((prev) => (prev.length >= MAX_IMAGENES ? prev : [...prev, { id: res.id, url: res.url }]));
+      const res = await uploadMedia(
+        esVid ? 'video' : 'post',
+        file,
+        esVid ? (pct) => setProgresoVideo(pct) : undefined
+      );
+      setImagenes((prev) => (prev.length >= MAX_IMAGENES ? prev : [...prev, {
+        id: res.id,
+        url: res.url,
+        kind: esVid ? 'video' : (res.kind || 'image'),
+      }]));
     } catch (e) {
       avisoError(e);
     } finally {
-      setSubiendo((n) => n - 1);
+      setSubiendo((n) => Math.max(0, n - 1));
+      if (esVid) setProgresoVideo(0);
     }
   }
 
@@ -61,14 +87,14 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
     const lista = Array.from(e.target.files || []);
     e.target.value = '';
     const hueco = MAX_IMAGENES - imagenes.length;
-    if (hueco <= 0) { toast.info(`Máximo ${MAX_IMAGENES} imágenes por publicación`); return; }
+    if (hueco <= 0) { toast.info(`Máximo ${MAX_IMAGENES} adjuntos por publicación`); return; }
     lista.slice(0, hueco).forEach(subir);
   }
 
   function soltar(e) {
     e.preventDefault();
     setArrastrando(false);
-    const lista = Array.from(e.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/'));
+    const lista = Array.from(e.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/') || f.type.startsWith('video/'));
     const hueco = MAX_IMAGENES - imagenes.length;
     lista.slice(0, hueco).forEach(subir);
   }
@@ -192,18 +218,28 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
 
         {imagenes.length > 0 ? (
           <div className="composer-preview">
-            {imagenes.map((img, i) => (
-              <div className="thumb" key={img.id}>
-                <img src={imgUrl(img.url)} alt={`Adjunto ${i + 1}`} />
-                <button
-                  type="button"
-                  onClick={() => setImagenes((prev) => prev.filter((x) => x.id !== img.id))}
-                  aria-label={`Quitar adjunto ${i + 1}`}
-                >
-                  <IconX />
-                </button>
-              </div>
-            ))}
+            {imagenes.map((img, i) => {
+              const esVid = img.kind === 'video' || /\.(mp4|webm|mov|mkv|3gp)(\?.*)?$/i.test(img.url);
+              return (
+                <div className={`thumb ${esVid ? 'thumb-video' : ''}`} key={img.id}>
+                  {esVid ? (
+                    <div className="video-thumb-preview">
+                      <video src={imgUrl(img.url)} muted playsInline preload="metadata" />
+                      <span className="badge-video">📹 Video</span>
+                    </div>
+                  ) : (
+                    <img src={imgUrl(img.url)} alt={`Adjunto ${i + 1}`} />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setImagenes((prev) => prev.filter((x) => x.id !== img.id))}
+                    aria-label={`Quitar adjunto ${i + 1}`}
+                  >
+                    <IconX />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         ) : null}
 
@@ -282,8 +318,15 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
           <input
             ref={archivos}
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept="image/jpeg,image/png,image/webp,image/gif"
             multiple
+            hidden
+            onChange={elegir}
+          />
+          <input
+            ref={archivosVideo}
+            type="file"
+            accept="video/mp4,video/webm,video/quicktime,video/3gpp"
             hidden
             onChange={elegir}
           />
@@ -292,10 +335,20 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
             className="icon-btn"
             onClick={() => archivos.current && archivos.current.click()}
             disabled={subiendo > 0}
-            title="Añadir imágenes"
-            aria-label="Añadir imágenes"
+            title="Añadir fotos"
+            aria-label="Añadir fotos"
           >
             <IconImage />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => archivosVideo.current && archivosVideo.current.click()}
+            disabled={subiendo > 0}
+            title="Añadir video"
+            aria-label="Añadir video"
+          >
+            <IconVideo />
           </button>
           <button
             type="button"
@@ -309,8 +362,12 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
           >
             <IconTrend />
           </button>
-          {subiendo > 0 ? <span className="muted" style={{ fontSize: 13 }}>Subiendo {subiendo}…</span> : null}
-          {arrastrando ? <span className="muted" style={{ fontSize: 13 }}>Suelta las imágenes aquí</span> : null}
+          {subiendo > 0 ? (
+            <span className="muted" style={{ fontSize: 13, fontWeight: 500 }}>
+              {progresoVideo > 0 ? `Subiendo video ${progresoVideo}%…` : `Subiendo…`}
+            </span>
+          ) : null}
+          {arrastrando ? <span className="muted" style={{ fontSize: 13 }}>Suelta los archivos aquí</span> : null}
 
           <span className="spacer" />
 
@@ -320,8 +377,8 @@ export default function Composer({ onCreated, destino = '/api/posts', placeholde
             </span>
           ) : null}
 
-          <span className="pill" title="Longitud máxima">
-            {imagenes.length}/{MAX_IMAGENES} fotos
+          <span className="pill" title="Adjuntos">
+            {imagenes.length}/{MAX_IMAGENES} adjuntos
           </span>
 
           <button className="btn btn-aurora btn-sm" onClick={publicar} disabled={!puede}>

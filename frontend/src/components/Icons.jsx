@@ -212,6 +212,9 @@ export const IconMicOff = (p) => (
 export const IconCameraOff = (p) => (
   <svg {...S(p)}><path d="M4 8.5h2.6l1.5-2.5h5.4" /><path d="M20 19.5H4A1.5 1.5 0 0 1 2.5 18v-8c0-.5.2-.9.5-1.2" /><path d="M9.5 8.5H18l3-1.5v9" /><path d="m3 3 18 18" /></svg>
 );
+export const IconVideo = (p) => (
+  <svg {...S(p)}><rect x="2.5" y="6" width="13" height="12" rx="3" /><path d="m15.5 10.5 5-3v9l-5-3" /></svg>
+);
 export const IconVideoLlamada = (p) => (
   <svg {...S(p)}><rect x="2.5" y="6" width="13" height="12" rx="3" /><path d="m15.5 10.5 4-2.5v8l-4-2.5" /></svg>
 );

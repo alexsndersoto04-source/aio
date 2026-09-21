@@ -15,18 +15,18 @@ import { ApiErr } from './util.mjs';
 import { uno, auditar } from './db.mjs';
 import {
   guardarImagen, leerImagen, servirDeDisco, asegurarCarpeta,
-  esAudio, mimeDeNombre, rangoDe,
+  esAudio, esVideo, mimeDeNombre, rangoDe,
 } from './medios.mjs';
 
 const TIPOS = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
-const MAX_BYTES = 8 * 1024 * 1024;
-// Las notas de voz también son archivos: hasta 8 MB (más de 10 minutos).
-const aceptado = (mime) => TIPOS.has(mime) || esAudio(mime);
+const MAX_BYTES_VIDEO = 120 * 1024 * 1024; // Hasta 120 MB para videos
+const MAX_BYTES_IMAGEN = 15 * 1024 * 1024; // Hasta 15 MB para fotos
+const aceptado = (mime) => TIPOS.has(mime) || esAudio(mime) || esVideo(mime);
 
 /** Lee el formulario completo en memoria (con tope de tamaño). */
 function leerFormulario(req) {
   return new Promise((resolver, rechazar) => {
-    const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: MAX_BYTES } });
+    const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: MAX_BYTES_VIDEO } });
     let clase = 'post';
     let trozos = [];
     let mime = '';
@@ -35,7 +35,7 @@ function leerFormulario(req) {
     let fallo = null;
 
     bb.on('field', (nombre, valor) => {
-      if (nombre === 'name' && ['avatar', 'cover', 'post', 'story', 'audio'].includes(valor)) clase = valor;
+      if (nombre === 'name' && ['avatar', 'cover', 'post', 'story', 'audio', 'video'].includes(valor)) clase = valor;
     });
 
     bb.on('file', (_campo, stream, info) => {
@@ -49,14 +49,18 @@ function leerFormulario(req) {
     bb.on('error', (e) => { fallo = e; });
     bb.on('close', () => {
       if (fallo) return rechazar(new ApiErr(`No se pudo leer el archivo: ${fallo.message}`, 400));
-      if (truncado) return rechazar(new ApiErr('El archivo supera los 8 MB', 413));
+      if (truncado) return rechazar(new ApiErr('El archivo supera los 120 MB permitidos', 413));
       const bytes = Buffer.concat(trozos);
       if (bytes.length === 0) return rechazar(new ApiErr('No se recibió ningún archivo', 400));
-      if (mime && !aceptado(mime)) {
-        return rechazar(new ApiErr('Formato no admitido: imágenes (JPEG, PNG, WebP, GIF, AVIF) o notas de voz', 400));
-      }
       const limpio = String(mime || '').split(';')[0].trim();
-      return resolver({ clase, bytes, mime: limpio || 'image/jpeg', nombreOriginal });
+      if (limpio && !aceptado(limpio)) {
+        return rechazar(new ApiErr('Formato no admitido: imágenes (JPEG, PNG, WebP, GIF), videos (MP4, WebM, MOV) o notas de voz', 400));
+      }
+      if (!esVideo(limpio) && !esAudio(limpio) && bytes.length > MAX_BYTES_IMAGEN) {
+        return rechazar(new ApiErr('La imagen supera los 15 MB permitidos', 413));
+      }
+      if (esVideo(limpio)) clase = 'video';
+      return resolver({ clase, bytes, mime: limpio || (esVideo(limpio) ? 'video/mp4' : 'image/jpeg'), nombreOriginal });
     });
 
     req.pipe(bb);

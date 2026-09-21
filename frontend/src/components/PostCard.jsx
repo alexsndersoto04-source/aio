@@ -562,21 +562,48 @@ export default function PostCard({ post, onChanged, compact = false }) {
 
       <Encuesta post={p} onCambio={aplicar} />
 
-      {imagenes.length > 0 ? (
-        <div className={`post-images count-${Math.min(imagenes.length, 4)}`}>
-          {imagenes.length > 1 ? (
-            <span className="contador-fotos">1 / {imagenes.length}</span>
-          ) : null}
-          {imagenes.map((img, i) => (
-            <img
-              key={i}
-              src={imgUrl(img.original_url || img.url)}
-              alt={`Imagen ${i + 1} de la publicación`}
-              loading="lazy"
-            />
-          ))}
-        </div>
-      ) : null}
+      {imagenes && imagenes.length > 0 ? (() => {
+        const videos = imagenes.filter((img) => {
+          const u = img.original_url || img.url || '';
+          return img.kind === 'video' || /\.(mp4|webm|mov|mkv|3gp)(\?.*)?$/i.test(u);
+        });
+        const fotos = imagenes.filter((img) => {
+          const u = img.original_url || img.url || '';
+          return img.kind !== 'video' && !/\.(mp4|webm|mov|mkv|3gp)(\?.*)?$/i.test(u);
+        });
+
+        return (
+          <>
+            {videos.map((vid, vi) => (
+              <div className="post-video-container" key={vid.id || `vid-${vi}`}>
+                <video
+                  src={imgUrl(vid.original_url || vid.url)}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  className="post-video-player"
+                />
+              </div>
+            ))}
+
+            {fotos.length > 0 ? (
+              <div className={`post-images count-${Math.min(fotos.length, 4)}`}>
+                {fotos.length > 1 ? (
+                  <span className="contador-fotos">1 / {fotos.length}</span>
+                ) : null}
+                {fotos.map((img, i) => (
+                  <img
+                    key={img.id || i}
+                    src={imgUrl(img.original_url || img.url)}
+                    alt={`Imagen ${i + 1} de la publicación`}
+                    loading="lazy"
+                  />
+                ))}
+              </div>
+            ) : null}
+          </>
+        );
+      })() : null}
 
       {reacciones && reacciones.total > 0 ? (
         <div className="resumen-reacciones">

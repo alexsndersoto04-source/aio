@@ -20,24 +20,38 @@ import { randomBytes } from 'node:crypto';
 import { createWriteStream, mkdirSync, existsSync, statSync, createReadStream, readdirSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { uno } from './db.mjs';
-import { subirATelegram } from './almacen-telegram.mjs';
+import { subirATelegram, descargarDeTelegram } from './almacen-telegram.mjs';
 
 export const CARPETA = process.env.MOON_UPLOADS || resolve(process.cwd(), 'uploads');
 
 const LADO_MAXIMO = 1600;
 const CALIDAD = 82;
 
+// Formatos de video admitidos para publicaciones de Moon
+export const TIPOS_VIDEO = new Set([
+  'video/mp4', 'video/webm', 'video/quicktime', 'video/ogg', 'video/3gpp', 'video/x-matroska',
+]);
+
+export const EXT_DE_VIDEO = {
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+  'video/ogg': '.ogv',
+  'video/3gpp': '.3gp',
+  'video/x-matroska': '.mkv',
+};
+
 // Notas de voz: se guardan tal cual (comprimirlas otra vez estropearía el
 // audio). Estos son los formatos que graban los teléfonos.
 export const TIPOS_AUDIO = new Set([
   'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-wav',
-  'audio/aac', 'audio/m4a', 'audio/x-m4a', 'audio/3gpp', 'video/webm', 'video/mp4',
+  'audio/aac', 'audio/m4a', 'audio/x-m4a', 'audio/3gpp',
 ]);
 
 const EXT_DE_MIME = {
-  'audio/webm': '.webm', 'video/webm': '.webm',
+  'audio/webm': '.webm',
   'audio/ogg': '.ogg',
-  'audio/mp4': '.m4a', 'audio/m4a': '.m4a', 'audio/x-m4a': '.m4a', 'video/mp4': '.m4a',
+  'audio/mp4': '.m4a', 'audio/m4a': '.m4a', 'audio/x-m4a': '.m4a',
   'audio/mpeg': '.mp3',
   'audio/wav': '.wav', 'audio/x-wav': '.wav',
   'audio/aac': '.aac', 'audio/3gpp': '.3gp',
@@ -46,11 +60,19 @@ const EXT_DE_MIME = {
 const MIME_DE_EXT = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
   '.gif': 'image/gif', '.avif': 'image/avif',
-  '.webm': 'audio/webm', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.m4a': 'audio/mp4',
-  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.aac': 'audio/aac', '.3gp': 'audio/3gpp',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+  '.ogv': 'video/ogg', '.3gp': 'video/3gpp', '.mkv': 'video/x-matroska',
+  '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.m4a': 'audio/mp4',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.aac': 'audio/aac',
 };
 
-/** ¿Es una nota de voz (o un video corto que manda el grabador del teléfono)? */
+/** ¿Es un video? */
+export function esVideo(mime) {
+  const m = String(mime || '').toLowerCase().split(';')[0].trim();
+  return TIPOS_VIDEO.has(m) || m.startsWith('video/');
+}
+
+/** ¿Es una nota de voz (o audio)? */
 export function esAudio(mime) {
   const m = String(mime || '').toLowerCase().split(';')[0].trim();
   return TIPOS_AUDIO.has(m) || m.startsWith('audio/');
@@ -186,45 +208,67 @@ function copiaEnDisco(nombre, bytes) {
  * de datos. Devuelve la fila creada con su dirección pública.
  */
 export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
-  const listo = esAudio(mime)
-    ? { bytes, mime: String(mime).split(';')[0], ext: EXT_DE_MIME[String(mime).split(';')[0]] || '.webm', ancho: 0, alto: 0 }
-    : await optimizar(bytes, mime);
+  const esVid = esVideo(mime);
+  const esAud = esAudio(mime);
+
+  let listo;
+  if (esAud) {
+    const limpio = String(mime).split(';')[0].trim();
+    listo = { bytes, mime: limpio, ext: EXT_DE_MIME[limpio] || '.webm', ancho: 0, alto: 0 };
+  } else if (esVid) {
+    const limpio = String(mime).split(';')[0].trim();
+    listo = { bytes, mime: limpio, ext: EXT_DE_VIDEO[limpio] || '.mp4', ancho: 0, alto: 0 };
+  } else {
+    listo = await optimizar(bytes, mime);
+  }
+
   const nombre = nombrePara(listo.ext);
   const url = `/api/media/${nombre}`;
+  const tipoKind = esVid ? 'video' : (esAud ? 'audio' : clase);
 
   const media = await uno(
     pool,
     `INSERT INTO media (user_id, kind, original_path, thumb_path, url, bytes)
      VALUES ($1, $2, $3, $3, $4, $5) RETURNING id`,
-    [userId, clase, nombre, url, listo.bytes.length]
+    [userId, tipoKind, nombre, url, listo.bytes.length]
   );
 
-  try {
-    await pool.query(
-      `INSERT INTO media_blobs (media_id, mime, bytes, ancho, alto) VALUES ($1, $2, $3, $4, $5)`,
-      [Number(media.id), listo.mime, paramBytes(listo.bytes), listo.ancho, listo.alto]
-    );
-  } catch (e) {
-    // Si la base de datos no acepta los bytes (por ejemplo, se llenó el
-    // espacio), al menos queda la copia en disco: mejor eso que nada.
-    console.error('[medios] no se pudieron guardar los bytes en la base:', e.message);
+  // Guardar en PostgreSQL (Neon) solo imágenes y audios pequeños.
+  // Los videos pesados NO van a la base de datos para no quemar la cuota de Neon.
+  if (!esVid) {
+    try {
+      await pool.query(
+        `INSERT INTO media_blobs (media_id, mime, bytes, ancho, alto) VALUES ($1, $2, $3, $4, $5)`,
+        [Number(media.id), listo.mime, paramBytes(listo.bytes), listo.ancho, listo.alto]
+      );
+    } catch (e) {
+      // Si la base de datos no acepta los bytes (por ejemplo, se llenó el
+      // espacio), al menos queda la copia en disco: mejor eso que nada.
+      console.error('[medios] no se pudieron guardar los bytes en la base:', e.message);
+    }
   }
 
   copiaEnDisco(nombre, listo.bytes);
 
   // Enviar a la bodega del canal privado en Telegram (de fondo y protegido contra cualquier fallo)
   try {
-    subirATelegram(listo.bytes, { nombre, tipo: listo.mime }).catch((err) => {
-      console.error('[medios] error enviando a telegram:', err?.message || err);
-    });
+    subirATelegram(listo.bytes, { nombre, tipo: listo.mime })
+      .then(async (resTg) => {
+        if (resTg && resTg.tg_id) {
+          await pool.query('UPDATE media SET thumb_path = $1 WHERE id = $2', [`tg:${resTg.tg_id}`, Number(media.id)]).catch(() => {});
+        }
+      })
+      .catch((err) => {
+        console.error('[medios] error enviando a telegram:', err?.message || err);
+      });
   } catch (errTg) {
     console.error('[medios] error iniciando subida a telegram:', errTg?.message || errTg);
   }
 
-  return { id: Number(media.id), url, bytes: listo.bytes.length, kind: clase, mime: listo.mime, ancho: listo.ancho, alto: listo.alto };
+  return { id: Number(media.id), url, bytes: listo.bytes.length, kind: tipoKind, mime: listo.mime, ancho: listo.ancho, alto: listo.alto };
 }
 
-/** Devuelve la imagen guardada en la base de datos, o `null`. */
+/** Devuelve la imagen guardada en la base de datos o recuperada de Telegram, o `null`. */
 export async function leerImagen(pool, nombre) {
   const url = `/api/media/${nombre}`;
   const fila = await uno(
@@ -233,6 +277,26 @@ export async function leerImagen(pool, nombre) {
     [url]
   );
   if (fila) return { mime: fila.mime, bytes: aBuffer(fila.bytes) };
+
+  // Si no está en media_blobs (por ejemplo videos que van directo a Telegram):
+  try {
+    const med = await uno(
+      pool,
+      `SELECT id, kind, thumb_path, original_path FROM media WHERE url = $1`,
+      [url]
+    );
+    if (med && med.thumb_path && String(med.thumb_path).startsWith('tg:')) {
+      const tgId = String(med.thumb_path).slice(3);
+      const bajado = await descargarDeTelegram(tgId, { tipo: med.kind || 'video' });
+      if (bajado) {
+        copiaEnDisco(nombre, bajado);
+        const mime = mimeDeNombre(nombre);
+        return { mime, bytes: bajado };
+      }
+    }
+  } catch (errTg) {
+    console.error('[medios] error recuperando de telegram:', errTg?.message || errTg);
+  }
 
   // Compatibilidad: las fotos que se subieron con la versión anterior quedaron
   // en la columna `original_data` de la tabla `media`. Se siguen sirviendo

@@ -97,3 +97,27 @@ export async function subirATelegram(buffer, { nombre = 'archivo.jpg', tipo = 'i
     return null;
   }
 }
+
+/**
+ * Descarga los bytes de un archivo guardado en Telegram mediante el id del mensaje.
+ */
+export async function descargarDeTelegram(tgId, { tipo = 'video' } = {}) {
+  const tg = await obtenerClienteTelegram();
+  if (!tg) return null;
+
+  try {
+    const canal = await resolverCanal(tg, tipo);
+    if (!canal) return null;
+
+    const mensajes = await tg.getMessages(canal, { ids: [Number(tgId)] });
+    const msg = mensajes && mensajes[0];
+    if (!msg || !msg.media) return null;
+
+    const buffer = await tg.downloadMedia(msg, {});
+    return buffer ? Buffer.from(buffer) : null;
+  } catch (err) {
+    console.error('[tg-almacen] Error descargando archivo de Telegram:', err.message);
+    return null;
+  }
+}
+

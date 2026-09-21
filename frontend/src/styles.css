@@ -676,6 +676,58 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .post-images img { width: 100%; height: 100%; object-fit: cover; max-height: 420px; transition: transform var(--mid); }
 .post-images img:hover { transform: scale(1.015); }
 
+.post-video-container {
+  margin-top: 12px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-height: 520px;
+  width: 100%;
+}
+.post-video-player {
+  width: 100%;
+  max-height: 520px;
+  display: block;
+  object-fit: contain;
+  background: #000;
+  border-radius: var(--radius);
+}
+
+.composer-preview .thumb.thumb-video {
+  width: 120px;
+  height: 80px;
+}
+.video-thumb-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.video-thumb-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.badge-video {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
 .post-actions {
   display: flex;
   align-items: center;
