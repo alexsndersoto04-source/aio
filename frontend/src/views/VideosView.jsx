@@ -1,24 +1,20 @@
-// Moon — Sección de Videos y Entretenimiento
+// Moon — Feed de Videos y Entretenimiento
 // ============================================================
-// Diseño claro, limpio y profesional al estilo de Moon:
-// - Fondo claro descansado con tarjetas blancas y acentos morados.
-// - Categorías de contenido (Tendencias, Música, Videojuegos, Noticias, Deportes).
-// - Buscador de videos instantáneo.
-// - Reproductor integrado en modal elegante sin salir de Moon.
-// - Consume el catálogo público mundial de Dailymotion sin costos.
+// Diseño integrado nativo en Moon (claro, elegante y limpio):
+// - Sin modales emergentes raros ni franjas negras desproporcionadas.
+// - Formato de feed de publicaciones de video profesionales.
+// - Reproducción directa integrada con proporciones exactas.
 
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  IconSearch, IconX, IconRefresh, IconSpark, IconPlay,
-} from '../components/Icons.jsx';
+import React, { useState, useEffect } from 'react';
+import { IconSearch, IconX } from '../components/Icons.jsx';
 
 const CATEGORIAS = [
   { id: 'trending', label: 'Tendencias' },
   { id: 'music', label: 'Música', canal: 'music' },
   { id: 'gaming', label: 'Videojuegos', canal: 'videogames' },
-  { id: 'news', label: 'Noticias', canal: 'news' },
+  { id: 'fun', label: 'Humor y Comedia', canal: 'fun' },
   { id: 'sport', label: 'Deportes', canal: 'sport' },
-  { id: 'fun', label: 'Comedia', canal: 'fun' },
+  { id: 'news', label: 'Noticias', canal: 'news' },
   { id: 'tech', label: 'Tecnología', canal: 'tech' },
 ];
 
@@ -36,30 +32,32 @@ export default function VideosView() {
   const [videos, setVideos] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
-  const [videoActivo, setVideoActivo] = useState(null);
+  // Cuál video está reproduciéndose activamente en el feed
+  const [videoReproduciendo, setVideoReproduciendo] = useState(null);
 
   useEffect(() => {
     let cancelado = false;
     setCargando(true);
     setError('');
+    setVideoReproduciendo(null);
 
     async function cargarVideos() {
       try {
-        let url = 'https://api.dailymotion.com/videos?fields=id,title,thumbnail_360_url,duration,owner.screenname,views_total,created_time&limit=24';
+        let url = 'https://api.dailymotion.com/videos?fields=id,title,thumbnail_720_url,thumbnail_360_url,duration,owner.screenname,owner.username,views_total,created_time&limit=20';
 
         if (termino.trim()) {
           url += `&search=${encodeURIComponent(termino.trim())}`;
         } else {
-          const catActual = CATEGORIAS.find((c) => c.id === categoria);
-          if (catActual && catActual.canal) {
-            url += `&channel=${catActual.canal}`;
+          const cat = CATEGORIAS.find((c) => c.id === categoria);
+          if (cat && cat.canal) {
+            url += `&channel=${cat.canal}`;
           } else {
             url += '&sort=trending';
           }
         }
 
         const res = await fetch(url);
-        if (!res.ok) throw new Error('No se pudieron cargar los videos');
+        if (!res.ok) throw new Error('Error al conectar con la red de videos');
         const data = await res.json();
 
         if (!cancelado) {
@@ -68,8 +66,8 @@ export default function VideosView() {
         }
       } catch (err) {
         if (!cancelado) {
-          console.error('[videos] Error cargando:', err);
-          setError('No pudimos conectar con el catálogo de videos. Comprueba tu conexión.');
+          console.error('[videos] Error:', err);
+          setError('No pudimos cargar los videos. Revisa tu conexión.');
           setCargando(false);
         }
       }
@@ -84,38 +82,35 @@ export default function VideosView() {
     setTermino(busqueda.trim());
   }
 
-  function limpiarBusqueda() {
+  function limpiar() {
     setBusqueda('');
     setTermino('');
   }
 
   return (
     <div className="videos-shell">
-      {/* Cabecera limpia y clara */}
+      {/* Cabecera integrada */}
       <div className="videos-cabecera">
-        <div className="videos-titulo-area">
-          <h1 className="videos-titulo">Videos</h1>
-          <p className="videos-sub">Descubre lo más nuevo en música, tendencias y entretenimiento.</p>
-        </div>
+        <h1 className="videos-titulo">Videos</h1>
+        <p className="videos-sub">Tendencias, música y entretenimiento en Moon.</p>
 
-        {/* Buscador de videos */}
         <form className="videos-buscador" onSubmit={buscar}>
           <IconSearch />
           <input
             type="search"
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar videos, canciones, creadores..."
+            placeholder="Buscar videos, artistas, temas..."
           />
           {busqueda ? (
-            <button type="button" className="limpiar-btn" onClick={limpiarBusqueda}>
+            <button type="button" className="limpiar-btn" onClick={limpiar}>
               <IconX />
             </button>
           ) : null}
         </form>
       </div>
 
-      {/* Pestañas de categorías */}
+      {/* Categorías */}
       {!termino && (
         <div className="videos-categorias">
           {CATEGORIAS.map((cat) => (
@@ -134,88 +129,82 @@ export default function VideosView() {
       {termino && (
         <div className="videos-aviso-busqueda">
           <span>Resultados para: <b>"{termino}"</b></span>
-          <button type="button" onClick={limpiarBusqueda}>Ver categorías</button>
+          <button type="button" onClick={limpiar}>Volver a categorías</button>
         </div>
       )}
 
-      {/* Estado de carga */}
+      {/* Cargando */}
       {cargando && (
-        <div className="videos-grid-esqueleto">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div className="video-card-skeleton" key={i} />
+        <div className="videos-feed">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div className="video-post-card-skeleton" key={i} />
           ))}
         </div>
       )}
 
       {/* Error */}
       {error && !cargando && (
-        <div className="videos-error">
-          <p>{error}</p>
+        <div className="videos-aviso-busqueda">
+          <span>{error}</span>
           <button type="button" onClick={() => setCategoria(categoria)}>Reintentar</button>
         </div>
       )}
 
-      {/* Cuadrícula de videos */}
+      {/* Feed nativo de videos */}
       {!cargando && !error && (
-        <div className="videos-grid">
-          {videos.map((vid) => (
-            <div
-              key={vid.id}
-              className="video-card"
-              onClick={() => setVideoActivo(vid)}
-              role="button"
-              tabIndex={0}
-            >
-              <div className="video-thumb-wrap">
-                <img
-                  src={vid.thumbnail_360_url || 'https://via.placeholder.com/360x200?text=Video'}
-                  alt={vid.title}
-                  loading="lazy"
-                />
-                <span className="video-duracion">{formatearSegundos(vid.duration)}</span>
-                <div className="video-play-overlay">
-                  <span className="play-icon">▶</span>
-                </div>
-              </div>
-              <div className="video-info">
-                <h3 className="video-title" title={vid.title}>{vid.title}</h3>
-                <div className="video-meta">
-                  <span className="video-canal">{vid['owner.screenname'] || 'Canal'}</span>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+        <div className="videos-feed">
+          {videos.map((vid) => {
+            const estaReproduciendo = videoReproduciendo === vid.id;
+            const canal = vid['owner.screenname'] || vid['owner.username'] || 'Creador';
+            const inicial = canal.charAt(0).toUpperCase();
 
-      {/* Modal Reproductor de Video */}
-      {videoActivo && (
-        <div className="video-modal-velo" onClick={() => setVideoActivo(null)}>
-          <div className="video-modal-caja" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              className="video-cerrar-btn"
-              onClick={() => setVideoActivo(null)}
-              aria-label="Cerrar video"
-            >
-              ✕
-            </button>
-            <div className="video-reproductor-iframe-wrap">
-              <iframe
-                title={videoActivo.title}
-                src={`https://www.dailymotion.com/embed/video/${videoActivo.id}?autoplay=1`}
-                width="100%"
-                height="100%"
-                allowFullScreen
-                allow="autoplay; fullscreen"
-                frameBorder="0"
-              />
-            </div>
-            <div className="video-modal-detalles">
-              <h2>{videoActivo.title}</h2>
-              <p>Por: <b>{videoActivo['owner.screenname'] || 'Creador'}</b></p>
-            </div>
-          </div>
+            return (
+              <article key={vid.id} className="video-post-card">
+                {/* Cabecera del video */}
+                <div className="video-post-head">
+                  <div className="video-post-avatar">{inicial}</div>
+                  <div className="video-post-meta">
+                    <span className="video-post-autor">{canal}</span>
+                    <span className="video-post-tag">En Moon Video</span>
+                  </div>
+                </div>
+
+                {/* Reproductor o Portada interactiva */}
+                <div className="video-frame-container">
+                  {estaReproduciendo ? (
+                    <iframe
+                      title={vid.title}
+                      src={`https://www.dailymotion.com/embed/video/${vid.id}?autoplay=1&ui-logo=0&ui-start-screen-info=0`}
+                      allowFullScreen
+                      allow="autoplay; fullscreen"
+                    />
+                  ) : (
+                    <div
+                      className="video-placeholder-wrap"
+                      onClick={() => setVideoReproduciendo(vid.id)}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <img
+                        src={vid.thumbnail_720_url || vid.thumbnail_360_url}
+                        alt={vid.title}
+                        loading="lazy"
+                      />
+                      <span className="video-duracion-badge">{formatearSegundos(vid.duration)}</span>
+                      <div className="video-play-btn-pulse">
+                        <div className="play-circle">▶</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Título y detalles al pie */}
+                <div className="video-post-foot">
+                  <h2 className="video-post-titulo">{vid.title}</h2>
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
     </div>
