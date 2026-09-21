@@ -26,6 +26,7 @@ import { registrarRutasPush } from './rutas-push.mjs';
 import { registrarRutasInteraccion } from './rutas-interaccion.mjs';
 import { registrarRutasGruposExtra } from './rutas-grupos-extra.mjs';
 import { registrarRutasPerfil } from './rutas-perfil.mjs';
+import { registrarRutasTelegramAuth } from './rutas-telegram-auth.mjs';
 import { montarWs, conectados } from './ws.mjs';
 import { importarDelDisco } from './medios.mjs';
 import { programarCopiaDiaria } from './copias.mjs';
@@ -186,6 +187,7 @@ registrarRutasPush(router);
 registrarRutasInteraccion(router);
 registrarRutasGruposExtra(router);
 registrarRutasPerfil(router);
+registrarRutasTelegramAuth(router);
 
 // Salud (pública) y métricas (solo administración).
 router.get('/api/health', async (c) => {

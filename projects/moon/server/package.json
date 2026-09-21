@@ -13,9 +13,11 @@
     "@neondatabase/serverless": "^1.1.0",
     "@node-rs/argon2": "^2.0.2",
     "busboy": "^1.6.0",
+    "input": "^1.0.1",
     "nodemailer": "^6.9.16",
     "pg": "^8.13.1",
     "sharp": "^0.35.4",
+    "telegram": "^2.26.22",
     "web-push": "^3.6.7",
     "ws": "^8.18.0"
   },
