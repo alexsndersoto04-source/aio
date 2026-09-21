@@ -799,6 +799,20 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
   cursor: pointer;
 }
 
+.moon-video-error-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 16px;
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  border-radius: var(--radius);
+  border: 1px dashed var(--line);
+  margin-top: 10px;
+}
+
 .post-video-container {
   margin-top: 12px;
   border-radius: var(--radius);

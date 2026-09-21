@@ -97,7 +97,8 @@ export function cors(origins) {
       origins.includes('*') || origins.includes(origen) ? origen || '*' : origins[0] || '*';
     res.setHeader('Access-Control-Allow-Origin', permitido);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Refresh-Token');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Refresh-Token, Range');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
     res.setHeader('Vary', 'Origin');
 

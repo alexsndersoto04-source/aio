@@ -99,6 +99,7 @@ function ReproductorVideoMoon({ url }) {
   const [duracion, setDuracion] = useState(0);
   const [tiempo, setTiempo] = useState(0);
   const [mostrarControles, setMostrarControles] = useState(true);
+  const [errorVideo, setErrorVideo] = useState(false);
   const timer = useRef(null);
 
   function refrescarControles() {
@@ -120,7 +121,17 @@ function ReproductorVideoMoon({ url }) {
           setReproduciendo(true);
           refrescarControles();
         })
-        .catch(() => {});
+        .catch((err) => {
+          console.warn('Reproduccion fallida, intentando con mute:', err?.message || err);
+          if (videoRef.current) {
+            videoRef.current.muted = true;
+            setSilenciado(true);
+            videoRef.current.play().then(() => {
+              setReproduciendo(true);
+              refrescarControles();
+            }).catch(() => {});
+          }
+        });
     } else {
       videoRef.current.pause();
       setReproduciendo(false);
@@ -139,6 +150,14 @@ function ReproductorVideoMoon({ url }) {
     }
   }
 
+  if (errorVideo) {
+    return (
+      <div className="moon-video-error-box">
+        <span>⚠️ Este video anterior no se pudo cargar. Los nuevos videos se guardan de forma permanente.</span>
+      </div>
+    );
+  }
+
   return (
     <div
       className="moon-post-video"
@@ -149,8 +168,10 @@ function ReproductorVideoMoon({ url }) {
         ref={videoRef}
         src={url}
         playsInline
+        crossOrigin="anonymous"
         preload="metadata"
         muted={silenciado}
+        onError={() => setErrorVideo(true)}
         onTimeUpdate={() => {
           if (videoRef.current) {
             const c = videoRef.current.currentTime;

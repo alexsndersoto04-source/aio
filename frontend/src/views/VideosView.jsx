@@ -74,7 +74,16 @@ function TarjetaVideoWatch({ post, onActualizar }) {
   function alternarPlay() {
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
-      videoRef.current.play().then(() => setReproduciendo(true)).catch(() => {});
+      videoRef.current.play()
+        .then(() => setReproduciendo(true))
+        .catch((err) => {
+          console.warn('Reproduccion bloqueada por navegador, intentando silenciado:', err?.message || err);
+          if (videoRef.current) {
+            videoRef.current.muted = true;
+            setSilenciado(true);
+            videoRef.current.play().then(() => setReproduciendo(true)).catch(() => {});
+          }
+        });
     } else {
       videoRef.current.pause();
       setReproduciendo(false);
@@ -206,6 +215,7 @@ function TarjetaVideoWatch({ post, onActualizar }) {
           ref={videoRef}
           src={imgUrl(urlVideo)}
           playsInline
+          crossOrigin="anonymous"
           preload="metadata"
           muted={silenciado}
           onClick={alternarPlay}

@@ -332,6 +332,9 @@ export function servirDeDisco(res, nombre, cabeceraRango = '') {
     'Content-Type': mime,
     'Cache-Control': 'public, max-age=31536000, immutable',
     'Accept-Ranges': 'bytes',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Range, Content-Type',
+    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
     'X-Content-Type-Options': 'nosniff',
   };
 
