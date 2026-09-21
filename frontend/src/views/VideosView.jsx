@@ -1,157 +1,177 @@
-// Moon Watch — Feed nativo de videos estilo Facebook Watch
+// Moon Watch — Feed nativo idéntico al diseño de Facebook Watch
 // ============================================================
-// Diseño limpio, claro y profesional:
-// - Sin modales flotantes raros.
-// - Tarjetas limpias de ancho completo con avatar, título e interacción.
-// - Reproductor integrado directamente en el feed.
+// - Estructura limpia y plana (sin marcos desbordados ni modales).
+// - Video borde a borde de 16:9 que encaja exacto en móvil y PC.
+// - Barra de creador con avatar, nombre, botón Seguir.
+// - Barra inferior de Me gusta, Comentar, Compartir.
 
 import React, { useState, useEffect } from 'react';
 import {
   IconSearch, IconX, IconHeart, IconComment, IconSend,
 } from '../components/Icons.jsx';
 
-const CATEGORIAS = [
+const TOPICS = [
   { id: 'trending', label: 'Para ti' },
   { id: 'music', label: 'Música', canal: 'music' },
-  { id: 'gaming', label: 'Videojuegos', canal: 'videogames' },
   { id: 'fun', label: 'Humor', canal: 'fun' },
+  { id: 'gaming', label: 'Videojuegos', canal: 'videogames' },
   { id: 'sport', label: 'Deportes', canal: 'sport' },
   { id: 'news', label: 'Noticias', canal: 'news' },
   { id: 'tech', label: 'Tecnología', canal: 'tech' },
 ];
 
-function formatearSegundos(seg) {
-  if (!seg) return '0:00';
-  const m = Math.floor(seg / 60);
-  const s = Math.floor(seg % 60);
-  return `${m}:${s < 10 ? '0' : ''}${s}`;
+function formatTime(s) {
+  if (!s) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+function formatViews(n) {
+  const num = Number(n || 0);
+  if (num > 1000000) return `${(num / 1000000).toFixed(1)} M`;
+  if (num > 1000) return `${(num / 1000).toFixed(0)} mil`;
+  return String(num || 120);
 }
 
 export default function VideosView() {
-  const [categoria, setCategoria] = useState('trending');
-  const [busqueda, setBusqueda] = useState('');
-  const [termino, setTermino] = useState('');
+  const [topic, setTopic] = useState('trending');
+  const [query, setQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [videos, setVideos] = useState([]);
-  const [cargando, setCargando] = useState(true);
-  const [videoActivo, setVideoActivo] = useState(null);
-  const [likes, setLikes] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [playingId, setPlayingId] = useState(null);
+  const [liked, setLiked] = useState({});
+  const [following, setFollowing] = useState({});
 
   useEffect(() => {
-    let cancelado = false;
-    setCargando(true);
-    setVideoActivo(null);
+    let active = true;
+    setLoading(true);
+    setPlayingId(null);
 
-    async function cargarVideos() {
+    async function fetchVideos() {
       try {
-        let url = 'https://api.dailymotion.com/videos?fields=id,title,thumbnail_720_url,thumbnail_360_url,duration,owner.screenname,owner.username,created_time&limit=20';
+        let url = 'https://api.dailymotion.com/videos?fields=id,title,thumbnail_720_url,thumbnail_360_url,duration,owner.screenname,owner.username,views_total,created_time&limit=15';
 
-        if (termino.trim()) {
-          url += `&search=${encodeURIComponent(termino.trim())}`;
+        if (searchTerm.trim()) {
+          url += `&search=${encodeURIComponent(searchTerm.trim())}`;
         } else {
-          const cat = CATEGORIAS.find((c) => c.id === categoria);
-          if (cat && cat.canal) {
-            url += `&channel=${cat.canal}`;
+          const currentTopic = TOPICS.find((t) => t.id === topic);
+          if (currentTopic && currentTopic.canal) {
+            url += `&channel=${currentTopic.canal}`;
           } else {
             url += '&sort=trending';
           }
         }
 
         const res = await fetch(url);
-        if (!res.ok) throw new Error('Error al conectar con el servidor de videos');
+        if (!res.ok) throw new Error('Error de red');
         const data = await res.json();
 
-        if (!cancelado) {
+        if (active) {
           setVideos(data.list || []);
-          setCargando(false);
+          setLoading(false);
         }
       } catch (err) {
-        if (!cancelado) {
-          console.error('[videos] Error:', err);
-          setCargando(false);
+        if (active) {
+          console.error('[watch] error:', err);
+          setLoading(false);
         }
       }
     }
 
-    cargarVideos();
-    return () => { cancelado = true; };
-  }, [categoria, termino]);
+    fetchVideos();
+    return () => { active = false; };
+  }, [topic, searchTerm]);
 
-  function buscar(e) {
+  function handleSearch(e) {
     e.preventDefault();
-    setTermino(busqueda.trim());
-  }
-
-  function toggleLike(id) {
-    setLikes((prev) => ({ ...prev, [id]: !prev[id] }));
+    setSearchTerm(query.trim());
   }
 
   return (
     <div className="videos-shell">
-      {/* Cabecera estilo Facebook Watch */}
-      <div className="videos-cabecera">
-        <div className="videos-top-row">
-          <h1 className="videos-titulo">Videos</h1>
+      {/* 1. Cabecera Facebook Watch */}
+      <div className="watch-fb-header">
+        <div className="watch-fb-title-bar">
+          <h1 className="watch-fb-title">Videos</h1>
         </div>
 
-        <form className="videos-buscador" onSubmit={buscar}>
+        <form className="watch-fb-searchbox" onSubmit={handleSearch}>
           <IconSearch />
           <input
             type="search"
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar en Videos..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar videos en Watch..."
           />
-          {busqueda ? (
-            <button type="button" className="limpiar-btn" onClick={() => { setBusqueda(''); setTermino(''); }}>
+          {query ? (
+            <button
+              type="button"
+              className="clear-btn"
+              onClick={() => { setQuery(''); setSearchTerm(''); }}
+            >
               <IconX />
             </button>
           ) : null}
         </form>
       </div>
 
-      {/* Píldoras de filtros estilo Watch */}
-      <div className="videos-categorias">
-        {CATEGORIAS.map((cat) => (
+      {/* 2. Barra de temas horizontales (Pestañas estilo Watch) */}
+      <div className="watch-fb-tabs">
+        {TOPICS.map((t) => (
           <button
-            key={cat.id}
+            key={t.id}
             type="button"
-            className={`cat-btn ${categoria === cat.id && !termino ? 'activa' : ''}`}
-            onClick={() => { setTermino(''); setCategoria(cat.id); }}
+            className={`watch-fb-pill ${topic === t.id && !searchTerm ? 'active' : ''}`}
+            onClick={() => { setSearchTerm(''); setTopic(t.id); }}
           >
-            {cat.label}
+            {t.label}
           </button>
         ))}
       </div>
 
-      {/* Feed continuo de publicaciones de video */}
-      <div className="videos-feed">
-        {cargando && Array.from({ length: 3 }).map((_, i) => (
-          <div className="watch-card-skeleton" key={i} />
+      {/* 3. Feed de videos */}
+      <div className="watch-fb-feed">
+        {loading && Array.from({ length: 3 }).map((_, i) => (
+          <div className="watch-skeleton-card" key={i} />
         ))}
 
-        {!cargando && videos.map((vid) => {
-          const reproduciendo = videoActivo === vid.id;
-          const canal = vid['owner.screenname'] || vid['owner.username'] || 'Creador';
-          const inicial = canal.charAt(0).toUpperCase();
-          const meGusta = Boolean(likes[vid.id]);
+        {!loading && videos.map((vid) => {
+          const isPlaying = playingId === vid.id;
+          const author = vid['owner.screenname'] || vid['owner.username'] || 'Creador de Video';
+          const isLiked = Boolean(liked[vid.id]);
+          const isFollowed = Boolean(following[author]);
 
           return (
-            <article key={vid.id} className="watch-card">
-              {/* Creador / Canal */}
-              <div className="watch-head">
-                <div className="watch-avatar">{inicial}</div>
-                <div className="watch-meta">
-                  <span className="watch-canal">{canal}</span>
-                  <span className="watch-fecha">Sugerido para ti</span>
+            <article key={vid.id} className="watch-fb-card">
+              {/* Cabecera del video */}
+              <div className="watch-card-header">
+                <div className="watch-creator-info">
+                  <div className="watch-avatar-circle">
+                    {author.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="watch-creator-texts">
+                    <span className="watch-creator-name">{author}</span>
+                    <span className="watch-post-date">Sugerido para ti · 🌐</span>
+                  </div>
                 </div>
+
+                <button
+                  type="button"
+                  className="watch-follow-btn"
+                  onClick={() => setFollowing((prev) => ({ ...prev, [author]: !prev[author] }))}
+                >
+                  {isFollowed ? 'Siguiendo' : 'Seguir'}
+                </button>
               </div>
 
               {/* Título de la publicación */}
-              <h2 className="watch-titulo">{vid.title}</h2>
+              <p className="watch-card-text">{vid.title}</p>
 
-              {/* Reproductor / Portada */}
-              <div className="watch-video-box">
-                {reproduciendo ? (
+              {/* Video o Portada (ancho 100% borde a borde sin desbordes) */}
+              <div className="watch-media-box">
+                {isPlaying ? (
                   <iframe
                     title={vid.title}
                     src={`https://www.dailymotion.com/embed/video/${vid.id}?autoplay=1&ui-logo=0&ui-start-screen-info=0&sharing-enable=0`}
@@ -160,8 +180,8 @@ export default function VideosView() {
                   />
                 ) : (
                   <div
-                    className="watch-portada"
-                    onClick={() => setVideoActivo(vid.id)}
+                    className="watch-thumbnail-wrapper"
+                    onClick={() => setPlayingId(vid.id)}
                     role="button"
                     tabIndex={0}
                   >
@@ -170,42 +190,45 @@ export default function VideosView() {
                       alt={vid.title}
                       loading="lazy"
                     />
-                    <span className="watch-duracion">{formatearSegundos(vid.duration)}</span>
-                    <div className="watch-play-overlay">
-                      <div className="watch-play-boton">▶</div>
+                    <span className="watch-duration-tag">{formatTime(vid.duration)}</span>
+                    <div className="watch-play-button-overlay">
+                      <div className="watch-play-circle-icon">▶</div>
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Botones de acción estilo red social */}
-              <div className="watch-acciones">
+              {/* Estadísticas de reproducciones estilo Facebook */}
+              <div className="watch-stats-row">
+                <span>{formatViews(vid.views_total)} reproducciones</span>
+                <span>{isLiked ? 'Tú y otros' : 'Reacciones'}</span>
+              </div>
+
+              {/* Barra de 3 botones inferiores: Me gusta, Comentar, Compartir */}
+              <div className="watch-fb-actions-bar">
                 <button
                   type="button"
-                  className={`watch-accion-btn ${meGusta ? 'activo' : ''}`}
-                  onClick={() => toggleLike(vid.id)}
-                  style={{ color: meGusta ? 'var(--accent)' : undefined }}
+                  className={`watch-fb-action-button ${isLiked ? 'liked' : ''}`}
+                  onClick={() => setLiked((prev) => ({ ...prev, [vid.id]: !prev[vid.id] }))}
                 >
-                  <IconHeart /> Me gusta
+                  <IconHeart filled={isLiked} /> {isLiked ? 'Me gusta' : 'Me gusta'}
                 </button>
                 <button
                   type="button"
-                  className="watch-accion-btn"
-                  onClick={() => {
-                    const el = document.querySelector(`[data-vid="${vid.id}"]`);
-                    setVideoActivo(vid.id);
-                  }}
+                  className="watch-fb-action-button"
+                  onClick={() => setPlayingId(vid.id)}
                 >
                   <IconComment /> Comentar
                 </button>
                 <button
                   type="button"
-                  className="watch-accion-btn"
+                  className="watch-fb-action-button"
                   onClick={() => {
+                    const shareUrl = `https://www.dailymotion.com/video/${vid.id}`;
                     if (navigator.share) {
-                      navigator.share({ title: vid.title, url: `https://www.dailymotion.com/video/${vid.id}` }).catch(() => {});
+                      navigator.share({ title: vid.title, url: shareUrl }).catch(() => {});
                     } else {
-                      navigator.clipboard?.writeText(`https://www.dailymotion.com/video/${vid.id}`);
+                      navigator.clipboard?.writeText(shareUrl);
                       alert('Enlace copiado al portapapeles');
                     }
                   }}
