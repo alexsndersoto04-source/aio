@@ -1,18 +1,20 @@
-// Moon — Feed de Videos y Entretenimiento
+// Moon Watch — Feed nativo de videos estilo Facebook Watch
 // ============================================================
-// Diseño integrado nativo en Moon (claro, elegante y limpio):
-// - Sin modales emergentes raros ni franjas negras desproporcionadas.
-// - Formato de feed de publicaciones de video profesionales.
-// - Reproducción directa integrada con proporciones exactas.
+// Diseño limpio, claro y profesional:
+// - Sin modales flotantes raros.
+// - Tarjetas limpias de ancho completo con avatar, título e interacción.
+// - Reproductor integrado directamente en el feed.
 
 import React, { useState, useEffect } from 'react';
-import { IconSearch, IconX } from '../components/Icons.jsx';
+import {
+  IconSearch, IconX, IconHeart, IconComment, IconSend,
+} from '../components/Icons.jsx';
 
 const CATEGORIAS = [
-  { id: 'trending', label: 'Tendencias' },
+  { id: 'trending', label: 'Para ti' },
   { id: 'music', label: 'Música', canal: 'music' },
   { id: 'gaming', label: 'Videojuegos', canal: 'videogames' },
-  { id: 'fun', label: 'Humor y Comedia', canal: 'fun' },
+  { id: 'fun', label: 'Humor', canal: 'fun' },
   { id: 'sport', label: 'Deportes', canal: 'sport' },
   { id: 'news', label: 'Noticias', canal: 'news' },
   { id: 'tech', label: 'Tecnología', canal: 'tech' },
@@ -31,19 +33,17 @@ export default function VideosView() {
   const [termino, setTermino] = useState('');
   const [videos, setVideos] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState('');
-  // Cuál video está reproduciéndose activamente en el feed
-  const [videoReproduciendo, setVideoReproduciendo] = useState(null);
+  const [videoActivo, setVideoActivo] = useState(null);
+  const [likes, setLikes] = useState({});
 
   useEffect(() => {
     let cancelado = false;
     setCargando(true);
-    setError('');
-    setVideoReproduciendo(null);
+    setVideoActivo(null);
 
     async function cargarVideos() {
       try {
-        let url = 'https://api.dailymotion.com/videos?fields=id,title,thumbnail_720_url,thumbnail_360_url,duration,owner.screenname,owner.username,views_total,created_time&limit=20';
+        let url = 'https://api.dailymotion.com/videos?fields=id,title,thumbnail_720_url,thumbnail_360_url,duration,owner.screenname,owner.username,created_time&limit=20';
 
         if (termino.trim()) {
           url += `&search=${encodeURIComponent(termino.trim())}`;
@@ -57,7 +57,7 @@ export default function VideosView() {
         }
 
         const res = await fetch(url);
-        if (!res.ok) throw new Error('Error al conectar con la red de videos');
+        if (!res.ok) throw new Error('Error al conectar con el servidor de videos');
         const data = await res.json();
 
         if (!cancelado) {
@@ -67,7 +67,6 @@ export default function VideosView() {
       } catch (err) {
         if (!cancelado) {
           console.error('[videos] Error:', err);
-          setError('No pudimos cargar los videos. Revisa tu conexión.');
           setCargando(false);
         }
       }
@@ -82,17 +81,17 @@ export default function VideosView() {
     setTermino(busqueda.trim());
   }
 
-  function limpiar() {
-    setBusqueda('');
-    setTermino('');
+  function toggleLike(id) {
+    setLikes((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
   return (
     <div className="videos-shell">
-      {/* Cabecera integrada */}
+      {/* Cabecera estilo Facebook Watch */}
       <div className="videos-cabecera">
-        <h1 className="videos-titulo">Videos</h1>
-        <p className="videos-sub">Tendencias, música y entretenimiento en Moon.</p>
+        <div className="videos-top-row">
+          <h1 className="videos-titulo">Videos</h1>
+        </div>
 
         <form className="videos-buscador" onSubmit={buscar}>
           <IconSearch />
@@ -100,113 +99,124 @@ export default function VideosView() {
             type="search"
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar videos, artistas, temas..."
+            placeholder="Buscar en Videos..."
           />
           {busqueda ? (
-            <button type="button" className="limpiar-btn" onClick={limpiar}>
+            <button type="button" className="limpiar-btn" onClick={() => { setBusqueda(''); setTermino(''); }}>
               <IconX />
             </button>
           ) : null}
         </form>
       </div>
 
-      {/* Categorías */}
-      {!termino && (
-        <div className="videos-categorias">
-          {CATEGORIAS.map((cat) => (
-            <button
-              key={cat.id}
-              type="button"
-              className={`cat-btn ${categoria === cat.id ? 'activa' : ''}`}
-              onClick={() => setCategoria(cat.id)}
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Píldoras de filtros estilo Watch */}
+      <div className="videos-categorias">
+        {CATEGORIAS.map((cat) => (
+          <button
+            key={cat.id}
+            type="button"
+            className={`cat-btn ${categoria === cat.id && !termino ? 'activa' : ''}`}
+            onClick={() => { setTermino(''); setCategoria(cat.id); }}
+          >
+            {cat.label}
+          </button>
+        ))}
+      </div>
 
-      {termino && (
-        <div className="videos-aviso-busqueda">
-          <span>Resultados para: <b>"{termino}"</b></span>
-          <button type="button" onClick={limpiar}>Volver a categorías</button>
-        </div>
-      )}
+      {/* Feed continuo de publicaciones de video */}
+      <div className="videos-feed">
+        {cargando && Array.from({ length: 3 }).map((_, i) => (
+          <div className="watch-card-skeleton" key={i} />
+        ))}
 
-      {/* Cargando */}
-      {cargando && (
-        <div className="videos-feed">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div className="video-post-card-skeleton" key={i} />
-          ))}
-        </div>
-      )}
+        {!cargando && videos.map((vid) => {
+          const reproduciendo = videoActivo === vid.id;
+          const canal = vid['owner.screenname'] || vid['owner.username'] || 'Creador';
+          const inicial = canal.charAt(0).toUpperCase();
+          const meGusta = Boolean(likes[vid.id]);
 
-      {/* Error */}
-      {error && !cargando && (
-        <div className="videos-aviso-busqueda">
-          <span>{error}</span>
-          <button type="button" onClick={() => setCategoria(categoria)}>Reintentar</button>
-        </div>
-      )}
-
-      {/* Feed nativo de videos */}
-      {!cargando && !error && (
-        <div className="videos-feed">
-          {videos.map((vid) => {
-            const estaReproduciendo = videoReproduciendo === vid.id;
-            const canal = vid['owner.screenname'] || vid['owner.username'] || 'Creador';
-            const inicial = canal.charAt(0).toUpperCase();
-
-            return (
-              <article key={vid.id} className="video-post-card">
-                {/* Cabecera del video */}
-                <div className="video-post-head">
-                  <div className="video-post-avatar">{inicial}</div>
-                  <div className="video-post-meta">
-                    <span className="video-post-autor">{canal}</span>
-                    <span className="video-post-tag">En Moon Video</span>
-                  </div>
+          return (
+            <article key={vid.id} className="watch-card">
+              {/* Creador / Canal */}
+              <div className="watch-head">
+                <div className="watch-avatar">{inicial}</div>
+                <div className="watch-meta">
+                  <span className="watch-canal">{canal}</span>
+                  <span className="watch-fecha">Sugerido para ti</span>
                 </div>
+              </div>
 
-                {/* Reproductor o Portada interactiva */}
-                <div className="video-frame-container">
-                  {estaReproduciendo ? (
-                    <iframe
-                      title={vid.title}
-                      src={`https://www.dailymotion.com/embed/video/${vid.id}?autoplay=1&ui-logo=0&ui-start-screen-info=0`}
-                      allowFullScreen
-                      allow="autoplay; fullscreen"
+              {/* Título de la publicación */}
+              <h2 className="watch-titulo">{vid.title}</h2>
+
+              {/* Reproductor / Portada */}
+              <div className="watch-video-box">
+                {reproduciendo ? (
+                  <iframe
+                    title={vid.title}
+                    src={`https://www.dailymotion.com/embed/video/${vid.id}?autoplay=1&ui-logo=0&ui-start-screen-info=0&sharing-enable=0`}
+                    allowFullScreen
+                    allow="autoplay; fullscreen"
+                  />
+                ) : (
+                  <div
+                    className="watch-portada"
+                    onClick={() => setVideoActivo(vid.id)}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <img
+                      src={vid.thumbnail_720_url || vid.thumbnail_360_url}
+                      alt={vid.title}
+                      loading="lazy"
                     />
-                  ) : (
-                    <div
-                      className="video-placeholder-wrap"
-                      onClick={() => setVideoReproduciendo(vid.id)}
-                      role="button"
-                      tabIndex={0}
-                    >
-                      <img
-                        src={vid.thumbnail_720_url || vid.thumbnail_360_url}
-                        alt={vid.title}
-                        loading="lazy"
-                      />
-                      <span className="video-duracion-badge">{formatearSegundos(vid.duration)}</span>
-                      <div className="video-play-btn-pulse">
-                        <div className="play-circle">▶</div>
-                      </div>
+                    <span className="watch-duracion">{formatearSegundos(vid.duration)}</span>
+                    <div className="watch-play-overlay">
+                      <div className="watch-play-boton">▶</div>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
+              </div>
 
-                {/* Título y detalles al pie */}
-                <div className="video-post-foot">
-                  <h2 className="video-post-titulo">{vid.title}</h2>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
+              {/* Botones de acción estilo red social */}
+              <div className="watch-acciones">
+                <button
+                  type="button"
+                  className={`watch-accion-btn ${meGusta ? 'activo' : ''}`}
+                  onClick={() => toggleLike(vid.id)}
+                  style={{ color: meGusta ? 'var(--accent)' : undefined }}
+                >
+                  <IconHeart /> Me gusta
+                </button>
+                <button
+                  type="button"
+                  className="watch-accion-btn"
+                  onClick={() => {
+                    const el = document.querySelector(`[data-vid="${vid.id}"]`);
+                    setVideoActivo(vid.id);
+                  }}
+                >
+                  <IconComment /> Comentar
+                </button>
+                <button
+                  type="button"
+                  className="watch-accion-btn"
+                  onClick={() => {
+                    if (navigator.share) {
+                      navigator.share({ title: vid.title, url: `https://www.dailymotion.com/video/${vid.id}` }).catch(() => {});
+                    } else {
+                      navigator.clipboard?.writeText(`https://www.dailymotion.com/video/${vid.id}`);
+                      alert('Enlace copiado al portapapeles');
+                    }
+                  }}
+                >
+                  <IconSend /> Compartir
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
     </div>
   );
 }

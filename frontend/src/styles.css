@@ -397,13 +397,21 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--ink-3);
-  padding: 6px 10px;
+  padding: 4px 6px;
   border-radius: var(--radius-sm);
   position: relative;
   transition: color var(--fast);
+  flex: 1;
+  min-width: 0;
+}
+.bottom-nav a span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .bottom-nav a svg { width: 23px; height: 23px; }
 .bottom-nav a.active { color: var(--accent); }

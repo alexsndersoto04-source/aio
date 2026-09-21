@@ -1,13 +1,13 @@
 // Moon — Navegación inferior (móvil)
 // ============================================================
-// Cinco destinos principales con contador y estado activo.
-// Incluye acceso directo a Videos.
+// Todas las secciones esenciales a la vista:
+// Inicio, Videos, Explorar, Grupos, Mensajes, Perfil.
 
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../auth.jsx';
 import { useUnread } from '../unread.js';
 import {
-  IconHome, IconExplore, IconMail, IconUser, IconPlay,
+  IconHome, IconExplore, IconMail, IconUser, IconLayers, IconPlay,
 } from './Icons.jsx';
 
 export default function BottomNav() {
@@ -39,10 +39,11 @@ export default function BottomNav() {
   );
 
   return (
-    <nav className="bottom-nav" aria-label="Secciones">
+    <nav className="bottom-nav bottom-nav--seis" aria-label="Secciones">
       {item('feed', 'Inicio', <IconHome />)}
-      {item('videos', 'Videos', <IconPlay />)}
+      {item('videos', 'Video', <IconPlay />)}
       {item('explore', 'Explorar', <IconExplore />)}
+      {item('grupos', 'Grupos', <IconLayers />)}
       {item('messages', 'Mensajes', <IconMail />, unread.messages)}
       {item(`user/${user.id}`, 'Perfil', <IconUser />)}
     </nav>
