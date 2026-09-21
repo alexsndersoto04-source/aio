@@ -1,357 +1,491 @@
-// Moon Watch — Feed de videos con YouTube y Comunidad Moon
-// ============================================================
-// Entretenimiento real en español sin bots ni contenido falso de IA.
-// Diseño plano idéntico a Facebook Watch, con miniaturas HD y
-// reproductor fluido de YouTube sin necesidad de tarjeta ni Google Cloud.
+// Moon Watch — Plataforma nativa de videos de Moon respaldada en Telegram
+// =========================================================================
+// Feed estilo Facebook Watch / Reels, 100% nativo y profesional.
+// Sin terceros, sin límites de bloqueo, con reproductor en pantalla completa,
+// comentarios en vivo, reacciones y subida directa de videos a tu biblioteca.
 
-import React, { useState, useEffect } from 'react';
-import { api, imgUrl } from '../api.js';
+import React, { useState, useEffect, useRef } from 'react';
+import { api, uploadMedia, imgUrl } from '../api.js';
+import { useAuth } from '../auth.jsx';
+import { toast, avisoError } from '../ui.js';
+import Avatar from '../components/Avatar.jsx';
 import {
-  IconSearch, IconX, IconHeart, IconComment, IconSend,
+  IconSearch, IconX, IconHeart, IconComment, IconSend, IconVideo,
 } from '../components/Icons.jsx';
 
-const CATEGORIAS = [
+const PESTANAS = [
+  { id: 'para_ti', label: 'Para ti' },
   { id: 'tendencias', label: 'Tendencias' },
-  { id: 'comedia', label: 'Comedia & Creadores' },
-  { id: 'musica', label: 'Música' },
-  { id: 'deportes', label: 'Deportes' },
-  { id: 'gaming', label: 'Gaming' },
-  { id: 'moon', label: 'Comunidad Moon' },
+  { id: 'siguiendo', label: 'Siguiendo' },
+  { id: 'mis_videos', label: 'Mis Videos' },
 ];
 
-// Catálogo curado de videos en español de primer nivel (YouTube)
-const CATALOGO_YOUTUBE = {
-  tendencias: [
-    {
-      id: '0e3GPea1Tyg',
-      title: '¡Sobreviví 7 Días En Una Ciudad Abandonada!',
-      author: 'MrBeast en Español',
-      verified: true,
-      duration: '18:42',
-      views: '42.8 M',
-      avatar: 'M',
-    },
-    {
-      id: 'b3_l344U2Gw',
-      title: '¡Construí 100 Casas Y Las Regalé a Familias Necesitadas!',
-      author: 'MrBeast en Español',
-      verified: true,
-      duration: '16:15',
-      views: '54.2 M',
-      avatar: 'M',
-    },
-    {
-      id: 'yD8sNnJ_v-k',
-      title: 'LA VELADA DEL AÑO — Los Momentos Más Épicos e Históricos',
-      author: 'Ibai',
-      verified: true,
-      duration: '22:10',
-      views: '18.9 M',
-      avatar: 'I',
-    },
-    {
-      id: 'V1bFr2SWP1I',
-      title: 'REACCIONANDO A LOS PEORES TIKTOKS DE LA HISTORIA',
-      author: 'Auron',
-      verified: true,
-      duration: '14:35',
-      views: '11.5 M',
-      avatar: 'A',
-    },
-    {
-      id: 'dQ7Ym0b943M',
-      title: 'Te Lo Dijo El Chombo — Lo Que Nadie Sabe De La Música Urbana',
-      author: 'El Chombo',
-      verified: true,
-      duration: '15:20',
-      views: '9.3 M',
-      avatar: 'C',
-    },
-  ],
-  comedia: [
-    {
-      id: '2Q_ZzIat97Y',
-      title: 'RPS: Cosas de Parejas y Situaciones de la Vida Real',
-      author: 'Franco Escamilla',
-      verified: true,
-      duration: '24:50',
-      views: '28.1 M',
-      avatar: 'F',
-    },
-    {
-      id: '7R1N4hsFD9g',
-      title: 'Viendo el Teléfono de tu Pareja (Sketch de Humor)',
-      author: 'enchufetv',
-      verified: true,
-      duration: '4:15',
-      views: '35.4 M',
-      avatar: 'E',
-    },
-    {
-      id: 'p9H1C5_rR3E',
-      title: 'Harina — El Teniente Harina (Video Completo Oficial)',
-      author: 'Backdoor - Humor por donde no pasa la luz',
-      verified: true,
-      duration: '3:50',
-      views: '68.0 M',
-      avatar: 'B',
-    },
-    {
-      id: 'gM8p1c_h0xE',
-      title: 'Probando la Comida Callejera Más Peligrosa y Picante',
-      author: 'Luisito Comunica',
-      verified: true,
-      duration: '17:30',
-      views: '19.7 M',
-      avatar: 'L',
-    },
-    {
-      id: '60ItHLz5WEA',
-      title: 'Los 7 Misterios y Secretos Más Aterradores del Mundo',
-      author: 'DrossRotzank',
-      verified: true,
-      duration: '16:04',
-      views: '14.2 M',
-      avatar: 'D',
-    },
-  ],
-  musica: [
-    {
-      id: 'CocEMWmpcfs',
-      title: 'SHAKIRA || BZRP Music Sessions #53 (Official Video)',
-      author: 'Bizarrap',
-      verified: true,
-      duration: '3:38',
-      views: '730 M',
-      avatar: 'B',
-    },
-    {
-      id: '_X3qMs8U_9c',
-      title: 'Bad Bunny - MONACO (Official Video con Al Pacino)',
-      author: 'Bad Bunny',
-      verified: true,
-      duration: '7:12',
-      views: '185 M',
-      avatar: 'B',
-    },
-    {
-      id: 'A_g3lMcWVy0',
-      title: 'QUEVEDO || BZRP Music Sessions #52 (Quédate)',
-      author: 'Bizarrap',
-      verified: true,
-      duration: '3:19',
-      views: '670 M',
-      avatar: 'B',
-    },
-    {
-      id: 'zD_ZqEw7F8g',
-      title: 'KAROL G, Peso Pluma - QLONA (Official Video)',
-      author: 'Karol G',
-      verified: true,
-      duration: '2:53',
-      views: '410 M',
-      avatar: 'K',
-    },
-    {
-      id: '5p_UkyH1nF8',
-      title: 'Feid, Young Miko - CLASSY 101 (Official Video)',
-      author: 'Feid',
-      verified: true,
-      duration: '3:20',
-      views: '390 M',
-      avatar: 'F',
-    },
-  ],
-  deportes: [
-    {
-      id: '19rZ5f0wVbQ',
-      title: 'Los 10 Mejores Golazos Históricos de Lionel Messi en LaLiga',
-      author: 'LaLiga EA Sports Oficial',
-      verified: true,
-      duration: '12:05',
-      views: '32.1 M',
-      avatar: 'L',
-    },
-    {
-      id: 'E4qBvjQ2_3c',
-      title: 'Real Madrid — Las Remontadas Épicas de Champions League',
-      author: 'UEFA Champions League',
-      verified: true,
-      duration: '14:40',
-      views: '21.4 M',
-      avatar: 'R',
-    },
-    {
-      id: 'oF5eF5v0Lw8',
-      title: 'Las 50 Mejores Clavadas y Mates en la Historia de la NBA',
-      author: 'NBA Latam Oficial',
-      verified: true,
-      duration: '15:18',
-      views: '16.7 M',
-      avatar: 'N',
-    },
-    {
-      id: 'p6_pG2mQ7jE',
-      title: 'Las Mejores Rimas y Batallas Épicas de Freestyle en Español',
-      author: 'Red Bull Batalla',
-      verified: true,
-      duration: '18:55',
-      views: '14.0 M',
-      avatar: 'R',
-    },
-  ],
-  gaming: [
-    {
-      id: 'xQ3t8L4g1rA',
-      title: 'Risas y Momentos Inolvidables en Minecraft con Amigos',
-      author: 'VEGETTA777',
-      verified: true,
-      duration: '21:10',
-      views: '15.6 M',
-      avatar: 'V',
-    },
-    {
-      id: 'L_LUpnjgPso',
-      title: 'Troleando en GTA V Online Modo Caos Total con Streamers',
-      author: 'elrubiusOMG',
-      verified: true,
-      duration: '19:45',
-      views: '22.3 M',
-      avatar: 'R',
-    },
-    {
-      id: 'fB8UUm_nF5E',
-      title: 'Sobreviviendo 100 Días Extremos con Todo en Contra',
-      author: 'Spreen',
-      verified: true,
-      duration: '25:30',
-      views: '12.8 M',
-      avatar: 'S',
-    },
-    {
-      id: 'vjB3x7qQz8I',
-      title: 'El Evento Histórico que Rompió el Récord Mundial de Directos',
-      author: 'TheGrefg',
-      verified: true,
-      duration: '18:22',
-      views: '19.1 M',
-      avatar: 'G',
-    },
-  ],
-};
-
-function extraerIdYoutube(cadena) {
-  if (!cadena) return null;
-  const c = cadena.trim();
-  const m = c.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
-  if (m) return m[1];
-  if (/^[\w-]{11}$/.test(c)) return c;
-  return null;
+function tiempoRelativo(fechaIso) {
+  if (!fechaIso) return '';
+  const seg = Math.max(0, Math.floor((Date.now() - new Date(fechaIso).getTime()) / 1000));
+  if (seg < 60) return 'Hace un momento';
+  const min = Math.floor(seg / 60);
+  if (min < 60) return `Hace ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `Hace ${h} h`;
+  const d = Math.floor(h / 24);
+  return `Hace ${d} d`;
 }
 
-export default function VideosView() {
-  const [categoria, setCategoria] = useState('tendencias');
-  const [query, setQuery] = useState('');
-  const [busqueda, setBusqueda] = useState('');
-  const [videosMoon, setVideosMoon] = useState([]);
-  const [cargandoMoon, setCargandoMoon] = useState(false);
-  const [playingId, setPlayingId] = useState(null);
-  const [liked, setLiked] = useState({});
-  const [following, setFollowing] = useState({});
+function formatearSegundos(s) {
+  if (isNaN(s) || s === Infinity) return '0:00';
+  const min = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${min}:${sec < 10 ? '0' : ''}${sec}`;
+}
 
-  // Cargar videos de la comunidad Moon si se elige esa pestaña
-  useEffect(() => {
-    if (categoria === 'moon') {
-      let vivo = true;
-      setCargandoMoon(true);
-      api.get('/api/feed?tipo=videos&limit=20')
-        .then((res) => {
-          if (!vivo) return;
-          const items = (res?.items || res || []).map((p) => {
-            const vidObj = (p.images || []).find((im) => {
-              const u = im.original_url || im.url || '';
-              return im.kind === 'video' || /\.(mp4|webm|mov|mkv|3gp)(\?.*)?$/i.test(u);
-            });
-            return {
-              id: `moon-${p.id}`,
-              esMoon: true,
-              videoUrl: vidObj ? (vidObj.original_url || vidObj.url) : '',
-              title: p.content || 'Video de la comunidad Moon',
-              author: p.user?.display_name || p.user?.username || 'Usuario Moon',
-              avatar: (p.user?.username || 'M').charAt(0).toUpperCase(),
-              duration: 'Moon',
-              views: `${p.likes_count || 1} me gusta`,
-            };
-          }).filter((x) => Boolean(x.videoUrl));
-          setVideosMoon(items);
-        })
-        .catch(() => {})
-        .finally(() => { if (vivo) setCargandoMoon(false); });
-      return () => { vivo = false; };
+/** Componente de reproducción y tarjeta de video individual */
+function TarjetaVideoWatch({ post, onActualizar }) {
+  const { user: yo } = useAuth();
+  const videoRef = useRef(null);
+  const contenedorRef = useRef(null);
+
+  const [reproduciendo, setReproduciendo] = useState(false);
+  const [silenciado, setSilenciado] = useState(false);
+  const [progreso, setProgreso] = useState(0);
+  const [duracion, setDuracion] = useState(0);
+  const [tiempoActual, setTiempoActual] = useState(0);
+
+  // Estados de interacción
+  const [isLiked, setIsLiked] = useState(Boolean(post.is_liked));
+  const [likesCount, setLikesCount] = useState(Number(post.likes_count || 0));
+  const [siguiendo, setSiguiendo] = useState(Boolean(post.user?.is_following));
+
+  // Comentarios
+  const [verComentarios, setVerComentarios] = useState(false);
+  const [comentarios, setComentarios] = useState([]);
+  const [cargandoComentarios, setCargandoComentarios] = useState(false);
+  const [nuevoComentario, setNuevoComentario] = useState('');
+  const [enviandoComentario, setEnviandoComentario] = useState(false);
+
+  // Extraer el archivo de video de la publicación
+  const archivoVideo = (post.images || []).find((im) => {
+    const u = im.original_url || im.url || '';
+    return im.kind === 'video' || /\.(mp4|webm|mov|mkv|3gp)(\?.*)?$/i.test(u);
+  });
+  const urlVideo = archivoVideo ? (archivoVideo.original_url || archivoVideo.url) : '';
+
+  // Control de play / pause
+  function alternarPlay() {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.play().then(() => setReproduciendo(true)).catch(() => {});
+    } else {
+      videoRef.current.pause();
+      setReproduciendo(false);
     }
-    return undefined;
-  }, [categoria]);
-
-  function handleSearch(e) {
-    e.preventDefault();
-    setBusqueda(query.trim());
-    setPlayingId(null);
   }
 
-  // Si el usuario pega un enlace de YouTube en el buscador:
-  const ytIdDirecto = extraerIdYoutube(busqueda);
+  // Pantalla completa nativa
+  function activarPantallaCompleta() {
+    const el = videoRef.current || contenedorRef.current;
+    if (!el) return;
+    if (el.requestFullscreen) {
+      el.requestFullscreen().catch(() => {});
+    } else if (el.webkitRequestFullscreen) {
+      el.webkitRequestFullscreen();
+    } else if (el.webkitEnterFullscreen) {
+      // iOS Safari nativo para <video>
+      el.webkitEnterFullscreen();
+    }
+  }
 
-  // Lista de videos a mostrar
-  let listaMostrar = [];
+  // Alternar Me Gusta
+  async function alternarLike() {
+    const nuevoEstado = !isLiked;
+    setIsLiked(nuevoEstado);
+    setLikesCount((prev) => Math.max(0, prev + (nuevoEstado ? 1 : -1)));
 
-  if (categoria === 'moon') {
-    listaMostrar = videosMoon;
-  } else {
-    const listaBase = CATALOGO_YOUTUBE[categoria] || CATALOGO_YOUTUBE.tendencias;
-    if (ytIdDirecto) {
-      listaMostrar = [
-        {
-          id: ytIdDirecto,
-          title: `Video de YouTube (${ytIdDirecto})`,
-          author: 'YouTube',
-          verified: true,
-          duration: 'En vivo',
-          views: 'En reproducción',
-          avatar: 'Y',
-        },
-        ...listaBase,
-      ];
-    } else if (busqueda) {
-      const q = busqueda.toLowerCase();
-      listaMostrar = Object.values(CATALOGO_YOUTUBE).flat().filter((v) => (
-        v.title.toLowerCase().includes(q) || v.author.toLowerCase().includes(q)
-      ));
-    } else {
-      listaMostrar = listaBase;
+    try {
+      if (nuevoEstado) {
+        await api.post(`/api/posts/${post.id}/like`, {});
+      } else {
+        await api.del(`/api/posts/${post.id}/like`);
+      }
+    } catch {
+      // Revertir en caso de fallo
+      setIsLiked(!nuevoEstado);
+      setLikesCount((prev) => Math.max(0, prev + (nuevoEstado ? -1 : 1)));
+    }
+  }
+
+  // Alternar Seguir al creador
+  async function alternarSeguir() {
+    if (!post.user?.id || post.user.id === yo?.id) return;
+    const nuevo = !siguiendo;
+    setSiguiendo(nuevo);
+    try {
+      if (nuevo) {
+        await api.post(`/api/users/${post.user.id}/follow`, {});
+      } else {
+        await api.del(`/api/users/${post.user.id}/follow`);
+      }
+    } catch {
+      setSiguiendo(!nuevo);
+    }
+  }
+
+  // Cargar comentarios
+  async function abrirComentarios() {
+    const siguiente = !verComentarios;
+    setVerComentarios(siguiente);
+    if (siguiente && comentarios.length === 0) {
+      setCargandoComentarios(true);
+      try {
+        const res = await api.get(`/api/posts/${post.id}/comments`);
+        setComentarios(res || []);
+      } catch (e) {
+        avisoError(e);
+      } finally {
+        setCargandoComentarios(false);
+      }
+    }
+  }
+
+  // Enviar comentario
+  async function enviarComentario(e) {
+    e.preventDefault();
+    const txt = nuevoComentario.trim();
+    if (!txt || enviandoComentario) return;
+    setEnviandoComentario(true);
+    try {
+      const creado = await api.post(`/api/posts/${post.id}/comments`, { content: txt });
+      setComentarios((prev) => [...prev, creado]);
+      setNuevoComentario('');
+      if (onActualizar) onActualizar();
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setEnviandoComentario(false);
+    }
+  }
+
+  if (!urlVideo) return null;
+
+  return (
+    <article className="watch-fb-card" ref={contenedorRef}>
+      {/* 1. Cabecera del creador */}
+      <div className="watch-card-header">
+        <div className="watch-creator-info">
+          <Avatar user={post.user} size="sm" />
+          <div className="watch-creator-texts">
+            <span className="watch-creator-name">
+              {post.user?.display_name || post.user?.username || 'Creador Moon'}
+              {post.user?.verified ? ' ✓' : ''}
+            </span>
+            <span className="watch-post-date">
+              @{post.user?.username || 'usuario'} · {tiempoRelativo(post.created_at)}
+            </span>
+          </div>
+        </div>
+
+        {yo?.id !== post.user?.id ? (
+          <button
+            type="button"
+            className={`watch-follow-btn ${siguiendo ? 'siguiendo' : ''}`}
+            onClick={alternarSeguir}
+          >
+            {siguiendo ? 'Siguiendo' : '+ Seguir'}
+          </button>
+        ) : null}
+      </div>
+
+      {/* 2. Título o descripción del video */}
+      {post.content ? (
+        <p className="watch-card-text">{post.content}</p>
+      ) : null}
+
+      {/* 3. Área de reproducción de video profesional */}
+      <div className="watch-media-box">
+        <video
+          ref={videoRef}
+          src={imgUrl(urlVideo)}
+          playsInline
+          preload="metadata"
+          muted={silenciado}
+          onClick={alternarPlay}
+          onTimeUpdate={() => {
+            if (videoRef.current) {
+              const cur = videoRef.current.currentTime;
+              const dur = videoRef.current.duration || 1;
+              setTiempoActual(cur);
+              setProgreso((cur / dur) * 100);
+            }
+          }}
+          onLoadedMetadata={() => {
+            if (videoRef.current) setDuracion(videoRef.current.duration || 0);
+          }}
+          onPlay={() => setReproduciendo(true)}
+          onPause={() => setReproduciendo(false)}
+          onEnded={() => setReproduciendo(false)}
+        />
+
+        {/* Botón flotante central de Play cuando está pausado */}
+        {!reproduciendo ? (
+          <div className="watch-play-button-overlay" onClick={alternarPlay}>
+            <div className="watch-play-circle-icon">▶</div>
+          </div>
+        ) : null}
+
+        {/* Barra de control inferior nativa */}
+        <div className="watch-video-controls-bar">
+          <button type="button" className="watch-ctrl-btn" onClick={alternarPlay} title="Play/Pausa">
+            {reproduciendo ? '❚❚' : '▶'}
+          </button>
+
+          <span className="watch-time-label">
+            {formatearSegundos(tiempoActual)} / {formatearSegundos(duracion)}
+          </span>
+
+          {/* Barra de avance deslizante */}
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={progreso}
+            className="watch-scrubber"
+            onChange={(e) => {
+              const pct = Number(e.target.value);
+              setProgreso(pct);
+              if (videoRef.current && duracion > 0) {
+                videoRef.current.currentTime = (pct / 100) * duracion;
+              }
+            }}
+          />
+
+          <button
+            type="button"
+            className="watch-ctrl-btn"
+            onClick={() => setSilenciado(!silenciado)}
+            title={silenciado ? 'Activar sonido' : 'Silenciar'}
+          >
+            {silenciado ? '🔇' : '🔊'}
+          </button>
+
+          <button
+            type="button"
+            className="watch-ctrl-btn"
+            onClick={activarPantallaCompleta}
+            title="Pantalla completa"
+          >
+            ⛶
+          </button>
+        </div>
+      </div>
+
+      {/* 4. Estadísticas del video */}
+      <div className="watch-stats-row">
+        <span>{likesCount} {likesCount === 1 ? 'me gusta' : 'me gusta'}</span>
+        <span>{post.comments_count || comentarios.length || 0} comentarios</span>
+      </div>
+
+      {/* 5. Barra de interacciones estilo Facebook Watch */}
+      <div className="watch-fb-actions-bar">
+        <button
+          type="button"
+          className={`watch-fb-action-button ${isLiked ? 'liked' : ''}`}
+          onClick={alternarLike}
+        >
+          <IconHeart filled={isLiked} /> {isLiked ? 'Me gusta' : 'Me gusta'}
+        </button>
+
+        <button
+          type="button"
+          className="watch-fb-action-button"
+          onClick={abrirComentarios}
+        >
+          <IconComment /> Comentar
+        </button>
+
+        <button
+          type="button"
+          className="watch-fb-action-button"
+          onClick={() => {
+            const shareUrl = window.location.origin + `/p/${post.id}`;
+            if (navigator.share) {
+              navigator.share({ title: post.content || 'Video en Moon Watch', url: shareUrl }).catch(() => {});
+            } else {
+              navigator.clipboard?.writeText(shareUrl);
+              toast.ok('Enlace del video copiado al portapapeles');
+            }
+          }}
+        >
+          <IconSend /> Compartir
+        </button>
+      </div>
+
+      {/* 6. Sección de comentarios desplegable */}
+      {verComentarios ? (
+        <div className="watch-comments-section">
+          <form className="watch-comment-input-box" onSubmit={enviarComentario}>
+            <input
+              type="text"
+              placeholder="Escribe un comentario..."
+              value={nuevoComentario}
+              onChange={(e) => setNuevoComentario(e.target.value)}
+            />
+            <button type="submit" disabled={!nuevoComentario.trim() || enviandoComentario}>
+              Enviar
+            </button>
+          </form>
+
+          {cargandoComentarios ? (
+            <div style={{ padding: '12px', textAlign: 'center', color: '#65676b', fontSize: 13 }}>
+              Cargando comentarios…
+            </div>
+          ) : null}
+
+          {comentarios.map((c) => (
+            <div className="watch-comment-item" key={c.id}>
+              <div className="watch-comment-bubble">
+                <b>{c.user?.display_name || c.user?.username || 'Usuario'}</b>
+                <p>{c.content}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+/** Pantalla principal de Moon Watch */
+export default function VideosView() {
+  const [categoria, setCategoria] = useState('para_ti');
+  const [busqueda, setBusqueda] = useState('');
+  const [queryInput, setQueryInput] = useState('');
+  const [videos, setVideos] = useState([]);
+  const [cargando, setCargando] = useState(true);
+
+  // Modal de subida de video
+  const [mostrarModal, setMostrarModal] = useState(false);
+  const [archivoSeleccionado, setArchivoSeleccionado] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [descripcionVideo, setDescripcionVideo] = useState('');
+  const [subiendoPct, setSubiendoPct] = useState(0);
+  const [publicando, setPublicando] = useState(false);
+  const inputArchivoRef = useRef(null);
+
+  // Cargar videos de Moon
+  useEffect(() => {
+    let activo = true;
+    setCargando(true);
+
+    const params = new URLSearchParams();
+    params.set('cat', categoria);
+    if (busqueda) params.set('q', busqueda);
+    params.set('limit', '25');
+
+    api.get(`/api/videos?${params.toString()}`)
+      .then((res) => {
+        if (!activo) return;
+        setVideos(res?.items || res || []);
+      })
+      .catch((err) => {
+        console.error('[watch] error cargando videos:', err);
+      })
+      .finally(() => {
+        if (activo) setCargando(false);
+      });
+
+    return () => { activo = false; };
+  }, [categoria, busqueda]);
+
+  function buscar(e) {
+    e.preventDefault();
+    setBusqueda(queryInput.trim());
+  }
+
+  // Manejar selección de video
+  function onSeleccionarArchivo(e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    if (!f.type.startsWith('video/') && !/\.(mp4|webm|mov|mkv|3gp)$/i.test(f.name)) {
+      toast.err('Selecciona un archivo de video válido (.mp4, .webm, .mov)');
+      return;
+    }
+    if (f.size > 120 * 1024 * 1024) {
+      toast.err('El video no puede superar los 120 MB');
+      return;
+    }
+
+    setArchivoSeleccionado(f);
+    setPreviewUrl(URL.createObjectURL(f));
+  }
+
+  // Publicar video directo a Moon Watch
+  async function publicarVideo(e) {
+    e.preventDefault();
+    if (!archivoSeleccionado || publicando) return;
+
+    setPublicando(true);
+    setSubiendoPct(1);
+
+    try {
+      // 1. Subir a Moon (respaldado en Telegram)
+      const resMedia = await uploadMedia('video', archivoSeleccionado, (pct) => {
+        setSubiendoPct(pct);
+      });
+
+      // 2. Crear la publicación
+      const postCreado = await api.post('/api/posts', {
+        content: descripcionVideo.trim(),
+        images: [{ id: resMedia.id, url: resMedia.url }],
+      });
+
+      toast.ok('¡Video publicado exitosamente en Moon Watch!');
+      setVideos((prev) => [postCreado, ...prev]);
+
+      // Limpiar y cerrar modal
+      setMostrarModal(false);
+      setArchivoSeleccionado(null);
+      setPreviewUrl('');
+      setDescripcionVideo('');
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setPublicando(false);
+      setSubiendoPct(0);
     }
   }
 
   return (
     <div className="videos-shell">
-      {/* 1. Cabecera Facebook Watch */}
+      {/* 1. Cabecera principal estilo Facebook Watch */}
       <div className="watch-fb-header">
         <div className="watch-fb-title-bar">
-          <h1 className="watch-fb-title">Videos</h1>
+          <div className="watch-title-brand">
+            <h1 className="watch-fb-title">Moon Watch</h1>
+          </div>
+
+          <button
+            type="button"
+            className="watch-subir-btn-hero"
+            onClick={() => setMostrarModal(true)}
+          >
+            <IconVideo /> Subir video
+          </button>
         </div>
 
-        <form className="watch-fb-searchbox" onSubmit={handleSearch}>
+        {/* Buscador plano */}
+        <form className="watch-fb-searchbox" onSubmit={buscar}>
           <IconSearch />
           <input
             type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar videos o pega un enlace de YouTube..."
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
+            placeholder="Buscar videos en Moon Watch..."
           />
-          {query ? (
+          {queryInput ? (
             <button
               type="button"
               className="clear-btn"
-              onClick={() => { setQuery(''); setBusqueda(''); }}
+              onClick={() => { setQueryInput(''); setBusqueda(''); }}
             >
               <IconX />
             </button>
@@ -359,163 +493,151 @@ export default function VideosView() {
         </form>
       </div>
 
-      {/* 2. Barra de categorías */}
+      {/* 2. Pestañas de categorías */}
       <div className="watch-fb-tabs">
-        {CATEGORIAS.map((cat) => (
+        {PESTANAS.map((pestana) => (
           <button
-            key={cat.id}
+            key={pestana.id}
             type="button"
-            className={`watch-fb-pill ${categoria === cat.id && !busqueda ? 'active' : ''}`}
+            className={`watch-fb-pill ${categoria === pestana.id && !busqueda ? 'active' : ''}`}
             onClick={() => {
               setBusqueda('');
-              setQuery('');
-              setCategoria(cat.id);
-              setPlayingId(null);
+              setQueryInput('');
+              setCategoria(pestana.id);
             }}
           >
-            {cat.label}
+            {pestana.label}
           </button>
         ))}
       </div>
 
       {/* 3. Feed de videos */}
       <div className="watch-fb-feed">
-        {cargandoMoon && (
-          <div style={{ padding: '30px 16px', textAlign: 'center', color: 'var(--muted)' }}>
-            Cargando videos de la comunidad…
+        {cargando && Array.from({ length: 2 }).map((_, i) => (
+          <div className="watch-skeleton-card" key={i} />
+        ))}
+
+        {!cargando && videos.length === 0 && (
+          <div className="watch-empty-box">
+            <div className="watch-empty-icon">📹</div>
+            <h3>Tu biblioteca de videos en Moon Watch</h3>
+            <p>
+              Todos los videos que tú y la comunidad suban aquí quedan guardados de por vida
+              en tu canal de Telegram, con reproducción fluida, sin límites ni cortes.
+            </p>
+            <button
+              type="button"
+              className="btn btn-aurora"
+              onClick={() => setMostrarModal(true)}
+            >
+              + Subir el primer video
+            </button>
           </div>
         )}
 
-        {categoria === 'moon' && !cargandoMoon && videosMoon.length === 0 && (
-          <div style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--muted)' }}>
-            <p style={{ fontSize: 16, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
-              Aún no hay videos en la comunidad Moon
-            </p>
-            <p style={{ fontSize: 14 }}>
-              ¡Sé el primero en subir un video con el botón de publicar de Moon!
-            </p>
-          </div>
-        )}
+        {!cargando && videos.map((v) => (
+          <TarjetaVideoWatch
+            key={v.id}
+            post={v}
+            onActualizar={() => {}}
+          />
+        ))}
+      </div>
 
-        {listaMostrar.map((vid) => {
-          const isPlaying = playingId === vid.id;
-          const isLiked = Boolean(liked[vid.id]);
-          const isFollowed = Boolean(following[vid.author]);
-          const thumbUrl = vid.esMoon
-            ? imgUrl(vid.videoUrl)
-            : `https://i.ytimg.com/vi/${vid.id}/hqdefault.jpg`;
+      {/* 4. Modal de Subida de Video */}
+      {mostrarModal ? (
+        <div className="watch-modal-backdrop" onClick={() => !publicando && setMostrarModal(false)}>
+          <div className="watch-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="watch-modal-header">
+              <h2>Subir video a Moon Watch</h2>
+              <button
+                type="button"
+                className="close-btn"
+                disabled={publicando}
+                onClick={() => setMostrarModal(false)}
+              >
+                <IconX />
+              </button>
+            </div>
 
-          return (
-            <article key={vid.id} className="watch-fb-card">
-              {/* Cabecera del video */}
-              <div className="watch-card-header">
-                <div className="watch-creator-info">
-                  <div className="watch-avatar-circle">
-                    {vid.avatar || vid.author.charAt(0).toUpperCase()}
+            <form onSubmit={publicarVideo}>
+              {/* Selector o Vista previa del video */}
+              {!previewUrl ? (
+                <div
+                  className="watch-dropzone"
+                  onClick={() => inputArchivoRef.current && inputArchivoRef.current.click()}
+                >
+                  <input
+                    ref={inputArchivoRef}
+                    type="file"
+                    accept="video/mp4,video/webm,video/quicktime,video/3gpp"
+                    hidden
+                    onChange={onSeleccionarArchivo}
+                  />
+                  <div className="dropzone-icon">📁</div>
+                  <p><b>Toca para elegir un video desde tu galería</b></p>
+                  <span>Formatos: MP4, WebM, MOV (hasta 120 MB)</span>
+                </div>
+              ) : (
+                <div className="watch-preview-container">
+                  <video src={previewUrl} controls playsInline className="preview-vid" />
+                  <button
+                    type="button"
+                    className="btn-cambiar-video"
+                    onClick={() => { setArchivoSeleccionado(null); setPreviewUrl(''); }}
+                  >
+                    Cambiar video
+                  </button>
+                </div>
+              )}
+
+              {/* Descripción */}
+              <div className="watch-form-group">
+                <textarea
+                  className="watch-textarea"
+                  rows={3}
+                  placeholder="Escribe una descripción o título para tu video..."
+                  value={descripcionVideo}
+                  onChange={(e) => setDescripcionVideo(e.target.value)}
+                  disabled={publicando}
+                />
+              </div>
+
+              {/* Barra de progreso si está subiendo */}
+              {publicando ? (
+                <div className="watch-upload-progress">
+                  <div className="progress-info">
+                    <span>Subiendo a tu almacén de Telegram…</span>
+                    <span>{subiendoPct}%</span>
                   </div>
-                  <div className="watch-creator-texts">
-                    <span className="watch-creator-name">{vid.author}</span>
-                    <span className="watch-post-date">
-                      {vid.esMoon ? 'Moon Video' : 'Canal verificado · YouTube'}
-                    </span>
+                  <div className="progress-track">
+                    <div className="progress-bar" style={{ width: `${subiendoPct}%` }} />
                   </div>
                 </div>
+              ) : null}
 
+              {/* Botón de publicar */}
+              <div className="watch-modal-actions">
                 <button
                   type="button"
-                  className="watch-follow-btn"
-                  onClick={() => setFollowing((prev) => ({ ...prev, [vid.author]: !prev[vid.author] }))}
+                  className="btn btn-ghost"
+                  disabled={publicando}
+                  onClick={() => setMostrarModal(false)}
                 >
-                  {isFollowed ? 'Siguiendo' : 'Seguir'}
-                </button>
-              </div>
-
-              {/* Título de la publicación */}
-              <p className="watch-card-text">{vid.title}</p>
-
-              {/* Video o Portada 16:9 borde a borde */}
-              <div className="watch-media-box">
-                {isPlaying ? (
-                  vid.esMoon ? (
-                    <video
-                      src={imgUrl(vid.videoUrl)}
-                      controls
-                      autoPlay
-                      playsInline
-                      className="post-video-player"
-                    />
-                  ) : (
-                    <iframe
-                      title={vid.title}
-                      src={`https://www.youtube-nocookie.com/embed/${vid.id}?autoplay=1&rel=0&modestbranding=1&playsinline=1`}
-                      allowFullScreen
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    />
-                  )
-                ) : (
-                  <div
-                    className="watch-thumbnail-wrapper"
-                    onClick={() => setPlayingId(vid.id)}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <img
-                      src={thumbUrl}
-                      alt={vid.title}
-                      loading="lazy"
-                    />
-                    <span className="watch-duration-tag">{vid.duration}</span>
-                    <div className="watch-play-button-overlay">
-                      <div className="watch-play-circle-icon">▶</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Estadísticas compactas */}
-              <div className="watch-stats-row">
-                <span>{vid.views}</span>
-                <span>{isLiked ? 'Te gusta este video' : 'Reacciones'}</span>
-              </div>
-
-              {/* Barra inferior compacta de reacciones */}
-              <div className="watch-fb-actions-bar">
-                <button
-                  type="button"
-                  className={`watch-fb-action-button ${isLiked ? 'liked' : ''}`}
-                  onClick={() => setLiked((prev) => ({ ...prev, [vid.id]: !prev[vid.id] }))}
-                >
-                  <IconHeart filled={isLiked} /> {isLiked ? 'Me gusta' : 'Me gusta'}
+                  Cancelar
                 </button>
                 <button
-                  type="button"
-                  className="watch-fb-action-button"
-                  onClick={() => setPlayingId(vid.id)}
+                  type="submit"
+                  className="btn btn-aurora"
+                  disabled={!archivoSeleccionado || publicando}
                 >
-                  <IconComment /> Comentar
-                </button>
-                <button
-                  type="button"
-                  className="watch-fb-action-button"
-                  onClick={() => {
-                    const shareUrl = vid.esMoon
-                      ? window.location.href
-                      : `https://www.youtube.com/watch?v=/${vid.id}`;
-                    if (navigator.share) {
-                      navigator.share({ title: vid.title, url: shareUrl }).catch(() => {});
-                    } else {
-                      navigator.clipboard?.writeText(shareUrl);
-                      alert('Enlace copiado al portapapeles');
-                    }
-                  }}
-                >
-                  <IconSend /> Compartir
+                  {publicando ? `Publicando (${subiendoPct}%)…` : 'Publicar Video'}
                 </button>
               </div>
-            </article>
-          );
-        })}
-      </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

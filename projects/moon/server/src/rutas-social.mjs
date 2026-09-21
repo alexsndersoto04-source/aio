@@ -244,6 +244,57 @@ export function registrarRutasSocial(router) {
     return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
   });
 
+  // ---------- Moon Watch (Videos de la comunidad) ----------
+  router.get('/api/videos', async (c) => {
+    const yo = await c.yoOpcional();
+    const yoId = yo?.id || 0;
+    const { page, limit, offset } = paginacion(c.req, 12, 50);
+    const busqueda = (c.query.get('q') || '').trim().toLowerCase();
+    const categoria = (c.query.get('cat') || 'para_ti').trim();
+
+    let conds = [
+      "p.status = 'active'",
+      "EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id AND (pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%' OR pi.original_url ILIKE '%.mov%' OR pi.original_url ILIKE '%.mkv%' OR pi.original_url ILIKE '%.3gp%'))",
+    ];
+    let args = [yoId];
+
+    if (busqueda) {
+      args.push(`%${busqueda}%`);
+      conds.push(`(LOWER(p.content) LIKE $${args.length} OR LOWER(u.username) LIKE $${args.length} OR LOWER(u.display_name) LIKE $${args.length})`);
+    }
+
+    let orden = 'p.created_at DESC';
+    if (categoria === 'tendencias') {
+      orden = '(p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC';
+    } else if (categoria === 'siguiendo' && yoId) {
+      conds.push(`p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ${yoId})`);
+    } else if (categoria === 'mis_videos' && yoId) {
+      conds.push(`p.user_id = ${yoId}`);
+    }
+
+    const total = await uno(
+      c.pool,
+      `SELECT COUNT(*)::int AS count FROM posts p JOIN users u ON u.id = p.user_id WHERE ${conds.join(' AND ')}`,
+      args
+    );
+
+    const filas = await c.pool.query(
+      `SELECT p.id, p.content, p.status, p.likes_count, p.comments_count, p.saves_count,
+              p.created_at, p.user_id,
+              (SELECT COUNT(*)::int FROM likes l WHERE l.post_id = p.id AND l.user_id = $1) > 0 AS is_liked,
+              u.username, u.display_name, u.avatar_url, u.verified
+         FROM posts p
+         JOIN users u ON u.id = p.user_id
+        WHERE ${conds.join(' AND ')}
+        ORDER BY ${orden}
+        LIMIT ${limit} OFFSET ${offset}`,
+      args
+    );
+
+    const posts = await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yoId)), yoId);
+    return conPagina(c, posts, Number(total?.count || 0), page, limit);
+  });
+
   // ---------- Publicaciones ----------
   router.post('/api/posts', async (c) => {
     const yo = await c.exigir();
