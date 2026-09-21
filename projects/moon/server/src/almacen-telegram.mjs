@@ -74,8 +74,13 @@ export async function subirATelegram(buffer, { nombre = 'archivo.jpg', tipo = 'i
       return null;
     }
 
-    const { CustomFile } = await import('telegram/client/uploads.js');
-    const toUpload = new CustomFile(nombre, buffer.length, '', buffer);
+    let toUpload = buffer;
+    try {
+      const { CustomFile } = await import('telegram/client/uploads.js');
+      toUpload = new CustomFile(nombre, buffer.length, '', buffer);
+    } catch {
+      toUpload = buffer;
+    }
 
     const mensaje = await tg.sendFile(canal, {
       file: toUpload,

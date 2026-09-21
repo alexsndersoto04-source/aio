@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { createWriteStream, mkdirSync, existsSync, statSync, createReadStream, readdirSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { uno } from './db.mjs';
+import { subirATelegram } from './almacen-telegram.mjs';
 
 export const CARPETA = process.env.MOON_UPLOADS || resolve(process.cwd(), 'uploads');
 
@@ -211,10 +212,14 @@ export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
 
   copiaEnDisco(nombre, listo.bytes);
 
-  // Enviar a la bodega del canal privado en Telegram
-  subirATelegram(listo.bytes, { nombre, tipo: listo.mime }).catch((err) => {
-    console.error('[medios] error enviando a telegram:', err);
-  });
+  // Enviar a la bodega del canal privado en Telegram (de fondo y protegido contra cualquier fallo)
+  try {
+    subirATelegram(listo.bytes, { nombre, tipo: listo.mime }).catch((err) => {
+      console.error('[medios] error enviando a telegram:', err?.message || err);
+    });
+  } catch (errTg) {
+    console.error('[medios] error iniciando subida a telegram:', errTg?.message || errTg);
+  }
 
   return { id: Number(media.id), url, bytes: listo.bytes.length, kind: clase, mime: listo.mime, ancho: listo.ancho, alto: listo.alto };
 }
