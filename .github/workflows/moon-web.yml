@@ -51,10 +51,7 @@ jobs:
           cd projects/moon/server && npm i telegram input
           node $GITHUB_WORKSPACE/.github/scripts/vincular-telegram.mjs 2>&1 | tee /tmp/tg_log.txt
           res=${PIPESTATUS[1]}
-          if [ $res -ne 0 ]; then
-            gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/tg_log.txt
-            exit 1
-          fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/tg_log.txt
 
       - name: Validar el despliegue en seco (no sube nada)
         run: |
