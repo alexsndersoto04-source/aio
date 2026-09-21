@@ -1,20 +1,19 @@
 /* Moon Watch — Réplica exacta de la interfaz móvil de Facebook Watch */
-/* 100% nativo, plano, sin capas flotantes, sin desbordes */
+/* 100% nativo, plano, medidas compactas, sin desbordes */
 
 .videos-shell {
   width: 100%;
   max-width: 600px;
   margin: 0 auto;
-  padding: 0 0 70px 0;
+  padding: 0 0 75px 0;
   background: #f0f2f5;
-  min-height: 100vh;
   box-sizing: border-box;
 }
 
 /* 1. Barra superior Facebook Watch */
 .watch-fb-header {
   background: #ffffff;
-  padding: 12px 16px 8px 16px;
+  padding: 10px 14px 8px 14px;
   border-bottom: 1px solid #e4e6eb;
 }
 
@@ -22,52 +21,33 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .watch-fb-title {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 800;
   color: #050505;
   margin: 0;
   letter-spacing: -0.02em;
 }
 
-.watch-fb-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.watch-fb-circle-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: #e4e6eb;
-  border: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #050505;
-  cursor: pointer;
-}
-
 .watch-fb-searchbox {
   display: flex;
   align-items: center;
   background: #f0f2f5;
-  border-radius: 20px;
+  border-radius: 18px;
   padding: 6px 12px;
-  margin-top: 6px;
 }
 
 .watch-fb-searchbox input {
   border: none;
   background: transparent;
   outline: none;
-  font-size: 14px;
+  font-size: 13.5px;
   color: #050505;
   width: 100%;
-  margin-left: 8px;
+  margin-left: 6px;
 }
 
 .watch-fb-searchbox .clear-btn {
@@ -78,12 +58,12 @@
   padding: 0;
 }
 
-/* 2. Pestañas horizontales estilo Facebook (Para ti, En vivo, Música, etc.) */
+/* 2. Pestañas horizontales estilo Facebook */
 .watch-fb-tabs {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   overflow-x: auto;
-  padding: 10px 16px;
+  padding: 8px 14px;
   background: #ffffff;
   border-bottom: 1px solid #e4e6eb;
   scrollbar-width: none;
@@ -94,10 +74,10 @@
   background: #e4e6eb;
   border: none;
   color: #050505;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 7px 14px;
-  border-radius: 18px;
+  padding: 6px 12px;
+  border-radius: 16px;
   cursor: pointer;
   white-space: nowrap;
   flex: none;
@@ -108,7 +88,7 @@
   color: #1877f2;
 }
 
-/* 3. Feed de publicaciones estilo Facebook (una tarjeta tras otra) */
+/* 3. Feed de videos */
 .watch-fb-feed {
   display: flex;
   flex-direction: column;
@@ -125,23 +105,23 @@
   box-sizing: border-box;
 }
 
-/* Cabecera del post: Avatar redondo, Nombre de página/canal en negrita, Seguir */
+/* Cabecera del post */
 .watch-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px 8px 14px;
+  padding: 10px 14px 6px 14px;
 }
 
 .watch-creator-info {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .watch-avatar-circle {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   background: #1877f2;
   color: #ffffff;
@@ -149,7 +129,7 @@
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  font-size: 16px;
+  font-size: 15px;
   flex: none;
 }
 
@@ -159,39 +139,39 @@
 }
 
 .watch-creator-name {
-  font-size: 14.5px;
+  font-size: 13.5px;
   font-weight: 700;
   color: #050505;
   line-height: 1.2;
 }
 
 .watch-post-date {
-  font-size: 12px;
+  font-size: 11.5px;
   color: #65676b;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .watch-follow-btn {
   background: none;
   border: none;
   color: #1877f2;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 2px 6px;
 }
 
-/* Texto del post / Título */
+/* Texto del video */
 .watch-card-text {
-  font-size: 14.5px;
+  font-size: 13.5px;
   color: #050505;
   line-height: 1.35;
-  padding: 0 14px 10px 14px;
+  padding: 0 14px 8px 14px;
   margin: 0;
   word-break: break-word;
 }
 
-/* Área del video: exactamente borde a borde (ancho 100%, relación 16:9) */
+/* Área de video 16:9 borde a borde */
 .watch-media-box {
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -243,36 +223,37 @@
 }
 
 .watch-play-circle-icon {
-  width: 56px;
-  height: 56px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.65);
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 18px;
   padding-left: 3px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-/* Estadísticas de reproducciones y reacciones */
+/* Estadísticas de reproducciones y reacciones compactas */
 .watch-stats-row {
   display: flex;
   justify-content: space-between;
-  padding: 8px 14px;
+  align-items: center;
+  padding: 6px 14px;
   border-bottom: 1px solid #ced0d4;
   margin: 0 4px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: #65676b;
 }
 
-/* Barra inferior de 3 botones: Me gusta, Comentar, Compartir */
+/* Botones Me gusta, Comentar, Compartir compactos (idénticos a Facebook) */
 .watch-fb-actions-bar {
   display: flex;
   align-items: center;
   justify-content: space-around;
-  padding: 4px 6px;
+  padding: 2px 4px;
 }
 
 .watch-fb-action-button {
@@ -280,29 +261,28 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   background: none;
   border: none;
   color: #65676b;
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
   padding: 8px 0;
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s;
 }
 
-.watch-fb-action-button:hover {
-  background: #f0f2f5;
+.watch-fb-action-button svg {
+  width: 16px;
+  height: 16px;
 }
 
 .watch-fb-action-button.liked {
   color: #1877f2;
 }
 
-/* Esqueletos de carga */
 .watch-skeleton-card {
-  height: 380px;
+  height: 360px;
   background: #ffffff;
   border-top: 1px solid #e4e6eb;
   border-bottom: 1px solid #e4e6eb;
