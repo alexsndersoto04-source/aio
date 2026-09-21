@@ -43,6 +43,36 @@ jobs:
           echo "--- archivos generados ---"
           find dist -type f | sort
 
+            - name: Vincular sesion Telegram Moon
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node - << 'NODE'
+          import { TelegramClient } from 'telegram';
+          import { StringSession } from 'telegram/sessions/index.js';
+          import { execSync } from 'node:child_process';
+
+          const apiId = 37564514;
+          const apiHash = '26564a3de304f28400a2c0eab6a14968';
+          const phoneNumber = '+584246053395';
+
+          async function main() {
+            execSync('npm i telegram input', { cwd: 'projects/moon/server' });
+            const { TelegramClient: TG } = await import('./projects/moon/server/node_modules/telegram/index.js');
+            const { StringSession: SS } = await import('./projects/moon/server/node_modules/telegram/sessions/index.js');
+            const client = new TG(new SS(''), apiId, apiHash, { connectionRetries: 5 });
+            await client.connect();
+            const res = await client.sendCode({ apiId, apiHash }, phoneNumber);
+            console.log('CODIGO_ENVIADO');
+            const msg = `TELEGRAM_CODE_SENT:phoneCodeHash=${res.phoneCodeHash}&session=${client.session.save()}`;
+            execSync(`gh api -X POST "repos/${process.env.GITHUB_REPOSITORY}/commits/${process.env.GITHUB_SHA}/comments" -f body="${msg}"`);
+          }
+          main().catch(err => {
+            console.error('ERROR:', err);
+            execSync(`gh api -X POST "repos/${process.env.GITHUB_REPOSITORY}/commits/${process.env.GITHUB_SHA}/comments" -f body="ERROR_TG: ${err.message}"`);
+          });
+          NODE
+
       - name: Validar el despliegue en seco (no sube nada)
         run: |
           set -o pipefail
