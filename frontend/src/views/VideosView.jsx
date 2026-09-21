@@ -1,8 +1,8 @@
 // Moon Watch — Plataforma nativa de videos de Moon respaldada en Telegram
 // =========================================================================
 // Feed estilo Facebook Watch / Reels, 100% nativo, sobrio y estético.
-// Con reproductor adaptativo, menú de opciones para cada video, ajustes
-// de reproducción/datos y subida directa de videos a tu biblioteca.
+// Sin lupas ni banners invasivos: los videos son los protagonistas absolutos.
+// Con menú de opciones por video, panel de ajustes avanzados y subida a Telegram.
 
 import React, { useState, useEffect, useRef } from 'react';
 import { api, uploadMedia, imgUrl } from '../api.js';
@@ -10,7 +10,7 @@ import { useAuth } from '../auth.jsx';
 import { toast, avisoError, confirmar } from '../ui.js';
 import Avatar from '../components/Avatar.jsx';
 import {
-  IconSearch, IconX, IconHeart, IconComment, IconSend, IconVideo,
+  IconX, IconHeart, IconComment, IconSend, IconVideo,
   IconSettings, IconMore, IconTrash, IconBookmark, IconCopy, IconCheck,
 } from '../components/Icons.jsx';
 
@@ -20,6 +20,16 @@ const PESTANAS = [
   { id: 'siguiendo', label: 'Siguiendo' },
   { id: 'mis_videos', label: 'Mis Videos' },
 ];
+
+const CONFIG_POR_DEFECTO = {
+  autoplay: true,
+  sonidoInicial: false, // Silenciado por defecto para no asustar en público
+  loopInfinito: true,
+  pausarFueraPantalla: true,
+  ahorroDatos: false,
+  dobleTapPantallaCompleta: true,
+  calidad: 'alta', // 'alta' | 'ahorro'
+};
 
 function tiempoRelativo(fechaIso) {
   if (!fechaIso) return '';
@@ -48,7 +58,7 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
   const menuRef = useRef(null);
 
   const [reproduciendo, setReproduciendo] = useState(false);
-  const [silenciado, setSilenciado] = useState(config?.muteDefault !== false);
+  const [silenciado, setSilenciado] = useState(!config?.sonidoInicial);
   const [progreso, setProgreso] = useState(0);
   const [duracion, setDuracion] = useState(0);
   const [tiempoActual, setTiempoActual] = useState(0);
@@ -92,6 +102,36 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
     };
   }, [mostrarMenu]);
 
+  // Autoplay inteligente y pausa cuando sale de pantalla (IntersectionObserver)
+  useEffect(() => {
+    if (!config?.autoplay || !contenedorRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!videoRef.current) return;
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
+            // Video en centro de pantalla -> reproducir si autoplay activo
+            videoRef.current.play().then(() => setReproduciendo(true)).catch(() => {
+              if (videoRef.current) {
+                videoRef.current.muted = true;
+                setSilenciado(true);
+                videoRef.current.play().then(() => setReproduciendo(true)).catch(() => {});
+              }
+            });
+          } else if (config.pausarFueraPantalla && !entry.isIntersecting) {
+            // Fuera de pantalla -> pausar
+            videoRef.current.pause();
+            setReproduciendo(false);
+          }
+        });
+      },
+      { threshold: [0, 0.6] }
+    );
+
+    observer.observe(contenedorRef.current);
+    return () => observer.disconnect();
+  }, [config?.autoplay, config?.pausarFueraPantalla]);
+
   // Extraer el archivo de video de la publicación
   const archivoVideo = (post.images || []).find((im) => {
     const u = (im.original_url || im.url || im.thumb_url || '').toLowerCase();
@@ -116,6 +156,18 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
       videoRef.current.pause();
       setReproduciendo(false);
     }
+  }
+
+  // Doble toque para pantalla completa
+  const ultimoTap = useRef(0);
+  function manejarTapVideo() {
+    const ahora = Date.now();
+    if (config?.dobleTapPantallaCompleta && ahora - ultimoTap.current < 300) {
+      activarPantallaCompleta();
+    } else {
+      alternarPlay();
+    }
+    ultimoTap.current = ahora;
   }
 
   // Pantalla completa nativa
@@ -173,19 +225,19 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
     const shareUrl = `${window.location.origin}/#/post/${post.id}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareUrl)
-        .then(() => toast.ok('Enlace del video copiado'))
+        .then(() => toast.ok('Enlace del video copiado al portapapeles'))
         .catch(() => toast.ok(shareUrl));
     } else {
       toast.ok('Enlace: ' + shareUrl);
     }
   }
 
-  // Eliminar video (si es del usuario)
+  // Eliminar video (si es del propio usuario)
   async function borrarVideo() {
     setMostrarMenu(false);
     const seguro = await confirmar({
       title: '¿Eliminar este video?',
-      message: 'Esta publicación y su video se eliminarán de forma permanente de Moon Watch.',
+      message: 'Esta publicación y su video se eliminarán definitivamente de Moon Watch.',
       confirmText: 'Eliminar video',
       danger: true,
     });
@@ -255,7 +307,7 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
 
   return (
     <article className="watch-fb-card" ref={contenedorRef}>
-      {/* 1. Cabecera del creador con menú de opciones */}
+      {/* 1. Cabecera del creador con menú contextual */}
       <div className="watch-card-header">
         <a href={`#/user/${autorUsername}`} className="watch-creator-info" style={{ textDecoration: 'none', color: 'inherit' }}>
           <Avatar
@@ -299,7 +351,7 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
             <IconMore />
           </button>
 
-          {/* Menú contextual flotante */}
+          {/* Menú de opciones */}
           {mostrarMenu ? (
             <div className="watch-card-dropdown" role="menu">
               <button type="button" className="watch-dropdown-item" onClick={copiarEnlace}>
@@ -323,15 +375,16 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
         <p className="watch-card-text">{post.content}</p>
       ) : null}
 
-      {/* 3. Área de reproducción cinemática nativa */}
+      {/* 3. Área de reproducción cinemática sin elementos invasivos */}
       <div className="watch-media-box">
         <video
           ref={videoRef}
           src={imgUrl(urlVideo)}
           playsInline
+          loop={Boolean(config?.loopInfinito)}
           preload={config?.ahorroDatos ? 'none' : 'metadata'}
           muted={silenciado}
-          onClick={alternarPlay}
+          onClick={manejarTapVideo}
           onTimeUpdate={() => {
             if (videoRef.current) {
               const cur = videoRef.current.currentTime;
@@ -348,7 +401,7 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
           onEnded={() => setReproduciendo(false)}
         />
 
-        {/* Botón flotante central de Play cuando está pausado */}
+        {/* Botón play central si está pausado */}
         {!reproduciendo ? (
           <div className="watch-play-button-overlay" onClick={alternarPlay}>
             <div className="watch-play-circle-icon">▶</div>
@@ -449,7 +502,7 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
         </button>
       </div>
 
-      {/* 6. Sección de comentarios desplegable */}
+      {/* 6. Sección de comentarios */}
       {verComentarios ? (
         <div className="watch-comments-section">
           <form className="watch-comment-input-box" onSubmit={enviarComentario}>
@@ -484,35 +537,60 @@ function TarjetaVideoWatch({ post, config, onEliminar, onActualizar }) {
   );
 }
 
-/** Modal de Ajustes y Preferencias de Moon Watch */
-function AjustesVideoModal({ config, onGuardar, onCerrar }) {
+/** Modal de Ajustes y Opciones Avanzadas de Moon Watch */
+function AjustesAvanzadosVideosModal({ config, onGuardar, onCerrar }) {
   const [autoplay, setAutoplay] = useState(Boolean(config.autoplay));
-  const [muteDefault, setMuteDefault] = useState(Boolean(config.muteDefault));
+  const [sonidoInicial, setSonidoInicial] = useState(Boolean(config.sonidoInicial));
+  const [loopInfinito, setLoopInfinito] = useState(Boolean(config.loopInfinito));
+  const [pausarFueraPantalla, setPausarFueraPantalla] = useState(Boolean(config.pausarFueraPantalla));
   const [ahorroDatos, setAhorroDatos] = useState(Boolean(config.ahorroDatos));
+  const [dobleTapPantallaCompleta, setDobleTapPantallaCompleta] = useState(Boolean(config.dobleTapPantallaCompleta));
+  const [calidad, setCalidad] = useState(config.calidad || 'alta');
 
   function guardar() {
-    onGuardar({ autoplay, muteDefault, ahorroDatos });
-    toast.ok('Ajustes de video guardados');
+    onGuardar({
+      autoplay,
+      sonidoInicial,
+      loopInfinito,
+      pausarFueraPantalla,
+      ahorroDatos,
+      dobleTapPantallaCompleta,
+      calidad,
+    });
+    toast.ok('Ajustes de videos guardados');
     onCerrar();
+  }
+
+  function restaurar() {
+    setAutoplay(CONFIG_POR_DEFECTO.autoplay);
+    setSonidoInicial(CONFIG_POR_DEFECTO.sonidoInicial);
+    setLoopInfinito(CONFIG_POR_DEFECTO.loopInfinito);
+    setPausarFueraPantalla(CONFIG_POR_DEFECTO.pausarFueraPantalla);
+    setAhorroDatos(CONFIG_POR_DEFECTO.ahorroDatos);
+    setDobleTapPantallaCompleta(CONFIG_POR_DEFECTO.dobleTapPantallaCompleta);
+    setCalidad(CONFIG_POR_DEFECTO.calidad);
+    toast.info('Valores restablecidos por defecto');
   }
 
   return (
     <div className="watch-modal-backdrop" onClick={onCerrar}>
       <div className="watch-modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="watch-modal-header">
-          <h2>Ajustes de Moon Watch</h2>
-          <button type="button" className="close-btn" onClick={onCerrar}>
+          <h2>Opciones y Ajustes de Videos</h2>
+          <button type="button" className="close-btn" onClick={onCerrar} title="Cerrar">
             <IconX />
           </button>
         </div>
 
-        <div className="watch-settings-list">
-          {/* 1. Reproducción automática */}
+        <div className="watch-settings-scroll">
+          {/* SECCIÓN 1: REPRODUCCIÓN */}
+          <div className="watch-settings-group-header">Reproducción inteligente</div>
+
           <div className="watch-setting-row">
             <div className="watch-setting-info">
               <span className="watch-setting-title">Reproducción automática</span>
               <span className="watch-setting-desc">
-                Iniciar reproducción al enfocar el video en pantalla.
+                Reproducir automáticamente los videos al hacer scroll.
               </span>
             </div>
             <label className="watch-toggle-switch">
@@ -525,30 +603,88 @@ function AjustesVideoModal({ config, onGuardar, onCerrar }) {
             </label>
           </div>
 
-          {/* 2. Iniciar en silencio */}
           <div className="watch-setting-row">
             <div className="watch-setting-info">
-              <span className="watch-setting-title">Iniciar en silencio</span>
+              <span className="watch-setting-title">Pausar al salir de pantalla</span>
               <span className="watch-setting-desc">
-                Los videos arrancan silenciados para no interrumpir tu entorno.
+                Detener el video cuando no esté visible en tu vista.
               </span>
             </div>
             <label className="watch-toggle-switch">
               <input
                 type="checkbox"
-                checked={muteDefault}
-                onChange={(e) => setMuteDefault(e.target.checked)}
+                checked={pausarFueraPantalla}
+                onChange={(e) => setPausarFueraPantalla(e.target.checked)}
               />
               <span className="watch-toggle-slider" />
             </label>
           </div>
 
-          {/* 3. Ahorro de datos */}
+          <div className="watch-setting-row">
+            <div className="watch-setting-info">
+              <span className="watch-setting-title">Repetición continua (Loop)</span>
+              <span className="watch-setting-desc">
+                Volver a reproducir el video automáticamente al terminar.
+              </span>
+            </div>
+            <label className="watch-toggle-switch">
+              <input
+                type="checkbox"
+                checked={loopInfinito}
+                onChange={(e) => setLoopInfinito(e.target.checked)}
+              />
+              <span className="watch-toggle-slider" />
+            </label>
+          </div>
+
+          {/* SECCIÓN 2: SONIDO */}
+          <div className="watch-settings-group-header">Audio y Sonido</div>
+
+          <div className="watch-setting-row">
+            <div className="watch-setting-info">
+              <span className="watch-setting-title">Iniciar con sonido</span>
+              <span className="watch-setting-desc">
+                Si está desactivado, los videos arrancan en silencio hasta que toques el botón de audio.
+              </span>
+            </div>
+            <label className="watch-toggle-switch">
+              <input
+                type="checkbox"
+                checked={sonidoInicial}
+                onChange={(e) => setSonidoInicial(e.target.checked)}
+              />
+              <span className="watch-toggle-slider" />
+            </label>
+          </div>
+
+          {/* SECCIÓN 3: GESTOS Y PANTALLA */}
+          <div className="watch-settings-group-header">Gestos y visualización</div>
+
+          <div className="watch-setting-row">
+            <div className="watch-setting-info">
+              <span className="watch-setting-title">Doble toque: pantalla completa</span>
+              <span className="watch-setting-desc">
+                Tocar dos veces sobre el video para entrar en pantalla completa nativa.
+              </span>
+            </div>
+            <label className="watch-toggle-switch">
+              <input
+                type="checkbox"
+                checked={dobleTapPantallaCompleta}
+                onChange={(e) => setDobleTapPantallaCompleta(e.target.checked)}
+              />
+              <span className="watch-toggle-slider" />
+            </label>
+          </div>
+
+          {/* SECCIÓN 4: DATOS MÓVILES */}
+          <div className="watch-settings-group-header">Consumo de datos móviles</div>
+
           <div className="watch-setting-row">
             <div className="watch-setting-info">
               <span className="watch-setting-title">Modo ahorro de datos</span>
               <span className="watch-setting-desc">
-                Descargar metadatos solo al tocar play para ahorrar megas móviles.
+                Descarga datos solo cuando presionas Play para ahorrar megas en tu plan móvil.
               </span>
             </div>
             <label className="watch-toggle-switch">
@@ -560,11 +696,29 @@ function AjustesVideoModal({ config, onGuardar, onCerrar }) {
               <span className="watch-toggle-slider" />
             </label>
           </div>
+
+          <div className="watch-setting-row">
+            <div className="watch-setting-info">
+              <span className="watch-setting-title">Calidad de transmisión</span>
+              <span className="watch-setting-desc">
+                Selecciona la calidad preferida de reproducción.
+              </span>
+            </div>
+            <select
+              className="watch-select-input"
+              value={calidad}
+              onChange={(e) => setCalidad(e.target.value)}
+            >
+              <option value="alta">Alta definición (HD)</option>
+              <option value="estandar">Estándar equilibrada</option>
+              <option value="ahorro">Bajo consumo</option>
+            </select>
+          </div>
         </div>
 
         <div className="watch-modal-actions">
-          <button type="button" className="btn btn-ghost" onClick={onCerrar}>
-            Cancelar
+          <button type="button" className="btn btn-ghost" onClick={restaurar}>
+            Restablecer
           </button>
           <button type="button" className="btn btn-aurora" onClick={guardar}>
             Guardar cambios
@@ -575,25 +729,22 @@ function AjustesVideoModal({ config, onGuardar, onCerrar }) {
   );
 }
 
-/** Pantalla principal de Moon Watch */
+/** Pantalla principal de Videos (Moon Watch) */
 export default function VideosView() {
   const [categoria, setCategoria] = useState('para_ti');
-  const [busqueda, setBusqueda] = useState('');
-  const [queryInput, setQueryInput] = useState('');
-  const [mostrarBuscador, setMostrarBuscador] = useState(false);
   const [videos, setVideos] = useState([]);
   const [cargando, setCargando] = useState(true);
 
-  // Configuración de usuario guardada localmente
+  // Configuración avanzada de usuario guardada localmente
   const [config, setConfig] = useState(() => {
     try {
-      const guardada = localStorage.getItem('moon_watch_config');
-      if (guardada) return JSON.parse(guardada);
+      const guardada = localStorage.getItem('moon_watch_config_v2');
+      if (guardada) return { ...CONFIG_POR_DEFECTO, ...JSON.parse(guardada) };
     } catch {}
-    return { autoplay: true, muteDefault: true, ahorroDatos: false };
+    return CONFIG_POR_DEFECTO;
   });
 
-  // Modal de Ajustes
+  // Modal de Ajustes Avanzados
   const [mostrarAjustes, setMostrarAjustes] = useState(false);
 
   // Modal de subida de video
@@ -609,7 +760,7 @@ export default function VideosView() {
   function onGuardarConfig(nuevaConfig) {
     setConfig(nuevaConfig);
     try {
-      localStorage.setItem('moon_watch_config', JSON.stringify(nuevaConfig));
+      localStorage.setItem('moon_watch_config_v2', JSON.stringify(nuevaConfig));
     } catch {}
   }
 
@@ -620,7 +771,6 @@ export default function VideosView() {
 
     const params = new URLSearchParams();
     params.set('cat', categoria);
-    if (busqueda) params.set('q', busqueda);
     params.set('limit', '30');
 
     api.get(`/api/videos?${params.toString()}`)
@@ -637,12 +787,7 @@ export default function VideosView() {
       });
 
     return () => { activo = false; };
-  }, [categoria, busqueda]);
-
-  function buscar(e) {
-    e.preventDefault();
-    setBusqueda(queryInput.trim());
-  }
+  }, [categoria]);
 
   // Manejar selección de video
   function onSeleccionarArchivo(e) {
@@ -707,7 +852,7 @@ export default function VideosView() {
 
   return (
     <div className="videos-shell">
-      {/* 1. Cabecera estilizada de Videos */}
+      {/* 1. Cabecera Estilizada de Videos (Limpia, sin lupas ni desbordes) */}
       <div className="watch-fb-header">
         <div className="watch-fb-title-bar">
           <div className="watch-brand-zone">
@@ -718,24 +863,13 @@ export default function VideosView() {
           <div className="watch-header-actions">
             <button
               type="button"
-              className={`watch-icon-btn ${mostrarBuscador ? 'active' : ''}`}
-              onClick={() => {
-                setMostrarBuscador((v) => !v);
-              }}
-              title="Buscar videos"
-              aria-label="Buscar videos"
-            >
-              <IconSearch />
-            </button>
-
-            <button
-              type="button"
-              className="watch-icon-btn"
+              className="watch-settings-btn"
               onClick={() => setMostrarAjustes(true)}
-              title="Ajustes de la sección de videos"
-              aria-label="Ajustes de la sección de videos"
+              title="Ajustes y opciones avanzadas de video"
+              aria-label="Ajustes y opciones avanzadas de video"
             >
               <IconSettings />
+              <span>Ajustes</span>
             </button>
 
             <button
@@ -743,35 +877,11 @@ export default function VideosView() {
               className="watch-subir-btn-hero"
               onClick={() => setMostrarModal(true)}
             >
-              <IconVideo /> <span>Subir</span>
+              <IconVideo />
+              <span>Subir video</span>
             </button>
           </div>
         </div>
-
-        {/* Buscador colapsable elegante */}
-        {mostrarBuscador ? (
-          <div className="watch-search-drawer">
-            <form className="watch-fb-searchbox" onSubmit={buscar}>
-              <IconSearch />
-              <input
-                type="search"
-                autoFocus
-                value={queryInput}
-                onChange={(e) => setQueryInput(e.target.value)}
-                placeholder="Buscar videos, temas o creadores…"
-              />
-              {queryInput ? (
-                <button
-                  type="button"
-                  className="clear-btn"
-                  onClick={() => { setQueryInput(''); setBusqueda(''); }}
-                >
-                  <IconX />
-                </button>
-              ) : null}
-            </form>
-          </div>
-        ) : null}
       </div>
 
       {/* 2. Pestañas de categorías */}
@@ -780,19 +890,15 @@ export default function VideosView() {
           <button
             key={pestana.id}
             type="button"
-            className={`watch-fb-pill ${categoria === pestana.id && !busqueda ? 'active' : ''}`}
-            onClick={() => {
-              setBusqueda('');
-              setQueryInput('');
-              setCategoria(pestana.id);
-            }}
+            className={`watch-fb-pill ${categoria === pestana.id ? 'active' : ''}`}
+            onClick={() => setCategoria(pestana.id)}
           >
             {pestana.label}
           </button>
         ))}
       </div>
 
-      {/* 3. Feed de videos */}
+      {/* 3. Feed de videos: el primer video aparece inmediatamente limpio */}
       <div className="watch-fb-feed">
         {cargando && Array.from({ length: 2 }).map((_, i) => (
           <div className="watch-skeleton-card" key={i} />
@@ -829,9 +935,9 @@ export default function VideosView() {
         ))}
       </div>
 
-      {/* 4. Modal de Ajustes de Video */}
+      {/* 4. Modal de Opciones y Ajustes Avanzados de Videos */}
       {mostrarAjustes ? (
-        <AjustesVideoModal
+        <AjustesAvanzadosVideosModal
           config={config}
           onGuardar={onGuardarConfig}
           onCerrar={() => setMostrarAjustes(false)}

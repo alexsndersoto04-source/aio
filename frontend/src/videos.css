@@ -13,14 +13,14 @@
   background: var(--bg-main, #f0f2f5);
 }
 
-/* ---------- 1. Cabecera Estilizada de Videos ---------- */
+/* ---------- 1. Cabecera Estilizada de Videos (Limpia y Compacta) ---------- */
 .watch-fb-header {
   background: var(--bg-surface, #ffffff);
   border-bottom: 1px solid var(--border-subtle, #e4e6eb);
   position: sticky;
   top: 0;
   z-index: 30;
-  padding: 10px 16px 8px 16px;
+  padding: 10px 16px;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
@@ -64,38 +64,31 @@
   gap: 8px;
 }
 
-.watch-icon-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 1px solid var(--border-subtle, #e4e6eb);
+.watch-settings-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--bg-alt, #f0f2f5);
   color: var(--text-main, #050505);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  border: 1px solid var(--border-subtle, #e4e6eb);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 13px;
+  border-radius: 20px;
   cursor: pointer;
   transition: all 0.2s ease;
-  padding: 0;
 }
 
-.watch-icon-btn:hover {
+.watch-settings-btn:hover {
   background: var(--bg-hover, #e4e6eb);
-  transform: translateY(-1px);
 }
 
-.watch-icon-btn.active {
-  background: #1877f2;
-  color: #ffffff;
-  border-color: #1877f2;
-}
-
-.watch-icon-btn svg {
-  width: 17px !important;
-  height: 17px !important;
-  max-width: 17px !important;
-  max-height: 17px !important;
-  display: block;
+.watch-settings-btn svg {
+  width: 15px !important;
+  height: 15px !important;
+  max-width: 15px !important;
+  max-height: 15px !important;
+  color: var(--text-muted, #65676b);
 }
 
 .watch-subir-btn-hero {
@@ -107,7 +100,7 @@
   border: none;
   font-size: 13px;
   font-weight: 700;
-  padding: 8px 14px;
+  padding: 7px 15px;
   border-radius: 20px;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(24, 119, 242, 0.25);
@@ -124,65 +117,6 @@
   height: 15px !important;
   max-width: 15px !important;
   max-height: 15px !important;
-}
-
-/* Buscador colapsable elegante */
-.watch-search-drawer {
-  margin-top: 8px;
-  animation: watch-slide-down 0.2s ease-out;
-}
-
-@keyframes watch-slide-down {
-  from { opacity: 0; transform: translateY(-6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.watch-fb-searchbox {
-  display: flex;
-  align-items: center;
-  background: var(--bg-alt, #f0f2f5);
-  border: 1px solid var(--border-subtle, #e4e6eb);
-  border-radius: 20px;
-  padding: 6px 12px;
-  gap: 8px;
-}
-
-/* El tamaño de la lupa nunca se desborda */
-.watch-fb-searchbox svg {
-  width: 16px !important;
-  height: 16px !important;
-  min-width: 16px !important;
-  min-height: 16px !important;
-  max-width: 16px !important;
-  max-height: 16px !important;
-  color: var(--text-muted, #65676b);
-  flex-shrink: 0;
-  display: block;
-}
-
-.watch-fb-searchbox input {
-  border: none;
-  background: transparent;
-  outline: none;
-  font-size: 13.5px;
-  color: var(--text-main, #050505);
-  width: 100%;
-}
-
-.watch-fb-searchbox .clear-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted, #65676b);
-  cursor: pointer;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.watch-fb-searchbox .clear-btn svg {
-  width: 14px !important;
-  height: 14px !important;
 }
 
 /* ---------- 2. Pestañas de categorías ---------- */
@@ -644,12 +578,25 @@
   line-height: 1.45;
 }
 
-/* ---------- 4. Modal de Ajustes de Video ---------- */
-.watch-settings-list {
+/* ---------- 4. Modal de Opciones y Ajustes Avanzados ---------- */
+.watch-settings-scroll {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
+  gap: 14px;
+  padding: 16px 18px;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+
+.watch-settings-group-header {
+  font-size: 11.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #1877f2;
+  margin-top: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-subtle, #e4e6eb);
 }
 
 .watch-setting-row {
@@ -657,6 +604,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+  padding: 4px 0;
 }
 
 .watch-setting-info {
@@ -665,7 +613,7 @@
 }
 
 .watch-setting-title {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 700;
   color: var(--text-main, #050505);
 }
@@ -675,6 +623,18 @@
   color: var(--text-muted, #65676b);
   margin-top: 2px;
   line-height: 1.35;
+}
+
+.watch-select-input {
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-subtle, #ced0d4);
+  color: var(--text-main, #050505);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
 }
 
 /* Switch conmutador */
@@ -754,7 +714,7 @@
 }
 
 .watch-modal-header h2 {
-  font-size: 16.5px;
+  font-size: 16px;
   font-weight: 800;
   color: var(--text-main, #050505);
   margin: 0;
