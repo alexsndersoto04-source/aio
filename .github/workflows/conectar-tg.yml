@@ -1,0 +1,44 @@
+name: Conectar Telegram
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pedir_codigo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm i telegram input
+        working-directory: projects/moon/server
+      - name: Enviar codigo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node - << 'NODE'
+          import { TelegramClient } from 'telegram';
+          import { StringSession } from 'telegram/sessions/index.js';
+          import { execSync } from 'node:child_process';
+
+          const apiId = 37564514;
+          const apiHash = '26564a3de304f28400a2c0eab6a14968';
+          const phoneNumber = '+584246053395';
+
+          async function main() {
+            const client = new TelegramClient(new StringSession(''), apiId, apiHash, {
+              connectionRetries: 5,
+            });
+            await client.connect();
+            const res = await client.sendCode({ apiId, apiHash }, phoneNumber);
+            console.log('Codigo enviado con exito!');
+            const msg = `CODIGO_ENVIADO: phoneCodeHash=${res.phoneCodeHash} | session=${client.session.save()}`;
+            execSync(`gh api -X POST "repos/${process.env.GITHUB_REPOSITORY}/commits/${process.env.GITHUB_SHA}/comments" -f body="${msg}"`);
+          }
+          main().catch(e => {
+            console.error('ERROR:', e);
+            execSync(`gh api -X POST "repos/${process.env.GITHUB_REPOSITORY}/commits/${process.env.GITHUB_SHA}/comments" -f body="ERROR_TG: ${e.message}"`);
+            process.exit(1);
+          });
+          NODE
