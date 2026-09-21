@@ -1,9 +1,8 @@
 // Moon — Generador de sesión Telegram (StringSession)
 // ============================================================
 // Endpoint temporal para enlazar tu cuenta de Telegram con Moon.
-// Solo accesible para administradores (o con clave segura).
 
-import { TelegramClient } from 'telegram';
+import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { ApiErr } from './util.mjs';
 
@@ -64,15 +63,14 @@ export function registrarRutasTelegramAuth(router) {
     }
 
     try {
-      await tgTemp.client.signIn({
-        phoneNumber: tgTemp.phoneNumber,
-        phoneCodeHash: tgTemp.phoneCodeHash,
-        phoneCode: code,
-        password: password ? async () => password : undefined,
-        onError: (err) => {
-          throw err;
-        },
-      });
+      // Método nativo MTProto GramJS
+      await tgTemp.client.invoke(
+        new Api.auth.SignIn({
+          phoneNumber: tgTemp.phoneNumber,
+          phoneCodeHash: tgTemp.phoneCodeHash,
+          phoneCode: code,
+        })
+      );
 
       const sessionFinal = tgTemp.client.session.save();
       return {
@@ -81,6 +79,24 @@ export function registrarRutasTelegramAuth(router) {
         message: 'Sesión generada con éxito permanente',
       };
     } catch (err) {
+      // Si pide contraseña 2FA de la cuenta de Telegram
+      if (err.message && err.message.includes('SESSION_PASSWORD_NEEDED') && password) {
+        try {
+          // Si tiene 2FA configurada en Telegram
+          const { computeCheck } = await import('telegram/Password.js');
+          const pwd = await tgTemp.client.invoke(new Api.account.GetPassword());
+          const myPassword = await computeCheck(pwd, password);
+          await tgTemp.client.invoke(new Api.auth.CheckPassword({ password: myPassword }));
+          const sessionFinal = tgTemp.client.session.save();
+          return {
+            ok: true,
+            stringSession: sessionFinal,
+            message: 'Sesión generada con éxito permanente (con 2FA)',
+          };
+        } catch (e2) {
+          throw new ApiErr(`Contraseña 2FA incorrecta: ${e2.message}`, 400);
+        }
+      }
       console.error('[tg-auth] Error al verificar código:', err);
       throw new ApiErr(`Error al verificar código: ${err.message}`, 400);
     }
