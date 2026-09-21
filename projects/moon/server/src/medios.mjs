@@ -233,9 +233,10 @@ export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
     [userId, tipoKind, nombre, url, listo.bytes.length]
   );
 
-  // Guardar en PostgreSQL (Neon) solo imágenes y audios pequeños.
-  // Los videos pesados NO van a la base de datos para no quemar la cuota de Neon.
-  if (!esVid) {
+  // Si el archivo pesa hasta 30 MB (o es imagen/audio), se guarda en Postgres
+  // para que esté 100% permanente y no se pierda al reiniciar Render.
+  const guardarEnBlobs = !esVid || (listo.bytes.length <= 30 * 1024 * 1024);
+  if (guardarEnBlobs) {
     try {
       await pool.query(
         `INSERT INTO media_blobs (media_id, mime, bytes, ancho, alto) VALUES ($1, $2, $3, $4, $5)`,

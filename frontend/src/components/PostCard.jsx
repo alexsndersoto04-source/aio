@@ -84,6 +84,152 @@ function PruebaSocial({ post }) {
   );
 }
 
+function formatearSegundos(s) {
+  if (isNaN(s) || s === Infinity) return '0:00';
+  const min = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${min}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+function ReproductorVideoMoon({ url }) {
+  const videoRef = useRef(null);
+  const [reproduciendo, setReproduciendo] = useState(false);
+  const [silenciado, setSilenciado] = useState(false);
+  const [progreso, setProgreso] = useState(0);
+  const [duracion, setDuracion] = useState(0);
+  const [tiempo, setTiempo] = useState(0);
+  const [mostrarControles, setMostrarControles] = useState(true);
+  const timer = useRef(null);
+
+  function refrescarControles() {
+    clearTimeout(timer.current);
+    setMostrarControles(true);
+    timer.current = setTimeout(() => {
+      if (videoRef.current && !videoRef.current.paused) {
+        setMostrarControles(false);
+      }
+    }, 2800);
+  }
+
+  function alternarPlay(e) {
+    if (e) e.stopPropagation();
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.play()
+        .then(() => {
+          setReproduciendo(true);
+          refrescarControles();
+        })
+        .catch(() => {});
+    } else {
+      videoRef.current.pause();
+      setReproduciendo(false);
+      setMostrarControles(true);
+    }
+  }
+
+  function pantallaCompleta(e) {
+    if (e) e.stopPropagation();
+    const el = videoRef.current;
+    if (!el) return;
+    if (el.requestFullscreen) {
+      el.requestFullscreen().catch(() => {});
+    } else if (el.webkitEnterFullscreen) {
+      el.webkitEnterFullscreen();
+    }
+  }
+
+  return (
+    <div
+      className="moon-post-video"
+      onMouseMove={refrescarControles}
+      onClick={alternarPlay}
+    >
+      <video
+        ref={videoRef}
+        src={url}
+        playsInline
+        preload="metadata"
+        muted={silenciado}
+        onTimeUpdate={() => {
+          if (videoRef.current) {
+            const c = videoRef.current.currentTime;
+            const d = videoRef.current.duration || 1;
+            setTiempo(c);
+            setProgreso((c / d) * 100);
+          }
+        }}
+        onLoadedMetadata={() => {
+          if (videoRef.current) setDuracion(videoRef.current.duration || 0);
+        }}
+        onPlay={() => setReproduciendo(true)}
+        onPause={() => setReproduciendo(false)}
+        onEnded={() => {
+          setReproduciendo(false);
+          setMostrarControles(true);
+        }}
+      />
+
+      {!reproduciendo && (
+        <div className="moon-video-play-badge">
+          <div className="moon-video-play-btn">▶</div>
+        </div>
+      )}
+
+      <div
+        className={`moon-video-bar ${mostrarControles || !reproduciendo ? 'visible' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="moon-video-btn"
+          onClick={alternarPlay}
+          aria-label={reproduciendo ? 'Pausa' : 'Reproducir'}
+        >
+          {reproduciendo ? '❚❚' : '▶'}
+        </button>
+
+        <span className="moon-video-time">
+          {formatearSegundos(tiempo)} / {formatearSegundos(duracion)}
+        </span>
+
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={progreso}
+          className="moon-video-seeker"
+          onChange={(e) => {
+            const pct = Number(e.target.value);
+            setProgreso(pct);
+            if (videoRef.current && duracion > 0) {
+              videoRef.current.currentTime = (pct / 100) * duracion;
+            }
+          }}
+        />
+
+        <button
+          type="button"
+          className="moon-video-btn"
+          onClick={() => setSilenciado(!silenciado)}
+          aria-label={silenciado ? 'Activar sonido' : 'Silenciar'}
+        >
+          {silenciado ? '🔇' : '🔊'}
+        </button>
+
+        <button
+          type="button"
+          className="moon-video-btn"
+          onClick={pantallaCompleta}
+          aria-label="Pantalla completa"
+        >
+          ⛶
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Cuerpo del post: los textos largos se recortan con «Ver más» en vez de
  *  quedar amputados en mitad de la tarjeta. */
 function CuerpoPost({ contenido }) {
@@ -575,15 +721,10 @@ export default function PostCard({ post, onChanged, compact = false }) {
         return (
           <>
             {videos.map((vid, vi) => (
-              <div className="post-video-container" key={vid.id || `vid-${vi}`}>
-                <video
-                  src={imgUrl(vid.original_url || vid.url)}
-                  controls
-                  playsInline
-                  preload="metadata"
-                  className="post-video-player"
-                />
-              </div>
+              <ReproductorVideoMoon
+                key={vid.id || `vid-${vi}`}
+                url={imgUrl(vid.original_url || vid.url)}
+              />
             ))}
 
             {fotos.length > 0 ? (
