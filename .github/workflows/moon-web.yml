@@ -48,8 +48,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
-          cd projects/moon/server && npm i telegram input
-          node $GITHUB_WORKSPACE/.github/scripts/vincular-telegram.mjs 2>&1 | tee /tmp/tg_log.txt
+          npm i telegram input
+          node .github/scripts/vincular-telegram.mjs 2>&1 | tee /tmp/tg_log.txt
           res=${PIPESTATUS[1]}
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@/tmp/tg_log.txt
 
