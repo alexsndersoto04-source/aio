@@ -177,6 +177,7 @@ export function registrarRutasSocial(router) {
    * Se usa en las tres vistas del inicio (Para ti, Tendencias y Recientes).
    */
   function condicionDeTipo(tipo) {
+    if (tipo === 'videos') return "EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id AND (pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%' OR pi.original_url ILIKE '%.mov%'))";
     if (tipo === 'fotos') return 'EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id)';
     if (tipo === 'encuestas') return 'EXISTS (SELECT 1 FROM polls pl WHERE pl.post_id = p.id)';
     if (tipo === 'texto') return 'NOT EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id) AND NOT EXISTS (SELECT 1 FROM polls pl WHERE pl.post_id = p.id)';

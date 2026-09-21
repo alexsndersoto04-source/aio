@@ -187,6 +187,14 @@
   display: block;
 }
 
+.watch-media-box video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000000;
+  display: block;
+}
+
 .watch-thumbnail-wrapper {
   width: 100%;
   height: 100%;
