@@ -217,6 +217,7 @@ router.get('/api/health', async (c) => {
     commit: String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '').slice(0, 7) || null,
     fotos_en_base: fotosEnBase,
     correo: correoConfigurado() ? viaDeCorreo() : 'sin configurar',
+    telegram_almacen: Boolean(process.env.TELEGRAM_SESSION),
   };
 });
 
