@@ -287,7 +287,7 @@ export function registrarRutasSocial(router) {
 
   // ---------- Moon Watch (Videos de la comunidad) ----------
   router.get('/api/videos', async (c) => {
-    const yo = await c.yoOpcional();
+    const yo = await c.usuario();
     const yoId = yo ? Number(yo.id) : 0;
     const { page, limit, offset } = paginacion(c.req, 20, 50);
     const busqueda = (c.query.get('q') || '').trim();
@@ -315,7 +315,11 @@ export function registrarRutasSocial(router) {
       )
     )`;
 
-    const condiciones = ["p.status = 'active'", condVideo];
+    const condiciones = [
+      "p.status = 'active'",
+      "($1::bigint = $1::bigint)",
+      condVideo,
+    ];
     const args = [yoId];
 
     if (yoId) {

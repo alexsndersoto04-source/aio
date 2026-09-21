@@ -228,7 +228,6 @@ function TarjetaVideoWatch({ post, onActualizar }) {
           ref={videoRef}
           src={imgUrl(urlVideo)}
           playsInline
-          crossOrigin="anonymous"
           preload="metadata"
           muted={silenciado}
           onClick={alternarPlay}
@@ -463,7 +462,15 @@ export default function VideosView() {
       });
 
       toast.ok('¡Video publicado exitosamente en Moon Watch!');
-      setVideos((prev) => [postCreado, ...prev]);
+
+      const postListo = {
+        ...postCreado,
+        images: (postCreado?.images && postCreado.images.length > 0)
+          ? postCreado.images.map((im) => ({ ...im, kind: 'video' }))
+          : [{ id: resMedia.id, url: resMedia.url, original_url: resMedia.url, thumb_url: resMedia.url, kind: 'video' }],
+      };
+
+      setVideos((prev) => [postListo, ...prev.filter((p) => p.id !== postListo.id)]);
 
       // Limpiar y cerrar modal
       setMostrarModal(false);
