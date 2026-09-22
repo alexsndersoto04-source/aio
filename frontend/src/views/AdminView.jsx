@@ -233,9 +233,13 @@ export default function AdminView({ tab }) {
 
 function Dashboard() {
   const [d, setD] = useState(null);
+  const [m, setM] = useState(null);
+
   useEffect(() => {
     api.get('/api/admin/dashboard').then(setD).catch(avisoError);
+    api.get('/api/metrics').then(setM).catch(() => {});
   }, []);
+
   if (!d) return <div className="spinner" />;
   const stats = [
     ['Usuarios', d.users_total],
@@ -251,6 +255,26 @@ function Dashboard() {
   ];
   return (
     <div>
+      {m?.micro_cache ? (
+        <div className="card" style={{ padding: 16, marginBottom: 14, background: 'linear-gradient(135deg, rgba(99,102,241,0.06), rgba(16,185,129,0.06))', border: '1px solid rgba(99,102,241,0.2)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                ⚡ Micro-Caché en RAM & Concurrencia
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>
+                {m.micro_cache.efectividad_porcentaje}% <span style={{ fontSize: 13, fontWeight: 400 }} className="muted">de consultas servidas en memoria (0.1ms)</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 16, fontSize: 13, flexWrap: 'wrap' }}>
+              <div><b>{m.micro_cache.peticiones_atendidas_en_ram}</b> <span className="muted">en RAM</span></div>
+              <div><b>{m.micro_cache.consultas_a_neon}</b> <span className="muted">a Neon</span></div>
+              <div><b>{m.micro_cache.elementos_en_ram}</b> <span className="muted">en caché</span></div>
+              <div><b>{m.websockets ?? 0}</b> <span className="muted">sockets vivos</span></div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="stat-grid">
         {stats.map(([label, value]) => (
           <div key={label} className="stat"><b>{value}</b><span>{label}</span></div>
@@ -557,6 +581,7 @@ function SeccionBovedaTelegram() {
 
   const neon = estado?.capacidad_neon || {};
   const tg = estado?.boveda_telegram || {};
+  const mc = estado?.micro_cache || {};
   const porcentajeNeon = neon.porcentaje_usado || 0;
 
   return (
@@ -636,6 +661,20 @@ function SeccionBovedaTelegram() {
           <div className="muted" style={{ fontSize: 12 }}>
             {tg.total_registros ?? 0} registros históricos a salvo
           </div>
+        </div>
+
+        {/* Micro-Caché en RAM */}
+        <div className="card" style={{ padding: 16 }}>
+          <div className="muted" style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase' }}>Micro-Caché RAM (Escudo)</div>
+          <div style={{ fontSize: 24, fontWeight: 700, margin: '8px 0 4px', color: '#6366f1' }}>
+            {mc.efectividad_porcentaje ?? 0}% <span style={{ fontSize: 14, fontWeight: 400 }} className="muted">en RAM</span>
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            ⚡ {mc.peticiones_atendidas_en_ram ?? 0} en RAM · 🐘 {mc.consultas_a_neon ?? 0} a Neon
+          </div>
+          <small className="muted" style={{ display: 'block', marginTop: 4 }}>
+            {mc.elementos_en_ram ?? 0} feeds/videos en memoria (0.1ms)
+          </small>
         </div>
       </div>
 

@@ -8,6 +8,7 @@
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { subirATelegram, descargarDeTelegram, estadoCanalBoveda } from './almacen-telegram.mjs';
+import { microCache } from './cache-memoria.mjs';
 
 const LIMITE_NEON_BYTES = 500 * 1024 * 1024; // 500 MB cuota free Neon
 const CACHE_LOTES = new Map(); // LRU memoria temporal (máx 15 lotes)
@@ -98,6 +99,7 @@ export async function obtenerEstadoBoveda(pool) {
       ...estadoTg,
       ...resumenBoveda,
     },
+    micro_cache: microCache.estadisticas(),
   };
 }
 
