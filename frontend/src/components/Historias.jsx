@@ -367,58 +367,42 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
           </div>
         </div>
 
-        {/* Pie flotante con caption, reacciones persistentes y comentarios */}
+        {/* Pie flotante con caption, reacciones 100% fijas y caja de comentarios permanente */}
         <div className="visor-pie-flotante">
           {actual?.caption ? (
             <p className="visor-pie-texto">{actual.caption}</p>
           ) : null}
 
-          {/* Barra de reacciones */}
+          {/* Barra de reacciones fijas y permanentes */}
           <div className="visor-barra-reacciones">
-            {!mia ? (
-              <div className="visor-emojis-reaccion">
-                {['❤️', '🔥', '😂', '😮', '👏', '🌙', '💯'].map((em) => {
-                  const esActivo = actual?.mi_reaccion === em;
-                  return (
-                    <button
-                      key={em}
-                      type="button"
-                      className={`visor-btn-emoji${esActivo ? ' activa' : ''}`}
-                      onClick={() => reaccionar(em)}
-                      aria-label={`Reaccionar con ${em}`}
-                      style={{
-                        transform: esActivo ? 'scale(1.28)' : 'scale(1)',
-                        filter: esActivo ? 'drop-shadow(0 0 8px #ffffff)' : 'none',
-                      }}
-                    >
-                      {em}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <div className="visor-reacciones-stats">
-                  <span>❤️ {actual?.reactions_count || 0} reacciones</span>
-                </div>
-                <button
-                  type="button"
-                  className="visor-reacciones-stats"
-                  style={{ cursor: 'pointer', border: 0 }}
-                  onClick={abrirComentariosAutor}
-                >
-                  💬 {actual?.comments_count || 0} comentarios
-                </button>
-              </div>
-            )}
+            <div className="visor-emojis-reaccion">
+              {['❤️', '🔥', '😂', '😮', '👏', '🌙', '💯'].map((em) => {
+                const esActivo = actual?.mi_reaccion === em;
+                return (
+                  <button
+                    key={em}
+                    type="button"
+                    className={`visor-btn-emoji${esActivo ? ' activa' : ''}`}
+                    onClick={() => reaccionar(em)}
+                    aria-label={`Reaccionar con ${em}`}
+                    style={{
+                      transform: esActivo ? 'scale(1.28)' : 'scale(1)',
+                      filter: esActivo ? 'drop-shadow(0 0 8px #ffffff)' : 'none',
+                    }}
+                  >
+                    {em}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Caja para comentar la historia */}
-          {!mia && (
-            <form onSubmit={enviarComentario} className="visor-fila-comentario">
+          {/* Caja permanente para comentar la historia */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%' }}>
+            <form onSubmit={enviarComentario} className="visor-fila-comentario" style={{ flex: 1 }}>
               <input
                 className="visor-input-comentario"
-                placeholder={`Responder a @${datos?.user?.username}…`}
+                placeholder={mia ? 'Añade una nota o comentario…' : `Comentar a @${datos?.user?.username}…`}
                 value={textoComentario}
                 onChange={(e) => setTextoComentario(e.target.value)}
                 onFocus={() => setPausado(true)}
@@ -432,14 +416,23 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
                 {enviandoComentario ? '…' : 'Enviar'}
               </button>
             </form>
-          )}
+
+            <button
+              type="button"
+              className="visor-btn-ver-comentarios"
+              onClick={abrirComentariosAutor}
+              title="Ver comentarios de esta historia"
+            >
+              💬 {actual?.comments_count || 0}
+            </button>
+          </div>
         </div>
 
-        {/* Modal de comentarios para el autor */}
+        {/* Modal / Panel de comentarios de la historia */}
         {verComentarios && (
           <div className="visor-modal-comentarios">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <b style={{ color: '#fff', fontSize: 16 }}>Comentarios de tu historia</b>
+              <b style={{ color: '#fff', fontSize: 16 }}>Comentarios de la historia</b>
               <button
                 type="button"
                 className="btn-ghost btn-sm"
