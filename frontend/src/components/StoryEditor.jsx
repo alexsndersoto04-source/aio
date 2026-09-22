@@ -428,7 +428,7 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
           </button>
         </header>
 
-        {/* BARRA DE HERRAMIENTAS VERTICAL A LA DERECHA (LÍNEAS SIN RELLENOS) */}
+        {/* BARRA DE HERRAMIENTAS VERTICAL A LA DERECHA (LÍNEAS LIMPIAS SIN BORDES NI SOMBRAS) */}
         <div className="editor-barra-vertical">
           <button
             type="button"
@@ -437,9 +437,7 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             title="Escribir texto"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="4 7 4 4 20 4 20 7" />
-              <line x1="9" y1="20" x2="15" y2="20" />
-              <line x1="12" y1="4" x2="12" y2="20" />
+              <path d="M4 6h16M12 6v14" />
             </svg>
             <span className="btn-label">Texto</span>
           </button>
@@ -467,7 +465,7 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="4" />
               <circle cx="8.5" cy="8.5" r="1.5" />
-              <polyline points="21 15 16 10 5 21" />
+              <path d="M21 15l-5-5L5 21" />
             </svg>
             <span className="btn-label">Fondo</span>
           </button>
@@ -479,7 +477,10 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             title="Stickers y Badges"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2l2.4 7.4h7.6l-6.2 4.5 2.4 7.4-6.2-4.5-6.2 4.5 2.4-7.4-6.2-4.5h7.6z" />
+              <circle cx="12" cy="12" r="9" />
+              <path d="M8 13.5a4 4 0 0 0 8 0" />
+              <circle cx="9" cy="9.5" r="1" fill="currentColor" stroke="none" />
+              <circle cx="15" cy="9.5" r="1" fill="currentColor" stroke="none" />
             </svg>
             <span className="btn-label">Sticker</span>
           </button>
@@ -904,11 +905,11 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
                   key={em}
                   type="button"
                   style={{
-                    background: 'rgba(255,255,255,0.12)',
-                    border: 0,
-                    borderRadius: 10,
+                    background: '#f1f5f9',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 12,
                     fontSize: 22,
-                    padding: '4px 8px',
+                    padding: '6px 10px',
                     cursor: 'pointer',
                   }}
                   onClick={() => setStickerActivo({ tipo: 'emoji', valor: em })}
@@ -944,7 +945,7 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
                 <button
                   type="button"
                   className="editor-chip"
-                  style={{ background: 'rgba(239, 68, 68, 0.3)', borderColor: '#ef4444' }}
+                  style={{ background: '#fee2e2', borderColor: '#fca5a5', color: '#dc2626' }}
                   onClick={() => setStickerActivo(null)}
                 >
                   ✕ Quitar
