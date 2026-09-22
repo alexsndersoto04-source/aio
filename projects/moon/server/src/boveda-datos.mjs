@@ -224,8 +224,8 @@ export async function crearSnapshotBoveda(pool) {
   // Extraemos datos esenciales estructurados de las tablas principales
   const [usuarios, posts, comentarios, grupos, configuracion] = await Promise.all([
     pool.query('SELECT id, username, email, display_name, role, status, created_at FROM users ORDER BY id ASC'),
-    pool.query("SELECT id, user_id, body, media_urls, status, created_at FROM posts WHERE status = 'active' ORDER BY id ASC"),
-    pool.query("SELECT id, post_id, user_id, body, status, created_at FROM comments WHERE status = 'active' ORDER BY id ASC"),
+    pool.query("SELECT id, user_id, content, status, likes_count, comments_count, created_at FROM posts WHERE status = 'active' ORDER BY id ASC"),
+    pool.query("SELECT id, post_id, user_id, content, status, created_at FROM comments WHERE status = 'active' ORDER BY id ASC"),
     pool.query('SELECT id, name, slug, privacy, created_at FROM groups ORDER BY id ASC'),
     pool.query('SELECT clave, valor FROM app_settings'),
   ]);
@@ -263,9 +263,9 @@ export async function crearSnapshotBoveda(pool) {
  */
 export async function archivarNotificacionesViejas(pool, dias = 30) {
   const consulta = await pool.query(
-    `SELECT id, user_id, actor_id, type, entity_id, read_at, created_at
+    `SELECT id, user_id, from_user_id, type, post_id, comment_id, content, is_read, created_at
      FROM notifications
-     WHERE read_at IS NOT NULL
+     WHERE is_read = TRUE
        AND created_at < NOW() - ($1 || ' days')::interval
      ORDER BY id ASC
      LIMIT 1000`,
