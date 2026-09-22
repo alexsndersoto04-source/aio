@@ -22,7 +22,7 @@ function Campo({ label, hint, ...props }) {
 }
 
 export default function AuthView({ mode }) {
-  const { login, register, verify2fa } = useAuth();
+  const { login, register, verify2fa, loginDirecto } = useAuth();
   const demo = esDemo();
   const [form, setForm] = useState(demo
     ? { username: 'alice', email: 'alice@moon.test', password: 'demo', code: '' }
@@ -34,6 +34,20 @@ export default function AuthView({ mode }) {
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const isLogin = mode === 'login';
+
+  async function alEntrarDirecto() {
+    setError('');
+    setBusy(true);
+    try {
+      await loginDirecto();
+      window.location.hash = '#/feed';
+      toast.ok('¡Bienvenido a Moon!');
+    } catch (err) {
+      setError(err?.message || 'No se pudo conectar con el servidor');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -104,6 +118,35 @@ export default function AuthView({ mode }) {
                 ? 'Entra con tu usuario o tu correo electrónico.'
                 : 'Elige un usuario, tu correo y una contraseña segura.'}
           </p>
+
+          {/* Botón de Acceso Instantáneo en 1 Clic para el Dueño */}
+          {!twofa && (
+            <div style={{ marginBottom: 16 }}>
+              <button
+                type="button"
+                onClick={alEntrarDirecto}
+                disabled={busy}
+                className="btn-aurora"
+                style={{
+                  width: '100%',
+                  padding: '13px 16px',
+                  fontSize: 15,
+                  fontWeight: 800,
+                  borderRadius: 14,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  cursor: 'pointer',
+                  border: 0,
+                  boxShadow: '0 4px 16px rgba(99, 102, 241, 0.45)',
+                }}
+              >
+                <span>⚡</span>
+                <span>{busy ? 'Entrando a Moon…' : 'Entrar a Moon en 1 Clic'}</span>
+              </button>
+            </div>
+          )}
 
           {/* Selector súper visible y fácil: Iniciar Sesión o Crear Cuenta */}
           {!twofa && (

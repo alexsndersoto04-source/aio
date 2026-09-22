@@ -48,6 +48,12 @@ export function AuthProvider({ children }) {
     applySession(resp);
   }, [applySession]);
 
+  const loginDirecto = useCallback(async () => {
+    const resp = await api.post('/api/auth/acceso-rapido', {});
+    applySession(resp);
+    return resp;
+  }, [applySession]);
+
   const logout = useCallback(async () => {
     try { await authApi.logout(); } catch { /* revocar ya es best-effort */ }
     clearTokens();
@@ -93,7 +99,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = {
-    user, setUser, loading, login, register, logout, verify2fa, refreshMe,
+    user, setUser, loading, login, loginDirecto, register, logout, verify2fa, refreshMe,
     isAdmin: !!(user && user.role === 'admin'),
   };
 
