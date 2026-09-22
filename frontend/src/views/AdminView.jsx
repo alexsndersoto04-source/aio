@@ -531,7 +531,7 @@ function SeccionBovedaTelegram() {
     setAccion('snapshot');
     try {
       const res = await api.post('/api/boveda/snapshot', {});
-      toast(`Snapshot asegurado en Telegram (#${res.tg_msg_id})`);
+      toast.ok(`Snapshot asegurado en Telegram (#${res.tg_msg_id})`);
       cargarDatos();
     } catch (e) {
       avisoError(e);
@@ -544,7 +544,7 @@ function SeccionBovedaTelegram() {
     setAccion('archivar');
     try {
       const res = await api.post('/api/boveda/archivar', { tipo: 'todo', dias: 30 });
-      toast('Datos antiguos archivados y asegurados en Telegram');
+      toast.ok('Datos antiguos archivados y asegurados en Telegram');
       cargarDatos();
     } catch (e) {
       avisoError(e);
