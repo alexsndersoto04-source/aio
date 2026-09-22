@@ -2103,27 +2103,7 @@ html, body { max-width: 100%; overflow-x: hidden; }
 
 /* En el teléfono, «Crear historia» es una franja fina, no una tarjeta alta */
 @media (max-width: 720px) {
-  .historias { flex-direction: column; align-items: stretch; gap: 8px; }
-  .historias .historia.crear {
-    width: 100%;
-    min-width: 0;
-    height: 54px;
-    padding: 0 14px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.92);
-    border: 1px solid rgba(17, 21, 50, 0.09);
-    display: flex;
-    align-items: center;
-    gap: 11px;
-  }
-  [data-theme='dark'] .historias .historia.crear {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-  .historias .historia.crear .aro { width: 34px; height: 34px; }
-  .historias .historia.crear .aro .relleno { width: 34px; height: 34px; }
-  .historias .historia.crear b { font-size: 14.5px; max-width: none; }
-  .historias .historia:not(.crear) { width: 74px; }
+  .historias { flex-direction: row; align-items: stretch; gap: 10px; overflow-x: auto; }
 }
 
 /* ============================================================
@@ -2538,39 +2518,18 @@ html, body { max-width: 100%; overflow-x: hidden; }
     margin: 0 !important;
   }
 
-  /* ---------- 37.6 Historias: círculos a sangre, sin tarjeta ---------- */
+  /* ---------- 37.6 Historias: tarjetas visuales con preview de contenido ---------- */
   .historias {
     border-bottom: 1px solid var(--hair) !important;
     border-radius: 0 !important;
-    padding: 12px var(--gutter) 10px !important;
+    padding: 12px var(--gutter) 12px !important;
     margin: 0 !important;
     overflow-x: auto;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: stretch !important;
+    gap: 10px !important;
   }
-  .historias .historia.crear {
-    height: auto !important;
-    min-width: 0 !important;
-    width: 68px !important;
-    padding: 0 !important;
-    border: 0 !important;
-    background: transparent !important;
-    border-radius: 0 !important;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .historias .historia.crear .aro { width: 60px; height: 60px; }
-  .historias .historia.crear .aro .relleno { width: 60px; height: 60px; }
-  .historias .historia.crear b {
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--ink-2);
-    max-width: 68px;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .historias .historia:not(.crear) { width: 68px; }
-  .historias .aro, .historias .aro .relleno { width: 60px; height: 60px; }
 
   /* ---------- 37.7 Pestañas: subrayado aurora, sin pastilla ---------- */
   .tabs, .tabs-inicio {

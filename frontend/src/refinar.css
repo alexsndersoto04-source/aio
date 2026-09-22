@@ -113,20 +113,8 @@
 }
 .ver-mas:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-/* ---------- 31.6 Historias: franja compacta cuando estás solo ---------- */
-.historias-sola { padding: 6px 2px; margin-bottom: 10px; }
-.historias-sola .historia {
-  width: auto;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 12px 4px 4px;
-  border-radius: 999px;
-  background: var(--surface-3);
-}
-.historias-sola .historia .aro { width: 44px; height: 44px; }
-.historias-sola .historia .aro .relleno svg { width: 16px; height: 16px; }
-.historias-sola .historia b { font-size: 13.5px; font-weight: 620; }
+/* ---------- 31.6 Historias: siempre tarjetas visuales ---------- */
+.historias-sola { padding: 10px 4px; margin-bottom: 10px; }
 
 /* ---------- 31.7 Chat: hora útil, lectura propia, presencia ---------- */
 .msg .time { font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }

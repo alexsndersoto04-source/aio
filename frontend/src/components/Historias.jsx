@@ -1,10 +1,8 @@
-// Moon — Historias (24 horas)
+// Moon — Historias (Tarjetas visuales con vista previa de contenido y visor pantalla completa)
 // ============================================================
-// Historias reales, guardadas en la base de datos: se ven las propias y las
-// de a quienes sigues, caducan a las 24 horas y cada visita queda registrada.
-//
-// La fila va arriba del inicio, como en las redes grandes. El anillo con el
-// degradado de la casa marca lo que aún no has visto.
+// Historias reales de 24 horas: a simple vista en el feed de Inicio se ve
+// el contenido visual real de la historia (foto o diseño con texto) sin tener
+// que seleccionarla, y al abrirla se despliega a pantalla completa real inmersiva.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, uploadMedia, imgUrl } from '../api.js';
@@ -30,6 +28,7 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
   const [datos, setDatos] = useState(null);
   const [indice, setIndice] = useState(0);
   const [cargando, setCargando] = useState(true);
+  const [pausado, setPausado] = useState(false);
   const temporizador = useRef(null);
 
   const cargar = useCallback(async () => {
@@ -51,12 +50,15 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
 
   const actual = datos?.stories?.[indice];
 
-  // Al mostrar una historia se marca como vista (cuenta real en la base).
+  // Al mostrar una historia se marca como vista en la base de datos
   useEffect(() => {
     if (!actual || actual.vista) return;
     api.post(`/api/stories/${actual.id}/view`, {})
       .then(() => {
-        setDatos((d) => d ? { ...d, stories: d.stories.map((s) => (s.id === actual.id ? { ...s, vista: true, views_count: s.views_count + 1 } : s)) } : d);
+        setDatos((d) => d ? {
+          ...d,
+          stories: d.stories.map((s) => (s.id === actual.id ? { ...s, vista: true, views_count: s.views_count + 1 } : s))
+        } : d);
         if (alCambiarContador) alCambiarContador();
       })
       .catch(() => {});
@@ -71,15 +73,17 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
     });
   }, [datos, alCerrar]);
 
-  const anterior = () => setIndice((i) => Math.max(0, i - 1));
+  const anterior = useCallback(() => {
+    setIndice((i) => Math.max(0, i - 1));
+  }, []);
 
-  // Cambia de historia sola a los 5 segundos, como es costumbre.
+  // Cambia de historia sola a los 5 segundos (se pausa si mantienes presionado)
   useEffect(() => {
-    if (!actual) return;
+    if (!actual || pausado) return;
     clearTimeout(temporizador.current);
     temporizador.current = setTimeout(siguiente, 5000);
     return () => clearTimeout(temporizador.current);
-  }, [actual, siguiente]);
+  }, [actual, siguiente, pausado]);
 
   useEffect(() => {
     const tecla = (e) => {
@@ -93,13 +97,13 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
       document.removeEventListener('keydown', tecla);
       document.body.style.overflow = '';
     };
-  }, [alCerrar, siguiente]);
+  }, [alCerrar, siguiente, anterior]);
 
   async function borrar() {
     if (!actual) return;
     const ok = await confirmar({
       title: '¿Eliminar esta historia?',
-      message: 'Dejará de verse en tu perfil.',
+      message: 'Dejará de verse en tu perfil y en el feed de tus seguidores.',
       confirmText: 'Eliminar',
       danger: true,
     });
@@ -121,16 +125,19 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
   const mia = datos?.user && Number(datos.user.id) === Number(user?.id);
 
   return (
-    <div className="visor-historias" role="dialog" aria-modal="true" aria-label="Historias">
-      <button type="button" className="visor-velo" onClick={alCerrar} aria-label="Cerrar las historias" />
-
+    <div className="visor-historias" role="dialog" aria-modal="true" aria-label="Visor de historias pantalla completa">
       <div className="visor-caja">
+        {/* Barras de progreso superiores */}
         <div className="visor-progreso">
           {datos?.stories?.map((s, i) => (
-            <span key={s.id} className={`tramo${i < indice ? ' hecho' : i === indice ? ' actual' : ''}`} />
+            <span
+              key={s.id}
+              className={`tramo${i < indice ? ' hecho' : i === indice ? ' actual' : ''}`}
+            />
           ))}
         </div>
 
+        {/* Cabecera flotante */}
         <header className="visor-cabecera">
           <Avatar user={datos?.user} size="sm" />
           <div className="quien">
@@ -144,48 +151,77 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
               </span>
             ) : null}
             {mia ? (
-              <button type="button" onClick={borrar} aria-label="Eliminar la historia"><IconTrash /></button>
+              <button type="button" onClick={borrar} aria-label="Eliminar la historia">
+                <IconTrash />
+              </button>
             ) : null}
-            <button type="button" onClick={alCerrar} aria-label="Cerrar"><IconX /></button>
+            <button type="button" onClick={alCerrar} aria-label="Cerrar visor">
+              <IconX />
+            </button>
           </div>
         </header>
 
+        {/* Contenido visual central a pantalla completa */}
         <div className="visor-contenido">
           {cargando ? (
-            <div className="cargando"><span className="giro" aria-hidden="true" /><span>Abriendo la historia…</span></div>
+            <div className="cargando">
+              <span className="giro" aria-hidden="true" />
+              <span>Cargando historia…</span>
+            </div>
           ) : actual ? (
-            <img src={imgUrl(actual.image_url)} alt={actual.caption || 'Historia'} />
+            <img
+              src={imgUrl(actual.image_url)}
+              alt={actual.caption || 'Historia'}
+            />
           ) : (
-            <p className="muted">Esta historia ya no está.</p>
+            <p className="muted">Esta historia ya no está disponible.</p>
           )}
 
-          {indice > 0 ? (
-            <button type="button" className="flecha izq" onClick={anterior} aria-label="Anterior"><IconChevronLeft /></button>
-          ) : null}
-          {datos && indice < datos.stories.length - 1 ? (
-            <button type="button" className="flecha der" onClick={siguiente} aria-label="Siguiente"><IconChevronLeft /></button>
-          ) : null}
+          {/* Zonas táctiles para navegar y mantener presionado para pausar */}
+          <div
+            className="visor-zonas-tactiles"
+            onPointerDown={() => setPausado(true)}
+            onPointerUp={() => setPausado(false)}
+            onPointerLeave={() => setPausado(false)}
+          >
+            <div
+              className="visor-zona-izq"
+              onClick={anterior}
+              role="button"
+              aria-label="Historia anterior"
+            />
+            <div
+              className="visor-zona-der"
+              onClick={siguiente}
+              role="button"
+              aria-label="Historia siguiente"
+            />
+          </div>
         </div>
 
-        {actual?.caption ? <p className="visor-pie">{actual.caption}</p> : null}
-
-        {mia ? (
-          <p className="visor-quien">
-            {datos?.stories?.length} historia(s) · se borran solas a las 24 horas
-          </p>
+        {/* Pie flotante con caption */}
+        {actual?.caption ? (
+          <div className="visor-pie-flotante">
+            <p className="visor-pie-texto">{actual.caption}</p>
+            {mia && (
+              <div className="visor-pie-meta">
+                {datos?.stories?.length} historia(s) publicadas · expiran a las 24 horas
+              </div>
+            )}
+          </div>
         ) : null}
       </div>
     </div>
   );
 }
 
-/** Una historia recién publicada (menos de una hora) se marca como nueva. */
+/** Una historia recién publicada (menos de 2 horas) se marca como nueva. */
 function esNueva(grupo) {
-  const creada = grupo?.ultima_at || grupo?.created_at;
+  const creada = grupo?.created_at || grupo?.ultima;
   if (!creada) return false;
   const t = new Date(creada).getTime();
   if (!t) return false;
-  return Date.now() - t < 60 * 60 * 1000;
+  return Date.now() - t < 2 * 60 * 60 * 1000;
 }
 
 export default function Historias({ onNovedad }) {
@@ -193,7 +229,9 @@ export default function Historias({ onNovedad }) {
   const [grupos, setGrupos] = useState([]);
   const [abierto, setAbierto] = useState(null);
   const [subiendo, setSubiendo] = useState(false);
-  const [editando, setEditando] = useState(null);
+  const [editando, setEditando] = useState(false);
+  const [archivoEditor, setArchivoEditor] = useState(null);
+  const [menuCrear, setMenuCrear] = useState(false);
   const archivoRef = useRef(null);
 
   const cargar = useCallback(() => {
@@ -206,21 +244,27 @@ export default function Historias({ onNovedad }) {
     const archivo = e.target.files?.[0];
     e.target.value = '';
     if (!archivo) return;
-    setEditando(archivo);            // abre el editor; se sube al publicar
+    setArchivoEditor(archivo);
+    setEditando(true);
   }
 
-  // El editor entrega la foto ya compuesta (con el texto dibujado) y el texto.
+  function abrirEditorEnBlanco() {
+    setArchivoEditor(null);
+    setEditando(true);
+  }
+
   async function publicarDesdeEditor(file, texto) {
     setSubiendo(true);
     try {
       const subida = await uploadMedia('story', file);
       await api.post('/api/stories', { image_url: subida.url, caption: texto || '' });
-      toast.ok('Historia publicada. Durará 24 horas.');
-      setEditando(null);
+      toast.ok('¡Historia publicada! Estará activa 24 horas.');
+      setEditando(false);
+      setArchivoEditor(null);
       const nuevos = await api.get('/api/stories');
       setGrupos(nuevos);
       const mia = nuevos.find((g) => g.mine);
-      if (mia) setAbierto(mia);       // se abre sola para que la veas al instante
+      if (mia) setAbierto(mia);
       if (onNovedad) onNovedad();
     } catch (err) {
       avisoError(err);
@@ -232,26 +276,47 @@ export default function Historias({ onNovedad }) {
   if (!user) return null;
   const mia = grupos.find((g) => g.mine);
 
-  // Sin historias de otras personas la fila sería un hueco enorme con un solo
-  // círculo: en ese caso se dibuja como franja compacta, no como tarjeta alta.
-  const sola = grupos.length === 0;
-
   return (
     <>
-      <section className={`historias${sola ? ' historias-sola' : ''}`} aria-label="Historias">
-        <button
-          type="button"
-          className="historia crear"
-          onClick={() => archivoRef.current?.click()}
-          disabled={subiendo}
+      <section className="historias" aria-label="Historias en órbita">
+        {/* Tarjeta 1: Crear historia */}
+        <div
+          className="historia-card crear-card"
+          onClick={() => setMenuCrear(true)}
+          role="button"
+          tabIndex={0}
+          aria-label="Crear o añadir historia"
         >
-          <span className="aro">
-            <span className="relleno">
-              {subiendo ? <span className="giro mini" aria-hidden="true" /> : <IconPlus />}
-            </span>
-          </span>
-          <b>{subiendo ? 'Subiendo…' : mia ? 'Añadir historia' : 'Crear historia'}</b>
-        </button>
+          <div className="crear-card-top">
+            {user.avatar_url ? (
+              <img
+                src={imgUrl(user.avatar_url)}
+                alt="Tu perfil"
+                className="avatar-fondo"
+              />
+            ) : (
+              <div
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  background: 'var(--aurora-grad, linear-gradient(135deg, #4f46e5, #ec4899))',
+                  opacity: 0.8,
+                }}
+              />
+            )}
+            <div className="crear-btn-flotante">
+              {subiendo ? (
+                <span className="giro mini" aria-hidden="true" style={{ width: 14, height: 14, borderWidth: 2 }} />
+              ) : (
+                <IconPlus />
+              )}
+            </div>
+          </div>
+          <div className="crear-card-bottom">
+            <b>{subiendo ? 'Publicando…' : mia ? 'Añadir más' : 'Crear historia'}</b>
+          </div>
+        </div>
+
         <input
           ref={archivoRef}
           type="file"
@@ -261,33 +326,153 @@ export default function Historias({ onNovedad }) {
           aria-label="Elegir una imagen para tu historia"
         />
 
-        {grupos.map((g) => (
-          <button type="button" key={g.user_id} className="historia" onClick={() => setAbierto(g)}>
-            <span className={`aro${g.sin_ver > 0 ? ' sin-ver' : ''}${g.mine ? ' mia' : ''}`}>
-              <span className="relleno">
-                <Avatar user={{ username: g.username, display_name: g.display_name, avatar_url: g.avatar_url }} size="md" />
-              </span>
-            </span>
-            <b>{g.mine ? 'Tu historia' : (g.display_name || g.username).split(' ')[0]}</b>
-            {esNueva(g) ? <span className="en-vivo">nueva</span> : (
-              <small>{g.total > 1 ? `${g.total} historias` : '1 historia'}</small>
-            )}
-          </button>
-        ))}
+        {/* Modal de selección para crear historia */}
+        {menuCrear && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              backgroundColor: 'rgba(0,0,0,0.7)',
+              backdropFilter: 'blur(4px)',
+              zIndex: 99999,
+              display: 'flex',
+              alignItems: 'flex-end',
+              justifyContent: 'center',
+              padding: '0 0 calc(env(safe-area-inset-bottom, 0px) + 16px)',
+            }}
+            onClick={() => setMenuCrear(false)}
+          >
+            <div
+              className="card"
+              style={{
+                width: 'min(420px, calc(100% - 32px))',
+                padding: '20px 16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+                borderRadius: 20,
+                background: 'var(--surface)',
+                boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <b style={{ fontSize: 16 }}>Crear historia</b>
+                <button
+                  className="btn-ghost btn-sm"
+                  onClick={() => setMenuCrear(false)}
+                  style={{ borderRadius: '50%', width: 32, height: 32, padding: 0 }}
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                Elige cómo quieres expresarte hoy:
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+                <button
+                  type="button"
+                  className="btn-aurora"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '12px' }}
+                  onClick={() => {
+                    setMenuCrear(false);
+                    archivoRef.current?.click();
+                  }}
+                >
+                  📷 Subir Foto desde Galería
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '12px', border: '1px solid var(--line-strong)' }}
+                  onClick={() => {
+                    setMenuCrear(false);
+                    abrirEditorEnBlanco();
+                  }}
+                >
+                  🎨 Crear con Texto, Stickers y Fondos Moon
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tarjetas de historias reales con vista previa del contenido visual */}
+        {grupos.map((g) => {
+          const tieneImagen = Boolean(g.image_url);
+          return (
+            <div
+              key={g.user_id}
+              className="historia-card"
+              onClick={() => setAbierto(g)}
+              role="button"
+              tabIndex={0}
+              aria-label={`Ver historia de ${g.display_name || g.username}`}
+            >
+              {/* Imagen real de fondo de la historia para verla sin abrirla */}
+              {tieneImagen ? (
+                <img
+                  src={imgUrl(g.image_url)}
+                  alt="Vista previa de la historia"
+                  className="historia-bg"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="historia-bg-placeholder" />
+              )}
+
+              {/* Degradado para garantizar contraste visual */}
+              <div className="historia-mascara" />
+
+              {/* Si hay texto o pie corto, se muestra como extracto legible */}
+              {g.caption ? (
+                <div className="historia-extracto-texto">
+                  {g.caption}
+                </div>
+              ) : null}
+
+              {/* Avatar flotante arriba con anillo aurora si está sin ver */}
+              <div className={`historia-avatar-aro${g.sin_ver > 0 ? ' sin-ver' : ''}`}>
+                <Avatar
+                  user={{ username: g.username, display_name: g.display_name, avatar_url: g.avatar_url }}
+                  size="sm"
+                />
+              </div>
+
+              {/* Información abajo: Nombre y etiqueta */}
+              <div className="historia-info-abajo">
+                <p className="historia-nombre">
+                  {g.mine ? 'Tu historia' : (g.display_name || g.username).split(' ')[0]}
+                </p>
+                {esNueva(g) ? (
+                  <span className="historia-badge-nueva">NUEVA</span>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
       </section>
 
+      {/* Editor visual potente de historias */}
       {editando ? (
         <StoryEditor
-          archivo={editando}
-          onCancelar={() => setEditando(null)}
+          archivo={archivoEditor}
+          onCancelar={() => {
+            setEditando(false);
+            setArchivoEditor(null);
+          }}
           onListo={publicarDesdeEditor}
         />
       ) : null}
 
+      {/* Visor a pantalla completa real */}
       {abierto ? (
         <Visor
           grupo={abierto}
-          alCerrar={() => { setAbierto(null); cargar(); }}
+          alCerrar={() => {
+            setAbierto(null);
+            cargar();
+          }}
           alCambiarContador={onNovedad}
         />
       ) : null}

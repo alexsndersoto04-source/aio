@@ -24,7 +24,9 @@ export function registrarRutasHistorias(router) {
       `SELECT s.user_id, u.username, u.display_name, u.avatar_url, u.is_verified,
               MAX(s.created_at)::text AS ultima,
               COUNT(*)::int AS total,
-              COUNT(*) FILTER (WHERE sv.viewer_id IS NULL)::int AS sin_ver
+              COUNT(*) FILTER (WHERE sv.viewer_id IS NULL)::int AS sin_ver,
+              (SELECT s2.image_url FROM stories s2 WHERE s2.user_id = s.user_id AND s2.expires_at > NOW() ORDER BY s2.created_at DESC LIMIT 1) AS ultima_imagen,
+              (SELECT s2.caption FROM stories s2 WHERE s2.user_id = s.user_id AND s2.expires_at > NOW() ORDER BY s2.created_at DESC LIMIT 1) AS ultimo_caption
          FROM stories s
          JOIN users u ON u.id = s.user_id
          LEFT JOIN story_views sv ON sv.story_id = s.id AND sv.viewer_id = $1
@@ -47,6 +49,8 @@ export function registrarRutasHistorias(router) {
       sin_ver: Number(g.sin_ver),
       mine: Number(g.user_id) === Number(yo.id),
       created_at: g.ultima,
+      image_url: g.ultima_imagen,
+      caption: g.ultimo_caption,
     }));
   });
 
