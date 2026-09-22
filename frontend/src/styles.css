@@ -4677,48 +4677,141 @@ svg { flex: 0 0 auto; }
   pointer-events: none;
   z-index: 20;
 }
-.editor-panel-inferior {
+/* Barra de herramientas vertical en el lateral derecho (estilo Instagram / Facebook) */
+.editor-barra-vertical {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 68px);
+  right: 14px;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.editor-btn-vertical {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(10, 10, 14, 0.72);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  font-size: 18px;
+  padding: 0;
+}
+.editor-btn-vertical:hover {
+  transform: scale(1.08);
+  background: rgba(255, 255, 255, 0.2);
+}
+.editor-btn-vertical:active {
+  transform: scale(0.95);
+}
+.editor-btn-vertical.activo {
+  background: var(--aurora-grad, linear-gradient(135deg, #6366f1, #a855f7));
+  border-color: #ffffff;
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.75);
+  transform: scale(1.06);
+}
+.editor-btn-vertical .btn-label {
+  font-size: 8px;
+  font-weight: 750;
+  text-transform: uppercase;
+  margin-top: 1px;
+  color: rgba(255, 255, 255, 0.95);
+  letter-spacing: 0.02em;
+}
+
+/* Barra inferior permanente con botón publicar */
+.editor-barra-inferior-fija {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
   z-index: 30;
-  background: linear-gradient(0deg, rgba(0,0,0,0.95) 0%, rgba(10,10,14,0.9) 70%, transparent 100%);
-  padding: 20px 14px calc(env(safe-area-inset-bottom, 0px) + 12px);
+  padding: 16px 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.85) 0%, transparent 100%);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+}
+.editor-barra-inferior-fija > * {
+  pointer-events: auto;
+}
+
+/* Panel emergente cuando se selecciona una herramienta */
+.editor-panel-emergente {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 45;
+  background: rgba(12, 12, 16, 0.94);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 20px 20px 0 0;
+  padding: 16px 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.7);
+  animation: subirPanel 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes subirPanel {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.editor-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #fff;
+}
+.editor-panel-header b {
+  font-size: 14px;
+}
+.editor-panel-header button {
+  background: rgba(255, 255, 255, 0.12);
+  border: 0;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  color: #fff;
+  cursor: pointer;
+}
+
+/* Controles de recorte de música estilo Facebook */
+.musica-recorte-card {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  backdrop-filter: blur(12px);
 }
-.editor-pestanas-herramientas {
+.musica-slider-fila {
   display: flex;
+  flex-direction: column;
   gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  padding-bottom: 2px;
 }
-.editor-pestana-btn {
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.15);
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.8);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
+.musica-slider-fila input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
 }
-.editor-pestana-btn.activa {
-  background: #ffffff;
-  color: #000000;
-  border-color: #ffffff;
-}
+
 .editor-input {
   width: 100%;
   resize: none;
   border: 1px solid rgba(255,255,255,0.2);
   border-radius: 12px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   font: inherit;
   font-size: 14px;
   background: rgba(255, 255, 255, 0.12);
@@ -4741,7 +4834,7 @@ svg { flex: 0 0 auto; }
 }
 .editor-subpanel::-webkit-scrollbar { display: none; }
 .editor-chip {
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.18);
   background: rgba(255,255,255,0.1);
@@ -4777,4 +4870,77 @@ svg { flex: 0 0 auto; }
   justify-content: space-between;
   align-items: center;
   margin-top: 4px;
+}
+
+/* Comentarios en el visor de historias */
+.visor-fila-comentario {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.visor-input-comentario {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 13.5px;
+  color: #ffffff;
+  outline: none;
+}
+.visor-input-comentario::placeholder {
+  color: rgba(255, 255, 255, 0.65);
+}
+.visor-input-comentario:focus {
+  border-color: #ffffff;
+  background: rgba(255, 255, 255, 0.22);
+}
+.visor-btn-enviar-comentario {
+  background: var(--aurora-grad, linear-gradient(135deg, #6366f1, #a855f7));
+  color: #fff;
+  border: 0;
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.visor-modal-comentarios {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60vh;
+  max-height: 500px;
+  background: rgba(14, 14, 18, 0.96);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 20px 20px 0 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  animation: subirPanel 0.22s ease-out;
+}
+.visor-comentarios-lista {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 0;
+}
+.visor-comentario-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.visor-comentario-burbuja {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
 }

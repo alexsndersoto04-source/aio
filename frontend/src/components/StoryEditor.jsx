@@ -1,12 +1,14 @@
 // Moon — Editor de historias profesional (suite creativa avanzada)
 // ============================================================
-// Permite componer historias con fotos de la galería o fondos degradados,
-// múltiples tipografías de impacto, filtros visuales para fotos, stickers/badges,
-// estilos de resaltado de texto y arrastre táctil libre en pantalla completa.
+// Barra de herramientas vertical en el lateral derecho (estilo Instagram/Facebook),
+// música personalizada desde el teléfono con recorte de segundos y selector de duración,
+// stickers, tipografías y composición Full HD.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { IconX } from './Icons.jsx';
 import { PISTAS_MUSICA, reproducirMusica, detenerMusica } from '../musicaHistorias.js';
+import { uploadMedia } from '../api.js';
+import { toast, avisoError } from '../ui.js';
 
 const TIPOGRAFIAS = [
   { id: 'moderna', label: 'Moderna', font: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', weight: '700' },
@@ -80,7 +82,14 @@ function partirLineas(ctx, texto, maxAncho) {
   return lineas;
 }
 
+function formatearSegundos(seg) {
+  const m = Math.floor(seg / 60);
+  const s = Math.floor(seg % 60);
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+}
+
 export default function StoryEditor({ archivo, onCancelar, onListo }) {
+  // Texto
   const [texto, setTexto] = useState('');
   const [tipoFuente, setTipoFuente] = useState('moderna');
   const [color, setColor] = useState('#ffffff');
@@ -89,52 +98,117 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
   const [alineacion, setAlineacion] = useState('center');
   const [posTexto, setPosTexto] = useState({ x: 0.5, y: 0.45 });
 
+  // Fondo / Imagen
   const [fondoIndex, setFondoIndex] = useState(0);
   const [filtroId, setFiltroId] = useState('normal');
   const [urlImg, setUrlImg] = useState('');
-  const [natural, setNatural] = useState({ w: 1080, h: 1920 });
 
+  // Sticker
   const [stickerActivo, setStickerActivo] = useState(null); // { tipo: 'emoji' | 'badge', valor: string }
   const [posSticker, setPosSticker] = useState({ x: 0.5, y: 0.72 });
 
-  const [musica, setMusica] = useState(null); // { id, titulo, autor, emoji }
+  // Música personalizada
+  const [musica, setMusica] = useState(null); // { tipo: 'archivo' | 'synth', file?: File, url?: string, titulo: string, inicio: number, duracion: number, totalDur: number }
   const [posMusica, setPosMusica] = useState({ x: 0.5, y: 0.18 });
+  const [reproduciendoPrevia, setReproduciendoPrevia] = useState(false);
 
-  const [pestana, setPestana] = useState('texto'); // 'texto' | 'estilo' | 'fondo' | 'stickers' | 'musica'
+  // Herramienta activa en la barra lateral derecha (null = ninguna abierta)
+  const [herramientaActiva, setHerramientaActiva] = useState(null); // 'texto' | 'musica' | 'fondo' | 'stickers' | 'estilo' | null
   const [elementoArrastrado, setElementoArrastrado] = useState(null); // 'texto' | 'sticker' | 'musica' | null
+  const [publicando, setPublicando] = useState(false);
 
   const zonaRef = useRef(null);
   const fileInputRef = useRef(null);
+  const audioInputRef = useRef(null);
+  const audioPreviaRef = useRef(null);
 
   useEffect(() => {
     if (archivo) {
       const u = URL.createObjectURL(archivo);
       setUrlImg(u);
-      const img = new Image();
-      img.onload = () => setNatural({ w: img.naturalWidth, h: img.naturalHeight });
-      img.src = u;
       return () => URL.revokeObjectURL(u);
     }
   }, [archivo]);
+
+  useEffect(() => {
+    return () => {
+      detenerMusica();
+      if (audioPreviaRef.current) {
+        audioPreviaRef.current.pause();
+        audioPreviaRef.current = null;
+      }
+    };
+  }, []);
 
   function cambiarFoto(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     const u = URL.createObjectURL(file);
     setUrlImg(u);
-    const img = new Image();
-    img.onload = () => setNatural({ w: img.naturalWidth, h: img.naturalHeight });
-    img.src = u;
+  }
+
+  function elegirAudioArchivo(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const audioUrl = URL.createObjectURL(file);
+    const audioTemp = new Audio(audioUrl);
+
+    audioTemp.onloadedmetadata = () => {
+      const duracionTotal = Math.floor(audioTemp.duration) || 60;
+      const nombreLimpio = file.name.replace(/\.[^/.]+$/, '').slice(0, 50);
+
+      detenerMusica();
+      if (audioPreviaRef.current) audioPreviaRef.current.pause();
+
+      setMusica({
+        tipo: 'archivo',
+        file,
+        url: audioUrl,
+        titulo: nombreLimpio,
+        inicio: 0,
+        duracion: 15,
+        totalDur: duracionTotal,
+      });
+    };
+  }
+
+  function alternarPreviaAudio() {
+    if (!musica) return;
+    if (musica.tipo === 'synth') {
+      if (reproduciendoPrevia) {
+        detenerMusica();
+        setReproduciendoPrevia(false);
+      } else {
+        reproducirMusica(musica.id);
+        setReproduciendoPrevia(true);
+      }
+      return;
+    }
+
+    if (!audioPreviaRef.current) {
+      audioPreviaRef.current = new Audio(musica.url);
+    }
+    const a = audioPreviaRef.current;
+    if (reproduciendoPrevia) {
+      a.pause();
+      setReproduciendoPrevia(false);
+    } else {
+      a.currentTime = musica.inicio;
+      a.play().catch(() => {});
+      setReproduciendoPrevia(true);
+      setTimeout(() => {
+        if (audioPreviaRef.current) {
+          audioPreviaRef.current.pause();
+          setReproduciendoPrevia(false);
+        }
+      }, musica.duracion * 1000);
+    }
   }
 
   const fuenteActual = useMemo(() => TIPOGRAFIAS.find((f) => f.id === tipoFuente) || TIPOGRAFIAS[0], [tipoFuente]);
   const rel = useMemo(() => (TAMAÑOS.find((t) => t.id === tam) || TAMAÑOS[1]).rel, [tam]);
   const filtroActual = useMemo(() => FILTROS.find((f) => f.id === filtroId) || FILTROS[0], [filtroId]);
   const fondoActual = useMemo(() => FONDOS_DEGRADADOS[fondoIndex] || FONDOS_DEGRADADOS[0], [fondoIndex]);
-
-  useEffect(() => {
-    return () => detenerMusica();
-  }, []);
 
   function alArrastrar(e) {
     if (!elementoArrastrado || !zonaRef.current) return;
@@ -144,211 +218,285 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
     const px = Math.min(0.95, Math.max(0.05, (clientX - rect.left) / rect.width));
     const py = Math.min(0.95, Math.max(0.08, (clientY - rect.top) / rect.height));
 
-    if (elementoArrastrado === 'texto') {
-      setPosTexto({ x: px, y: py });
-    } else if (elementoArrastrado === 'sticker') {
-      setPosSticker({ x: px, y: py });
-    } else if (elementoArrastrado === 'musica') {
-      setPosMusica({ x: px, y: py });
-    }
+    if (elementoArrastrado === 'texto') setPosTexto({ x: px, y: py });
+    else if (elementoArrastrado === 'sticker') setPosSticker({ x: px, y: py });
+    else if (elementoArrastrado === 'musica') setPosMusica({ x: px, y: py });
   }
 
-  function publicar() {
-    const W = 1080;
-    const H = 1920;
-    const canvas = document.createElement('canvas');
-    canvas.width = W;
-    canvas.height = H;
-    const ctx = canvas.getContext('2d');
+  async function publicar() {
+    setPublicando(true);
+    detenerMusica();
+    if (audioPreviaRef.current) audioPreviaRef.current.pause();
 
-    const renderContenidoFinal = (imgFondo) => {
-      // 1. Dibujar fondo
-      if (imgFondo) {
-        if (filtroActual.filter !== 'none') {
-          ctx.filter = filtroActual.filter;
+    try {
+      let finalMusicUrl = '';
+      let finalMusicTitle = '';
+      let finalMusicStart = 0;
+      let finalMusicDuration = 15;
+
+      if (musica) {
+        finalMusicTitle = musica.titulo;
+        finalMusicStart = musica.inicio || 0;
+        finalMusicDuration = musica.duracion || 15;
+
+        if (musica.tipo === 'archivo' && musica.file) {
+          toast.info('Subiendo música de tu teléfono…');
+          const subidaAudio = await uploadMedia('audio', musica.file);
+          finalMusicUrl = subidaAudio.url;
+        } else if (musica.tipo === 'synth') {
+          finalMusicUrl = `synth:${musica.id}`;
         }
-        // Escalar imagen para cubrir canvas (cover)
-        const scale = Math.max(W / imgFondo.naturalWidth, H / imgFondo.naturalHeight);
-        const x = (W - imgFondo.naturalWidth * scale) / 2;
-        const y = (H - imgFondo.naturalHeight * scale) / 2;
-        ctx.drawImage(imgFondo, x, y, imgFondo.naturalWidth * scale, imgFondo.naturalHeight * scale);
-        ctx.filter = 'none';
-
-        // Viñeta sutil para mejorar contraste
-        const gradVignette = ctx.createLinearGradient(0, 0, 0, H);
-        gradVignette.addColorStop(0, 'rgba(0,0,0,0.3)');
-        gradVignette.addColorStop(0.3, 'rgba(0,0,0,0)');
-        gradVignette.addColorStop(0.7, 'rgba(0,0,0,0)');
-        gradVignette.addColorStop(1, 'rgba(0,0,0,0.4)');
-        ctx.fillStyle = gradVignette;
-        ctx.fillRect(0, 0, W, H);
-      } else {
-        // Fondo degradado elegido
-        const grad = ctx.createLinearGradient(0, 0, W, H);
-        grad.addColorStop(0, fondoActual.colors[0]);
-        grad.addColorStop(0.5, fondoActual.colors[1]);
-        grad.addColorStop(1, fondoActual.colors[2]);
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, W, H);
       }
 
-      // 2. Dibujar Sticker o Badge si existe
-      if (stickerActivo) {
-        const sx = posSticker.x * W;
-        const sy = posSticker.y * H;
-        if (stickerActivo.tipo === 'emoji') {
-          ctx.font = '120px sans-serif';
+      const W = 1080;
+      const H = 1920;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+
+      const renderContenidoFinal = (imgFondo) => {
+        // 1. Fondo
+        if (imgFondo) {
+          if (filtroActual.filter !== 'none') ctx.filter = filtroActual.filter;
+          const scale = Math.max(W / imgFondo.naturalWidth, H / imgFondo.naturalHeight);
+          const x = (W - imgFondo.naturalWidth * scale) / 2;
+          const y = (H - imgFondo.naturalHeight * scale) / 2;
+          ctx.drawImage(imgFondo, x, y, imgFondo.naturalWidth * scale, imgFondo.naturalHeight * scale);
+          ctx.filter = 'none';
+
+          const gradVignette = ctx.createLinearGradient(0, 0, 0, H);
+          gradVignette.addColorStop(0, 'rgba(0,0,0,0.3)');
+          gradVignette.addColorStop(0.3, 'rgba(0,0,0,0)');
+          gradVignette.addColorStop(0.7, 'rgba(0,0,0,0)');
+          gradVignette.addColorStop(1, 'rgba(0,0,0,0.4)');
+          ctx.fillStyle = gradVignette;
+          ctx.fillRect(0, 0, W, H);
+        } else {
+          const grad = ctx.createLinearGradient(0, 0, W, H);
+          grad.addColorStop(0, fondoActual.colors[0]);
+          grad.addColorStop(0.5, fondoActual.colors[1]);
+          grad.addColorStop(1, fondoActual.colors[2]);
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, W, H);
+        }
+
+        // 2. Sticker o Badge
+        if (stickerActivo) {
+          const sx = posSticker.x * W;
+          const sy = posSticker.y * H;
+          if (stickerActivo.tipo === 'emoji') {
+            ctx.font = '120px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.shadowColor = 'rgba(0,0,0,0.4)';
+            ctx.shadowBlur = 18;
+            ctx.fillText(stickerActivo.valor, sx, sy);
+            ctx.shadowBlur = 0;
+          } else if (stickerActivo.tipo === 'badge') {
+            ctx.font = '700 36px -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const txt = stickerActivo.valor;
+            const tw = ctx.measureText(txt).width;
+            const bw = tw + 60;
+            const bh = 70;
+            const x0 = sx - bw / 2;
+            const y0 = sy - bh / 2;
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.shadowColor = 'rgba(0,0,0,0.35)';
+            ctx.shadowBlur = 20;
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(x0, y0, bw, bh, 35);
+            else ctx.rect(x0, y0, bw, bh);
+            ctx.fill();
+
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#0a0a0c';
+            ctx.fillText(txt, sx, sy);
+          }
+        }
+
+        // 2.5 Sticker de Música
+        if (musica) {
+          const mx = posMusica.x * W;
+          const my = posMusica.y * H;
+          ctx.font = '700 32px -apple-system, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.shadowColor = 'rgba(0,0,0,0.4)';
-          ctx.shadowBlur = 18;
-          ctx.fillText(stickerActivo.valor, sx, sy);
-          ctx.shadowBlur = 0;
-        } else if (stickerActivo.tipo === 'badge') {
-          ctx.font = '700 36px -apple-system, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          const txt = stickerActivo.valor;
+          const txt = `🎵 ${musica.titulo}`;
           const tw = ctx.measureText(txt).width;
           const bw = tw + 60;
-          const bh = 70;
-          const x0 = sx - bw / 2;
-          const y0 = sy - bh / 2;
+          const bh = 64;
+          const x0 = mx - bw / 2;
+          const y0 = my - bh / 2;
 
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-          ctx.shadowColor = 'rgba(0,0,0,0.35)';
-          ctx.shadowBlur = 20;
+          ctx.fillStyle = 'rgba(10, 10, 14, 0.82)';
+          ctx.shadowColor = 'rgba(0,0,0,0.5)';
+          ctx.shadowBlur = 18;
           ctx.beginPath();
-          if (ctx.roundRect) ctx.roundRect(x0, y0, bw, bh, 35);
+          if (ctx.roundRect) ctx.roundRect(x0, y0, bw, bh, 32);
           else ctx.rect(x0, y0, bw, bh);
           ctx.fill();
+
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
 
           ctx.shadowBlur = 0;
-          ctx.fillStyle = '#0a0a0c';
-          ctx.fillText(txt, sx, sy);
-        }
-      }
-
-      // 2.5 Dibujar Sticker de Música si existe
-      if (musica) {
-        const mx = posMusica.x * W;
-        const my = posMusica.y * H;
-        ctx.font = '700 32px -apple-system, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const txt = `🎵 ${musica.titulo} · ${musica.autor}`;
-        const tw = ctx.measureText(txt).width;
-        const bw = tw + 56;
-        const bh = 64;
-        const x0 = mx - bw / 2;
-        const y0 = my - bh / 2;
-
-        ctx.fillStyle = 'rgba(10, 10, 14, 0.78)';
-        ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        ctx.shadowBlur = 18;
-        ctx.beginPath();
-        if (ctx.roundRect) ctx.roundRect(x0, y0, bw, bh, 32);
-        else ctx.rect(x0, y0, bw, bh);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(txt, mx, my);
-      }
-
-      // 3. Dibujar Texto si existe
-      if (texto.trim()) {
-        const fs = Math.round(W * rel);
-        const fontName = fuenteActual.font;
-        const weight = fuenteActual.weight;
-        ctx.font = `${weight} ${fs}px ${fontName}`;
-        ctx.textAlign = alineacion;
-        ctx.textBaseline = 'middle';
-
-        const lineas = partirLineas(ctx, texto.trim(), W * 0.85);
-        const altoLinea = fs * 1.28;
-        const cx = posTexto.x * W;
-        const cy = posTexto.y * H;
-        const startY = cy - ((lineas.length - 1) * altoLinea) / 2;
-
-        if (estiloTexto === 'glass' || estiloTexto === 'solido') {
-          let maxW = 0;
-          lineas.forEach((l) => { maxW = Math.max(maxW, ctx.measureText(l).width); });
-          const padX = fs * 0.45;
-          const padY = fs * 0.35;
-          const bw = maxW + padX * 2;
-          const bh = lineas.length * altoLinea + padY * 2;
-          const x0 = alineacion === 'center' ? cx - bw / 2 : alineacion === 'left' ? cx - padX : cx - bw + padX;
-          const y0 = cy - bh / 2;
-
-          ctx.fillStyle = estiloTexto === 'solido' ? '#ffffff' : 'rgba(0, 0, 0, 0.55)';
-          ctx.beginPath();
-          if (ctx.roundRect) ctx.roundRect(x0, y0, bw, bh, 20);
-          else ctx.rect(x0, y0, bw, bh);
-          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(txt, mx, my);
         }
 
-        if (fuenteActual.neon || estiloTexto === 'neon') {
-          ctx.shadowColor = color;
-          ctx.shadowBlur = 24;
-        } else {
-          ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
-          ctx.shadowBlur = 12;
+        // 3. Texto
+        if (texto.trim()) {
+          const fs = Math.round(W * rel);
+          const fontName = fuenteActual.font;
+          const weight = fuenteActual.weight;
+          ctx.font = `${weight} ${fs}px ${fontName}`;
+          ctx.textAlign = alineacion;
+          ctx.textBaseline = 'middle';
+
+          const lineas = partirLineas(ctx, texto.trim(), W * 0.85);
+          const altoLinea = fs * 1.28;
+          const cx = posTexto.x * W;
+          const cy = posTexto.y * H;
+          const startY = cy - ((lineas.length - 1) * altoLinea) / 2;
+
+          if (estiloTexto === 'glass' || estiloTexto === 'solido') {
+            let maxW = 0;
+            lineas.forEach((l) => { maxW = Math.max(maxW, ctx.measureText(l).width); });
+            const padX = fs * 0.45;
+            const padY = fs * 0.35;
+            const bw = maxW + padX * 2;
+            const bh = lineas.length * altoLinea + padY * 2;
+            const x0 = alineacion === 'center' ? cx - bw / 2 : alineacion === 'left' ? cx - padX : cx - bw + padX;
+            const y0 = cy - bh / 2;
+
+            ctx.fillStyle = estiloTexto === 'solido' ? '#ffffff' : 'rgba(0, 0, 0, 0.55)';
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(x0, y0, bw, bh, 20);
+            else ctx.rect(x0, y0, bw, bh);
+            ctx.fill();
+          }
+
+          if (fuenteActual.neon || estiloTexto === 'neon') {
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 24;
+          } else {
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+            ctx.shadowBlur = 12;
+          }
+
+          ctx.fillStyle = estiloTexto === 'solido' ? '#000000' : color;
+          lineas.forEach((l, i) => {
+            ctx.fillText(l, cx, startY + i * altoLinea);
+          });
+          ctx.shadowBlur = 0;
         }
 
-        ctx.fillStyle = estiloTexto === 'solido' ? '#000000' : color;
-        lineas.forEach((l, i) => {
-          ctx.fillText(l, cx, startY + i * altoLinea);
-        });
-        ctx.shadowBlur = 0;
+        // 4. Exportar
+        canvas.toBlob((blob) => {
+          const file = new File([blob], 'historia.jpg', { type: 'image/jpeg' });
+          onListo(file, texto.trim(), finalMusicTitle, finalMusicUrl, finalMusicStart, finalMusicDuration);
+        }, 'image/jpeg', 0.92);
+      };
+
+      if (urlImg) {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => renderContenidoFinal(img);
+        img.src = urlImg;
+      } else {
+        renderContenidoFinal(null);
       }
-
-      // 4. Exportar a Blob y emitir
-      canvas.toBlob((blob) => {
-        detenerMusica();
-        const file = new File([blob], 'historia.jpg', { type: 'image/jpeg' });
-        onListo(file, texto.trim(), musica?.titulo || '', musica ? `synth:${musica.id}` : '');
-      }, 'image/jpeg', 0.92);
-    };
-
-    if (urlImg) {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => renderContenidoFinal(img);
-      img.src = urlImg;
-    } else {
-      renderContenidoFinal(null);
+    } catch (e) {
+      avisoError(e);
+      setPublicando(false);
     }
   }
 
   return (
-    <div className="editor-historia" role="dialog" aria-modal="true" aria-label="Editor de historias de Moon">
+    <div className="editor-historia" role="dialog" aria-modal="true" aria-label="Editor de historias">
       <div className="editor-caja">
-        {/* Cabecera superior flotante */}
+        {/* Cabecera superior */}
         <header className="editor-cabecera">
           <b>Crear historia</b>
-          <button type="button" onClick={onCancelar} aria-label="Cerrar editor">
+          <button type="button" onClick={onCancelar} aria-label="Cerrar">
             <IconX />
           </button>
         </header>
 
-        {/* Lienzo interactivo central a pantalla completa */}
+        {/* BARRA DE HERRAMIENTAS VERTICAL A LA DERECHA */}
+        <div className="editor-barra-vertical">
+          <button
+            type="button"
+            className={`editor-btn-vertical${herramientaActiva === 'texto' ? ' activo' : ''}`}
+            onClick={() => setHerramientaActiva(herramientaActiva === 'texto' ? null : 'texto')}
+            title="Escribir texto"
+          >
+            <span>🔤</span>
+            <span className="btn-label">Texto</span>
+          </button>
+
+          <button
+            type="button"
+            className={`editor-btn-vertical${herramientaActiva === 'musica' ? ' activo' : ''}`}
+            onClick={() => setHerramientaActiva(herramientaActiva === 'musica' ? null : 'musica')}
+            title="Añadir música"
+          >
+            <span>🎵</span>
+            <span className="btn-label">Música</span>
+          </button>
+
+          <button
+            type="button"
+            className={`editor-btn-vertical${herramientaActiva === 'fondo' ? ' activo' : ''}`}
+            onClick={() => setHerramientaActiva(herramientaActiva === 'fondo' ? null : 'fondo')}
+            title="Fondo o foto"
+          >
+            <span>🎨</span>
+            <span className="btn-label">Fondo</span>
+          </button>
+
+          <button
+            type="button"
+            className={`editor-btn-vertical${herramientaActiva === 'stickers' ? ' activo' : ''}`}
+            onClick={() => setHerramientaActiva(herramientaActiva === 'stickers' ? null : 'stickers')}
+            title="Stickers y Badges"
+          >
+            <span>✨</span>
+            <span className="btn-label">Sticker</span>
+          </button>
+
+          <button
+            type="button"
+            className={`editor-btn-vertical${herramientaActiva === 'estilo' ? ' activo' : ''}`}
+            onClick={() => setHerramientaActiva(herramientaActiva === 'estilo' ? null : 'estilo')}
+            title="Tipografía y estilo"
+          >
+            <span>📐</span>
+            <span className="btn-label">Estilo</span>
+          </button>
+        </div>
+
+        {/* Lienzo central */}
         <div
           ref={zonaRef}
           className="editor-lienzo"
+          onClick={() => {
+            // Si hay un panel abierto y tocas el lienzo, lo cierra para dar vista limpia
+            if (herramientaActiva) setHerramientaActiva(null);
+          }}
           onPointerMove={alArrastrar}
           onPointerUp={() => setElementoArrastrado(null)}
           onPointerCancel={() => setElementoArrastrado(null)}
         >
-          {/* Fondo: Imagen con filtro O Degradado */}
           {urlImg ? (
             <img
               src={urlImg}
-              alt="Lienzo de historia"
+              alt="Lienzo"
               style={{ filter: filtroActual.filter }}
               draggable={false}
             />
@@ -383,7 +531,7 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             </div>
           ) : null}
 
-          {/* Sticker o Badge arrastrable */}
+          {/* Sticker arrastrable */}
           {stickerActivo ? (
             <div
               className="editor-sticker-caja"
@@ -456,110 +604,164 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
           ) : null}
 
           {!texto && !stickerActivo && !musica ? (
-            <span className="editor-ayuda">Escribe abajo o añade música, stickers y arrástralos</span>
+            <span className="editor-ayuda">Toca las herramientas de la derecha para personalizar tu historia</span>
           ) : null}
         </div>
 
-        {/* Panel inferior de herramientas */}
-        <div className="editor-panel-inferior">
-          {/* Pestañas de herramientas */}
-          <div className="editor-pestanas-herramientas">
-            <button
-              type="button"
-              className={`editor-pestana-btn${pestana === 'texto' ? ' activa' : ''}`}
-              onClick={() => setPestana('texto')}
-            >
-              ✏️ Texto
-            </button>
-            <button
-              type="button"
-              className={`editor-pestana-btn${pestana === 'musica' ? ' activa' : ''}`}
-              onClick={() => setPestana('musica')}
-            >
-              🎵 Música
-            </button>
-            <button
-              type="button"
-              className={`editor-pestana-btn${pestana === 'estilo' ? ' activa' : ''}`}
-              onClick={() => setPestana('estilo')}
-            >
-              🔤 Tipografía & Estilo
-            </button>
-            <button
-              type="button"
-              className={`editor-pestana-btn${pestana === 'fondo' ? ' activa' : ''}`}
-              onClick={() => setPestana('fondo')}
-            >
-              🎨 Fondo / Filtro
-            </button>
-            <button
-              type="button"
-              className={`editor-pestana-btn${pestana === 'stickers' ? ' activa' : ''}`}
-              onClick={() => setPestana('stickers')}
-            >
-              ✨ Stickers & Badges
-            </button>
-          </div>
+        {/* Barra inferior fija con el botón publicar */}
+        <div className="editor-barra-inferior-fija">
+          <button type="button" className="btn" onClick={onCancelar}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn-aurora"
+            onClick={publicar}
+            disabled={publicando}
+            style={{ padding: '10px 22px', fontWeight: 700 }}
+          >
+            {publicando ? 'Publicando…' : 'Publicar historia ✨'}
+          </button>
+        </div>
 
-          {/* Subpanel 1: Texto */}
-          {pestana === 'texto' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {/* PANELES EMERGENTES (Se abren desde la barra vertical) */}
+
+        {/* Panel 1: Texto */}
+        {herramientaActiva === 'texto' && (
+          <div className="editor-panel-emergente">
+            <div className="editor-panel-header">
+              <b>Escribir texto</b>
+              <button type="button" onClick={() => setHerramientaActiva(null)}>✕</button>
+            </div>
+            <input
+              className="editor-input"
+              maxLength={220}
+              placeholder="¿Qué estás pensando?"
+              value={texto}
+              onChange={(e) => setTexto(e.target.value)}
+              autoFocus
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div className="editor-subpanel">
+                {COLORES.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    className={`editor-color${color === c ? ' activa' : ''}`}
+                    style={{ background: c }}
+                    onClick={() => setColor(c)}
+                    aria-label={`Color ${c}`}
+                  />
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {['left', 'center', 'right'].map((al) => (
+                  <button
+                    key={al}
+                    type="button"
+                    className={`editor-chip${alineacion === al ? ' activo' : ''}`}
+                    onClick={() => setAlineacion(al)}
+                  >
+                    {al === 'left' ? '⇤' : al === 'center' ? '≡' : '⇥'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Panel 2: Música (desde teléfono con recorte de segundos) */}
+        {herramientaActiva === 'musica' && (
+          <div className="editor-panel-emergente">
+            <div className="editor-panel-header">
+              <b>🎵 Música de la historia</b>
+              <button type="button" onClick={() => setHerramientaActiva(null)}>✕</button>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn-aurora btn-sm"
+                style={{ flex: 1, padding: '10px' }}
+                onClick={() => audioInputRef.current?.click()}
+              >
+                📁 Elegir Canción de mi Teléfono
+              </button>
               <input
-                className="editor-input"
-                maxLength={220}
-                placeholder="Escribe el texto de tu historia…"
-                value={texto}
-                onChange={(e) => setTexto(e.target.value)}
-                autoFocus
+                ref={audioInputRef}
+                type="file"
+                accept="audio/*"
+                hidden
+                onChange={elegirAudioArchivo}
               />
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div className="editor-subpanel">
-                  {COLORES.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      className={`editor-color${color === c ? ' activa' : ''}`}
-                      style={{ background: c }}
-                      onClick={() => setColor(c)}
-                      aria-label={`Color ${c}`}
-                    />
-                  ))}
+              {musica && (
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  style={{ color: '#ef4444' }}
+                  onClick={() => {
+                    detenerMusica();
+                    if (audioPreviaRef.current) audioPreviaRef.current.pause();
+                    setMusica(null);
+                    setReproduciendoPrevia(false);
+                  }}
+                >
+                  ✕ Quitar
+                </button>
+              )}
+            </div>
+
+            {/* Recorte personalizado si seleccionó música del teléfono */}
+            {musica && musica.tipo === 'archivo' && (
+              <div className="musica-recorte-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <b>{musica.titulo}</b>
+                  <button
+                    type="button"
+                    className="btn-ghost btn-sm"
+                    onClick={alternarPreviaAudio}
+                  >
+                    {reproduciendoPrevia ? '⏸️ Pausar' : '▶️ Escuchar'}
+                  </button>
                 </div>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {['left', 'center', 'right'].map((al) => (
+
+                <div className="musica-slider-fila">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }} className="muted">
+                    <span>Inicio: {formatearSegundos(musica.inicio)}</span>
+                    <span>Total: {formatearSegundos(musica.totalDur)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0, musica.totalDur - musica.duracion)}
+                    value={musica.inicio}
+                    onChange={(e) => {
+                      const nuevoInicio = parseInt(e.target.value, 10);
+                      setMusica({ ...musica, inicio: nuevoInicio });
+                      if (audioPreviaRef.current) audioPreviaRef.current.currentTime = nuevoInicio;
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="muted" style={{ fontSize: 12 }}>Duración:</span>
+                  {[5, 10, 15, 30].map((d) => (
                     <button
-                      key={al}
+                      key={d}
                       type="button"
-                      className={`editor-chip${alineacion === al ? ' activo' : ''}`}
-                      onClick={() => setAlineacion(al)}
+                      className={`editor-chip${musica.duracion === d ? ' activo' : ''}`}
+                      onClick={() => setMusica({ ...musica, duracion: d })}
                     >
-                      {al === 'left' ? '⇤' : al === 'center' ? '≡' : '⇥'}
+                      {d}s
                     </button>
                   ))}
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Subpanel Música */}
-          {pestana === 'musica' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="muted" style={{ fontSize: 11 }}>Selecciona una banda sonora para tu historia:</span>
-                {musica ? (
-                  <button
-                    type="button"
-                    className="btn-ghost btn-sm"
-                    style={{ fontSize: 11, padding: '2px 8px', color: '#ef4444' }}
-                    onClick={() => {
-                      detenerMusica();
-                      setMusica(null);
-                    }}
-                  >
-                    ✕ Quitar música
-                  </button>
-                ) : null}
-              </div>
+            {/* Opciones sintetizadas Moon */}
+            <div>
+              <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>O vibras musicales Moon:</div>
               <div className="editor-subpanel">
                 {PISTAS_MUSICA.map((p) => {
                   const seleccionada = musica?.id === p.id;
@@ -568,232 +770,213 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
                       key={p.id}
                       type="button"
                       className={`editor-chip${seleccionada ? ' activo' : ''}`}
-                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px' }}
                       onClick={() => {
                         if (seleccionada) {
                           detenerMusica();
                           setMusica(null);
                         } else {
-                          setMusica(p);
+                          detenerMusica();
+                          if (audioPreviaRef.current) audioPreviaRef.current.pause();
+                          setMusica({
+                            tipo: 'synth',
+                            id: p.id,
+                            titulo: p.titulo,
+                            inicio: 0,
+                            duracion: 15,
+                          });
                           reproducirMusica(p.id);
                         }
                       }}
                     >
-                      <span>{p.emoji}</span>
-                      <div style={{ textAlign: 'left', lineHeight: 1.1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700 }}>{p.titulo}</div>
-                        <div style={{ fontSize: 10, opacity: 0.8 }}>{p.autor}</div>
-                      </div>
+                      {p.emoji} {p.titulo}
                     </button>
                   );
                 })}
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Subpanel 2: Tipografía & Estilo */}
-          {pestana === 'estilo' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div className="editor-subpanel">
-                {TIPOGRAFIAS.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    className={`editor-chip${tipoFuente === f.id ? ' activo' : ''}`}
-                    onClick={() => setTipoFuente(f.id)}
-                  >
-                    {f.label}
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <div className="editor-subpanel">
-                  {ESTILOS_TEXTO.map((est) => (
-                    <button
-                      key={est.id}
-                      type="button"
-                      className={`editor-chip${estiloTexto === est.id ? ' activo' : ''}`}
-                      onClick={() => setEstiloTexto(est.id)}
-                    >
-                      {est.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="editor-subpanel">
-                  {TAMAÑOS.map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className={`editor-chip${tam === t.id ? ' activo' : ''}`}
-                      onClick={() => setTam(t.id)}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+        {/* Panel 3: Fondo o Foto */}
+        {herramientaActiva === 'fondo' && (
+          <div className="editor-panel-emergente">
+            <div className="editor-panel-header">
+              <b>Fondo y Filtros</b>
+              <button type="button" onClick={() => setHerramientaActiva(null)}>✕</button>
             </div>
-          )}
-
-          {/* Subpanel 3: Fondo o Filtros */}
-          {pestana === 'fondo' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="editor-chip activo"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                📷 {urlImg ? 'Cambiar Foto' : 'Subir Foto'}
+              </button>
+              {urlImg ? (
                 <button
                   type="button"
-                  className="editor-chip activo"
-                  onClick={() => fileInputRef.current?.click()}
+                  className="editor-chip"
+                  onClick={() => setUrlImg('')}
                 >
-                  📷 {urlImg ? 'Cambiar Foto' : 'Subir Foto'}
+                  🎨 Usar Fondos Moon
                 </button>
-                {urlImg ? (
-                  <button
-                    type="button"
-                    className="editor-chip"
-                    onClick={() => setUrlImg('')}
-                  >
-                    🎨 Usar Fondos Moon
-                  </button>
-                ) : null}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  hidden
-                  onChange={cambiarFoto}
-                />
-              </div>
+              ) : null}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={cambiarFoto}
+              />
+            </div>
 
-              {urlImg ? (
-                <div>
-                  <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Filtros para la imagen:</div>
-                  <div className="editor-subpanel">
-                    {FILTROS.map((fil) => (
-                      <button
-                        key={fil.id}
-                        type="button"
-                        className={`editor-chip${filtroId === fil.id ? ' activo' : ''}`}
-                        onClick={() => setFiltroId(fil.id)}
-                      >
-                        {fil.label}
-                      </button>
-                    ))}
-                  </div>
+            {urlImg ? (
+              <div>
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Filtros para la foto:</div>
+                <div className="editor-subpanel">
+                  {FILTROS.map((fil) => (
+                    <button
+                      key={fil.id}
+                      type="button"
+                      className={`editor-chip${filtroId === fil.id ? ' activo' : ''}`}
+                      onClick={() => setFiltroId(fil.id)}
+                    >
+                      {fil.label}
+                    </button>
+                  ))}
                 </div>
-              ) : (
-                <div>
-                  <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Fondos degradados exclusivos:</div>
-                  <div className="editor-subpanel">
-                    {FONDOS_DEGRADADOS.map((fd, idx) => (
-                      <button
-                        key={fd.id}
-                        type="button"
-                        className={`editor-chip${fondoIndex === idx ? ' activo' : ''}`}
-                        style={{
-                          background: fd.css,
-                          borderColor: fondoIndex === idx ? '#fff' : 'transparent',
-                        }}
-                        onClick={() => setFondoIndex(idx)}
-                      >
-                        {fd.label}
-                      </button>
-                    ))}
-                  </div>
+              </div>
+            ) : (
+              <div>
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Fondos degradados:</div>
+                <div className="editor-subpanel">
+                  {FONDOS_DEGRADADOS.map((fd, idx) => (
+                    <button
+                      key={fd.id}
+                      type="button"
+                      className={`editor-chip${fondoIndex === idx ? ' activo' : ''}`}
+                      style={{ background: fd.css, borderColor: fondoIndex === idx ? '#fff' : 'transparent' }}
+                      onClick={() => setFondoIndex(idx)}
+                    >
+                      {fd.label}
+                    </button>
+                  ))}
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Panel 4: Stickers */}
+        {herramientaActiva === 'stickers' && (
+          <div className="editor-panel-emergente">
+            <div className="editor-panel-header">
+              <b>Stickers & Emojis</b>
+              <button type="button" onClick={() => setHerramientaActiva(null)}>✕</button>
+            </div>
+            <div className="editor-subpanel">
+              {STICKERS_EMOJIS.map((em) => (
+                <button
+                  key={em}
+                  type="button"
+                  style={{
+                    background: 'rgba(255,255,255,0.12)',
+                    border: 0,
+                    borderRadius: 10,
+                    fontSize: 22,
+                    padding: '4px 8px',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setStickerActivo({ tipo: 'emoji', valor: em })}
+                >
+                  {em}
+                </button>
+              ))}
+            </div>
+
+            <div className="editor-subpanel">
+              <button
+                type="button"
+                className="editor-chip"
+                onClick={() => setStickerActivo({ tipo: 'badge', valor: `⏰ ${obtenerHoraActual()}` })}
+              >
+                ⏰ Hora actual
+              </button>
+              <button
+                type="button"
+                className="editor-chip"
+                onClick={() => setStickerActivo({ tipo: 'badge', valor: '📍 En directo' })}
+              >
+                📍 En directo
+              </button>
+              <button
+                type="button"
+                className="editor-chip"
+                onClick={() => setStickerActivo({ tipo: 'badge', valor: '💬 Pregúntame' })}
+              >
+                💬 Pregúntame
+              </button>
+              {stickerActivo && (
+                <button
+                  type="button"
+                  className="editor-chip"
+                  style={{ background: 'rgba(239, 68, 68, 0.3)', borderColor: '#ef4444' }}
+                  onClick={() => setStickerActivo(null)}
+                >
+                  ✕ Quitar
+                </button>
               )}
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Subpanel 4: Stickers & Badges */}
-          {pestana === 'stickers' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {/* Emojis reactivos */}
+        {/* Panel 5: Estilo */}
+        {herramientaActiva === 'estilo' && (
+          <div className="editor-panel-emergente">
+            <div className="editor-panel-header">
+              <b>Tipografía y estilo</b>
+              <button type="button" onClick={() => setHerramientaActiva(null)}>✕</button>
+            </div>
+            <div className="editor-subpanel">
+              {TIPOGRAFIAS.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  className={`editor-chip${tipoFuente === f.id ? ' activo' : ''}`}
+                  onClick={() => setTipoFuente(f.id)}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <div className="editor-subpanel">
-                {STICKERS_EMOJIS.map((em) => (
+                {ESTILOS_TEXTO.map((est) => (
                   <button
-                    key={em}
+                    key={est.id}
                     type="button"
-                    style={{
-                      background: 'rgba(255,255,255,0.12)',
-                      border: 0,
-                      borderRadius: 10,
-                      fontSize: 22,
-                      padding: '4px 8px',
-                      cursor: 'pointer',
-                    }}
-                    onClick={() => setStickerActivo({ tipo: 'emoji', valor: em })}
+                    className={`editor-chip${estiloTexto === est.id ? ' activo' : ''}`}
+                    onClick={() => setEstiloTexto(est.id)}
                   >
-                    {em}
+                    {est.label}
                   </button>
                 ))}
               </div>
-
-              {/* Badges interactivos */}
               <div className="editor-subpanel">
-                <button
-                  type="button"
-                  className="editor-chip"
-                  onClick={() => setStickerActivo({ tipo: 'badge', valor: `⏰ ${obtenerHoraActual()}` })}
-                >
-                  ⏰ Hora actual
-                </button>
-                <button
-                  type="button"
-                  className="editor-chip"
-                  onClick={() => setStickerActivo({ tipo: 'badge', valor: '📍 En directo' })}
-                >
-                  📍 En directo
-                </button>
-                <button
-                  type="button"
-                  className="editor-chip"
-                  onClick={() => setStickerActivo({ tipo: 'badge', valor: '💬 Pregúntame' })}
-                >
-                  💬 Pregúntame
-                </button>
-                <button
-                  type="button"
-                  className="editor-chip"
-                  onClick={() => setStickerActivo({ tipo: 'badge', valor: '🌙 En órbita' })}
-                >
-                  🌙 En órbita
-                </button>
-                <button
-                  type="button"
-                  className="editor-chip"
-                  onClick={() => setStickerActivo({ tipo: 'badge', valor: '🎵 Vibra Moon' })}
-                >
-                  🎵 Vibra Moon
-                </button>
-                {stickerActivo && (
+                {TAMAÑOS.map((t) => (
                   <button
+                    key={t.id}
                     type="button"
-                    className="editor-chip"
-                    style={{ background: 'rgba(239, 68, 68, 0.3)', borderColor: '#ef4444' }}
-                    onClick={() => setStickerActivo(null)}
+                    className={`editor-chip${tam === t.id ? ' activo' : ''}`}
+                    onClick={() => setTam(t.id)}
                   >
-                    ✕ Quitar
+                    {t.label}
                   </button>
-                )}
+                ))}
               </div>
             </div>
-          )}
-
-          {/* Acciones principales de publicación */}
-          <div className="editor-acciones">
-            <button type="button" className="btn" onClick={onCancelar} style={{ flex: '0 0 auto' }}>
-              Cancelar
-            </button>
-            <button
-              type="button"
-              className="btn-aurora"
-              onClick={publicar}
-              style={{ flex: 1, padding: '10px 18px', fontWeight: 700 }}
-            >
-              Publicar historia ✨
-            </button>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

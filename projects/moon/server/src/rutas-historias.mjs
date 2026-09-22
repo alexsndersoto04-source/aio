@@ -63,10 +63,13 @@ export function registrarRutasHistorias(router) {
       `SELECT s.id, s.user_id, s.image_url, s.caption, s.views_count,
               COALESCE(s.music_title, '') AS music_title,
               COALESCE(s.music_url, '') AS music_url,
+              COALESCE(s.music_start_sec, 0) AS music_start_sec,
+              COALESCE(s.music_duration_sec, 15) AS music_duration_sec,
               s.created_at::text AS created_at,
               (SELECT COUNT(*)::int FROM story_views sv WHERE sv.story_id = s.id AND sv.viewer_id = $2) > 0 AS vista,
               (SELECT sr.emoji FROM story_reactions sr WHERE sr.story_id = s.id AND sr.user_id = $2 LIMIT 1) AS mi_reaccion,
-              (SELECT COUNT(*)::int FROM story_reactions sr WHERE sr.story_id = s.id) AS reactions_count
+              (SELECT COUNT(*)::int FROM story_reactions sr WHERE sr.story_id = s.id) AS reactions_count,
+              (SELECT COUNT(*)::int FROM story_comments sc WHERE sc.story_id = s.id) AS comments_count
          FROM stories s
         WHERE s.user_id = $1 AND s.expires_at > NOW()
         ORDER BY s.created_at ASC`,
@@ -88,8 +91,11 @@ export function registrarRutasHistorias(router) {
         caption: s.caption,
         music_title: s.music_title || '',
         music_url: s.music_url || '',
+        music_start_sec: Number(s.music_start_sec || 0),
+        music_duration_sec: Number(s.music_duration_sec || 15),
         views_count: Number(s.views_count),
         reactions_count: Number(s.reactions_count || 0),
+        comments_count: Number(s.comments_count || 0),
         mi_reaccion: s.mi_reaccion || null,
         created_at: s.created_at,
         vista: !!s.vista,
@@ -104,13 +110,15 @@ export function registrarRutasHistorias(router) {
     const pie = typeof b.caption === 'string' ? b.caption.slice(0, 200) : '';
     const musicTitle = typeof b.music_title === 'string' ? b.music_title.slice(0, 150) : '';
     const musicUrl = typeof b.music_url === 'string' ? b.music_url.slice(0, 500) : '';
+    const musicStart = Math.max(0, parseInt(b.music_start_sec || 0, 10) || 0);
+    const musicDuration = Math.min(60, Math.max(5, parseInt(b.music_duration_sec || 15, 10) || 15));
 
     const creada = await uno(
       c.pool,
-      `INSERT INTO stories (user_id, image_url, caption, music_title, music_url, expires_at)
-       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '24 hours')
+      `INSERT INTO stories (user_id, image_url, caption, music_title, music_url, music_start_sec, music_duration_sec, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() + INTERVAL '24 hours')
        RETURNING id, created_at::text AS created_at, expires_at::text AS expires_at`,
-      [yo.id, imagen, pie, musicTitle, musicUrl]
+      [yo.id, imagen, pie, musicTitle, musicUrl, musicStart, musicDuration]
     );
     await auditar(c.pool, Number(yo.id), 'historia_creada', `#${creada.id}`, c.ip);
     return {
@@ -119,8 +127,11 @@ export function registrarRutasHistorias(router) {
       caption: pie,
       music_title: musicTitle,
       music_url: musicUrl,
+      music_start_sec: musicStart,
+      music_duration_sec: musicDuration,
       views_count: 0,
       reactions_count: 0,
+      comments_count: 0,
       mi_reaccion: null,
       created_at: creada.created_at,
       expires_at: creada.expires_at,
@@ -164,6 +175,86 @@ export function registrarRutasHistorias(router) {
     const id = Number(c.params.id);
     await c.pool.query('DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2', [id, yo.id]);
     return { ok: true };
+  });
+
+  // Listar comentarios de una historia
+  router.get('/api/stories/:id/comments', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const historia = await uno(c.pool, 'SELECT id, user_id FROM stories WHERE id = $1', [id]);
+    if (!historia) throw new ApiErr('Historia no encontrada', 404);
+
+    const comentarios = await filas(
+      c.pool,
+      `SELECT sc.id, sc.story_id, sc.user_id, sc.content, sc.created_at::text AS created_at,
+              u.username, u.display_name, u.avatar_url
+         FROM story_comments sc
+         JOIN users u ON u.id = sc.user_id
+        WHERE sc.story_id = $1
+        ORDER BY sc.created_at ASC`,
+      [id]
+    );
+
+    return {
+      items: comentarios.map((com) => ({
+        id: Number(com.id),
+        story_id: Number(com.story_id),
+        user_id: Number(com.user_id),
+        content: com.content,
+        created_at: com.created_at,
+        mine: Number(com.user_id) === Number(yo.id),
+        user: {
+          id: Number(com.user_id),
+          username: com.username,
+          display_name: com.display_name || com.username,
+          avatar_url: com.avatar_url,
+        },
+      })),
+    };
+  });
+
+  // Comentar en una historia
+  router.post('/api/stories/:id/comments', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const b = await c.cuerpo();
+    const contenido = texto(b.content || '', { min: 1, max: 500, campo: 'comentario' });
+
+    const historia = await uno(c.pool, 'SELECT id, user_id FROM stories WHERE id = $1', [id]);
+    if (!historia) throw new ApiErr('Historia no encontrada', 404);
+
+    const creado = await uno(
+      c.pool,
+      `INSERT INTO story_comments (story_id, user_id, content)
+       VALUES ($1, $2, $3)
+       RETURNING id, story_id, user_id, content, created_at::text AS created_at`,
+      [id, yo.id, contenido]
+    );
+
+    // Notificar al dueño de la historia
+    if (Number(historia.user_id) !== Number(yo.id)) {
+      await c.pool.query(
+        `INSERT INTO notifications (user_id, actor_id, type, entity_id)
+         VALUES ($1, $2, 'comment', $3)
+         ON CONFLICT DO NOTHING`,
+        [historia.user_id, yo.id, id]
+      ).catch(() => {});
+    }
+
+    return {
+      id: Number(creado.id),
+      story_id: Number(creado.story_id),
+      user_id: Number(creado.user_id),
+      content: creado.content,
+      created_at: creado.created_at,
+      mine: true,
+      user: {
+        id: Number(yo.id),
+        username: yo.username,
+        display_name: yo.display_name || yo.username,
+        avatar_url: yo.avatar_url,
+      },
+    };
   });
 
   router.post('/api/stories/:id/view', async (c) => {

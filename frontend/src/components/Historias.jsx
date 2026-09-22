@@ -31,8 +31,17 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
   const [cargando, setCargando] = useState(true);
   const [pausado, setPausado] = useState(false);
   const [sonido, setSonido] = useState(true);
-  const [voladores, setVoladores] = useState([]); // [{ id, emoji, left }]
+  const [voladores, setVoladores] = useState([]); // [{ id, emoji, left, delay }]
+
+  // Comentarios
+  const [textoComentario, setTextoComentario] = useState('');
+  const [enviandoComentario, setEnviandoComentario] = useState(false);
+  const [verComentarios, setVerComentarios] = useState(false);
+  const [listaComentarios, setListaComentarios] = useState([]);
+  const [cargandoComentarios, setCargandoComentarios] = useState(false);
+
   const temporizador = useRef(null);
+  const audioRef = useRef(null);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -55,13 +64,30 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
 
   // Manejo de música de fondo sincronizada con la historia
   useEffect(() => {
-    if (actual?.music_url && sonido) {
+    if (!actual?.music_url || !sonido) {
+      detenerMusica();
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      return;
+    }
+
+    if (actual.music_url.startsWith('synth:')) {
       const pistaId = actual.music_url.replace('synth:', '') || 'lofi';
       reproducirMusica(pistaId);
+      if (audioRef.current) audioRef.current.pause();
     } else {
       detenerMusica();
+      if (audioRef.current) {
+        audioRef.current.currentTime = actual.music_start_sec || 0;
+        audioRef.current.play().catch(() => {});
+      }
     }
-    return () => detenerMusica();
+
+    return () => {
+      detenerMusica();
+      if (audioRef.current) audioRef.current.pause();
+    };
   }, [actual, sonido]);
 
   // Al mostrar una historia se marca como vista en la base de datos
@@ -91,19 +117,23 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
     setIndice((i) => Math.max(0, i - 1));
   }, []);
 
-  // Cambia de historia sola a los 5 segundos (se pausa si mantienes presionado)
+  // Cambia de historia sola a los 6 segundos (se pausa si escribes o mantienes presionado)
   useEffect(() => {
-    if (!actual || pausado) return;
+    if (!actual || pausado || verComentarios) return;
     clearTimeout(temporizador.current);
-    temporizador.current = setTimeout(siguiente, 5000);
+    const duracion = (actual.music_duration_sec || 6) * 1000;
+    temporizador.current = setTimeout(siguiente, Math.min(15000, Math.max(5000, duracion)));
     return () => clearTimeout(temporizador.current);
-  }, [actual, siguiente, pausado]);
+  }, [actual, siguiente, pausado, verComentarios]);
 
   useEffect(() => {
     const tecla = (e) => {
-      if (e.key === 'Escape') alCerrar();
-      if (e.key === 'ArrowRight') siguiente();
-      if (e.key === 'ArrowLeft') anterior();
+      if (e.key === 'Escape') {
+        if (verComentarios) setVerComentarios(false);
+        else alCerrar();
+      }
+      if (e.key === 'ArrowRight' && !verComentarios) siguiente();
+      if (e.key === 'ArrowLeft' && !verComentarios) anterior();
     };
     document.addEventListener('keydown', tecla);
     document.body.style.overflow = 'hidden';
@@ -111,16 +141,22 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
       document.removeEventListener('keydown', tecla);
       document.body.style.overflow = '';
       detenerMusica();
+      if (audioRef.current) audioRef.current.pause();
     };
-  }, [alCerrar, siguiente, anterior]);
+  }, [alCerrar, siguiente, anterior, verComentarios]);
 
+  // Reacciones persistentes
   async function reaccionar(emoji) {
     if (!actual) return;
-    // Disparar animación de emojis voladores
-    const nuevos = Array.from({ length: 6 }).map((_, idx) => ({
+    // Pausar temporalmente para que el usuario aprecie su reacción
+    setPausado(true);
+    setTimeout(() => setPausado(false), 3500);
+
+    // Animación de emojis voladores
+    const nuevos = Array.from({ length: 7 }).map((_, idx) => ({
       id: Date.now() + Math.random(),
       emoji,
-      left: Math.random() * 80 + 10,
+      left: Math.random() * 75 + 12,
       delay: idx * 0.1,
     }));
     setVoladores((v) => [...v, ...nuevos]);
@@ -128,26 +164,69 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
       setVoladores((v) => v.filter((item) => !nuevos.includes(item)));
     }, 1800);
 
+    // Persistencia inmediata en el estado
+    setDatos((d) => {
+      if (!d) return d;
+      return {
+        ...d,
+        stories: d.stories.map((s) => {
+          if (s.id === actual.id) {
+            const eraMismo = s.mi_reaccion === emoji;
+            return {
+              ...s,
+              mi_reaccion: emoji,
+              reactions_count: eraMismo ? s.reactions_count : (s.reactions_count || 0) + 1,
+            };
+          }
+          return s;
+        }),
+      };
+    });
+
     try {
       await api.post(`/api/stories/${actual.id}/react`, { emoji });
+    } catch (_) {}
+  }
+
+  // Enviar comentario a la historia
+  async function enviarComentario(e) {
+    if (e) e.preventDefault();
+    if (!actual || !textoComentario.trim() || enviandoComentario) return;
+    setEnviandoComentario(true);
+    const texto = textoComentario.trim();
+    try {
+      await api.post(`/api/stories/${actual.id}/comments`, { content: texto });
+      toast.ok('Comentario enviado al creador');
+      setTextoComentario('');
       setDatos((d) => {
         if (!d) return d;
         return {
           ...d,
-          stories: d.stories.map((s) => {
-            if (s.id === actual.id) {
-              const eraMismo = s.mi_reaccion === emoji;
-              return {
-                ...s,
-                mi_reaccion: emoji,
-                reactions_count: eraMismo ? s.reactions_count : (s.reactions_count || 0) + 1,
-              };
-            }
-            return s;
-          }),
+          stories: d.stories.map((s) => s.id === actual.id ? { ...s, comments_count: (s.comments_count || 0) + 1 } : s),
         };
       });
-    } catch (_) {}
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setEnviandoComentario(false);
+      setPausado(false);
+    }
+  }
+
+  // Cargar comentarios para el autor
+  async function abrirComentariosAutor() {
+    if (!actual) return;
+    setVerComentarios(true);
+    setPausado(true);
+    setCargandoComentarios(true);
+    try {
+      const res = await api.get(`/api/stories/${actual.id}/comments`);
+      setListaComentarios(res.items || []);
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setCargandoComentarios(false);
+    }
   }
 
   async function borrar() {
@@ -178,6 +257,16 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
   return (
     <div className="visor-historias" role="dialog" aria-modal="true" aria-label="Visor de historias pantalla completa">
       <div className="visor-caja">
+        {/* Elemento de audio nativo para música de archivos subidos */}
+        {actual?.music_url && !actual.music_url.startsWith('synth:') && (
+          <audio
+            ref={audioRef}
+            src={imgUrl(actual.music_url)}
+            preload="auto"
+            loop
+          />
+        )}
+
         {/* Barras de progreso superiores */}
         <div className="visor-progreso">
           {datos?.stories?.map((s, i) => (
@@ -278,46 +367,123 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
           </div>
         </div>
 
-        {/* Pie flotante con caption limpio y barra de reacciones */}
+        {/* Pie flotante con caption, reacciones persistentes y comentarios */}
         <div className="visor-pie-flotante">
           {actual?.caption ? (
             <p className="visor-pie-texto">{actual.caption}</p>
           ) : null}
 
+          {/* Barra de reacciones */}
           <div className="visor-barra-reacciones">
             {!mia ? (
               <div className="visor-emojis-reaccion">
-                {['❤️', '🔥', '😂', '😮', '👏', '🌙', '💯'].map((em) => (
-                  <button
-                    key={em}
-                    type="button"
-                    className={`visor-btn-emoji${actual?.mi_reaccion === em ? ' activa' : ''}`}
-                    onClick={() => reaccionar(em)}
-                    aria-label={`Reaccionar con ${em}`}
-                  >
-                    {em}
-                  </button>
-                ))}
+                {['❤️', '🔥', '😂', '😮', '👏', '🌙', '💯'].map((em) => {
+                  const esActivo = actual?.mi_reaccion === em;
+                  return (
+                    <button
+                      key={em}
+                      type="button"
+                      className={`visor-btn-emoji${esActivo ? ' activa' : ''}`}
+                      onClick={() => reaccionar(em)}
+                      aria-label={`Reaccionar con ${em}`}
+                      style={{
+                        transform: esActivo ? 'scale(1.28)' : 'scale(1)',
+                        filter: esActivo ? 'drop-shadow(0 0 8px #ffffff)' : 'none',
+                      }}
+                    >
+                      {em}
+                    </button>
+                  );
+                })}
               </div>
             ) : (
-              <div className="visor-reacciones-stats">
-                <span>❤️ {actual?.reactions_count || 0} reacciones</span>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div className="visor-reacciones-stats">
+                  <span>❤️ {actual?.reactions_count || 0} reacciones</span>
+                </div>
+                <button
+                  type="button"
+                  className="visor-reacciones-stats"
+                  style={{ cursor: 'pointer', border: 0 }}
+                  onClick={abrirComentariosAutor}
+                >
+                  💬 {actual?.comments_count || 0} comentarios
+                </button>
               </div>
             )}
           </div>
+
+          {/* Caja para comentar la historia */}
+          {!mia && (
+            <form onSubmit={enviarComentario} className="visor-fila-comentario">
+              <input
+                className="visor-input-comentario"
+                placeholder={`Responder a @${datos?.user?.username}…`}
+                value={textoComentario}
+                onChange={(e) => setTextoComentario(e.target.value)}
+                onFocus={() => setPausado(true)}
+                onBlur={() => setPausado(false)}
+              />
+              <button
+                type="submit"
+                className="visor-btn-enviar-comentario"
+                disabled={!textoComentario.trim() || enviandoComentario}
+              >
+                {enviandoComentario ? '…' : 'Enviar'}
+              </button>
+            </form>
+          )}
         </div>
+
+        {/* Modal de comentarios para el autor */}
+        {verComentarios && (
+          <div className="visor-modal-comentarios">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <b style={{ color: '#fff', fontSize: 16 }}>Comentarios de tu historia</b>
+              <button
+                type="button"
+                className="btn-ghost btn-sm"
+                style={{ color: '#fff' }}
+                onClick={() => {
+                  setVerComentarios(false);
+                  setPausado(false);
+                }}
+              >
+                ✕ Cerrar
+              </button>
+            </div>
+
+            {cargandoComentarios ? (
+              <p className="muted">Cargando comentarios…</p>
+            ) : listaComentarios.length === 0 ? (
+              <p className="muted" style={{ margin: 'auto', textAlign: 'center' }}>
+                Aún nadie ha comentado esta historia.
+              </p>
+            ) : (
+              <div className="visor-comentarios-lista">
+                {listaComentarios.map((c) => (
+                  <div key={c.id} className="visor-comentario-item">
+                    <Avatar user={c.user} size="sm" />
+                    <div>
+                      <div style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}>
+                        {c.user.display_name || c.user.username}{' '}
+                        <span className="muted" style={{ fontWeight: 400, marginLeft: 4 }}>
+                          {tiempoRelativo(c.created_at)}
+                        </span>
+                      </div>
+                      <div className="visor-comentario-burbuja" style={{ color: '#fff', marginTop: 2 }}>
+                        {c.content}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
-}
-
-/** Una historia recién publicada (menos de 2 horas) se marca como nueva. */
-function esNueva(grupo) {
-  const creada = grupo?.created_at || grupo?.ultima;
-  if (!creada) return false;
-  const t = new Date(creada).getTime();
-  if (!t) return false;
-  return Date.now() - t < 2 * 60 * 60 * 1000;
 }
 
 export default function Historias({ onNovedad }) {
@@ -349,7 +515,7 @@ export default function Historias({ onNovedad }) {
     setEditando(true);
   }
 
-  async function publicarDesdeEditor(file, texto, musicTitle = '', musicUrl = '') {
+  async function publicarDesdeEditor(file, texto, musicTitle = '', musicUrl = '', musicStart = 0, musicDuration = 15) {
     setSubiendo(true);
     try {
       const subida = await uploadMedia('story', file);
@@ -358,6 +524,8 @@ export default function Historias({ onNovedad }) {
         caption: texto || '',
         music_title: musicTitle || '',
         music_url: musicUrl || '',
+        music_start_sec: musicStart || 0,
+        music_duration_sec: musicDuration || 15,
       });
       toast.ok('¡Historia publicada! Estará activa 24 horas.');
       setEditando(false);
@@ -540,7 +708,7 @@ export default function Historias({ onNovedad }) {
                 />
               </div>
 
-              {/* Información abajo: Nombre */}
+              {/* Información abajo: Nombre limpio */}
               <div className="historia-info-abajo">
                 <p className="historia-nombre">
                   {g.mine ? 'Tu historia' : (g.display_name || g.username).split(' ')[0]}
