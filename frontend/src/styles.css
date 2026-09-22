@@ -2873,7 +2873,7 @@ h3 { font-size: 16px; line-height: 1.25; }
   top: 0 !important;
   left: 0 !important;
   right: 0 !important;
-  z-index: 25 !important;
+  z-index: 130 !important;
   display: flex !important;
   gap: 4px !important;
   padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 6px !important;
@@ -2905,7 +2905,7 @@ h3 { font-size: 16px; line-height: 1.25; }
   top: calc(env(safe-area-inset-top, 0px) + 16px) !important;
   left: 0 !important;
   right: 0 !important;
-  z-index: 25 !important;
+  z-index: 130 !important;
   display: flex !important;
   align-items: center !important;
   gap: 10px !important;
@@ -3014,33 +3014,38 @@ h3 { font-size: 16px; line-height: 1.25; }
   }
 }
 .visor-zonas-tactiles {
-  position: absolute;
-  inset: 0;
-  z-index: 15;
-  display: flex;
+  position: absolute !important;
+  top: 80px !important;
+  bottom: 150px !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 20 !important;
+  display: flex !important;
+  pointer-events: auto !important;
 }
 .visor-zona-izq {
-  width: 35%;
-  height: 100%;
-  cursor: pointer;
+  width: 35% !important;
+  height: 100% !important;
+  cursor: pointer !important;
 }
 .visor-zona-der {
-  width: 65%;
-  height: 100%;
-  cursor: pointer;
+  width: 65% !important;
+  height: 100% !important;
+  cursor: pointer !important;
 }
 .visor-pie-flotante {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 25;
-  padding: 30px 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
-  background: linear-gradient(0deg, rgba(0, 0, 0, 0.92) 0%, rgba(0,0,0,0.5) 65%, transparent 100%);
-  color: #fff;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  position: absolute !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 120 !important;
+  padding: 30px 16px calc(env(safe-area-inset-bottom, 0px) + 16px) !important;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.96) 0%, rgba(0,0,0,0.75) 65%, transparent 100%) !important;
+  color: #fff !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  pointer-events: auto !important;
 }
 .visor-pie-texto {
   font-size: 14.5px;
@@ -3546,22 +3551,6 @@ svg { flex: 0 0 auto; }
 .historia small { font-size: 11px; }
 .historia.mia-mirada .aro::after { content: ''; }
 
-/* Visor a pantalla completa */
-.visor-caja {
-  width: min(440px, 100%);
-  border-radius: var(--r-panel);
-  box-shadow: 0 40px 90px -20px rgba(0, 0, 0, 0.85);
-}
-.visor-velo { background: rgba(5, 5, 8, 0.9); backdrop-filter: blur(6px); }
-.visor-progreso { padding: 12px 12px 0; gap: 4px; }
-.visor-progreso .tramo { height: 3px; background: rgba(255, 255, 255, 0.24); }
-.visor-progreso .tramo.actual { background: var(--grad); }
-.visor-cabecera { padding: 14px 16px; }
-.visor-cabecera .quien b { font-size: 15px; }
-.visor-contenido { min-height: 420px; }
-.visor-contenido .flecha { background: rgba(255, 255, 255, 0.16); backdrop-filter: blur(4px); }
-.visor-contenido .flecha:hover { background: rgba(255, 255, 255, 0.26); }
-
 /* ---------- 28.7 Rail derecho ---------- */
 .tarjeta-rail { padding: 18px; margin-bottom: 16px; }
 .tarjeta-rail h3 { font-size: 16.5px; letter-spacing: -0.025em; font-weight: 680; margin-bottom: 14px; }
@@ -3738,8 +3727,6 @@ svg { flex: 0 0 auto; }
   .historia { width: 88px; }
   .historia .aro { width: 68px; height: 68px; }
   .historia b { font-size: 12px; }
-  .visor-caja { width: 100%; max-height: 100vh; border-radius: 20px; }
-  .visor-contenido { min-height: 320px; }
   .menu { right: 6px; }
   .menu button svg, .menu a svg { width: 17px; height: 17px; min-width: 17px; }
 }

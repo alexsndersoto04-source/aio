@@ -428,7 +428,7 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
           </button>
         </header>
 
-        {/* BARRA DE HERRAMIENTAS VERTICAL A LA DERECHA */}
+        {/* BARRA DE HERRAMIENTAS VERTICAL A LA DERECHA (LÍNEAS SIN RELLENOS) */}
         <div className="editor-barra-vertical">
           <button
             type="button"
@@ -436,7 +436,11 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             onClick={() => setHerramientaActiva(herramientaActiva === 'texto' ? null : 'texto')}
             title="Escribir texto"
           >
-            <span>🔤</span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 7 4 4 20 4 20 7" />
+              <line x1="9" y1="20" x2="15" y2="20" />
+              <line x1="12" y1="4" x2="12" y2="20" />
+            </svg>
             <span className="btn-label">Texto</span>
           </button>
 
@@ -446,7 +450,11 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             onClick={() => setHerramientaActiva(herramientaActiva === 'musica' ? null : 'musica')}
             title="Añadir música"
           >
-            <span>🎵</span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 18V5l12-2v13" />
+              <circle cx="6" cy="18" r="3" />
+              <circle cx="18" cy="16" r="3" />
+            </svg>
             <span className="btn-label">Música</span>
           </button>
 
@@ -456,7 +464,11 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             onClick={() => setHerramientaActiva(herramientaActiva === 'fondo' ? null : 'fondo')}
             title="Fondo o foto"
           >
-            <span>🎨</span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="4" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
             <span className="btn-label">Fondo</span>
           </button>
 
@@ -466,7 +478,9 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             onClick={() => setHerramientaActiva(herramientaActiva === 'stickers' ? null : 'stickers')}
             title="Stickers y Badges"
           >
-            <span>✨</span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2l2.4 7.4h7.6l-6.2 4.5 2.4 7.4-6.2-4.5-6.2 4.5 2.4-7.4-6.2-4.5h7.6z" />
+            </svg>
             <span className="btn-label">Sticker</span>
           </button>
 
@@ -476,7 +490,17 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             onClick={() => setHerramientaActiva(herramientaActiva === 'estilo' ? null : 'estilo')}
             title="Tipografía y estilo"
           >
-            <span>📐</span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="4" y1="21" x2="4" y2="14" />
+              <line x1="4" y1="10" x2="4" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12" y2="3" />
+              <line x1="20" y1="21" x2="20" y2="16" />
+              <line x1="20" y1="12" x2="20" y2="3" />
+              <line x1="1" y1="14" x2="7" y2="14" />
+              <line x1="9" y1="8" x2="15" y2="8" />
+              <line x1="17" y1="16" x2="23" y2="16" />
+            </svg>
             <span className="btn-label">Estilo</span>
           </button>
         </div>
