@@ -257,3 +257,113 @@ export async function migrarA(pool, urlDestino) {
     await dest.end();
   }
 }
+
+/**
+ * Restaura los datos esenciales (usuarios, posts, mensajes, historias, etc.)
+ * desde la base vieja hacia la base nueva, OMITIENDO media_blobs para no
+ * saturar el espacio ni la transferencia de la nueva base de datos.
+ */
+export async function restaurarDesdeBaseVieja(urlOrigen, poolDestino) {
+  console.log('[migracion-recuperacion] Intentando conectar con base anterior...');
+  let poolOrigen;
+  try {
+    const { crearPool } = await import('./db.mjs');
+    poolOrigen = crearPool(urlOrigen);
+  } catch (e) {
+    console.error('[migracion-recuperacion] Error creando pool origen:', e.message);
+    return { ok: false, error: e.message };
+  }
+
+  const tablasACopiar = [
+    'users', 'follows', 'blocks', 'groups', 'group_members', 'posts', 'post_images',
+    'likes', 'comments', 'saves', 'hashtags', 'post_hashtags', 'conversations',
+    'messages', 'notifications', 'notification_prefs', 'reports', 'blocked_words',
+    'stories', 'story_views', 'story_reactions', 'story_comments', 'polls', 'poll_votes',
+    'media',
+  ];
+
+  const resultados = {};
+  let totalCopiados = 0;
+
+  try {
+    for (const tabla of tablasACopiar) {
+      try {
+        // Verificar si la tabla existe en origen
+        const existe = await poolOrigen.query(
+          `SELECT to_regclass('public."${tabla}"') AS r`
+        ).catch(() => null);
+        if (!existe?.rows?.[0]?.r) continue;
+
+        // Leer columnas de la tabla en destino para no insertar columnas que no existan
+        const colsDestino = (await poolDestino.query(
+          `SELECT column_name, data_type FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = $1
+           AND column_name NOT IN ('original_data', 'bytes_data')`,
+          [tabla]
+        )).rows;
+
+        if (colsDestino.length === 0) continue;
+
+        const nombresCols = colsDestino.map((c) => `"${c.column_name}"`).join(', ');
+        const filasOrigen = (await poolOrigen.query(
+          `SELECT ${nombresCols} FROM "${tabla}" ORDER BY id ASC`
+        ).catch(async () => {
+          return await poolOrigen.query(`SELECT ${nombresCols} FROM "${tabla}"`);
+        })).rows;
+
+        if (filasOrigen.length === 0) {
+          resultados[tabla] = 0;
+          continue;
+        }
+
+        let insertadas = 0;
+        for (const fila of filasOrigen) {
+          const params = [];
+          const placeholders = [];
+          colsDestino.forEach((c, idx) => {
+            placeholders.push(`$${idx + 1}`);
+            params.push(valorParametro(fila[c.column_name]));
+          });
+
+          // Insertar respetando IDs para no romper relaciones
+          await poolDestino.query(
+            `INSERT INTO "${tabla}" (${nombresCols}) VALUES (${placeholders.join(', ')})
+             ON CONFLICT DO NOTHING`,
+            params
+          ).catch((e) => {
+            // Ignorar duplicados o continuar
+          });
+          insertadas += 1;
+        }
+
+        // Actualizar secuencias de ID
+        try {
+          const maxIdRes = await poolDestino.query(`SELECT COALESCE(MAX(id), 1) AS m FROM "${tabla}"`);
+          const maxId = maxIdRes.rows[0]?.m;
+          if (maxId) {
+            await poolDestino.query(
+              `SELECT setval(pg_get_serial_sequence('public."${tabla}"', 'id'), $1, true)`,
+              [Number(maxId)]
+            ).catch(() => {});
+          }
+        } catch {}
+
+        resultados[tabla] = insertadas;
+        totalCopiados += insertadas;
+        console.log(`[migracion-recuperacion] ✅ Tabla "${tabla}": ${insertadas} registros restaurados`);
+      } catch (errTabla) {
+        console.warn(`[migracion-recuperacion] Aviso en tabla "${tabla}":`, errTabla.message);
+      }
+    }
+
+    console.log(`[migracion-recuperacion] 🎉 Recuperación completada: ${totalCopiados} registros totales restaurados.`);
+    return { ok: true, resultados, total: totalCopiados };
+  } catch (errGlobal) {
+    console.error('[migracion-recuperacion] Error durante el volcado:', errGlobal.message);
+    return { ok: false, error: errGlobal.message };
+  } finally {
+    if (poolOrigen && typeof poolOrigen.end === 'function') {
+      poolOrigen.end().catch(() => {});
+    }
+  }
+}

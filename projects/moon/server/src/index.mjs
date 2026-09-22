@@ -13,7 +13,7 @@
 
 import { createServer } from 'node:http';
 import { crearPool, crearPoolHibrido, migrar, auditar } from './db.mjs';
-import { migrarA } from './migracion.mjs';
+import { migrarA, restaurarDesdeBaseVieja } from './migracion.mjs';
 import { crearRouter, crearContexto, cors, manejadorErrores, json } from './nucleo.mjs';
 import { registrarRutasAuth } from './rutas-auth.mjs';
 import { registrarRutasSocial } from './rutas-social.mjs';
@@ -199,6 +199,35 @@ registrarRutasGruposExtra(router);
 registrarRutasPerfil(router);
 registrarRutasTelegramAuth(router);
 registrarRutasBoveda(router);
+
+// Ruta de rescate y recuperación desde la base de datos anterior
+const URL_BD_VIEJA = process.env.MOON_DB_VIEJA || 'postgresql://neondb_owner:npg_sfphKX1Vd8CD@ep-shiny-glade-ac398dfe-pooler.sa-east-1.aws.neon.tech/neondb?sslmode=require';
+
+router.post('/api/admin/recuperar-datos-viejos', async (c) => {
+  await c.admin();
+  console.log('[recuperacion] Petición manual de restauración de datos anteriores iniciada...');
+  const res = await restaurarDesdeBaseVieja(URL_BD_VIEJA, c.pool);
+  return res;
+});
+
+// Auto-restauración al arrancar si la base nueva está vacía o tiene menos de 3 usuarios:
+setTimeout(async () => {
+  try {
+    const resCount = await pool.query('SELECT COUNT(*)::int AS n FROM users').catch(() => null);
+    const nUsers = Number(resCount?.rows?.[0]?.n || 0);
+    if (nUsers <= 2) {
+      console.log(`[recuperacion] Detectada base nueva con ${nUsers} usuarios. Intentando importar datos desde base anterior...`);
+      const resultado = await restaurarDesdeBaseVieja(URL_BD_VIEJA, pool);
+      if (resultado.ok) {
+        console.log(`[recuperacion] ✅ Rescate exitoso: ${resultado.total} registros recuperados`);
+      } else {
+        console.log(`[recuperacion] Aviso: no se pudo conectar automáticamente a la base anterior: ${resultado.error}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[recuperacion] Fallo comprobando auto-restauración:', e.message);
+  }
+}, 4000);
 
 // Salud (pública) y métricas (solo administración).
 router.get('/api/health', async (c) => {
