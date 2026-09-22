@@ -2,7 +2,7 @@
 // =========================================================================
 // Guarda fotos, videos y paquetes comprimidos de base de datos en canales
 // privados de Telegram usando MTProto (GramJS).
-// Busca automáticamente los canales por nombre ("Moon Fotos", "Moon Videos", "Moon — Bóveda de Dato").
+// Canales: "Moon Fotos", "Moon Videos", "Moon — Bóveda de Dato".
 
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
@@ -36,27 +36,85 @@ export async function obtenerClienteTelegram() {
 }
 
 /**
+ * Resuelve y asegura la entidad del canal de Bóveda.
+ */
+async function asegurarCanalBoveda(tg) {
+  if (entidadBoveda) return entidadBoveda;
+
+  // 1. Probar en diálogos buscando por título
+  try {
+    const dialogs = await tg.getDialogs({ limit: 100 });
+    for (const d of dialogs) {
+      const n = (d.title || d.name || '').trim().toLowerCase();
+      if (n.includes('boveda') || n.includes('bóveda') || (n.includes('moon') && n.includes('dato')) || n.includes('boveda de dato')) {
+        entidadBoveda = d.entity || d.inputEntity || d;
+        console.log(`[tg-almacen] Canal Bóveda resuelto en diálogos: "${d.title}" (ID: ${d.id})`);
+        return entidadBoveda;
+      }
+    }
+  } catch (err) {
+    console.warn('[tg-almacen] Advertencia escaneando diálogos:', err.message);
+  }
+
+  // 2. Probar CheckChatInvite con el hash de invitación
+  if (BOVEDA_INVITE_HASH) {
+    try {
+      const invite = await tg.invoke(new Api.messages.CheckChatInvite({ hash: BOVEDA_INVITE_HASH }));
+      if (invite && invite.chat) {
+        entidadBoveda = invite.chat;
+        console.log(`[tg-almacen] Canal Bóveda resuelto por CheckChatInvite: "${invite.chat.title}"`);
+        return entidadBoveda;
+      }
+    } catch (checkErr) {
+      // Ignorar si no es accesible por check directo
+    }
+
+    // 3. Probar ImportChatInvite para unirse
+    try {
+      const importRes = await tg.invoke(new Api.messages.ImportChatInvite({ hash: BOVEDA_INVITE_HASH }));
+      if (importRes) {
+        entidadBoveda = importRes.chats?.[0] || importRes.chat || importRes;
+        console.log('[tg-almacen] Unido exitosamente al canal de Bóveda!');
+        return entidadBoveda;
+      }
+    } catch (invErr) {
+      if (invErr.errorMessage === 'USER_ALREADY_PARTICIPANT' || /already/i.test(invErr.message)) {
+        try {
+          const dialogs = await tg.getDialogs({ limit: 100 });
+          for (const d of dialogs) {
+            const n = (d.title || '').trim().toLowerCase();
+            if (n.includes('boveda') || n.includes('bóveda') || n.includes('dato')) {
+              entidadBoveda = d.entity || d.inputEntity || d;
+              return entidadBoveda;
+            }
+          }
+        } catch {}
+      } else {
+        console.warn('[tg-almacen] ImportChatInvite error:', invErr.message);
+      }
+    }
+  }
+
+  return entidadBoveda;
+}
+
+/**
  * Resuelve el canal privado buscándolo en los diálogos de la cuenta.
  */
 async function resolverCanal(tg, tipo) {
   const t = String(tipo || '').toLowerCase();
 
   if (t.includes('boveda') || t.includes('dato') || t.includes('vault')) {
-    if (entidadBoveda) return entidadBoveda;
-  } else if (t.startsWith('video')) {
-    if (entidadVideos) return entidadVideos;
-  } else {
-    if (entidadFotos) return entidadFotos;
+    return await asegurarCanalBoveda(tg);
   }
 
+  if (t.startsWith('video') && entidadVideos) return entidadVideos;
+  if (!t.startsWith('video') && entidadFotos) return entidadFotos;
+
   try {
-    const dialogs = await tg.getDialogs({});
+    const dialogs = await tg.getDialogs({ limit: 80 });
     for (const d of dialogs) {
       const nombre = (d.title || '').trim().toLowerCase();
-      if ((nombre.includes('boveda') || nombre.includes('bóveda') || nombre.includes('dato')) && !entidadBoveda) {
-        entidadBoveda = d.entity || d.inputEntity;
-        console.log(`[tg-almacen] Canal Bóveda detectado: "${d.title}" (ID: ${d.id})`);
-      }
       if (nombre.includes('foto') && !entidadFotos) {
         entidadFotos = d.entity || d.inputEntity;
       }
@@ -68,34 +126,6 @@ async function resolverCanal(tg, tipo) {
     console.error('[tg-almacen] Error escaneando diálogos:', e.message);
   }
 
-  // Si se busca la bóveda y aún no está en los diálogos, intentar unirse con el hash
-  if ((t.includes('boveda') || t.includes('dato') || t.includes('vault')) && !entidadBoveda && BOVEDA_INVITE_HASH) {
-    try {
-      console.log('[tg-almacen] Intentando unirse al canal de Bóveda por enlace de invitación...');
-      const res = await tg.invoke(new Api.messages.ImportChatInvite({ hash: BOVEDA_INVITE_HASH }));
-      if (res) {
-        entidadBoveda = res.chats?.[0] || res.chat || res;
-        console.log('[tg-almacen] Unión exitosa al canal de Bóveda!');
-      }
-    } catch (invErr) {
-      if (invErr.errorMessage === 'USER_ALREADY_PARTICIPANT' || /already/i.test(invErr.message)) {
-        try {
-          const dialogs = await tg.getDialogs({});
-          for (const d of dialogs) {
-            const n = (d.title || '').trim().toLowerCase();
-            if (n.includes('boveda') || n.includes('bóveda') || n.includes('dato')) {
-              entidadBoveda = d.entity || d.inputEntity;
-              break;
-            }
-          }
-        } catch {}
-      } else {
-        console.warn('[tg-almacen] No se pudo unir por invitación:', invErr.message);
-      }
-    }
-  }
-
-  if (t.includes('boveda') || t.includes('dato') || t.includes('vault')) return entidadBoveda;
   if (t.startsWith('video')) return entidadVideos;
   return entidadFotos;
 }
@@ -106,40 +136,40 @@ async function resolverCanal(tg, tipo) {
 export async function subirATelegram(buffer, { nombre = 'archivo.bin', tipo = 'image/jpeg', caption = '' } = {}) {
   const tg = await obtenerClienteTelegram();
   if (!tg) {
-    console.warn('[tg-almacen] Sin sesión activa de Telegram, archivo omitido');
-    return null;
+    throw new Error('Sin sesión activa de Telegram configurada en el servidor');
   }
 
+  const canal = await resolverCanal(tg, tipo);
+  if (!canal) {
+    throw new Error(`No se encontró el canal de Telegram para tipo "${tipo}". Asegúrate de que el bot o cuenta sea miembro o administrador del canal.`);
+  }
+
+  const esDoc = !tipo.startsWith('image/') && !tipo.startsWith('video/');
+
+  let toUpload = buffer;
   try {
-    const canal = await resolverCanal(tg, tipo);
-    if (!canal) {
-      console.warn(`[tg-almacen] No se encontró canal para tipo "${tipo}"`);
-      return null;
-    }
-
-    let toUpload = buffer;
-    try {
-      const { CustomFile } = await import('telegram/client/uploads.js');
-      toUpload = new CustomFile(nombre, buffer.length, '', buffer);
-    } catch {
-      toUpload = buffer;
-    }
-
-    const pie = caption || `Moon ${tipo}: ${nombre} (${new Date().toISOString()})`;
-    const mensaje = await tg.sendFile(canal, {
-      file: toUpload,
-      caption: pie,
-    });
-
-    console.log(`[tg-almacen] Archivo enviado a Telegram! ID: ${mensaje.id} (Tipo: ${tipo})`);
-    return {
-      ok: true,
-      tg_id: mensaje.id,
-    };
-  } catch (err) {
-    console.error('[tg-almacen] Error subiendo archivo a Telegram:', err.message);
-    return null;
+    const { CustomFile } = await import('telegram/client/uploads.js');
+    toUpload = new CustomFile(nombre, buffer.length, '', buffer);
+  } catch {
+    toUpload = buffer;
   }
+
+  const pie = caption || `Moon ${tipo}: ${nombre} (${new Date().toISOString()})`;
+  const opcionesEnvio = {
+    file: toUpload,
+    caption: pie,
+  };
+  if (esDoc) {
+    opcionesEnvio.forceDocument = true;
+  }
+
+  const mensaje = await tg.sendFile(canal, opcionesEnvio);
+
+  console.log(`[tg-almacen] Archivo enviado a Telegram! ID: ${mensaje.id} (Tipo: ${tipo})`);
+  return {
+    ok: true,
+    tg_id: mensaje.id,
+  };
 }
 
 /**
@@ -201,7 +231,7 @@ export async function estadoCanalBoveda() {
     return {
       conectado: true,
       canal: Boolean(canal),
-      canal_nombre: canal?.title || canal?.name || 'Moon — Bóveda de Datos',
+      canal_nombre: canal?.title || canal?.name || 'Moon — Bóveda de Dato',
     };
   } catch (e) {
     return { conectado: true, canal: false, motivo: e.message };
