@@ -163,5 +163,10 @@
     "version": 33,
     "name": "boveda_datos_telegram",
     "sql": "CREATE TABLE IF NOT EXISTS boveda_indice ( id BIGSERIAL PRIMARY KEY, modulo TEXT NOT NULL, subtipo TEXT NOT NULL DEFAULT '', desde_id BIGINT, hasta_id BIGINT, desde_fecha TIMESTAMPTZ, hasta_fecha TIMESTAMPTZ, total_registros INT NOT NULL DEFAULT 0, tg_msg_id BIGINT NOT NULL, bytes_originales BIGINT NOT NULL DEFAULT 0, bytes_comprimidos BIGINT NOT NULL DEFAULT 0, checksum_sha256 TEXT NOT NULL DEFAULT '', metadatos JSONB NOT NULL DEFAULT '{}'::jsonb, creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW() ); CREATE INDEX IF NOT EXISTS ix_boveda_modulo ON boveda_indice (modulo, creado_en DESC); CREATE INDEX IF NOT EXISTS ix_boveda_rango ON boveda_indice (modulo, desde_id, hasta_id)"
+  },
+  {
+    "version": 34,
+    "name": "seguridad_defensas_admin",
+    "sql": "CREATE TABLE IF NOT EXISTS blocked_ips ( ip TEXT PRIMARY KEY, motivo TEXT NOT NULL DEFAULT '', bloqueado_por BIGINT REFERENCES users(id) ON DELETE SET NULL, creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW() ); CREATE INDEX IF NOT EXISTS ix_blocked_ips_fecha ON blocked_ips (creado_en DESC); CREATE TABLE IF NOT EXISTS security_events ( id BIGSERIAL PRIMARY KEY, tipo TEXT NOT NULL, detalle TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', user_id BIGINT, creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW() ); CREATE INDEX IF NOT EXISTS ix_security_events_tipo ON security_events (tipo, creado_en DESC)"
   }
 ]

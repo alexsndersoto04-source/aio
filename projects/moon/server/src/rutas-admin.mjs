@@ -10,6 +10,11 @@ import { volcarBase, copiaPorCorreo } from './copias.mjs';
 import { migrarA } from './migracion.mjs';
 import { enviarA } from './ws.mjs';
 import { demasiadoRapido } from './limites.mjs';
+import {
+  obtenerEstadoSeguridad, cambiarModoBlindaje, bloquearIp, desbloquearIp,
+  listarIpsBloqueadas, listarEventosSeguridad,
+} from './defensas.mjs';
+import { microCache } from './cache-memoria.mjs';
 
 export function registrarRutasAdmin(router) {
   router.get('/api/admin/dashboard', async (c) => {
@@ -368,5 +373,154 @@ export function registrarRutasAdmin(router) {
     } catch (e) {
       throw new ApiErr(e.message || 'No se pudo activar la base nueva', 400, 'migracion');
     }
+  });
+
+  // ============================================================
+  // ---------- CONTROL TOTAL: SEGURIDAD Y BLINDAJE -------------
+  // ============================================================
+
+  // Estado general de seguridad y defensas
+  router.get('/api/admin/security', async (c) => {
+    await c.admin();
+    const info = await obtenerEstadoSeguridad(c.pool);
+    const ips = await listarIpsBloqueadas(c.pool);
+    return {
+      ...info,
+      ips_bloqueadas: ips,
+      cache_ram: microCache.estadisticas(),
+    };
+  });
+
+  // Activar o desactivar Modo Blindaje Anti-DDoS
+  router.post('/api/admin/security/shield', async (c) => {
+    const admin = await c.admin();
+    const b = await c.cuerpo();
+    const activar = booleano(b.activar, true);
+    return await cambiarModoBlindaje(c.pool, activar, admin.id);
+  });
+
+  // Bloquear IP
+  router.post('/api/admin/security/block-ip', async (c) => {
+    const admin = await c.admin();
+    const b = await c.cuerpo();
+    const ip = texto(b.ip, { min: 3, max: 60, campo: 'IP' });
+    const motivo = texto(b.motivo || 'Bloqueo manual', { min: 1, max: 200, campo: 'motivo' });
+    return await bloquearIp(c.pool, ip, motivo, admin.id);
+  });
+
+  // Desbloquear IP
+  router.post('/api/admin/security/unblock-ip', async (c) => {
+    const admin = await c.admin();
+    const b = await c.cuerpo();
+    const ip = texto(b.ip, { min: 3, max: 60, campo: 'IP' });
+    return await desbloquearIp(c.pool, ip, admin.id);
+  });
+
+  // Purgar memoria micro-caché bajo demanda
+  router.post('/api/admin/cache/clear', async (c) => {
+    await c.admin();
+    microCache.limpiar();
+    return { ok: true, mensaje: 'Micro-caché en memoria RAM purgado exitosamente' };
+  });
+
+  // ============================================================
+  // ---------- CONTROL TOTAL: GESTIÓN DE CONTENIDOS ------------
+  // ============================================================
+
+  // Listado de todas las publicaciones para moderación directa
+  router.get('/api/admin/content/posts', async (c) => {
+    await c.admin();
+    const { page, limit, offset } = paginacion(c.req, 20, 50);
+    const r = await c.pool.query(
+      `SELECT p.id, p.content, p.status, p.likes_count, p.comments_count,
+              p.created_at::text AS created_at, u.username, u.display_name, u.avatar_url
+       FROM posts p
+       JOIN users u ON u.id = p.user_id
+       ORDER BY p.id DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    const total = await uno(c.pool, 'SELECT COUNT(*)::int AS count FROM posts');
+    return { items: r.rows, total: Number(total?.count || 0), page, limit };
+  });
+
+  // Listado de todos los videos de Moon Watch para moderación directa
+  router.get('/api/admin/content/videos', async (c) => {
+    await c.admin();
+    const { page, limit, offset } = paginacion(c.req, 20, 50);
+    const r = await c.pool.query(
+      `SELECT p.id, p.content, p.status, p.likes_count, p.comments_count,
+              p.created_at::text AS created_at, u.username, u.display_name,
+              pi.original_url AS video_url
+       FROM posts p
+       JOIN users u ON u.id = p.user_id
+       JOIN post_images pi ON pi.post_id = p.id
+       WHERE pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%'
+          OR pi.original_url ILIKE '%.mov%' OR pi.original_url ILIKE '%video%'
+       ORDER BY p.id DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    return { items: r.rows, page, limit };
+  });
+
+  // Listado de grupos creados para moderación
+  router.get('/api/admin/content/groups', async (c) => {
+    await c.admin();
+    const { page, limit, offset } = paginacion(c.req, 20, 50);
+    const r = await c.pool.query(
+      `SELECT g.id, g.name, g.slug, g.privacy, g.members_count, g.posts_count,
+              g.created_at::text AS created_at, u.username AS owner_username
+       FROM groups g
+       JOIN users u ON u.id = g.owner_id
+       ORDER BY g.id DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    const total = await uno(c.pool, 'SELECT COUNT(*)::int AS count FROM groups');
+    return { items: r.rows, total: Number(total?.count || 0), page, limit };
+  });
+
+  // Eliminar grupo desde administración
+  router.del('/api/admin/content/groups/:id', async (c) => {
+    const admin = await c.admin();
+    const id = Number(c.params.id);
+    await c.pool.query('DELETE FROM groups WHERE id = $1', [id]);
+    await auditar(c.pool, Number(admin.id), 'grupo_eliminado_admin', `#${id}`, c.ip);
+    return { ok: true };
+  });
+
+  // ============================================================
+  // ---------- CONTROL TOTAL: SESIONES Y KILLSWITCH ------------
+  // ============================================================
+
+  // Ver sesiones abiertas de un usuario (para detectar accesos no autorizados)
+  router.get('/api/admin/users/:id/sessions', async (c) => {
+    await c.admin();
+    const id = Number(c.params.id);
+    const sesiones = await c.pool.query(
+      `SELECT id, device, user_agent, ip, created_at::text AS created_at,
+              last_used_at::text AS last_used_at, expires_at::text AS expires_at,
+              revoked_at::text AS revoked_at
+       FROM refresh_tokens
+       WHERE user_id = $1
+       ORDER BY id DESC
+       LIMIT 20`,
+      [id]
+    );
+    return sesiones.rows;
+  });
+
+  // Killswitch: cerrar todas las sesiones activas de un usuario
+  router.post('/api/admin/users/:id/revoke-sessions', async (c) => {
+    const admin = await c.admin();
+    const id = Number(c.params.id);
+    const r = await c.pool.query(
+      'UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL',
+      [id]
+    );
+    enviarA(id, { type: 'force_logout', reason: 'Sesiones revocadas por administración' });
+    await auditar(c.pool, Number(admin.id), 'sesiones_revocadas_admin', `Usuario #${id} (${r.rowCount} sesiones)`, c.ip);
+    return { ok: true, sesiones_revocadas: r.rowCount };
   });
 }

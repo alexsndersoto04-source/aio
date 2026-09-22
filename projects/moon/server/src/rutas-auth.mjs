@@ -13,6 +13,7 @@ import {
   consumirTokenRecuperacion, verificarJwt, tokenRefrescoDe, usuarioPublico, ACCESO_MIN,
 } from './auth.mjs';
 import { enviarCorreo, correoConfigurado } from './correo.mjs';
+import { registrarFalloLogin, limpiarFallosLogin } from './defensas.mjs';
 
 const ACCESO_SEG = ACCESO_MIN * 60;
 
@@ -93,7 +94,11 @@ export function registrarRutasAuth(router) {
       [identificador]
     );
     const valido = usuario ? await verificarPassword(usuario.password_hash, password) : false;
-    if (!usuario || !valido) throw new ApiErr('Usuario o contraseña incorrectos', 401, 'bad_credentials');
+    if (!usuario || !valido) {
+      await registrarFalloLogin(c.pool, c.ip, identificador);
+      throw new ApiErr('Usuario o contraseña incorrectos', 401, 'bad_credentials');
+    }
+    limpiarFallosLogin(c.ip);
     if (usuario.status === 'suspended') {
       throw new ApiErr(usuario.suspend_reason ? `Cuenta suspendida: ${usuario.suspend_reason}` : 'Cuenta suspendida', 403, 'suspended');
     }

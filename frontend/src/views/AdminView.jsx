@@ -216,11 +216,23 @@ export default function AdminView({ tab }) {
     <>
       <div className="topbar"><h1>Panel de administración</h1></div>
       <div className="tabs" ref={migas}>
-        {[['dashboard', 'Resumen'], ['users', 'Usuarios'], ['reports', 'Reportes'], ['words', 'Palabras'], ['activity', 'Actividad'], ['copias', 'Copias'], ['boveda', 'Bóveda Telegram']].map(([id, label]) => (
+        {[
+          ['dashboard', 'Resumen'],
+          ['security', '🛡️ Defensas & Seguridad'],
+          ['content', 'Contenido & Videos'],
+          ['users', 'Usuarios'],
+          ['reports', 'Reportes'],
+          ['words', 'Palabras'],
+          ['activity', 'Actividad'],
+          ['copias', 'Copias'],
+          ['boveda', 'Bóveda Telegram'],
+        ].map(([id, label]) => (
           <button key={id} className={section === id ? 'active' : ''} onClick={() => setSection(id)}>{label}</button>
         ))}
       </div>
       {section === 'dashboard' ? <Dashboard /> : null}
+      {section === 'security' ? <SecurityAdmin /> : null}
+      {section === 'content' ? <ContentAdmin /> : null}
       {section === 'users' ? <UsersAdmin /> : null}
       {section === 'reports' ? <ReportsAdmin /> : null}
       {section === 'words' ? <WordsAdmin /> : null}
@@ -309,6 +321,8 @@ function UsersAdmin() {
   const [q, setQ] = useState('');
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
+  const [sesionesUsuario, setSesionesUsuario] = useState(null);
+  const [cargandoSesiones, setCargandoSesiones] = useState(false);
 
   async function load(query, page = 1) {
     try {
@@ -343,6 +357,57 @@ function UsersAdmin() {
     } catch (e) { avisoError(e); }
   }
 
+  async function abrirSesiones(u) {
+    setCargandoSesiones(true);
+    setSesionesUsuario({ user: u, items: [] });
+    try {
+      const res = await api.get(`/api/admin/users/${u.id}/sessions`);
+      setSesionesUsuario({ user: u, items: res.items || [] });
+    } catch (e) {
+      avisoError(e);
+      setSesionesUsuario(null);
+    } finally {
+      setCargandoSesiones(false);
+    }
+  }
+
+  async function revocarSesion(tokenId) {
+    if (!sesionesUsuario) return;
+    const ok = await confirmar({
+      title: '¿Revocar sesión?',
+      message: 'El dispositivo seleccionado se desconectará de inmediato.',
+      confirmText: 'Revocar',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.delete(`/api/admin/users/${sesionesUsuario.user.id}/sessions/${tokenId}`);
+      toast.ok('Sesión revocada');
+      const res = await api.get(`/api/admin/users/${sesionesUsuario.user.id}/sessions`);
+      setSesionesUsuario({ user: sesionesUsuario.user, items: res.items || [] });
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  async function killswitchTodas() {
+    if (!sesionesUsuario) return;
+    const ok = await confirmar({
+      title: '🚨 Killswitch: ¿Revocar TODAS las sesiones?',
+      message: `Esto cerrará todas las sesiones activas de @${sesionesUsuario.user.username} en todos los dispositivos de inmediato.`,
+      confirmText: 'Cerrar todas las sesiones',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const res = await api.post(`/api/admin/users/${sesionesUsuario.user.id}/revoke-sessions`, {});
+      toast.ok(res.mensaje || 'Todas las sesiones revocadas');
+      setSesionesUsuario(null);
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
   return (
     <div className="card" style={{ padding: 16, overflowX: 'auto' }}>
       <input className="input mb" placeholder="Buscar por usuario, correo o nombre…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -366,10 +431,11 @@ function UsersAdmin() {
               <td className="muted">{u.posts_count} posts · {u.followers_count} seg.</td>
               <td className="muted">{timeAgo(u.created_at)}</td>
               <td>
-                <div className="row">
+                <div className="row" style={{ gap: 6 }}>
                   {u.status === 'active' ? <button className="btn-ghost btn-sm" onClick={() => act(u.id, 'suspend')}>Suspender</button> : null}
                   {u.status === 'suspended' ? <button className="btn-ghost btn-sm" onClick={() => act(u.id, 'activate')}>Activar</button> : null}
                   {!u.is_verified ? <button className="btn-ghost btn-sm" onClick={() => act(u.id, 'verify')}>Verificar</button> : <span className="muted">✓</span>}
+                  <button className="btn-ghost btn-sm" onClick={() => abrirSesiones(u)} title="Auditar sesiones y Killswitch">Sesiones</button>
                 </div>
               </td>
             </tr>
@@ -377,6 +443,58 @@ function UsersAdmin() {
         </tbody>
       </table>
       <p className="muted">{total} usuarios</p>
+
+      {/* Modal de Sesiones y Killswitch */}
+      {sesionesUsuario && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0,0,0,0.7)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: 16
+        }}>
+          <div className="card" style={{ maxWidth: 640, width: '100%', maxHeight: '90vh', overflowY: 'auto', padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18 }}>Sesiones de @{sesionesUsuario.user.username}</h3>
+                <p className="muted" style={{ margin: '4px 0 0', fontSize: 13 }}>Auditoría de dispositivos y killswitch de emergencia</p>
+              </div>
+              <button className="btn-ghost btn-sm" onClick={() => setSesionesUsuario(null)}>✕ Cerrar</button>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', padding: 12, borderRadius: 8 }}>
+              <div>
+                <b style={{ color: '#ef4444' }}>Killswitch de Seguridad</b>
+                <div className="muted" style={{ fontSize: 12 }}>Desconectar de inmediato todas las sesiones activas en teléfonos y computadoras.</div>
+              </div>
+              <button className="btn-danger btn-sm" onClick={killswitchTodas}>🚨 Expulsar Todo</button>
+            </div>
+
+            {cargandoSesiones ? (
+              <p className="muted">Cargando sesiones…</p>
+            ) : sesionesUsuario.items.length === 0 ? (
+              <p className="muted">Este usuario no tiene sesiones activas registradas en este momento.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {sesionesUsuario.items.map((s) => (
+                  <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 10, background: 'var(--bg-sec, rgba(255,255,255,0.03))', borderRadius: 8, border: '1px solid var(--borde, rgba(255,255,255,0.06))' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>IP: <code>{s.ip || 'No registrada'}</code></div>
+                      <div className="muted" style={{ fontSize: 12, wordBreak: 'break-all', marginTop: 2 }}>{s.user_agent || 'Navegador desconocido'}</div>
+                      <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Iniciada {timeAgo(s.created_at)} · Expira {timeAgo(s.expires_at)}</div>
+                    </div>
+                    <button className="btn-ghost btn-sm" style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)', marginLeft: 12 }} onClick={() => revocarSesion(s.id)}>Revocar</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -708,6 +826,626 @@ function SeccionBovedaTelegram() {
           </tbody>
         </table>
         {lotes.length === 0 ? <p className="muted" style={{ margin: '12px 0 0' }}>Aún no se han generado paquetes en la bóveda. Presiona «Crear Snapshot en Telegram» para resguardar tu primer paquete.</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function SecurityAdmin() {
+  const [data, setData] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [ipBloquear, setIpBloquear] = useState('');
+  const [motivoBloquear, setMotivoBloquear] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function cargar() {
+    try {
+      setCargando(true);
+      const res = await api.get('/api/admin/security');
+      setData(res);
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  useEffect(() => {
+    cargar();
+  }, []);
+
+  async function alternarBlindaje(activar) {
+    const ok = await confirmar({
+      title: activar ? '¿Activar Modo Blindaje Anti-DDoS?' : '¿Desactivar Modo Blindaje?',
+      message: activar
+        ? 'El servidor aplicará un límite estricto de 15 peticiones/minuto por IP y filtrará tráfico anómalo para mitigar ataques DDoS.'
+        : 'El servidor volverá a los límites estándar de protección.',
+      confirmText: activar ? 'Activar Blindaje' : 'Volver a Normal',
+      danger: activar,
+    });
+    if (!ok) return;
+
+    try {
+      setBusy(true);
+      const res = await api.post('/api/admin/security/shield', { activo: activar });
+      toast.ok(res.mensaje);
+      cargar();
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bloquearIpManual(e) {
+    e.preventDefault();
+    if (!ipBloquear.trim()) return;
+    try {
+      setBusy(true);
+      const res = await api.post('/api/admin/security/block-ip', {
+        ip: ipBloquear.trim(),
+        motivo: motivoBloquear.trim() || 'Bloqueo manual administrativo',
+      });
+      toast.ok(res.mensaje);
+      setIpBloquear('');
+      setMotivoBloquear('');
+      cargar();
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function desbloquearIp(ip) {
+    const ok = await confirmar({
+      title: `¿Desbloquear IP ${ip}?`,
+      message: 'Esta dirección IP podrá comunicarse de nuevo con el servidor sin restricciones.',
+      confirmText: 'Desbloquear',
+    });
+    if (!ok) return;
+
+    try {
+      setBusy(true);
+      const res = await api.post('/api/admin/security/unblock-ip', { ip });
+      toast.ok(res.mensaje);
+      cargar();
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function purgarCache() {
+    const ok = await confirmar({
+      title: '¿Purgar caché global del servidor?',
+      message: 'Se limpiarán todas las entradas en memoria RAM (feeds, videos y estadísticas), forzando a rehidratar datos limpios.',
+      confirmText: '⚡ Purgar Memoria',
+    });
+    if (!ok) return;
+
+    try {
+      setBusy(true);
+      const res = await api.post('/api/admin/cache/clear', {});
+      toast.ok(res.mensaje);
+      cargar();
+    } catch (err) {
+      avisoError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (cargando && !data) {
+    return <div className="card" style={{ padding: 24, textAlign: 'center' }}><p className="muted">Cargando defensas y escudo de seguridad…</p></div>;
+  }
+
+  const blindajeActivo = Boolean(data?.resumen_defensas?.modo_blindaje_ddos);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Tarjeta de Escudo Anti-DDoS */}
+      <div
+        className="card"
+        style={{
+          padding: 20,
+          background: blindajeActivo
+            ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(220, 38, 38, 0.05) 100%)'
+            : 'linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(5, 150, 105, 0.02) 100%)',
+          borderColor: blindajeActivo ? '#ef4444' : 'rgba(16, 185, 129, 0.3)',
+        }}
+      >
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: 12,
+                background: blindajeActivo ? '#ef4444' : '#10b981',
+                color: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: blindajeActivo ? '0 0 16px rgba(239,68,68,0.4)' : 'none',
+              }}
+            >
+              <IconShield style={{ width: 26, height: 26 }} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 18 }}>Escudo Anti-DDoS y Blindaje</h3>
+                <span
+                  className="pill"
+                  style={{
+                    background: blindajeActivo ? '#ef4444' : '#10b981',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: 11,
+                  }}
+                >
+                  {blindajeActivo ? 'BLINDAJE ACTIVO' : 'DEFENSAS ESTÁNDAR'}
+                </span>
+              </div>
+              <p className="muted" style={{ margin: '4px 0 0', fontSize: 13, maxWidth: 600 }}>
+                {blindajeActivo
+                  ? 'Escudo de alta resistencia activo: se aplica rate limiting estricto de 15 peticiones/minuto por IP y rechazo anticipado en RAM.'
+                  : 'Filtrado de IPs en memoria RAM (0.001 ms) y rate limiting inteligente para uso habitual y fluido.'}
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              className={blindajeActivo ? 'btn-ghost' : 'btn-danger'}
+              style={{ fontWeight: 600, padding: '8px 16px' }}
+              disabled={busy}
+              onClick={() => alternarBlindaje(!blindajeActivo)}
+            >
+              {blindajeActivo ? 'Desactivar Blindaje' : '🚨 Activar Modo Blindaje'}
+            </button>
+            <button
+              className="btn-ghost"
+              style={{ padding: '8px 14px' }}
+              disabled={busy}
+              onClick={purgarCache}
+              title="Vaciar caché en memoria de feeds y videos"
+            >
+              ⚡ Purgar Caché
+            </button>
+            <button
+              className="btn-ghost"
+              style={{ padding: '8px 12px' }}
+              disabled={busy}
+              onClick={cargar}
+              title="Refrescar métricas"
+            >
+              ↻ Refrescar
+            </button>
+          </div>
+        </div>
+
+        {/* Métricas del Motor de Defensas */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            gap: 12,
+            marginTop: 18,
+            paddingTop: 16,
+            borderTop: '1px solid var(--borde, rgba(255,255,255,0.08))',
+          }}
+        >
+          <div>
+            <div className="muted" style={{ fontSize: 12 }}>IPs Bloqueadas (Memoria)</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#ef4444' }}>
+              {data?.resumen_defensas?.ips_bloqueadas_en_ram || 0}
+            </div>
+            <small className="muted" style={{ fontSize: 11 }}>Rechazo a 0.001 ms</small>
+          </div>
+          <div>
+            <div className="muted" style={{ fontSize: 12 }}>IPs con Intentos Fallidos</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#f59e0b' }}>
+              {data?.resumen_defensas?.ips_bajo_vigilancia_fuerza_bruta || 0}
+            </div>
+            <small className="muted" style={{ fontSize: 11 }}>Vigilancia activa</small>
+          </div>
+          <div>
+            <div className="muted" style={{ fontSize: 12 }}>Eventos de Seguridad (24h)</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#6366f1' }}>
+              {data?.eventos_24h || 0}
+            </div>
+            <small className="muted" style={{ fontSize: 11 }}>Auditoría registrada</small>
+          </div>
+          <div>
+            <div className="muted" style={{ fontSize: 12 }}>Algoritmo Criptográfico</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#10b981', marginTop: 4 }}>
+              Argon2id + TOTP 2FA
+            </div>
+            <small className="muted" style={{ fontSize: 11 }}>Blindaje militar</small>
+          </div>
+        </div>
+      </div>
+
+      {/* Bloqueo Manual y Gestión de IPs */}
+      <div className="card" style={{ padding: 18 }}>
+        <h4 style={{ margin: '0 0 12px', fontSize: 16 }}>Lista Negra de IPs (Bloqueo Instantáneo)</h4>
+        <form onSubmit={bloquearIpManual} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+          <input
+            className="input"
+            style={{ flex: '1 1 200px' }}
+            placeholder="Dirección IP (ej. 185.220.101.5)"
+            value={ipBloquear}
+            onChange={(e) => setIpBloquear(e.target.value)}
+            required
+          />
+          <input
+            className="input"
+            style={{ flex: '2 1 280px' }}
+            placeholder="Motivo del bloqueo (ej. Fuerza bruta en autenticación)"
+            value={motivoBloquear}
+            onChange={(e) => setMotivoBloquear(e.target.value)}
+          />
+          <button type="submit" className="btn-danger" disabled={busy || !ipBloquear.trim()}>
+            Bloquear IP
+          </button>
+        </form>
+
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Dirección IP</th>
+                <th>Motivo</th>
+                <th>Bloqueado por</th>
+                <th>Fecha</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data?.ips_bloqueadas?.map((b) => (
+                <tr key={b.id || b.ip}>
+                  <td><code>{b.ip}</code></td>
+                  <td>{b.reason || 'Sin motivo especificado'}</td>
+                  <td className="muted">{b.blocked_by_user || 'Sistema / Auto-bloqueo'}</td>
+                  <td className="muted">{timeAgo(b.created_at)}</td>
+                  <td>
+                    <button
+                      className="btn-ghost btn-sm"
+                      onClick={() => desbloquearIp(b.ip)}
+                      disabled={busy}
+                    >
+                      Desbloquear
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {(!data?.ips_bloqueadas || data.ips_bloqueadas.length === 0) && (
+            <p className="muted" style={{ margin: '12px 0 0' }}>
+              No hay direcciones IP bloqueadas actualmente. El sistema bloquea automáticamente tras 5 fallos seguidos de autenticación.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Auditoría de Eventos de Seguridad */}
+      <div className="card" style={{ padding: 18 }}>
+        <h4 style={{ margin: '0 0 12px', fontSize: 16 }}>Registro de Auditoría de Seguridad</h4>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Tipo de Evento</th>
+                <th>IP</th>
+                <th>Usuario</th>
+                <th>Detalles</th>
+                <th>Fecha / Hora</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data?.eventos_recientes?.map((ev) => (
+                <tr key={ev.id}>
+                  <td>
+                    <span
+                      className="pill"
+                      style={{
+                        background:
+                          ev.event_type.includes('EXCESS') || ev.event_type.includes('SUSPICIOUS')
+                            ? '#ef4444'
+                            : ev.event_type.includes('SHIELD')
+                            ? '#8b5cf6'
+                            : '#3b82f6',
+                        color: '#fff',
+                        fontSize: 11,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {ev.event_type}
+                    </span>
+                  </td>
+                  <td><code>{ev.ip || '—'}</code></td>
+                  <td className="muted">{ev.username ? `@${ev.username}` : '—'}</td>
+                  <td style={{ fontSize: 12, maxWidth: 320, wordBreak: 'break-word' }}>
+                    {typeof ev.details === 'object' ? JSON.stringify(ev.details) : String(ev.details || '—')}
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>{timeAgo(ev.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {(!data?.eventos_recientes || data.eventos_recientes.length === 0) && (
+            <p className="muted" style={{ margin: '12px 0 0' }}>
+              No se han registrado incidentes de seguridad recientemente.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContentAdmin() {
+  const [subTab, setSubTab] = useState('posts');
+  const [q, setQ] = useState('');
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [cargando, setCargando] = useState(false);
+
+  async function cargar(query, tab) {
+    try {
+      setCargando(true);
+      const res = await api.get(`/api/admin/content/${tab}?q=${encodeURIComponent(query)}&page=1&limit=25`);
+      setItems(res.items || []);
+      setTotal(res.total || 0);
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  useEffect(() => {
+    cargar(q, subTab);
+  }, [subTab]);
+
+  useEffect(() => {
+    const t = setTimeout(() => cargar(q, subTab), 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  async function eliminarPost(id) {
+    const ok = await confirmar({
+      title: '¿Eliminar publicación?',
+      message: 'Esta publicación será removida de la plataforma de forma permanente.',
+      confirmText: 'Eliminar',
+      danger: true,
+    });
+    if (!ok) return;
+
+    try {
+      await api.delete(`/api/admin/content/posts/${id}`);
+      toast.ok('Publicación eliminada');
+      cargar(q, subTab);
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  async function eliminarVideo(id) {
+    const ok = await confirmar({
+      title: '¿Eliminar video de Moon Watch?',
+      message: 'El video y sus interacciones se eliminarán permanentemente.',
+      confirmText: 'Eliminar Video',
+      danger: true,
+    });
+    if (!ok) return;
+
+    try {
+      await api.delete(`/api/admin/content/videos/${id}`);
+      toast.ok('Video eliminado');
+      cargar(q, subTab);
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  async function disolverGrupo(id) {
+    const ok = await confirmar({
+      title: '¿Disolver grupo?',
+      message: 'El grupo y sus miembros serán eliminados permanentemente.',
+      confirmText: 'Disolver Grupo',
+      danger: true,
+    });
+    if (!ok) return;
+
+    try {
+      await api.delete(`/api/admin/content/groups/${id}`);
+      toast.ok('Grupo eliminado');
+      cargar(q, subTab);
+    } catch (e) {
+      avisoError(e);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Sub-navegación */}
+      <div className="tabs" style={{ margin: 0 }}>
+        <button className={subTab === 'posts' ? 'active' : ''} onClick={() => { setSubTab('posts'); setQ(''); }}>
+          Publicaciones ({subTab === 'posts' ? total : '...'})
+        </button>
+        <button className={subTab === 'videos' ? 'active' : ''} onClick={() => { setSubTab('videos'); setQ(''); }}>
+          Moon Watch Videos ({subTab === 'videos' ? total : '...'})
+        </button>
+        <button className={subTab === 'groups' ? 'active' : ''} onClick={() => { setSubTab('groups'); setQ(''); }}>
+          Grupos ({subTab === 'groups' ? total : '...'})
+        </button>
+      </div>
+
+      <div className="card" style={{ padding: 16, overflowX: 'auto' }}>
+        <input
+          className="input mb"
+          placeholder={
+            subTab === 'posts'
+              ? 'Buscar por texto o @usuario…'
+              : subTab === 'videos'
+              ? 'Buscar video por título o autor…'
+              : 'Buscar grupo por nombre o creador…'
+          }
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+
+        {cargando ? (
+          <p className="muted">Cargando contenido…</p>
+        ) : subTab === 'posts' ? (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Autor</th>
+                <th>Contenido</th>
+                <th>Interacciones</th>
+                <th>Fecha</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((p) => (
+                <tr key={p.id}>
+                  <td>
+                    <b>{p.display_name || p.username}</b>
+                    <div className="muted" style={{ fontSize: 12 }}>@{p.username}</div>
+                  </td>
+                  <td style={{ maxWidth: 360, wordBreak: 'break-word', fontSize: 13 }}>
+                    {p.content || <span className="muted italic">(Sin texto)</span>}
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    ❤️ {p.likes_count || 0} · 💬 {p.comments_count || 0}
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>{timeAgo(p.created_at)}</td>
+                  <td>
+                    <button className="btn-ghost btn-sm" style={{ color: '#ef4444' }} onClick={() => eliminarPost(p.id)}>
+                      Eliminar
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : subTab === 'videos' ? (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Video</th>
+                <th>Título</th>
+                <th>Autor</th>
+                <th>Métricas</th>
+                <th>Fecha</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((v) => (
+                <tr key={v.id}>
+                  <td style={{ width: 80 }}>
+                    {v.poster_url ? (
+                      <img
+                        src={v.poster_url}
+                        alt="Miniatura"
+                        style={{ width: 64, height: 40, objectFit: 'cover', borderRadius: 4 }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: 64,
+                          height: 40,
+                          background: 'rgba(255,255,255,0.06)',
+                          borderRadius: 4,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 10,
+                        }}
+                      >
+                        Sin miniatura
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    <b>{v.titulo || 'Sin título'}</b>
+                    {v.descripcion && (
+                      <div className="muted" style={{ fontSize: 11, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {v.descripcion}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    <b>{v.display_name || v.username}</b>
+                    <div className="muted" style={{ fontSize: 12 }}>@{v.username}</div>
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    👁️ {v.vistas_contador || 0} · ❤️ {v.likes_contador || 0} · ⏱️ {Math.round(v.duracion_segundos || 0)}s
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>{timeAgo(v.creado_en)}</td>
+                  <td>
+                    <button className="btn-ghost btn-sm" style={{ color: '#ef4444' }} onClick={() => eliminarVideo(v.id)}>
+                      Eliminar
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Grupo</th>
+                <th>Privacidad</th>
+                <th>Miembros</th>
+                <th>Creador</th>
+                <th>Fecha</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((g) => (
+                <tr key={g.id}>
+                  <td>
+                    <b>{g.name}</b>
+                    <div className="muted" style={{ fontSize: 12 }}>/{g.slug}</div>
+                    {g.description && <div className="muted" style={{ fontSize: 11 }}>{g.description}</div>}
+                  </td>
+                  <td>
+                    <span className={`pill ${g.privacy === 'public' ? 'ok' : 'info'}`}>
+                      {g.privacy}
+                    </span>
+                  </td>
+                  <td className="muted">{g.members_count} miembros</td>
+                  <td>
+                    <b>{g.creator_name || g.creator_username}</b>
+                    <div className="muted" style={{ fontSize: 12 }}>@{g.creator_username}</div>
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>{timeAgo(g.created_at)}</td>
+                  <td>
+                    <button className="btn-ghost btn-sm" style={{ color: '#ef4444' }} onClick={() => disolverGrupo(g.id)}>
+                      Disolver
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {!cargando && items.length === 0 && (
+          <p className="muted" style={{ margin: '14px 0 0' }}>
+            No se encontraron elementos coincidentes.
+          </p>
+        )}
       </div>
     </div>
   );

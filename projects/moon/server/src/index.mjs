@@ -29,6 +29,7 @@ import { registrarRutasPerfil } from './rutas-perfil.mjs';
 import { registrarRutasTelegramAuth } from './rutas-telegram-auth.mjs';
 import { registrarRutasBoveda } from './rutas-boveda.mjs';
 import { microCache } from './cache-memoria.mjs';
+import { inicializarDefensas, estaIpBloqueada, estadoModoBlindaje } from './defensas.mjs';
 import { montarWs, conectados } from './ws.mjs';
 import { importarDelDisco } from './medios.mjs';
 import { programarCopiaDiaria } from './copias.mjs';
@@ -242,6 +243,9 @@ router.get('/api/metrics', async (c) => {
   };
 });
 
+// Inicializar defensas y escudo en memoria
+await inicializarDefensas(pool).catch(() => {});
+
 // Las fotos que quedaran en el disco se pasan a la base de datos (una vez).
 importarDelDisco(pool).catch(() => {});
 // Copia de seguridad diaria por correo (si hay correo configurado).
@@ -258,6 +262,12 @@ const servidor = createServer(async (req, res) => {
     return;
   }
 
+  const ipCliente = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (estaIpBloqueada(ipCliente)) {
+    json(res, 403, { error: 'Acceso denegado: tu dirección IP está bloqueada por seguridad' });
+    return;
+  }
+
   let camino;
   try {
     camino = decodeURIComponent(new URL(req.url, 'http://x').pathname);
@@ -266,8 +276,9 @@ const servidor = createServer(async (req, res) => {
     return;
   }
 
-  // Límite general por IP para frenar abusos (las rutas sensibles tienen el suyo).
-  if (camino.startsWith('/api/') && demasiadoRapido(`ip:${req.socket.remoteAddress}`, 300, 60_000)) {
+  // Límite general por IP (en Modo Blindaje es mucho más estricto para mitigar ataques).
+  const maxPeticiones = estadoModoBlindaje() ? 80 : 300;
+  if (camino.startsWith('/api/') && demasiadoRapido(`ip:${ipCliente}`, maxPeticiones, 60_000)) {
     json(res, 429, { error: 'Demasiadas peticiones, intenta en un minuto' });
     return;
   }
