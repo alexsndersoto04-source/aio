@@ -1,7 +1,7 @@
 {
   "name": "Moon — red social",
   "short_name": "Moon",
-  "description": "Moon: publicaciones, fotos, historias, grupos y mensajes en vivo. Una red social real.",
+  "description": "Moon: publicaciones, videos de alta calidad, fotos, notas de voz, grupos y mensajería en vivo. Una red social real.",
   "lang": "es",
   "start_url": "/",
   "scope": "/",
@@ -17,6 +17,7 @@
     { "src": "/iconos/icono-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "shortcuts": [
+    { "name": "Videos", "url": "/#/videos", "icons": [{ "src": "/iconos/icono-192.png", "sizes": "192x192" }] },
     { "name": "Mensajes", "url": "/#/messages", "icons": [{ "src": "/iconos/icono-192.png", "sizes": "192x192" }] },
     { "name": "Publicar", "url": "/#/feed", "icons": [{ "src": "/iconos/icono-192.png", "sizes": "192x192" }] },
     { "name": "Mi perfil", "url": "/#/profile", "icons": [{ "src": "/iconos/icono-192.png", "sizes": "192x192" }] }

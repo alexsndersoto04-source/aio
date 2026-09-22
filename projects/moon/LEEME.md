@@ -53,7 +53,8 @@ que hicieron, para poder comprobarlo a mano después.
 | Área | Qué incluye |
 |---|---|
 | Cuentas | Registro, acceso, 2FA, recuperación de contraseña, privacidad, bloqueos |
-| Publicaciones | Texto, hasta 4 fotos, edición, borrado, me gusta, comentarios, guardados |
+| Publicaciones | Texto, videos, fotos, encuestas, notas de voz, edición, me gusta, comentarios, guardados |
+| Videos (Watch) | Feed de videos con reproducción continua, pantalla completa y biblioteca personal |
 | Historias | Foto con pie, caducan a las 24 horas, visitas contadas, borrado |
 | Grupos | Crear, entrar, salir, publicar dentro, miembros con su papel, privados |
 | Mensajes | Conversaciones, tiempo real, reacciones, borrar, «escribiendo…» |

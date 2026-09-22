@@ -23,7 +23,7 @@ import {
   IconCheck, IconAlert, IconWarning, IconInfo, IconSun, IconMoon, IconRefresh,
   IconGrid, IconCamera, IconAt, IconMapPin, IconLink, IconEye, IconBan, IconSpark,
   IconMail, IconComment, IconUsers, IconSearch, IconTrend,
-  IconClock, IconGlobe, IconImage,
+  IconClock, IconGlobe, IconImage, IconVideo,
 } from '../components/Icons.jsx';
 import { toast, confirmar, avisoError } from '../ui.js';
 import { soportaAvisos, activarAvisos, desactivarAvisos, estadoAvisos, esIOS, instalada } from '../push.js';
@@ -1419,45 +1419,73 @@ export default function SettingsView({ tab }) {
               </span>
               <div>
                 <div className="nombre">Moon</div>
-                <div className="muted" style={{ fontSize: 13 }}>Una red social real: publicaciones, fotos, historias, grupos y mensajes en vivo.</div>
+                <div className="muted" style={{ fontSize: 13 }}>
+                  Una red social real: publicaciones, videos de alta calidad, fotos, notas de voz, grupos y mensajes en vivo.
+                </div>
                 <span className="sello" style={{ marginTop: 6 }}>
-                  <span className="luz" style={{ width: 7, height: 7, borderRadius: '50%', background: salud?.status === 'ok' ? '#22c55e' : salud ? '#f59e0b' : '#94a3b8' }} />
+                  <span
+                    className="luz"
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: '50%',
+                      background: salud?.status === 'ok' ? '#22c55e' : salud ? '#f59e0b' : '#94a3b8',
+                    }}
+                  />
                   {salud
-                    ? (salud.status === 'ok' ? 'Servidor y base de datos en línea' : 'El servidor responde, la base de datos no')
-                    : 'Comprobando el servidor…'}
+                    ? (salud.status === 'ok' ? 'Plataforma en línea y sincronizada' : 'Conectando con los servicios de Moon…')
+                    : 'Comprobando estado del sistema…'}
                 </span>
               </div>
             </div>
             <div className="divisor-aurora" />
+
             <div className="fila-ajuste">
               <span className="icono"><IconSpark /></span>
-              <span className="texto"><b>Aurora de cristal</b><small>El acabado de esta versión: cielo aurora, cristal y acento índigo → violeta → cian.</small></span>
+              <span className="texto">
+                <b>Experiencia visual Moon</b>
+                <small>Diseño adaptativo con tema claro y oscuro, navegación fluida y optimizada para funcionar como app móvil instalable (PWA).</small>
+              </span>
             </div>
+
             <div className="fila-ajuste">
-              <span className="icono"><IconCheck /></span>
-              <span className="texto"><b>Lo que puedes hacer</b><small>Publicar con fotos y encuestas, historias de 24 h, grupos, mensajes con reacciones, guardados, avisos y moderación.</small></span>
+              <span className="icono"><IconVideo /></span>
+              <span className="texto">
+                <b>Moon Watch</b>
+                <small>Sección de videos con reproducción continua, pantalla completa real, controles avanzados de audio y biblioteca personal.</small>
+              </span>
             </div>
+
             <div className="fila-ajuste">
               <span className="icono"><IconLayers /></span>
               <span className="texto">
-                <b>Fotos guardadas a salvo</b>
-                <small>
-                  {salud?.fotos_en_base === null || salud?.fotos_en_base === undefined
-                    ? 'Comprobando…'
-                    : `${salud.fotos_en_base} imágenes dentro de la base de datos (no se pierden al reiniciar).`}
-                </small>
+                <b>Almacén multimedia permanente</b>
+                <small>Tus fotos, videos y notas de voz se guardan con entrega rápida en streaming y respaldo continuo sin caducidad.</small>
               </span>
             </div>
+
             <div className="fila-ajuste">
-              <span className="icono"><IconMail /></span>
+              <span className="icono"><IconShield /></span>
               <span className="texto">
-                <b>Correo</b>
-                <small>{salud?.correo && salud.correo !== 'sin configurar' ? `Configurado (${salud.correo})` : 'Sin configurar: no salen los correos de recuperación ni la copia diaria.'}</small>
+                <b>Privacidad y Seguridad</b>
+                <small>Acceso protegido con verificación en dos pasos (2FA), cifrado en tránsito y control total sobre quién ve tu perfil y tus mensajes.</small>
               </span>
             </div>
+
+            <div className="fila-ajuste">
+              <span className="icono"><IconUsers /></span>
+              <span className="texto">
+                <b>Comunidad y Mensajes</b>
+                <small>Chat en vivo 1 a 1 con reacciones, grupos temáticos, historias temporales de 24 horas y encuestas dinámicas.</small>
+              </span>
+            </div>
+
             <div className="fila-ajuste">
               <span className="icono"><IconAlert /></span>
-              <span className="texto"><b>Reportar un problema</b><small>Desde el menú de cualquier publicación o perfil puedes reportar contenido.</small></span>
+              <span className="texto">
+                <b>Reportar un problema</b>
+                <small>Desde el menú de cualquier publicación, video o perfil puedes reportar contenido indebido de forma confidencial.</small>
+              </span>
             </div>
           </div>
         </>

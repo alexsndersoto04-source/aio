@@ -8,7 +8,7 @@ import { esDemo } from '../demo.js';
 import { useAuth } from '../auth.jsx';
 import { toast } from '../ui.js';
 import {
-  IconLock, IconSpark, IconGlobe, IconUsers, IconShield, IconCheck,
+  IconLock, IconSpark, IconGlobe, IconUsers, IconShield, IconCheck, IconVideo,
 } from '../components/Icons.jsx';
 
 function Campo({ label, hint, ...props }) {
@@ -78,14 +78,15 @@ export default function AuthView({ mode }) {
           <div className="auth-orb" aria-hidden="true" />
           <h1>Tu órbita,<br />tu conversación.</h1>
           <p>
-            Moon reúne publicaciones, fotos, mensajes en vivo y comunidades en un
-            espacio tranquilo, rápido y sin ruido.
+            Moon reúne publicaciones, videos de alta calidad, fotos, notas de voz
+            y comunidades en un espacio fluido, rápido y sin ruido.
           </p>
           <ul>
-            <li><IconSpark /> Feed con lo que de verdad te interesa</li>
-            <li><IconGlobe /> Descubre tendencias y personas nuevas</li>
-            <li><IconUsers /> Mensajería 1 a 1 en tiempo real</li>
-            <li><IconShield /> Cuenta protegida: 2FA, sesiones y privacidad</li>
+            <li><IconSpark /> Feed inteligente con lo que te interesa</li>
+            <li><IconVideo /> Moon Watch: videos y clips continuos</li>
+            <li><IconGlobe /> Tendencias, grupos y comunidades</li>
+            <li><IconUsers /> Mensajería privada y llamadas en vivo</li>
+            <li><IconShield /> Seguridad avanzada, 2FA y privacidad total</li>
           </ul>
         </section>
 
