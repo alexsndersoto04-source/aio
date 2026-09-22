@@ -158,5 +158,10 @@
     "version": 32,
     "name": "llamadas_en_el_chat",
     "sql": "ALTER TABLE messages ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT ''; CREATE INDEX IF NOT EXISTS ix_messages_llamadas ON messages (conversation_id, kind) WHERE kind <> ''"
+  },
+  {
+    "version": 33,
+    "name": "boveda_datos_telegram",
+    "sql": "CREATE TABLE IF NOT EXISTS boveda_indice ( id BIGSERIAL PRIMARY KEY, modulo TEXT NOT NULL, subtipo TEXT NOT NULL DEFAULT '', desde_id BIGINT, hasta_id BIGINT, desde_fecha TIMESTAMPTZ, hasta_fecha TIMESTAMPTZ, total_registros INT NOT NULL DEFAULT 0, tg_msg_id BIGINT NOT NULL, bytes_originales BIGINT NOT NULL DEFAULT 0, bytes_comprimidos BIGINT NOT NULL DEFAULT 0, checksum_sha256 TEXT NOT NULL DEFAULT '', metadatos JSONB NOT NULL DEFAULT '{}'::jsonb, creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW() ); CREATE INDEX IF NOT EXISTS ix_boveda_modulo ON boveda_indice (modulo, creado_en DESC); CREATE INDEX IF NOT EXISTS ix_boveda_rango ON boveda_indice (modulo, desde_id, hasta_id)"
   }
 ]

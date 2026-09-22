@@ -216,7 +216,7 @@ export default function AdminView({ tab }) {
     <>
       <div className="topbar"><h1>Panel de administración</h1></div>
       <div className="tabs" ref={migas}>
-        {[['dashboard', 'Resumen'], ['users', 'Usuarios'], ['reports', 'Reportes'], ['words', 'Palabras'], ['activity', 'Actividad'], ['copias', 'Copias']].map(([id, label]) => (
+        {[['dashboard', 'Resumen'], ['users', 'Usuarios'], ['reports', 'Reportes'], ['words', 'Palabras'], ['activity', 'Actividad'], ['copias', 'Copias'], ['boveda', 'Bóveda Telegram']].map(([id, label]) => (
           <button key={id} className={section === id ? 'active' : ''} onClick={() => setSection(id)}>{label}</button>
         ))}
       </div>
@@ -226,6 +226,7 @@ export default function AdminView({ tab }) {
       {section === 'words' ? <WordsAdmin /> : null}
       {section === 'activity' ? <ActivityAdmin /> : null}
       {section === 'copias' ? <SeccionCopias /> : null}
+      {section === 'boveda' ? <SeccionBovedaTelegram /> : null}
     </>
   );
 }
@@ -497,6 +498,178 @@ function ActivityAdmin() {
         </tbody>
       </table>
       {rows.length === 0 ? <p className="muted">Sin actividad registrada.</p> : null}
+    </div>
+  );
+}
+
+function SeccionBovedaTelegram() {
+  const [estado, setEstado] = useState(null);
+  const [lotes, setLotes] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [accion, setAccion] = useState('');
+
+  const cargarDatos = async () => {
+    try {
+      const [est, lot] = await Promise.all([
+        api.get('/api/boveda/estado'),
+        api.get('/api/boveda/lotes'),
+      ]);
+      setEstado(est);
+      setLotes(lot || []);
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  useEffect(() => {
+    cargarDatos();
+  }, []);
+
+  const crearSnapshot = async () => {
+    setAccion('snapshot');
+    try {
+      const res = await api.post('/api/boveda/snapshot', {});
+      toast(`Snapshot asegurado en Telegram (#${res.tg_msg_id})`);
+      cargarDatos();
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setAccion('');
+    }
+  };
+
+  const archivarFrios = async () => {
+    setAccion('archivar');
+    try {
+      const res = await api.post('/api/boveda/archivar', { tipo: 'todo', dias: 30 });
+      toast('Datos antiguos archivados y asegurados en Telegram');
+      cargarDatos();
+    } catch (e) {
+      avisoError(e);
+    } finally {
+      setAccion('');
+    }
+  };
+
+  if (cargando) return <div className="spinner" />;
+
+  const neon = estado?.capacidad_neon || {};
+  const tg = estado?.boveda_telegram || {};
+  const porcentajeNeon = neon.porcentaje_usado || 0;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Banner de arquitectura en 2 capas */}
+      <div className="card" style={{ padding: 20, background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(6,182,212,0.08))', border: '1px solid rgba(99,102,241,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>🏛️</span> Bóveda de Datos Fría (Telegram Tiered Storage)
+            </h3>
+            <p className="muted" style={{ margin: '6px 0 0', fontSize: 13, maxWidth: 640 }}>
+              Arquitectura híbrida de almacenamiento infinito a coste cero: Neon PostgreSQL mantiene los datos activos en caliente, y Telegram aloja los lotes históricos y snapshots comprimidos al ~90%.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-primary btn-sm" onClick={crearSnapshot} disabled={!!accion}>
+              {accion === 'snapshot' ? 'Comprimiendo y Subiendo…' : '📦 Crear Snapshot en Telegram'}
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={archivarFrios} disabled={!!accion}>
+              {accion === 'archivar' ? 'Archivando…' : '🧹 Archivar Registros Fríos'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Métricas clave */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+        {/* Capa Caliente Neon */}
+        <div className="card" style={{ padding: 16 }}>
+          <div className="muted" style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase' }}>Capa Caliente (Neon)</div>
+          <div style={{ fontSize: 24, fontWeight: 700, margin: '8px 0 4px' }}>
+            {neon.usado_mb ?? 0} <span style={{ fontSize: 14, fontWeight: 400 }} className="muted">/ {neon.limite_mb || 500} MB</span>
+          </div>
+          <div style={{ height: 6, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden', margin: '8px 0' }}>
+            <div
+              style={{
+                height: '100%',
+                width: `${Math.min(100, Math.max(2, porcentajeNeon))}%`,
+                background: porcentajeNeon > 80 ? '#ef4444' : porcentajeNeon > 50 ? '#f59e0b' : '#10b981',
+                borderRadius: 3,
+                transition: 'width 0.4s ease',
+              }}
+            />
+          </div>
+          <small className="muted">{porcentajeNeon}% de cuota libre consumida</small>
+        </div>
+
+        {/* Capa Fría Telegram */}
+        <div className="card" style={{ padding: 16 }}>
+          <div className="muted" style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase' }}>Canal de Bóveda (Telegram)</div>
+          <div style={{ fontSize: 16, fontWeight: 700, margin: '8px 0 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: tg.canal ? '#10b981' : '#f59e0b', display: 'inline-block' }} />
+            {tg.canal ? 'Conectado y En Línea' : 'Esperando canal'}
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>{tg.canal_nombre || 'Moon — Bóveda de Dato'}</div>
+          <div style={{ marginTop: 6, fontSize: 12, color: '#6366f1' }}>Almacenamiento Ilimitado 24/7</div>
+        </div>
+
+        {/* Ahorro con Compresión */}
+        <div className="card" style={{ padding: 16 }}>
+          <div className="muted" style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase' }}>Optimización Gzip</div>
+          <div style={{ fontSize: 24, fontWeight: 700, margin: '8px 0 4px', color: '#10b981' }}>
+            {tg.ahorro_porcentaje ?? 0}% <span style={{ fontSize: 14, fontWeight: 400 }} className="muted">ahorrado</span>
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {tg.bytes_originales ? `${+(tg.bytes_originales / 1024).toFixed(1)} KB originales → ${+(tg.bytes_comprimidos / 1024).toFixed(1)} KB en Telegram` : 'Sin paquetes archivados aún'}
+          </div>
+        </div>
+
+        {/* Lotes Totales */}
+        <div className="card" style={{ padding: 16 }}>
+          <div className="muted" style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase' }}>Lotes Asegurados</div>
+          <div style={{ fontSize: 24, fontWeight: 700, margin: '8px 0 4px' }}>
+            {tg.total_lotes ?? 0} <span style={{ fontSize: 14, fontWeight: 400 }} className="muted">paquetes</span>
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {tg.total_registros ?? 0} registros históricos a salvo
+          </div>
+        </div>
+      </div>
+
+      {/* Historial de Lotes Archivados */}
+      <div className="card" style={{ padding: 16, overflowX: 'auto' }}>
+        <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>Historial de Lotes en Telegram</h4>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Módulo</th>
+              <th>Registros</th>
+              <th>Original</th>
+              <th>En Telegram</th>
+              <th>Mensaje Telegram</th>
+              <th>Fecha</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lotes.map((l) => (
+              <tr key={l.id}>
+                <td>#{l.id}</td>
+                <td><code>{l.modulo}</code></td>
+                <td>{l.total_registros}</td>
+                <td className="muted">{+(Number(l.bytes_originales || 0) / 1024).toFixed(1)} KB</td>
+                <td style={{ color: '#10b981', fontWeight: 600 }}>{+(Number(l.bytes_comprimidos || 0) / 1024).toFixed(1)} KB</td>
+                <td><code>Msg #{l.tg_msg_id}</code></td>
+                <td className="muted">{timeAgo(l.creado_en)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {lotes.length === 0 ? <p className="muted" style={{ margin: '12px 0 0' }}>Aún no se han generado paquetes en la bóveda. Presiona «Crear Snapshot en Telegram» para resguardar tu primer paquete.</p> : null}
+      </div>
     </div>
   );
 }

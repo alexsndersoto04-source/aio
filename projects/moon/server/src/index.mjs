@@ -27,6 +27,7 @@ import { registrarRutasInteraccion } from './rutas-interaccion.mjs';
 import { registrarRutasGruposExtra } from './rutas-grupos-extra.mjs';
 import { registrarRutasPerfil } from './rutas-perfil.mjs';
 import { registrarRutasTelegramAuth } from './rutas-telegram-auth.mjs';
+import { registrarRutasBoveda } from './rutas-boveda.mjs';
 import { montarWs, conectados } from './ws.mjs';
 import { importarDelDisco } from './medios.mjs';
 import { programarCopiaDiaria } from './copias.mjs';
@@ -188,6 +189,7 @@ registrarRutasInteraccion(router);
 registrarRutasGruposExtra(router);
 registrarRutasPerfil(router);
 registrarRutasTelegramAuth(router);
+registrarRutasBoveda(router);
 
 // Salud (pública) y métricas (solo administración).
 router.get('/api/health', async (c) => {
@@ -218,6 +220,7 @@ router.get('/api/health', async (c) => {
     fotos_en_base: fotosEnBase,
     correo: correoConfigurado() ? viaDeCorreo() : 'sin configurar',
     telegram_almacen: Boolean(process.env.TELEGRAM_SESSION),
+    boveda_tier: true,
   };
 });
 
