@@ -226,69 +226,51 @@ export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
   const url = `/api/media/${nombre}`;
   const tipoKind = esVid ? 'video' : (esAud ? 'audio' : clase);
 
+  copiaEnDisco(nombre, listo.bytes);
+
+  // TELEGRAM ES EL REY: Todo archivo multimedia (fotos, audios, historias, videos)
+  // se sube de inmediato a Telegram como almacenamiento permanente e ilimitado.
+  // La base de datos relacional (PostgreSQL) NUNCA almacena los bytes pesados
+  // para evitar agotar las cuotas de Neon o Supabase.
+  let tgPath = nombre;
+  try {
+    const resTg = await subirATelegram(listo.bytes, { nombre, tipo: listo.mime });
+    if (resTg && resTg.tg_id) {
+      tgPath = `tg:${resTg.tg_id}`;
+    }
+  } catch (errTg) {
+    console.error('[medios] error enviando archivo a telegram:', errTg?.message || errTg);
+  }
+
   const media = await uno(
     pool,
     `INSERT INTO media (user_id, kind, original_path, thumb_path, url, bytes)
-     VALUES ($1, $2, $3, $3, $4, $5) RETURNING id`,
-    [userId, tipoKind, nombre, url, listo.bytes.length]
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [userId, tipoKind, nombre, tgPath, url, listo.bytes.length]
   );
-
-  // Si el archivo pesa hasta 30 MB (o es imagen/audio), se guarda en Postgres
-  // para que esté 100% permanente y no se pierda al reiniciar Render.
-  const guardarEnBlobs = !esVid || (listo.bytes.length <= 30 * 1024 * 1024);
-  if (guardarEnBlobs) {
-    try {
-      await pool.query(
-        `INSERT INTO media_blobs (media_id, mime, bytes, ancho, alto) VALUES ($1, $2, $3, $4, $5)`,
-        [Number(media.id), listo.mime, paramBytes(listo.bytes), listo.ancho, listo.alto]
-      );
-    } catch (e) {
-      // Si la base de datos no acepta los bytes (por ejemplo, se llenó el
-      // espacio), al menos queda la copia en disco: mejor eso que nada.
-      console.error('[medios] no se pudieron guardar los bytes en la base:', e.message);
-    }
-  }
-
-  copiaEnDisco(nombre, listo.bytes);
-
-  // Enviar a la bodega del canal privado en Telegram (de fondo y protegido contra cualquier fallo)
-  try {
-    subirATelegram(listo.bytes, { nombre, tipo: listo.mime })
-      .then(async (resTg) => {
-        if (resTg && resTg.tg_id) {
-          await pool.query('UPDATE media SET thumb_path = $1 WHERE id = $2', [`tg:${resTg.tg_id}`, Number(media.id)]).catch(() => {});
-        }
-      })
-      .catch((err) => {
-        console.error('[medios] error enviando a telegram:', err?.message || err);
-      });
-  } catch (errTg) {
-    console.error('[medios] error iniciando subida a telegram:', errTg?.message || errTg);
-  }
 
   return { id: Number(media.id), url, bytes: listo.bytes.length, kind: tipoKind, mime: listo.mime, ancho: listo.ancho, alto: listo.alto };
 }
 
-/** Devuelve la imagen guardada en la base de datos o recuperada de Telegram, o `null`. */
+/**
+ * Devuelve la imagen o audio guardado.
+ * Prioridad 1: Telegram (vía caché en disco local o descarga directa de Telegram).
+ * Prioridad 2: Respaldo de compatibilidad para archivos antiguos.
+ */
 export async function leerImagen(pool, nombre) {
   const url = `/api/media/${nombre}`;
-  const fila = await uno(
-    pool,
-    `SELECT b.mime, b.bytes FROM media m JOIN media_blobs b ON b.media_id = m.id WHERE m.url = $1`,
-    [url]
-  );
-  if (fila) return { mime: fila.mime, bytes: aBuffer(fila.bytes) };
 
-  // Si no está en media_blobs (por ejemplo videos que van directo a Telegram):
+  // 1. TELEGRAM: Buscar si tenemos el puntero en la tabla media
   try {
     const med = await uno(
       pool,
       `SELECT id, kind, thumb_path, original_path FROM media WHERE url = $1`,
       [url]
     );
+
     if (med && med.thumb_path && String(med.thumb_path).startsWith('tg:')) {
       const tgId = String(med.thumb_path).slice(3);
-      const bajado = await descargarDeTelegram(tgId, { tipo: med.kind || 'video' });
+      const bajado = await descargarDeTelegram(tgId, { tipo: med.kind || 'image/jpeg' });
       if (bajado) {
         copiaEnDisco(nombre, bajado);
         const mime = mimeDeNombre(nombre);
@@ -296,7 +278,7 @@ export async function leerImagen(pool, nombre) {
       }
     }
 
-    // Si no tenía 'tg:' o falló por ID, buscar por nombre en el canal de videos:
+    // Si no tenía prefijo 'tg:', intentar rescate por nombre en Telegram
     const rescatado = await recuperarVideoPorNombre(nombre);
     if (rescatado && rescatado.bytes) {
       copiaEnDisco(nombre, rescatado.bytes);
@@ -310,9 +292,17 @@ export async function leerImagen(pool, nombre) {
     console.error('[medios] error recuperando de telegram:', errTg?.message || errTg);
   }
 
-  // Compatibilidad: las fotos que se subieron con la versión anterior quedaron
-  // en la columna `original_data` de la tabla `media`. Se siguen sirviendo
-  // exactamente igual, sin pedirle a nadie que vuelva a subirlas.
+  // 2. Respaldo histórico (solo si existía antes en media_blobs):
+  try {
+    const fila = await uno(
+      pool,
+      `SELECT b.mime, b.bytes FROM media m JOIN media_blobs b ON b.media_id = m.id WHERE m.url = $1`,
+      [url]
+    );
+    if (fila) return { mime: fila.mime, bytes: aBuffer(fila.bytes) };
+  } catch {}
+
+  // 3. Respaldo histórico legacy (original_data):
   try {
     const vieja = await uno(
       pool,
@@ -321,7 +311,7 @@ export async function leerImagen(pool, nombre) {
       [url]
     );
     if (vieja && vieja.bytes) return { mime: vieja.mime, bytes: aBuffer(vieja.bytes) };
-  } catch { /* la columna no existe todavía: nada que recuperar */ }
+  } catch {}
 
   return null;
 }
