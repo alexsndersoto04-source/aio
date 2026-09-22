@@ -51,7 +51,75 @@ export function crearPool(url) {
   return pool;
 }
 
-export async function migrar(pool) {
+/**
+ * Pool Híbrido con Failover Automático:
+ * Combina dos proveedores de base de datos (ej. Neon como Primaria y Supabase como Secundaria).
+ * Si la base primaria se satura, agota cuota o cae, el servidor conmuta
+ * automáticamente a la secundaria sin interrupción del servicio.
+ */
+export class PoolHibrido {
+  constructor(urlA, urlB) {
+    this.urlA = urlA;
+    this.urlB = urlB;
+    this.poolA = urlA ? crearPool(urlA) : null;
+    this.poolB = urlB ? crearPool(urlB) : null;
+    this.activo = 'A';
+    this.esHibrido = true;
+  }
+
+  get poolActual() {
+    if (this.activo === 'A' && this.poolA) return this.poolA;
+    if (this.poolB) return this.poolB;
+    return this.poolA;
+  }
+
+  async query(sql, args = []) {
+    try {
+      return await this.poolActual.query(sql, args);
+    } catch (err) {
+      const msg = String(err.message || '').toLowerCase();
+      const esFalloConexion = msg.includes('terminated') || msg.includes('econnreset') ||
+        msg.includes('connection') || msg.includes('timeout') || msg.includes('quota') ||
+        msg.includes('rate limit') || msg.includes('suspended') || msg.includes('limit reached');
+
+      if (esFalloConexion && this.poolB && this.activo === 'A') {
+        console.warn(`[bd-hibrida] ⚠️ Alerta en BD Primaria (${err.message}). Activando Failover automático a Supabase...`);
+        this.activo = 'B';
+        return await this.poolB.query(sql, args);
+      } else if (esFalloConexion && this.poolA && this.activo === 'B') {
+        console.warn(`[bd-hibrida] ⚠️ Alerta en BD Secundaria (${err.message}). Conmutando a BD Primaria Neon...`);
+        this.activo = 'A';
+        return await this.poolA.query(sql, args);
+      }
+      throw err;
+    }
+  }
+
+  async connect() {
+    try {
+      return await this.poolActual.connect();
+    } catch (err) {
+      if (this.poolB && this.activo === 'A') {
+        console.warn(`[bd-hibrida] Conmutando conexión interactiva a base de respaldo...`);
+        this.activo = 'B';
+        return await this.poolB.connect();
+      }
+      throw err;
+    }
+  }
+
+  on(event, handler) {
+    if (this.poolA && typeof this.poolA.on === 'function') this.poolA.on(event, handler);
+    if (this.poolB && typeof this.poolB.on === 'function') this.poolB.on(event, handler);
+  }
+}
+
+export function crearPoolHibrido(urlA, urlB) {
+  if (!urlB) return crearPool(urlA);
+  return new PoolHibrido(urlA, urlB);
+}
+
+async function aplicarMigracionesEnPool(pool, etiqueta = 'bd') {
   const migraciones = JSON.parse(readFileSync(rutaEsquema, 'utf8'));
   await pool.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version BIGINT PRIMARY KEY,
@@ -69,7 +137,6 @@ export async function migrar(pool) {
     const cliente = await pool.connect();
     try {
       await cliente.query('BEGIN');
-      // Cada migración trae varias sentencias separadas por «;».
       const sentencias = m.sql
         .split(';')
         .map((s) => s.trim())
@@ -78,17 +145,44 @@ export async function migrar(pool) {
       await cliente.query('INSERT INTO schema_migrations (version, name) VALUES ($1, $2)', [m.version, m.name]);
       await cliente.query('COMMIT');
       nuevas += 1;
-      console.log(`[bd] migración v${m.version} ${m.name} aplicada`);
+      console.log(`[bd-${etiqueta}] migración v${m.version} ${m.name} aplicada`);
     } catch (e) {
       await cliente.query('ROLLBACK').catch(() => {});
-      console.error(`[bd] fallo en la migración v${m.version} (${m.name}):`, e.message);
+      console.error(`[bd-${etiqueta}] fallo en la migración v${m.version} (${m.name}):`, e.message);
       throw e;
     } finally {
       cliente.release();
     }
   }
-  if (nuevas === 0) console.log('[bd] esquema al día');
+  if (nuevas === 0) console.log(`[bd-${etiqueta}] esquema al día`);
   return nuevas;
+}
+
+export async function migrar(pool) {
+  if (pool instanceof PoolHibrido || pool.esHibrido) {
+    let exito = false;
+    if (pool.poolA) {
+      try {
+        await aplicarMigracionesEnPool(pool.poolA, 'primaria');
+        exito = true;
+      } catch (errA) {
+        console.warn('[bd-hibrida] No se pudo migrar BD primaria, probando secundaria:', errA.message);
+      }
+    }
+    if (pool.poolB) {
+      try {
+        await aplicarMigracionesEnPool(pool.poolB, 'secundaria');
+        exito = true;
+      } catch (errB) {
+        console.warn('[bd-hibrida] No se pudo migrar BD secundaria:', errB.message);
+      }
+    }
+    if (!exito) {
+      throw new Error('No se pudo aplicar migraciones en ninguna de las bases de datos');
+    }
+    return;
+  }
+  return await aplicarMigracionesEnPool(pool, 'unica');
 }
 
 // Azúcar para consultas.
