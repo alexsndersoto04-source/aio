@@ -13,6 +13,30 @@ import { demasiadoRapido } from './limites.mjs';
 
 const conexiones = new Map(); // userId -> Set(socket)
 
+// Amortiguador de presencia en lotes para alta concurrencia
+const cambiosPresencia = new Map(); // uid -> boolean (online)
+let temporizadorPresencia = null;
+
+function emitirPresenciaAmortiguada(uid, online) {
+  cambiosPresencia.set(Number(uid), online);
+  if (!temporizadorPresencia) {
+    temporizadorPresencia = setTimeout(() => {
+      temporizadorPresencia = null;
+      if (cambiosPresencia.size === 0) return;
+      const copia = new Map(cambiosPresencia);
+      cambiosPresencia.clear();
+
+      for (const [usuarioId, estaOnline] of copia) {
+        for (const otro of conexiones.keys()) {
+          if (Number(otro) !== usuarioId) {
+            enviarA(Number(otro), { type: 'presence', user_id: usuarioId, online: estaOnline });
+          }
+        }
+      }
+    }, 1500); // Agrupa cambios en ventanas de 1.5s
+  }
+}
+
 // Llamadas en curso, por id: { de, para, tipo }. Sirve para avisar si alguien
 // se queda sin conexión y para no encimar dos llamadas a la misma persona.
 const llamadas = new Map();
@@ -107,12 +131,8 @@ export function montarWs(servidorHttp, pool, secreto) {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(evento));
     };
     ws.enviar({ type: 'connected', user_id: uid });
-    // Aviso de presencia: los demás refrescan la lista de contactos.
-    setTimeout(() => {
-      for (const otro of conexiones.keys()) {
-        if (Number(otro) !== uid) enviarA(Number(otro), { type: 'presence', user_id: uid, online: true });
-      }
-    }, 50);
+    // Aviso de presencia amortiguado en lote
+    emitirPresenciaAmortiguada(uid, true);
 
     // ¿Le estaba entrando una llamada mientras no tenía Moon abierto? Ahora que
     // lo abrió, le timbra. Se manda dos veces (al segundo y a los tres
@@ -249,9 +269,7 @@ export function montarWs(servidorHttp, pool, secreto) {
       conjunto.delete(ws);
       if (conjunto.size === 0) {
         conexiones.delete(uid);
-        for (const otro of conexiones.keys()) {
-          enviarA(Number(otro), { type: 'presence', user_id: uid, online: false });
-        }
+        emitirPresenciaAmortiguada(uid, false);
       }
     });
     ws.on('error', () => {});

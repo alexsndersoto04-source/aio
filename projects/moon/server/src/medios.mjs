@@ -339,15 +339,23 @@ export function servirDeDisco(res, nombre, cabeceraRango = '') {
     return false;
   }
   const mime = mimeDeNombre(nombre);
+  const etag = `W/"${nombre}-${tamano}"`;
   const comun = {
     'Content-Type': mime,
     'Cache-Control': 'public, max-age=31536000, immutable',
+    'ETag': etag,
     'Accept-Ranges': 'bytes',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Range, Content-Type',
-    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
     'X-Content-Type-Options': 'nosniff',
   };
+
+  if (res.req && res.req.headers && res.req.headers['if-none-match'] === etag) {
+    res.writeHead(304, comun);
+    res.end();
+    return true;
+  }
 
   const r = rangoDe(cabeceraRango, tamano);
   if (r && r.invalido) {

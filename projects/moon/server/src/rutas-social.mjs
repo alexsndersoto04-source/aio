@@ -10,6 +10,7 @@ import { auditar, sumarEstadistica } from './db.mjs';
 import { notificar } from './ws.mjs';
 import { demasiadoRapido } from './limites.mjs';
 import { conReacciones, conReaccionesComentarios, tipoValido } from './reacciones.mjs';
+import { microCache } from './cache-memoria.mjs';
 
 // ---------- Ayudas ----------
 
@@ -235,54 +236,66 @@ export function registrarRutasSocial(router) {
     const yo = await c.exigir();
     const { page, limit, offset } = paginacion(c.req, 10, 50);
     const tipo = condicionDeTipo(String(c.query.get('tipo') || ''));
-    const condiciones = ["p.status = 'active'", SQL_NO_BLOQUEADOS, SQL_NO_OCULTOS];
-    if (tipo) condiciones.push(tipo);
-    const args = [yo.id];
-    const total = await uno(
-      c.pool,
-      `SELECT COUNT(*)::int AS count FROM posts p WHERE ${condiciones.join(' AND ')}`,
-      args
-    );
-    const filas = await c.pool.query(
-      `${SQL_POST} WHERE ${condiciones.join(' AND ')}
-        ORDER BY ${ordenParaTi(yo.id)} LIMIT ${limit} OFFSET ${offset}`,
-      args
-    );
-    return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), Number(total?.count || 0), page, limit);
+    const clave = `feed:${yo.id}:${page}:${limit}:${tipo || 'todos'}`;
+
+    return await microCache.obtener(clave, 3, async () => {
+      const condiciones = ["p.status = 'active'", SQL_NO_BLOQUEADOS, SQL_NO_OCULTOS];
+      if (tipo) condiciones.push(tipo);
+      const args = [yo.id];
+      const total = await uno(
+        c.pool,
+        `SELECT COUNT(*)::int AS count FROM posts p WHERE ${condiciones.join(' AND ')}`,
+        args
+      );
+      const filas = await c.pool.query(
+        `${SQL_POST} WHERE ${condiciones.join(' AND ')}
+          ORDER BY ${ordenParaTi(yo.id)} LIMIT ${limit} OFFSET ${offset}`,
+        args
+      );
+      return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), Number(total?.count || 0), page, limit);
+    });
   });
 
   router.get('/api/feed/trending', async (c) => {
     const yo = await c.exigir();
     const { page, limit, offset } = paginacion(c.req, 10, 50);
     const tipoTrending = condicionDeTipo(String(c.query.get('tipo') || ''));
-    const filas = await c.pool.query(
-      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND ${SQL_NO_OCULTOS}
-        AND p.created_at > NOW() - INTERVAL '7 days'
-        ${tipoTrending ? `AND ${tipoTrending}` : ''}
-        ORDER BY (p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
-      [yo.id]
-    );
-    const total = await contarPublicaciones(
-      c.pool,
-      "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND " + SQL_NO_OCULTOS
-        + " AND p.created_at > NOW() - INTERVAL '7 days'"
-        + (tipoTrending ? ` AND ${tipoTrending}` : ''),
-      [yo.id]
-    );
-    return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
+    const clave = `trending:${yo.id}:${page}:${limit}:${tipoTrending || 'todos'}`;
+
+    return await microCache.obtener(clave, 8, async () => {
+      const filas = await c.pool.query(
+        `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND ${SQL_NO_OCULTOS}
+          AND p.created_at > NOW() - INTERVAL '7 days'
+          ${tipoTrending ? `AND ${tipoTrending}` : ''}
+          ORDER BY (p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+        [yo.id]
+      );
+      const total = await contarPublicaciones(
+        c.pool,
+        "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND " + SQL_NO_OCULTOS
+          + " AND p.created_at > NOW() - INTERVAL '7 days'"
+          + (tipoTrending ? ` AND ${tipoTrending}` : ''),
+        [yo.id]
+      );
+      return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
+    });
   });
 
   router.get('/api/feed/latest', async (c) => {
     const yo = await c.exigir();
     const { page, limit, offset } = paginacion(c.req, 10, 50);
     const tipoNuevo = condicionDeTipo(String(c.query.get('tipo') || ''));
-    const filas = await c.pool.query(
-      `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND ${SQL_NO_OCULTOS} ${tipoNuevo ? `AND ${tipoNuevo}` : ''}
-        ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
-      [yo.id]
-    );
-    const total = await contarPublicaciones(c.pool, "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND " + SQL_NO_OCULTOS, [yo.id]);
-    return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
+    const clave = `latest:${yo.id}:${page}:${limit}:${tipoNuevo || 'todos'}`;
+
+    return await microCache.obtener(clave, 3, async () => {
+      const filas = await c.pool.query(
+        `${SQL_POST} WHERE p.status = 'active' AND ${SQL_NO_BLOQUEADOS} AND ${SQL_NO_OCULTOS} ${tipoNuevo ? `AND ${tipoNuevo}` : ''}
+          ORDER BY p.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+        [yo.id]
+      );
+      const total = await contarPublicaciones(c.pool, "p.status = 'active' AND " + SQL_NO_BLOQUEADOS + " AND " + SQL_NO_OCULTOS, [yo.id]);
+      return conPagina(c, await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id), total, page, limit);
+    });
   });
 
   // ---------- Moon Watch (Videos de la comunidad) ----------
@@ -292,80 +305,83 @@ export function registrarRutasSocial(router) {
     const { page, limit, offset } = paginacion(c.req, 20, 50);
     const busqueda = (c.query.get('q') || '').trim();
     const categoria = (c.query.get('cat') || 'para_ti').trim();
+    const clave = `videos:${yoId}:${page}:${limit}:${categoria}:${busqueda}`;
 
-    const condVideo = `(
-      EXISTS (
-        SELECT 1 FROM post_images pi
-        WHERE pi.post_id = p.id
-          AND (
-            pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%'
-            OR pi.original_url ILIKE '%.mov%' OR pi.original_url ILIKE '%.mkv%'
-            OR pi.original_url ILIKE '%.3gp%' OR pi.original_url ILIKE '%.ogv%'
-            OR pi.original_url ILIKE '%video%'
-            OR pi.thumb_url ILIKE '%.mp4%' OR pi.thumb_url ILIKE '%.webm%'
-            OR pi.thumb_url ILIKE '%.mov%' OR pi.thumb_url ILIKE '%.mkv%'
-            OR pi.thumb_url ILIKE '%.3gp%' OR pi.thumb_url ILIKE '%.ogv%'
-            OR pi.thumb_url ILIKE '%video%'
-          )
-      )
-      OR EXISTS (
-        SELECT 1 FROM media m
-        WHERE (m.kind = 'video' OR m.kind = ('post_' || p.id))
-          AND (m.original_path ILIKE '%.mp4%' OR m.original_path ILIKE '%.webm%' OR m.original_path ILIKE '%.mov%' OR m.original_path ILIKE '%.mkv%' OR m.original_path ILIKE '%.3gp%')
-      )
-    )`;
+    return await microCache.obtener(clave, 4, async () => {
+      const condVideo = `(
+        EXISTS (
+          SELECT 1 FROM post_images pi
+          WHERE pi.post_id = p.id
+            AND (
+              pi.original_url ILIKE '%.mp4%' OR pi.original_url ILIKE '%.webm%'
+              OR pi.original_url ILIKE '%.mov%' OR pi.original_url ILIKE '%.mkv%'
+              OR pi.original_url ILIKE '%.3gp%' OR pi.original_url ILIKE '%.ogv%'
+              OR pi.original_url ILIKE '%video%'
+              OR pi.thumb_url ILIKE '%.mp4%' OR pi.thumb_url ILIKE '%.webm%'
+              OR pi.thumb_url ILIKE '%.mov%' OR pi.thumb_url ILIKE '%.mkv%'
+              OR pi.thumb_url ILIKE '%.3gp%' OR pi.thumb_url ILIKE '%.ogv%'
+              OR pi.thumb_url ILIKE '%video%'
+            )
+        )
+        OR EXISTS (
+          SELECT 1 FROM media m
+          WHERE (m.kind = 'video' OR m.kind = ('post_' || p.id))
+            AND (m.original_path ILIKE '%.mp4%' OR m.original_path ILIKE '%.webm%' OR m.original_path ILIKE '%.mov%' OR m.original_path ILIKE '%.mkv%' OR m.original_path ILIKE '%.3gp%')
+        )
+      )`;
 
-    const condiciones = [
-      "p.status = 'active'",
-      "($1::bigint = $1::bigint)",
-      condVideo,
-    ];
-    const args = [yoId];
+      const condiciones = [
+        "p.status = 'active'",
+        "($1::bigint = $1::bigint)",
+        condVideo,
+      ];
+      const args = [yoId];
 
-    if (yoId) {
-      condiciones.push(SQL_NO_BLOQUEADOS);
-      condiciones.push(SQL_NO_OCULTOS);
-    }
+      if (yoId) {
+        condiciones.push(SQL_NO_BLOQUEADOS);
+        condiciones.push(SQL_NO_OCULTOS);
+      }
 
-    if (categoria === 'siguiendo' && yoId) {
-      condiciones.push(`p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)`);
-    } else if (categoria === 'mis_videos' && yoId) {
-      condiciones.push(`p.user_id = $1`);
-    }
+      if (categoria === 'siguiendo' && yoId) {
+        condiciones.push(`p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)`);
+      } else if (categoria === 'mis_videos' && yoId) {
+        condiciones.push(`p.user_id = $1`);
+      }
 
-    if (busqueda) {
-      args.push(`%${busqueda.toLowerCase()}%`);
-      const bIdx = args.length;
-      condiciones.push(`(
-        LOWER(p.content) LIKE $${bIdx}
-        OR LOWER(u.username) LIKE $${bIdx}
-        OR LOWER(u.display_name) LIKE $${bIdx}
-      )`);
-    }
+      if (busqueda) {
+        args.push(`%${busqueda.toLowerCase()}%`);
+        const bIdx = args.length;
+        condiciones.push(`(
+          LOWER(p.content) LIKE $${bIdx}
+          OR LOWER(u.username) LIKE $${bIdx}
+          OR LOWER(u.display_name) LIKE $${bIdx}
+        )`);
+      }
 
-    let orden = 'p.created_at DESC';
-    if (categoria === 'tendencias') {
-      orden = '(p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC';
-    } else if (categoria === 'para_ti' && yoId) {
-      orden = `${ordenParaTi(yoId)}`;
-    }
+      let orden = 'p.created_at DESC';
+      if (categoria === 'tendencias') {
+        orden = '(p.likes_count * 3 + p.comments_count * 4) DESC, p.created_at DESC';
+      } else if (categoria === 'para_ti' && yoId) {
+        orden = `${ordenParaTi(yoId)}`;
+      }
 
-    const where = condiciones.join(' AND ');
-    const total = await uno(
-      c.pool,
-      `SELECT COUNT(*)::int AS count FROM posts p JOIN users u ON u.id = p.user_id WHERE ${where}`,
-      args
-    );
+      const where = condiciones.join(' AND ');
+      const total = await uno(
+        c.pool,
+        `SELECT COUNT(*)::int AS count FROM posts p JOIN users u ON u.id = p.user_id WHERE ${where}`,
+        args
+      );
 
-    const filas = await c.pool.query(
-      `${SQL_POST} WHERE ${where}
-        ORDER BY ${orden}
-        LIMIT ${limit} OFFSET ${offset}`,
-      args
-    );
+      const filas = await c.pool.query(
+        `${SQL_POST} WHERE ${where}
+          ORDER BY ${orden}
+          LIMIT ${limit} OFFSET ${offset}`,
+        args
+      );
 
-    const posts = await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yoId)), yoId);
-    return conPagina(c, posts, Number(total?.count || 0), page, limit);
+      const posts = await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yoId)), yoId);
+      return conPagina(c, posts, Number(total?.count || 0), page, limit);
+    });
   });
 
   // ---------- Publicaciones ----------
@@ -453,6 +469,7 @@ export function registrarRutasSocial(router) {
 
     await sumarEstadistica(c.pool, 'new_posts');
     await auditar(c.pool, Number(yo.id), 'publicacion_creada', `#${creado.id}`, c.ip);
+    microCache.invalidarFeeds();
     const filas = await c.pool.query(`${SQL_POST} WHERE p.id = $2`, [yo.id, creado.id]);
     const conIm = await conContenido(c.pool, filas.rows.map((f) => aPublicacion(f, yo.id)), yo.id);
     return conIm[0];
@@ -521,6 +538,7 @@ export function registrarRutasSocial(router) {
     if (r.rowCount === 0) throw new ApiErr('No puedes eliminar esta publicación', 404);
     await c.pool.query('UPDATE users SET posts_count = GREATEST(0, posts_count - 1) WHERE id = $1', [yo.id]);
     await auditar(c.pool, Number(yo.id), 'publicacion_eliminada', `#${c.params.id}`, c.ip);
+    microCache.invalidarFeeds();
     return { ok: true };
   });
 
@@ -542,6 +560,7 @@ export function registrarRutasSocial(router) {
       );
       if (r.rowCount > 0) {
         await c.pool.query(`UPDATE posts SET ${contador} = ${contador} + 1 WHERE id = $1`, [postId]);
+        microCache.invalidarFeeds();
         if (tabla === 'likes') {
           await sumarEstadistica(c.pool, 'new_likes');
           await notificar(c.pool, {
@@ -554,6 +573,7 @@ export function registrarRutasSocial(router) {
       const r = await c.pool.query(`DELETE FROM ${tabla} WHERE user_id = $1 AND post_id = $2`, [yo.id, postId]);
       if (r.rowCount > 0) {
         await c.pool.query(`UPDATE posts SET ${contador} = GREATEST(0, ${contador} - 1) WHERE id = $1`, [postId]);
+        microCache.invalidarFeeds();
       }
     }
     const f = await fila(c.pool, `${SQL_POST} WHERE p.id = $2`, [yo.id, postId]);
@@ -672,6 +692,7 @@ export function registrarRutasSocial(router) {
       is_verified: !!yo.is_verified,
       is_mine: true,
     }], Number(yo.id));
+    microCache.invalidarFeeds();
     return conReac;
   });
 
@@ -682,6 +703,7 @@ export function registrarRutasSocial(router) {
       [Number(c.params.id), yo.id]
     );
     if (r.rowCount === 0) throw new ApiErr('No puedes eliminar este comentario', 404);
+    microCache.invalidarFeeds();
     await c.pool.query(
       'UPDATE posts SET comments_count = GREATEST(0, comments_count - 1) WHERE id = (SELECT post_id FROM comments WHERE id = $1)',
       [Number(c.params.id)]

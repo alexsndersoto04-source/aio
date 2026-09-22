@@ -105,15 +105,25 @@ export function registrarRutasMedia(router) {
 
     const bytes = fila.bytes;
     const mime = fila.mime || mimeDeNombre(nombre);
+    const etag = `W/"${nombre}-${bytes.length}"`;
+
     const comun = {
       'Content-Type': mime,
       'Cache-Control': 'public, max-age=31536000, immutable',
+      'ETag': etag,
       'Accept-Ranges': 'bytes',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Range, Content-Type',
-      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
       'X-Content-Type-Options': 'nosniff',
     };
+
+    // Revalidación ultrarrápida: si ya lo tiene, no se envía nada
+    if (c.req.headers['if-none-match'] === etag) {
+      c.res.writeHead(304, comun);
+      c.res.end();
+      return undefined;
+    }
 
     // Los reproductores del teléfono piden trozos (Range) para poder avanzar
     // dentro de una nota de voz. Sin esto, en iPhone no suena.

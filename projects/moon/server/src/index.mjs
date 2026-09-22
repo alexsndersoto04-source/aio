@@ -28,6 +28,7 @@ import { registrarRutasGruposExtra } from './rutas-grupos-extra.mjs';
 import { registrarRutasPerfil } from './rutas-perfil.mjs';
 import { registrarRutasTelegramAuth } from './rutas-telegram-auth.mjs';
 import { registrarRutasBoveda } from './rutas-boveda.mjs';
+import { microCache } from './cache-memoria.mjs';
 import { montarWs, conectados } from './ws.mjs';
 import { importarDelDisco } from './medios.mjs';
 import { programarCopiaDiaria } from './copias.mjs';
@@ -236,6 +237,7 @@ router.get('/api/metrics', async (c) => {
     time: new Date().toISOString(),
     websockets: conectados(),
     memoria_mb: Math.round(process.memoryUsage().rss / 1048576),
+    micro_cache: microCache.estadisticas(),
     totales: r.rows[0],
   };
 });
