@@ -2924,6 +2924,28 @@ h3 { font-size: 16px; line-height: 1.25; }
   font-size: 12px;
   text-shadow: 0 1px 2px rgba(0,0,0,0.85);
 }
+.visor-badge-musica {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(10, 10, 14, 0.65);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+  max-width: 170px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.visor-badge-musica:active {
+  transform: scale(0.96);
+}
 .visor-cabecera .acciones {
   margin-left: auto;
   display: flex;
@@ -3013,9 +3035,12 @@ h3 { font-size: 16px; line-height: 1.25; }
   left: 0;
   right: 0;
   z-index: 25;
-  padding: 36px 16px calc(env(safe-area-inset-bottom, 0px) + 20px);
-  background: linear-gradient(0deg, rgba(0, 0, 0, 0.88) 0%, rgba(0,0,0,0.35) 60%, transparent 100%);
+  padding: 30px 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.92) 0%, rgba(0,0,0,0.5) 65%, transparent 100%);
   color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .visor-pie-texto {
   font-size: 14.5px;
@@ -3024,10 +3049,107 @@ h3 { font-size: 16px; line-height: 1.25; }
   margin: 0;
   word-break: break-word;
 }
-.visor-pie-meta {
-  margin-top: 6px;
-  font-size: 11.5px;
-  color: rgba(255, 255, 255, 0.7);
+.visor-barra-reacciones {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+.visor-emojis-reaccion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 360px;
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(12px);
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.visor-btn-emoji {
+  background: transparent;
+  border: 0;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+  user-select: none;
+}
+.visor-btn-emoji:hover {
+  transform: scale(1.3);
+}
+.visor-btn-emoji:active {
+  transform: scale(0.9);
+}
+.visor-btn-emoji.activa {
+  transform: scale(1.25);
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.8));
+}
+.visor-reacciones-stats {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.14);
+  padding: 6px 14px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+
+/* Animación de emojis voladores cuando reaccionas */
+.emoji-flotante {
+  position: absolute;
+  bottom: 80px;
+  z-index: 50;
+  font-size: 38px;
+  pointer-events: none;
+  user-select: none;
+  animation: flotarEmoji 1.6s ease-out forwards;
+}
+@keyframes flotarEmoji {
+  0% {
+    transform: translateY(0) scale(0.6);
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(-220px) scale(1.2) rotate(-8deg);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateY(-460px) scale(0.9) rotate(8deg);
+    opacity: 0;
+  }
+}
+
+/* Ecualizador animado para stickers de música */
+.ecualizador-mini {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+  width: 12px;
+}
+.ecualizador-mini .barra {
+  width: 2.5px;
+  background: #ffffff;
+  border-radius: 1px;
+}
+.ecualizador-mini .b1 {
+  height: 60%;
+  animation: ecualizar 0.6s infinite ease-in-out alternate;
+}
+.ecualizador-mini .b2 {
+  height: 100%;
+  animation: ecualizar 0.4s infinite ease-in-out alternate 0.2s;
+}
+.ecualizador-mini .b3 {
+  height: 40%;
+  animation: ecualizar 0.7s infinite ease-in-out alternate 0.1s;
+}
+@keyframes ecualizar {
+  0% { height: 25%; }
+  100% { height: 100%; }
 }
 
 /* --- 27.9 Hoja de accesos (móvil) --- */

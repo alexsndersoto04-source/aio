@@ -60,8 +60,13 @@ export function registrarRutasHistorias(router) {
     const objetivo = Number(c.params.userId);
     const lista = await filas(
       c.pool,
-      `SELECT s.id, s.user_id, s.image_url, s.caption, s.views_count, s.created_at::text AS created_at,
-              (SELECT COUNT(*)::int FROM story_views sv WHERE sv.story_id = s.id AND sv.viewer_id = $2) > 0 AS vista
+      `SELECT s.id, s.user_id, s.image_url, s.caption, s.views_count,
+              COALESCE(s.music_title, '') AS music_title,
+              COALESCE(s.music_url, '') AS music_url,
+              s.created_at::text AS created_at,
+              (SELECT COUNT(*)::int FROM story_views sv WHERE sv.story_id = s.id AND sv.viewer_id = $2) > 0 AS vista,
+              (SELECT sr.emoji FROM story_reactions sr WHERE sr.story_id = s.id AND sr.user_id = $2 LIMIT 1) AS mi_reaccion,
+              (SELECT COUNT(*)::int FROM story_reactions sr WHERE sr.story_id = s.id) AS reactions_count
          FROM stories s
         WHERE s.user_id = $1 AND s.expires_at > NOW()
         ORDER BY s.created_at ASC`,
@@ -81,7 +86,11 @@ export function registrarRutasHistorias(router) {
         id: Number(s.id),
         image_url: s.image_url,
         caption: s.caption,
+        music_title: s.music_title || '',
+        music_url: s.music_url || '',
         views_count: Number(s.views_count),
+        reactions_count: Number(s.reactions_count || 0),
+        mi_reaccion: s.mi_reaccion || null,
         created_at: s.created_at,
         vista: !!s.vista,
       })),
@@ -93,15 +102,68 @@ export function registrarRutasHistorias(router) {
     const b = await c.cuerpo();
     const imagen = texto(b.image_url || '', { min: 1, max: 500, campo: 'imagen' });
     const pie = typeof b.caption === 'string' ? b.caption.slice(0, 200) : '';
+    const musicTitle = typeof b.music_title === 'string' ? b.music_title.slice(0, 150) : '';
+    const musicUrl = typeof b.music_url === 'string' ? b.music_url.slice(0, 500) : '';
+
     const creada = await uno(
       c.pool,
-      `INSERT INTO stories (user_id, image_url, caption, expires_at)
-       VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours')
+      `INSERT INTO stories (user_id, image_url, caption, music_title, music_url, expires_at)
+       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '24 hours')
        RETURNING id, created_at::text AS created_at, expires_at::text AS expires_at`,
-      [yo.id, imagen, pie]
+      [yo.id, imagen, pie, musicTitle, musicUrl]
     );
     await auditar(c.pool, Number(yo.id), 'historia_creada', `#${creada.id}`, c.ip);
-    return { id: Number(creada.id), image_url: imagen, caption: pie, views_count: 0, created_at: creada.created_at, expires_at: creada.expires_at, vista: false };
+    return {
+      id: Number(creada.id),
+      image_url: imagen,
+      caption: pie,
+      music_title: musicTitle,
+      music_url: musicUrl,
+      views_count: 0,
+      reactions_count: 0,
+      mi_reaccion: null,
+      created_at: creada.created_at,
+      expires_at: creada.expires_at,
+      vista: false,
+    };
+  });
+
+  // Reaccionar a una historia
+  router.post('/api/stories/:id/react', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    const b = await c.cuerpo();
+    const emoji = texto(b.emoji || '❤️', { min: 1, max: 20, campo: 'emoji' });
+
+    const historia = await uno(c.pool, 'SELECT id, user_id FROM stories WHERE id = $1', [id]);
+    if (!historia) throw new ApiErr('Historia no encontrada', 404);
+
+    await c.pool.query(
+      `INSERT INTO story_reactions (story_id, user_id, emoji)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (story_id, user_id) DO UPDATE SET emoji = EXCLUDED.emoji, created_at = NOW()`,
+      [id, yo.id, emoji]
+    );
+
+    // Opcionalmente notificar al autor si no es él mismo
+    if (Number(historia.user_id) !== Number(yo.id)) {
+      await c.pool.query(
+        `INSERT INTO notifications (user_id, actor_id, type, entity_id)
+         VALUES ($1, $2, 'reaction', $3)
+         ON CONFLICT DO NOTHING`,
+        [historia.user_id, yo.id, id]
+      ).catch(() => {});
+    }
+
+    return { ok: true, emoji };
+  });
+
+  // Quitar reacción de una historia
+  router.del('/api/stories/:id/react', async (c) => {
+    const yo = await c.exigir();
+    const id = Number(c.params.id);
+    await c.pool.query('DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2', [id, yo.id]);
+    return { ok: true };
   });
 
   router.post('/api/stories/:id/view', async (c) => {

@@ -6,6 +6,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { IconX } from './Icons.jsx';
+import { PISTAS_MUSICA, reproducirMusica, detenerMusica } from '../musicaHistorias.js';
 
 const TIPOGRAFIAS = [
   { id: 'moderna', label: 'Moderna', font: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', weight: '700' },
@@ -96,8 +97,11 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
   const [stickerActivo, setStickerActivo] = useState(null); // { tipo: 'emoji' | 'badge', valor: string }
   const [posSticker, setPosSticker] = useState({ x: 0.5, y: 0.72 });
 
-  const [pestana, setPestana] = useState('texto'); // 'texto' | 'estilo' | 'fondo' | 'stickers'
-  const [elementoArrastrado, setElementoArrastrado] = useState(null); // 'texto' | 'sticker' | null
+  const [musica, setMusica] = useState(null); // { id, titulo, autor, emoji }
+  const [posMusica, setPosMusica] = useState({ x: 0.5, y: 0.18 });
+
+  const [pestana, setPestana] = useState('texto'); // 'texto' | 'estilo' | 'fondo' | 'stickers' | 'musica'
+  const [elementoArrastrado, setElementoArrastrado] = useState(null); // 'texto' | 'sticker' | 'musica' | null
 
   const zonaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -128,6 +132,10 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
   const filtroActual = useMemo(() => FILTROS.find((f) => f.id === filtroId) || FILTROS[0], [filtroId]);
   const fondoActual = useMemo(() => FONDOS_DEGRADADOS[fondoIndex] || FONDOS_DEGRADADOS[0], [fondoIndex]);
 
+  useEffect(() => {
+    return () => detenerMusica();
+  }, []);
+
   function alArrastrar(e) {
     if (!elementoArrastrado || !zonaRef.current) return;
     const rect = zonaRef.current.getBoundingClientRect();
@@ -140,6 +148,8 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
       setPosTexto({ x: px, y: py });
     } else if (elementoArrastrado === 'sticker') {
       setPosSticker({ x: px, y: py });
+    } else if (elementoArrastrado === 'musica') {
+      setPosMusica({ x: px, y: py });
     }
   }
 
@@ -219,6 +229,37 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
         }
       }
 
+      // 2.5 Dibujar Sticker de Música si existe
+      if (musica) {
+        const mx = posMusica.x * W;
+        const my = posMusica.y * H;
+        ctx.font = '700 32px -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const txt = `🎵 ${musica.titulo} · ${musica.autor}`;
+        const tw = ctx.measureText(txt).width;
+        const bw = tw + 56;
+        const bh = 64;
+        const x0 = mx - bw / 2;
+        const y0 = my - bh / 2;
+
+        ctx.fillStyle = 'rgba(10, 10, 14, 0.78)';
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 18;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x0, y0, bw, bh, 32);
+        else ctx.rect(x0, y0, bw, bh);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(txt, mx, my);
+      }
+
       // 3. Dibujar Texto si existe
       if (texto.trim()) {
         const fs = Math.round(W * rel);
@@ -268,8 +309,9 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
 
       // 4. Exportar a Blob y emitir
       canvas.toBlob((blob) => {
+        detenerMusica();
         const file = new File([blob], 'historia.jpg', { type: 'image/jpeg' });
-        onListo(file, texto.trim());
+        onListo(file, texto.trim(), musica?.titulo || '', musica ? `synth:${musica.id}` : '');
       }, 'image/jpeg', 0.92);
     };
 
@@ -375,8 +417,46 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
             </div>
           ) : null}
 
-          {!texto && !stickerActivo ? (
-            <span className="editor-ayuda">Escribe abajo o añade stickers y arrástralos</span>
+          {/* Sticker de Música arrastrable */}
+          {musica ? (
+            <div
+              className="editor-sticker-caja"
+              onPointerDown={(e) => { e.stopPropagation(); setElementoArrastrado('musica'); }}
+              style={{
+                left: `${posMusica.x * 100}%`,
+                top: `${posMusica.y * 100}%`,
+                pointerEvents: 'auto',
+                cursor: 'grab',
+              }}
+            >
+              <div
+                style={{
+                  padding: '7px 16px',
+                  borderRadius: 999,
+                  background: 'rgba(10, 10, 14, 0.82)',
+                  backdropFilter: 'blur(10px)',
+                  color: '#ffffff',
+                  fontWeight: 700,
+                  fontSize: 13,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  border: '1.5px solid rgba(255,255,255,0.25)',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                }}
+              >
+                <span>🎵 {musica.titulo}</span>
+                <span className="ecualizador-mini">
+                  <span className="barra b1" />
+                  <span className="barra b2" />
+                  <span className="barra b3" />
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {!texto && !stickerActivo && !musica ? (
+            <span className="editor-ayuda">Escribe abajo o añade música, stickers y arrástralos</span>
           ) : null}
         </div>
 
@@ -390,6 +470,13 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
               onClick={() => setPestana('texto')}
             >
               ✏️ Texto
+            </button>
+            <button
+              type="button"
+              className={`editor-pestana-btn${pestana === 'musica' ? ' activa' : ''}`}
+              onClick={() => setPestana('musica')}
+            >
+              🎵 Música
             </button>
             <button
               type="button"
@@ -450,6 +537,56 @@ export default function StoryEditor({ archivo, onCancelar, onListo }) {
                     </button>
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Subpanel Música */}
+          {pestana === 'musica' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="muted" style={{ fontSize: 11 }}>Selecciona una banda sonora para tu historia:</span>
+                {musica ? (
+                  <button
+                    type="button"
+                    className="btn-ghost btn-sm"
+                    style={{ fontSize: 11, padding: '2px 8px', color: '#ef4444' }}
+                    onClick={() => {
+                      detenerMusica();
+                      setMusica(null);
+                    }}
+                  >
+                    ✕ Quitar música
+                  </button>
+                ) : null}
+              </div>
+              <div className="editor-subpanel">
+                {PISTAS_MUSICA.map((p) => {
+                  const seleccionada = musica?.id === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className={`editor-chip${seleccionada ? ' activo' : ''}`}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px' }}
+                      onClick={() => {
+                        if (seleccionada) {
+                          detenerMusica();
+                          setMusica(null);
+                        } else {
+                          setMusica(p);
+                          reproducirMusica(p.id);
+                        }
+                      }}
+                    >
+                      <span>{p.emoji}</span>
+                      <div style={{ textAlign: 'left', lineHeight: 1.1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700 }}>{p.titulo}</div>
+                        <div style={{ fontSize: 10, opacity: 0.8 }}>{p.autor}</div>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}

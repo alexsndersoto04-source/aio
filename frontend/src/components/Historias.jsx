@@ -11,6 +11,7 @@ import { toast, avisoError, confirmar } from '../ui.js';
 import StoryEditor from './StoryEditor.jsx';
 import Avatar from './Avatar.jsx';
 import { IconPlus, IconX, IconChevronLeft, IconTrash, IconEye } from './Icons.jsx';
+import { reproducirMusica, detenerMusica } from '../musicaHistorias.js';
 
 function tiempoRelativo(fecha) {
   const t = new Date(fecha).getTime();
@@ -29,6 +30,8 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
   const [indice, setIndice] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [pausado, setPausado] = useState(false);
+  const [sonido, setSonido] = useState(true);
+  const [voladores, setVoladores] = useState([]); // [{ id, emoji, left }]
   const temporizador = useRef(null);
 
   const cargar = useCallback(async () => {
@@ -49,6 +52,17 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
   useEffect(() => { cargar(); }, [cargar]);
 
   const actual = datos?.stories?.[indice];
+
+  // Manejo de música de fondo sincronizada con la historia
+  useEffect(() => {
+    if (actual?.music_url && sonido) {
+      const pistaId = actual.music_url.replace('synth:', '') || 'lofi';
+      reproducirMusica(pistaId);
+    } else {
+      detenerMusica();
+    }
+    return () => detenerMusica();
+  }, [actual, sonido]);
 
   // Al mostrar una historia se marca como vista en la base de datos
   useEffect(() => {
@@ -96,8 +110,45 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
     return () => {
       document.removeEventListener('keydown', tecla);
       document.body.style.overflow = '';
+      detenerMusica();
     };
   }, [alCerrar, siguiente, anterior]);
+
+  async function reaccionar(emoji) {
+    if (!actual) return;
+    // Disparar animación de emojis voladores
+    const nuevos = Array.from({ length: 6 }).map((_, idx) => ({
+      id: Date.now() + Math.random(),
+      emoji,
+      left: Math.random() * 80 + 10,
+      delay: idx * 0.1,
+    }));
+    setVoladores((v) => [...v, ...nuevos]);
+    setTimeout(() => {
+      setVoladores((v) => v.filter((item) => !nuevos.includes(item)));
+    }, 1800);
+
+    try {
+      await api.post(`/api/stories/${actual.id}/react`, { emoji });
+      setDatos((d) => {
+        if (!d) return d;
+        return {
+          ...d,
+          stories: d.stories.map((s) => {
+            if (s.id === actual.id) {
+              const eraMismo = s.mi_reaccion === emoji;
+              return {
+                ...s,
+                mi_reaccion: emoji,
+                reactions_count: eraMismo ? s.reactions_count : (s.reactions_count || 0) + 1,
+              };
+            }
+            return s;
+          }),
+        };
+      });
+    } catch (_) {}
+  }
 
   async function borrar() {
     if (!actual) return;
@@ -144,6 +195,20 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
             <b>{datos?.user?.display_name || datos?.user?.username}</b>
             <small>{actual ? tiempoRelativo(actual.created_at) : ''}</small>
           </div>
+
+          {/* Badge de música si tiene audio */}
+          {actual?.music_title && (
+            <div
+              className="visor-badge-musica"
+              onClick={() => setSonido(!sonido)}
+              role="button"
+              title="Activar o silenciar música"
+            >
+              <span>🎵 {actual.music_title}</span>
+              <span style={{ fontSize: 13 }}>{sonido ? '🔊' : '🔇'}</span>
+            </div>
+          )}
+
           <div className="acciones">
             {mia && actual ? (
               <span className="vistas" title="Visitas">
@@ -177,6 +242,20 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
             <p className="muted">Esta historia ya no está disponible.</p>
           )}
 
+          {/* Emojis flotantes animados */}
+          {voladores.map((item) => (
+            <span
+              key={item.id}
+              className="emoji-flotante"
+              style={{
+                left: `${item.left}%`,
+                animationDelay: `${item.delay}s`,
+              }}
+            >
+              {item.emoji}
+            </span>
+          ))}
+
           {/* Zonas táctiles para navegar y mantener presionado para pausar */}
           <div
             className="visor-zonas-tactiles"
@@ -199,17 +278,34 @@ function Visor({ grupo, alCerrar, alCambiarContador }) {
           </div>
         </div>
 
-        {/* Pie flotante con caption */}
-        {actual?.caption ? (
-          <div className="visor-pie-flotante">
+        {/* Pie flotante con caption limpio y barra de reacciones */}
+        <div className="visor-pie-flotante">
+          {actual?.caption ? (
             <p className="visor-pie-texto">{actual.caption}</p>
-            {mia && (
-              <div className="visor-pie-meta">
-                {datos?.stories?.length} historia(s) publicadas · expiran a las 24 horas
+          ) : null}
+
+          <div className="visor-barra-reacciones">
+            {!mia ? (
+              <div className="visor-emojis-reaccion">
+                {['❤️', '🔥', '😂', '😮', '👏', '🌙', '💯'].map((em) => (
+                  <button
+                    key={em}
+                    type="button"
+                    className={`visor-btn-emoji${actual?.mi_reaccion === em ? ' activa' : ''}`}
+                    onClick={() => reaccionar(em)}
+                    aria-label={`Reaccionar con ${em}`}
+                  >
+                    {em}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="visor-reacciones-stats">
+                <span>❤️ {actual?.reactions_count || 0} reacciones</span>
               </div>
             )}
           </div>
-        ) : null}
+        </div>
       </div>
     </div>
   );
@@ -253,11 +349,16 @@ export default function Historias({ onNovedad }) {
     setEditando(true);
   }
 
-  async function publicarDesdeEditor(file, texto) {
+  async function publicarDesdeEditor(file, texto, musicTitle = '', musicUrl = '') {
     setSubiendo(true);
     try {
       const subida = await uploadMedia('story', file);
-      await api.post('/api/stories', { image_url: subida.url, caption: texto || '' });
+      await api.post('/api/stories', {
+        image_url: subida.url,
+        caption: texto || '',
+        music_title: musicTitle || '',
+        music_url: musicUrl || '',
+      });
       toast.ok('¡Historia publicada! Estará activa 24 horas.');
       setEditando(false);
       setArchivoEditor(null);
@@ -439,14 +540,11 @@ export default function Historias({ onNovedad }) {
                 />
               </div>
 
-              {/* Información abajo: Nombre y etiqueta */}
+              {/* Información abajo: Nombre */}
               <div className="historia-info-abajo">
                 <p className="historia-nombre">
                   {g.mine ? 'Tu historia' : (g.display_name || g.username).split(' ')[0]}
                 </p>
-                {esNueva(g) ? (
-                  <span className="historia-badge-nueva">NUEVA</span>
-                ) : null}
               </div>
             </div>
           );
