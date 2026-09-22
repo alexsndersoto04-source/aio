@@ -105,6 +105,59 @@ export default function AuthView({ mode }) {
                 : 'Elige un usuario, tu correo y una contraseña segura.'}
           </p>
 
+          {/* Selector súper visible y fácil: Iniciar Sesión o Crear Cuenta */}
+          {!twofa && (
+            <div style={{
+              display: 'flex',
+              background: 'rgba(255, 255, 255, 0.08)',
+              borderRadius: 12,
+              padding: 4,
+              marginBottom: 20,
+              gap: 6
+            }}>
+              <a
+                href="#/login"
+                style={{
+                  flex: 1,
+                  textAlign: 'center',
+                  padding: '11px 12px',
+                  borderRadius: 10,
+                  fontWeight: 750,
+                  fontSize: 14,
+                  textDecoration: 'none',
+                  background: isLogin ? 'var(--aurora-grad, linear-gradient(135deg, #6366f1, #a855f7))' : 'transparent',
+                  color: '#ffffff',
+                  boxShadow: isLogin ? '0 2px 10px rgba(99,102,241,0.4)' : 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                Iniciar Sesión
+              </a>
+              <a
+                href="#/register"
+                style={{
+                  flex: 1,
+                  textAlign: 'center',
+                  padding: '11px 12px',
+                  borderRadius: 10,
+                  fontWeight: 750,
+                  fontSize: 14,
+                  textDecoration: 'none',
+                  background: !isLogin ? 'var(--aurora-grad, linear-gradient(135deg, #6366f1, #a855f7))' : 'transparent',
+                  color: '#ffffff',
+                  boxShadow: !isLogin ? '0 2px 10px rgba(99,102,241,0.4)' : 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                Crear Cuenta ✨
+              </a>
+            </div>
+          )}
+
           {error ? <div className="alert err" role="alert">{error}</div> : null}
 
           {dup ? (
