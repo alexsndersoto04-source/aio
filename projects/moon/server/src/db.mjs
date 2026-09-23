@@ -21,6 +21,27 @@ import { fileURLToPath } from 'node:url';
 const aqui = dirname(fileURLToPath(import.meta.url));
 const rutaEsquema = resolve(aqui, '../esquema.json');
 
+function envolverConReintento(pool) {
+  const queryOriginal = pool.query.bind(pool);
+  pool.query = async function queryConReintento(sql, args = []) {
+    try {
+      return await queryOriginal(sql, args);
+    } catch (err) {
+      const msg = String(err?.message || '').toLowerCase();
+      const esTransitorio = msg.includes('terminated') || msg.includes('econnreset') ||
+        msg.includes('connection') || msg.includes('timeout') || msg.includes('etimedout') ||
+        msg.includes('57p01') || msg.includes('broken pipe') || msg.includes('socket');
+      if (esTransitorio) {
+        console.warn(`[bd-resiliencia] Reintentando consulta por fluctuacion de red: ${err.message}`);
+        await new Promise((r) => setTimeout(r, 400));
+        return await queryOriginal(sql, args);
+      }
+      throw err;
+    }
+  };
+  return pool;
+}
+
 export function crearPool(url) {
   let anfitrion = '';
   try { anfitrion = new URL(url).hostname; } catch { anfitrion = ''; }
@@ -32,7 +53,7 @@ export function crearPool(url) {
     const pool = new NeonPool({ connectionString: url });
     pool.on('error', (e) => console.error('[bd] error de conexión:', e.message));
     pool.motor = 'neon-http';
-    return pool;
+    return envolverConReintento(pool);
   }
 
   // Cualquier otra base (Supabase, Postgres propio…): pg como siempre.
@@ -48,7 +69,7 @@ export function crearPool(url) {
   const pool = new pg.Pool(ajustes);
   pool.on('error', (e) => console.error('[bd] error en conexión inactiva:', e.message));
   pool.motor = 'pg-tcp';
-  return pool;
+  return envolverConReintento(pool);
 }
 
 async function aplicarMigracionesEnPool(pool, etiqueta = 'bd') {

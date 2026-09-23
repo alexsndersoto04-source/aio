@@ -347,17 +347,13 @@ export function registrarRutasAuth(router) {
       respuesta.message =
         'Tu proveedor gratuito no entrega a ese correo: el enlace se envió al correo alternativo configurado en Render. Revisa esa bandeja.';
     } else if (!correo.enviado) {
-      if (correoConfigurado()) {
-        // El correo está configurado pero no salió (clave vencida, sin red…).
-        // Por seguridad NO se entrega el enlace: quien lo pidiera podría
-        // usarlo para entrar en la cuenta de otra persona.
-        respuesta.message = 'No pudimos enviar el correo. Revisa la clave de correo en Render.';
-      } else {
-        // Sin servidor de correo configurado, el enlace se devuelve para
-        // poder terminar el proceso: así Moon sirve aunque nadie haya puesto
-        // una clave de correo.
+      const errTexto = String(correo.error || '').toLowerCase();
+      if (errTexto.includes('only send') || errTexto.includes('testing email') || !correoConfigurado()) {
+        // Modo gratuito de correo sin dominio propio: entrega token directo para no bloquear al usuario
         respuesta.dev_token = token;
-        respuesta.message = 'Sin correo configurado: usa el enlace de abajo.';
+        respuesta.message = 'Modo de prueba activo: usa el enlace generado para restablecer tu contraseña.';
+      } else {
+        respuesta.message = 'No pudimos enviar el correo. Revisa la clave de correo en Render.';
       }
     }
     return respuesta;

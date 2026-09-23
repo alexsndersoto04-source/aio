@@ -234,12 +234,17 @@ export async function guardarImagen(pool, { userId, clase, bytes, mime }) {
   // para evitar agotar las cuotas de Neon o Supabase.
   let tgPath = nombre;
   try {
-    const resTg = await subirATelegram(listo.bytes, { nombre, tipo: listo.mime });
+    let resTg = await subirATelegram(listo.bytes, { nombre, tipo: listo.mime });
+    if (!resTg || !resTg.tg_id) {
+      // Reintento de resiliencia: espera 800ms y reintenta
+      await new Promise((r) => setTimeout(r, 800));
+      resTg = await subirATelegram(listo.bytes, { nombre, tipo: listo.mime });
+    }
     if (resTg && resTg.tg_id) {
       tgPath = `tg:${resTg.tg_id}`;
     }
   } catch (errTg) {
-    console.error('[medios] error enviando archivo a telegram:', errTg?.message || errTg);
+    console.warn('[medios] aviso: fallo temporal subiendo a Telegram, se conserva respaldo en disco:', errTg?.message || errTg);
   }
 
   const media = await uno(

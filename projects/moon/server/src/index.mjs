@@ -280,6 +280,16 @@ router.get('/api/metrics', async (c) => {
 // Inicializar defensas y escudo en memoria
 await inicializarDefensas(pool).catch(() => {});
 
+// Latido de auto-mantenimiento (Keep-Alive):
+// Cada 10 minutos hace un ping ligero a /api/health para que Render no duerma el contenedor
+const URL_PING = process.env.RENDER_EXTERNAL_URL || 'https://moon-dal0.onrender.com';
+setInterval(async () => {
+  try {
+    const res = await fetch(`${URL_PING}/api/health`, { headers: { 'User-Agent': 'Moon-KeepAlive/1.0' } });
+    if (res.ok) console.log('[keep-alive] Latido de actividad completado (evita suspension)');
+  } catch {}
+}, 10 * 60 * 1000);
+
 // Las fotos que quedaran en el disco se pasan a la base de datos (una vez).
 importarDelDisco(pool).catch(() => {});
 // Copia de seguridad diaria por correo (si hay correo configurado).

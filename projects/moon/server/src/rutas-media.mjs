@@ -19,13 +19,19 @@ import {
 } from './medios.mjs';
 
 const TIPOS = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
-const MAX_BYTES_VIDEO = 120 * 1024 * 1024; // Hasta 120 MB para videos
-const MAX_BYTES_IMAGEN = 15 * 1024 * 1024; // Hasta 15 MB para fotos
+const MAX_BYTES_VIDEO = 25 * 1024 * 1024; // Tope seguro: 25 MB (protege el límite de 512 MB RAM de Render)
+const MAX_BYTES_IMAGEN = 10 * 1024 * 1024; // Tope seguro: 10 MB para fotos
 const aceptado = (mime) => TIPOS.has(mime) || esAudio(mime) || esVideo(mime);
 
-/** Lee el formulario completo en memoria (con tope de tamaño). */
+/** Lee el formulario completo en memoria (con tope estricto de tamaño para blindar RAM). */
 function leerFormulario(req) {
   return new Promise((resolver, rechazar) => {
+    // Rechazo preventivo inmediato si el tamaño de cabecera supera el límite (cero consumo de RAM)
+    const largoCabecera = Number(req.headers['content-length'] || 0);
+    if (largoCabecera > MAX_BYTES_VIDEO) {
+      return rechazar(new ApiErr('El archivo supera los 25 MB permitidos para proteger el rendimiento', 413));
+    }
+
     const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: MAX_BYTES_VIDEO } });
     let clase = 'post';
     let trozos = [];
@@ -49,7 +55,7 @@ function leerFormulario(req) {
     bb.on('error', (e) => { fallo = e; });
     bb.on('close', () => {
       if (fallo) return rechazar(new ApiErr(`No se pudo leer el archivo: ${fallo.message}`, 400));
-      if (truncado) return rechazar(new ApiErr('El archivo supera los 120 MB permitidos', 413));
+      if (truncado) return rechazar(new ApiErr('El archivo supera los 25 MB permitidos', 413));
       const bytes = Buffer.concat(trozos);
       if (bytes.length === 0) return rechazar(new ApiErr('No se recibió ningún archivo', 400));
       const limpio = String(mime || '').split(';')[0].trim();
@@ -57,7 +63,7 @@ function leerFormulario(req) {
         return rechazar(new ApiErr('Formato no admitido: imágenes (JPEG, PNG, WebP, GIF), videos (MP4, WebM, MOV) o notas de voz', 400));
       }
       if (!esVideo(limpio) && !esAudio(limpio) && bytes.length > MAX_BYTES_IMAGEN) {
-        return rechazar(new ApiErr('La imagen supera los 15 MB permitidos', 413));
+        return rechazar(new ApiErr('La imagen supera los 10 MB permitidos', 413));
       }
       if (esVideo(limpio)) clase = 'video';
       return resolver({ clase, bytes, mime: limpio || (esVideo(limpio) ? 'video/mp4' : 'image/jpeg'), nombreOriginal });
