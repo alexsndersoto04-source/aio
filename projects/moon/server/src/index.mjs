@@ -41,9 +41,13 @@ import { ApiErr } from './util.mjs';
 const PUERTO = Number(process.env.PORT || 3000);
 
 // Base de datos PostgreSQL activa y única fuente de verdad:
-// Prioridad: variable DATABASE_URL de Render, o MOON_DB_OVERRIDE, o URL_NEON_NUEVA
+// La base nueva de Neon donde están las cuentas y datos reales:
 const URL_NEON_NUEVA = 'postgresql://neondb_owner:npg_XliM3eg0cSjd@ep-rough-wind-b5w04gn6-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require';
-const URL_BD = process.env.DATABASE_URL || process.env.MOON_DB_OVERRIDE || URL_NEON_NUEVA;
+
+// Si Render tiene configurada una URL vieja/muerta (ej. Supabase bcolvbpbteflnjpmgvza o Neon viejo), se descarta automáticamente para conectar a la base viva:
+const urlEnv = process.env.MOON_DB_OVERRIDE || process.env.DATABASE_URL || '';
+const esBaseInactiva = urlEnv.includes('bcolvbpbteflnjpmgvza') || urlEnv.includes('ep-shiny-glade');
+const URL_BD = (!esBaseInactiva && urlEnv) ? urlEnv : URL_NEON_NUEVA;
 
 const SECRETO = process.env.JWT_SECRET || 'moon_jwt_secret_ultra_seguro_2026_super_estable_resilient';
 const BASE_PUBLICA = process.env.PUBLIC_BASE_URL || '';
