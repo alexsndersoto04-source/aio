@@ -128,6 +128,15 @@ export default function TopNav() {
           <IconBell />
           {unread.notifications > 0 ? <span className="badge">{numero(unread.notifications)}</span> : null}
         </a>
+        <a
+          className="icono-redondo"
+          href="#/admin"
+          title="Panel de Administración"
+          aria-label="Panel de Administración"
+          style={{ color: 'var(--accent, #6366f1)', position: 'relative' }}
+        >
+          <IconShield />
+        </a>
         <ThemeToggle compact />
         <button
           type="button"

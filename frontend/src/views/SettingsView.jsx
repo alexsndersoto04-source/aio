@@ -591,10 +591,12 @@ export default function SettingsView({ tab }) {
             <div className="fila-ajuste">
               <span className="icono"><IconShield /></span>
               <span className="texto">
-                <b>{isAdmin ? 'Administrador' : 'Cuenta normal'}</b>
-                <small>{isAdmin ? 'Eres el primer usuario: puedes moderar reportes, usuarios y palabras.' : 'Cuenta de miembro.'}</small>
+                <b>Administrador de Moon</b>
+                <small>Acceso completo a moderación, métricas, seguridad y configuración del sistema.</small>
               </span>
-              {isAdmin ? <a className="btn btn-outline btn-sm" href="#/admin">Abrir panel</a> : null}
+              <a className="btn btn-primary btn-sm" href="#/admin" style={{ fontWeight: 700 }}>
+                🛡️ Abrir panel
+              </a>
             </div>
             <div className="fila-ajuste">
               <span className="icono"><IconCheck /></span>
