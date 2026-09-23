@@ -12,7 +12,7 @@
 //   MOON_UPLOADS    carpeta de imágenes (por defecto ../../uploads)
 
 import { createServer } from 'node:http';
-import { crearPool, crearPoolHibrido, migrar, auditar } from './db.mjs';
+import { crearPool, migrar, auditar } from './db.mjs';
 import { migrarA, restaurarDesdeBaseVieja } from './migracion.mjs';
 import { crearRouter, crearContexto, cors, manejadorErrores, json } from './nucleo.mjs';
 import { registrarRutasAuth } from './rutas-auth.mjs';
@@ -40,17 +40,10 @@ import { ApiErr } from './util.mjs';
 
 const PUERTO = Number(process.env.PORT || 3000);
 
-// Credenciales nuevas y frescas otorgadas por el usuario:
+// Base de datos PostgreSQL activa y única fuente de verdad:
+// Prioridad: variable DATABASE_URL de Render, o MOON_DB_OVERRIDE, o URL_NEON_NUEVA
 const URL_NEON_NUEVA = 'postgresql://neondb_owner:npg_XliM3eg0cSjd@ep-rough-wind-b5w04gn6-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require';
-const URL_SUPABASE_NUEVA = 'postgresql://postgres.frnzfirgsqxpggbrsoao:AlexSoto2316%40@aws-0-us-east-1.pooler.supabase.com:6543/postgres';
-
-// Base Primaria (Neon):
-const URL_BD_A = process.env.MOON_DB_OVERRIDE || URL_NEON_NUEVA;
-
-// Base Secundaria de Respaldo / Failover (Supabase):
-const URL_BD_B = process.env.DATABASE_URL_BACKUP || URL_SUPABASE_NUEVA;
-
-const URL_BD = URL_BD_A;
+const URL_BD = process.env.DATABASE_URL || process.env.MOON_DB_OVERRIDE || URL_NEON_NUEVA;
 
 const SECRETO = process.env.JWT_SECRET || 'moon_jwt_secret_ultra_seguro_2026_super_estable_resilient';
 const BASE_PUBLICA = process.env.PUBLIC_BASE_URL || '';
@@ -67,7 +60,8 @@ if (!SECRETO || SECRETO.length < 32) {
   process.exit(1);
 }
 
-let pool = crearPoolHibrido(URL_BD_A, URL_BD_B);
+// Pool directo y consistente: una sola base de datos como fuente de verdad.
+let pool = crearPool(URL_BD);
 
 // Explica en palabras llanas qué hacer cuando la conexión con la base de datos
 // falla. Devuelve la lista de pistas, o vacía si es un fallo pasajero (que sí
