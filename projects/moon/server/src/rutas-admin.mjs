@@ -490,6 +490,31 @@ export function registrarRutasAdmin(router) {
     return { ok: true };
   });
 
+  // Eliminar publicación o video desde administración
+  router.del('/api/admin/content/posts/:id', async (c) => {
+    const admin = await c.admin();
+    const id = Number(c.params.id);
+    const post = await uno(c.pool, 'SELECT user_id FROM posts WHERE id = $1', [id]);
+    if (post) {
+      await c.pool.query('DELETE FROM posts WHERE id = $1', [id]);
+      await c.pool.query('UPDATE users SET posts_count = GREATEST(0, posts_count - 1) WHERE id = $1', [post.user_id]);
+      await auditar(c.pool, Number(admin.id), 'post_eliminado_admin', `#${id}`, c.ip);
+    }
+    return { ok: true };
+  });
+
+  router.del('/api/admin/content/videos/:id', async (c) => {
+    const admin = await c.admin();
+    const id = Number(c.params.id);
+    const post = await uno(c.pool, 'SELECT user_id FROM posts WHERE id = $1', [id]);
+    if (post) {
+      await c.pool.query('DELETE FROM posts WHERE id = $1', [id]);
+      await c.pool.query('UPDATE users SET posts_count = GREATEST(0, posts_count - 1) WHERE id = $1', [post.user_id]);
+      await auditar(c.pool, Number(admin.id), 'video_eliminado_admin', `#${id}`, c.ip);
+    }
+    return { ok: true };
+  });
+
   // ============================================================
   // ---------- CONTROL TOTAL: SESIONES Y KILLSWITCH ------------
   // ============================================================
@@ -509,6 +534,19 @@ export function registrarRutasAdmin(router) {
       [id]
     );
     return sesiones.rows;
+  });
+
+  // Revocar una sesión específica de un usuario
+  router.del('/api/admin/users/:userId/sessions/:tokenId', async (c) => {
+    const admin = await c.admin();
+    const userId = Number(c.params.userId);
+    const tokenId = Number(c.params.tokenId);
+    await c.pool.query(
+      'UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1 AND user_id = $2',
+      [tokenId, userId]
+    );
+    await auditar(c.pool, Number(admin.id), 'sesion_revocada_admin', `Usuario #${userId}, token #${tokenId}`, c.ip);
+    return { ok: true };
   });
 
   // Killswitch: cerrar todas las sesiones activas de un usuario

@@ -115,6 +115,26 @@ export function registrarRutasPerfil(router) {
     };
   });
 
+  // Lo que yo pedí a cuentas privadas y sigue pendiente.
+  router.get('/api/me/enviadas', async (c) => {
+    const yo = await c.exigir();
+    const lista = await filas(
+      c.pool,
+      `SELECT s.id AS solicitud_id, s.created_at::text AS pedida, u.*
+         FROM follow_requests s JOIN users u ON u.id = s.destino_id
+        WHERE s.solicitante_id = $1 AND s.estado = 'pendiente'
+        ORDER BY s.created_at ASC LIMIT 100`,
+      [yo.id]
+    );
+    return {
+      enviadas: lista.map((u) => ({
+        ...perfilPublico(u),
+        solicitud_id: Number(u.solicitud_id),
+        created_at: u.pedida,
+      })),
+    };
+  });
+
   router.post('/api/me/solicitudes/:id', async (c) => {
     const yo = await c.exigir();
     const solicitudId = Number(c.params.id);
