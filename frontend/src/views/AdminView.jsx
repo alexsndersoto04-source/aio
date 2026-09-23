@@ -942,7 +942,7 @@ function SecurityAdmin() {
     return <div className="card" style={{ padding: 24, textAlign: 'center' }}><p className="muted">Cargando defensas y escudo de seguridad…</p></div>;
   }
 
-  const blindajeActivo = Boolean(data?.resumen_defensas?.modo_blindaje_ddos);
+  const blindajeActivo = Boolean(data?.defensas?.modo_blindaje || data?.resumen_defensas?.modo_blindaje_ddos);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1041,7 +1041,7 @@ function SecurityAdmin() {
           <div>
             <div className="muted" style={{ fontSize: 12 }}>IPs Bloqueadas (Memoria)</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: '#ef4444' }}>
-              {data?.resumen_defensas?.ips_bloqueadas_en_ram || 0}
+              {data?.defensas?.ips_bloqueadas_total ?? data?.ips_bloqueadas?.length ?? 0}
             </div>
             <small className="muted" style={{ fontSize: 11 }}>Rechazo a 0.001 ms</small>
           </div>
@@ -1055,7 +1055,7 @@ function SecurityAdmin() {
           <div>
             <div className="muted" style={{ fontSize: 12 }}>Eventos de Seguridad (24h)</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: '#6366f1' }}>
-              {data?.eventos_24h || 0}
+              {data?.eventos_recientes?.length || data?.eventos_24h || 0}
             </div>
             <small className="muted" style={{ fontSize: 11 }}>Auditoría registrada</small>
           </div>
@@ -1108,9 +1108,9 @@ function SecurityAdmin() {
               {data?.ips_bloqueadas?.map((b) => (
                 <tr key={b.id || b.ip}>
                   <td><code>{b.ip}</code></td>
-                  <td>{b.reason || 'Sin motivo especificado'}</td>
-                  <td className="muted">{b.blocked_by_user || 'Sistema / Auto-bloqueo'}</td>
-                  <td className="muted">{timeAgo(b.created_at)}</td>
+                  <td>{b.motivo || b.reason || 'Sin motivo especificado'}</td>
+                  <td className="muted">{b.bloqueado_por_usuario || b.blocked_by_user || 'Sistema / Auto-bloqueo'}</td>
+                  <td className="muted">{timeAgo(b.creado_en || b.created_at)}</td>
                   <td>
                     <button
                       className="btn-ghost btn-sm"
@@ -1147,34 +1147,39 @@ function SecurityAdmin() {
               </tr>
             </thead>
             <tbody>
-              {data?.eventos_recientes?.map((ev) => (
-                <tr key={ev.id}>
-                  <td>
-                    <span
-                      className="pill"
-                      style={{
-                        background:
-                          ev.event_type.includes('EXCESS') || ev.event_type.includes('SUSPICIOUS')
-                            ? '#ef4444'
-                            : ev.event_type.includes('SHIELD')
-                            ? '#8b5cf6'
-                            : '#3b82f6',
-                        color: '#fff',
-                        fontSize: 11,
-                        fontWeight: 600,
-                      }}
-                    >
-                      {ev.event_type}
-                    </span>
-                  </td>
-                  <td><code>{ev.ip || '—'}</code></td>
-                  <td className="muted">{ev.username ? `@${ev.username}` : '—'}</td>
-                  <td style={{ fontSize: 12, maxWidth: 320, wordBreak: 'break-word' }}>
-                    {typeof ev.details === 'object' ? JSON.stringify(ev.details) : String(ev.details || '—')}
-                  </td>
-                  <td className="muted" style={{ fontSize: 12 }}>{timeAgo(ev.created_at)}</td>
-                </tr>
-              ))}
+              {data?.eventos_recientes?.map((ev) => {
+                const tipoStr = String(ev.tipo || ev.event_type || 'evento');
+                return (
+                  <tr key={ev.id}>
+                    <td>
+                      <span
+                        className="pill"
+                        style={{
+                          background:
+                            tipoStr.includes('bloqueada') || tipoStr.includes('EXCESS') || tipoStr.includes('SUSPICIOUS')
+                              ? '#ef4444'
+                              : tipoStr.includes('blindaje') || tipoStr.includes('SHIELD')
+                              ? '#8b5cf6'
+                              : '#3b82f6',
+                          color: '#fff',
+                          fontSize: 11,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {tipoStr}
+                      </span>
+                    </td>
+                    <td><code>{ev.ip || '—'}</code></td>
+                    <td className="muted">{ev.username ? `@${ev.username}` : '—'}</td>
+                    <td style={{ fontSize: 12, maxWidth: 320, wordBreak: 'break-word' }}>
+                      {typeof (ev.detalle || ev.details) === 'object'
+                        ? JSON.stringify(ev.detalle || ev.details)
+                        : String(ev.detalle || ev.details || '—')}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12 }}>{timeAgo(ev.creado_en || ev.created_at)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {(!data?.eventos_recientes || data.eventos_recientes.length === 0) && (
