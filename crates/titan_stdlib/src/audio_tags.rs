@@ -982,14 +982,18 @@ fn parse_wav(head: &[u8]) -> (Id3Tags, f64, u32, u16) {
                         break;
                     }
                     let raw = String::from_utf8_lossy(&body[sstart..sstart + ssize]).to_string();
-                    match sid {
-                        *b"INAM" => tags.title = clean(raw),
-                        *b"IART" => tags.artist = clean(raw),
-                        *b"IPRD" => tags.album = clean(raw),
-                        *b"IGNR" => tags.genre = clean(raw),
-                        *b"ICRD" => tags.year = clean(raw),
-                        *b"ITRK" => tags.track = parse_track_number(&raw),
-                        _ => {}
+                    if sid == *b"INAM" {
+                        tags.title = clean(raw);
+                    } else if sid == *b"IART" {
+                        tags.artist = clean(raw);
+                    } else if sid == *b"IPRD" {
+                        tags.album = clean(raw);
+                    } else if sid == *b"IGNR" {
+                        tags.genre = clean(raw);
+                    } else if sid == *b"ICRD" {
+                        tags.year = clean(raw);
+                    } else if sid == *b"ITRK" {
+                        tags.track = parse_track_number(&raw);
                     }
                     sp = sstart + ssize + (ssize & 1);
                 }
