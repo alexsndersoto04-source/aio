@@ -48,19 +48,20 @@ jobs:
 
       - name: cargo test (capturado, nunca falla el paso)
         run: |
-          cargo test --workspace --all-targets --no-fail-fast > /tmp/ctest.txt 2>&1
-          rc=$?
-          echo "cargo test terminó con exit code $rc"
-          exit 0
+          # || true: el runner ejecuta con errexit; sin esto el paso morirá
+          # antes de que el paso de anotaciones pueda leer /tmp/ctest.txt.
+          cargo test --workspace --all-targets --no-fail-fast > /tmp/ctest.txt 2>&1 || true
+          echo "cargo test terminado; salida completa en /tmp/ctest.txt"
 
       - name: Emitir líneas de fallo como anotaciones
         if: always()
         run: |
           {
-            grep -E "^test result: (FAILED|ok)" /tmp/ctest.txt
-            echo "----- fallos -----"
-            grep -E "^---- .* stdout ----$|panicked at|assertion .{0,120}failed|left ==|right:|^error(\[|:)" /tmp/ctest.txt | head -60
-            echo "----- fin -----"
+            echo "=== RESULTADOS ==="
+            grep -E "^test result:" /tmp/ctest.txt
+            echo "=== TAIL 70 (el final SIEMPRE contiene el resumen del fallo) ==="
+            tail -70 /tmp/ctest.txt
+            echo "=== FIN ==="
           } | while IFS= read -r line; do
             echo "::error file=CI_DIAG.txt,${RANDOM}::${line:0:400}"
           done
