@@ -2779,6 +2779,48 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::audio::record_stop" => Value::Str(stdlib::audio_mod::record_stop().map_err(error)?),
         #[cfg(feature = "audio_mod")]
         "std::audio::record_info" => Value::Str(stdlib::audio_mod::record_info().map_err(error)?),
+        // ---------------- Phase 9b: backends + decodificacion ----------------
+        #[cfg(feature = "audio_mod")]
+        "std::audio::backends" => Value::Array(
+            stdlib::audio_mod::backends()
+                .into_iter()
+                .map(|value| Value::Str(value.into()))
+                .collect(),
+        ),
+        #[cfg(feature = "audio_mod")]
+        "std::audio::backend" => Value::Str(stdlib::audio_mod::backend().into()),
+        #[cfg(feature = "audio_mod")]
+        "std::audio::play_with" => {
+            let path = string!();
+            let backend = string!();
+            Value::Str(stdlib::audio_mod::play_with(&path, &backend).map_err(error)?)
+        }
+        #[cfg(feature = "audio_decode_mod")]
+        "std::audio::formats" => Value::Array(
+            stdlib::audio_mod::formats()
+                .into_iter()
+                .map(|value| Value::Str(value.into()))
+                .collect(),
+        ),
+        #[cfg(feature = "audio_decode_mod")]
+        "std::audio::decode" => {
+            let path = string!();
+            let decoded = stdlib::audio_mod::decode(&path).map_err(error)?;
+            audio_decoded_result(decoded)
+        }
+        #[cfg(feature = "audio_decode_mod")]
+        "std::audio::probe" => {
+            let path = string!();
+            let probed = stdlib::audio_mod::probe(&path).map_err(error)?;
+            audio_probed_result(probed)
+        }
+        #[cfg(feature = "audio_decode_mod")]
+        "std::audio::decode_to_wav" => {
+            let src = string!();
+            let dst = string!();
+            let decoded = stdlib::audio_mod::decode_to_wav(&src, &dst).map_err(error)?;
+            audio_decoded_result(decoded)
+        }
 
         // ---------------- Phase 10: sled key-value ----------------
         #[cfg(feature = "kv_mod")]
@@ -5178,6 +5220,40 @@ fn audio_read_result(samples: Vec<f32>, sample_rate: u32, channels: u16, bits: u
     map.insert("sample_rate".into(), Value::Int(sample_rate as i64));
     map.insert("channels".into(), Value::Int(channels as i64));
     map.insert("bits_per_sample".into(), Value::Int(bits as i64));
+    Value::Map(map)
+}
+
+/// PCM decodificado por symphonia -> map para `.titan`. Misma forma que
+/// `audio_read_result` (samples/sample_rate/channels) para que el codigo de
+/// Titan no distinga entre un WAV leido y un mp3 decodificado.
+#[cfg(feature = "audio_decode_mod")]
+fn audio_decoded_result(decoded: stdlib::audio_mod::Decoded) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "samples".into(),
+        Value::Array(
+            decoded
+                .samples
+                .into_iter()
+                .map(|value| Value::Float(value as f64))
+                .collect(),
+        ),
+    );
+    map.insert("sample_rate".into(), Value::Int(decoded.sample_rate as i64));
+    map.insert("channels".into(), Value::Int(decoded.channels as i64));
+    map.insert("frames".into(), Value::Int(decoded.frames as i64));
+    Value::Map(map)
+}
+
+/// Metadata de un archivo, sin decodificarlo entero.
+#[cfg(feature = "audio_decode_mod")]
+fn audio_probed_result(probed: stdlib::audio_mod::Probed) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert("format".into(), Value::Str(probed.format));
+    map.insert("sample_rate".into(), Value::Int(probed.sample_rate as i64));
+    map.insert("channels".into(), Value::Int(probed.channels as i64));
+    map.insert("duration_ms".into(), Value::Int(probed.duration_ms as i64));
+    map.insert("frames".into(), Value::Int(probed.frames as i64));
     Value::Map(map)
 }
 

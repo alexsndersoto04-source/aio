@@ -18,10 +18,26 @@
 use std::f32::consts::PI;
 use std::io::Cursor;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use thiserror::Error;
+
+#[cfg(feature = "audio_decode_mod")]
+use symphonia::core::audio::SampleBuffer;
+#[cfg(feature = "audio_decode_mod")]
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+#[cfg(feature = "audio_decode_mod")]
+use symphonia::core::errors::Error as SymphoniaError;
+#[cfg(feature = "audio_decode_mod")]
+use symphonia::core::formats::FormatOptions;
+#[cfg(feature = "audio_decode_mod")]
+use symphonia::core::io::MediaSourceStream;
+#[cfg(feature = "audio_decode_mod")]
+use symphonia::core::meta::MetadataOptions;
+#[cfg(feature = "audio_decode_mod")]
+use symphonia::core::probe::Hint;
 
 #[derive(Debug, Error)]
 pub enum AudioError {
@@ -35,6 +51,8 @@ pub enum AudioError {
     Failed { tool: String, stderr: String },
     #[error("invalid parameter: {0}")]
     Invalid(String),
+    #[error("audio decode error: {0}")]
+    Decode(String),
 }
 
 fn map_wav(error: hound::Error) -> AudioError {
@@ -281,24 +299,332 @@ pub fn is_termux_media_available() -> bool {
         .is_ok()
 }
 
-/// Start playing `path` in the background. Returns the tool's stdout for
-/// inspection (usually just "Now Playing:").
+/// Start playing `path` in the background using whichever player is available.
+///
+/// Priority order: `termux-media-player` first so Android keeps behaving
+/// exactly as before, then `mpv`, `ffplay`, `paplay` and `aplay` for desktop
+/// Linux. Returns a description of what was started.
 pub fn play(path: &str) -> Result<String, AudioError> {
-    let out = spawn("termux-media-player", &["play", path])?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    let backend = backend();
+    if backend == "none" {
+        return Err(AudioError::MissingCli {
+            tool: "ningun reproductor (instala mpv, ffplay, pulseaudio-utils o alsa-utils; en Termux: pkg install termux-api)".into(),
+        });
+    }
+    play_with(path, backend)
+}
+
+/// Play `path` with an explicit backend. Use `std::audio::backends()` to list
+/// what this machine actually has.
+pub fn play_with(path: &str, backend: &str) -> Result<String, AudioError> {
+    match backend {
+        "termux-media-player" => {
+            let out = spawn("termux-media-player", &["play", path])?;
+            Ok(String::from_utf8_lossy(&out).into_owned())
+        }
+        "mpv" => start_detached("mpv", &["--no-video", "--really-quiet", path]),
+        "ffplay" => start_detached("ffplay", &["-nodisp", "-autoexit", "-loglevel", "quiet", path]),
+        "paplay" => start_detached("paplay", &[path]),
+        "aplay" => start_detached("aplay", &["-q", path]),
+        other => Err(AudioError::Invalid(format!(
+            "backend de audio desconocido: '{other}'. Usa std::audio::backends() para ver los disponibles"
+        ))),
+    }
 }
 
 pub fn pause() -> Result<String, AudioError> {
+    if !is_termux_media_available() {
+        return Err(AudioError::Invalid(
+            "pause solo esta soportado por termux-media-player; en escritorio usa stop() y play() de nuevo".into(),
+        ));
+    }
     let out = spawn("termux-media-player", &["pause"])?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 pub fn resume() -> Result<String, AudioError> {
+    if !is_termux_media_available() {
+        return Err(AudioError::Invalid(
+            "resume solo esta soportado por termux-media-player; en escritorio usa play() de nuevo".into(),
+        ));
+    }
     let out = spawn("termux-media-player", &["play"])?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 pub fn stop() -> Result<String, AudioError> {
-    let out = spawn("termux-media-player", &["stop"])?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    if is_termux_media_available() {
+        let out = spawn("termux-media-player", &["stop"])?;
+        return Ok(String::from_utf8_lossy(&out).into_owned());
+    }
+    Ok(stop_child())
+}
+
+// ---------------- Playback backends -----------------------------------
+//
+// Titan no enlaza ALSA/CoreAudio/WASAPI: la salida se delega a un reproductor
+// del sistema. En Android ese reproductor es `termux-media-player` (que usa el
+// MediaPlayer del SO y por tanto decodifica mp3/m4a). En escritorio se usa lo
+// que este instalado. El hijo queda registrado para que `stop()` pueda matarlo.
+
+/// Backends in priority order: (tool on PATH, args builder lives in play_with).
+const BACKEND_PRIORITY: &[&str] = &["termux-media-player", "mpv", "ffplay", "paplay", "aplay"];
+
+fn player_slot() -> &'static Mutex<Option<Child>> {
+    static PLAYER: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+    PLAYER.get_or_init(|| Mutex::new(None))
+}
+
+fn lock_player() -> std::sync::MutexGuard<'static, Option<Child>> {
+    player_slot().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// True if `tool` can be spawned at all. Only presence matters: `--version`
+/// exits fast, and a nonzero exit still means the binary exists.
+fn tool_present(tool: &str) -> bool {
+    Command::new(tool)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .is_ok()
+}
+
+fn backend_available(backend: &str) -> bool {
+    if backend == "termux-media-player" {
+        return is_termux_media_available();
+    }
+    tool_present(backend)
+}
+
+/// Every backend this machine has, in the order `play()` would try them.
+pub fn backends() -> Vec<&'static str> {
+    BACKEND_PRIORITY
+        .iter()
+        .copied()
+        .filter(|backend| backend_available(backend))
+        .collect()
+}
+
+/// The backend `play()` would use, or `"none"`.
+pub fn backend() -> &'static str {
+    BACKEND_PRIORITY
+        .iter()
+        .copied()
+        .find(|backend| backend_available(backend))
+        .unwrap_or("none")
+}
+
+/// Spawn a player without waiting for it, replacing whatever was playing.
+fn start_detached(tool: &str, args: &[&str]) -> Result<String, AudioError> {
+    stop_child();
+    let child = Command::new(tool)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => AudioError::MissingCli { tool: tool.into() },
+            _ => AudioError::Io(error),
+        })?;
+    let pid = child.id();
+    *lock_player() = Some(child);
+    Ok(format!("{tool} pid={pid}"))
+}
+
+/// Kill the registered player, if any. Returns a human-readable result.
+fn stop_child() -> String {
+    let child = lock_player().take();
+    match child {
+        Some(mut child) => match child.kill() {
+            Ok(()) => {
+                let _ = child.wait();
+                "reproduccion detenida".into()
+            }
+            Err(error) => format!("no se pudo detener: {error}"),
+        },
+        None => "no habia nada reproduciendose".into(),
+    }
+}
+
+// ---------------- Decodificacion (symphonia) --------------------------
+//
+// Todo este bloque existe solo con la feature `audio_decode_mod`. Convierte
+// cualquier contenedor/codec que symphonia entienda a PCM f32 interleaved,
+// que es exactamente lo que ya consumen `write_wav` y `encode_wav`.
+
+/// PCM plano tras decodificar: muestras f32 interleaved en `[-1.0, 1.0]`.
+#[cfg(feature = "audio_decode_mod")]
+pub struct Decoded {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub frames: u64,
+}
+
+/// Metadata de un archivo de audio, sin decodificarlo entero.
+#[cfg(feature = "audio_decode_mod")]
+pub struct Probed {
+    pub format: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub duration_ms: u64,
+    pub frames: u64,
+}
+
+/// Formatos que este build sabe decodificar.
+#[cfg(feature = "audio_decode_mod")]
+pub fn formats() -> Vec<&'static str> {
+    vec![
+        "wav", "aiff", "mp3", "mp2", "mp1", "flac", "ogg/vorbis", "m4a/aac", "alac", "adpcm", "mkv",
+    ]
+}
+
+#[cfg(feature = "audio_decode_mod")]
+fn decode_file(path: &str) -> Result<Decoded, AudioError> {
+    let file = std::fs::File::open(path)?;
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+
+    let source = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(extension) = extension.as_deref() {
+        hint.with_extension(extension);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            source,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|error| AudioError::Decode(error.to_string()))?;
+    let mut format = probed.format;
+
+    let track = format
+        .tracks()
+        .iter()
+        .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| AudioError::Decode("el archivo no tiene ninguna pista de audio decodificable".into()))?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|error| AudioError::Decode(error.to_string()))?;
+
+    let mut samples: Vec<f32> = Vec::new();
+    let mut buffer: Option<SampleBuffer<f32>> = None;
+    let mut sample_rate = 0u32;
+    let mut channels = 0u16;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            // Fin del archivo o pista encadenada: para un reproductor eso es
+            // simplemente "termino", no un error.
+            Err(SymphoniaError::ResetRequired) => break,
+            Err(SymphoniaError::IoError(ref error))
+                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break
+            }
+            Err(SymphoniaError::IoError(_)) | Err(SymphoniaError::DecodeError(_)) => break,
+            Err(error) => return Err(AudioError::Decode(error.to_string())),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            // Un paquete corrupto no tira la cancion entera: se salta.
+            Err(SymphoniaError::IoError(_)) | Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(error) => return Err(AudioError::Decode(error.to_string())),
+        };
+        if buffer.is_none() {
+            let spec = *decoded.spec();
+            sample_rate = spec.rate;
+            channels = spec.channels.count() as u16;
+            buffer = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
+        }
+        if let Some(buffer) = buffer.as_mut() {
+            buffer.copy_interleaved_ref(decoded);
+            samples.extend_from_slice(buffer.samples());
+        }
+    }
+
+    let frames = if channels == 0 {
+        0
+    } else {
+        samples.len() as u64 / u64::from(channels)
+    };
+    Ok(Decoded { samples, sample_rate, channels, frames })
+}
+
+/// Decodifica cualquier formato soportado a PCM f32.
+#[cfg(feature = "audio_decode_mod")]
+pub fn decode(path: &str) -> Result<Decoded, AudioError> {
+    decode_file(path)
+}
+
+/// Decodifica `src_path` y escribe el resultado como WAV en `dst_path`, que es
+/// lo que los backends de reproduccion si saben tocar. Devuelve el PCM por si
+/// ademas se quiere procesar (fades, mezcla, visualizador).
+#[cfg(feature = "audio_decode_mod")]
+pub fn decode_to_wav(src_path: &str, dst_path: &str) -> Result<Decoded, AudioError> {
+    let decoded = decode_file(src_path)?;
+    write_wav(dst_path, &decoded.samples, decoded.sample_rate, decoded.channels)?;
+    Ok(decoded)
+}
+
+/// Metadata sin decodificar el audio completo.
+#[cfg(feature = "audio_decode_mod")]
+pub fn probe(path: &str) -> Result<Probed, AudioError> {
+    let file = std::fs::File::open(path)?;
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+
+    let source = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(extension) = extension.as_deref() {
+        hint.with_extension(extension);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            source,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|error| AudioError::Decode(error.to_string()))?;
+    let format_name = probed.mime_type.unwrap_or_else(|| "desconocido".into());
+    let track = probed
+        .format
+        .tracks()
+        .iter()
+        .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| AudioError::Decode("el archivo no tiene ninguna pista de audio".into()))?;
+
+    let sample_rate = track.codec_params.sample_rate.unwrap_or(0);
+    let channels = track
+        .codec_params
+        .channels
+        .map(|channels| channels.count() as u16)
+        .unwrap_or(0);
+    let frames = track.codec_params.n_frames.unwrap_or(0);
+    let duration_ms = match (track.codec_params.time_base, track.codec_params.n_frames) {
+        (Some(time_base), Some(frames)) => {
+            let time = time_base.calc_time(frames);
+            time.seconds.saturating_mul(1000) + (time.frac * 1000.0) as u64
+        }
+        _ => 0,
+    };
+
+    Ok(Probed { format: format_name, sample_rate, channels, duration_ms, frames })
 }
 pub fn info() -> Result<String, AudioError> {
     let out = spawn("termux-media-player", &["info"])?;
@@ -384,5 +710,84 @@ mod tests {
     fn missing_cli_is_typed() {
         let out = spawn("termux-audio-definitely-does-not-exist-xyz", &[]);
         assert!(matches!(out, Err(AudioError::MissingCli { .. })));
+    }
+
+    #[cfg(feature = "audio_decode_mod")]
+    #[test]
+    fn decode_round_trips_a_wav() {
+        let file = std::env::temp_dir().join(format!("titan-decode-{}.wav", std::process::id()));
+        let path = file.to_string_lossy().into_owned();
+        // 440 Hz, 250 ms, mono a 44.1 kHz -> 11_025 muestras.
+        let original = sine_wave(440.0, 250, 44_100, 0.8);
+        write_wav(&path, &original, 44_100, 1).expect("write_wav");
+
+        let decoded = decode(&path).expect("decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(decoded.sample_rate, 44_100);
+        assert_eq!(decoded.channels, 1);
+        assert_eq!(decoded.samples.len(), original.len());
+        assert_eq!(decoded.frames, original.len() as u64);
+        // write_wav cuantiza a 16 bits, asi que se tolera el error de redondeo.
+        for (expected, actual) in original.iter().zip(decoded.samples.iter()) {
+            assert!((expected - actual).abs() < 1e-3, "deriva al decodificar");
+        }
+    }
+
+    #[cfg(feature = "audio_decode_mod")]
+    #[test]
+    fn probe_reads_metadata_without_decoding() {
+        let file = std::env::temp_dir().join(format!("titan-probe-{}.wav", std::process::id()));
+        let path = file.to_string_lossy().into_owned();
+        let samples = sine_wave(440.0, 250, 44_100, 0.8);
+        write_wav(&path, &samples, 44_100, 1).expect("write_wav");
+
+        let probed = probe(&path).expect("probe");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(probed.sample_rate, 44_100);
+        assert_eq!(probed.channels, 1);
+        assert!(probed.frames >= 11_000, "frames = {}", probed.frames);
+        // 250 ms exactos; se deja margen por el redondeo de la base de tiempo.
+        assert!((240..=260).contains(&probed.duration_ms), "duration_ms = {}", probed.duration_ms);
+        assert!(
+            probed.format.contains("wav") || probed.format.contains("wave"),
+            "format = {}",
+            probed.format
+        );
+    }
+
+    #[cfg(feature = "audio_decode_mod")]
+    #[test]
+    fn decode_to_wav_writes_a_readable_file() {
+        let id = std::process::id();
+        let src = std::env::temp_dir().join(format!("titan-d2w-src-{id}.wav"));
+        let dst = std::env::temp_dir().join(format!("titan-d2w-dst-{id}.wav"));
+        let src = src.to_string_lossy().into_owned();
+        let dst = dst.to_string_lossy().into_owned();
+        let samples = sine_wave(220.0, 100, 22_050, 0.5);
+        write_wav(&src, &samples, 22_050, 1).expect("write_wav");
+
+        let decoded = decode_to_wav(&src, &dst).expect("decode_to_wav");
+        assert_eq!(decoded.sample_rate, 22_050);
+
+        // El destino tiene que volver a leerse con el camino WAV existente.
+        let (reread, sample_rate, channels, _bits) = read_wav(&dst).expect("read_wav");
+        assert_eq!(sample_rate, 22_050);
+        assert_eq!(channels, 1);
+        assert_eq!(reread.len(), decoded.samples.len());
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+    }
+
+    #[test]
+    fn backends_only_reports_known_players() {
+        const KNOWN: &[&str] = &["termux-media-player", "mpv", "ffplay", "paplay", "aplay"];
+        for backend in backends() {
+            assert!(KNOWN.contains(&backend), "backend inesperado: {backend}");
+        }
+        let chosen = backend();
+        assert!(chosen == "none" || KNOWN.contains(&chosen), "backend = {chosen}");
     }
 }

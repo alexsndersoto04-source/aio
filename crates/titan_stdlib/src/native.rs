@@ -1048,6 +1048,16 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::audio::record_start", [String, Int], String, Process),
     native!("std::audio::record_stop", [], String, Process),
     native!("std::audio::record_info", [], String, Process),
+    // Backends de reproduccion. Titan no enlaza ALSA/CoreAudio: delega en un
+    // reproductor del sistema, y estas tres dejan elegirlo explicitamente.
+    native!("std::audio::backends", [], Array, Process),
+    native!("std::audio::backend", [], String, Process),
+    native!("std::audio::play_with", [String, String], String, Process),
+    // Decodificacion de formatos comprimidos (feature audio_decode_mod).
+    native!("std::audio::formats", [], Array),
+    native!("std::audio::decode", [String], Map, Filesystem),
+    native!("std::audio::probe", [String], Map, Filesystem),
+    native!("std::audio::decode_to_wav", [String, String], Map, Filesystem),
     // --- Phase 10: NoSQL — embedded key-value (sled) ---
     // Path I/O -> Filesystem capability. Results that may be missing use
     // Any (returns Bytes or Nil).
