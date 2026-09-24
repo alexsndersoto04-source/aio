@@ -54,11 +54,11 @@ jobs:
             echo "cargo test: OK"
           else
             echo "=== cola del log de tests ==="
-            tail -n 30 /tmp/test.log | while IFS= read -r line; do
+            tail -n 50 /tmp/test.log | while IFS= read -r line; do
               echo "::error::${line:0:380}"
             done
-            echo "=== lineas de fallo ==="
-            grep -E "(FAILED|panicked at|^error|test result: FAILED)" /tmp/test.log | head -20 | while IFS= read -r line; do
+            echo "=== senales/memoria ==="
+            grep -iE "(signal|killed|out of memory|oom|segfault|abort|SIG)" /tmp/test.log | head -10 | while IFS= read -r line; do
               echo "::error::${line:0:380}"
             done
             exit 1
