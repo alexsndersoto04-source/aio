@@ -1067,7 +1067,7 @@ mod tests {
         let mut tail = vec![0u8; 128];
         tail[0..3].copy_from_slice(b"TAG");
         tail[3..16].copy_from_slice(b"Vieja Escuela");
-        tail[33..41].copy_from_slice(b"Banda X");
+        tail[33..40].copy_from_slice(b"Banda X");
         tail[63..71].copy_from_slice(b"Clasicos");
         tail[93..97].copy_from_slice(b"1999");
         tail[126] = 5;
