@@ -1101,7 +1101,9 @@ mod tests {
         head.extend_from_slice(&[0x00, 0, 0, 34]);
         head.extend_from_slice(&si);
         head.extend_from_slice(&[0x84]); // last block, type 4
-        head.extend_from_slice(&(vc.len() as u32).to_be_bytes());
+        // FLAC escribe la longitud del bloque en 24 bits (3 bytes BE).
+        let vlen = (vc.len() as u32).to_be_bytes();
+        head.extend_from_slice(&vlen[1..]);
         head.extend_from_slice(&vc);
         let (tags, dur, r, c) = parse_flac(&head);
         assert_eq!(tags.title.as_deref(), Some("Flac Song"));
