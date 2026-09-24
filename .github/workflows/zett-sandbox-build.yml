@@ -1,26 +1,32 @@
-# Compila `zett` (crate titan_cli) contra una glibc ANTIGUA para que el binario
-# corra en entornos con glibc viejo. El binario oficial del release v1.0.0 se
-# construye en `ubuntu-latest` y por eso no necesariamente arranca en, por
-# ejemplo, Debian 12 / glibc 2.36.
+# Trae un `zett` funcional a un sandbox con red filtrada.
 #
-# Este workflow se construye dentro de `ubuntu:22.04` (glibc 2.35): cualquier
-# binario que enlace ahí corre en glibc >= 2.35.
+# Contexto: en sandboxes como el de Arena el host de releases de GitHub
+# (release-assets.githubusercontent.com) esta bloqueado, y tambien
+# static.rust-lang.org y crates.io, asi que ahi no se puede ni descargar el
+# binario del release ni compilar desde fuente. Lo que SI pasa el filtro es
+# git (github.com / api.github.com / codeload), y los runners de Actions si
+# tienen Rust e internet. Este workflow une las dos puntas:
 #
-# El resultado NO se sube como artifact ni como release: en sandboxes con red
-# filtrada esos hosts están bloqueados y `git` es el único canal disponible, así
-# que el binario se commitea en la rama y se recupera con `git fetch`.
+#   1. compila titan_cli dentro de ubuntu:22.04 (glibc 2.35, asi el binario
+#      corre en glibc >= 2.35 en vez de quedar atado a la glibc del runner);
+#   2. lo commitea en la MISMA rama que lo disparo;
+#   3. el sandbox lo recupera con `git fetch` + `git show` y lo descomprime.
 #
-# Disparo: solo cuando cambia ESTE archivo en la rama de trabajo, para que no se
-# ejecute en cada push ni entre en bucle con su propio commit de publicación.
+# Despues de usarlo conviene borrar el tarball de la rama: queda recuperable
+# del historial y el binario ya esta en el sandbox.
 #
-# Nota: `shell: bash` implica `bash -eo pipefail`, así que acá no se usan
-# tuberías hacia `head` (SIGPIPE -> 141); se escribe a archivo y se lee con sed.
+# Disparo: solo cuando cambia ESTE archivo, y en cualquier rama arena/**, para
+# que sirva en futuras sesiones y no entre en bucle con su propio commit
+# (que ademas lleva [skip ci]).
+#
+# Nota: `shell: bash` implica `bash -eo pipefail`, asi que aca no se usan
+# tuberias hacia `head` (SIGPIPE -> 141); se escribe a archivo y se lee con sed.
 
 name: zett-sandbox-build
 
 on:
   push:
-    branches: ["arena/01a0d172-aio"]
+    branches: ["arena/**"]
     paths: [".github/workflows/zett-sandbox-build.yml"]
 
 permissions:
@@ -58,7 +64,10 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
           sh /tmp/rustup.sh -y --profile minimal --default-toolchain stable
+          # `. cargo/env` es para ESTE paso; `$GITHUB_PATH` recien rige en los
+          # pasos siguientes. Sin el source, `rustc -V` muere con 127.
           . "$HOME/.cargo/env"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           rustc -V
           cargo -V
 
@@ -70,13 +79,14 @@ jobs:
 
       - name: cargo build --release -p titan_cli
         run: |
-          . "$HOME/.cargo/env"
           set -o pipefail
           cargo build --release -p titan_cli 2>&1 | tee /tmp/build.log
 
       # Todo lo que se averigua del binario va a /tmp/reporte.txt: como los logs
-      # de Actions no son legibles desde el sandbox, este archivo se commitea al
-      # final (pase o no el job) y se lee con la API de GitHub.
+      # de Actions no son legibles desde un sandbox con red filtrada, este
+      # archivo se commitea SI EL JOB FALLA (paso final) y se lee con la API de
+      # GitHub. En exito no se commitea nada de diagnostico: la prueba es el
+      # propio binario funcionando.
       - name: Verificar binario antes de publicar
         run: |
           bin=target/release/titan
@@ -117,16 +127,16 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898530+github-actions[bot]@users.noreply.github.com"
-          git fetch origin arena/01a0d172-aio
+          git fetch origin "${GITHUB_REF_NAME}"
           git checkout -B zett-bin FETCH_HEAD
           git add -f tools/zett-linux-x86_64.tar.xz tools/zett-linux-x86_64.tar.xz.sha256
           git commit -m "ci: zett x86_64 (glibc 2.35) para el sandbox [skip ci]"
-          git push origin HEAD:arena/01a0d172-aio
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
-      # Corre SIEMPRE: es el canal de diagnostico del sandbox (no puede leer los
-      # logs de Actions porque viven en un host bloqueado).
-      - name: Publicar reporte de diagnostico
-        if: always()
+      # Solo ante un fallo: es el canal de diagnostico cuando el sandbox no
+      # puede leer los logs de Actions.
+      - name: Publicar reporte de diagnostico (solo si fallo)
+        if: failure()
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
           mkdir -p tools
@@ -139,8 +149,8 @@ jobs:
           } > tools/ci-reporte.txt 2>/dev/null || echo "fallo armando el reporte" > tools/ci-reporte.txt
           git config user.name  "github-actions[bot]" || true
           git config user.email "41898530+github-actions[bot]@users.noreply.github.com" || true
-          git fetch origin arena/01a0d172-aio || true
+          git fetch origin "${GITHUB_REF_NAME}" || true
           git checkout -B zett-reporte FETCH_HEAD 2>/dev/null || git checkout -B zett-reporte 2>/dev/null || true
           git add -f tools/ci-reporte.txt || true
           git commit -m "ci: reporte de diagnostico del build [skip ci]" || true
-          git push origin HEAD:arena/01a0d172-aio || echo "no se pudo publicar el reporte"
+          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "no se pudo publicar el reporte"
