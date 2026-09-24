@@ -19,11 +19,7 @@ name: cross-platform
 
 on:
   push:
-    # TEMPORAL: `arena/01a0d172-aio` esta aca solo para verificar este cambio
-    # desde la rama de trabajo (workflow_dispatch ejecuta la version de `main`,
-    # no la de la rama, asi que no sirve para probar un job nuevo). Se quita en
-    # cuanto el run de verificacion este verde.
-    branches: [main, "arena/01a0d172-aio"]
+    branches: [main]
     tags: ["v*.*.*"]
   workflow_dispatch:
 
