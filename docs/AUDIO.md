@@ -102,6 +102,52 @@ fn main() {
 }
 ```
 
+## Esqueleto de reproductor
+
+Con las piezas de arriba se arma un reproductor completo. Este es el esqueleto
+minimo, encima del cual va tu interfaz, tu lista real (usando `std::fs` para
+listar carpetas) y tu logica de shuffle/repeat:
+
+```titan
+fn main() {
+    // ---- diagnostico: que hay en esta maquina ----
+    let bks = std::audio::backends()
+    for b in bks {
+        let s = b
+        print("reproductor disponible: {s}")
+    }
+
+    // ---- la cola del reproductor ----
+    let cola = ["/sdcard/Music/cancion1.mp3", "/sdcard/Music/cancion2.flac"]
+
+    // ---- reproducir una a una, con la metadata a mano ----
+    for ruta in cola {
+        let r = ruta
+        let meta = std::audio::probe(r)
+        let fmt = meta.format
+        let ms = meta.duration_ms
+        print("[{fmt}] {r} ({ms} ms)")
+        std::audio::play(r)
+    }
+
+    // ---- controles ----
+    std::audio::pause()
+    std::audio::resume()
+    std::audio::stop()
+}
+```
+
+Para un control mas fino:
+
+- `std::audio::play_with(ruta, backend)` fuerza un reproductor concreto de la
+  lista que devuelve `std::audio::backends()`.
+- `std::audio::decode(ruta)` te da el audio en crudo (PCM) para lo que el
+  reproductor delegado no puede hacer: fades, ecualizador, mezclas,
+  visualizadores, analisis. `samples` son floats intercalados en
+  [-1.0, 1.0], a `sample_rate` Hz y `channels` canales.
+- `std::audio::decode_to_wav(origen, destino)` convierte cualquier formato a
+  WAV para los backends que solo entienden WAV (`aplay`, `paplay`).
+
 ## Limites honestos
 
 - `decode` carga la pista entera en memoria: un mp3 de 4 minutos a 44.1 kHz
