@@ -204,11 +204,6 @@ fn is_mpeg_sync(head: &[u8]) -> bool {
 
 // ------------------------------------------------------- shared little helpers
 
-fn u16be(b: &[u8], at: usize) -> Option<u16> {
-    let s = b.get(at..at.checked_add(2)?)?;
-    Some(u16::from_be_bytes([s[0], s[1]]))
-}
-
 fn u16le(b: &[u8], at: usize) -> Option<u16> {
     let s = b.get(at..at.checked_add(2)?)?;
     Some(u16::from_le_bytes([s[0], s[1]]))
@@ -603,7 +598,6 @@ struct Mp3Frame {
     rate: u32,
     channels: u16,
     samples_per_frame: u32,
-    frame_len: usize,
     header_at: usize,
     is_v1: bool,
 }
@@ -684,7 +678,6 @@ fn parse_mp3_frame(buf: &[u8], at: usize) -> Option<Mp3Frame> {
         rate,
         channels,
         samples_per_frame,
-        frame_len,
         header_at: at,
         is_v1,
     })
