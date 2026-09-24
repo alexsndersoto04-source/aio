@@ -37,6 +37,7 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".github/workflows/publish-linux-binary.yml"
 
 permissions:
   contents: write
@@ -121,7 +122,12 @@ jobs:
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit -q -m "zett linux-x86_64 $(cat VERSION) @ $(cut -c1-12 COMMIT)"
-          git push -q origin HEAD:binaries
+          if ! git push -q origin HEAD:binaries 2>/tmp/push-err.txt; then
+            # Anotación legible por la API desde los entornos Arena (los logs
+            # no son alcanzables desde aquí).
+            echo "::error file=.github/workflows/publish-linux-binary.yml::git push failed: $(tr '\n' ' ' < /tmp/push-err.txt | head -c 600)"
+            exit 1
+          fi
 
           echo "Publicado en la rama 'binaries':"
           git ls-files
