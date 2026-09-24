@@ -315,11 +315,11 @@ fn main() {
     print("               -H 'Content-Type: application/json' \\")
     print("               -d '{\"username\":\"alex\",\"password\":\"secret123\"}'")
     print("")
-    print("Aceptando hasta 40 requests (timeout 60s/c)...")
+    print("Aceptando hasta 40 requests (timeout 30s/c)...")
     print("")
 
     for i in 0..40 {
-        let req = std::server::accept(s, 60000)
+        let req = std::server::accept(s, 30000)
         if req < 0 {
             print("[server] timeout, saliendo del loop")
         } else {
