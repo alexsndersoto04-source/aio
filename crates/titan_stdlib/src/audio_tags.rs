@@ -1008,15 +1008,6 @@ fn parse_wav(head: &[u8]) -> (Id3Tags, f64, u32, u16) {
 mod tests {
     use super::*;
 
-    fn syncsafe4(n: usize) -> [u8; 4] {
-        [
-            ((n >> 21) & 0x7F) as u8,
-            ((n >> 14) & 0x7F) as u8,
-            ((n >> 7) & 0x7F) as u8,
-            (n & 0x7F) as u8,
-        ]
-    }
-
     #[test]
     fn id3v23_text_frames_are_parsed() {
         let mut frames: Vec<u8> = Vec::new();
