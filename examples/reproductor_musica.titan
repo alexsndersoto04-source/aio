@@ -10,7 +10,9 @@
 // 3. Escanear una carpeta completa con `std::audio::scan_library`
 // 4. Reproducir con el backend del sistema (mpv, afplay, paplay, aplay,
 //    ffplay o SoundPlayer en Windows): play, posición, pausa, resume,
-//    volumen, cola y stop — degradando con elegancia donde no hay soporte.
+//    volumen, cola, next/prev, pista actual y stop — degradando con
+//    elegancia donde no hay soporte.
+// 5. Extraer la carátula embebida con std::audio::cover (bytes).
 //
 // Con mpv instalado (Termux: `pkg install mpv`) el control es completo.
 
@@ -100,10 +102,39 @@ fn main() {
             Result::Ok(msg) => print(msg),
             Result::Err(e) => print("cola no disponible: " + e),
         }
+        let actual = std::try::catch(|| std::audio::player_current())
+        match actual {
+            Result::Ok(t) => {
+                print("pista actual:")
+                print(t.title)
+                print("índice en la cola:")
+                print(t.index)
+                print("tamaño de la cola:")
+                print(t.count)
+            }
+            Result::Err(e) => print("estado actual no disponible: " + e),
+        }
+        let siguiente = std::try::catch(|| std::audio::player_next())
+        match siguiente {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("saltar pista no disponible: " + e),
+        }
+        let atras = std::try::catch(|| std::audio::player_prev())
+        match atras {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("volver atrás no disponible: " + e),
+        }
         std::time::sleep_ms(2000)
         print("posición tras 2 s más (s):")
         print(std::audio::player_position())
         print(std::audio::player_stop())
+    }
+
+    print("---- 5. Carátula embebida (std::audio::cover) ----")
+    let portada = std::try::catch(|| std::audio::cover(pista_a))
+    match portada {
+        Result::Ok(bytes) => print("portada de la WAV generada: {std::bytes::length(bytes)} bytes (0 si no lleva carátula)"),
+        Result::Err(e) => print("portada no disponible: " + e),
     }
 
     print("---- Listo. Las pistas quedaron guardadas en: ----")

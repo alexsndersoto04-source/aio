@@ -30,6 +30,10 @@ print(info.bitrate_kbps)   // 320 (solo MP3; 0 en WAV/FLAC/OGG)
 print(info.has_cover)      // true si trae carátula embebida
 
 let solo_duracion = std::audio::duration("/musica/cancion.flac") // Float
+
+// Carátula embebida en bytes (ID3v2 APIC/PIC en MP3, PICTURE en FLAC);
+// vector vacío cuando el archivo no trae portada.
+let portada = std::audio::cover("/musica/cancion.mp3")
 ```
 
 ### Formatos y etiquetas soportados
@@ -82,6 +86,10 @@ let aplicado = std::audio::player_set_volume(60) // true si el backend lo aplic�
 print(std::audio::player_seek(42.0))
 print(std::audio::player_queue_add("/musica/b.mp3"))  // cola real con mpv
 print(std::audio::player_queue_clear())
+print(std::audio::player_next())          // saltar a la siguiente pista (mpv)
+print(std::audio::player_prev())          // volver a la anterior (mpv)
+let actual = std::audio::player_current() // {index, count, title, path} (mpv)
+print(actual.title)
 print(std::audio::player_stop())
 ```
 

@@ -25,10 +25,25 @@
 name: Build zett linux-x86_64 (rama binaries)
 
 on:
+  # Manual (solo funciona cuando el workflow está en la rama default):
   workflow_dispatch:
+  # Automático: cada vez que cambia el código compilado, la rama `binaries`
+  # queda con el binario fresco de esa misma commit (ver COMMIT).
+  # (workflow_dispatch NO se puede disparar desde Arena para rama no
+  # default — la API devuelve 403 —, así que el push es el canal.)
+  push:
+    branches: [main, "arena/**"]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
 
 permissions:
   contents: write
+
+concurrency:
+  group: zett-binaries-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-linux-x86_64:

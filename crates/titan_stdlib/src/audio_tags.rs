@@ -123,6 +123,34 @@ pub fn duration_secs(path: &str) -> Result<f64, TagsError> {
     Ok(read_track(path)?.duration_secs)
 }
 
+/// Raw bytes of the first embedded cover (APIC/PIC in ID3v2, PICTURE in
+/// FLAC). Empty vector when the file has no cover; error only when the
+/// file is not readable audio. The `has_cover` field of [`read_track`]
+/// tells you in advance whether a call will return data.
+pub fn cover_bytes(path: &str) -> Result<Vec<u8>, TagsError> {
+    let (head, tail, file_len) = read_head_tail(path)?;
+    if head.is_empty() {
+        return Err(TagsError::Format(path.to_string()));
+    }
+    let kind = detect(&head);
+    let (tags, _dur, _rate, _ch, _kbps, _name) = match kind {
+        "wav" => {
+            let (t, d, r, c) = parse_wav(&head);
+            (t, d, r, c, 0, "wav")
+        }
+        "flac" => {
+            let (t, d, r, c) = parse_flac(&head);
+            (t, d, r, c, 0, "flac")
+        }
+        "ogg" => parse_ogg(&head, &tail),
+        _ => parse_mp3(&head, &tail, file_len),
+    };
+    if kind.is_empty() {
+        return Err(TagsError::Format(format!("unsupported audio file: {path}")));
+    }
+    Ok(tags.cover.unwrap_or_default())
+}
+
 /// Walk `dir` recursively and read the metadata of every supported audio
 /// file, sorted by path. Unreadable files are skipped (best effort), so a
 /// single broken track never breaks the library scan.
@@ -315,6 +343,9 @@ pub(crate) struct Id3Tags {
     pub year: Option<String>,
     pub track: Option<u32>,
     pub has_cover: bool,
+    /// Raw bytes of the first embedded cover (APIC/PIC in ID3v2, PICTURE in
+    /// FLAC). `None` when there is no cover or the format cannot yield one.
+    pub cover: Option<Vec<u8>>,
 }
 
 impl Id3Tags {
@@ -373,6 +404,9 @@ fn merge_tags(dst: &mut Id3Tags, src: Id3Tags) {
         dst.track = src.track;
     }
     dst.has_cover |= src.has_cover;
+    if dst.cover.is_none() {
+        dst.cover = src.cover;
+    }
 }
 
 fn decode_text_frame(content: &[u8]) -> Option<String> {
@@ -446,6 +480,9 @@ pub(crate) fn parse_id3v2_frames(buf: &[u8], major: u8, tag_flags: u8) -> Id3Tag
         }
         if id == "APIC" || id == "PIC" {
             tags.has_cover = true;
+            if tags.cover.is_none() {
+                tags.cover = apic_image_bytes(&id, &content);
+            }
         } else if id.starts_with('T') {
             if let Some(text) = decode_text_frame(&content) {
                 tags.set(&id, text);
@@ -453,6 +490,55 @@ pub(crate) fn parse_id3v2_frames(buf: &[u8], major: u8, tag_flags: u8) -> Id3Tag
         }
     }
     tags
+}
+
+/// Image data out of an APIC frame body (ID3v2.3/2.4):
+/// `encoding | MIME\0 | picture-type | description\0 | data`.
+/// PIC (ID3v2.2) is `image-id (3 bytes) | data`.
+/// When the description terminator is missing (lenient files), the rest of
+/// the frame is treated as image data.
+fn apic_image_bytes(id: &str, content: &[u8]) -> Option<Vec<u8>> {
+    if id == "PIC" {
+        return content
+            .len()
+            .checked_sub(3)
+            .filter(|n| *n > 0)
+            .map(|_| content[3..].to_vec());
+    }
+    let enc = *content.first()?;
+    let mime_end = content[1..].iter().position(|&b| b == 0)?;
+    let mut pos = 2 + mime_end; // encoding byte + MIME
+    pos += 1; // picture type
+    if pos >= content.len() {
+        return None;
+    }
+    // Description terminator: 2-byte NUL for UTF-16 (enc 1), 1 byte otherwise.
+    let desc_end = if enc == 1 {
+        content[pos..].windows(2).position(|w| w == [0, 0]).map(|p| p + 2)
+    } else {
+        content[pos..].iter().position(|&b| b == 0).map(|p| p + 1)
+    };
+    let start = match desc_end {
+        Some(len) => pos + len,
+        None => pos, // no terminator: the rest is the image (lenient)
+    };
+    (start < content.len()).then(|| content[start..].to_vec())
+}
+
+/// Image data out of a FLAC PICTURE metadata block body:
+/// `type | MIME | description | width | height | depth | colors | data`,
+/// every length a big-endian u32.
+fn flac_picture_bytes(body: &[u8]) -> Option<Vec<u8>> {
+    let mut pos = 4; // picture type
+    let mime_len = u32be(body, pos)? as usize;
+    pos = pos.checked_add(4 + mime_len)?;
+    let desc_len = u32be(body, pos)? as usize;
+    pos = pos.checked_add(4 + desc_len)?;
+    pos = pos.checked_add(16)?; // width, height, depth, colors
+    let data_len = u32be(body, pos)? as usize;
+    pos = pos.checked_add(4)?;
+    let end = pos.checked_add(data_len)?;
+    (data_len > 0 && end <= body.len()).then(|| body[pos..end].to_vec())
 }
 
 /// Parse an ID3v2 tag that includes its full header ("ID3"...), e.g. from
@@ -816,7 +902,12 @@ fn parse_flac(head: &[u8]) -> (Id3Tags, f64, u32, u16) {
                     tags.set_vorbis(&k, v);
                 }
             }
-            6 => tags.has_cover = true,
+            6 => {
+                tags.has_cover = true;
+                if tags.cover.is_none() {
+                    tags.cover = flac_picture_bytes(body);
+                }
+            }
             _ => {}
         }
         pos = start + blen;
@@ -1047,6 +1138,55 @@ mod tests {
         assert_eq!(tags.year.as_deref(), Some("1998"));
         assert_eq!(tags.track, Some(7));
         assert!(tags.has_cover);
+        // The frame omits the description terminator on purpose: the
+        // parser must fall back to "the rest of the frame is the image".
+        assert_eq!(tags.cover.as_deref(), Some(b"coverdata".as_slice()));
+    }
+
+    #[test]
+    fn apic_image_bytes_strips_mime_and_description() {
+        // encoding(0) + "image/png\0" + type(1) + "Desc\0" + data
+        let mut c = vec![0u8];
+        c.extend_from_slice(b"image/png");
+        c.push(0);
+        c.push(1);
+        c.extend_from_slice(b"Desc");
+        c.push(0);
+        c.extend_from_slice(b"\x89PNG-data");
+        assert_eq!(apic_image_bytes("APIC", &c).as_deref(), Some(b"\x89PNG-data".as_slice()));
+
+        // UTF-16 (enc 1) with a 2-byte description terminator.
+        let mut u = vec![1u8];
+        u.extend_from_slice(b"image/jpeg");
+        u.push(0);
+        u.push(3);
+        u.extend_from_slice(&[68, 0, 0, 0]); // description "D\0\0\0"
+        u.extend_from_slice(b"jpegbytes");
+        assert_eq!(apic_image_bytes("APIC", &u).as_deref(), Some(b"jpegbytes".as_slice()));
+
+        // PIC (ID3v2.2): 3-byte image id + raw data.
+        let p = [b'J', b'P', b'G', 0xDE, 0xAD, 0xBE, 0xEF];
+        assert_eq!(apic_image_bytes("PIC", &p).as_deref(), Some(b"\xDE\xAD\xBE\xEF".as_slice()));
+    }
+
+    #[test]
+    fn flac_picture_bytes_strips_header_fields() {
+        // type | mime "image/jpeg" | desc "x" | width..colors | data
+        let mut body = Vec::new();
+        body.extend_from_slice(&3u32.to_be_bytes());
+        body.extend_from_slice(&(8u32).to_be_bytes());
+        body.extend_from_slice(b"image/jpeg");
+        body.extend_from_slice(&(1u32).to_be_bytes());
+        body.extend_from_slice(b"x");
+        for v in [0u32, 1, 24, 2] {
+            body.extend_from_slice(&v.to_be_bytes());
+        }
+        body.extend_from_slice(&(5u32).to_be_bytes()); // data length
+        body.extend_from_slice(b"COVER");
+        assert_eq!(flac_picture_bytes(&body).as_deref(), Some(b"COVER".as_slice()));
+
+        // Truncated block: no image, but no panic either.
+        assert_eq!(flac_picture_bytes(&[0, 0, 0]), None);
     }
 
     #[test]

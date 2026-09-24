@@ -2833,6 +2833,29 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::audio::player_queue_clear" => {
             Value::Str(stdlib::audio_player::queue_clear().map_err(error)?)
         }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_next" => {
+            Value::Str(stdlib::audio_player::queue_next().map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_prev" => {
+            Value::Str(stdlib::audio_player::queue_prev().map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_current" => {
+            let cur = stdlib::audio_player::current_track().map_err(error)?;
+            let mut map = BTreeMap::new();
+            map.insert("index".into(), Value::Int(cur.index));
+            map.insert("count".into(), Value::Int(cur.count));
+            map.insert("title".into(), Value::Str(cur.title));
+            map.insert("path".into(), Value::Str(cur.path));
+            Value::Map(map)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::cover" => {
+            let path = string!();
+            Value::Bytes(stdlib::audio_tags::cover_bytes(&path).map_err(error)?)
+        }
 
         // ---------------- Phase 10: sled key-value ----------------
         #[cfg(feature = "kv_mod")]

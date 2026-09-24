@@ -571,6 +571,10 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::audio::player_backend", [], String),
     native!("std::audio::player_queue_add", [String], String),
     native!("std::audio::player_queue_clear", [], String),
+    native!("std::audio::player_next", [], String),
+    native!("std::audio::player_prev", [], String),
+    native!("std::audio::player_current", [], Map),
+    native!("std::audio::cover", [String], Bytes),
     native!("std::gui::init", [], Bool, UserInterface),
     native!(
         "std::gui::create_container",

@@ -388,6 +388,46 @@ fn extract_float_after(json: &str, key: &str) -> Option<f64> {
     rest[..end].parse().ok()
 }
 
+/// Pull a JSON string out of an mpv reply, e.g. `"data":"/a/b.mp3"`.
+#[cfg(unix)]
+fn extract_json_string_after(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":");
+    let at = json.find(&needle)? + needle.len();
+    let rest = json[at..].trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                'b' => out.push('\u{08}'),
+                'f' => out.push('\u{0C}'),
+                'u' => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() == 4 {
+                        if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                            out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+                        }
+                    }
+                }
+                other => {
+                    out.push('\\');
+                    out.push(other);
+                }
+            },
+            '"' => return Some(out),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
 // ----------------------------------------------------------------- controls
 
 fn require_live(st: &mut PlayerState) -> Result<(), PlayerError> {
@@ -642,6 +682,102 @@ fn do_queue_clear(st: &mut PlayerState) -> Result<String, PlayerError> {
     })
 }
 
+/// Skip to the next track in the queue. Only `mpv` keeps a real playlist;
+/// other backends answer [`PlayerError::Unsupported`] so a `.titan` player
+/// can degrade gracefully (it already knows the order it built).
+pub fn queue_next() -> Result<String, PlayerError> {
+    let mut guard = lock_slot();
+    let st = guard.as_mut().ok_or(PlayerError::Idle)?;
+    require_live(st)?;
+    do_playlist_step(st, "playlist-next")
+}
+
+/// Go back to the previous track in the queue (mpv only, as above).
+pub fn queue_prev() -> Result<String, PlayerError> {
+    let mut guard = lock_slot();
+    let st = guard.as_mut().ok_or(PlayerError::Idle)?;
+    require_live(st)?;
+    do_playlist_step(st, "playlist-prev")
+}
+
+#[cfg(unix)]
+fn do_playlist_step(st: &mut PlayerState, cmd: &str) -> Result<String, PlayerError> {
+    if st.backend == "mpv" {
+        let reply = ipc_cmd(st, &format!(r#"{{"command":[{}]}}"#, cmd))?;
+        mpv_error_check(&reply)?;
+        Ok(format!("moved to {cmd}"))
+    } else {
+        Err(PlayerError::Unsupported {
+            backend: st.backend.to_string(),
+            action: "queue".into(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+fn do_playlist_step(st: &mut PlayerState, _cmd: &str) -> Result<String, PlayerError> {
+    Err(PlayerError::Unsupported {
+        backend: st.backend.to_string(),
+        action: "queue".into(),
+    })
+}
+
+/// What is playing right now, as reported by the backend.
+#[derive(Debug, Clone, Default)]
+pub struct CurrentTrack {
+    /// 0-based position in the playlist; -1 when unknown.
+    pub index: i64,
+    /// Number of entries in the playlist; 0 when unknown.
+    pub count: i64,
+    /// Track title when the backend knows it, otherwise the file name.
+    pub title: String,
+    /// File path of the current track.
+    pub path: String,
+}
+
+/// Query the backend about the current track. Only `mpv` reports playlist
+/// data; other backends get [`PlayerError::Unsupported`] (the `.titan` code
+/// already knows which path it asked to play).
+pub fn current_track() -> Result<CurrentTrack, PlayerError> {
+    let mut guard = lock_slot();
+    let st = guard.as_mut().ok_or(PlayerError::Idle)?;
+    require_live(st)?;
+    do_current_track(st)
+}
+
+#[cfg(unix)]
+fn do_current_track(st: &mut PlayerState) -> Result<CurrentTrack, PlayerError> {
+    if st.backend != "mpv" {
+        return Err(PlayerError::Unsupported {
+            backend: st.backend.to_string(),
+            action: "current track".into(),
+        });
+    }
+    let mut out = CurrentTrack::default();
+    out.index = -1;
+    if let Ok(reply) = ipc_cmd(st, r#"{"command":["get_property","playlist-index"]}"#) {
+        out.index = extract_float_after(&reply, "data").map(|v| v as i64).unwrap_or(-1);
+    }
+    if let Ok(reply) = ipc_cmd(st, r#"{"command":["get_property","playlist-count"]}"#) {
+        out.count = extract_float_after(&reply, "data").map(|v| v as i64).unwrap_or(0);
+    }
+    if let Ok(reply) = ipc_cmd(st, r#"{"command":["get_property","media-title"]}"#) {
+        out.title = extract_json_string_after(&reply, "data").unwrap_or_default();
+    }
+    if let Ok(reply) = ipc_cmd(st, r#"{"command":["get_property","filename"]}"#) {
+        out.path = extract_json_string_after(&reply, "data").unwrap_or_default();
+    }
+    Ok(out)
+}
+
+#[cfg(not(unix))]
+fn do_current_track(st: &mut PlayerState) -> Result<CurrentTrack, PlayerError> {
+    Err(PlayerError::Unsupported {
+        backend: st.backend.to_string(),
+        action: "current track".into(),
+    })
+}
+
 /// Stop playback and release the backend process.
 pub fn stop() -> Result<String, PlayerError> {
     let mut guard = lock_slot();
@@ -746,5 +882,35 @@ mod tests {
         // Nothing was started in this process' slot (play() fails above).
         let pos = position_secs();
         assert!(pos == -1.0 || pos >= 0.0);
+    }
+
+    #[test]
+    fn playlist_steps_fail_when_idle() {
+        assert!(matches!(queue_next(), Err(PlayerError::Idle)));
+        assert!(matches!(queue_prev(), Err(PlayerError::Idle)));
+    }
+
+    #[test]
+    fn current_track_fails_when_idle() {
+        assert!(matches!(current_track(), Err(PlayerError::Idle)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_string_reads_mpv_replies() {
+        let reply = r#"{"data":"/musica/a \"b\".mp3","error":"success"}"#;
+        assert_eq!(
+            extract_json_string_after(reply, "data"),
+            Some("/musica/a \"b\".mp3".to_string())
+        );
+        assert_eq!(
+            extract_json_string_after(r#"{"data":null,"error":"success"}"#, "data"),
+            None
+        );
+        let esc = r#"{"data":"caf\u00e9","error":"success"}"#;
+        assert_eq!(
+            extract_json_string_after(esc, "data"),
+            Some("café".to_string())
+        );
     }
 }
