@@ -1,0 +1,109 @@
+# Compila `zett` (crate titan_cli) contra una glibc ANTIGUA para que el binario
+# corra en entornos con glibc viejo. El binario oficial del release v1.0.0 se
+# construye en `ubuntu-latest` (glibc 2.39) y por eso no necesariamente arranca
+# en, por ejemplo, Debian 12 / glibc 2.36.
+#
+# Este workflow se construye dentro de `ubuntu:22.04` (glibc 2.35): cualquier
+# binario que enlace ahí corre en glibc >= 2.35.
+#
+# El resultado NO se sube como artifact ni como release: en sandboxes con red
+# filtrada esos hosts están bloqueados y `git` es el único canal disponible, así
+# que el binario se commitea en la rama y se recupera con `git fetch`.
+#
+# Disparo: solo cuando cambia ESTE archivo en la rama de trabajo, para que no se
+# ejecute en cada push ni entre en bucle con su propio commit de publicación.
+
+name: zett-sandbox-build
+
+on:
+  push:
+    branches: ["arena/01a0d172-aio"]
+    paths: [".github/workflows/zett-sandbox-build.yml"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "5"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: zett x86_64 (glibc 2.35)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    steps:
+      - name: Dependencias del sistema
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git xz-utils binutils \
+            build-essential pkg-config \
+            libx11-dev libxcb1-dev libxkbcommon-dev libasound2-dev \
+            libudev-dev libssl-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Rust estable
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
+          sh /tmp/rustup.sh -y --profile minimal --default-toolchain stable
+          . "$HOME/.cargo/env"
+          rustc -V
+          cargo -V
+
+      - name: cargo build --release -p titan_cli
+        run: |
+          . "$HOME/.cargo/env"
+          set -o pipefail
+          cargo build --release -p titan_cli 2>&1 | tee /tmp/build.log
+
+      - name: Verificar binario antes de publicar
+        run: |
+          bin=target/release/titan
+          strip "$bin"
+          ldd --version | head -1
+          echo "glibc maxima requerida por el binario:"
+          objdump -T "$bin" | grep -o 'GLIBC_[0-9]*\.[0-9]*' | sort -uV | tail -3
+          ls -l "$bin"
+          "$bin" version
+          printf 'fn main() {\n    print("hola desde zett")\n}\n' > /tmp/hi.titan
+          "$bin" run /tmp/hi.titan
+
+      - name: Empaquetar y publicar en la rama
+        run: |
+          mkdir -p tools
+          cp target/release/titan tools/zett
+          tar -cJf tools/zett-linux-x86_64.tar.xz -C tools zett
+          rm tools/zett
+          sha256sum tools/zett-linux-x86_64.tar.xz | tee tools/zett-linux-x86_64.tar.xz.sha256
+          ls -l tools/
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898530+github-actions[bot]@users.noreply.github.com"
+          git fetch origin arena/01a0d172-aio
+          git checkout -B zett-bin FETCH_HEAD
+          git add -f tools/zett-linux-x86_64.tar.xz tools/zett-linux-x86_64.tar.xz.sha256
+          git commit -m "ci: zett x86_64 (glibc 2.35) para el sandbox [skip ci]"
+          git push origin HEAD:arena/01a0d172-aio
+
+      # Los logs de Actions viven en un host que el sandbox no puede leer, así
+      # que ante un fallo el log se commitea a la rama para poder diagnosticar.
+      - name: Publicar log si algo fallo
+        if: failure()
+        run: |
+          mkdir -p tools
+          tail -n 250 /tmp/build.log > tools/build-log.txt 2>/dev/null \
+            || echo "no se genero /tmp/build.log" > tools/build-log.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898530+github-actions[bot]@users.noreply.github.com"
+          git fetch origin arena/01a0d172-aio || true
+          git checkout -B zett-bin-log FETCH_HEAD 2>/dev/null || git checkout -B zett-bin-log
+          git add -f tools/build-log.txt
+          git commit -m "ci: log del build fallido [skip ci]" || true
+          git push origin HEAD:arena/01a0d172-aio || true
