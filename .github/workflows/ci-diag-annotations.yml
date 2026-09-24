@@ -56,12 +56,16 @@ jobs:
       - name: Emitir líneas de fallo como anotaciones
         if: always()
         run: |
+          # El API de anotaciones solo conserva ~12 por job (2 automáticas +
+          # ~10 de contenido): se emite SOLO el resumen del fallo.
           {
-            echo "=== RESULTADOS ==="
-            grep -E "^test result:" /tmp/ctest.txt
-            echo "=== TAIL 70 (el final SIEMPRE contiene el resumen del fallo) ==="
-            tail -70 /tmp/ctest.txt
-            echo "=== FIN ==="
-          } | while IFS= read -r line; do
-            echo "::error file=CI_DIAG.txt,${RANDOM}::${line:0:400}"
+            grep -cE "test result: FAILED|^error(\[|:)|panicked at" /tmp/ctest.txt | sed 's/^/BADLINES=/'
+            grep -E "test result: FAILED" /tmp/ctest.txt | head -3
+            grep -E "^---- .* stdout ----$" /tmp/ctest.txt | head -3
+            grep -E "panicked at" /tmp/ctest.txt | head -2
+            grep -E "assertion .{0,90}failed|^  left:|^ right:" /tmp/ctest.txt | head -4
+            grep -E "^error(\[|:)" /tmp/ctest.txt | head -3
+            tail -3 /tmp/ctest.txt
+          } | head -9 | while IFS= read -r line; do
+            echo "::error file=CI_DIAG.txt::${line:0:300}"
           done
