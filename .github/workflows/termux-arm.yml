@@ -37,7 +37,7 @@ jobs:
           targets: armv7-linux-androideabi
 
       - name: Install Android command-line tools
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        run: bash scripts/setup-android-ci.sh
 
       - name: Cache Rust ARM build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
