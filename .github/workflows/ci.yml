@@ -36,14 +36,13 @@ jobs:
       - name: cargo check (default features)
         run: |
           if cargo check --workspace --all-targets > /tmp/check_default.log 2>&1; then
-            echo "cargo check (default features): OK" >> "$GITHUB_STEP_SUMMARY"
+            echo "cargo check (default features): OK"
           else
-            status=$?
-            echo "### cargo check (default features) FALLO" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            grep -E "^(error|warning)" -A 8 /tmp/check_default.log | head -220 >> "$GITHUB_STEP_SUMMARY" || true
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            exit $status
+            echo "### errores de compilacion (mensaje + ubicacion):"
+            grep -E "^(error(\[E[0-9]+\])?:|warning: unused|  --> )" /tmp/check_default.log | head -24 | while IFS= read -r line; do
+              echo "::error::${line:0:380}"
+            done
+            exit 1
           fi
 
       - name: cargo test (default features)
