@@ -53,7 +53,12 @@ jobs:
           if cargo test --workspace --all-targets --no-fail-fast --color never > /tmp/test.log 2>&1; then
             echo "cargo test: OK"
           else
-            grep -E "(FAILED|panicked at|test result:|^failures:$|^    [a-zA-Z])" /tmp/test.log | head -40 | while IFS= read -r line; do
+            echo "=== cola del log de tests ==="
+            tail -n 30 /tmp/test.log | while IFS= read -r line; do
+              echo "::error::${line:0:380}"
+            done
+            echo "=== lineas de fallo ==="
+            grep -E "(FAILED|panicked at|^error|test result: FAILED)" /tmp/test.log | head -20 | while IFS= read -r line; do
               echo "::error::${line:0:380}"
             done
             exit 1
