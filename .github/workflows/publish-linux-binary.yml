@@ -1,0 +1,112 @@
+# ============================================================================
+# Binario linux-x86_64 de zett (rama `binaries`)
+#
+# Compila titan_cli para x86_64 y lo publica como archivo suelto en la rama
+# `binaries` del propio repo (el mismo patrón que usa la rama `zett-repo`
+# para los .deb de Termux). Se hace por rama y no como asset de release
+# porque los hosts de assets de GitHub (objects.githubusercontent.com) no
+# son alcanzables desde los entornos Arena; la rama SÍ se puede fetchear.
+#
+# Corriendo en ubuntu-22.04 (glibc 2.35) para que el binario funcione en
+# Debian 12/13 y Ubuntu 22.04+ (los entornos de Arena son Debian bookworm,
+# glibc 2.36; un binario de ubuntu-24.04 exigiría GLIBC_2.39).
+#
+# Uso:
+#   gh workflow run "Build zett linux-x86_64 (rama binaries)"
+#   # o desde la UI de GitHub: Actions → disparar manualmente
+#
+# Descarga desde un entorno Arena:
+#   git fetch origin binaries
+#   git show binaries:zett-linux-x86_64 > zett
+#   sha256sum -c zett-linux-x86_64.sha256   (contra el sha publicado)
+#   chmod +x zett && ./zett --version
+# ============================================================================
+
+name: Build zett linux-x86_64 (rama binaries)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x86_64:
+    name: Build and publish zett linux-x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: zett-linux-x86_64
+
+      - name: Build release
+        run: cargo build --locked --release -p titan_cli
+
+      - name: Prepare binary + metadata
+        run: |
+          set -euo pipefail
+          ROOT_DIR="$(git rev-parse --show-toplevel)"
+          cd "$ROOT_DIR"
+
+          cp target/release/titan zett-linux-x86_64
+          chmod 0755 zett-linux-x86_64
+          sha256sum zett-linux-x86_64 > zett-linux-x86_64.sha256
+
+          awk '
+            /^\[workspace\.package\]$/ { active=1; next }
+            /^\[/ { active=0 }
+            active && /^version[[:space:]]*=/ {
+                value=$0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                gsub(/^[\\\"[:space:]]+|[\\\"[:space:]]+$/, "", value)
+                print value
+                exit
+            }
+          ' Cargo.toml > VERSION
+          git rev-parse HEAD > COMMIT
+
+      - name: Publish to the binaries branch
+        run: |
+          set -euo pipefail
+          ROOT_DIR="$(git rev-parse --show-toplevel)"
+          cd "$ROOT_DIR"
+
+          # Clone mínimo y privado (solo la rama `binaries`): no toca el
+          # worktree principal ni ninguna otra rama.
+          STORE="$(mktemp -d "${TMPDIR:-/tmp}/zett-store.XXXXXXXX")"
+          trap 'rm -rf "$STORE"' EXIT
+          cd "$STORE"
+          git init -q
+          git remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git fetch -q --depth=1 origin refs/heads/binaries 2>/dev/null; then
+            git checkout -q -B binaries FETCH_HEAD
+          else
+            git checkout -q --orphan binaries
+          fi
+
+          cp "$ROOT_DIR/zett-linux-x86_64" \
+             "$ROOT_DIR/zett-linux-x86_64.sha256" \
+             "$ROOT_DIR/VERSION" \
+             "$ROOT_DIR/COMMIT" \
+             .
+
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "zett linux-x86_64 $(cat VERSION) @ $(cut -c1-12 COMMIT)"
+          git push -q origin HEAD:binaries
+
+          echo "Publicado en la rama 'binaries':"
+          git ls-files
