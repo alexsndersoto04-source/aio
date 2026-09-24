@@ -1,1 +1,1 @@
-diagnóstico 2026-09-24T20:20:01Z
+diagnóstico 2026-09-24T20:23:46Z (re-disparo: los workflows nuevos corren a partir del push siguiente)
