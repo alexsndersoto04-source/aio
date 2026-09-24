@@ -45,6 +45,33 @@ curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/z
 ./zett version
 ```
 
+### Linux x86-64 con glibc vieja
+
+El binario anterior se compila en el runner más reciente de GitHub, así que
+enlaza contra una glibc reciente. La compatibilidad de glibc va de viejo a
+nuevo y nunca al revés: si tu distribución es más vieja, el binario no llega a
+arrancar y falla con algo como `./zett: version 'GLIBC_2.xx' not found`.
+
+Para esos casos está la variante portable, compilada dentro de `ubuntu:22.04`
+(glibc 2.35) y por tanto válida en cualquier glibc **2.35 o mayor**: Debian 12,
+Ubuntu 22.04+, RHEL 9 y similares.
+
+```bash
+curl -L https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett-linux-x86_64-glibc235.tar.gz | tar xz
+./zett version
+```
+
+Para comparar lo que pide un binario con lo que tiene tu sistema:
+
+```bash
+ldd --version | head -1                                          # tu glibc
+objdump -T zett | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1   # la que exige
+```
+
+> Este asset lo genera el job `build-portable` de `cross-platform.yml` y se
+> adjunta a los releases siguientes a su incorporación. `v1.0.0` se publicó
+> antes, así que no lo incluye; por eso el enlace usa `releases/latest`.
+
 ### Linux ARM64 y ARMv7
 
 ```bash
