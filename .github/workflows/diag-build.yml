@@ -1,8 +1,8 @@
 name: Diag build errors
 
 # Temporal: el host de logs de Actions no es alcanzable desde el sandbox,
-# asi que este job publica la salida cruda de cargo como anotaciones del
-# check-run, que si se pueden leer por API. Se borra cuando el build quede verde.
+# asi que este job publica la salida de cargo como anotaciones del check-run,
+# que si se pueden leer por API. Se borra cuando la verificacion quede completa.
 
 on:
   push:
@@ -21,39 +21,39 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Dump cargo output as annotations
+      - name: Run the audio tests and publish their names
         run: |
           set +e
+          cargo test -p titan_stdlib --lib audio_mod -- --nocapture > /tmp/audio.log 2>&1
+          export AUDIO_CODE=$?
           cargo check --workspace --all-targets > /tmp/check.log 2>&1
           export CHECK_CODE=$?
-          cargo test --workspace --all-targets --no-fail-fast > /tmp/test.log 2>&1
-          export TEST_CODE=$?
           set -e
 
-          echo "check=$CHECK_CODE test=$TEST_CODE"
+          echo "audio=$AUDIO_CODE check=$CHECK_CODE"
 
           python3 - <<'PY'
           import os
 
-          def emit(label, path):
+          def emit(label, path, keep):
               try:
                   with open(path, errors='replace') as handle:
                       data = handle.read()
               except OSError:
                   data = '<falta el archivo>'
-              interesting = []
-              for line in data.splitlines():
-                  if any(tag in line for tag in ('error', 'warning', 'failures', 'test result', 'panicked', '-->')):
-                      interesting.append(line)
-              if not interesting:
-                  interesting = data.splitlines()
-              body = '\n'.join(interesting[-45:])
+              picked = [line for line in data.splitlines()
+                        if any(tag in line for tag in keep)]
+              if not picked:
+                  picked = data.splitlines()[-40:]
+              body = '\n'.join(picked[-60:])
               body = body.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-              print('::error::%s%s' % (label, body[:3500]))
+              print('::error::%s%s' % (label, body[:3800]))
 
-          emit('CHECK(exit=%s) ' % os.environ['CHECK_CODE'], '/tmp/check.log')
-          emit('TEST(exit=%s) ' % os.environ['TEST_CODE'], '/tmp/test.log')
+          emit('AUDIO(exit=%s) ' % os.environ['AUDIO_CODE'], '/tmp/audio.log',
+               ('running ', 'test audio_mod', 'test result', 'panicked', 'error'))
+          emit('CHECK(exit=%s) ' % os.environ['CHECK_CODE'], '/tmp/check.log',
+               ('error', 'warning', '-->'))
 
-          if os.environ['CHECK_CODE'] != '0' or os.environ['TEST_CODE'] != '0':
+          if os.environ['AUDIO_CODE'] != '0' or os.environ['CHECK_CODE'] != '0':
               raise SystemExit(1)
           PY

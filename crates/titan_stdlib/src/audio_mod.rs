@@ -787,6 +787,30 @@ mod tests {
         let _ = std::fs::remove_file(&dst);
     }
 
+    /// Si el nombre de una feature estuviera mal escrito, symphonia compilaria
+    /// igual pero sin ese decodificador, y el fallo solo apareceria al abrir un
+    /// mp3 en produccion. Esto verifica el registro en tiempo real.
+    #[cfg(feature = "audio_decode_mod")]
+    #[test]
+    fn compressed_codecs_are_actually_registered() {
+        use symphonia::core::codecs::{
+            CODEC_TYPE_AAC, CODEC_TYPE_ALAC, CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS,
+        };
+        let registry = symphonia::default::get_codecs();
+        for (codec, expected) in [
+            (CODEC_TYPE_MP3, "mp3"),
+            (CODEC_TYPE_FLAC, "flac"),
+            (CODEC_TYPE_VORBIS, "vorbis"),
+            (CODEC_TYPE_AAC, "aac"),
+            (CODEC_TYPE_ALAC, "alac"),
+        ] {
+            let descriptor = registry
+                .get_codec(codec)
+                .unwrap_or_else(|| panic!("el decodificador {expected} no esta registrado"));
+            assert!(!descriptor.short_name.is_empty(), "sin short_name para {expected}");
+        }
+    }
+
     #[test]
     fn backends_only_reports_known_players() {
         const KNOWN: &[&str] = &["termux-media-player", "mpv", "ffplay", "paplay", "aplay"];
