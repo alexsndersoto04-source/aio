@@ -2780,6 +2780,60 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "audio_mod")]
         "std::audio::record_info" => Value::Str(stdlib::audio_mod::record_info().map_err(error)?),
 
+        // ------- Fase 41: base del reproductor de música ------------------
+        #[cfg(feature = "audio_mod")]
+        "std::audio::tags" => {
+            let path = string!();
+            let info = stdlib::audio_tags::read_track(&path).map_err(error)?;
+            audio_track_map(&info)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::duration" => {
+            let path = string!();
+            let dur = stdlib::audio_tags::duration_secs(&path).map_err(error)?;
+            Value::Float(dur)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::scan_library" => {
+            let dir = string!();
+            let tracks = stdlib::audio_tags::scan_library(&dir).map_err(error)?;
+            Value::Array(tracks.iter().map(audio_track_map).collect())
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_play" => {
+            let path = string!();
+            Value::Str(stdlib::audio_player::play(&path).map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_stop" => Value::Str(stdlib::audio_player::stop().map_err(error)?),
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_pause" => Value::Str(stdlib::audio_player::pause().map_err(error)?),
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_resume" => Value::Str(stdlib::audio_player::resume().map_err(error)?),
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_position" => Value::Float(stdlib::audio_player::position_secs()),
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_set_volume" => {
+            let percent = int!();
+            Value::Bool(stdlib::audio_player::set_volume(percent).map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_seek" => {
+            let secs = float!();
+            Value::Str(stdlib::audio_player::seek(secs).map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_backend" => Value::Str(stdlib::audio_player::backend()),
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_queue_add" => {
+            let path = string!();
+            Value::Str(stdlib::audio_player::queue_add(&path).map_err(error)?)
+        }
+        #[cfg(feature = "audio_mod")]
+        "std::audio::player_queue_clear" => {
+            Value::Str(stdlib::audio_player::queue_clear().map_err(error)?)
+        }
+
         // ---------------- Phase 10: sled key-value ----------------
         #[cfg(feature = "kv_mod")]
         "std::kv::open" => Value::Int(stdlib::kv_mod::open(&string!()).map_err(error)?),
@@ -5193,6 +5247,37 @@ fn audio_samples_from_array(items: Vec<Value>) -> Result<Vec<f32>, String> {
             )),
         })
         .collect()
+}
+
+/// Convert a scanned/read track into the `std::audio::tags` /
+/// `std::audio::scan_library` result shape: a map with `nil` for unknown
+/// text fields and always-present numeric fields.
+#[cfg(feature = "audio_mod")]
+fn audio_track_map(info: &stdlib::audio_tags::TrackInfo) -> Value {
+    fn put(map: &mut BTreeMap<String, Value>, key: &str, v: Option<String>) {
+        map.insert(key.to_string(), v.map(Value::Str).unwrap_or(Value::Nil));
+    }
+    let mut map = BTreeMap::new();
+    map.insert("path".into(), Value::Str(info.path.clone()));
+    map.insert("format".into(), Value::Str(info.format.clone()));
+    put(&mut map, "title", info.title.clone());
+    put(&mut map, "artist", info.artist.clone());
+    put(&mut map, "album", info.album.clone());
+    put(&mut map, "album_artist", info.album_artist.clone());
+    put(&mut map, "genre", info.genre.clone());
+    put(&mut map, "year", info.year.clone());
+    map.insert(
+        "track".into(),
+        info.track_number
+            .map(|t| Value::Int(t as i64))
+            .unwrap_or(Value::Nil),
+    );
+    map.insert("duration_secs".into(), Value::Float(info.duration_secs));
+    map.insert("sample_rate".into(), Value::Int(info.sample_rate as i64));
+    map.insert("channels".into(), Value::Int(info.channels as i64));
+    map.insert("bitrate_kbps".into(), Value::Int(info.bitrate_kbps as i64));
+    map.insert("has_cover".into(), Value::Bool(info.has_cover));
+    Value::Map(map)
 }
 
 #[cfg(feature = "audio_mod")]

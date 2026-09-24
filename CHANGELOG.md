@@ -1,5 +1,28 @@
 # Zett / TITAN — Changelog
 
+## 1.1.0 — Fase 41: Base del Reproductor de Música — Etiquetas, Biblioteca y Motor de Reproducción de Escritorio (`std::audio` v2) 🎵
+
+- La capa de audio se convierte en fundación real para **construir un reproductor de música escrito en TITAN**: leer bibliotecas, mostrar metadatos y reproducir con control completo.
+- **Metadatos de pistas** (parser propio, Rust puro, cero dependencias nuevas) con 2 funciones nativas:
+  - `std::audio::tags(path)` — devuelve el mapa completo de la pista: `path`, `format` (`mp3` / `wav` / `flac` / `ogg` / `opus`), `title`, `artist`, `album`, `album_artist`, `genre`, `year`, `track`, `duration_secs`, `sample_rate`, `channels`, `bitrate_kbps` y `has_cover`. Los campos de texto salen `nil` cuando no hay etiqueta.
+  - `std::audio::duration(path)` — duración en segundos (`Float`, `0.0` si el formato no la puede saber).
+- **Formatos y etiquetas soportados**:
+  - **MP3**: ID3v2.2/2.3/2.4 (TIT2, TPE1, TALB, TPE2, TCON, TYER/TDRC, TRCK) con texto ISO-8859-1, UTF-8 y UTF-16 (con/sin BOM), detección de carátula (APIC/PIC), sincronización inversa (unsync), cabecera extendida y marcos comprimidos/cifrados saltados con seguridad; respaldo ID3v1 con la tabla estándar de 80 géneros. Duración exacta por contador de marcos Xing/Info (VBR) o estimación CBR.
+  - **WAV**: `fmt ` + duración exacta desde `data`, etiquetas `LIST`/`INFO` (INAM, IART, IPRD, IGNR, ICRD, ITRK) y chunks `id3 `/`ID3 ` embebidos.
+  - **FLAC**: STREAMINFO (duración exacta, tasa, canales) y VORBIS_COMMENT, con detección de PICTURE.
+  - **OGG Vorbis / Opus**: cabecera de identificación (tasa/canales, pre-skip de Opus), comentarios Vorbis/OpusTags y duración exacta por granule de la última página.
+- **Biblioteca musical**: `std::audio::scan_library(dir)` — recorre la carpeta (profundidad máx. 8, tope de 5000 pistas), filtra por extensión (`mp3`, `wav`, `flac`, `ogg`, `oga`, `opus`), lee los metadatos de cada pista y devuelve la lista ordenada por ruta. Los archivos ilegibles se saltan: una pista rota no rompe el escaneo.
+- **Motor de reproducción de escritorio** con 10 funciones nativas: `player_play`, `player_stop`, `player_pause`, `player_resume`, `player_position`, `player_set_volume`, `player_seek`, `player_backend`, `player_queue_add` y `player_queue_clear`.
+  - TITAN controla el **reproductor del sistema** sin embeber audio nativo: detección en orden **mpv → afplay → paplay → aplay → ffplay** (y `Media.SoundPlayer` por PowerShell en Windows).
+  - **mpv es la vía premium en Unix**: control por su socket JSON-IPC (`--input-ipc-server`) con `UnixStream` de la std — pausa, seek, volumen, cola real (`loadfile … append-play`, `playlist-clear`) y posición exacta leída del reproductor.
+  - Backends simples: pausa/resume por señales POSIX (SIGSTOP/SIGCONT, `nix`, opcional y solo Unix — mismo patrón que `process_mod`) y posición por reloj con descuento de pausas; lo no soportado devuelve `Result::Err` **tipado** para degradar con elegancia.
+  - En Termux/Android sigue disponible la vía clásica de la Fase 9 (`termux-media-player`).
+- Añadido ejemplo verificable end-to-end: `examples/reproductor_musica.titan` (genera dos tonos, lee etiquetas, escanea la biblioteca y reproduce con pausa/resume/volumen/cola/stop).
+- Documentación nueva: `docs/AUDIO.md` (tabla de formatos, matriz de soporte por backend y recetas).
+- Registro actualizado: **771 funciones nativas** registradas en `std::*`.
+
+---
+
 ## 0.40.0 — Phase 40: Aceleración en Caliente (*VM Fast-Paths*) y Benchmark Operacional (`std::runtime` v3) ⚡
 
 - Graduación de la hoja de ruta de **Producción Empresarial a Gran Escala (Fases 36 a 40)**.

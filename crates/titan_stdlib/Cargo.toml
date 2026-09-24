@@ -95,7 +95,10 @@ window_live  = ["dep:minifb"]
 signals_mod  = ["dep:signal-hook"]
 
 # Phase 9 — Audio (WAV read/write + synthesis; playback via termux-media-player)
-audio_mod    = ["dep:hound"]
+# Fase 41 añade el motor de reproducción de escritorio: `nix` (opcional y
+# solo Unix, igual que en process_mod) da SIGSTOP/SIGCONT para pausar
+# reproductores externos. En no-Unix el módulo compila igual sin él.
+audio_mod    = ["dep:hound", "dep:nix"]
 
 # Phase 10 — Embedded key-value store and Redis client
 kv_mod       = ["dep:sled"]
