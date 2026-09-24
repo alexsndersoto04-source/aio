@@ -19,7 +19,11 @@ name: cross-platform
 
 on:
   push:
-    branches: [main]
+    # TEMPORAL: `arena/01a0d172-aio` esta aca solo para verificar este cambio
+    # desde la rama de trabajo (workflow_dispatch ejecuta la version de `main`,
+    # no la de la rama, asi que no sirve para probar un job nuevo). Se quita en
+    # cuanto el run de verificacion este verde.
+    branches: [main, "arena/01a0d172-aio"]
     tags: ["v*.*.*"]
   workflow_dispatch:
 
@@ -100,6 +104,99 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zett-${{ matrix.asset }}
+          path: dist/zett-*
+
+      - name: Adjuntar al Release (solo tags v*)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/zett-*
+
+  # Entrada EXTRA de la matriz: el MISMO `zett` compilado contra glibc vieja.
+  #
+  # Los 3 assets linux de arriba se compilan en `ubuntu-latest`, que trae una
+  # glibc reciente. El binario resultante queda atado a esa glibc: pide
+  # simbolos versionados que una distro mas vieja no tiene, y entonces ni
+  # arranca (`./zett: version `GLIBC_2.xx' not found`). La compatibilidad de
+  # glibc va de viejo -> nuevo, nunca al reves, asi que la receta es compilar
+  # contra la glibc mas vieja que se quiera soportar.
+  #
+  # Este job compila dentro de ubuntu:22.04 (glibc 2.35): el binario corre en
+  # cualquier glibc >= 2.35 (Debian 12, Ubuntu 22.04+, RHEL 9, ...), que es lo
+  # que el asset `linux-x86_64` normal no garantiza.
+  #
+  # Va en un job aparte en vez de una fila mas de la matriz de `build` porque
+  # `container:` no se puede aplicar por entrada de matriz: un job con
+  # `container:` se lo impone a todas sus filas.
+  build-portable:
+    name: build (linux-x86_64-glibc235)
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    env:
+      ASSET: linux-x86_64-glibc235
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Dependencias del sistema
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git binutils \
+            build-essential pkg-config \
+            libx11-dev libxcb1-dev libxkbcommon-dev libasound2-dev \
+            libudev-dev libssl-dev
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: actions/checkout@v4
+
+      - name: Rust estable
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
+          sh /tmp/rustup.sh -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustc -V
+          cargo -V
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          save-if: "always"
+
+      - name: cargo build --release (titan_cli)
+        run: cargo build --release -p titan_cli
+
+      # La prueba de que el asset es lo que promete: se imprime la glibc maxima
+      # que exige el binario y se lo ejecuta ahi mismo, en glibc 2.35.
+      # (Sin tuberias a `head`: `shell: bash` implica `bash -eo pipefail` y un
+      # SIGPIPE ahi mata el paso con codigo 141.)
+      - name: Verificar glibc maxima y que el binario corre
+        run: |
+          bin=target/release/titan
+          ldd --version > /tmp/ldd.txt 2>&1
+          sed -n '1p' /tmp/ldd.txt
+          objdump -T "$bin" > /tmp/dyn.txt
+          echo "glibc maxima exigida por el binario:"
+          grep -o 'GLIBC_[0-9]*\.[0-9]*' /tmp/dyn.txt | sort -uV | tail -1 || echo "(sin refs GLIBC)"
+          "$bin" version
+
+      # Empaquetado identico al de los otros assets linux (mismo contenido,
+      # mismo formato); lo unico que cambia es la glibc contra la que enlaza.
+      - name: Empaquetar
+        run: |
+          mkdir -p dist/stage
+          cp target/release/titan dist/stage/zett
+          cp README.md LICENSE dist/stage/
+          tar -czf "dist/zett-${ASSET}.tar.gz" -C dist/stage .
+          ls -l dist/
+
+      - name: Artifact descargable (toda corrida)
+        uses: actions/upload-artifact@v4
+        with:
+          name: zett-${{ env.ASET }}
           path: dist/zett-*
 
       - name: Adjuntar al Release (solo tags v*)
