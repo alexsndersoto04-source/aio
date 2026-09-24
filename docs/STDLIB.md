@@ -8,6 +8,7 @@ The `titan_stdlib` crate provides memory-safe host capabilities for the compiler
 
 | Module | Capabilities |
 |---|---|
+| `audio` | WAV read/write, wave synthesis and fades; real decoding of mp3/flac/ogg/m4a/alac/aiff to PCM via pure-Rust symphonia; playback through a detected system player. See [AUDIO.md](AUDIO.md) |
 | `bytes` | Bounds-checked endian binary reader/writer, numeric and length-prefixed string formats |
 | `cache` | Capacity-bounded LRU cache with deterministic eviction |
 | `checksum` | FNV-1a, CRC-32, constant-time byte comparison |
