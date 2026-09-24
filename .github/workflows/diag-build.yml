@@ -1,0 +1,83 @@
+name: Diag build errors
+
+# Temporal: el host de logs de Actions no es alcanzable desde el sandbox,
+# asi que este job publica los diagnosticos de rustc como anotaciones del
+# check-run, que si se pueden leer por API. Se borra en cuanto el build quede verde.
+
+on:
+  push:
+    branches: [ "arena/**" ]
+
+env:
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Emit rustc diagnostics as annotations
+        run: |
+          set +e
+          cargo check --workspace --all-targets --message-format=json > /tmp/check.json 2> /tmp/check.err
+          CHECK_CODE=$?
+          cargo test --workspace --all-targets --no-fail-fast > /tmp/test.log 2>&1
+          TEST_CODE=$?
+          set -e
+
+          python3 - <<'PY'
+          import json
+
+          seen = set()
+          lines = []
+          try:
+              handle = open('/tmp/check.json')
+          except OSError:
+              handle = []
+          for raw in handle:
+              raw = raw.strip()
+              if not raw.startswith('{'):
+                  continue
+              try:
+                  event = json.loads(raw)
+              except ValueError:
+                  continue
+              if event.get('reason') != 'compiler-message':
+                  continue
+              message = event['message']
+              level = message.get('level')
+              if level not in ('error', 'warning'):
+                  continue
+              text = message.get('message', '')
+              location = ''
+              primary = [s for s in message.get('spans', []) if s.get('is_primary')]
+              if primary:
+                  span = primary[0]
+                  location = " file=%s,line=%s" % (span['file'], span['line_start'])
+              key = (text, location)
+              if key in seen:
+                  continue
+              seen.add(key)
+              encoded = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              lines.append('::%s%s::%s' % (level, location, encoded))
+          for line in lines[:60]:
+              print(line)
+          PY
+
+          echo "cargo check exit: $CHECK_CODE"
+          echo "cargo test exit: $TEST_CODE"
+
+          if [ "$TEST_CODE" != "0" ]; then
+            SUMMARY=$(grep -E "^(test result|failures:|---- |error|thread )" /tmp/test.log | head -40)
+            ENCODED=$(printf '%s' "$SUMMARY" | python3 -c "import sys; print(sys.stdin.read().replace('%','%25').replace('\r','%0D').replace('\n','%0A'))")
+            echo "::error::TEST FAILURES%0A${ENCODED}"
+          fi
+
+          if [ "$CHECK_CODE" != "0" ] || [ "$TEST_CODE" != "0" ]; then
+            exit 1
+          fi
