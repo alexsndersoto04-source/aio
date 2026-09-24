@@ -1,7 +1,7 @@
 # Compila `zett` (crate titan_cli) contra una glibc ANTIGUA para que el binario
 # corra en entornos con glibc viejo. El binario oficial del release v1.0.0 se
-# construye en `ubuntu-latest` (glibc 2.39) y por eso no necesariamente arranca
-# en, por ejemplo, Debian 12 / glibc 2.36.
+# construye en `ubuntu-latest` y por eso no necesariamente arranca en, por
+# ejemplo, Debian 12 / glibc 2.36.
 #
 # Este workflow se construye dentro de `ubuntu:22.04` (glibc 2.35): cualquier
 # binario que enlace ahí corre en glibc >= 2.35.
@@ -12,6 +12,9 @@
 #
 # Disparo: solo cuando cambia ESTE archivo en la rama de trabajo, para que no se
 # ejecute en cada push ni entre en bucle con su propio commit de publicación.
+#
+# Nota: `shell: bash` implica `bash -eo pipefail`, así que acá no se usan
+# tuberías hacia `head` (SIGPIPE -> 141); se escribe a archivo y se lee con sed.
 
 name: zett-sandbox-build
 
@@ -47,6 +50,7 @@ jobs:
             build-essential pkg-config \
             libx11-dev libxcb1-dev libxkbcommon-dev libasound2-dev \
             libudev-dev libssl-dev
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@v4
 
@@ -58,32 +62,59 @@ jobs:
           rustc -V
           cargo -V
 
+      - name: Cache cargo/target
+        uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          save-if: "always"
+
       - name: cargo build --release -p titan_cli
         run: |
           . "$HOME/.cargo/env"
           set -o pipefail
           cargo build --release -p titan_cli 2>&1 | tee /tmp/build.log
 
+      # Todo lo que se averigua del binario va a /tmp/reporte.txt: como los logs
+      # de Actions no son legibles desde el sandbox, este archivo se commitea al
+      # final (pase o no el job) y se lee con la API de GitHub.
       - name: Verificar binario antes de publicar
         run: |
           bin=target/release/titan
-          strip "$bin"
-          ldd --version | head -1
-          echo "glibc maxima requerida por el binario:"
-          objdump -T "$bin" | grep -o 'GLIBC_[0-9]*\.[0-9]*' | sort -uV | tail -3
-          ls -l "$bin"
-          "$bin" version
-          printf 'fn main() {\n    print("hola desde zett")\n}\n' > /tmp/hi.titan
-          "$bin" run /tmp/hi.titan
+          rep=/tmp/reporte.txt
+          {
+            echo "=== fecha: $(date -u +%FT%TZ)"
+            echo "=== ldd --version"
+            ldd --version 2>&1 | sed -n '1,2p'
+            echo "=== binario sin strip"
+            ls -l "$bin"
+            echo "=== strip"
+            strip "$bin" && echo "strip OK"
+            ls -l "$bin"
+            echo "=== glibc maxima requerida (top 5)"
+            objdump -T "$bin" > /tmp/dyn.txt 2>&1 || echo "objdump fallo"
+            grep -o 'GLIBC_[0-9]*\.[0-9]*' /tmp/dyn.txt | sort -uV | tail -5 || echo "(sin refs GLIBC)"
+            echo "=== librerias enlazadas"
+            ldd "$bin" 2>&1
+            echo "=== titan version"
+            "$bin" version 2>&1 || echo "FALLO: titan version (exit $?)"
+            echo "=== titan run hola.titan"
+            printf 'fn main() {\n    print("hola desde zett")\n}\n' > /tmp/hi.titan
+            "$bin" run /tmp/hi.titan 2>&1 || echo "FALLO: titan run (exit $?)"
+          } > "$rep" 2>&1
+          cat "$rep"
 
-      - name: Empaquetar y publicar en la rama
+      - name: Empaquetar
         run: |
           mkdir -p tools
           cp target/release/titan tools/zett
           tar -cJf tools/zett-linux-x86_64.tar.xz -C tools zett
           rm tools/zett
-          sha256sum tools/zett-linux-x86_64.tar.xz | tee tools/zett-linux-x86_64.tar.xz.sha256
+          (cd tools && sha256sum zett-linux-x86_64.tar.xz > zett-linux-x86_64.tar.xz.sha256)
           ls -l tools/
+          cat tools/zett-linux-x86_64.tar.xz.sha256
+
+      - name: Publicar binario en la rama
+        run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898530+github-actions[bot]@users.noreply.github.com"
           git fetch origin arena/01a0d172-aio
@@ -92,18 +123,24 @@ jobs:
           git commit -m "ci: zett x86_64 (glibc 2.35) para el sandbox [skip ci]"
           git push origin HEAD:arena/01a0d172-aio
 
-      # Los logs de Actions viven en un host que el sandbox no puede leer, así
-      # que ante un fallo el log se commitea a la rama para poder diagnosticar.
-      - name: Publicar log si algo fallo
-        if: failure()
+      # Corre SIEMPRE: es el canal de diagnostico del sandbox (no puede leer los
+      # logs de Actions porque viven en un host bloqueado).
+      - name: Publicar reporte de diagnostico
+        if: always()
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
           mkdir -p tools
-          tail -n 250 /tmp/build.log > tools/build-log.txt 2>/dev/null \
-            || echo "no se genero /tmp/build.log" > tools/build-log.txt
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898530+github-actions[bot]@users.noreply.github.com"
+          {
+            echo "### reporte del job"
+            cat /tmp/reporte.txt 2>/dev/null || echo "(sin reporte)"
+            echo
+            echo "### ultimas 120 lineas del build"
+            tail -n 120 /tmp/build.log 2>/dev/null || echo "(sin build.log)"
+          } > tools/ci-reporte.txt 2>/dev/null || echo "fallo armando el reporte" > tools/ci-reporte.txt
+          git config user.name  "github-actions[bot]" || true
+          git config user.email "41898530+github-actions[bot]@users.noreply.github.com" || true
           git fetch origin arena/01a0d172-aio || true
-          git checkout -B zett-bin-log FETCH_HEAD 2>/dev/null || git checkout -B zett-bin-log
-          git add -f tools/build-log.txt
-          git commit -m "ci: log del build fallido [skip ci]" || true
-          git push origin HEAD:arena/01a0d172-aio || true
+          git checkout -B zett-reporte FETCH_HEAD 2>/dev/null || git checkout -B zett-reporte 2>/dev/null || true
+          git add -f tools/ci-reporte.txt || true
+          git commit -m "ci: reporte de diagnostico del build [skip ci]" || true
+          git push origin HEAD:arena/01a0d172-aio || echo "no se pudo publicar el reporte"
