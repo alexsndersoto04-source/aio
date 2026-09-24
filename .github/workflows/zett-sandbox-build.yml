@@ -9,15 +9,16 @@
 #
 #   1. compila titan_cli dentro de ubuntu:22.04 (glibc 2.35, asi el binario
 #      corre en glibc >= 2.35 en vez de quedar atado a la glibc del runner);
-#   2. lo commitea en la MISMA rama que lo disparo;
+#   2. lo commitea en la rama `sandbox-zett-bin` (NUNCA en la rama de
+#      trabajo: los binarios no ensucian el historial del proyecto);
 #   3. el sandbox lo recupera con `git fetch` + `git show` y lo descomprime.
 #
-# Despues de usarlo conviene borrar el tarball de la rama: queda recuperable
-# del historial y el binario ya esta en el sandbox.
+# Si el job falla, el reporte de diagnostico va a la rama `sandbox-zett-diag`
+# (mismo mecanismo, distinta rama).
 #
-# Disparo: solo cuando cambia ESTE archivo, y en cualquier rama arena/**, para
-# que sirva en futuras sesiones y no entre en bucle con su propio commit
-# (que ademas lleva [skip ci]).
+# Disparo: cuando cambia ESTE archivo (en cualquier rama arena/**), o a mano
+# desde la UI de Actions (workflow_dispatch). El commit del binario va a otra
+# rama y lleva [skip ci], asi que no entra en bucle.
 #
 # Nota: `shell: bash` implica `bash -eo pipefail`, asi que aca no se usan
 # tuberias hacia `head` (SIGPIPE -> 141); se escribe a archivo y se lee con sed.
@@ -28,6 +29,7 @@ on:
   push:
     branches: ["arena/**"]
     paths: [".github/workflows/zett-sandbox-build.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -123,7 +125,9 @@ jobs:
           ls -l tools/
           cat tools/zett-linux-x86_64.tar.xz.sha256
 
-      - name: Publicar binario en la rama
+      # Los binarios van SIEMPRE a la rama de artefactos, nunca a la rama de
+      # trabajo (el historial del proyecto no tiene por que arrastrar tarballs).
+      - name: Publicar binario en la rama de artefactos
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898530+github-actions[bot]@users.noreply.github.com"
@@ -131,7 +135,7 @@ jobs:
           git checkout -B zett-bin FETCH_HEAD
           git add -f tools/zett-linux-x86_64.tar.xz tools/zett-linux-x86_64.tar.xz.sha256
           git commit -m "ci: zett x86_64 (glibc 2.35) para el sandbox [skip ci]"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push --force origin "HEAD:refs/heads/sandbox-zett-bin"
 
       # Solo ante un fallo: es el canal de diagnostico cuando el sandbox no
       # puede leer los logs de Actions.
@@ -153,4 +157,4 @@ jobs:
           git checkout -B zett-reporte FETCH_HEAD 2>/dev/null || git checkout -B zett-reporte 2>/dev/null || true
           git add -f tools/ci-reporte.txt || true
           git commit -m "ci: reporte de diagnostico del build [skip ci]" || true
-          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "no se pudo publicar el reporte"
+          git push --force origin "HEAD:refs/heads/sandbox-zett-diag" || echo "no se pudo publicar el reporte"
