@@ -53,16 +53,8 @@ jobs:
           if cargo test --workspace --all-targets --no-fail-fast --color never > /tmp/test.log 2>&1; then
             echo "cargo test: OK"
           else
-            echo "=== disco ==="
-            df -h / /tmp 2>/dev/null | while IFS= read -r line; do echo "::error::$line"; done
-            echo "=== conteo de binarios con resumen ==="
-            echo "::error::resultados_ok=$(grep -c 'test result: ok' /tmp/test.log) resultados_fallidos=$(grep -c 'test result: FAILED' /tmp/test.log)"
-            echo "=== errores en el log ==="
-            grep -nE "error" /tmp/test.log | tail -8 | while IFS= read -r line; do echo "::error::${line:0:380}"; done
-            echo "=== cola del log de tests ==="
-            tail -n 40 /tmp/test.log | while IFS= read -r line; do
-              echo "::error::${line:0:380}"
-            done
+            echo "=== fallos concretos ==="
+            grep -nE "panicked at|test result: FAILED|^failures:$" -A 4 /tmp/test.log | head -30 | while IFS= read -r line; do echo "::error::${line:0:380}"; done
             exit 1
           fi
 
