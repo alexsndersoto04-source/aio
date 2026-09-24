@@ -49,7 +49,15 @@ jobs:
           fi
 
       - name: cargo test (default features)
-        run: cargo test --workspace --all-targets --no-fail-fast
+        run: |
+          if cargo test --workspace --all-targets --no-fail-fast --color never > /tmp/test.log 2>&1; then
+            echo "cargo test: OK"
+          else
+            grep -E "(FAILED|panicked at|test result:|^failures:$|^    [a-zA-Z])" /tmp/test.log | head -40 | while IFS= read -r line; do
+              echo "::error::${line:0:380}"
+            done
+            exit 1
+          fi
 
       - name: cargo check (no default features)
         run: cargo check --workspace --all-targets --no-default-features
