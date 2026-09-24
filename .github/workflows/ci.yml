@@ -34,29 +34,10 @@ jobs:
         continue-on-error: true   # formatting is advisory for now
 
       - name: cargo check (default features)
-        run: |
-          if cargo check --workspace --all-targets --color never > /tmp/check_default.log 2>&1; then
-            echo "cargo check (default features): OK"
-          else
-            echo "### errores de compilacion (mensaje + ubicacion):"
-            grep -E "^(error(\[E[0-9]+\])?:|warning)" /tmp/check_default.log | head -16 | while IFS= read -r line; do
-              echo "::error::${line:0:380}"
-            done
-            grep -E "^\s+-->" /tmp/check_default.log | head -16 | while IFS= read -r line; do
-              echo "::error::ubicacion ${line:0:380}"
-            done
-            exit 1
-          fi
+        run: cargo check --workspace --all-targets
 
       - name: cargo test (default features)
-        run: |
-          if cargo test --workspace --all-targets --no-fail-fast --color never > /tmp/test.log 2>&1; then
-            echo "cargo test: OK"
-          else
-            echo "=== fallos concretos ==="
-            grep -nE "panicked at|test result: FAILED|^failures:$" -A 4 /tmp/test.log | head -30 | while IFS= read -r line; do echo "::error::${line:0:380}"; done
-            exit 1
-          fi
+        run: cargo test --workspace --all-targets --no-fail-fast
 
       - name: cargo check (no default features)
         run: cargo check --workspace --all-targets --no-default-features
