@@ -34,7 +34,17 @@ jobs:
         continue-on-error: true   # formatting is advisory for now
 
       - name: cargo check (default features)
-        run: cargo check --workspace --all-targets
+        run: |
+          if cargo check --workspace --all-targets > /tmp/check_default.log 2>&1; then
+            echo "cargo check (default features): OK" >> "$GITHUB_STEP_SUMMARY"
+          else
+            status=$?
+            echo "### cargo check (default features) FALLO" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -E "^(error|warning)" -A 8 /tmp/check_default.log | head -220 >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit $status
+          fi
 
       - name: cargo test (default features)
         run: cargo test --workspace --all-targets --no-fail-fast
