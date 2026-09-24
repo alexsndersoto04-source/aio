@@ -878,10 +878,13 @@ fn parse_ogg(head: &[u8], tail: &[u8]) -> (Id3Tags, f64, u32, u16, u32, &'static
             ch = head[p + 9] as u16;
             preskip = u16le(head, p + 10).unwrap_or(0) as u32;
         }
-    } else if let Some(p) = find(head, b"\x01vorbis") {
+    } else if let Some(p) = find(head, b"\x00\x00\x00\x00vorbis") {
+        // Cabecera de identificación Vorbis real: version (4 bytes LE, =0)
+        // + "vorbis" + canales (1 byte) + sample rate (4 bytes LE).
+        // `p` apunta al primer byte de version; canales en p+10, rate en p+11.
         if p + 16 <= head.len() {
-            ch = head[p + 11] as u16;
-            rate = u32le(head, p + 12).unwrap_or(0);
+            ch = head[p + 10] as u16;
+            rate = u32le(head, p + 11).unwrap_or(0);
         }
     }
     let comments_at = find(head, b"OpusTags")
@@ -1114,16 +1117,20 @@ mod tests {
 
     #[test]
     fn ogg_duration_comes_from_the_last_page() {
-        // Minimal first page with a Vorbis identification packet.
+        // Minimal first page with a Vorbis identification packet in the
+        // real on-disk layout: version (4 bytes LE, = 0), "vorbis",
+        // channels (1 byte), sample rate (4 bytes LE), bitrates, blocksize.
+        // (El parser buscaba `\x01vorbis`, que no existe en ningún archivo
+        // real: la versión de 32 bits es 0x00 0x00 0x00 0x00.)
         let mut packet: Vec<u8> = Vec::new();
-        packet.extend_from_slice(b"\x01vorbis");
         packet.extend_from_slice(&0u32.to_le_bytes()); // version
+        packet.extend_from_slice(b"vorbis");
         packet.push(2); // channels
         packet.extend_from_slice(&44100u32.to_le_bytes()); // rate
-        packet.extend_from_slice(&0u32.to_le_bytes()); // bitrate nominal
         packet.extend_from_slice(&0u32.to_le_bytes()); // bitrate max
-        packet.extend_from_slice(&0u32.to_le_bytes()); // bitrate min
-        packet.push(0x38); // blocksize
+        packet.extend_from_slice(&0u32.to_le_bytes()); // bitrate nominal
+        packet.extend_from_slice(&0u32.to_le_bytes()); // bitrate low
+        packet.push(0x55); // blocksize flags
         packet.push(1); // framing
         let mut head: Vec<u8> = Vec::new();
         head.extend_from_slice(b"OggS");
