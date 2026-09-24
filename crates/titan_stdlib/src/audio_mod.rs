@@ -601,13 +601,19 @@ pub fn probe(path: &str) -> Result<Probed, AudioError> {
             &MetadataOptions::default(),
         )
         .map_err(|error| AudioError::Decode(error.to_string()))?;
-    let format_name = probed.mime_type.unwrap_or_else(|| "desconocido".into());
     let track = probed
         .format
         .tracks()
         .iter()
         .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or_else(|| AudioError::Decode("el archivo no tiene ninguna pista de audio".into()))?;
+    // `ProbeResult` no trae mime type: el nombre real del codec sale del
+    // registro de decodificadores (p.ej. "mp3", "flac", "pcm_s16le").
+    let format_name = symphonia::default::get_codecs()
+        .get_codec(track.codec_params.codec)
+        .map(|descriptor| descriptor.short_name)
+        .unwrap_or("desconocido")
+        .to_string();
 
     let sample_rate = track.codec_params.sample_rate.unwrap_or(0);
     let channels = track
@@ -751,7 +757,7 @@ mod tests {
         // 250 ms exactos; se deja margen por el redondeo de la base de tiempo.
         assert!((240..=260).contains(&probed.duration_ms), "duration_ms = {}", probed.duration_ms);
         assert!(
-            probed.format.contains("wav") || probed.format.contains("wave"),
+            probed.format.starts_with("pcm"),
             "format = {}",
             probed.format
         );
