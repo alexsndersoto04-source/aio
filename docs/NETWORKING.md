@@ -66,3 +66,42 @@ Production helpers include `security_headers(response)` (nosniff, frame denial, 
 `on_error(router, |request, error| response)` recovers handler failures into HTTP responses while preserving structured error kind/message; failures in the recovery closure still propagate. `json_response(status, value)` and `error_response(status, message)` generate UTF-8 JSON response maps suitable for handlers. Response middleware still runs on recovered responses.
 
 TLS remains the next transport layer.
+
+## Bounded `std::server` accept loop
+
+`std::server::start(bind)` plus `std::server::accept(server, timeout_ms)` is the
+bounded accept loop used by `examples/webserver.titan`, `examples/dashboard.titan`
+and `examples/rest`.
+
+`accept` **rejects** a timeout above 30,000 ms; it does not clamp it. The limit
+is `MAX_ACCEPT_TIMEOUT_MS` in `crates/titan_stdlib/src/server_mod.rs`.
+
+```titan
+let req = std::server::accept(s, 30000)   // ok: 30000 es el maximo aceptado
+let req = std::server::accept(s, 60000)   // RUNTIME ERROR, no se recorta a 30000
+```
+
+The failure is immediate, on the very first call:
+
+```text
+RUNTIME ERROR: native function 'std::server::accept' failed:
+HTTP accept timeout milliseconds exceeds limit 30000
+```
+
+When the wait expires with no connection, `accept` returns `-1` rather than
+raising, so a long-lived server loops and continues:
+
+```titan
+for i in 0..200 {
+    let req = std::server::accept(s, 30000)
+    if req < 0 {
+        print("timeout, sigo esperando")
+    } else {
+        handle(req)
+    }
+}
+```
+
+The cap bounds how long a single wait blocks; it does not bound the server's
+total lifetime. Loop on `accept` instead of asking for a longer wait.
+
