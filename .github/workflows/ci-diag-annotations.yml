@@ -92,11 +92,11 @@ jobs:
             grep -E "^warning: (unused|.*never (read|used|constructed))" /tmp/ctest.txt | head -2
             grep -E "test result: FAILED" /tmp/ctest.txt | head -2
             grep -A8 "^failures:$" /tmp/ctest.txt | grep -E "^\s+\S" | head -6
-            grep -E "panicked at" /tmp/ctest.txt | head -2
+            grep -A3 -E "panicked at" /tmp/ctest.txt | grep -vE "^--$" | head -8
             echo "--- examples ---"
             grep -E "_exit=" /tmp/examples.txt | head -4
             grep -iE "error|panic|traceback|exception" /tmp/examples.txt | head -4
             tail -2 /tmp/examples.txt
-          } | head -12 | while IFS= read -r line; do
+          } | head -18 | while IFS= read -r line; do
             echo "::error file=CI_DIAG.txt::${line:0:300}"
           done

@@ -1331,7 +1331,16 @@ mod tests {
         while !decoder.is_finished() {
             decoder.fill(&mut pcm, 4096).expect("fill");
         }
-        assert!(pcm.len() > 20_000, "samples={}", pcm.len());
+        let head: Vec<String> = pcm.iter().take(4).map(|s| format!("{s:.4}")).collect();
+        let tail: Vec<String> = pcm.iter().rev().take(2).map(|s| format!("{s:.4}")).collect();
+        assert!(
+            pcm.len() > 20_000,
+            "samples={} fetches={} head=[{}] tail=[{}]",
+            pcm.len(),
+            mock.fetches.load(Ordering::SeqCst),
+            head.join(","),
+            tail.join(",")
+        );
         assert!(mock.fetches.load(Ordering::SeqCst) > 0);
         // Y el seek-a-tiempo (lo que usa engine_seek) también va.
         let data = pcm_wav_bytes(1.0);

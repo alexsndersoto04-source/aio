@@ -83,7 +83,7 @@ fun main() {
             print("guía rápida:")
             print("1. crea tu app en https://my.telegram.org (api_id + api_hash)")
             print("2. cloud_setup(api_id, api_hash)")
-            print("3. cloud_login_phone(\"+...\") → cloud_login_code(\"...\")")
+            print("3. cloud_login_phone con tu numero, luego cloud_login_code con el codigo")
         }
     }
 
