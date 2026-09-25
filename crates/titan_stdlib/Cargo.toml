@@ -233,7 +233,7 @@ hound             = { version = "3.5",  optional = true }
 # (MP3/FLAC/Vorbis/Opus/WAV/AAC sin librerías del sistema) y compila en
 # todos los targets, incluido Android. La salida (`cpal`) va aparte en
 # la sección [target] de abajo porque Android la excluye.
-symphonia         = { version = "0.8",  optional = true }
+symphonia         = { version = "0.5",  optional = true }
 
 # Phase 10 — Embedded key-value store + Redis client.
 # `sled` is pure-Rust, ACID, and produces a single on-disk file — perfect
