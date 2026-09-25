@@ -116,8 +116,6 @@ struct CloudConfig {
     phone: String,
     #[serde(default)]
     user_name: String,
-    #[serde(default)]
-    channel_id: Option<i64>,
 }
 
 fn load_config() -> CloudConfig {
@@ -655,7 +653,6 @@ pub fn logout() -> Result<String, CloudError> {
     }
     let mut cfg = load_config();
     cfg.user_name.clear();
-    cfg.channel_id = None;
     save_config(&cfg).ok();
     Ok("sesión cerrada; tus canciones siguen en Telegram".to_string())
 }
@@ -701,7 +698,6 @@ fn ensure_channel(handle: &Handle, client: &Client) -> Result<PeerRef, CloudErro
         Ok(found)
     })? {
         lock_slot().channel = Some(peer);
-        cache_channel_id(peer);
         return Ok(peer);
     }
     // 2) No existe: crearlo (canal privado solo nuestro).
@@ -750,14 +746,7 @@ fn ensure_channel(handle: &Handle, client: &Client) -> Result<PeerRef, CloudErro
         })
     })?;
     lock_slot().channel = Some(peer);
-    cache_channel_id(peer);
     Ok(peer)
-}
-
-fn cache_channel_id(peer: PeerRef) {
-    let mut cfg = load_config();
-    cfg.channel_id = Some(peer.id.bare_id());
-    save_config(&cfg).ok();
 }
 
 // --------------------------------------------------------------- biblioteca
