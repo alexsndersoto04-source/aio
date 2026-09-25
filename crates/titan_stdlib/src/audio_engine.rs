@@ -1392,8 +1392,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("corto.wav");
         fs::write(&file, pcm_wav_bytes(0.2)).unwrap();
-        // On CI/headless/Android this is NoDevice/Unsupported; on a machine
-        // with speakers it really plays. Both are correct — no panics.
+        // On CI/headless/Android this never plays: NoDevice (no backend),
+        // Unsupported (Android shell owns output) or Control (backend
+        // present but unusable, e.g. ALSA with no sound cards). On a
+        // machine with speakers it really plays. All are correct — no panics.
         match play(file.to_str().unwrap()) {
             Ok(msg) => {
                 assert!(msg.contains("hifi-engine"), "{msg}");
@@ -1411,7 +1413,9 @@ mod tests {
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("no audio output device") || msg.contains("unsupported on this target"),
+                    msg.contains("no audio output device")
+                        || msg.contains("unsupported on this target")
+                        || msg.contains("output error"),
                     "{msg}"
                 );
                 assert_eq!(state_string(), "idle");
