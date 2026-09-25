@@ -229,7 +229,9 @@ public class WebAppInterface {
         if (service != null) {
             float[] levels = service.getSpectrumLevels();
             for (float l : levels) {
-                arr.put(Math.round(l * 100.0) / 100.0);
+                try {
+                    arr.put(Math.round(l * 100.0) / 100.0);
+                } catch (Exception ignored) {}
             }
         }
         return arr.toString();
