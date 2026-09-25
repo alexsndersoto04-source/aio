@@ -80,14 +80,7 @@ jobs:
           sudo dpkg --add-architecture arm64
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
             sudo sed -i 's/^Types: deb/Architectures: amd64\nTypes: deb/' /etc/apt/sources.list.d/ubuntu.sources
-            sudo tee /etc/apt/sources.list.d/arm64-ports.sources <<'EOF'
-Types: deb
-URIs: http://ports.ubuntu.com/ubuntu-ports/
-Suites: noble noble-updates noble-security
-Components: main universe
-Architectures: arm64
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-EOF
+            printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: noble noble-updates noble-security\nComponents: main universe\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
           fi
           sudo apt-get update || true
           sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev:arm64 pkg-config
@@ -100,14 +93,7 @@ EOF
           sudo dpkg --add-architecture armhf
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
             sudo sed -i 's/^Types: deb/Architectures: amd64\nTypes: deb/' /etc/apt/sources.list.d/ubuntu.sources
-            sudo tee /etc/apt/sources.list.d/armhf-ports.sources <<'EOF'
-Types: deb
-URIs: http://ports.ubuntu.com/ubuntu-ports/
-Suites: noble noble-updates noble-security
-Components: main universe
-Architectures: armhf
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-EOF
+            printf "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: noble noble-updates noble-security\nComponents: main universe\nArchitectures: armhf\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n" | sudo tee /etc/apt/sources.list.d/armhf-ports.sources
           fi
           sudo apt-get update || true
           sudo apt-get install -y gcc-arm-linux-gnueabihf libasound2-dev:armhf pkg-config
