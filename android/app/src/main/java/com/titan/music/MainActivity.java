@@ -7,9 +7,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.provider.OpenableColumns;
+import android.util.Log;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -20,10 +24,12 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 /**
- * Actividad principal con interfaz web WebView acelerada por hardware (UI Spotify).
+ * Actividad principal con WebView acelerada por hardware y puente nativo a Android MediaPlayer.
  */
 public class MainActivity extends AppCompatActivity {
+    private static final String TAG = "MainActivity";
     private static final int PERMISSION_REQ_CODE = 1001;
+    public static final int FILE_PICKER_REQ_CODE = 2001;
 
     private WebView webView;
     private AudioPlaybackService audioService;
@@ -35,6 +41,7 @@ public class MainActivity extends AppCompatActivity {
             AudioPlaybackService.LocalBinder b = (AudioPlaybackService.LocalBinder) binder;
             audioService = b.getService();
             isBound = true;
+            Log.d(TAG, "AudioPlaybackService conectado");
         }
 
         @Override
@@ -49,9 +56,13 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Iniciar y enlazar el servicio de audio
+        // Iniciar y enlazar el servicio de audio en primer plano
         Intent serviceIntent = new Intent(this, AudioPlaybackService.class);
-        startService(serviceIntent);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
 
         // Crear WebView a pantalla completa
@@ -87,6 +98,70 @@ public class MainActivity extends AppCompatActivity {
         return audioService;
     }
 
+    public void launchAudioFilePicker() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("audio/*");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(intent, FILE_PICKER_REQ_CODE);
+        } catch (Exception e) {
+            Log.w(TAG, "ACTION_OPEN_DOCUMENT fallo, intentando ACTION_GET_CONTENT", e);
+            try {
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.setType("audio/*");
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                startActivityForResult(Intent.createChooser(intent, "Selecciona una canción"), FILE_PICKER_REQ_CODE);
+            } catch (Exception e2) {
+                Log.e(TAG, "No se pudo abrir selector de archivos", e2);
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == FILE_PICKER_REQ_CODE && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) {
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
+                } catch (Exception ignored) {}
+
+                String displayName = "Canción seleccionada";
+                try (Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        int nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (nameIdx >= 0) {
+                            displayName = c.getString(nameIdx);
+                        }
+                    }
+                } catch (Exception ignored) {}
+
+                final String finalUri = uri.toString();
+                final String finalTitle = displayName.replaceAll("\\.[a-zA-Z0-9]+$", "");
+
+                if (audioService != null) {
+                    audioService.play(finalUri, finalTitle, "Almacenamiento del teléfono");
+                }
+
+                if (webView != null) {
+                    webView.post(() -> {
+                        String escapedUri = finalUri.replace("'", "\\'");
+                        String escapedTitle = finalTitle.replace("'", "\\'");
+                        webView.evaluateJavascript(
+                                String.format("if (window.onLocalTrackImported) window.onLocalTrackImported('%s', '%s');", escapedUri, escapedTitle),
+                                null
+                        );
+                    });
+                }
+            }
+        }
+    }
+
     private void checkAndRequestPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_AUDIO)
@@ -119,7 +194,6 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == PERMISSION_REQ_CODE && webView != null) {
-            // Notificar a la web que refresque la biblioteca si se otorgaron permisos
             webView.post(() -> webView.evaluateJavascript("if (window.onPermissionsGranted) window.onPermissionsGranted();", null));
         }
     }
@@ -127,7 +201,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onBackPressed() {
         if (webView != null) {
-            // Si la web tiene un modal abierto (reproductor grande o ajustes), se cierra primero
             webView.evaluateJavascript("if (window.handleAndroidBack) { window.handleAndroidBack(); } else { 'back'; }", value -> {
                 if (value != null && value.contains("handled")) {
                     // Manejado por la web

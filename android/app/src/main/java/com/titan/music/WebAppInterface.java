@@ -1,5 +1,6 @@
 package com.titan.music;
 
+import android.content.ContentUris;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
@@ -42,6 +43,7 @@ public class WebAppInterface {
         if (service != null) {
             return service.play(path, title, artist);
         }
+        Log.e(TAG, "AudioPlaybackService no disponible para playTrack");
         return false;
     }
 
@@ -108,8 +110,13 @@ public class WebAppInterface {
         return obj.toString();
     }
 
+    @JavascriptInterface
+    public void openAudioFilePicker() {
+        activity.runOnUiThread(activity::launchAudioFilePicker);
+    }
+
     // =========================================================================
-    // AJUSTES AVANZADOS
+    // AJUSTES AVANZADOS HI-FI
     // =========================================================================
 
     @JavascriptInterface
@@ -169,14 +176,14 @@ public class WebAppInterface {
     }
 
     // =========================================================================
-    // BIBLIOTECA DEL TELÉFONO
+    // BIBLIOTECA DEL TELÉFONO (MEDIASTORE CON CONTENT URIs REALES)
     // =========================================================================
 
     @JavascriptInterface
     public String scanLocalMusic() {
         JSONArray array = new JSONArray();
         try {
-            Uri uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+            Uri collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
             String[] projection = {
                     MediaStore.Audio.Media._ID,
                     MediaStore.Audio.Media.TITLE,
@@ -185,27 +192,38 @@ public class WebAppInterface {
                     MediaStore.Audio.Media.DURATION,
                     MediaStore.Audio.Media.DATA
             };
-            String selection = MediaStore.Audio.Media.IS_MUSIC + "!= 0";
+            String selection = MediaStore.Audio.Media.IS_MUSIC + " != 0";
 
-            Cursor cursor = context.getContentResolver().query(uri, projection, selection, null, null);
+            Cursor cursor = context.getContentResolver().query(collection, projection, selection, null, MediaStore.Audio.Media.TITLE + " ASC");
             if (cursor != null) {
+                int idIdx = cursor.getColumnIndex(MediaStore.Audio.Media._ID);
+                int titleIdx = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE);
+                int artistIdx = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST);
+                int albumIdx = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM);
+                int durIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION);
+                int dataIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DATA);
+
                 while (cursor.moveToNext()) {
-                    long id = cursor.getLong(0);
-                    String title = cursor.getString(1);
-                    String artist = cursor.getString(2);
-                    String album = cursor.getString(3);
-                    long duration = cursor.getLong(4) / 1000;
-                    String path = cursor.getString(5);
+                    long id = cursor.getLong(idIdx);
+                    String title = titleIdx >= 0 ? cursor.getString(titleIdx) : "Pista " + id;
+                    String artist = artistIdx >= 0 ? cursor.getString(artistIdx) : "Artista desconocido";
+                    String album = albumIdx >= 0 ? cursor.getString(albumIdx) : "Teléfono";
+                    long durSecs = durIdx >= 0 ? cursor.getLong(durIdx) / 1000 : 180;
+                    String rawPath = dataIdx >= 0 ? cursor.getString(dataIdx) : "";
+
+                    Uri itemContentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
 
                     JSONObject song = new JSONObject();
                     song.put("id", "local_" + id);
-                    song.put("title", title != null ? title : "Canción " + id);
-                    song.put("artist", artist != null && !artist.equals("<unknown>") ? artist : "Artista desconocido");
-                    song.put("album", album != null ? album : "Álbum");
-                    song.put("duration", duration > 0 ? duration : 180);
-                    song.put("path", path != null ? path : "");
+                    song.put("title", (title != null && !title.isEmpty()) ? title : "Canción");
+                    song.put("artist", (artist != null && !artist.equals("<unknown>")) ? artist : "Artista desconocido");
+                    song.put("album", (album != null && !album.isEmpty()) ? album : "Álbum");
+                    song.put("duration", durSecs > 0 ? durSecs : 180);
+                    song.put("path", itemContentUri.toString());
+                    song.put("rawPath", rawPath != null ? rawPath : "");
                     song.put("source", "phone");
                     song.put("isCloud", false);
+                    song.put("downloaded", true);
                     array.put(song);
                 }
                 cursor.close();

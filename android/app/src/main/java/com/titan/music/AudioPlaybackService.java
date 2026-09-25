@@ -7,7 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.media.AudioDeviceInfo;
+import android.content.res.AssetFileDescriptor;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.audiofx.Equalizer;
@@ -16,48 +16,36 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
-
 import androidx.core.app.NotificationCompat;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
+import java.io.FileInputStream;
 import java.util.Random;
 
 /**
- * Servicio de reproducción de audio en primer plano para Android.
- * Soporta configuraciones avanzadas: volumen, crossfade, EQ de 3 bandas, gapless y selección de dispositivo.
+ * Servicio de reproducción de audio en primer plano (Hi-Fi Engine).
  */
 public class AudioPlaybackService extends Service {
     private static final String TAG = "AudioPlaybackService";
-    private static final String CHANNEL_ID = "titan_music_playback";
-    private static final int NOTIFICATION_ID = 42;
+    private static final String CHANNEL_ID = "titan_audio_channel";
+    private static final int NOTIFICATION_ID = 4201;
 
     private final IBinder binder = new LocalBinder();
     private MediaPlayer mediaPlayer;
-    private MediaPlayer nextMediaPlayer;
     private Equalizer equalizer;
-    private AudioManager audioManager;
 
-    private String currentTitle = "Titan Music";
-    private String currentArtist = "Listo para reproducir";
+    private String currentTitle = "Sin reproducción";
+    private String currentArtist = "Titan Music";
     private String currentPath = "";
     private boolean isPlaying = false;
     private float currentVolume = 0.8f;
     private float crossfadeSecs = 0.0f;
     private boolean gaplessEnabled = true;
-
-    // EQ dB values (-12 to +12 dB)
-    private int bassDb = 0;
-    private int midDb = 0;
-    private int trebleDb = 0;
-
-    // 32-bar Hi-Fi levels generator for the UI
-    private final float[] spectrumLevels = new float[32];
-    private final Random random = new Random();
+    private int eqBass = 0;
+    private int eqMid = 0;
+    private int eqTreble = 0;
 
     public class LocalBinder extends Binder {
         public AudioPlaybackService getService() {
@@ -68,13 +56,7 @@ public class AudioPlaybackService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         createNotificationChannel();
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        return binder;
     }
 
     private void createNotificationChannel() {
@@ -84,7 +66,7 @@ public class AudioPlaybackService extends Service {
                     "Titan Music Reproducción",
                     NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("Controles de audio en la barra de notificaciones");
+            channel.setDescription("Controles de reproducción multimedia");
             channel.setShowBadge(false);
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
@@ -94,34 +76,49 @@ public class AudioPlaybackService extends Service {
     }
 
     private Notification buildNotification() {
-        Intent notificationIntent = new Intent(this, MainActivity.class);
-        PendingIntent pendingIntent = PendingIntent.getActivity(
-                this, 0, notificationIntent,
-                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pi = PendingIntent.getActivity(
+                this, 0, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
         );
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle(currentTitle)
                 .setContentText(currentArtist)
-                .setSmallIcon(R.drawable.ic_launcher_foreground)
-                .setContentIntent(pendingIntent)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentIntent(pi)
                 .setOngoing(isPlaying)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
     }
 
+    /**
+     * Inicia la reproducción de una pista (URI de MediaStore, archivo local o stream de red).
+     */
     public synchronized boolean play(String path, String title, String artist) {
-        this.currentPath = path;
-        this.currentTitle = title != null ? title : "Canción";
-        this.currentArtist = artist != null ? artist : "Artista";
+        this.currentTitle = (title != null && !title.isEmpty()) ? title : "Canción";
+        this.currentArtist = (artist != null && !artist.isEmpty()) ? artist : "Artista";
+        this.currentPath = path != null ? path : "";
+
+        Log.i(TAG, "Solicitando reproducir: " + this.currentTitle + " (" + this.currentPath + ")");
 
         try {
             if (mediaPlayer != null) {
                 try {
                     mediaPlayer.stop();
+                    mediaPlayer.reset();
                     mediaPlayer.release();
                 } catch (Exception ignored) {}
                 mediaPlayer = null;
+            }
+
+            if (equalizer != null) {
+                try {
+                    equalizer.release();
+                } catch (Exception ignored) {}
+                equalizer = null;
             }
 
             mediaPlayer = new MediaPlayer();
@@ -129,24 +126,52 @@ public class AudioPlaybackService extends Service {
 
             boolean loaded = false;
 
-            if (path != null && !path.trim().isEmpty()) {
-                if (path.startsWith("http://") || path.startsWith("https://")) {
-                    mediaPlayer.setDataSource(path);
-                    loaded = true;
-                } else if (path.startsWith("content://")) {
-                    mediaPlayer.setDataSource(this, Uri.parse(path));
-                    loaded = true;
-                } else {
-                    File file = new File(path);
-                    if (file.exists() && file.canRead()) {
-                        mediaPlayer.setDataSource(path);
+            // 1. Content URI de Android MediaStore (content://...)
+            if (path != null && path.startsWith("content://")) {
+                Uri contentUri = Uri.parse(path);
+                try {
+                    AssetFileDescriptor afd = getContentResolver().openAssetFileDescriptor(contentUri, "r");
+                    if (afd != null) {
+                        mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+                        afd.close();
                         loaded = true;
+                        Log.i(TAG, "Cargado vía ContentResolver openAssetFileDescriptor");
+                    }
+                } catch (Exception e1) {
+                    Log.w(TAG, "Fallo openAssetFileDescriptor, intentando setDataSource directo", e1);
+                }
+
+                if (!loaded) {
+                    try {
+                        mediaPlayer.setDataSource(getApplicationContext(), contentUri);
+                        loaded = true;
+                        Log.i(TAG, "Cargado vía setDataSource(context, uri)");
+                    } catch (Exception e2) {
+                        Log.e(TAG, "Error final cargando content URI: " + path, e2);
+                    }
+                }
+            }
+            // 2. Stream HTTP / URL remota
+            else if (path != null && (path.startsWith("http://") || path.startsWith("https://"))) {
+                mediaPlayer.setDataSource(path);
+                loaded = true;
+            }
+            // 3. Archivo del sistema de ficheros (/storage/... o /data/...)
+            else if (path != null && !path.isEmpty() && !path.startsWith("cloud:")) {
+                File file = new File(path);
+                if (file.exists() && file.canRead()) {
+                    try (FileInputStream fis = new FileInputStream(file)) {
+                        mediaPlayer.setDataSource(fis.getFD());
+                        loaded = true;
+                        Log.i(TAG, "Cargado vía FileInputStream");
+                    } catch (Exception e) {
+                        Log.w(TAG, "Error leyendo file path: " + path, e);
                     }
                 }
             }
 
+            // 4. Fallback a pistas empaquetadas en assets si es una pista demo de la nube
             if (!loaded) {
-                // Seleccionar pista real empaquetada según el estilo de la canción
                 String search = (this.currentTitle + " " + this.currentArtist + " " + path).toLowerCase();
                 String assetFile = "track_synthwave.wav";
                 if (search.contains("soda") || search.contains("ligera") || search.contains("rock")) {
@@ -155,18 +180,18 @@ public class AudioPlaybackService extends Service {
                     assetFile = "track_lofi.wav";
                 } else if (search.contains("acoustic") || search.contains("guitar") || search.contains("piano")) {
                     assetFile = "track_acoustic.wav";
-                } else if (search.contains("dance") || search.contains("blinding") || search.contains("electronic")) {
+                } else if (search.contains("dance") || search.contains("blinding") || search.contains("electronic") || search.contains("starboy")) {
                     assetFile = "track_electronic.wav";
                 }
 
-                android.content.res.AssetFileDescriptor afd = null;
+                AssetFileDescriptor afd = null;
                 try {
                     afd = getAssets().openFd("web/audio/" + assetFile);
                 } catch (Exception e1) {
                     try {
                         afd = getAssets().openFd("audio/" + assetFile);
                     } catch (Exception e2) {
-                        Log.e(TAG, "No se pudo abrir asset de audio: " + assetFile, e2);
+                        Log.e(TAG, "No se pudo abrir asset empaquetado: " + assetFile, e2);
                     }
                 }
 
@@ -174,7 +199,13 @@ public class AudioPlaybackService extends Service {
                     mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
                     afd.close();
                     loaded = true;
+                    Log.i(TAG, "Cargado asset empaquetado: " + assetFile);
                 }
+            }
+
+            if (!loaded) {
+                Log.e(TAG, "Imposible cargar fuente de audio: " + path);
+                return false;
             }
 
             mediaPlayer.setVolume(currentVolume, currentVolume);
@@ -185,18 +216,21 @@ public class AudioPlaybackService extends Service {
                     isPlaying = true;
                     applyEqualizer();
                     startForeground(NOTIFICATION_ID, buildNotification());
+                    Log.i(TAG, "Reproducción iniciada exitosamente: " + currentTitle);
                 } catch (Exception err) {
-                    Log.e(TAG, "Error al iniciar mp.start()", err);
+                    Log.e(TAG, "Error en mp.start()", err);
                 }
             });
 
             mediaPlayer.setOnCompletionListener(mp -> {
+                Log.i(TAG, "Reproducción completada: " + currentTitle);
                 isPlaying = false;
                 stopForeground(false);
             });
 
             mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                Log.w(TAG, "MediaPlayer error: " + what + ", " + extra);
+                Log.e(TAG, "MediaPlayer error: " + what + ", " + extra);
+                isPlaying = false;
                 return false;
             });
 
@@ -209,52 +243,43 @@ public class AudioPlaybackService extends Service {
         }
     }
 
-    public synchronized void pause() {
+    public void pause() {
         if (mediaPlayer != null && isPlaying) {
-            try {
-                mediaPlayer.pause();
-            } catch (Exception ignored) {}
-        }
-        isPlaying = false;
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager != null) {
-            manager.notify(NOTIFICATION_ID, buildNotification());
+            mediaPlayer.pause();
+            isPlaying = false;
+            stopForeground(false);
         }
     }
 
-    public synchronized void resume() {
-        if (mediaPlayer != null) {
-            try {
-                mediaPlayer.start();
-                isPlaying = true;
-                startForeground(NOTIFICATION_ID, buildNotification());
-            } catch (Exception ignored) {}
-        } else {
+    public void resume() {
+        if (mediaPlayer != null && !isPlaying) {
+            mediaPlayer.start();
             isPlaying = true;
+            startForeground(NOTIFICATION_ID, buildNotification());
         }
     }
 
-    public synchronized void stop() {
+    public void stop() {
         if (mediaPlayer != null) {
             try {
                 mediaPlayer.stop();
-                mediaPlayer.release();
             } catch (Exception ignored) {}
-            mediaPlayer = null;
+            isPlaying = false;
+            stopForeground(true);
         }
-        isPlaying = false;
-        stopForeground(true);
     }
 
-    public synchronized void seekTo(int positionMs) {
+    public void seekTo(int msec) {
         if (mediaPlayer != null) {
-            try {
-                mediaPlayer.seekTo(positionMs);
-            } catch (Exception ignored) {}
+            mediaPlayer.seekTo(msec);
         }
     }
 
-    public synchronized int getPosition() {
+    public boolean isPlaying() {
+        return mediaPlayer != null && mediaPlayer.isPlaying();
+    }
+
+    public int getPosition() {
         if (mediaPlayer != null) {
             try {
                 return mediaPlayer.getCurrentPosition();
@@ -263,67 +288,57 @@ public class AudioPlaybackService extends Service {
         return 0;
     }
 
-    public synchronized int getDuration() {
+    public int getDuration() {
         if (mediaPlayer != null) {
             try {
-                return mediaPlayer.getDuration();
+                int dur = mediaPlayer.getDuration();
+                return dur > 0 ? dur : 180000;
             } catch (Exception ignored) {}
         }
-        return 210000; // 3:30 por defecto
-    }
-
-    public synchronized boolean isPlaying() {
-        if (mediaPlayer != null) {
-            try {
-                return mediaPlayer.isPlaying();
-            } catch (Exception ignored) {}
-        }
-        return isPlaying;
+        return 180000;
     }
 
     // =========================================================================
-    // CONFIGURACIONES AVANZADAS (Volumen, Crossfade, EQ, Gapless, Dispositivos)
+    // AJUSTES HI-FI
     // =========================================================================
 
-    public synchronized void setVolume(int percent) {
-        percent = Math.max(0, Math.min(100, percent));
-        this.currentVolume = percent / 100.0f;
+    public void setVolume(int percent) {
+        float vol = Math.max(0.0f, Math.min(1.0f, percent / 100.0f));
+        this.currentVolume = vol;
         if (mediaPlayer != null) {
-            try {
-                mediaPlayer.setVolume(currentVolume, currentVolume);
-            } catch (Exception ignored) {}
+            mediaPlayer.setVolume(vol, vol);
         }
     }
 
-    public synchronized int getVolume() {
+    public int getVolume() {
         return Math.round(currentVolume * 100);
     }
 
-    public synchronized void setCrossfade(float seconds) {
+    public void setCrossfade(float seconds) {
         this.crossfadeSecs = Math.max(0.0f, Math.min(12.0f, seconds));
     }
 
-    public synchronized float getCrossfade() {
-        return crossfadeSecs;
+    public float getCrossfade() {
+        return this.crossfadeSecs;
     }
 
-    public synchronized void setGapless(boolean enabled) {
+    public void setGapless(boolean enabled) {
         this.gaplessEnabled = enabled;
     }
 
-    public synchronized boolean isGapless() {
-        return gaplessEnabled;
+    public boolean isGapless() {
+        return this.gaplessEnabled;
     }
 
-    public synchronized void setEqualizer(int bass, int mid, int treble) {
-        this.bassDb = Math.max(-12, Math.min(12, bass));
-        this.midDb = Math.max(-12, Math.min(12, mid));
-        this.trebleDb = Math.max(-12, Math.min(12, treble));
+    public void setEqualizer(int bassDb, int midDb, int trebleDb) {
+        this.eqBass = Math.max(-12, Math.min(12, bassDb));
+        this.eqMid = Math.max(-12, Math.min(12, midDb));
+        this.eqTreble = Math.max(-12, Math.min(12, trebleDb));
         applyEqualizer();
     }
 
-    public synchronized int[] getEqualizer() {
-        return new int[]{bassDb, midDb, trebleDb};
+    public int[] getEqualizer() {
+        return new int[]{eqBass, eqMid, eqTreble};
     }
 
     private void applyEqualizer() {
@@ -333,100 +348,77 @@ public class AudioPlaybackService extends Service {
                 equalizer = new Equalizer(0, mediaPlayer.getAudioSessionId());
                 equalizer.setEnabled(true);
             }
-            short numBands = equalizer.getNumberOfBands();
-            if (numBands >= 3) {
-                short minEQ = equalizer.getBandLevelRange()[0];
-                short maxEQ = equalizer.getBandLevelRange()[1];
+            short bands = equalizer.getNumberOfBands();
+            if (bands >= 3) {
+                short minLevel = equalizer.getBandLevelRange()[0];
+                short maxLevel = equalizer.getBandLevelRange()[1];
 
-                // Mapear los dB (-12 a +12) a millibels (-1200 a +1200)
-                short bassMb = (short) Math.max(minEQ, Math.min(maxEQ, bassDb * 100));
-                short midMb = (short) Math.max(minEQ, Math.min(maxEQ, midDb * 100));
-                short trebleMb = (short) Math.max(minEQ, Math.min(maxEQ, trebleDb * 100));
+                short bassMilli = (short) ((eqBass / 12.0f) * maxLevel);
+                short midMilli = (short) ((eqMid / 12.0f) * maxLevel);
+                short trebleMilli = (short) ((eqTreble / 12.0f) * maxLevel);
 
-                equalizer.setBandLevel((short) 0, bassMb);
-                equalizer.setBandLevel((short) (numBands / 2), midMb);
-                equalizer.setBandLevel((short) (numBands - 1), trebleMb);
+                equalizer.setBandLevel((short) 0, bassMilli);
+                equalizer.setBandLevel((short) (bands / 2), midMilli);
+                equalizer.setBandLevel((short) (bands - 1), trebleMilli);
             }
         } catch (Exception e) {
-            Log.w(TAG, "Equalizer no disponible en este hardware, aplicando EQ por software", e);
+            Log.w(TAG, "No se pudo aplicar ecualizador por hardware", e);
         }
     }
 
     public JSONArray getAvailableDevices() {
-        JSONArray array = new JSONArray();
+        JSONArray arr = new JSONArray();
         try {
-            JSONObject phoneSpeaker = new JSONObject();
-            phoneSpeaker.put("id", 1);
-            phoneSpeaker.put("name", "Altavoz del teléfono");
-            phoneSpeaker.put("type", "speaker");
-            phoneSpeaker.put("active", true);
-            array.put(phoneSpeaker);
+            JSONObject dev1 = new JSONObject();
+            dev1.put("id", 1);
+            dev1.put("name", "Altavoz del teléfono");
+            dev1.put("type", "speaker");
+            dev1.put("active", true);
+            arr.put(dev1);
 
-            JSONObject headphones = new JSONObject();
-            headphones.put("id", 2);
-            headphones.put("name", "Auriculares / Cable (3.5mm / USB-C)");
-            headphones.put("type", "wired");
-            headphones.put("active", false);
-            array.put(headphones);
+            JSONObject dev2 = new JSONObject();
+            dev2.put("id", 2);
+            dev2.put("name", "Auriculares con cable");
+            dev2.put("type", "wired");
+            dev2.put("active", false);
+            arr.put(dev2);
 
-            JSONObject bluetooth = new JSONObject();
-            bluetooth.put("id", 3);
-            bluetooth.put("name", "Auriculares Bluetooth / Inalámbricos");
-            bluetooth.put("type", "bluetooth");
-            bluetooth.put("active", false);
-            array.put(bluetooth);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioManager != null) {
-                AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-                for (AudioDeviceInfo dev : devices) {
-                    JSONObject obj = new JSONObject();
-                    obj.put("id", dev.getId());
-                    obj.put("name", dev.getProductName());
-                    obj.put("type", getDeviceTypeName(dev.getType()));
-                    obj.put("active", false);
-                    array.put(obj);
-                }
-            }
+            JSONObject dev3 = new JSONObject();
+            dev3.put("id", 3);
+            dev3.put("name", "Dispositivo Bluetooth");
+            dev3.put("type", "bluetooth");
+            dev3.put("active", false);
+            arr.put(dev3);
         } catch (Exception ignored) {}
-        return array;
-    }
-
-    private String getDeviceTypeName(int type) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            switch (type) {
-                case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER: return "speaker";
-                case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-                case AudioDeviceInfo.TYPE_WIRED_HEADSET: return "wired";
-                case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
-                case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: return "bluetooth";
-            }
-        }
-        return "other";
+        return arr;
     }
 
     public float[] getSpectrumLevels() {
-        if (!isPlaying()) {
+        float[] levels = new float[32];
+        if (isPlaying) {
+            Random r = new Random();
             for (int i = 0; i < 32; i++) {
-                spectrumLevels[i] = 0.0f;
+                float factor = (i < 10) ? (1.0f + eqBass / 24.0f) : (i > 20 ? (1.0f + eqTreble / 24.0f) : (1.0f + eqMid / 24.0f));
+                levels[i] = Math.max(0.05f, Math.min(1.0f, (r.nextFloat() * 0.7f + 0.2f) * factor));
             }
-            return spectrumLevels;
         }
+        return levels;
+    }
 
-        // Simula las 32 bandas reales del motor Hi-Fi de Titan (60Hz a 16kHz)
-        for (int i = 0; i < 32; i++) {
-            float base = 0.3f + 0.6f * random.nextFloat();
-            // Acentuar con el EQ configurado
-            if (i < 10) base += (bassDb / 24.0f);
-            else if (i < 22) base += (midDb / 24.0f);
-            else base += (trebleDb / 24.0f);
-            spectrumLevels[i] = Math.max(0.05f, Math.min(1.0f, base * currentVolume));
-        }
-        return spectrumLevels;
+    @Override
+    public IBinder onBind(Intent intent) {
+        return binder;
     }
 
     @Override
     public void onDestroy() {
-        stop();
+        if (mediaPlayer != null) {
+            try {
+                mediaPlayer.stop();
+                mediaPlayer.release();
+            } catch (Exception ignored) {}
+            mediaPlayer = null;
+        }
         if (equalizer != null) {
             try {
                 equalizer.release();

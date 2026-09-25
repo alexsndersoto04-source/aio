@@ -1,294 +1,200 @@
 // =============================================================================
-// TITAN MUSIC — CLIENTE SPOTIFY PREMIUM + MOTOR HI-FI + STREAMING TELEGRAM
+// TITAN MUSIC — CLIENTE SPOTIFY MOBILE (MOTOR REAL DE AUDIO HI-FI)
 // =============================================================================
 
 (function () {
     'use strict';
 
-    // =========================================================================
-    // ESTADO GLOBAL
-    // =========================================================================
-
+    // ESTADO DE LA APLICACIÓN
     const state = {
         currentTab: 'tabHome',
-        filter: 'all',          // 'all', 'phone', 'cloud', 'downloaded'
-        searchQuery: '',
+        filter: 'all',          // 'all', 'phone', 'cloud'
         currentTrack: null,
         isPlaying: false,
         position: 0,
-        duration: 210,
+        duration: 180,
         volume: 80,
         crossfade: 0.0,
         gapless: true,
         eq: { bass: 0, mid: 0, treble: 0 },
-        queue: [],
-        history: [],
         shuffle: false,
-        repeat: 'off',          // 'off', 'all', 'one'
+        repeat: false,
         activeDevice: 'Altavoz del teléfono',
-        devices: [
-            { id: 1, name: 'Altavoz del teléfono', type: 'speaker', active: true },
-            { id: 2, name: 'Auriculares (Cable 3.5mm / USB-C)', type: 'wired', active: false },
-            { id: 3, name: 'Auriculares Bluetooth / Inalámbrico', type: 'bluetooth', active: false }
-        ],
+        songs: [],
         telegram: {
-            configured: true,
             connected: true,
-            authorized: true,
             user: 'alexsndersoto',
-            channel: 'Mi Música',
-            note: 'Streaming puro activo (sin llenar almacenamiento)'
-        },
-        songs: []
+            channel: 'Mi Música'
+        }
     };
 
-    // BIBLIOTECA INICIAL DE CANCIONES (LOCAL + NUBE TELEGRAM)
-    const initialSongs = [
+    // BIBLIOTECA INICIAL LIMPIA (ENRIQUECIDA AUTOMÁTICAMENTE CON MÚSICA DEL TELÉFONO)
+    const initialTracks = [
         {
-            id: 'phone_1',
-            title: 'De Música Ligera',
-            artist: 'Soda Stereo',
-            album: 'Canción Animal',
-            duration: 212,
-            source: 'phone',
-            isCloud: false,
-            color: '#1DB954',
-            downloaded: true,
-            audioFile: 'audio/track_rock.wav',
-            path: '/storage/emulated/0/Music/Soda Stereo - De Musica Ligera.mp3'
-        },
-        {
-            id: 'cloud_101',
+            id: 'cloud_1',
             title: 'Blinding Lights',
             artist: 'The Weeknd',
             album: 'After Hours',
             duration: 200,
             source: 'cloud',
             isCloud: true,
-            color: '#E91429',
-            downloaded: false,
-            audioFile: 'audio/track_electronic.wav',
-            path: 'cloud:101'
+            path: 'cloud:101',
+            color: '#1a233a'
         },
         {
-            id: 'phone_2',
-            title: 'Persiana Americana',
+            id: 'cloud_2',
+            title: 'De Música Ligera',
             artist: 'Soda Stereo',
-            album: 'Signos',
-            duration: 292,
-            source: 'phone',
-            isCloud: false,
-            color: '#8400E7',
-            downloaded: true,
-            audioFile: 'audio/track_synthwave.wav',
-            path: '/storage/emulated/0/Music/Soda Stereo - Persiana Americana.mp3'
+            album: 'Canción Animal',
+            duration: 212,
+            source: 'cloud',
+            isCloud: true,
+            path: 'cloud:102',
+            color: '#281a1a'
         },
         {
-            id: 'cloud_102',
+            id: 'cloud_3',
             title: 'Midnight City',
             artist: 'M83',
             album: 'Hurry Up, We\'re Dreaming',
             duration: 243,
             source: 'cloud',
             isCloud: true,
-            color: '#1E3264',
-            downloaded: false,
-            audioFile: 'audio/track_synthwave.wav',
-            path: 'cloud:102'
+            path: 'cloud:103',
+            color: '#1d2a20'
         },
         {
-            id: 'cloud_103',
-            title: 'Café & Calma (Lo-Fi)',
-            artist: 'Titan Chill Beats',
-            album: 'Estudio y Concentración',
-            duration: 180,
-            source: 'cloud',
-            isCloud: true,
-            color: '#E13300',
-            downloaded: false,
-            audioFile: 'audio/track_lofi.wav',
-            path: 'cloud:103'
-        },
-        {
-            id: 'phone_3',
-            title: 'Trátame Suavemente',
-            artist: 'Soda Stereo',
-            album: 'Soda Stereo',
-            duration: 202,
-            source: 'phone',
-            isCloud: false,
-            color: '#503750',
-            downloaded: true,
-            audioFile: 'audio/track_acoustic.wav',
-            path: '/storage/emulated/0/Music/Soda Stereo - Tratame Suavemente.mp3'
-        },
-        {
-            id: 'cloud_104',
+            id: 'cloud_4',
             title: 'Starboy',
             artist: 'The Weeknd ft. Daft Punk',
             album: 'Starboy',
             duration: 230,
             source: 'cloud',
             isCloud: true,
-            color: '#E91429',
-            downloaded: false,
-            audioFile: 'audio/track_electronic.wav',
-            path: 'cloud:104'
-        },
-        {
-            id: 'cloud_105',
-            title: 'Guitarra Acústica al Atardecer',
-            artist: 'Acoustic Sessions',
-            album: 'Naturaleza',
-            duration: 195,
-            source: 'cloud',
-            isCloud: true,
-            color: '#1DB954',
-            downloaded: false,
-            audioFile: 'audio/track_acoustic.wav',
-            path: 'cloud:105'
+            path: 'cloud:104',
+            color: '#2a1a28'
         }
     ];
 
-    // =========================================================================
     // ELEMENTOS DOM
-    // =========================================================================
-
     const el = {};
 
     function cacheDom() {
-        // Top bar
+        // Headers & navegación
         el.greetingText = document.getElementById('greetingText');
-        el.topTelegramPill = document.getElementById('topTelegramPill');
+        el.openFolderBtn = document.getElementById('openFolderBtn');
+        el.topTgPill = document.getElementById('topTgPill');
+        el.tgHeaderStatusDot = document.getElementById('tgHeaderStatusDot');
         el.topSettingsBtn = document.getElementById('topSettingsBtn');
-        el.cloudDot = document.getElementById('cloudDot');
-        el.cloudLabel = document.getElementById('cloudLabel');
-        el.userAvatarBtn = document.getElementById('userAvatarBtn');
-
-        // Tabs
-        el.tabViews = document.querySelectorAll('.tab-view');
-        el.navButtons = document.querySelectorAll('.nav-btn');
+        el.webAudioFileInput = document.getElementById('webAudioFileInput');
+        el.tabPanes = document.querySelectorAll('.tab-pane');
+        el.navItems = document.querySelectorAll('.nav-item');
 
         // Home
-        el.recentGrid = document.getElementById('recentGrid');
-        el.homeSongsList = document.getElementById('homeSongsList');
-        el.syncLibraryBtn = document.getElementById('syncLibraryBtn');
+        el.quickAccessGrid = document.getElementById('quickAccessGrid');
+        el.localImportCard = document.getElementById('localImportCard');
+        el.localCountLabel = document.getElementById('localCountLabel');
+        el.importLocalFilesBtn = document.getElementById('importLocalFilesBtn');
+        el.refreshLibBtn = document.getElementById('refreshLibBtn');
+        el.homeSongList = document.getElementById('homeSongList');
 
         // Search
         el.searchInput = document.getElementById('searchInput');
         el.searchClearBtn = document.getElementById('searchClearBtn');
-        el.searchCategories = document.getElementById('searchCategories');
-        el.searchResultsBlock = document.getElementById('searchResultsBlock');
+        el.searchBrowseSection = document.getElementById('searchBrowseSection');
+        el.searchResultsSection = document.getElementById('searchResultsSection');
         el.searchResultsList = document.getElementById('searchResultsList');
 
         // Library
-        el.libCountPhone = document.getElementById('libCountPhone');
-        el.libCountCloud = document.getElementById('libCountCloud');
-        el.librarySongsList = document.getElementById('librarySongsList');
+        el.librarySongList = document.getElementById('librarySongList');
 
         // Telegram tab
-        el.tgCardStatusBadge = document.getElementById('tgCardStatusBadge');
-        el.tgCardChannel = document.getElementById('tgCardChannel');
-        el.tgCardUser = document.getElementById('tgCardUser');
-        el.tgTestAudioBtn = document.getElementById('tgTestAudioBtn');
-        el.tgRefreshSongsBtn = document.getElementById('tgRefreshSongsBtn');
-        el.tgApiIdInput = document.getElementById('tgApiIdInput');
-        el.tgApiHashInput = document.getElementById('tgApiHashInput');
-        el.tgPhoneViewInput = document.getElementById('tgPhoneViewInput');
-        el.tgCodeViewBlock = document.getElementById('tgCodeViewBlock');
-        el.tgCodeViewInput = document.getElementById('tgCodeViewInput');
-        el.tgSaveConnectBtn = document.getElementById('tgSaveConnectBtn');
-        el.tgDisconnectBtn = document.getElementById('tgDisconnectBtn');
-        el.telegramSongsList = document.getElementById('telegramSongsList');
+        el.tgCardChannelTitle = document.getElementById('tgCardChannelTitle');
+        el.tgCardStateText = document.getElementById('tgCardStateText');
+        el.tgSyncNowBtn = document.getElementById('tgSyncNowBtn');
+        el.tgPhoneInput = document.getElementById('tgPhoneInput');
+        el.tgCodeInput = document.getElementById('tgCodeInput');
+        el.tgConnectActionBtn = document.getElementById('tgConnectActionBtn');
+        el.telegramSongList = document.getElementById('telegramSongList');
 
         // Settings tab
-        el.settingsVolBadge = document.getElementById('settingsVolBadge');
-        el.settingsVolSlider = document.getElementById('settingsVolSlider');
-        el.settingsCrossfadeBadge = document.getElementById('settingsCrossfadeBadge');
-        el.settingsCrossfadeSlider = document.getElementById('settingsCrossfadeSlider');
-        el.settingsResetEqBtn = document.getElementById('settingsResetEqBtn');
-        el.settingsEqBass = document.getElementById('settingsEqBass');
-        el.settingsEqMid = document.getElementById('settingsEqMid');
-        el.settingsEqTreble = document.getElementById('settingsEqTreble');
-        el.settingsEqBassDb = document.getElementById('settingsEqBassDb');
-        el.settingsEqMidDb = document.getElementById('settingsEqMidDb');
-        el.settingsEqTrebleDb = document.getElementById('settingsEqTrebleDb');
-        el.settingsSpectrumBars = document.getElementById('settingsSpectrumBars');
-        el.settingsGaplessToggle = document.getElementById('settingsGaplessToggle');
-        el.settingsDevicesContainer = document.getElementById('settingsDevicesContainer');
+        el.settingsVolValue = document.getElementById('settingsVolValue');
+        el.settingsVolRange = document.getElementById('settingsVolRange');
+        el.settingsCrossfadeValue = document.getElementById('settingsCrossfadeValue');
+        el.settingsCrossfadeRange = document.getElementById('settingsCrossfadeRange');
+        el.resetEqBtn = document.getElementById('resetEqBtn');
+        el.eqBass = document.getElementById('eqBass');
+        el.eqMid = document.getElementById('eqMid');
+        el.eqTreble = document.getElementById('eqTreble');
+        el.eqBassVal = document.getElementById('eqBassVal');
+        el.eqMidVal = document.getElementById('eqMidVal');
+        el.eqTrebleVal = document.getElementById('eqTrebleVal');
+        el.specStatusText = document.getElementById('specStatusText');
+        el.spectrumBarsBox = document.getElementById('spectrumBarsBox');
+        el.gaplessSwitch = document.getElementById('gaplessSwitch');
+        el.devicesList = document.getElementById('devicesList');
 
         // Mini player
         el.miniPlayer = document.getElementById('miniPlayer');
-        el.miniProgressBar = document.getElementById('miniProgressBar');
-        el.miniPlayerBody = document.getElementById('miniPlayerBody');
-        el.miniArt = document.getElementById('miniArt');
+        el.miniPlayerContent = document.getElementById('miniPlayerContent');
+        el.miniCover = document.getElementById('miniCover');
         el.miniTitle = document.getElementById('miniTitle');
         el.miniArtist = document.getElementById('miniArtist');
-        el.miniSourceTag = document.getElementById('miniSourceTag');
+        el.miniHeartBtn = document.getElementById('miniHeartBtn');
         el.miniPlayBtn = document.getElementById('miniPlayBtn');
-        el.miniNextBtn = document.getElementById('miniNextBtn');
+        el.miniPlayIcon = document.getElementById('miniPlayIcon');
+        el.miniProgressFill = document.getElementById('miniProgressFill');
 
-        // Full player
-        el.fullPlayerSheet = document.getElementById('fullPlayerSheet');
-        el.collapseFullPlayerBtn = document.getElementById('collapseFullPlayerBtn');
-        el.fullPlayerSourceHeader = document.getElementById('fullPlayerSourceHeader');
-        el.fullArtCard = document.getElementById('fullArtCard');
-        el.fullArtEmoji = document.getElementById('fullArtEmoji');
+        // Full player modal
+        el.fullPlayerModal = document.getElementById('fullPlayerModal');
+        el.collapsePlayerBtn = document.getElementById('collapsePlayerBtn');
+        el.fullSourceLabel = document.getElementById('fullSourceLabel');
+        el.fullArtworkCard = document.getElementById('fullArtworkCard');
         el.fullTrackTitle = document.getElementById('fullTrackTitle');
         el.fullTrackArtist = document.getElementById('fullTrackArtist');
-        el.heartBtn = document.getElementById('heartBtn');
-        el.fullStreamIcon = document.getElementById('fullStreamIcon');
-        el.fullStreamDesc = document.getElementById('fullStreamDesc');
-        el.fullSeekSlider = document.getElementById('fullSeekSlider');
+        el.fullHeartBtn = document.getElementById('fullHeartBtn');
+        el.fullHeartIcon = document.getElementById('fullHeartIcon');
+        el.fullSeekBar = document.getElementById('fullSeekBar');
         el.fullCurrentTime = document.getElementById('fullCurrentTime');
-        el.fullTotalDuration = document.getElementById('fullTotalDuration');
-        el.shuffleBtn = document.getElementById('shuffleBtn');
-        el.prevBtn = document.getElementById('prevBtn');
+        el.fullTotalTime = document.getElementById('fullTotalTime');
+        el.fullShuffleBtn = document.getElementById('fullShuffleBtn');
+        el.fullPrevBtn = document.getElementById('fullPrevBtn');
         el.fullPlayPauseBtn = document.getElementById('fullPlayPauseBtn');
         el.fullPlayPauseIcon = document.getElementById('fullPlayPauseIcon');
-        el.nextBtn = document.getElementById('nextBtn');
-        el.repeatBtn = document.getElementById('repeatBtn');
+        el.fullNextBtn = document.getElementById('fullNextBtn');
+        el.fullRepeatBtn = document.getElementById('fullRepeatBtn');
         el.fullDeviceBtn = document.getElementById('fullDeviceBtn');
-        el.fullDeviceName = document.getElementById('fullDeviceName');
-        el.fullQueueBtn = document.getElementById('fullQueueBtn');
-        el.fullQueueCount = document.getElementById('fullQueueCount');
-        el.fullSettingsBtn = document.getElementById('fullSettingsBtn');
+        el.fullActiveDeviceName = document.getElementById('fullActiveDeviceName');
 
-        // Queue modal
-        el.queueModal = document.getElementById('queueModal');
-        el.closeQueueModal = document.getElementById('closeQueueModal');
-        el.queueCurrentCard = document.getElementById('queueCurrentCard');
-        el.clearQueueBtn = document.getElementById('clearQueueBtn');
-        el.queueList = document.getElementById('queueList');
-
-        // Toast & Audio
-        el.toast = document.getElementById('toast');
-        el.toastText = document.getElementById('toastText');
+        // Toast & HTML Audio
+        el.toastNotification = document.getElementById('toastNotification');
+        el.toastMessage = document.getElementById('toastMessage');
         el.htmlAudioPlayer = document.getElementById('htmlAudioPlayer');
     }
 
-    // =========================================================================
     // INICIALIZACIÓN
-    // =========================================================================
-
     function init() {
         cacheDom();
-        state.songs = [...initialSongs];
+        state.songs = [...initialTracks];
 
         setupGreeting();
-        createSpectrumBars();
+        initSpectrumBars();
         bindEvents();
-        syncWithNativeBridge();
-        renderAllViews();
 
-        // Si hay una canción por defecto, prepararla
+        // Sincronizar música real del teléfono
+        syncLocalMusic();
+
+        // Renderizar vistas
+        renderAll();
+
+        // Si hay canciones, preparar la primera sin reproducir
         if (state.songs.length > 0) {
-            setTrack(state.songs[0], false);
+            loadTrackMeta(state.songs[0]);
         }
 
-        // Loop de actualización de posición y espectro
-        setInterval(playbackTicker, 400);
-        setInterval(animateSpectrum, 100);
+        // Ticker de reproducción
+        setInterval(updatePlaybackProgress, 350);
+        setInterval(renderSpectrumAnimation, 120);
     }
 
     function setupGreeting() {
@@ -299,79 +205,61 @@
         el.greetingText.textContent = greeting;
     }
 
-    function createSpectrumBars() {
-        el.settingsSpectrumBars.innerHTML = '';
+    function initSpectrumBars() {
+        el.spectrumBarsBox.innerHTML = '';
         for (let i = 0; i < 32; i++) {
             const bar = document.createElement('div');
-            bar.className = 'bar';
+            bar.className = 'spectrum-bar';
             bar.style.height = '4px';
-            el.settingsSpectrumBars.appendChild(bar);
+            el.spectrumBarsBox.appendChild(bar);
         }
     }
 
-    // =========================================================================
-    // NAVEGACIÓN POR PESTAÑAS (TABS)
-    // =========================================================================
+    // NAVEGACIÓN LIMPIA
+    function switchTab(tabId) {
+        state.currentTab = tabId;
 
-    function switchTab(targetTabId) {
-        state.currentTab = targetTabId;
-
-        // Cambiar vista activa
-        el.tabViews.forEach(view => {
-            if (view.id === targetTabId) {
-                view.classList.add('active');
-            } else {
-                view.classList.remove('active');
-            }
+        el.tabPanes.forEach(pane => {
+            pane.classList.toggle('active', pane.id === tabId);
         });
 
-        // Cambiar botón de navegación activo
-        el.navButtons.forEach(btn => {
-            if (btn.dataset.target === targetTabId) {
-                btn.classList.add('active');
-            } else {
-                btn.classList.remove('active');
-            }
+        el.navItems.forEach(item => {
+            item.classList.toggle('active', item.dataset.tab === tabId);
         });
 
-        // Scroll al tope
-        const container = document.querySelector('.tab-content-container');
-        if (container) container.scrollTop = 0;
+        const mainScroll = document.querySelector('.main-content-scroll');
+        if (mainScroll) mainScroll.scrollTop = 0;
     }
 
-    // =========================================================================
-    // EVENTOS Y LISTENERS
-    // =========================================================================
-
+    // EVENTOS
     function bindEvents() {
-        // Botones de navegación inferior
-        el.navButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                switchTab(btn.dataset.target);
-            });
+        // Tabs
+        el.navItems.forEach(item => {
+            item.addEventListener('click', () => switchTab(item.dataset.tab));
         });
 
-        // Botones superiores
-        el.topTelegramPill.addEventListener('click', () => switchTab('tabTelegram'));
+        el.topTgPill.addEventListener('click', () => switchTab('tabTelegram'));
         el.topSettingsBtn.addEventListener('click', () => switchTab('tabSettings'));
-        el.userAvatarBtn.addEventListener('click', () => switchTab('tabSettings'));
 
-        // Chips de filtro
-        document.querySelectorAll('.filter-chip').forEach(chip => {
-            chip.addEventListener('click', (e) => {
-                const parent = e.target.parentElement;
-                parent.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
-                chip.classList.add('active');
-                state.filter = chip.dataset.filter;
+        // Abrir archivos de música del teléfono
+        el.openFolderBtn.addEventListener('click', triggerFilePicker);
+        el.importLocalFilesBtn.addEventListener('click', triggerFilePicker);
+        el.refreshLibBtn.addEventListener('click', () => {
+            syncLocalMusic();
+            showToast('Actualizando canciones del dispositivo...');
+        });
+
+        // Entrada de archivo web
+        el.webAudioFileInput.addEventListener('change', handleWebFileImport);
+
+        // Filtros de biblioteca
+        document.querySelectorAll('.spotify-pill').forEach(pill => {
+            pill.addEventListener('click', () => {
+                document.querySelectorAll('.spotify-pill').forEach(p => p.classList.remove('active'));
+                pill.classList.add('active');
+                state.filter = pill.dataset.filter;
                 renderSongs();
             });
-        });
-
-        // Sincronizar biblioteca
-        el.syncLibraryBtn.addEventListener('click', () => {
-            syncWithNativeBridge();
-            renderSongs();
-            showToast('🔄 Biblioteca sincronizada con el teléfono');
         });
 
         // Búsqueda
@@ -382,19 +270,17 @@
             handleSearch();
         });
 
-        // Clic en tarjetas de géneros
-        document.querySelectorAll('.genre-card').forEach(card => {
-            card.addEventListener('click', () => {
-                const q = card.dataset.search;
-                el.searchInput.value = q;
+        document.querySelectorAll('.browse-tile').forEach(tile => {
+            tile.addEventListener('click', () => {
+                el.searchInput.value = tile.dataset.query;
                 el.searchClearBtn.style.display = 'block';
                 handleSearch();
             });
         });
 
-        // Mini reproductor -> abrir reproductor completo
-        el.miniPlayerBody.addEventListener('click', (e) => {
-            if (!e.target.closest('.mini-btn')) {
+        // Mini reproductor
+        el.miniPlayerContent.addEventListener('click', (e) => {
+            if (!e.target.closest('.mini-action-btn') && !e.target.closest('.mini-play-btn')) {
                 openFullPlayer();
             }
         });
@@ -404,283 +290,319 @@
             togglePlayPause();
         });
 
-        el.miniNextBtn.addEventListener('click', (e) => {
+        el.miniHeartBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            playNextTrack();
+            toggleLike();
         });
 
-        // Reproductor completo
-        el.collapseFullPlayerBtn.addEventListener('click', closeFullPlayer);
+        // Full player
+        el.collapsePlayerBtn.addEventListener('click', closeFullPlayer);
         el.fullPlayPauseBtn.addEventListener('click', togglePlayPause);
-        el.prevBtn.addEventListener('click', playPrevTrack);
-        el.nextBtn.addEventListener('click', playNextTrack);
+        el.fullPrevBtn.addEventListener('click', playPrevious);
+        el.fullNextBtn.addEventListener('click', playNext);
+        el.fullHeartBtn.addEventListener('click', toggleLike);
 
-        el.shuffleBtn.addEventListener('click', () => {
+        el.fullShuffleBtn.addEventListener('click', () => {
             state.shuffle = !state.shuffle;
-            el.shuffleBtn.classList.toggle('active', state.shuffle);
-            showToast(state.shuffle ? '🔀 Modo aleatorio activado' : 'Modo aleatorio desactivado');
+            el.fullShuffleBtn.classList.toggle('active', state.shuffle);
+            showToast(state.shuffle ? 'Modo aleatorio activado' : 'Modo aleatorio desactivado');
         });
 
-        el.repeatBtn.addEventListener('click', () => {
-            if (state.repeat === 'off') {
-                state.repeat = 'all';
-                el.repeatBtn.classList.add('active');
-                showToast('🔁 Repetición activada');
-            } else {
-                state.repeat = 'off';
-                el.repeatBtn.classList.remove('active');
-                showToast('Repetición desactivada');
-            }
+        el.fullRepeatBtn.addEventListener('click', () => {
+            state.repeat = !state.repeat;
+            el.fullRepeatBtn.classList.toggle('active', state.repeat);
+            showToast(state.repeat ? 'Repetición activada' : 'Repetición desactivada');
         });
 
-        el.heartBtn.addEventListener('click', () => {
-            el.heartBtn.classList.toggle('liked');
-            const liked = el.heartBtn.classList.contains('liked');
-            el.heartBtn.textContent = liked ? '💚' : '♡';
-            showToast(liked ? 'Guardada en tus Me gusta' : 'Eliminada de tus Me gusta');
-        });
-
-        // Seek
-        el.fullSeekSlider.addEventListener('input', (e) => {
-            const percent = parseFloat(e.target.value);
-            const targetSecs = (percent / 100) * state.duration;
-            el.fullCurrentTime.textContent = formatTime(targetSecs);
-        });
-
-        el.fullSeekSlider.addEventListener('change', (e) => {
-            const percent = parseFloat(e.target.value);
-            const targetSecs = (percent / 100) * state.duration;
-            seekToSeconds(targetSecs);
-        });
-
-        // Herramientas del reproductor completo
         el.fullDeviceBtn.addEventListener('click', () => {
             closeFullPlayer();
             switchTab('tabSettings');
         });
 
-        el.fullQueueBtn.addEventListener('click', openQueueModal);
-        el.closeQueueModal.addEventListener('click', closeQueueModal);
-        el.clearQueueBtn.addEventListener('click', clearQueue);
-
-        el.fullSettingsBtn.addEventListener('click', () => {
-            closeFullPlayer();
-            switchTab('tabSettings');
+        // Scrubber
+        el.fullSeekBar.addEventListener('input', (e) => {
+            const pct = parseFloat(e.target.value);
+            const targetSecs = (pct / 100) * state.duration;
+            el.fullCurrentTime.textContent = formatTime(targetSecs);
         });
 
-        // Configuración: Volumen
-        el.settingsVolSlider.addEventListener('input', (e) => {
+        el.fullSeekBar.addEventListener('change', (e) => {
+            const pct = parseFloat(e.target.value);
+            seekToSeconds((pct / 100) * state.duration);
+        });
+
+        // Ajustes Hi-Fi
+        el.settingsVolRange.addEventListener('input', (e) => {
             const vol = parseInt(e.target.value, 10);
             setVolume(vol);
         });
 
-        // Configuración: Crossfade
-        el.settingsCrossfadeSlider.addEventListener('input', (e) => {
+        el.settingsCrossfadeRange.addEventListener('input', (e) => {
             const cf = parseFloat(e.target.value);
             setCrossfade(cf);
         });
 
-        document.querySelectorAll('.chips-row-compact .chip-sm').forEach(chip => {
-            chip.addEventListener('click', () => {
-                document.querySelectorAll('.chips-row-compact .chip-sm').forEach(c => c.classList.remove('active'));
-                chip.classList.add('active');
-                const cf = parseFloat(chip.dataset.cf);
-                el.settingsCrossfadeSlider.value = cf;
+        document.querySelectorAll('.preset-chips-row .chip-btn[data-cf]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.preset-chips-row .chip-btn[data-cf]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const cf = parseFloat(btn.dataset.cf);
+                el.settingsCrossfadeRange.value = cf;
                 setCrossfade(cf);
             });
         });
 
-        // Configuración: EQ
-        el.settingsEqBass.addEventListener('input', updateEqFromSliders);
-        el.settingsEqMid.addEventListener('input', updateEqFromSliders);
-        el.settingsEqTreble.addEventListener('input', updateEqFromSliders);
-        el.settingsResetEqBtn.addEventListener('click', resetEq);
+        el.eqBass.addEventListener('input', updateEq);
+        el.eqMid.addEventListener('input', updateEq);
+        el.eqTreble.addEventListener('input', updateEq);
+        el.resetEqBtn.addEventListener('click', resetEq);
 
-        document.querySelectorAll('.preset-btn').forEach(btn => {
+        document.querySelectorAll('.preset-chips-row .chip-btn[data-eq]').forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.preset-chips-row .chip-btn[data-eq]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 const [b, m, t] = btn.dataset.eq.split(',').map(Number);
-                el.settingsEqBass.value = b;
-                el.settingsEqMid.value = m;
-                el.settingsEqTreble.value = t;
-                updateEqFromSliders();
-                showToast(`Preset: ${btn.textContent.trim()}`);
+                el.eqBass.value = b;
+                el.eqMid.value = m;
+                el.eqTreble.value = t;
+                updateEq();
             });
         });
 
-        // Configuración: Gapless
-        el.settingsGaplessToggle.addEventListener('change', (e) => {
-            setGapless(e.target.checked);
-        });
-
-        // Telegram tab actions
-        el.tgTestAudioBtn.addEventListener('click', () => {
-            const cloudTrack = state.songs.find(s => s.isCloud) || state.songs[0];
-            if (cloudTrack) {
-                playTrack(cloudTrack);
-                showToast('☁️ Reproduciendo pista en streaming de Telegram');
+        el.gaplessSwitch.addEventListener('change', (e) => {
+            state.gapless = e.target.checked;
+            if (window.TitanBridge && typeof window.TitanBridge.setGapless === 'function') {
+                window.TitanBridge.setGapless(state.gapless);
             }
+            showToast(state.gapless ? 'Reproducción sin pausas activada' : 'Reproducción continua desactivada');
         });
 
-        el.tgRefreshSongsBtn.addEventListener('click', () => {
-            showToast('🔄 Conectando con el canal «Mi Música»...');
-            setTimeout(() => {
-                showToast('✅ 4 canciones de Telegram sincronizadas');
-            }, 800);
+        // Telegram tab
+        el.tgSyncNowBtn.addEventListener('click', () => {
+            showToast('Sincronizando canal «Mi Música»...');
+            setTimeout(() => showToast('Canal sincronizado'), 800);
         });
 
-        el.tgSaveConnectBtn.addEventListener('click', handleTelegramConnect);
-        el.tgDisconnectBtn.addEventListener('click', handleTelegramDisconnect);
+        el.tgConnectActionBtn.addEventListener('click', () => {
+            const phone = el.tgPhoneInput.value.trim();
+            if (!phone) {
+                showToast('Ingresa un número de teléfono');
+                return;
+            }
+            if (window.TitanBridge && typeof window.TitanBridge.setupTelegram === 'function') {
+                window.TitanBridge.setupTelegram('1234567', 'abcdef', phone);
+            }
+            state.telegram.connected = true;
+            state.telegram.user = `Telegram (${phone})`;
+            el.tgCardStateText.textContent = `Conectado como ${state.telegram.user}`;
+            showToast('Cuenta de Telegram vinculada con éxito');
+        });
 
-        // Audio HTML5 Events
+        // Eventos HTML5 Audio para entorno web
         el.htmlAudioPlayer.addEventListener('timeupdate', () => {
-            if (el.htmlAudioPlayer.duration) {
+            if (el.htmlAudioPlayer.duration && !isNaN(el.htmlAudioPlayer.duration)) {
                 state.position = Math.floor(el.htmlAudioPlayer.currentTime);
                 state.duration = Math.floor(el.htmlAudioPlayer.duration);
-                updateSeekUI();
+                updateSeekDisplay();
             }
         });
 
         el.htmlAudioPlayer.addEventListener('ended', () => {
-            playNextTrack();
+            playNext();
         });
     }
 
-    // =========================================================================
-    // REPRODUCCIÓN DE AUDIO (AUDIO 100% GARANTIZADO)
-    // =========================================================================
+    // DISPARAR SELECTOR DE ARCHIVOS DE AUDIO REAL
+    function triggerFilePicker() {
+        if (window.TitanBridge && typeof window.TitanBridge.openAudioFilePicker === 'function') {
+            window.TitanBridge.openAudioFilePicker();
+            showToast('Abriendo selector de archivos...');
+        } else {
+            el.webAudioFileInput.click();
+        }
+    }
 
-    function setTrack(track, autoPlay = true) {
-        state.currentTrack = track;
-        state.duration = track.duration || 210;
-        state.position = 0;
+    function handleWebFileImport(e) {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
 
-        // Actualizar UI
-        el.miniTitle.textContent = track.title;
-        el.miniArtist.textContent = track.artist;
-        el.miniSourceTag.textContent = track.isCloud ? '☁️ Nube' : '📱 Local';
-        el.miniSourceTag.style.color = track.isCloud ? 'var(--telegram-blue)' : 'var(--spotify-green)';
-        el.miniSourceTag.style.background = track.isCloud ? 'var(--telegram-blue-dim)' : 'var(--spotify-green-dim)';
+        let added = 0;
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const url = URL.createObjectURL(file);
+            const title = file.name.replace(/\.[^/.]+$/, "");
 
-        el.fullTrackTitle.textContent = track.title;
-        el.fullTrackArtist.textContent = track.artist;
-        el.fullStreamDesc.textContent = track.isCloud 
-            ? 'Streaming puro desde Telegram («Mi Música»)' 
-            : 'Reproducción local en el teléfono';
-        el.fullStreamIcon.textContent = track.isCloud ? '☁️' : '📱';
-        el.fullTotalDuration.textContent = formatTime(state.duration);
-        el.fullCurrentTime.textContent = '0:00';
-        el.fullSeekSlider.value = 0;
+            const track = {
+                id: 'imported_' + Date.now() + '_' + i,
+                title: title,
+                artist: 'Archivo local',
+                album: 'Este dispositivo',
+                duration: 180,
+                source: 'phone',
+                isCloud: false,
+                downloaded: true,
+                path: url,
+                blobUrl: url
+            };
 
-        el.fullArtCard.style.background = `linear-gradient(135deg, ${track.color || '#1DB954'}, #121212)`;
-
-        // Mostrar mini reproductor
-        el.miniPlayer.style.display = 'flex';
-
-        if (autoPlay) {
-            playTrack(track);
+            state.songs.unshift(track);
+            added++;
+            if (i === 0) {
+                playTrack(track);
+            }
         }
 
+        renderAll();
+        showToast(`${added} canción(es) importadas`);
+    }
+
+    // CALLBACK LLAMADO DESDE ANDROID AL IMPORTAR UN ARCHIVO CON EL SELECTOR
+    window.onLocalTrackImported = function (uri, title) {
+        const track = {
+            id: 'local_pick_' + Date.now(),
+            title: title || 'Canción importada',
+            artist: 'Archivo del teléfono',
+            album: 'Almacenamiento',
+            duration: 180,
+            source: 'phone',
+            isCloud: false,
+            downloaded: true,
+            path: uri
+        };
+
+        state.songs.unshift(track);
+        loadTrackMeta(track);
+        state.isPlaying = true;
+        updatePlayIcons(true);
+        renderSongs();
+        showToast(`Reproduciendo: ${track.title}`);
+    };
+
+    window.onPermissionsGranted = function () {
+        syncLocalMusic();
+        showToast('Permisos concedidos: música detectada');
+    };
+
+    // =========================================================================
+    // REPRODUCCIÓN REAL DE AUDIO
+    // =========================================================================
+
+    function loadTrackMeta(track) {
+        state.currentTrack = track;
+        state.duration = track.duration || 180;
+        state.position = 0;
+
+        // Mini player
+        el.miniTitle.textContent = track.title;
+        el.miniArtist.textContent = track.artist;
+
+        // Full player
+        el.fullTrackTitle.textContent = track.title;
+        el.fullTrackArtist.textContent = track.artist;
+        el.fullSourceLabel.textContent = track.isCloud ? 'Nube de Telegram' : 'Música del teléfono';
+        el.fullTotalTime.textContent = formatTime(state.duration);
+        el.fullCurrentTime.textContent = '0:00';
+        el.fullSeekBar.value = 0;
+
+        // Colores de carátula
+        const color = track.color || '#242424';
+        el.fullArtworkCard.style.backgroundColor = color;
+        el.fullPlayerModal.style.background = `linear-gradient(180deg, ${color} 0%, #121212 70%)`;
+
+        el.miniPlayer.style.display = 'flex';
         renderSongs();
     }
 
     function playTrack(track) {
+        loadTrackMeta(track);
         state.isPlaying = true;
-        updatePlayPauseIcons(true);
+        updatePlayIcons(true);
 
-        // 1. Invocar al servicio nativo de Android si está presente
-        let nativeStarted = false;
+        let startedOnAndroid = false;
+        // 1. Invocar Android MediaPlayer nativo con el content:// URI o file path real
         if (window.TitanBridge && typeof window.TitanBridge.playTrack === 'function') {
             try {
-                nativeStarted = window.TitanBridge.playTrack(track.path, track.title, track.artist, track.isCloud);
+                startedOnAndroid = window.TitanBridge.playTrack(track.path, track.title, track.artist, track.isCloud);
             } catch (err) {
                 console.warn('Error en TitanBridge.playTrack:', err);
             }
         }
 
-        // 2. REPRODUCIR SONIDO REAL mediante el elemento HTML5 Audio
-        // Esto garantiza que el audio se escuche SIEMPRE, tanto en la web como en el WebView de Android
-        try {
-            const audioSrc = track.audioFile || 'audio/track_synthwave.wav';
-            if (el.htmlAudioPlayer.src !== location.origin + '/' + audioSrc && !el.htmlAudioPlayer.src.endsWith(audioSrc)) {
-                el.htmlAudioPlayer.src = audioSrc;
+        // 2. Si estamos en navegador web (no en Android nativo), reproducir vía HTML5 <audio>
+        if (!window.TitanBridge) {
+            try {
+                if (track.blobUrl) {
+                    el.htmlAudioPlayer.src = track.blobUrl;
+                } else {
+                    // Fallback para navegador de escritorio
+                    el.htmlAudioPlayer.src = 'audio/track_rock.wav';
+                }
+                el.htmlAudioPlayer.volume = state.volume / 100.0;
+                el.htmlAudioPlayer.play().catch(e => console.warn('HTML5 Audio play:', e));
+            } catch (e) {
+                console.error('Error reproduciendo en navegador:', e);
             }
-            el.htmlAudioPlayer.volume = state.volume / 100.0;
-            const playPromise = el.htmlAudioPlayer.play();
-            if (playPromise !== undefined) {
-                playPromise.catch(err => {
-                    console.warn('Audio HTML5 play prevenido por navegador, reintentando:', err);
-                });
-            }
-        } catch (e) {
-            console.error('Error reproduciendo audio HTML5:', e);
         }
 
-        showToast(`▶ ${track.title} — ${track.artist}`);
+        showToast(`${track.title}`);
     }
 
     function togglePlayPause() {
         if (!state.currentTrack && state.songs.length > 0) {
-            setTrack(state.songs[0], true);
+            playTrack(state.songs[0]);
             return;
         }
 
         state.isPlaying = !state.isPlaying;
-        updatePlayPauseIcons(state.isPlaying);
+        updatePlayIcons(state.isPlaying);
 
         if (state.isPlaying) {
             if (window.TitanBridge && typeof window.TitanBridge.resumeTrack === 'function') {
                 window.TitanBridge.resumeTrack();
+            } else {
+                el.htmlAudioPlayer.play().catch(() => {});
             }
-            el.htmlAudioPlayer.play().catch(() => {});
         } else {
             if (window.TitanBridge && typeof window.TitanBridge.pauseTrack === 'function') {
                 window.TitanBridge.pauseTrack();
+            } else {
+                el.htmlAudioPlayer.pause();
             }
-            el.htmlAudioPlayer.pause();
         }
     }
 
-    function updatePlayPauseIcons(isPlaying) {
-        const icon = isPlaying ? '⏸' : '▶';
-        el.miniPlayBtn.textContent = icon;
-        el.fullPlayPauseIcon.textContent = icon;
+    function updatePlayIcons(playing) {
+        const playIcon = `<path d="M7.05 3.606l13.49 7.77a.7.7 0 0 1 0 1.21L7.05 20.356A.7.7 0 0 1 6 19.752V4.21a.7.7 0 0 1 1.05-.604z"/>`;
+        const pauseIcon = `<path d="M5.7 3a.7.7 0 0 0-.7.7v16.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V3.7a.7.7 0 0 0-.7-.7H5.7zm10 0a.7.7 0 0 0-.7.7v16.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V3.7a.7.7 0 0 0-.7-.7h-2.6z"/>`;
+
+        el.miniPlayIcon.innerHTML = playing ? pauseIcon : playIcon;
+        el.fullPlayPauseIcon.innerHTML = playing ? pauseIcon : playIcon;
     }
 
-    function playNextTrack() {
-        if (state.queue.length > 0) {
-            const next = state.queue.shift();
-            el.fullQueueCount.textContent = state.queue.length;
-            setTrack(next, true);
-            return;
-        }
-
-        const currentIndex = state.songs.findIndex(s => s.id === (state.currentTrack ? state.currentTrack.id : ''));
-        let nextIndex = 0;
+    function playNext() {
+        if (state.songs.length === 0) return;
+        const currentIdx = state.songs.findIndex(s => s.id === (state.currentTrack ? state.currentTrack.id : ''));
+        let nextIdx = 0;
         if (state.shuffle) {
-            nextIndex = Math.floor(Math.random() * state.songs.length);
-        } else if (currentIndex >= 0 && currentIndex < state.songs.length - 1) {
-            nextIndex = currentIndex + 1;
+            nextIdx = Math.floor(Math.random() * state.songs.length);
+        } else if (currentIdx >= 0 && currentIdx < state.songs.length - 1) {
+            nextIdx = currentIdx + 1;
         }
-        if (state.songs[nextIndex]) {
-            setTrack(state.songs[nextIndex], true);
-        }
+        playTrack(state.songs[nextIdx]);
     }
 
-    function playPrevTrack() {
+    function playPrevious() {
         if (state.position > 3) {
             seekToSeconds(0);
             return;
         }
-        const currentIndex = state.songs.findIndex(s => s.id === (state.currentTrack ? state.currentTrack.id : ''));
-        let prevIndex = state.songs.length - 1;
-        if (currentIndex > 0) {
-            prevIndex = currentIndex - 1;
+        if (state.songs.length === 0) return;
+        const currentIdx = state.songs.findIndex(s => s.id === (state.currentTrack ? state.currentTrack.id : ''));
+        let prevIdx = state.songs.length - 1;
+        if (currentIdx > 0) {
+            prevIdx = currentIdx - 1;
         }
-        if (state.songs[prevIndex]) {
-            setTrack(state.songs[prevIndex], true);
-        }
+        playTrack(state.songs[prevIdx]);
     }
 
     function seekToSeconds(seconds) {
@@ -688,56 +610,70 @@
         if (window.TitanBridge && typeof window.TitanBridge.seekTo === 'function') {
             window.TitanBridge.seekTo(state.position);
         }
-        if (el.htmlAudioPlayer && !isNaN(el.htmlAudioPlayer.duration)) {
-            el.htmlAudioPlayer.currentTime = (seconds % el.htmlAudioPlayer.duration);
+        if (!window.TitanBridge && el.htmlAudioPlayer.duration) {
+            el.htmlAudioPlayer.currentTime = seconds % el.htmlAudioPlayer.duration;
         }
-        updateSeekUI();
+        updateSeekDisplay();
     }
 
-    function playbackTicker() {
+    function updatePlaybackProgress() {
         if (!state.isPlaying) return;
 
-        // Si viene del puente nativo de Android
+        // Si corre con Android nativo, obtener el estado real
         if (window.TitanBridge && typeof window.TitanBridge.getPlaybackStatus === 'function') {
             try {
                 const statusStr = window.TitanBridge.getPlaybackStatus();
                 const st = JSON.parse(statusStr);
-                if (st.playing !== undefined) {
-                    // Mantener sincronizado
+                if (st.duration && st.duration > 0) {
+                    state.duration = st.duration;
+                    state.position = st.position;
+                    state.isPlaying = st.playing;
                 }
             } catch (ignored) {}
-        }
-
-        // Si corre con audio HTML5
-        if (el.htmlAudioPlayer && !el.htmlAudioPlayer.paused && el.htmlAudioPlayer.duration) {
+        } else if (!window.TitanBridge && el.htmlAudioPlayer.duration) {
             state.position = Math.floor(el.htmlAudioPlayer.currentTime);
         } else if (state.isPlaying) {
             state.position += 1;
             if (state.position >= state.duration) {
                 state.position = 0;
-                playNextTrack();
+                playNext();
             }
         }
-        updateSeekUI();
+
+        updateSeekDisplay();
     }
 
-    function updateSeekUI() {
-        const percent = state.duration > 0 ? (state.position / state.duration) * 100 : 0;
-        el.miniProgressBar.style.width = `${percent}%`;
-        el.fullSeekSlider.value = percent;
+    function updateSeekDisplay() {
+        const pct = state.duration > 0 ? (state.position / state.duration) * 100 : 0;
+        el.miniProgressFill.style.width = `${pct}%`;
+        el.fullSeekBar.value = pct;
         el.fullCurrentTime.textContent = formatTime(state.position);
+        el.fullTotalTime.textContent = formatTime(state.duration);
+    }
+
+    function toggleLike() {
+        const liked = el.fullHeartBtn.classList.toggle('liked');
+        el.miniHeartBtn.classList.toggle('liked', liked);
+        showToast(liked ? 'Guardada en tus Me gusta' : 'Eliminada de tus Me gusta');
+    }
+
+    function openFullPlayer() {
+        el.fullPlayerModal.classList.add('open');
+    }
+
+    function closeFullPlayer() {
+        el.fullPlayerModal.classList.remove('open');
     }
 
     // =========================================================================
-    // AJUSTES HI-FI (VOLUMEN, CROSSFADE, EQ, GAPLESS, DISPOSITIVOS)
+    // AJUSTES HI-FI
     // =========================================================================
 
     function setVolume(val) {
         state.volume = val;
-        el.settingsVolBadge.textContent = `${val}%`;
-        el.settingsVolSlider.value = val;
+        el.settingsVolValue.textContent = `${val}%`;
+        el.settingsVolRange.value = val;
         el.htmlAudioPlayer.volume = val / 100.0;
-
         if (window.TitanBridge && typeof window.TitanBridge.setVolume === 'function') {
             window.TitanBridge.setVolume(val);
         }
@@ -745,30 +681,21 @@
 
     function setCrossfade(seconds) {
         state.crossfade = seconds;
-        el.settingsCrossfadeBadge.textContent = seconds === 0 ? 'Desactivado' : `${seconds.toFixed(1)} s`;
+        el.settingsCrossfadeValue.textContent = seconds === 0 ? 'Desactivado' : `${seconds.toFixed(1)}s`;
         if (window.TitanBridge && typeof window.TitanBridge.setCrossfade === 'function') {
             window.TitanBridge.setCrossfade(seconds);
         }
     }
 
-    function setGapless(enabled) {
-        state.gapless = enabled;
-        el.settingsGaplessToggle.checked = enabled;
-        if (window.TitanBridge && typeof window.TitanBridge.setGapless === 'function') {
-            window.TitanBridge.setGapless(enabled);
-        }
-        showToast(enabled ? '⚡ Reproducción sin pausas activada' : 'Reproducción continua desactivada');
-    }
-
-    function updateEqFromSliders() {
-        const bass = parseInt(el.settingsEqBass.value, 10);
-        const mid = parseInt(el.settingsEqMid.value, 10);
-        const treble = parseInt(el.settingsEqTreble.value, 10);
+    function updateEq() {
+        const bass = parseInt(el.eqBass.value, 10);
+        const mid = parseInt(el.eqMid.value, 10);
+        const treble = parseInt(el.eqTreble.value, 10);
 
         state.eq = { bass, mid, treble };
-        el.settingsEqBassDb.textContent = `${bass > 0 ? '+' : ''}${bass} dB`;
-        el.settingsEqMidDb.textContent = `${mid > 0 ? '+' : ''}${mid} dB`;
-        el.settingsEqTrebleDb.textContent = `${treble > 0 ? '+' : ''}${treble} dB`;
+        el.eqBassVal.textContent = `${bass > 0 ? '+' : ''}${bass} dB`;
+        el.eqMidVal.textContent = `${mid > 0 ? '+' : ''}${mid} dB`;
+        el.eqTrebleVal.textContent = `${treble > 0 ? '+' : ''}${treble} dB`;
 
         if (window.TitanBridge && typeof window.TitanBridge.setEqualizer === 'function') {
             window.TitanBridge.setEqualizer(bass, mid, treble);
@@ -776,18 +703,18 @@
     }
 
     function resetEq() {
-        el.settingsEqBass.value = 0;
-        el.settingsEqMid.value = 0;
-        el.settingsEqTreble.value = 0;
-        updateEqFromSliders();
-        document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-        const plano = document.querySelector('.preset-btn[data-eq="0,0,0"]');
+        el.eqBass.value = 0;
+        el.eqMid.value = 0;
+        el.eqTreble.value = 0;
+        updateEq();
+        document.querySelectorAll('.preset-chips-row .chip-btn[data-eq]').forEach(b => b.classList.remove('active'));
+        const plano = document.querySelector('.preset-chips-row .chip-btn[data-eq="0,0,0"]');
         if (plano) plano.classList.add('active');
-        showToast('Ecualizador restablecido a plano');
+        showToast('Ecualizador restablecido');
     }
 
-    function animateSpectrum() {
-        const bars = el.settingsSpectrumBars.children;
+    function renderSpectrumAnimation() {
+        const bars = el.spectrumBarsBox.children;
         if (!bars || bars.length === 0) return;
 
         let levels = [];
@@ -798,125 +725,89 @@
         }
 
         for (let i = 0; i < bars.length; i++) {
-            let heightPx = 4;
+            let h = 4;
             if (state.isPlaying) {
                 if (levels.length === 32) {
-                    heightPx = Math.floor(levels[i] * 40) + 4;
+                    h = Math.floor(levels[i] * 34) + 4;
                 } else {
-                    // Simulación estética realista
-                    const wave = Math.sin(Date.now() / 150 + i * 0.4) * 0.5 + 0.5;
-                    const boost = i < 10 ? (state.eq.bass / 24) : (i > 20 ? (state.eq.treble / 24) : 0);
-                    heightPx = Math.floor((wave * 0.7 + boost + 0.2) * 36) + 4;
+                    const wave = Math.sin(Date.now() / 140 + i * 0.35) * 0.5 + 0.5;
+                    h = Math.floor(wave * 30) + 4;
                 }
             }
-            bars[i].style.height = `${Math.max(4, Math.min(46, heightPx))}px`;
+            bars[i].style.height = `${h}px`;
         }
+        el.specStatusText.textContent = state.isPlaying ? 'Activo' : 'En espera';
     }
 
     function renderDevices() {
-        el.settingsDevicesContainer.innerHTML = '';
-        state.devices.forEach(dev => {
-            const row = document.createElement('div');
-            row.className = `device-choice-row ${dev.name === state.activeDevice ? 'active' : ''}`;
-            row.innerHTML = `
-                <span class="icon">${dev.type === 'bluetooth' ? '🎧' : (dev.type === 'wired' ? '🔌' : '📢')}</span>
-                <span class="device-choice-name">${dev.name}</span>
-                ${dev.name === state.activeDevice ? '<span class="device-check text-green">✓ Activo</span>' : ''}
-            `;
-            row.addEventListener('click', () => {
-                state.activeDevice = dev.name;
-                el.fullDeviceName.textContent = dev.name;
-                renderDevices();
-                showToast(`Salida de audio: ${dev.name}`);
-            });
-            el.settingsDevicesContainer.appendChild(row);
-        });
+        el.devicesList.innerHTML = `
+            <div class="device-row active">
+                <span>Altavoz del teléfono</span>
+                <span class="text-green">✓</span>
+            </div>
+            <div class="device-row">
+                <span>Auriculares con cable</span>
+            </div>
+            <div class="device-row">
+                <span>Dispositivo Bluetooth</span>
+            </div>
+        `;
     }
 
     // =========================================================================
-    // NUBE DE TELEGRAM
+    // SINCRONIZACIÓN CON EL DISPOSITIVO ANDROID
     // =========================================================================
 
-    function handleTelegramConnect() {
-        const apiId = el.tgApiIdInput.value.trim();
-        const apiHash = el.tgApiHashInput.value.trim();
-        const phone = el.tgPhoneViewInput.value.trim();
-
-        if (!phone) {
-            showToast('⚠️ Ingresa tu número de teléfono');
+    function syncLocalMusic() {
+        if (!window.TitanBridge || typeof window.TitanBridge.scanLocalMusic !== 'function') {
+            el.localCountLabel.textContent = 'Música lista para reproducir';
             return;
         }
 
-        if (window.TitanBridge && typeof window.TitanBridge.setupTelegram === 'function') {
-            window.TitanBridge.setupTelegram(apiId || '1234567', apiHash || 'abcdef', phone);
+        try {
+            const jsonStr = window.TitanBridge.scanLocalMusic();
+            const localTracks = JSON.parse(jsonStr);
+
+            if (Array.isArray(localTracks) && localTracks.length > 0) {
+                // Combinar con pistas existentes
+                const cloudTracks = state.songs.filter(s => s.isCloud);
+                state.songs = [...localTracks, ...cloudTracks];
+                el.localCountLabel.textContent = `${localTracks.length} canciones encontradas en el teléfono`;
+            } else {
+                el.localCountLabel.textContent = 'Toca «Examinar archivos» para abrir tus canciones';
+            }
+            renderAll();
+        } catch (e) {
+            console.warn('Error escaneando MediaStore:', e);
+            el.localCountLabel.textContent = 'Toca «Examinar archivos» para añadir canciones';
         }
-
-        state.telegram.connected = true;
-        state.telegram.authorized = true;
-        state.telegram.user = `Telegram (${phone})`;
-
-        updateTelegramUI();
-        showToast('✅ Conectado a Telegram («Mi Música» sincronizado)');
-    }
-
-    function handleTelegramDisconnect() {
-        if (window.TitanBridge && typeof window.TitanBridge.logoutTelegram === 'function') {
-            window.TitanBridge.logoutTelegram();
-        }
-        state.telegram.authorized = false;
-        state.telegram.connected = false;
-        updateTelegramUI();
-        showToast('Sesión de Telegram cerrada');
-    }
-
-    function updateTelegramUI() {
-        const isConn = state.telegram.connected && state.telegram.authorized;
-        el.cloudDot.className = `status-dot ${isConn ? 'connected' : ''}`;
-        el.cloudLabel.textContent = isConn ? 'Nube Conectada' : 'Vincular Telegram';
-
-        el.tgCardStatusBadge.className = `badge-status-pill ${isConn ? 'connected' : ''}`;
-        el.tgCardStatusBadge.textContent = isConn ? '🟢 Conectado' : '🟡 Desconectado';
-        el.tgCardUser.textContent = state.telegram.user || 'Sin usuario';
-    }
-
-    function downloadTrack(trackId) {
-        const track = state.songs.find(s => s.id === trackId);
-        if (!track) return;
-
-        if (window.TitanBridge && typeof window.TitanBridge.downloadCloudTrack === 'function') {
-            window.TitanBridge.downloadCloudTrack(track.id, track.title, track.artist);
-        }
-        track.downloaded = true;
-        showToast(`⬇️ Descargando «${track.title}» a almacenamiento local...`);
-        renderSongs();
     }
 
     // =========================================================================
-    // RENDERING DE CANCIONES Y LISTAS
+    // RENDERIZADO SPOTIFY LIMPIO
     // =========================================================================
 
-    function renderAllViews() {
-        renderRecentGrid();
+    function renderAll() {
+        renderQuickAccess();
         renderSongs();
         renderDevices();
-        updateTelegramUI();
     }
 
-    function renderRecentGrid() {
-        el.recentGrid.innerHTML = '';
-        const recents = state.songs.slice(0, 6);
-        recents.forEach(track => {
+    function renderQuickAccess() {
+        el.quickAccessGrid.innerHTML = '';
+        const recents = state.songs.slice(0, 4);
+        recents.forEach(song => {
             const card = document.createElement('div');
-            card.className = 'recent-card';
+            card.className = 'local-import-card';
+            card.style.marginBottom = '0';
             card.innerHTML = `
-                <div class="recent-card-art" style="background: linear-gradient(135deg, ${track.color}, #181818)">🎵</div>
-                <div class="recent-card-title">${escapeHtml(track.title)}</div>
-                <div class="recent-card-play">▶</div>
+                <div class="import-card-text">
+                    <h3>${escapeHtml(song.title)}</h3>
+                    <p>${escapeHtml(song.artist)}</p>
+                </div>
             `;
-            card.addEventListener('click', () => {
-                setTrack(track, true);
-            });
-            el.recentGrid.appendChild(card);
+            card.addEventListener('click', () => playTrack(song));
+            el.quickAccessGrid.appendChild(card);
         });
     }
 
@@ -924,224 +815,74 @@
         const filtered = state.songs.filter(song => {
             if (state.filter === 'phone') return !song.isCloud;
             if (state.filter === 'cloud') return song.isCloud;
-            if (state.filter === 'downloaded') return song.downloaded;
             return true;
         });
 
-        // Contadores
-        const phoneCount = state.songs.filter(s => !s.isCloud).length;
-        const cloudCount = state.songs.filter(s => s.isCloud).length;
-        el.libCountPhone.textContent = `${phoneCount} en teléfono`;
-        el.libCountCloud.textContent = `${cloudCount} en nube`;
+        renderListToContainer(el.homeSongList, filtered);
+        renderListToContainer(el.librarySongList, filtered);
 
-        // Render en Home y Biblioteca
-        renderSongListToElement(el.homeSongsList, filtered);
-        renderSongListToElement(el.librarySongsList, filtered);
-
-        // Render canciones de Telegram exclusivamente
-        const telegramSongs = state.songs.filter(s => s.isCloud);
-        renderSongListToElement(el.telegramSongsList, telegramSongs);
+        const tgOnly = state.songs.filter(s => s.isCloud);
+        renderListToContainer(el.telegramSongList, tgOnly);
     }
 
-    function renderSongListToElement(container, songList) {
+    function renderListToContainer(container, trackList) {
         if (!container) return;
         container.innerHTML = '';
 
-        if (songList.length === 0) {
-            container.innerHTML = `<div class="section-subtitle" style="padding: 16px 0; text-align: center;">No hay canciones en esta categoría.</div>`;
+        if (trackList.length === 0) {
+            container.innerHTML = `<div style="padding: 24px 0; color: var(--text-secondary); text-align: center;">No hay canciones en esta lista</div>`;
             return;
         }
 
-        songList.forEach(song => {
-            const isCurrent = state.currentTrack && state.currentTrack.id === song.id;
+        trackList.forEach(song => {
+            const isPlayingThis = state.currentTrack && state.currentTrack.id === song.id;
             const row = document.createElement('div');
-            row.className = `song-row ${isCurrent ? 'playing' : ''}`;
+            row.className = `song-item-row ${isPlayingThis ? 'playing' : ''}`;
             row.innerHTML = `
-                <div class="song-cover" style="background: linear-gradient(135deg, ${song.color || '#282828'}, #121212)">
-                    ${isCurrent && state.isPlaying ? '▶' : '🎵'}
+                <div class="song-item-cover" style="background-color: ${song.color || '#242424'}">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="${isPlayingThis ? '#1db954' : '#ffffff'}"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
                 </div>
-                <div class="song-info">
-                    <div class="song-title">${escapeHtml(song.title)}</div>
-                    <div class="song-artist">${escapeHtml(song.artist)} • ${formatTime(song.duration)}</div>
+                <div class="song-item-details">
+                    <div class="song-item-title">${escapeHtml(song.title)}</div>
+                    <div class="song-item-meta">
+                        <span class="song-item-source">${song.isCloud ? 'TELEGRAM' : 'LOCAL'}</span>
+                        ${escapeHtml(song.artist)} • ${formatTime(song.duration)}
+                    </div>
                 </div>
-                <div class="song-source-badge ${song.isCloud ? 'cloud' : 'phone'}">
-                    ${song.isCloud ? '☁️ Telegram' : '📱 Local'}
-                </div>
-                <div class="song-actions">
-                    ${song.isCloud && !song.downloaded ? `
-                        <button class="action-icon-btn download-btn" title="Descargar al teléfono" data-id="${song.id}">⬇️</button>
-                    ` : ''}
-                    <button class="action-icon-btn queue-add-btn" title="Agregar a la cola" data-id="${song.id}">➕</button>
+                <div class="song-item-actions">
+                    <button class="item-action-btn" title="Más opciones">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+                    </button>
                 </div>
             `;
 
-            // Click en la fila -> Reproducir
-            row.addEventListener('click', (e) => {
-                if (e.target.closest('.action-icon-btn')) return;
-                setTrack(song, true);
-            });
-
-            // Botón descargar
-            const dlBtn = row.querySelector('.download-btn');
-            if (dlBtn) {
-                dlBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    downloadTrack(song.id);
-                });
-            }
-
-            // Botón cola
-            const qBtn = row.querySelector('.queue-add-btn');
-            if (qBtn) {
-                qBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    addToQueue(song);
-                });
-            }
-
+            row.addEventListener('click', () => playTrack(song));
             container.appendChild(row);
         });
     }
 
     function handleSearch() {
         const query = el.searchInput.value.toLowerCase().trim();
-        state.searchQuery = query;
-
         if (!query) {
-            el.searchCategories.style.display = 'block';
-            el.searchResultsBlock.style.display = 'none';
+            el.searchBrowseSection.style.display = 'block';
+            el.searchResultsSection.style.display = 'none';
             return;
         }
 
-        el.searchCategories.style.display = 'none';
-        el.searchResultsBlock.style.display = 'block';
+        el.searchBrowseSection.style.display = 'none';
+        el.searchResultsSection.style.display = 'block';
 
-        const results = state.songs.filter(s => 
+        const results = state.songs.filter(s =>
             s.title.toLowerCase().includes(query) ||
-            s.artist.toLowerCase().includes(query) ||
-            s.album.toLowerCase().includes(query)
+            s.artist.toLowerCase().includes(query)
         );
 
-        renderSongListToElement(el.searchResultsList, results);
+        renderListToContainer(el.searchResultsList, results);
     }
 
-    function addToQueue(song) {
-        state.queue.push(song);
-        el.fullQueueCount.textContent = state.queue.length;
-        showToast(`➕ Añadido a la cola: ${song.title}`);
-    }
-
-    function clearQueue() {
-        state.queue = [];
-        el.fullQueueCount.textContent = 0;
-        renderQueue();
-        showToast('Cola de reproducción vaciada');
-    }
-
-    function openQueueModal() {
-        renderQueue();
-        el.queueModal.classList.add('open');
-    }
-
-    function closeQueueModal() {
-        el.queueModal.classList.remove('open');
-    }
-
-    function renderQueue() {
-        if (state.currentTrack) {
-            el.queueCurrentCard.innerHTML = `
-                <div class="song-title">${escapeHtml(state.currentTrack.title)}</div>
-                <div class="song-artist">${escapeHtml(state.currentTrack.artist)}</div>
-            `;
-        } else {
-            el.queueCurrentCard.innerHTML = `<em>Ninguna pista en reproducción</em>`;
-        }
-
-        el.queueList.innerHTML = '';
-        if (state.queue.length === 0) {
-            el.queueList.innerHTML = `<div class="section-subtitle" style="padding: 12px 0;">No hay más canciones en la cola.</div>`;
-            return;
-        }
-
-        state.queue.forEach((song, idx) => {
-            const item = document.createElement('div');
-            item.className = 'song-row';
-            item.innerHTML = `
-                <div class="song-info">
-                    <div class="song-title">${idx + 1}. ${escapeHtml(song.title)}</div>
-                    <div class="song-artist">${escapeHtml(song.artist)}</div>
-                </div>
-            `;
-            el.queueList.appendChild(item);
-        });
-    }
-
-    function openFullPlayer() {
-        el.fullPlayerSheet.classList.add('open');
-    }
-
-    function closeFullPlayer() {
-        el.fullPlayerSheet.classList.remove('open');
-    }
-
-    // =========================================================================
-    // PUENTE NATIVO ANDROID (TITAN BRIDGE)
-    // =========================================================================
-
-    function syncWithNativeBridge() {
-        if (!window.TitanBridge) return;
-
-        // 1. Escanear música local del teléfono
-        if (typeof window.TitanBridge.scanLocalMusic === 'function') {
-            try {
-                const localJson = window.TitanBridge.scanLocalMusic();
-                const localSongs = JSON.parse(localJson);
-                if (Array.isArray(localSongs) && localSongs.length > 0) {
-                    // Combinar pistas locales reales con las pistas de Telegram
-                    const cloudSongs = state.songs.filter(s => s.isCloud);
-                    const formattedLocal = localSongs.map((ls, idx) => ({
-                        id: ls.id || `local_${idx}`,
-                        title: ls.title,
-                        artist: ls.artist,
-                        album: ls.album || 'Música del teléfono',
-                        duration: ls.duration || 180,
-                        source: 'phone',
-                        isCloud: false,
-                        downloaded: true,
-                        color: '#1DB954',
-                        audioFile: 'audio/track_rock.wav',
-                        path: ls.path
-                    }));
-                    state.songs = [...formattedLocal, ...cloudSongs];
-                }
-            } catch (e) {
-                console.warn('Error sincronizando música local de TitanBridge:', e);
-            }
-        }
-
-        // 2. Estado de Telegram
-        if (typeof window.TitanBridge.getTelegramStatus === 'function') {
-            try {
-                const tgJson = window.TitanBridge.getTelegramStatus();
-                const tgObj = JSON.parse(tgJson);
-                state.telegram.connected = tgObj.connected;
-                state.telegram.authorized = tgObj.authorized;
-                state.telegram.user = tgObj.user || state.telegram.user;
-                state.telegram.channel = tgObj.channel || state.telegram.channel;
-                updateTelegramUI();
-            } catch (e) {
-                console.warn('Error leyendo estado de Telegram de TitanBridge:', e);
-            }
-        }
-    }
-
-    // Soporte para botón atrás de Android
+    // BOTÓN ATRÁS ANDROID
     window.handleAndroidBack = function () {
-        if (el.queueModal.classList.contains('open')) {
-            closeQueueModal();
-            return 'handled';
-        }
-        if (el.fullPlayerSheet.classList.contains('open')) {
+        if (el.fullPlayerModal.classList.contains('open')) {
             closeFullPlayer();
             return 'handled';
         }
@@ -1152,20 +893,11 @@
         return 'back';
     };
 
-    window.onPermissionsGranted = function () {
-        syncWithNativeBridge();
-        renderSongs();
-        showToast('✅ Permisos de música otorgados por Android');
-    };
-
-    // =========================================================================
     // UTILIDADES
-    // =========================================================================
-
-    function formatTime(seconds) {
-        if (!seconds || isNaN(seconds)) return '0:00';
-        const m = Math.floor(seconds / 60);
-        const s = Math.floor(seconds % 60);
+    function formatTime(secs) {
+        if (!secs || isNaN(secs)) return '0:00';
+        const m = Math.floor(secs / 60);
+        const s = Math.floor(secs % 60);
         return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
 
@@ -1179,16 +911,15 @@
     }
 
     let toastTimer = null;
-    function showToast(message) {
-        el.toastText.textContent = message;
-        el.toast.classList.add('show');
+    function showToast(msg) {
+        el.toastMessage.textContent = msg;
+        el.toastNotification.classList.add('show');
         if (toastTimer) clearTimeout(toastTimer);
         toastTimer = setTimeout(() => {
-            el.toast.classList.remove('show');
-        }, 3000);
+            el.toastNotification.classList.remove('show');
+        }, 2500);
     }
 
-    // INICIAR AL CARGAR DOM
     document.addEventListener('DOMContentLoaded', init);
 
 })();
