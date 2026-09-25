@@ -1,6 +1,26 @@
 # Zett / TITAN — Changelog
 
-## 1.3.0 — Fase 43: Nube Musical en Telegram — Biblioteca Doble con Streaming Puro (`std::audio::cloud_*`) ☁️
+## 1.4.0 — Fase UI estilo Spotify + APK Android (Biblioteca Doble, Reproductor Avanzado Hi-Fi y Sideload) 📱🎵
+
+- **App Android nativa con interfaz estilo Spotify**: diseño oscuro pulido (`#121212`, acentos `#1DB954`), navegación inferior (*Inicio*, *Buscar*, *Tu Biblioteca*), mini-reproductor flotante y reproductor desplegable a pantalla completa.
+- **Biblioteca Doble integrada**: pestañas para navegar entre canciones locales en el almacenamiento del teléfono (`📱 Teléfono`), canciones en el canal privado de Telegram (`☁️ Telegram`) y vista unificada (`🟢 Todas`). Búsqueda instantánea con filtrado en tiempo real por título, artista y álbum.
+- **Reproductor AVANZADO con configuraciones completas**:
+  - Control de volumen (0% a 100%) con indicador reactivo en vivo.
+  - Fundido cruzado (*Crossfade*) ajustable de 0.0 s a 12.0 s para transiciones suaves sin cortes.
+  - Ecualizador paramétrico de 3 bandas (*EQ*): Graves (250 Hz), Medios (1000 Hz) y Agudos (4000 Hz) de -12 dB a +12 dB, con presets de un toque (*Plano*, *Bass Boost*, *Vocal*, *Rock*, *Acústico*, *Electrónica*).
+  - Reproducción continua sin pausas (*Gapless playback*).
+  - Selector de dispositivo de salida (altavoz integrado, auriculares con cable y Bluetooth).
+  - Visualizador de espectro animado en tiempo real con 32 bandas logarítmicas.
+- **Streaming puro de Telegram**: las canciones de la nube se reproducen en streaming directo en memoria por fragmentos; **cero megabytes ocupados en el disco del teléfono**. Descarga explícita canción por canción con el botón «⬇️ Guardar» para escuchar sin conexión.
+- **Cola de reproducción (Queue)**: lista interactiva con la canción actual y próximas pistas en espera, reordenamiento, eliminación y vaciado de cola.
+- **Empaquetado y distribución APK en GitHub Actions**: workflow `android-apk.yml` que compila el APK con Gradle, lo firma para instalación directa (*sideload*) y lo publica tanto como artefacto de CI como adjunto a los GitHub Releases (`TitanMusic-v1.0.0.apk`).
+- **Limpieza de CI (Paso 0)**:
+  - `diag-titan.yml`: corregido instalando las dependencias de ALSA (`libasound2-dev pkg-config`).
+  - `cross-platform.yml`: corregido el test de degradación de audio para evitar carreras en el CoreAudio de macOS y activada ejecución en PRs.
+  - `wrangler.jsonc` + `package.json`: añadido comando de compilación automática del frontend para que el check externo de Cloudflare Workers pase en verde.
+
+---
+
 
 - Tus canciones viven en un canal privado de Telegram («Mi Música», se crea solo) y Titan las toca **directo de la nube**: solo viajan unos segundos por adelantado (MBs en memoria) y **nada se guarda en el teléfono**, salvo descarga explícita tuya. Como Spotify/YouTube.
 - **Login con tu cuenta** (MTProto, grammers 0.10, Rust puro): `cloud_setup(api_id, api_hash)` (app personal de https://my.telegram.org), `cloud_login_phone` → código → `cloud_login_code` (→ `cloud_login_password` si hay 2FA). Sesión persistente en `~/.titan/telegram.session.json` (JSON propio, sin SQLite/C); `cloud_status` (mapa de estado, nunca falla) y `cloud_logout` (borra sesión, respeta tus canciones y credenciales).
