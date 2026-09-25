@@ -253,10 +253,10 @@ const server = http.createServer((req, res) => {
     // =========================================================================
 
     // Estado del servidor y sistema
-    if (pathname === '/api/status' && req.method === 'GET') {
+    if ((pathname === '/api/health' || pathname === '/api/status' || pathname === '/api/v1/health') && req.method === 'GET') {
         const lib = getLibrary();
         return sendJson(res, 200, {
-            status: 'online',
+            status: 'ok',
             service: 'Titan Audio Full Stack Server',
             version: '2.0.0-hifi',
             uptimeSecs: Math.round(process.uptime()),
@@ -511,6 +511,11 @@ const server = http.createServer((req, res) => {
                 { name: 'Audición Nocturna', bass: 2, mid: -2, treble: -3 }
             ]
         });
+    }
+
+    // Si la ruta comienza con /api/ y no coincidió con ningún endpoint, devolver JSON 404
+    if (pathname.startsWith('/api/')) {
+        return sendJson(res, 404, { error: 'API endpoint not found', path: pathname });
     }
 
     // =========================================================================

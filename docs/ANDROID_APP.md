@@ -1,57 +1,52 @@
-# Titan Audio — Reproductor de Música Hi-Fi para Android 🎵📱
+# Titan Audio — Reproductor Hi-Fi & Arquitectura Full Stack Profesional 🎵📱
 
-Un reproductor de audio nativo y profesional para Android con diseño propio y exclusivo (sin imitaciones de Spotify ni stickers), barra interactiva de reproducción en la cortina de notificaciones de Android, lectura de carátulas reales incrustadas en tus canciones (ID3/FLAC) y reproducción directa de los archivos de tu teléfono.
+Una plataforma musical de nivel profesional, completa de extremo a extremo:
+1. **Backend Multimedia en Tiempo Real:** Servidor de streaming con soporte RFC 7233 de rangos parciales (HTTP 206), biblioteca dinámica indexada y API REST.
+2. **Frontend Móvil Ultra-Limpio:** Diseño continuo, minimalista y oscuro sin marcos pesados, flechas desalineadas ni etiquetas técnicas impropias.
+3. **Núcleo Android Nativo con MediaStyle:** Integración directa con el sistema operativo mediante `MediaSessionCompat` y `NotificationCompat.MediaStyle`, mostrando controles multimedia táctiles nativos (⏮, ⏯, ⏭) y carátula en alta definición, con icono de estado propio y sin rastro de terceros.
 
 ---
 
-## 📥 Descarga Directa del APK
+## 📥 Descarga Directa del APK Oficial
 
-Puedes descargar e instalar la versión oficial directamente en tu móvil:
-* **Enlace directo de descarga (GitHub Releases):**
+* **Enlace de Descarga Directa (GitHub Releases):**
   [Descargar TitanMusic-v1.0.0.apk](https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.26/TitanMusic-v1.0.0.apk)
-* También disponible en la pestaña de **Releases** de este repositorio.
+* Compilado de forma automática y reproducible en GitHub Actions.
 
 ---
 
-## 🌟 Novedades y Características 100% Reales
+## 🚀 Mejoras de Ingeniería y Diseño Profesional
 
-### 1. Identidad Visual Propia y Exclusiva (Titan Audio)
-* **Emblema original:** Logotipo geométrico en forma de «T» acústica con ondas resonantes en azul eléctrico cian (`#00e5ff`) y blanco titanio.
-* **Sin imitaciones:** Se eliminaron por completo logos y referencias a Spotify.
-* **Diseño ultra-limpio sin bordes toscos:** Fondo obsidiana profundo (`#090a0f`), superficies de titanio oscuro (`#131620`) y tipografía nítida con acabado de alta gama.
+### 1. Barra de Notificaciones y Pantalla de Bloqueo Nativas (`MediaStyle`)
+* **Controles táctiles multimedia integrados:** Se implementó `NotificationCompat.MediaStyle` conectado a `MediaSessionCompat`. En lugar de botones de texto genéricos (`[ Anterior ] [ Reproducir ] [ Siguiente ]`), el sistema operativo Android muestra la tarjeta de reproductor multimedia oficial con botones vectoriales de salto y pausa.
+* **Icono de barra de estado exclusivo (`ic_stat_music`):** Icono monocromático vectorial de la onda acústica de Titan Audio, eliminando cualquier icono residual o fallback del sistema.
+* **Iconos del lanzador en todas las densidades:** Paquetes PNG dedicados para pantallas mdpi, hdpi, xhdpi, xxhdpi y xxxhdpi con la identidad visual propia de Titan Audio.
 
-### 2. Barra de Reproducción en las Notificaciones de Android
-* **Controles nativos multimedia (`MediaSessionCompat`):**
-  - Aparece en la cortina de notificaciones y en la pantalla de bloqueo de tu teléfono.
-  - Botones táctiles reales: **Anterior**, **Reproducir / Pausa**, **Siguiente**.
-  - Muestra la carátula real del álbum, el título de la canción y el artista directamente en el sistema operativo.
-  - Compatible con los botones de tus auriculares (cable y Bluetooth) para pausar y cambiar de pista.
-* **Permiso `POST_NOTIFICATIONS`:** Configurado de forma nativa para que la notificación aparezca correctamente en Android 13, 14 y 15 sin ser bloqueada por el sistema.
+### 2. Filtrado Inteligente de Música Real (Cero Archivos Residuales)
+* El escáner de memoria de Android (`MediaStore`) ahora aplica un filtro inteligente de duración (`>= 40s`) y excluye automáticamente notas de voz de WhatsApp/Telegram, sintetizadores TTS, ringtones, alarmas y cachés temporales.
+* Solo aparecen en tu biblioteca las canciones completas que realmente tienes en el teléfono.
 
-### 3. Extracción Real de Carátulas Embebidas (Artwork)
-* **Extractor de metadatos (`MediaMetadataRetriever`):** La app lee los bytes de imagen incrustados en las etiquetas ID3 / FLAC de tus archivos de música y los muestra en alta resolución tanto en el mini reproductor, como en el reproductor completo y en la barra de notificaciones.
-* Si un archivo no tiene carátula integrada, muestra el monograma acústico de Titan Audio.
+### 3. Rediseño Completo de la Interfaz (Limpia, Alineada y Sin Bordes)
+* **Eliminación de elementos desalineados:** Se corrigió la estructura visual para eliminar flechas sueltas debajo de los números de pista.
+* **Mini reproductor flotante:**
+  - Carátula de 44x44 px a la izquierda.
+  - Título y artista completos con ajuste elíptico en el centro.
+  - Botones táctiles de reproducción y avance a la derecha.
+  - Barra de progreso sutil de 2 px en color cian neón (`#00e5ff`) en el borde superior.
+* **Reproductor a pantalla completa:** Al pulsar sobre el mini reproductor, se despliega la vista inmersiva con carátula de alta resolución, control deslizante de tiempo (scrubber) con minutos/segundos y panel de control completo.
+* **Navegación limpia:** Segmentos intuitivos (`Mi Teléfono`, `Nube Streaming`, `Telegram`) sin textos técnicos fuera de lugar.
 
-### 4. Reproducción 100% Real de tus Canciones
-* **Cero simulaciones ni canciones demo:** La lista muestra exclusivamente la música real que tienes en tu teléfono.
-* **Doble método de acceso:**
-  1. **Escanear teléfono:** Consulta la base multimedia del móvil (`MediaStore`) y lista tus canciones en orden alfabético.
-  2. **Abrir archivos (Selector del sistema):** Puedes pulsar el botón de carpeta para abrir el explorador de archivos de Android y seleccionar una o varias canciones a la vez desde tus carpetas o descargas.
-
-### 5. Controles Hi-Fi y Ajustes
-* **Volumen:** Deslizador maestro de audio.
-* **Fundido cruzado (Crossfade):** Transición suave de 0 a 12 segundos entre canciones consecutivas.
-* **Ecualizador de 3 bandas:** Ajuste de graves (250 Hz), medios (1 kHz) y agudos (4 kHz).
-* **Gapless:** Reproducción continua sin pausas entre pistas.
+### 4. Estudio Hi-Fi y Procesamiento de Audio
+* **Ecualizador paramétrico de 3 bandas:** Ajustes de Graves (60 Hz), Medios (1.0 kHz) y Agudos (10 kHz) de -12 dB a +12 dB.
+* **Visualizador de espectro:** 32 barras dinámicas en tiempo real.
+* **Crossfade (0 a 12 s):** Transición suave y continua entre canciones consecutivas.
+* **Modo Gapless:** Reproducción sin silencios entre pistas.
 
 ---
 
-## 📲 Pasos para instalar en tu teléfono Android
+## 📲 Guía Rápida de Instalación
 
-1. Descarga el archivo APK:
-   👉 **[TitanMusic-v1.0.0.apk](https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.26/TitanMusic-v1.0.0.apk)**
-2. Abre la notificación de descarga en tu móvil.
-3. Si el sistema te pide autorización para instalar aplicaciones desconocidas, pulsa **Permitir**.
-4. Pulsa **Instalar** y luego **Abrir**.
-5. Concede los permisos de música y notificaciones cuando la app te los pida para activar la barra superior del sistema.
-6. Pulsa **«Escanear teléfono»** o **«Abrir archivos»** para empezar a escuchar tu música.
+1. Descarga el archivo: **[TitanMusic-v1.0.0.apk](https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.26/TitanMusic-v1.0.0.apk)**.
+2. Pulsa en la descarga para instalar o actualizar.
+3. Abre **Titan Audio**: tu música aparecerá de inmediato en pantalla.
+4. Toca cualquier canción para reproducir y desliza la cortina superior de tu teléfono para ver la barra multimedia nativa de Android.

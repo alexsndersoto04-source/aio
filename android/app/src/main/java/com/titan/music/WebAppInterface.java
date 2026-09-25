@@ -17,6 +17,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.util.Locale;
 
 /**
  * Interfaz de comunicación bidireccional entre la interfaz web y el sistema Android nativo.
@@ -123,9 +124,9 @@ public class WebAppInterface {
             if (pathOrUri.startsWith("content://")) {
                 mmr.setDataSource(context, Uri.parse(pathOrUri));
             } else {
-                File f = new File(pathOrUri);
+                File f = new File(pathOrUri.replace("file://", ""));
                 if (f.exists() && f.canRead()) {
-                    mmr.setDataSource(pathOrUri);
+                    mmr.setDataSource(f.getAbsolutePath());
                 } else {
                     return "";
                 }
@@ -135,7 +136,6 @@ public class WebAppInterface {
             if (art != null && art.length > 0) {
                 Bitmap bitmap = BitmapFactory.decodeByteArray(art, 0, art.length);
                 if (bitmap != null) {
-                    // Redimensionar para optimizar transferencia al WebView
                     int maxDimension = 320;
                     float scale = Math.min((float) maxDimension / bitmap.getWidth(), (float) maxDimension / bitmap.getHeight());
                     if (scale < 1.0f) {
@@ -238,7 +238,7 @@ public class WebAppInterface {
     }
 
     // =========================================================================
-    // BIBLIOTECA DEL TELÉFONO (MEDIASTORE REAL)
+    // BIBLIOTECA DEL TELÉFONO (FILTRADO PROFESIONAL DE MÚSICA REAL)
     // =========================================================================
 
     @JavascriptInterface
@@ -254,10 +254,18 @@ public class WebAppInterface {
                     MediaStore.Audio.Media.DURATION,
                     MediaStore.Audio.Media.DATA
             };
-            // Filtrar audios de más de 3 segundos para excluir sonidos de sistema pero incluir toda la música real
-            String selection = MediaStore.Audio.Media.DURATION + " > 3000";
 
-            Cursor cursor = context.getContentResolver().query(collection, projection, selection, null, MediaStore.Audio.Media.TITLE + " ASC");
+            // Filtrado profesional: canciones de al menos 40 segundos para excluir notas de voz, ringtones y audios de apps
+            String selection = MediaStore.Audio.Media.DURATION + " >= 40000";
+
+            Cursor cursor = context.getContentResolver().query(
+                    collection,
+                    projection,
+                    selection,
+                    null,
+                    MediaStore.Audio.Media.TITLE + " ASC"
+            );
+
             if (cursor != null) {
                 int idIdx = cursor.getColumnIndex(MediaStore.Audio.Media._ID);
                 int titleIdx = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE);
@@ -273,6 +281,25 @@ public class WebAppInterface {
                     String album = albumIdx >= 0 ? cursor.getString(albumIdx) : "Dispositivo";
                     long durSecs = durIdx >= 0 ? cursor.getLong(durIdx) / 1000 : 180;
                     String rawPath = dataIdx >= 0 ? cursor.getString(dataIdx) : "";
+
+                    // Exclusión rigurosa de cachés de voz, TTS, ringtones, WhatsApp y grabaciones temporales
+                    String lowerPath = (rawPath != null ? rawPath : "").toLowerCase(Locale.ROOT);
+                    String lowerTitle = (title != null ? title : "").toLowerCase(Locale.ROOT);
+
+                    if (lowerPath.contains("/notifications/") ||
+                        lowerPath.contains("/ringtones/") ||
+                        lowerPath.contains("/alarms/") ||
+                        lowerPath.contains("/whatsapp/media/whatsapp voice") ||
+                        lowerPath.contains("/whatsapp/media/whatsapp audio") ||
+                        lowerPath.contains("/telegram/telegram audio/voice") ||
+                        lowerPath.contains("/android/data/") ||
+                        lowerPath.contains("cache") ||
+                        lowerTitle.contains("tts-") ||
+                        lowerTitle.contains("inworld") ||
+                        lowerTitle.startsWith("ptt-") ||
+                        lowerTitle.startsWith("aud-")) {
+                        continue;
+                    }
 
                     Uri itemContentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
 
