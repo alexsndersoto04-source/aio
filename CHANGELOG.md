@@ -1,5 +1,21 @@
 # Zett / TITAN — Changelog
 
+## 1.2.0 — Fase 42A: Motor de Audio Nativo — Titan Decodifica y Suena Solo (`std::audio::engine_*`) 🔊
+
+- Titan deja de delegar el sonido: **decodifica MP3/FLAC/Vorbis/Opus/WAV/AAC dentro del binario** (`symphonia`, Rust puro, cero librerías del sistema) y lo empuja a las bocinas (`cpal`: CoreAudio / WASAPI / ALSA). Sin mpv, sin afplay, sin ayudantes.
+- **Transporte** con 8 nativas: `engine_play`, `engine_stop`, `engine_pause`, `engine_resume`, `engine_position` (`-1.0` si idle), `engine_duration`, `engine_state` (`idle/playing/paused`) y `engine_seek` (exacto a nivel de muestra). Fallo rápido y tipado: archivo podrido o máquina sin salida devuelven `Result::Err`, nunca fingen.
+- **Cola gapless + crossfade + historial** con 6 nativas: `engine_queue_add` (funciona antes del primer play), `engine_queue_list`, `engine_queue_clear`, `engine_next`, `engine_prev` (>3 s reinicia, si no retrocede) y `engine_current` (`{path, codec, position_secs, duration_secs, state, queue_len}`). Gapless por defecto, crossfade con mezcla muestra a muestra (`0.0` lo apaga), 250 ms de aire si se apaga gapless.
+- **Ajustes que sobreviven entre pistas y sesiones** (el backend de la futura pantalla de configuración) con 5 nativas: `engine_set_volume` (`0..100`), `engine_set_crossfade` (`0.0..12.0` s), `engine_set_gapless` (booleano), `engine_set_eq` (graves/medios/agudos `-12..12` dB, filtros RBJ 250 Hz/1 kHz/4 kHz, bit-transparente en cero) y `engine_status` (mapa completo para la UI).
+- **Visualizador** con `engine_levels`: 32 bandas logarítmicas `60 Hz..16 kHz` sobre el mono post-FX; ceros en idle para sondeo libre de errores.
+- **Chequeo headless** con `engine_decode`: sonda + decodifica hasta 5 s sin bocinas (`{duration_secs, sample_rate, channels, codec, verified_secs, peak}`) — lo que corre en CI y usará la caché de streaming de Telegram (Fase 43). Más `engine_device` (etiqueta de salida o `""`).
+- Diseño honesto por target: escritorio = playback completo; CI/headless = `NoDevice` tipado + decode; Android = decode + cola + ajustes (la salida la pone el shell de la app en Fase 42B, `cpal` excluido del target).
+- Por dentro: hilo decodificador con anillo de ~8 s, remuestreo lineal + adaptación de canales al dispositivo, cola 500 / historial 200, archivos podridos que se saltan sin matar la sesión.
+- Ejemplo verificable end-to-end: `examples/reproductor_hifi.titan` (tonos, decode headless, ajustes, cola y reproducción con degradación elegante). Documentación nueva: `docs/AUDIO_ENGINE.md`.
+- CI: `libasound2-dev` en los jobs de Linux (+ sysroot multiarch para los cruces ARM) y workflow `update-cargo-lock` para fijar el lock desde la CI.
+- Registro actualizado: **797 funciones nativas** registradas en `std::*`.
+
+---
+
 ## 1.1.0 — Fase 41: Base del Reproductor de Música — Etiquetas, Biblioteca y Motor de Reproducción de Escritorio (`std::audio` v2) 🎵
 
 - La capa de audio se convierte en fundación real para **construir un reproductor de música escrito en TITAN**: leer bibliotecas, mostrar metadatos y reproducir con control completo.

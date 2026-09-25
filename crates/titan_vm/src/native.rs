@@ -2857,6 +2857,130 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Bytes(stdlib::audio_tags::cover_bytes(&path).map_err(error)?)
         }
 
+        // ---------------- Fase 42A: native audio engine ----------------
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_play" => {
+            let path = string!();
+            Value::Str(stdlib::audio_engine::play(&path).map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_stop" => Value::Str(stdlib::audio_engine::stop().map_err(error)?),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_pause" => Value::Str(stdlib::audio_engine::pause().map_err(error)?),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_resume" => {
+            Value::Str(stdlib::audio_engine::resume().map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_position" => Value::Float(stdlib::audio_engine::position_secs()),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_duration" => Value::Float(stdlib::audio_engine::duration_secs()),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_state" => Value::Str(stdlib::audio_engine::state_string()),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_seek" => {
+            let secs = float!();
+            Value::Str(stdlib::audio_engine::seek(secs).map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_set_volume" => {
+            let percent = int!();
+            Value::Bool(stdlib::audio_engine::set_volume(percent).map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_set_crossfade" => {
+            let secs = float!();
+            Value::Bool(stdlib::audio_engine::set_crossfade(secs).map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_set_gapless" => {
+            let on = boolean!();
+            Value::Bool(stdlib::audio_engine::set_gapless(on).map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_set_eq" => {
+            let bass = int!();
+            let mid = int!();
+            let treble = int!();
+            Value::Bool(stdlib::audio_engine::set_eq(bass, mid, treble).map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_queue_add" => {
+            let path = string!();
+            Value::Str(stdlib::audio_engine::queue_add(&path).map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_queue_clear" => {
+            Value::Str(stdlib::audio_engine::queue_clear().map_err(error)?)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_queue_list" => Value::Array(
+            stdlib::audio_engine::queue_list()
+                .into_iter()
+                .map(Value::Str)
+                .collect(),
+        ),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_next" => Value::Str(stdlib::audio_engine::next().map_err(error)?),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_prev" => Value::Str(stdlib::audio_engine::prev().map_err(error)?),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_current" => {
+            let cur = stdlib::audio_engine::current_track().map_err(error)?;
+            let mut map = BTreeMap::new();
+            map.insert("path".into(), Value::Str(cur.path));
+            map.insert("codec".into(), Value::Str(cur.codec));
+            map.insert("position_secs".into(), Value::Float(cur.position_secs));
+            map.insert("duration_secs".into(), Value::Float(cur.duration_secs));
+            map.insert("state".into(), Value::Str(cur.state));
+            map.insert("queue_len".into(), Value::Int(cur.queue_len as i64));
+            Value::Map(map)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_levels" => Value::Array(
+            stdlib::audio_engine::levels()
+                .into_iter()
+                .map(|v| Value::Float(v as f64))
+                .collect(),
+        ),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_decode" => {
+            let path = string!();
+            let rep = stdlib::audio_engine::decode_report(&path).map_err(error)?;
+            let mut map = BTreeMap::new();
+            map.insert("duration_secs".into(), Value::Float(rep.duration_secs));
+            map.insert("sample_rate".into(), Value::Int(rep.sample_rate as i64));
+            map.insert("channels".into(), Value::Int(rep.channels as i64));
+            map.insert("codec".into(), Value::Str(rep.codec));
+            map.insert("verified_secs".into(), Value::Float(rep.verified_secs));
+            map.insert("peak".into(), Value::Float(rep.peak as f64));
+            Value::Map(map)
+        }
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_device" => Value::Str(stdlib::audio_engine::device()),
+        #[cfg(feature = "audio_engine")]
+        "std::audio::engine_status" => {
+            let st = stdlib::audio_engine::status();
+            let mut map = BTreeMap::new();
+            map.insert("state".into(), Value::Str(st.state));
+            map.insert("path".into(), Value::Str(st.path));
+            map.insert("codec".into(), Value::Str(st.codec));
+            map.insert("position_secs".into(), Value::Float(st.position_secs));
+            map.insert("duration_secs".into(), Value::Float(st.duration_secs));
+            map.insert("sample_rate".into(), Value::Int(st.sample_rate as i64));
+            map.insert("channels".into(), Value::Int(st.channels as i64));
+            map.insert("volume".into(), Value::Int(st.volume_percent));
+            map.insert("crossfade_secs".into(), Value::Float(st.crossfade_secs));
+            map.insert("gapless".into(), Value::Bool(st.gapless));
+            map.insert(
+                "eq".into(),
+                Value::Array(st.eq_db.into_iter().map(Value::Int).collect()),
+            );
+            map.insert("queue_len".into(), Value::Int(st.queue_len as i64));
+            map.insert("device".into(), Value::Str(st.device));
+            Value::Map(map)
+        }
+
         // ---------------- Phase 10: sled key-value ----------------
         #[cfg(feature = "kv_mod")]
         "std::kv::open" => Value::Int(stdlib::kv_mod::open(&string!()).map_err(error)?),

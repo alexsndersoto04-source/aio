@@ -575,6 +575,32 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::audio::player_prev", [], String),
     native!("std::audio::player_current", [], Map),
     native!("std::audio::cover", [String], Bytes),
+    // Fase 42A — motor de audio nativo: decode dentro de Titan + salida
+    // directa. Transporte (play/stop/pausa/seek/cola), ajustes que
+    // sobreviven entre pistas (volumen, crossfade, gapless, EQ de 3
+    // bandas), visualizador de 32 barras y chequeo headless.
+    native!("std::audio::engine_play", [String], String),
+    native!("std::audio::engine_stop", [], String),
+    native!("std::audio::engine_pause", [], String),
+    native!("std::audio::engine_resume", [], String),
+    native!("std::audio::engine_position", [], Float),
+    native!("std::audio::engine_duration", [], Float),
+    native!("std::audio::engine_state", [], String),
+    native!("std::audio::engine_seek", [Float], String),
+    native!("std::audio::engine_set_volume", [Int], Bool),
+    native!("std::audio::engine_set_crossfade", [Float], Bool),
+    native!("std::audio::engine_set_gapless", [Bool], Bool),
+    native!("std::audio::engine_set_eq", [Int, Int, Int], Bool),
+    native!("std::audio::engine_queue_add", [String], String),
+    native!("std::audio::engine_queue_clear", [], String),
+    native!("std::audio::engine_queue_list", [], Array),
+    native!("std::audio::engine_next", [], String),
+    native!("std::audio::engine_prev", [], String),
+    native!("std::audio::engine_current", [], Map),
+    native!("std::audio::engine_levels", [], Array),
+    native!("std::audio::engine_decode", [String], Map),
+    native!("std::audio::engine_device", [], String),
+    native!("std::audio::engine_status", [], Map),
     native!("std::gui::init", [], Bool, UserInterface),
     native!(
         "std::gui::create_container",

@@ -1,5 +1,9 @@
 # Audio — procesamiento, metadatos y motor de reproducción (`std::audio`)
 
+> **Fase 42A:** Titan ahora también decodifica y suena por sí solo con
+> `std::audio::engine_*` (sin mpv ni ayudantes). Ver `docs/AUDIO_ENGINE.md`.
+> Este documento describe las capas Fase 9/41, que siguen vigentes.
+
 `std::audio` es la base para construir música y reproductores en TITAN.
 Todo es Rust puro, sin dependencias nativas de audio (no ALSA, no AAudio,
 no PulseAudio al compilar): el motor de reproducción **usa los

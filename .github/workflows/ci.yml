@@ -26,6 +26,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Fase 42A: el motor de audio nativo usa cpal/ALSA en Linux.
+      - name: System deps for native audio (cpal/ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
