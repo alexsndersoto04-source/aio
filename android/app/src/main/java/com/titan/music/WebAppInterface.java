@@ -31,6 +31,14 @@ public class WebAppInterface {
     @JavascriptInterface
     public boolean playTrack(String path, String title, String artist, boolean isCloud) {
         AudioPlaybackService service = activity.getAudioService();
+        int attempts = 0;
+        while (service == null && attempts < 5) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException ignored) {}
+            service = activity.getAudioService();
+            attempts++;
+        }
         if (service != null) {
             return service.play(path, title, artist);
         }

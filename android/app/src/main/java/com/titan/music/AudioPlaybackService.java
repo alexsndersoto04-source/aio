@@ -127,25 +127,67 @@ public class AudioPlaybackService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
 
-            if (path.startsWith("http://") || path.startsWith("https://")) {
-                mediaPlayer.setDataSource(path);
-            } else if (path.startsWith("content://")) {
-                mediaPlayer.setDataSource(this, Uri.parse(path));
-            } else if (new File(path).exists()) {
-                mediaPlayer.setDataSource(path);
-            } else {
-                // Audio sintético / mock para entorno de pruebas
-                Uri uri = Uri.parse("android.resource://" + getPackageName() + "/" + R.drawable.ic_launcher_background);
-                mediaPlayer.setDataSource(this, uri);
+            boolean loaded = false;
+
+            if (path != null && !path.trim().isEmpty()) {
+                if (path.startsWith("http://") || path.startsWith("https://")) {
+                    mediaPlayer.setDataSource(path);
+                    loaded = true;
+                } else if (path.startsWith("content://")) {
+                    mediaPlayer.setDataSource(this, Uri.parse(path));
+                    loaded = true;
+                } else {
+                    File file = new File(path);
+                    if (file.exists() && file.canRead()) {
+                        mediaPlayer.setDataSource(path);
+                        loaded = true;
+                    }
+                }
+            }
+
+            if (!loaded) {
+                // Seleccionar pista real empaquetada según el estilo de la canción
+                String search = (this.currentTitle + " " + this.currentArtist + " " + path).toLowerCase();
+                String assetFile = "track_synthwave.wav";
+                if (search.contains("soda") || search.contains("ligera") || search.contains("rock")) {
+                    assetFile = "track_rock.wav";
+                } else if (search.contains("lofi") || search.contains("chill") || search.contains("calma")) {
+                    assetFile = "track_lofi.wav";
+                } else if (search.contains("acoustic") || search.contains("guitar") || search.contains("piano")) {
+                    assetFile = "track_acoustic.wav";
+                } else if (search.contains("dance") || search.contains("blinding") || search.contains("electronic")) {
+                    assetFile = "track_electronic.wav";
+                }
+
+                android.content.res.AssetFileDescriptor afd = null;
+                try {
+                    afd = getAssets().openFd("web/audio/" + assetFile);
+                } catch (Exception e1) {
+                    try {
+                        afd = getAssets().openFd("audio/" + assetFile);
+                    } catch (Exception e2) {
+                        Log.e(TAG, "No se pudo abrir asset de audio: " + assetFile, e2);
+                    }
+                }
+
+                if (afd != null) {
+                    mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+                    afd.close();
+                    loaded = true;
+                }
             }
 
             mediaPlayer.setVolume(currentVolume, currentVolume);
 
             mediaPlayer.setOnPreparedListener(mp -> {
-                mp.start();
-                isPlaying = true;
-                applyEqualizer();
-                startForeground(NOTIFICATION_ID, buildNotification());
+                try {
+                    mp.start();
+                    isPlaying = true;
+                    applyEqualizer();
+                    startForeground(NOTIFICATION_ID, buildNotification());
+                } catch (Exception err) {
+                    Log.e(TAG, "Error al iniciar mp.start()", err);
+                }
             });
 
             mediaPlayer.setOnCompletionListener(mp -> {
@@ -153,14 +195,17 @@ public class AudioPlaybackService extends Service {
                 stopForeground(false);
             });
 
+            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                Log.w(TAG, "MediaPlayer error: " + what + ", " + extra);
+                return false;
+            });
+
             mediaPlayer.prepareAsync();
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error iniciando reproducción de: " + path, e);
-            // Simular estado de reproducción activo para la interfaz si no hay archivo físico
-            isPlaying = true;
-            startForeground(NOTIFICATION_ID, buildNotification());
-            return true;
+            isPlaying = false;
+            return false;
         }
     }
 

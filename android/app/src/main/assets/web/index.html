@@ -2,373 +2,482 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Titan Music — Estilo Spotify</title>
     <link rel="stylesheet" href="app.css">
     <!-- Google Fonts Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 </head>
 <body>
     <div id="app">
-        <!-- BARRA SUPERIOR -->
+        <!-- BARRA SUPERIOR SPOTIFY -->
         <header class="top-bar">
-            <div class="user-greeting">
-                <span class="greeting-text" id="greetingText">Buenas tardes</span>
-                <h1 class="logo-title">Titan <span class="logo-accent">Music</span></h1>
+            <div class="user-profile-header">
+                <div class="user-avatar" id="userAvatarBtn" title="Perfil">A</div>
+                <div class="greeting-box">
+                    <span class="greeting-sub" id="greetingText">Buenas noches</span>
+                    <h1 class="logo-title">Titan <span class="logo-green">Music</span></h1>
+                </div>
             </div>
             <div class="top-actions">
-                <button class="cloud-status-pill" id="openTelegramModalBtn" title="Estado de la nube Telegram">
-                    <span class="cloud-dot connected" id="cloudDot"></span>
-                    <span class="cloud-label" id="cloudLabel">Nube Telegram</span>
+                <button class="top-btn-pill telegram-pill" id="topTelegramPill" title="Nube Telegram">
+                    <span class="status-dot connected" id="cloudDot"></span>
+                    <span class="pill-label" id="cloudLabel">Nube Telegram</span>
+                </button>
+                <button class="top-icon-btn" id="topSettingsBtn" title="Configuración">
+                    <span class="icon">⚙️</span>
                 </button>
             </div>
         </header>
 
-        <!-- FILTROS DE BIBLIOTECA (CHIPS) -->
-        <section class="filter-section">
-            <div class="chips-row">
-                <button class="filter-chip active" data-filter="all">🟢 Todas</button>
-                <button class="filter-chip" data-filter="phone">📱 En este teléfono</button>
-                <button class="filter-chip" data-filter="cloud">☁️ Nube Telegram</button>
-            </div>
-            <div class="search-box">
-                <span class="search-icon">🔍</span>
-                <input type="text" id="searchInput" placeholder="Buscar canciones, artistas o álbumes..." autocomplete="off">
-                <button class="search-clear" id="searchClearBtn" style="display: none;">✕</button>
-            </div>
-            <div class="library-summary" id="librarySummary">
-                <span id="summaryPhone">0 en el teléfono</span> • <span id="summaryCloud">0 en la nube</span>
-            </div>
-        </section>
+        <!-- CONTENIDO PRINCIPAL POR PESTAÑAS (TABS) -->
+        <div class="tab-content-container">
 
-        <!-- LISTA DE CANCIONES (BIBLIOTECA DOBLE) -->
-        <main class="songs-container" id="songsContainer">
-            <div class="songs-list" id="songsList">
-                <!-- Se llena dinámicamente con JavaScript -->
-            </div>
-        </main>
-
-        <!-- MINI REPRODUCTOR INFERIOR -->
-        <aside class="mini-player" id="miniPlayer" style="display: none;">
-            <div class="mini-progress-bar">
-                <div class="mini-progress-fill" id="miniProgressFill"></div>
-            </div>
-            <div class="mini-content" id="expandPlayerBtn">
-                <div class="mini-cover-wrapper">
-                    <div class="mini-cover" id="miniCover">🎵</div>
-                </div>
-                <div class="mini-info">
-                    <div class="mini-title" id="miniTitle">Título</div>
-                    <div class="mini-artist" id="miniArtist">Artista</div>
-                </div>
-                <div class="mini-source-badge" id="miniSourceBadge">📱 Local</div>
-                <button class="mini-control-btn" id="miniPlayPauseBtn" title="Reproducir/Pausar">▶</button>
-                <button class="mini-control-btn" id="miniNextBtn" title="Siguiente">⏭</button>
-            </div>
-        </aside>
-
-        <!-- BARRA DE NAVEGACIÓN INFERIOR (SPOTIFY) -->
-        <nav class="bottom-nav">
-            <button class="nav-item active" data-tab="home">
-                <span class="nav-icon">🏠</span>
-                <span class="nav-label">Inicio</span>
-            </button>
-            <button class="nav-item" data-tab="search" id="navSearchBtn">
-                <span class="nav-icon">🔍</span>
-                <span class="nav-label">Buscar</span>
-            </button>
-            <button class="nav-item" data-tab="library" id="navLibraryBtn">
-                <span class="nav-icon">📚</span>
-                <span class="nav-label">Tu Biblioteca</span>
-            </button>
-        </nav>
-
-        <!-- REPRODUCTOR COMPLETO A PANTALLA COMPLETA -->
-        <section class="full-player" id="fullPlayer">
-            <div class="full-player-header">
-                <button class="player-collapse-btn" id="collapsePlayerBtn">⌄</button>
-                <div class="player-header-title">
-                    <span class="sub-label">REPRODUCIENDO DE</span>
-                    <span class="main-label" id="playerSourceLabel">Tu Biblioteca Doble</span>
-                </div>
-                <button class="player-menu-btn" id="playerMenuBtn">•••</button>
-            </div>
-
-            <!-- CARÁTULA GIGANTE -->
-            <div class="full-cover-wrapper">
-                <div class="full-cover" id="fullCover">
-                    <span class="cover-placeholder-icon">🎵</span>
-                </div>
-            </div>
-
-            <!-- TÍTULO Y ARTISTA -->
-            <div class="full-track-details">
-                <div class="title-artist-col">
-                    <h2 class="full-title" id="fullTitle">Nombre de la canción</h2>
-                    <p class="full-artist" id="fullArtist">Nombre del artista</p>
-                </div>
-                <button class="like-btn" id="likeBtn">♡</button>
-            </div>
-
-            <!-- ORIGEN (LOCAL vs STREAMING PURO DE TELEGRAM) -->
-            <div class="streaming-pill" id="streamingIndicator">
-                <span class="stream-icon" id="streamIcon">📱</span>
-                <span class="stream-text" id="streamText">Reproduciendo desde el teléfono</span>
-            </div>
-
-            <!-- BARRA DE TIEMPO / SEEK SLIDER -->
-            <div class="seek-container">
-                <div class="seek-slider-wrapper">
-                    <input type="range" id="seekSlider" min="0" max="100" value="0" class="spotify-range">
-                </div>
-                <div class="seek-times">
-                    <span id="currentTime">0:00</span>
-                    <span id="totalDuration">3:30</span>
-                </div>
-            </div>
-
-            <!-- CONTROLES PRINCIPALES DE REPRODUCCIÓN -->
-            <div class="player-controls">
-                <button class="control-btn secondary" id="shuffleBtn" title="Aleatorio">🔀</button>
-                <button class="control-btn primary-nav" id="prevBtn" title="Anterior">⏮</button>
-                <button class="control-btn play-main" id="mainPlayPauseBtn" title="Reproducir/Pausar">
-                    <span id="mainPlayIcon">▶</span>
-                </button>
-                <button class="control-btn primary-nav" id="nextBtn" title="Siguiente">⏭</button>
-                <button class="control-btn secondary" id="repeatBtn" title="Repetir">🔁</button>
-            </div>
-
-            <!-- BARRA INFERIOR DE ACCESO RÁPIDO (DISPOSITIVO, COLA, AJUSTES AVANZADOS) -->
-            <div class="player-footer-tools">
-                <button class="tool-btn" id="openDeviceModalBtn" title="Dispositivo de salida">
-                    <span class="tool-icon">📢</span>
-                    <span class="tool-name" id="activeDeviceLabel">Altavoz</span>
-                </button>
-
-                <div class="footer-center-tools">
-                    <button class="tool-btn icon-only" id="openQueueModalBtn" title="Cola de reproducción">
-                        <span>📑</span>
-                        <span class="badge-count" id="queueBadgeCount">0</span>
-                    </button>
+            <!-- TAB 1: INICIO -->
+            <section class="tab-view active" id="tabHome">
+                <!-- FILTROS RÁPIDOS (CHIPS) -->
+                <div class="chips-scroll">
+                    <button class="filter-chip active" data-filter="all">Todas</button>
+                    <button class="filter-chip" data-filter="phone">📱 En este teléfono</button>
+                    <button class="filter-chip" data-filter="cloud">☁️ Nube Telegram</button>
+                    <button class="filter-chip" data-filter="downloaded">⬇️ Descargadas</button>
                 </div>
 
-                <!-- BOTÓN DE AJUSTES AVANZADOS (LO QUE MÁS LE IMPORTA AL USUARIO) -->
-                <button class="tool-btn highlight" id="openSettingsModalBtn" title="Ajustes Avanzados de Audio">
-                    <span class="tool-icon">🎚️</span>
-                    <span class="tool-name">Ajustes Hi-Fi</span>
-                </button>
-            </div>
-        </section>
-
-        <!-- MODAL 1: AJUSTES AVANZADOS DE AUDIO (VOLUMEN, CROSSFADE, EQ, GAPLESS, DISPOSITIVO) -->
-        <div class="modal-backdrop" id="settingsModal">
-            <div class="modal-sheet">
-                <div class="sheet-drag-handle"></div>
-                <div class="modal-header">
-                    <h2>Ajustes Avanzados de Audio</h2>
-                    <button class="modal-close-btn" id="closeSettingsModalBtn">✕</button>
+                <!-- ESCUCHADO RECIENTEMENTE (GRID 2x3 SPOTIFY) -->
+                <div class="section-block">
+                    <h2 class="section-title">Escuchado recientemente</h2>
+                    <div class="recent-grid" id="recentGrid">
+                        <!-- Generado por JavaScript -->
+                    </div>
                 </div>
 
-                <div class="modal-body settings-scroll">
-                    <!-- 1. VOLUMEN -->
-                    <div class="setting-card">
-                        <div class="setting-header">
-                            <span class="setting-title">🔊 Volumen de reproducción</span>
-                            <span class="setting-value" id="volumeValueLabel">80%</span>
+                <!-- TU BIBLIOTECA DOBLE (LOCAL + NUBE) -->
+                <div class="section-block">
+                    <div class="section-header-row">
+                        <div>
+                            <h2 class="section-title">Tu Biblioteca</h2>
+                            <p class="section-subtitle" id="homeSubtitle">Música local y streaming en la nube de Telegram</p>
                         </div>
-                        <div class="slider-wrapper">
+                        <button class="btn-text-action" id="syncLibraryBtn">🔄 Sincronizar</button>
+                    </div>
+                    <div class="songs-list" id="homeSongsList">
+                        <!-- Lista de canciones dinámica -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: BUSCAR -->
+            <section class="tab-view" id="tabSearch">
+                <div class="search-header-block">
+                    <h2 class="search-title">Buscar</h2>
+                    <div class="search-input-wrapper">
+                        <span class="search-icon">🔍</span>
+                        <input type="text" id="searchInput" placeholder="Canciones, artistas, álbumes..." autocomplete="off">
+                        <button class="search-clear-btn" id="searchClearBtn" style="display: none;">✕</button>
+                    </div>
+                </div>
+
+                <!-- GÉNEROS / CATEGORÍAS -->
+                <div class="search-categories" id="searchCategories">
+                    <h3 class="category-heading">Explorar todo</h3>
+                    <div class="genre-grid">
+                        <div class="genre-card" style="background: linear-gradient(135deg, #E91429, #B00D1F);" data-search="rock">
+                            <span>Rock</span>
+                            <div class="genre-art">🎸</div>
+                        </div>
+                        <div class="genre-card" style="background: linear-gradient(135deg, #1DB954, #147A38);" data-search="telegram">
+                            <span>Nube Telegram</span>
+                            <div class="genre-art">☁️</div>
+                        </div>
+                        <div class="genre-card" style="background: linear-gradient(135deg, #1E3264, #142144);" data-search="chill">
+                            <span>Lo-Fi Chill</span>
+                            <div class="genre-art">☕</div>
+                        </div>
+                        <div class="genre-card" style="background: linear-gradient(135deg, #8400E7, #59009B);" data-search="synthwave">
+                            <span>Synthwave</span>
+                            <div class="genre-art">🌆</div>
+                        </div>
+                        <div class="genre-card" style="background: linear-gradient(135deg, #E13300, #962200);" data-search="pop">
+                            <span>Pop & Dance</span>
+                            <div class="genre-art">⚡</div>
+                        </div>
+                        <div class="genre-card" style="background: linear-gradient(135deg, #503750, #362536);" data-search="acoustic">
+                            <span>Acústico</span>
+                            <div class="genre-art">🎹</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RESULTADOS DE BÚSQUEDA -->
+                <div class="search-results-block" id="searchResultsBlock" style="display: none;">
+                    <h3 class="category-heading" id="searchResultsHeading">Resultados</h3>
+                    <div class="songs-list" id="searchResultsList"></div>
+                </div>
+            </section>
+
+            <!-- TAB 3: TU BIBLIOTECA -->
+            <section class="tab-view" id="tabLibrary">
+                <div class="library-header-block">
+                    <div class="library-title-row">
+                        <h2 class="section-title">Tu Biblioteca</h2>
+                        <div class="library-badges">
+                            <span class="lib-badge phone" id="libCountPhone">0 local</span>
+                            <span class="lib-badge cloud" id="libCountCloud">0 nube</span>
+                        </div>
+                    </div>
+                    <div class="chips-scroll">
+                        <button class="filter-chip active" data-filter="all">Todo</button>
+                        <button class="filter-chip" data-filter="phone">📱 Teléfono</button>
+                        <button class="filter-chip" data-filter="cloud">☁️ Telegram</button>
+                        <button class="filter-chip" data-filter="downloaded">💾 Guardadas</button>
+                    </div>
+                </div>
+                <div class="songs-list" id="librarySongsList">
+                    <!-- Lista completa -->
+                </div>
+            </section>
+
+            <!-- TAB 4: NUBE TELEGRAM («MI MÚSICA») -->
+            <section class="tab-view" id="tabTelegram">
+                <div class="telegram-view-container">
+                    <div class="tg-hero-banner">
+                        <div class="tg-hero-icon">☁️</div>
+                        <div class="tg-hero-texts">
+                            <h2>Nube Musical en Telegram</h2>
+                            <p>Streaming honesto y puro: la música vive en tu canal privado de Telegram y no gasta almacenamiento en tu teléfono.</p>
+                        </div>
+                    </div>
+
+                    <!-- TARJETA DE ESTADO EN VIVO -->
+                    <div class="tg-card">
+                        <div class="tg-card-header">
+                            <span class="card-title">Estado de la conexión</span>
+                            <span class="badge-status-pill connected" id="tgCardStatusBadge">🟢 Conectado</span>
+                        </div>
+                        <div class="tg-info-rows">
+                            <div class="tg-info-item">
+                                <span class="label">Canal privado:</span>
+                                <span class="val" id="tgCardChannel">«Mi Música»</span>
+                            </div>
+                            <div class="tg-info-item">
+                                <span class="label">Usuario activo:</span>
+                                <span class="val" id="tgCardUser">Usuario Titan</span>
+                            </div>
+                            <div class="tg-info-item">
+                                <span class="label">Modo de audio:</span>
+                                <span class="val text-green">Streaming en RAM (0 MB en disco)</span>
+                            </div>
+                        </div>
+                        <div class="tg-card-actions">
+                            <button class="btn-spotify-secondary" id="tgTestAudioBtn">▶ Probar sonido streaming</button>
+                            <button class="btn-spotify-secondary" id="tgRefreshSongsBtn">🔄 Sincronizar canciones</button>
+                        </div>
+                    </div>
+
+                    <!-- ASISTENTE DE CONFIGURACIÓN PASO A PASO -->
+                    <div class="tg-card">
+                        <h3 class="card-subtitle">Vincular cuenta de Telegram</h3>
+                        <p class="card-desc">Crea tu App en <strong>my.telegram.org</strong> (gratis en 2 minutos) para vincular tu canal privado:</p>
+                        
+                        <div class="form-group">
+                            <label for="tgApiIdInput">API ID:</label>
+                            <input type="number" id="tgApiIdInput" placeholder="Ej. 1234567" class="spotify-input">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="tgApiHashInput">API Hash:</label>
+                            <input type="text" id="tgApiHashInput" placeholder="Ej. 0123456789abcdef0123456789abcdef" class="spotify-input">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="tgPhoneViewInput">Número de teléfono:</label>
+                            <input type="text" id="tgPhoneViewInput" placeholder="+58 412 1234567" class="spotify-input">
+                        </div>
+
+                        <div class="form-group" id="tgCodeViewBlock" style="display: none;">
+                            <label for="tgCodeViewInput">Código recibido en Telegram:</label>
+                            <input type="text" id="tgCodeViewInput" placeholder="12345" class="spotify-input">
+                        </div>
+
+                        <div class="btn-group-row">
+                            <button class="btn-spotify-primary" id="tgSaveConnectBtn">Guardar y Conectar</button>
+                            <button class="btn-spotify-danger" id="tgDisconnectBtn">Desconectar</button>
+                        </div>
+                    </div>
+
+                    <!-- CANCIONES DE LA NUBE -->
+                    <div class="section-block">
+                        <h3 class="section-title">Canciones en tu Nube</h3>
+                        <div class="songs-list" id="telegramSongsList"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 5: CONFIGURACIÓN HI-FI (AJUSTES) -->
+            <section class="tab-view" id="tabSettings">
+                <div class="settings-view-container">
+                    <h2 class="settings-main-title">Configuración de Audio</h2>
+                    <p class="settings-main-desc">Ajustes avanzados del reproductor Hi-Fi y preferencias del sistema</p>
+
+                    <!-- 1. VOLUMEN -->
+                    <div class="settings-card">
+                        <div class="setting-title-row">
+                            <span class="setting-name">🔊 Volumen de reproducción</span>
+                            <span class="setting-badge" id="settingsVolBadge">80%</span>
+                        </div>
+                        <div class="slider-row">
                             <span class="slider-icon">🔈</span>
-                            <input type="range" id="volumeSlider" min="0" max="100" value="80" class="spotify-range">
+                            <input type="range" id="settingsVolSlider" min="0" max="100" value="80" class="spotify-range">
                             <span class="slider-icon">🔊</span>
                         </div>
                     </div>
 
-                    <!-- 2. FUNDIDO CRUZADO (CROSSFADE) -->
-                    <div class="setting-card">
-                        <div class="setting-header">
+                    <!-- 2. CROSSFADE -->
+                    <div class="settings-card">
+                        <div class="setting-title-row">
                             <div>
-                                <span class="setting-title">🔄 Crossfade (Fundido entre pistas)</span>
-                                <p class="setting-desc">Transición continua mezclando el final con la siguiente.</p>
+                                <span class="setting-name">🔄 Crossfade (Fundido entre canciones)</span>
+                                <p class="setting-subtext">Elimina los cortes y mezcla suavemente el final con la siguiente pista.</p>
                             </div>
-                            <span class="setting-value" id="crossfadeValueLabel">Desactivado</span>
+                            <span class="setting-badge" id="settingsCrossfadeBadge">Desactivado</span>
                         </div>
-                        <div class="slider-wrapper">
-                            <input type="range" id="crossfadeSlider" min="0" max="12" step="0.5" value="0" class="spotify-range">
+                        <div class="slider-row">
+                            <input type="range" id="settingsCrossfadeSlider" min="0" max="12" step="0.5" value="0" class="spotify-range">
                         </div>
-                        <div class="quick-chips">
-                            <button class="chip-sm" data-cf="0">Desactivado</button>
-                            <button class="chip-sm" data-cf="2">2.0 s</button>
-                            <button class="chip-sm" data-cf="4">4.0 s</button>
-                            <button class="chip-sm" data-cf="8">8.0 s</button>
-                            <button class="chip-sm" data-cf="12">12.0 s</button>
+                        <div class="chips-row-compact">
+                            <button class="chip-sm active" data-cf="0">Apagado</button>
+                            <button class="chip-sm" data-cf="2">2 seg</button>
+                            <button class="chip-sm" data-cf="4">4 seg</button>
+                            <button class="chip-sm" data-cf="8">8 seg</button>
+                            <button class="chip-sm" data-cf="12">12 seg</button>
                         </div>
                     </div>
 
-                    <!-- 3. ECUALIZADOR (EQ) 3 BANDAS -->
-                    <div class="setting-card eq-card">
-                        <div class="setting-header">
+                    <!-- 3. ECUALIZADOR HI-FI 3 BANDAS -->
+                    <div class="settings-card eq-box">
+                        <div class="setting-title-row">
                             <div>
-                                <span class="setting-title">🎛️ Ecualizador Hi-Fi (3 Bandas)</span>
-                                <p class="setting-desc">Ajuste de respuesta de frecuencia (-12 dB a +12 dB).</p>
+                                <span class="setting-name">🎛️ Ecualizador Hi-Fi (3 Bandas)</span>
+                                <p class="setting-subtext">Ajusta graves, medios y agudos a tu gusto de -12 dB a +12 dB.</p>
                             </div>
-                            <button class="btn-text-sm" id="resetEqBtn">Restablecer</button>
+                            <button class="btn-text-action" id="settingsResetEqBtn">Restablecer</button>
                         </div>
 
-                        <!-- PRESETS RÁPIDOS -->
-                        <div class="eq-presets-row">
-                            <button class="eq-preset-chip active" data-eq="0,0,0">Plano</button>
-                            <button class="eq-preset-chip" data-eq="6,2,-1">Bass Boost</button>
-                            <button class="eq-preset-chip" data-eq="-1,5,2">Vocal</button>
-                            <button class="eq-preset-chip" data-eq="5,-2,4">Rock</button>
-                            <button class="eq-preset-chip" data-eq="3,3,4">Acústico</button>
-                            <button class="eq-preset-chip" data-eq="6,1,5">Electrónica</button>
+                        <!-- PRESETS -->
+                        <div class="eq-presets-wrap">
+                            <button class="preset-btn active" data-eq="0,0,0">Plano</button>
+                            <button class="preset-btn" data-eq="6,2,-1">Bass Boost 🔊</button>
+                            <button class="preset-btn" data-eq="-1,5,2">Vocal 🎤</button>
+                            <button class="preset-btn" data-eq="5,-2,4">Rock 🎸</button>
+                            <button class="preset-btn" data-eq="3,3,4">Acústico 🎹</button>
+                            <button class="preset-btn" data-eq="6,1,5">Electrónica ⚡</button>
                         </div>
 
-                        <!-- SLIDERS DE EQ -->
-                        <div class="eq-sliders-grid">
-                            <div class="eq-band">
-                                <span class="eq-band-label">Graves (250Hz)</span>
-                                <input type="range" id="eqBass" min="-12" max="12" value="0" class="spotify-range">
-                                <span class="eq-db-badge" id="eqBassLabel">0 dB</span>
+                        <!-- SLIDERS -->
+                        <div class="eq-sliders-container">
+                            <div class="eq-band-item">
+                                <span class="band-label">Graves (250 Hz)</span>
+                                <input type="range" id="settingsEqBass" min="-12" max="12" value="0" class="spotify-range">
+                                <span class="band-db" id="settingsEqBassDb">0 dB</span>
                             </div>
-                            <div class="eq-band">
-                                <span class="eq-band-label">Medios (1kHz)</span>
-                                <input type="range" id="eqMid" min="-12" max="12" value="0" class="spotify-range">
-                                <span class="eq-db-badge" id="eqMidLabel">0 dB</span>
+                            <div class="eq-band-item">
+                                <span class="band-label">Medios (1 kHz)</span>
+                                <input type="range" id="settingsEqMid" min="-12" max="12" value="0" class="spotify-range">
+                                <span class="band-db" id="settingsEqMidDb">0 dB</span>
                             </div>
-                            <div class="eq-band">
-                                <span class="eq-band-label">Agudos (4kHz)</span>
-                                <input type="range" id="eqTreble" min="-12" max="12" value="0" class="spotify-range">
-                                <span class="eq-db-badge" id="eqTrebleLabel">0 dB</span>
+                            <div class="eq-band-item">
+                                <span class="band-label">Agudos (4 kHz)</span>
+                                <input type="range" id="settingsEqTreble" min="-12" max="12" value="0" class="spotify-range">
+                                <span class="band-db" id="settingsEqTrebleDb">0 dB</span>
                             </div>
                         </div>
 
-                        <!-- VISUALIZADOR DE 32 BARRAS -->
-                        <div class="spectrum-box">
-                            <span class="spectrum-label">Visualizador en vivo (32 barras de espectro):</span>
-                            <div class="spectrum-bars" id="spectrumBars">
-                                <!-- 32 barras generadas con JS -->
-                            </div>
+                        <!-- VISUALIZADOR 32 BARRAS -->
+                        <div class="live-spectrum-card">
+                            <span class="spectrum-title">Visualizador en vivo (32 barras de espectro):</span>
+                            <div class="spectrum-bars" id="settingsSpectrumBars"></div>
                         </div>
                     </div>
 
-                    <!-- 4. GAPLESS (REPRODUCCIÓN SIN PAUSAS) -->
-                    <div class="setting-card">
-                        <div class="toggle-row">
+                    <!-- 4. GAPLESS -->
+                    <div class="settings-card">
+                        <div class="switch-row">
                             <div>
-                                <span class="setting-title">⚡ Reproducción sin pausas (Gapless)</span>
-                                <p class="setting-desc">Sin silencio ni pausas entre canciones (ideal para álbumes en vivo).</p>
+                                <span class="setting-name">⚡ Reproducción continua (Gapless)</span>
+                                <p class="setting-subtext">Cero milisegundos de silencio entre pistas continuas de un álbum.</p>
                             </div>
-                            <label class="switch">
-                                <input type="checkbox" id="gaplessToggle" checked>
-                                <span class="slider round"></span>
+                            <label class="spotify-switch">
+                                <input type="checkbox" id="settingsGaplessToggle" checked>
+                                <span class="switch-slider"></span>
                             </label>
                         </div>
                     </div>
 
                     <!-- 5. DISPOSITIVO DE SALIDA -->
-                    <div class="setting-card">
-                        <div class="setting-header">
+                    <div class="settings-card">
+                        <div class="setting-title-row">
                             <div>
-                                <span class="setting-title">🎧 Dispositivo de salida</span>
-                                <p class="setting-desc">Selecciona por dónde suena la música.</p>
+                                <span class="setting-name">🎧 Dispositivo de salida de audio</span>
+                                <p class="setting-subtext">Selecciona por dónde suena la música.</p>
                             </div>
                         </div>
-                        <div class="devices-list" id="devicesListContainer">
-                            <!-- Se llena con JS -->
-                        </div>
+                        <div class="devices-picker" id="settingsDevicesContainer"></div>
+                    </div>
+
+                    <!-- 6. ACERCA DE -->
+                    <div class="settings-card about-card">
+                        <span class="setting-name">Titan Music v1.4.0</span>
+                        <p class="setting-subtext">Reproductor Hi-Fi nativo con streaming puro de Telegram (grammers MTProto) y motor de audio de baja latencia.</p>
                     </div>
                 </div>
-            </div>
+            </section>
         </div>
 
-        <!-- MODAL 2: COLA DE REPRODUCCIÓN (QUEUE) -->
-        <div class="modal-backdrop" id="queueModal">
-            <div class="modal-sheet">
-                <div class="sheet-drag-handle"></div>
-                <div class="modal-header">
-                    <h2>Cola de Reproducción</h2>
-                    <button class="modal-close-btn" id="closeQueueModalBtn">✕</button>
+        <!-- MINI REPRODUCTOR FLOTANTE (ESTILO SPOTIFY) -->
+        <aside class="mini-player" id="miniPlayer" style="display: none;">
+            <div class="mini-progress-track">
+                <div class="mini-progress-bar" id="miniProgressBar"></div>
+            </div>
+            <div class="mini-player-body" id="miniPlayerBody">
+                <div class="mini-art-wrapper">
+                    <div class="mini-art" id="miniArt">🎵</div>
                 </div>
-                <div class="modal-body queue-scroll">
-                    <div class="queue-section-header">
-                        <span>Sonando ahora</span>
-                    </div>
-                    <div class="now-playing-queue-item" id="nowPlayingQueueItem">
-                        <!-- Pista actual -->
-                    </div>
+                <div class="mini-meta">
+                    <span class="mini-title" id="miniTitle">Título de la canción</span>
+                    <span class="mini-artist" id="miniArtist">Artista</span>
+                </div>
+                <span class="mini-source-tag" id="miniSourceTag">📱 Local</span>
+                <button class="mini-btn play" id="miniPlayBtn" title="Reproducir / Pausar">▶</button>
+                <button class="mini-btn next" id="miniNextBtn" title="Siguiente">⏭</button>
+            </div>
+        </aside>
 
-                    <div class="queue-section-header queue-sub-header">
+        <!-- BARRA DE NAVEGACIÓN INFERIOR (5 PESTAÑAS) -->
+        <nav class="bottom-nav">
+            <button class="nav-btn active" data-target="tabHome">
+                <span class="nav-icon">🏠</span>
+                <span class="nav-text">Inicio</span>
+            </button>
+            <button class="nav-btn" data-target="tabSearch">
+                <span class="nav-icon">🔍</span>
+                <span class="nav-text">Buscar</span>
+            </button>
+            <button class="nav-btn" data-target="tabLibrary">
+                <span class="nav-icon">📚</span>
+                <span class="nav-text">Biblioteca</span>
+            </button>
+            <button class="nav-btn" data-target="tabTelegram">
+                <span class="nav-icon">☁️</span>
+                <span class="nav-text">Telegram</span>
+            </button>
+            <button class="nav-btn" data-target="tabSettings">
+                <span class="nav-icon">⚙️</span>
+                <span class="nav-text">Ajustes</span>
+            </button>
+        </nav>
+
+        <!-- REPRODUCTOR A PANTALLA COMPLETA (FULL PLAYER) -->
+        <section class="full-player-sheet" id="fullPlayerSheet">
+            <div class="sheet-top-bar">
+                <button class="sheet-icon-btn" id="collapseFullPlayerBtn">⌄</button>
+                <div class="sheet-header-title">
+                    <span class="sub">REPRODUCIENDO DESDE</span>
+                    <span class="main" id="fullPlayerSourceHeader">Tu Biblioteca Doble</span>
+                </div>
+                <button class="sheet-icon-btn" id="fullPlayerMenuBtn">•••</button>
+            </div>
+
+            <!-- CARÁTULA ENORME -->
+            <div class="full-art-box">
+                <div class="full-art-card" id="fullArtCard">
+                    <span class="full-art-emoji" id="fullArtEmoji">🎵</span>
+                </div>
+            </div>
+
+            <!-- TÍTULO Y ARTISTA -->
+            <div class="full-meta-box">
+                <div class="title-col">
+                    <h2 class="full-track-title" id="fullTrackTitle">Título de la canción</h2>
+                    <p class="full-track-artist" id="fullTrackArtist">Nombre del artista</p>
+                </div>
+                <button class="heart-btn" id="heartBtn" title="Me gusta">♡</button>
+            </div>
+
+            <!-- BADGE DE STREAMING (LOCAL VS TELEGRAM) -->
+            <div class="stream-pill" id="fullStreamPill">
+                <span class="stream-icon" id="fullStreamIcon">📱</span>
+                <span class="stream-desc" id="fullStreamDesc">Reproducción local</span>
+            </div>
+
+            <!-- BARRA DE PROGRESO / SEEK -->
+            <div class="seek-bar-box">
+                <input type="range" id="fullSeekSlider" min="0" max="100" value="0" class="spotify-range">
+                <div class="time-labels">
+                    <span id="fullCurrentTime">0:00</span>
+                    <span id="fullTotalDuration">3:30</span>
+                </div>
+            </div>
+
+            <!-- CONTROLES PRINCIPALES -->
+            <div class="main-controls-row">
+                <button class="ctrl-icon-btn" id="shuffleBtn" title="Aleatorio">🔀</button>
+                <button class="ctrl-icon-btn nav" id="prevBtn" title="Anterior">⏮</button>
+                <button class="ctrl-play-btn" id="fullPlayPauseBtn" title="Reproducir / Pausar">
+                    <span id="fullPlayPauseIcon">▶</span>
+                </button>
+                <button class="ctrl-icon-btn nav" id="nextBtn" title="Siguiente">⏭</button>
+                <button class="ctrl-icon-btn" id="repeatBtn" title="Repetir">🔁</button>
+            </div>
+
+            <!-- HERRAMIENTAS INFERIORES DEL REPRODUCTOR -->
+            <div class="sheet-footer-tools">
+                <button class="footer-tool-btn" id="fullDeviceBtn">
+                    <span class="icon">📢</span>
+                    <span id="fullDeviceName">Altavoz</span>
+                </button>
+                <button class="footer-tool-btn" id="fullQueueBtn">
+                    <span class="icon">📑</span>
+                    <span>Cola (<span id="fullQueueCount">0</span>)</span>
+                </button>
+                <button class="footer-tool-btn active-tool" id="fullSettingsBtn">
+                    <span class="icon">🎚️</span>
+                    <span>Ajustes Hi-Fi</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- MODAL DE COLA DE REPRODUCCIÓN -->
+        <div class="modal-overlay" id="queueModal">
+            <div class="modal-sheet">
+                <div class="modal-drag-bar"></div>
+                <div class="modal-header">
+                    <h3>Cola de Reproducción</h3>
+                    <button class="modal-close-icon" id="closeQueueModal">✕</button>
+                </div>
+                <div class="modal-scroll-body">
+                    <div class="queue-heading">Sonando ahora</div>
+                    <div class="queue-current-card" id="queueCurrentCard"></div>
+                    <div class="queue-heading-row">
                         <span>A continuación</span>
-                        <button class="btn-text-sm" id="clearQueueBtn">Vaciar cola</button>
+                        <button class="btn-text-action" id="clearQueueBtn">Vaciar cola</button>
                     </div>
-                    <div class="queue-items-list" id="queueItemsList">
-                        <!-- Lista de pistas en espera -->
-                    </div>
+                    <div class="queue-list" id="queueList"></div>
                 </div>
             </div>
         </div>
 
-        <!-- MODAL 3: CONECTAR A TELEGRAM (NUBE) -->
-        <div class="modal-backdrop" id="telegramModal">
-            <div class="modal-sheet">
-                <div class="sheet-drag-handle"></div>
-                <div class="modal-header">
-                    <h2>Nube Telegram («Mi Música»)</h2>
-                    <button class="modal-close-btn" id="closeTelegramModalBtn">✕</button>
-                </div>
-                <div class="modal-body">
-                    <div class="telegram-hero-card">
-                        <div class="tg-badge">☁️ Streaming puro</div>
-                        <p class="tg-hero-desc">
-                            Tus canciones viven en tu canal privado de Telegram.
-                            Solo viajan unos segundos por adelantado en memoria: 
-                            <strong>cero megabytes ocupados en tu teléfono</strong>.
-                        </p>
-                    </div>
-
-                    <div class="tg-status-card" id="tgStatusCard">
-                        <div class="tg-status-row">
-                            <span>Estado:</span>
-                            <span class="status-badge" id="tgStatusBadge">Listo para usar</span>
-                        </div>
-                        <div class="tg-status-row">
-                            <span>Canal privado:</span>
-                            <span id="tgChannelName">«Mi Música»</span>
-                        </div>
-                        <div class="tg-status-row">
-                            <span>Usuario:</span>
-                            <span id="tgUserLabel">Sin iniciar sesión</span>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="tgPhoneInput">Número de teléfono (con código de país):</label>
-                        <input type="text" id="tgPhoneInput" placeholder="+34 600 111 222" class="spotify-input">
-                    </div>
-
-                    <div class="form-group" id="tgCodeGroup" style="display: none;">
-                        <label for="tgCodeInput">Código recibido en Telegram:</label>
-                        <input type="text" id="tgCodeInput" placeholder="12345" class="spotify-input">
-                    </div>
-
-                    <div class="modal-actions">
-                        <button class="btn-spotify-primary" id="tgConnectBtn">Conectar con Telegram</button>
-                        <button class="btn-spotify-secondary" id="tgDisconnectBtn" style="display: none;">Cerrar sesión</button>
-                    </div>
-                </div>
-            </div>
+        <!-- TOAST FLOTANTE -->
+        <div class="floating-toast" id="toast">
+            <span id="toastText">Notificación</span>
         </div>
 
-        <!-- TOAST DE NOTIFICACIÓN FLOTANTE -->
-        <div class="toast-notification" id="toastNotification">
-            <span id="toastMessage">Acción completada</span>
-        </div>
+        <!-- ELEMENTO DE AUDIO HTML5 DE RESPALDO (GARANTIZA SONIDO 100% REAL) -->
+        <audio id="htmlAudioPlayer" preload="auto"></audio>
     </div>
 
-    <!-- Script de lógica de la aplicación -->
+    <!-- SCRIPT DE LA APLICACIÓN -->
     <script src="app.js"></script>
 </body>
 </html>
