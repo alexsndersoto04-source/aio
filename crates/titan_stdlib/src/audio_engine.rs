@@ -269,7 +269,7 @@ fn stop_locked(eng: &mut Engine) {
     }
     eng.control = None;
     if let Some(shared) = eng.shared.as_ref() {
-        let held = crate::native::lock_recover(shared);
+        let mut held = crate::native::lock_recover(shared);
         held.buf.clear();
         held.paused.store(false, Ordering::SeqCst);
     }
@@ -508,7 +508,9 @@ fn push_blocking(control: &Control, shared: &Mutex<Shared>, samples: &[f32]) {
 fn worker_main(control: Arc<Control>, shared: Arc<Mutex<Shared>>, out_rate: u32, out_ch: u16) {
     let out_rate = out_rate.max(8000);
     let out_ch = out_ch.max(1) as usize;
-    let mut decoder: Option<FileDecoder> = None;
+    // Definite assignment below (the open() match returns on failure),
+    // so no dummy initializer that would trip `unused_assignments`.
+    let mut decoder: Option<FileDecoder>;
     let mut overlap: Option<Overlap> = None;
     let mut chunk: Vec<f32> = Vec::with_capacity(CHUNK_FRAMES * out_ch);
     let mut eq = Eq3::new([0.0, 0.0, 0.0], out_rate, out_ch);
