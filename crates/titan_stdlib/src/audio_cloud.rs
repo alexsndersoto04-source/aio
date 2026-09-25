@@ -1081,9 +1081,15 @@ impl CloudMediaSource {
 
 impl Read for CloudMediaSource {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if out.is_empty() || self.pos >= self.size {
+        if out.is_empty() {
             return Ok(0);
         }
+        // Ojo: `pos` es la marca de agua del FETCH (hasta dónde se pidió),
+        // NO la posición de consumo. El EOF real es quedarse sin `buf` con
+        // la marca de agua en `size`: si cortáramos arriba con
+        // `pos >= size`, un pedazo grande sin consumir se perdería y el
+        // decodificador vería un fin de stream falso (la pista sonaría
+        // truncada). r10: aquí estaba el bug de las pistas cortadas.
         while self.buf.is_empty() && self.pos < self.size {
             let want = (self.size - self.pos).min(READ_AHEAD as u64) as usize;
             let part = self

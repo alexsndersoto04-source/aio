@@ -97,16 +97,18 @@ jobs:
           # Fase 42A: pelar ANSI primero (cargo coloriza error/warning).
           sed -i 's/\x1b\[[0-9;]*m//g' /tmp/ctest.txt
           {
-            grep -E "^error(\[|:)" /tmp/ctest.txt | head -4
-            grep -E "^ +-->" /tmp/ctest.txt | head -4
-            grep -E "^warning: (unused|.*never (read|used|constructed))" /tmp/ctest.txt | head -2
-            grep -E "test result: FAILED" /tmp/ctest.txt | head -2
+            # r10: el contexto de los panics PRIMERO (el assert del
+            # typechecker lista los errores de cada ejemplo .titan) — el API
+            # solo conserva ~10 anotaciones de error por job.
+            grep -A12 -E "panicked at" /tmp/ctest.txt | grep -vE "^--$" | head -14
             grep -A8 "^failures:$" /tmp/ctest.txt | grep -E "^\s+\S" | grep -v "Running unittests" | head -4
-            grep -A3 -E "panicked at" /tmp/ctest.txt | grep -vE "^--$" | head -8
+            grep -E "test result: FAILED" /tmp/ctest.txt | head -2
+            grep -E "^error(\[|:)" /tmp/ctest.txt | head -4
+            grep -E "^ +-->" /tmp/ctest.txt | head -2
             echo "--- examples ---"
-            grep -E "_exit=" /tmp/examples.txt | head -4
+            grep -E "_exit=" /tmp/examples.txt | head -8
             grep -iE "error|panic|traceback|exception" /tmp/examples.txt | head -4
             tail -2 /tmp/examples.txt
-          } | head -18 | while IFS= read -r line; do
+          } | head -24 | while IFS= read -r line; do
             echo "::error file=CI_DIAG.txt::${line:0:300}"
           done
