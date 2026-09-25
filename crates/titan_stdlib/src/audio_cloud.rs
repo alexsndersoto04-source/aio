@@ -348,7 +348,7 @@ struct CloudState {
 }
 
 impl CloudState {
-    const fn new() -> Self {
+    fn new() -> Self {
         CloudState {
             rt: None,
             session: None,
@@ -1415,8 +1415,15 @@ mod tests {
         };
         let media = Media::Document(grammers_client::media::Document::from_raw_media(
             tl::types::MessageMediaDocument {
-                flags: 0,
+                nopremium: false,
+                spoiler: false,
+                video: false,
+                round: false,
+                voice: false,
                 document: Some(tl::enums::Document::Document(raw_doc)),
+                alt_documents: None,
+                video_cover: None,
+                video_timestamp: None,
                 ttl_seconds: None,
             },
         ));
