@@ -48,10 +48,8 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle_build.log || {
-            echo "### Gradle Build Failed" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 80 /tmp/gradle_build.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            ERR=$(grep -A 2 -B 1 -m 5 -E "error:|FAILURE:|cannot find symbol" /tmp/gradle_build.log | tr '\n' ' ' | cut -c 1-250)
+            echo "::error title=Gradle Error::$ERR"
             exit 1
           }
 
