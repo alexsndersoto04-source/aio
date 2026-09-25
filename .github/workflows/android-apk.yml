@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   build-apk:
@@ -30,38 +29,14 @@ jobs:
 
       - name: Build Android APK (Release)
         working-directory: android
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x gradlew
-          if ! ./gradlew assembleRelease --no-daemon > /tmp/build.log 2>&1; then
-            echo "Build failed. Extrayendo causa del fallo..."
-            python3 -c '
-with open("/tmp/build.log") as f:
-    lines = f.readlines()
-extracted = []
-for i, l in enumerate(lines):
-    if any(k in l for k in ["* What went wrong:", "error:", "> Task :", "FAILURE:"]):
-        s = max(0, i - 2)
-        e = min(len(lines), i + 25)
-        extracted.extend(lines[s:e])
-if not extracted:
-    extracted = lines[-50:]
-with open("/tmp/err_summary.log", "w") as out:
-    out.writelines(extracted[:60])
-'
-            gh pr comment 20 --body-file /tmp/err_summary.log || true
-            cat /tmp/err_summary.log
-            exit 1
-          fi
+          ./gradlew assembleRelease --no-daemon
 
       - name: Verify APK structure
         run: |
           mkdir -p dist/
-          APK_SRC=$(find android/app/build/outputs/apk/ -name "*.apk" | head -n 1)
-          if [ -z "$APK_SRC" ]; then
-            APK_SRC=$(find android/ -name "*.apk" | head -n 1)
-          fi
+          APK_SRC=$(find android/ -name "*.apk" | head -n 1)
           if [ -z "$APK_SRC" ]; then
             echo "No APK found after build"
             exit 1
