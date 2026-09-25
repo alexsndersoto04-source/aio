@@ -71,10 +71,7 @@ fn time_to_secs(time: Time) -> f64 {
 
 fn time_from_secs(secs: f64) -> Time {
     let clamped = if secs.is_finite() { secs.max(0.0) } else { 0.0 };
-    Time {
-        seconds: clamped.trunc() as u64,
-        frac: clamped.fract(),
-    }
+    Time::from_seconds(clamped)
 }
 
 // ------------------------------------------------------------------ decoder
@@ -205,6 +202,12 @@ impl FileDecoder {
             let packet = match self.format.next_packet() {
                 Ok(packet) => packet,
                 Err(SymphoniaError::IoError(_)) => {
+                    self.finished = true;
+                    return Ok(());
+                }
+                Err(SymphoniaError::ResetRequired) => {
+                    // Track list changed mid-stream (chained OGG): end
+                    // this track gracefully instead of failing the session.
                     self.finished = true;
                     return Ok(());
                 }

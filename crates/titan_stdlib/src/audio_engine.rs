@@ -28,6 +28,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+#[cfg(not(target_os = "android"))]
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
 use crate::audio_decode::{self, Eq3, FileDecoder};
 
 /// Errors produced by the native playback engine.
@@ -282,7 +285,7 @@ fn ensure_output(eng: &mut Engine) -> Result<(), EngineError> {
         .default_output_config()
         .map_err(|e| EngineError::Control(e.to_string()))?;
     let sample_format = supported.sample_format();
-    let config = supported.config();
+    let config: cpal::StreamConfig = supported.into();
     eng.out_rate = config.sample_rate.0;
     eng.out_channels = config.channels.max(1);
     let shared = Arc::new(Mutex::new(Shared {
