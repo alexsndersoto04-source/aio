@@ -293,35 +293,36 @@ fn ipc_cmd(st: &mut PlayerState, cmd: &str) -> Result<String, PlayerError> {
     ipc.writer.write_all(b"\n")?;
     ipc.writer.flush()?;
     let deadline = Instant::now() + Duration::from_millis(1200);
+    let mut line = Vec::new();
     loop {
         if Instant::now() >= deadline {
             break;
         }
-        let mut line = Vec::new();
         let mut byte = [0u8; 1];
-        loop {
-            match ipc.reader.read(&mut byte) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if byte[0] == b'\n' {
-                        break;
+        match ipc.reader.read(&mut byte) {
+            Ok(0) => break, // EOF: mpv cerró el socket
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    let text = String::from_utf8_lossy(&line).to_string();
+                    line.clear();
+                    if text.contains("\"error\"") {
+                        return Ok(text);
                     }
+                    // línea de evento: seguir leyendo hasta el deadline.
+                } else {
                     line.push(byte[0]);
                     if line.len() > 65536 {
-                        break;
+                        line.clear();
                     }
                 }
-                Err(_) => break,
+            }
+            // El reader tiene timeout de 200 ms; una espera no es un
+            // fracaso: reintentar hasta el deadline de 1.2 s.
+            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => {
+                return Err(PlayerError::Control(format!("ipc read failed: {e}")));
             }
         }
-        if line.is_empty() {
-            break;
-        }
-        let text = String::from_utf8_lossy(&line).to_string();
-        if text.contains("\"error\"") {
-            return Ok(text);
-        }
-        // else: an event line; keep reading until the deadline.
     }
     Err(PlayerError::Control(
         "no response from mpv (is it still running?)".into(),
@@ -703,7 +704,7 @@ pub fn queue_prev() -> Result<String, PlayerError> {
 #[cfg(unix)]
 fn do_playlist_step(st: &mut PlayerState, cmd: &str) -> Result<String, PlayerError> {
     if st.backend == "mpv" {
-        let reply = ipc_cmd(st, &format!(r#"{{"command":[{}]}}"#, cmd))?;
+        let reply = ipc_cmd(st, &playlist_step_cmd(cmd))?;
         mpv_error_check(&reply)?;
         Ok(format!("moved to {cmd}"))
     } else {
@@ -720,6 +721,14 @@ fn do_playlist_step(st: &mut PlayerState, _cmd: &str) -> Result<String, PlayerEr
         backend: st.backend.to_string(),
         action: "queue".into(),
     })
+}
+
+/// Build the JSON-IPC payload for a playlist step command. The command
+/// name must be a quoted JSON string — an unquoted `playlist-next` is not
+/// valid JSON and mpv ignores the command.
+#[cfg(unix)]
+fn playlist_step_cmd(cmd: &str) -> String {
+    format!(r#"{{"command":[{}]}}"#, json_string(cmd))
 }
 
 /// What is playing right now, as reported by the backend.
@@ -912,5 +921,25 @@ mod tests {
             extract_json_string_after(esc, "data"),
             Some("café".to_string())
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod playlist_step_cmd_tests {
+    use super::*;
+
+    #[test]
+    fn playlist_step_payloads_are_valid_json() {
+        for cmd in ["playlist-next", "playlist-prev"] {
+            let payload = playlist_step_cmd(cmd);
+            let v: serde_json::Value =
+                serde_json::from_str(&payload).expect("payload must be valid JSON");
+            let first = v
+                .get("command")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|c| c.as_str());
+            assert_eq!(first, Some(cmd), "command must be a quoted JSON string");
+        }
     }
 }
