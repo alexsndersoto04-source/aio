@@ -1106,17 +1106,18 @@ impl Read for CloudMediaSource {
 
 impl Seek for CloudMediaSource {
     fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
-        let base: i64 = match from {
-            // Ojo: `pos` ya incluye lo que duerme en `buf`.
-            SeekFrom::Start(off) => off as i64 - self.pos as i64,
-            SeekFrom::End(off) => self.size as i64 + off - self.pos as i64,
-            SeekFrom::Current(off) => off - self.buf.len() as i64,
+        // Ojo: `pos` es marca de agua (hasta dónde se pidió); lo que
+        // duerme en `buf` aún no se consumió.
+        let cur = self.pos as i64 - self.buf.len() as i64;
+        let target = match from {
+            SeekFrom::Start(off) => off as i64,
+            SeekFrom::End(off) => self.size as i64 + off,
+            SeekFrom::Current(off) => cur + off,
         };
-        let logical = self.pos as i64 - self.buf.len() as i64 + base;
-        let logical = logical.clamp(0, self.size as i64) as u64;
-        self.pos = logical;
+        let target = target.clamp(0, self.size as i64) as u64;
+        self.pos = target;
         self.buf.clear();
-        Ok(logical)
+        Ok(target)
     }
 }
 

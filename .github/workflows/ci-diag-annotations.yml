@@ -91,6 +91,7 @@ jobs:
             grep -E "^ +-->" /tmp/ctest.txt | head -4
             grep -E "^warning: (unused|.*never (read|used|constructed))" /tmp/ctest.txt | head -2
             grep -E "test result: FAILED" /tmp/ctest.txt | head -2
+            grep -A8 "^failures:$" /tmp/ctest.txt | grep -E "^\s+\S" | head -6
             grep -E "panicked at" /tmp/ctest.txt | head -2
             echo "--- examples ---"
             grep -E "_exit=" /tmp/examples.txt | head -4
