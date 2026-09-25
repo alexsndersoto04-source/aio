@@ -12,17 +12,16 @@ import android.content.res.AssetFileDescriptor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.AudioManager;
-import android.media.MediaMetadata;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.media.audiofx.Equalizer;
-import android.media.session.MediaSession;
-import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
+
+import androidx.core.app.NotificationCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -34,8 +33,8 @@ import java.util.Random;
 /**
  * Servicio de reproducción de audio multimedia Titan Audio.
  *
- * Utiliza el MediaSession nativo de Android y Notification.MediaStyle del sistema,
- * con extracción de carátulas embebidas ID3 y controles directos en la barra de estado.
+ * Integra controles interactivos en la barra de notificaciones del sistema Android,
+ * extracción de carátulas embebidas ID3 y decodificación nativa de archivos locales.
  */
 public class AudioPlaybackService extends Service {
     private static final String TAG = "TitanAudioService";
@@ -51,13 +50,11 @@ public class AudioPlaybackService extends Service {
 
     private final IBinder binder = new LocalBinder();
     private MediaPlayer mediaPlayer;
-    private MediaSession mediaSession;
     private Equalizer equalizer;
     private NotificationManager notificationManager;
 
     private String currentTitle = "Sin reproducción";
     private String currentArtist = "Titan Audio";
-    private String currentAlbum = "Dispositivo";
     private String currentPath = "";
     private Bitmap currentArtwork = null;
 
@@ -92,14 +89,13 @@ public class AudioPlaybackService extends Service {
         super.onCreate();
         notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         createNotificationChannel();
-        initMediaSession();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getAction() != null) {
             String action = intent.getAction();
-            Log.d(TAG, "onStartCommand acción recibida: " + action);
+            Log.d(TAG, "onStartCommand acción: " + action);
             switch (action) {
                 case ACTION_TOGGLE:
                     if (isPlaying) {
@@ -128,85 +124,12 @@ public class AudioPlaybackService extends Service {
         return START_NOT_STICKY;
     }
 
-    private void initMediaSession() {
-        mediaSession = new MediaSession(this, "TitanAudioMediaSession");
-        mediaSession.setActive(true);
-
-        mediaSession.setCallback(new MediaSession.Callback() {
-            @Override
-            public void onPlay() {
-                resume();
-            }
-
-            @Override
-            public void onPause() {
-                pause();
-            }
-
-            @Override
-            public void onSkipToNext() {
-                if (eventListener != null) eventListener.onNextRequested();
-            }
-
-            @Override
-            public void onSkipToPrevious() {
-                if (eventListener != null) eventListener.onPreviousRequested();
-            }
-
-            @Override
-            public void onSeekTo(long pos) {
-                seekTo((int) pos);
-            }
-
-            @Override
-            public void onStop() {
-                stop();
-            }
-        });
-
-        updatePlaybackState(PlaybackState.STATE_NONE, 0);
-    }
-
-    private void updatePlaybackState(int state, long position) {
-        if (mediaSession == null) return;
-
-        long actions = PlaybackState.ACTION_PLAY
-                | PlaybackState.ACTION_PAUSE
-                | PlaybackState.ACTION_PLAY_PAUSE
-                | PlaybackState.ACTION_SKIP_TO_NEXT
-                | PlaybackState.ACTION_SKIP_TO_PREVIOUS
-                | PlaybackState.ACTION_SEEK_TO;
-
-        PlaybackState.Builder stateBuilder = new PlaybackState.Builder()
-                .setActions(actions)
-                .setState(state, position, 1.0f);
-
-        mediaSession.setPlaybackState(stateBuilder.build());
-    }
-
-    private void updateSessionMetadata() {
-        if (mediaSession == null) return;
-
-        MediaMetadata.Builder metaBuilder = new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, currentTitle)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, currentArtist)
-                .putString(MediaMetadata.METADATA_KEY_ALBUM, currentAlbum)
-                .putLong(MediaMetadata.METADATA_KEY_DURATION, getDuration());
-
-        if (currentArtwork != null) {
-            metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, currentArtwork);
-            metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ART, currentArtwork);
-        }
-
-        mediaSession.setMetadata(metaBuilder.build());
-    }
-
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     "Titan Reproductor Multimedia",
-                    NotificationManager.IMPORTANCE_LOW
+                    NotificationManager.IMPORTANCE_DEFAULT
             );
             channel.setDescription("Controles interactivos de reproducción y carátula");
             channel.setShowBadge(true);
@@ -241,30 +164,19 @@ public class AudioPlaybackService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
         );
 
-        Notification.Builder builder = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-
-        Notification.MediaStyle mediaStyle = new Notification.MediaStyle()
-                .setMediaSession(mediaSession.getSessionToken())
-                .setShowActionsInCompactView(0, 1, 2);
-
-        builder.setContentTitle(currentTitle)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(currentTitle)
                 .setContentText(currentArtist)
-                .setSubText(currentAlbum)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(piContent)
-                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setOngoing(isPlaying)
                 .setShowWhen(false)
-                .setStyle(mediaStyle)
-                .addAction(new Notification.Action.Builder(
-                        android.R.drawable.ic_media_previous, "Anterior", piPrev).build())
-                .addAction(new Notification.Action.Builder(
-                        isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
-                        isPlaying ? "Pausa" : "Reproducir", piToggle).build())
-                .addAction(new Notification.Action.Builder(
-                        android.R.drawable.ic_media_next, "Siguiente", piNext).build());
+                .addAction(android.R.drawable.ic_media_previous, "Anterior", piPrev)
+                .addAction(isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
+                        isPlaying ? "Pausa" : "Reproducir", piToggle)
+                .addAction(android.R.drawable.ic_media_next, "Siguiente", piNext);
 
         if (currentArtwork != null) {
             builder.setLargeIcon(currentArtwork);
@@ -278,7 +190,7 @@ public class AudioPlaybackService extends Service {
             try {
                 notificationManager.notify(NOTIFICATION_ID, buildNotification());
             } catch (Exception e) {
-                Log.w(TAG, "No se pudo actualizar notificación: " + e.getMessage());
+                Log.w(TAG, "Error actualizando notificación: " + e.getMessage());
             }
         }
     }
@@ -290,7 +202,7 @@ public class AudioPlaybackService extends Service {
 
         extractArtwork(this.currentPath);
 
-        Log.i(TAG, "Iniciando pista: " + this.currentTitle + " (" + this.currentPath + ")");
+        Log.i(TAG, "Iniciando reproducción: " + this.currentTitle + " (" + this.currentPath + ")");
 
         try {
             if (mediaPlayer != null) {
@@ -338,7 +250,7 @@ public class AudioPlaybackService extends Service {
                 mediaPlayer.setDataSource(path);
                 loaded = true;
             }
-            // 3. Ruta directa
+            // 3. Ruta directa del sistema de archivos
             else if (path != null && !path.isEmpty()) {
                 File file = new File(path);
                 if (file.exists() && file.canRead()) {
@@ -362,9 +274,6 @@ public class AudioPlaybackService extends Service {
                     isPlaying = true;
                     applyEqualizer();
 
-                    updateSessionMetadata();
-                    updatePlaybackState(PlaybackState.STATE_PLAYING, mp.getCurrentPosition());
-
                     Notification notif = buildNotification();
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
@@ -382,14 +291,12 @@ public class AudioPlaybackService extends Service {
 
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPlaying = false;
-                updatePlaybackState(PlaybackState.STATE_PAUSED, mp.getDuration());
                 updateNotification();
                 if (eventListener != null) eventListener.onNextRequested();
             });
 
             mediaPlayer.setOnErrorListener((mp, what, extra) -> {
                 isPlaying = false;
-                updatePlaybackState(PlaybackState.STATE_ERROR, 0);
                 return false;
             });
 
@@ -428,7 +335,6 @@ public class AudioPlaybackService extends Service {
         if (mediaPlayer != null && isPlaying) {
             mediaPlayer.pause();
             isPlaying = false;
-            updatePlaybackState(PlaybackState.STATE_PAUSED, mediaPlayer.getCurrentPosition());
             updateNotification();
             if (eventListener != null) {
                 eventListener.onPlaybackStateChanged(false, currentTitle, currentArtist);
@@ -440,7 +346,6 @@ public class AudioPlaybackService extends Service {
         if (mediaPlayer != null && !isPlaying) {
             mediaPlayer.start();
             isPlaying = true;
-            updatePlaybackState(PlaybackState.STATE_PLAYING, mediaPlayer.getCurrentPosition());
 
             Notification notif = buildNotification();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -461,7 +366,6 @@ public class AudioPlaybackService extends Service {
                 mediaPlayer.stop();
             } catch (Exception ignored) {}
             isPlaying = false;
-            updatePlaybackState(PlaybackState.STATE_STOPPED, 0);
             stopForeground(true);
             if (eventListener != null) {
                 eventListener.onPlaybackStateChanged(false, currentTitle, currentArtist);
@@ -472,7 +376,6 @@ public class AudioPlaybackService extends Service {
     public void seekTo(int msec) {
         if (mediaPlayer != null) {
             mediaPlayer.seekTo(msec);
-            updatePlaybackState(isPlaying ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, msec);
         }
     }
 
@@ -619,11 +522,6 @@ public class AudioPlaybackService extends Service {
                 equalizer.release();
             } catch (Exception ignored) {}
             equalizer = null;
-        }
-        if (mediaSession != null) {
-            mediaSession.setActive(false);
-            mediaSession.release();
-            mediaSession = null;
         }
         super.onDestroy();
     }
