@@ -149,3 +149,6 @@ jobs:
             COMMIT
           if-no-files-found: error
           retention-days: 30
+
+# (2026-09-25: permisos del repo cambiados a Read+Write — la rama
+#  binaries se publica sola a partir de este commit)
