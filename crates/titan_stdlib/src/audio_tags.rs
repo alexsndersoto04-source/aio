@@ -513,8 +513,16 @@ fn apic_image_bytes(id: &str, content: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     // Description terminator: 2-byte NUL for UTF-16 (enc 1), 1 byte otherwise.
+    // UTF-16 se escanea en offsets PARES (líneas de carácter): un par [0,0]
+    // en offset impar sería el byte alto de un carácter BMP más el byte bajo
+    // del terminador (falso positivo).
     let desc_end = if enc == 1 {
-        content[pos..].windows(2).position(|w| w == [0, 0]).map(|p| p + 2)
+        let slice = &content[pos..];
+        let mut i = 0usize;
+        while i + 1 < slice.len() && (slice[i] != 0 || slice[i + 1] != 0) {
+            i += 2;
+        }
+        if i < slice.len() { Some(i + 2) } else { None }
     } else {
         content[pos..].iter().position(|&b| b == 0).map(|p| p + 1)
     };
@@ -1174,7 +1182,7 @@ mod tests {
         // type | mime "image/jpeg" | desc "x" | width..colors | data
         let mut body = Vec::new();
         body.extend_from_slice(&3u32.to_be_bytes());
-        body.extend_from_slice(&(8u32).to_be_bytes());
+        body.extend_from_slice(&(10u32).to_be_bytes());
         body.extend_from_slice(b"image/jpeg");
         body.extend_from_slice(&(1u32).to_be_bytes());
         body.extend_from_slice(b"x");
