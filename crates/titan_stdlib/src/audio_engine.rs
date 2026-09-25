@@ -130,6 +130,10 @@ struct Shared {
     /// Output channels; only the `cpal` callback reads it.
     #[cfg(not(target_os = "android"))]
     channels: u16,
+    /// Callback-side pause gate (mirror of `Control::paused`, set together).
+    /// Lets pause/resume work from any thread; the stream itself stays put.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    paused: AtomicBool,
     /// Output-rate frames the callback has rendered, all tracks.
     frames_rendered: u64,
 }
@@ -163,8 +167,6 @@ struct Engine {
     /// Created once with the output stream, reused across plays so the
     /// `cpal` callback never points at a dead buffer.
     shared: Option<Arc<Mutex<Shared>>>,
-    #[cfg(not(target_os = "android"))]
-    stream: Option<cpal::Stream>,
     device_label: String,
     out_rate: u32,
     out_channels: u16,
@@ -180,8 +182,6 @@ impl Engine {
             worker: None,
             control: None,
             shared: None,
-            #[cfg(not(target_os = "android"))]
-            stream: None,
             device_label: String::new(),
             out_rate: 0,
             out_channels: 0,
@@ -198,6 +198,51 @@ fn slot() -> &'static Mutex<Option<Engine>> {
 
 fn lock_slot() -> std::sync::MutexGuard<'static, Option<Engine>> {
     slot().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+// `cpal::Stream` is `!Send` by design (same story as `minifb::Window`),
+// so it lives thread-locally on the OS thread that first called `play()`.
+// Everything else (buffer, queue, config, position) is `Send` and stays
+// global, and pause/resume also gate the callback + worker flags, so
+// transport from another thread degrades instead of breaking.
+#[cfg(not(target_os = "android"))]
+struct Output {
+    stream: cpal::Stream,
+}
+
+#[cfg(not(target_os = "android"))]
+thread_local! {
+    static OUTPUT: std::cell::RefCell<Option<Output>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Set once the owner thread builds the stream: a second thread calling
+/// `play()` gets an honest error instead of racing a second stream.
+#[cfg(not(target_os = "android"))]
+static STREAM_TAKEN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(target_os = "android"))]
+enum StreamOp {
+    Play,
+    Pause,
+}
+
+/// Best-effort control of the owner thread's stream (no-op elsewhere;
+// the pause flags already stop the sound on every thread).
+#[cfg(not(target_os = "android"))]
+fn tls_stream(op: StreamOp) {
+    let _ = OUTPUT.try_with(|output| {
+        if let Some(held) = output.borrow().as_ref() {
+            match op {
+                StreamOp::Play => {
+                    let _ = held.stream.play();
+                }
+                StreamOp::Pause => {
+                    let _ = held.stream.pause();
+                }
+            }
+        }
+    });
 }
 
 /// Join a worker that finished on its own (queue drained).
@@ -224,12 +269,12 @@ fn stop_locked(eng: &mut Engine) {
     }
     eng.control = None;
     if let Some(shared) = eng.shared.as_ref() {
-        crate::native::lock_recover(shared).buf.clear();
+        let held = crate::native::lock_recover(shared);
+        held.buf.clear();
+        held.paused.store(false, Ordering::SeqCst);
     }
     #[cfg(not(target_os = "android"))]
-    if let Some(stream) = eng.stream.as_ref() {
-        let _ = stream.pause();
-    }
+    tls_stream(StreamOp::Pause);
 }
 
 // ------------------------------------------------------------------ output
@@ -238,6 +283,10 @@ fn stop_locked(eng: &mut Engine) {
 fn pull_frames(shared: &Mutex<Shared>, n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; n];
     if let Ok(mut s) = shared.try_lock() {
+        if s.paused.load(Ordering::SeqCst) {
+            // Silence without draining: resume continues seamlessly.
+            return out;
+        }
         let take = s.buf.len().min(n);
         for slot in out.iter_mut().take(take) {
             *slot = s.buf.pop_front().unwrap_or(0.0);
@@ -255,14 +304,16 @@ fn render_f32(shared: &Mutex<Shared>, data: &mut [f32]) {
 
 #[cfg(not(target_os = "android"))]
 fn render_i16(shared: &Mutex<Shared>, data: &mut [i16]) {
-    for (slot, v) in data.iter_mut().zip(pull_frames(shared, data.len()).iter()) {
+    let n = data.len();
+    for (slot, v) in data.iter_mut().zip(pull_frames(shared, n).iter()) {
         *slot = (v.clamp(-1.0, 1.0) * 32767.0) as i16;
     }
 }
 
 #[cfg(not(target_os = "android"))]
 fn render_u16(shared: &Mutex<Shared>, data: &mut [u16]) {
-    for (slot, v) in data.iter_mut().zip(pull_frames(shared, data.len()).iter()) {
+    let n = data.len();
+    for (slot, v) in data.iter_mut().zip(pull_frames(shared, n).iter()) {
         *slot = ((v.clamp(-1.0, 1.0) * 0.5 + 0.5) * 65535.0) as u16;
     }
 }
@@ -272,11 +323,19 @@ fn stream_error(err: cpal::StreamError) {
     eprintln!("[titan-audio] output stream error: {err}");
 }
 
-/// Build the output stream once (plus its long-lived shared buffer).
+/// Build the output once: device facts + shared buffer go global (all
+/// `Send`), the `!Send` stream stays thread-local on this OS thread.
 #[cfg(not(target_os = "android"))]
 fn ensure_output(eng: &mut Engine) -> Result<(), EngineError> {
-    if eng.stream.is_some() {
-        return Ok(());
+    if eng.shared.is_some() {
+        let owned_here = OUTPUT.try_with(|o| o.borrow().is_some()).unwrap_or(false);
+        if owned_here {
+            return Ok(());
+        }
+        return Err(EngineError::Unsupported(
+            "audio output is owned by another OS thread; keep engine_* transport on one thread"
+                .to_string(),
+        ));
     }
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or(EngineError::NoDevice)?;
@@ -292,9 +351,17 @@ fn ensure_output(eng: &mut Engine) -> Result<(), EngineError> {
         buf: VecDeque::new(),
         cap_samples: eng.out_rate as usize * eng.out_channels as usize * 8,
         channels: eng.out_channels,
+        paused: AtomicBool::new(false),
         frames_rendered: 0,
     }));
     eng.shared = Some(Arc::clone(&shared));
+    if STREAM_TAKEN.swap(true, Ordering::SeqCst) {
+        eng.shared = None;
+        return Err(EngineError::Unsupported(
+            "audio output is owned by another OS thread; keep engine_* transport on one thread"
+                .to_string(),
+        ));
+    }
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_output_stream(
             &config,
@@ -314,10 +381,29 @@ fn ensure_output(eng: &mut Engine) -> Result<(), EngineError> {
             stream_error,
             None,
         ),
-        _ => return Err(EngineError::Unsupported("output sample format".to_string())),
+        _ => {
+            eng.shared = None;
+            STREAM_TAKEN.store(false, Ordering::SeqCst);
+            return Err(EngineError::Unsupported("output sample format".to_string()));
+        }
     }
-    .map_err(|e| EngineError::Control(e.to_string()))?;
-    eng.stream = Some(stream);
+    .map_err(|e| {
+        eng.shared = None;
+        STREAM_TAKEN.store(false, Ordering::SeqCst);
+        EngineError::Control(e.to_string())
+    })?;
+    let stored = OUTPUT
+        .try_with(|o| {
+            *o.borrow_mut() = Some(Output { stream });
+        })
+        .is_ok();
+    if !stored {
+        eng.shared = None;
+        STREAM_TAKEN.store(false, Ordering::SeqCst);
+        return Err(EngineError::Control(
+            "audio thread state is gone".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -707,10 +793,13 @@ pub fn play(path: &str) -> Result<String, EngineError> {
     eng.worker = Some(std::thread::spawn(move || {
         worker_main(worker_control, worker_shared, out_rate, out_channels);
     }));
-    #[cfg(not(target_os = "android"))]
-    if let Some(stream) = eng.stream.as_ref() {
-        let _ = stream.play();
+    if let Some(shared) = eng.shared.as_ref() {
+        crate::native::lock_recover(shared)
+            .paused
+            .store(false, Ordering::SeqCst);
     }
+    #[cfg(not(target_os = "android"))]
+    tls_stream(StreamOp::Play);
     Ok(format!("playing {path} via hifi-engine"))
 }
 
@@ -738,10 +827,13 @@ pub fn pause() -> Result<String, EngineError> {
     reap_finished(eng);
     let control = eng.control.clone().ok_or(EngineError::Idle)?;
     control.paused.store(true, Ordering::SeqCst);
-    #[cfg(not(target_os = "android"))]
-    if let Some(stream) = eng.stream.as_ref() {
-        let _ = stream.pause();
+    if let Some(shared) = eng.shared.as_ref() {
+        crate::native::lock_recover(shared)
+            .paused
+            .store(true, Ordering::SeqCst);
     }
+    #[cfg(not(target_os = "android"))]
+    tls_stream(StreamOp::Pause);
     Ok("paused".to_string())
 }
 
@@ -754,10 +846,13 @@ pub fn resume() -> Result<String, EngineError> {
     reap_finished(eng);
     let control = eng.control.clone().ok_or(EngineError::Idle)?;
     control.paused.store(false, Ordering::SeqCst);
-    #[cfg(not(target_os = "android"))]
-    if let Some(stream) = eng.stream.as_ref() {
-        let _ = stream.play();
+    if let Some(shared) = eng.shared.as_ref() {
+        crate::native::lock_recover(shared)
+            .paused
+            .store(false, Ordering::SeqCst);
     }
+    #[cfg(not(target_os = "android"))]
+    tls_stream(StreamOp::Play);
     Ok("resumed".to_string())
 }
 

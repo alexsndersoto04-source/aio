@@ -70,8 +70,13 @@ fn time_to_secs(time: Time) -> f64 {
 }
 
 fn time_from_secs(secs: f64) -> Time {
+    // symphonia 0.5 `Time` is a plain `{ seconds, frac }` struct (the
+    // `from_seconds` helper only exists in newer releases).
     let clamped = if secs.is_finite() { secs.max(0.0) } else { 0.0 };
-    Time::from_seconds(clamped)
+    Time {
+        seconds: clamped.trunc() as u64,
+        frac: clamped.fract(),
+    }
 }
 
 // ------------------------------------------------------------------ decoder
