@@ -58,8 +58,8 @@ fun main() {
                 print(std::collections::length(cola))
 
                 print("---- 5. Play nube (streaming puro) ----")
-                let play = std::try::catch(|| std::audio::cloud_play(primera.id))
-                match play {
+                let repro = std::try::catch(|| std::audio::cloud_play(primera.id))
+                match repro {
                     Result::Ok(msg) => {
                         print(msg)
                         std::time::sleep_ms(1500)

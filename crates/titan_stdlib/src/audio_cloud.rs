@@ -1328,8 +1328,16 @@ mod tests {
         assert_eq!(decoder.sample_rate(), 22_050);
         assert_eq!(decoder.channels(), 1);
         let mut pcm: Vec<f32> = Vec::new();
+        let mut vueltas: u32 = 0;
         while !decoder.is_finished() {
             decoder.fill(&mut pcm, 4096).expect("fill");
+            vueltas += 1;
+            assert!(
+                vueltas < 100,
+                "bucle sin fin: samples={} fetches={}",
+                pcm.len(),
+                mock.fetches.load(Ordering::SeqCst)
+            );
         }
         let head: Vec<String> = pcm.iter().take(4).map(|s| format!("{s:.4}")).collect();
         let tail: Vec<String> = pcm.iter().rev().take(2).map(|s| format!("{s:.4}")).collect();
