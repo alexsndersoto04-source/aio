@@ -45,27 +45,29 @@ jobs:
       - name: Build release
         id: buildstep
         run: |
-          cargo build --release --bin zett > /tmp/build.log 2>&1 || {
-            echo "=== intento warm fallido; limpiando target y reintentando (cold) ==="
+          set +e
+          echo "cargo: $(which cargo 2>/dev/null || echo MISSING)"
+          cargo --version 2>&1 | head -1
+          cargo build --release --bin zett > /tmp/build.log 2>&1
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "=== intento warm fallido (rc=$rc); limpiando target y reintentando (cold) ==="
             tail -20 /tmp/build.log
             rm -rf target
-            cargo build --release --bin zett > /tmp/build2.log 2>&1 || {
-              echo "=== build cold también falló ==="
+            cargo build --release --bin zett > /tmp/build2.log 2>&1
+            rc2=$?
+            if [ $rc2 -ne 0 ]; then
+              echo "=== build cold también falló (rc=$rc2) ==="
               tail -60 /tmp/build2.log
+              echo "::error::[build] FAIL warm rc=$rc, cold rc=$rc2"
+              tail -12 /tmp/build2.log | while IFS= read -r l; do
+                echo "::error::[build] $l"
+              done
               exit 1
-            }
-          }
+            fi
+          fi
           echo "=== build OK ==="
           ls -la target/release/zett
-
-      - name: Annotate build failure (visible via API)
-        if: steps.buildstep.outcome == 'failure'
-        run: |
-          LOG=/tmp/build.log
-          [ -f /tmp/build2.log ] && LOG=/tmp/build2.log
-          tail -12 "$LOG" 2>/dev/null | while IFS= read -r l; do
-            echo "::error::[build] $l"
-          done
 
       - name: Publish to the binaries branch
         id: publish
