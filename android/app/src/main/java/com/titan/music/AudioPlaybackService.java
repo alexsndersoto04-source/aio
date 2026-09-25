@@ -12,22 +12,17 @@ import android.content.res.AssetFileDescriptor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.AudioManager;
+import android.media.MediaMetadata;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.media.audiofx.Equalizer;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
-import android.support.v4.media.MediaMetadataCompat;
-import android.support.v4.media.session.MediaSessionCompat;
-import android.support.v4.media.session.PlaybackStateCompat;
-import android.util.Base64;
 import android.util.Log;
-
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
-import androidx.core.app.ServiceCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -39,15 +34,14 @@ import java.util.Random;
 /**
  * Servicio de reproducción de audio multimedia Titan Audio.
  *
- * Integra MediaSessionCompat nativo de Android, NotificationCompat.MediaStyle,
- * extracción real de carátulas embebidas ID3 y compatibilidad completa con Android 10-15.
+ * Utiliza el MediaSession nativo de Android y Notification.MediaStyle del sistema,
+ * con extracción de carátulas embebidas ID3 y controles directos en la barra de estado.
  */
 public class AudioPlaybackService extends Service {
     private static final String TAG = "TitanAudioService";
     public static final String CHANNEL_ID = "titan_audio_channel";
     public static final int NOTIFICATION_ID = 1001;
 
-    // Acciones de control desde notificación y widgets
     public static final String ACTION_TOGGLE = "com.titan.music.ACTION_TOGGLE";
     public static final String ACTION_PLAY = "com.titan.music.ACTION_PLAY";
     public static final String ACTION_PAUSE = "com.titan.music.ACTION_PAUSE";
@@ -57,12 +51,13 @@ public class AudioPlaybackService extends Service {
 
     private final IBinder binder = new LocalBinder();
     private MediaPlayer mediaPlayer;
-    private MediaSessionCompat mediaSession;
+    private MediaSession mediaSession;
     private Equalizer equalizer;
+    private NotificationManager notificationManager;
 
     private String currentTitle = "Sin reproducción";
     private String currentArtist = "Titan Audio";
-    private String currentAlbum = "Biblioteca local";
+    private String currentAlbum = "Dispositivo";
     private String currentPath = "";
     private Bitmap currentArtwork = null;
 
@@ -95,6 +90,7 @@ public class AudioPlaybackService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         createNotificationChannel();
         initMediaSession();
     }
@@ -119,14 +115,10 @@ public class AudioPlaybackService extends Service {
                     pause();
                     break;
                 case ACTION_NEXT:
-                    if (eventListener != null) {
-                        eventListener.onNextRequested();
-                    }
+                    if (eventListener != null) eventListener.onNextRequested();
                     break;
                 case ACTION_PREV:
-                    if (eventListener != null) {
-                        eventListener.onPreviousRequested();
-                    }
+                    if (eventListener != null) eventListener.onPreviousRequested();
                     break;
                 case ACTION_STOP:
                     stop();
@@ -137,10 +129,10 @@ public class AudioPlaybackService extends Service {
     }
 
     private void initMediaSession() {
-        mediaSession = new MediaSessionCompat(this, "TitanAudioMediaSession");
+        mediaSession = new MediaSession(this, "TitanAudioMediaSession");
         mediaSession.setActive(true);
 
-        mediaSession.setCallback(new MediaSessionCompat.Callback() {
+        mediaSession.setCallback(new MediaSession.Callback() {
             @Override
             public void onPlay() {
                 resume();
@@ -172,20 +164,20 @@ public class AudioPlaybackService extends Service {
             }
         });
 
-        updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0);
+        updatePlaybackState(PlaybackState.STATE_NONE, 0);
     }
 
     private void updatePlaybackState(int state, long position) {
         if (mediaSession == null) return;
 
-        long actions = PlaybackStateCompat.ACTION_PLAY
-                | PlaybackStateCompat.ACTION_PAUSE
-                | PlaybackStateCompat.ACTION_PLAY_PAUSE
-                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-                | PlaybackStateCompat.ACTION_SEEK_TO;
+        long actions = PlaybackState.ACTION_PLAY
+                | PlaybackState.ACTION_PAUSE
+                | PlaybackState.ACTION_PLAY_PAUSE
+                | PlaybackState.ACTION_SKIP_TO_NEXT
+                | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                | PlaybackState.ACTION_SEEK_TO;
 
-        PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
+        PlaybackState.Builder stateBuilder = new PlaybackState.Builder()
                 .setActions(actions)
                 .setState(state, position, 1.0f);
 
@@ -195,15 +187,15 @@ public class AudioPlaybackService extends Service {
     private void updateSessionMetadata() {
         if (mediaSession == null) return;
 
-        MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
-                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
-                .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, currentAlbum)
-                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, getDuration());
+        MediaMetadata.Builder metaBuilder = new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, currentTitle)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, currentArtist)
+                .putString(MediaMetadata.METADATA_KEY_ALBUM, currentAlbum)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, getDuration());
 
         if (currentArtwork != null) {
-            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtwork);
-            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, currentArtwork);
+            metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, currentArtwork);
+            metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ART, currentArtwork);
         }
 
         mediaSession.setMetadata(metaBuilder.build());
@@ -220,9 +212,8 @@ public class AudioPlaybackService extends Service {
             channel.setShowBadge(true);
             channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
 
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
+            if (notificationManager != null) {
+                notificationManager.createNotificationChannel(channel);
             }
         }
     }
@@ -250,24 +241,30 @@ public class AudioPlaybackService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
         );
 
-        androidx.media.app.NotificationCompat.MediaStyle mediaStyle = new androidx.media.app.NotificationCompat.MediaStyle()
+        Notification.Builder builder = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
+
+        Notification.MediaStyle mediaStyle = new Notification.MediaStyle()
                 .setMediaSession(mediaSession.getSessionToken())
                 .setShowActionsInCompactView(0, 1, 2);
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(currentTitle)
+        builder.setContentTitle(currentTitle)
                 .setContentText(currentArtist)
                 .setSubText(currentAlbum)
-                .setSmallIcon(R.drawable.ic_notif_music)
+                .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(piContent)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setOngoing(isPlaying)
                 .setShowWhen(false)
                 .setStyle(mediaStyle)
-                .addAction(R.drawable.ic_notif_previous, "Anterior", piPrev)
-                .addAction(isPlaying ? R.drawable.ic_notif_pause : R.drawable.ic_notif_play, isPlaying ? "Pausa" : "Reproducir", piToggle)
-                .addAction(R.drawable.ic_notif_next, "Siguiente", piNext);
+                .addAction(new Notification.Action.Builder(
+                        android.R.drawable.ic_media_previous, "Anterior", piPrev).build())
+                .addAction(new Notification.Action.Builder(
+                        isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
+                        isPlaying ? "Pausa" : "Reproducir", piToggle).build())
+                .addAction(new Notification.Action.Builder(
+                        android.R.drawable.ic_media_next, "Siguiente", piNext).build());
 
         if (currentArtwork != null) {
             builder.setLargeIcon(currentArtwork);
@@ -277,26 +274,23 @@ public class AudioPlaybackService extends Service {
     }
 
     private void updateNotification() {
-        try {
-            Notification notification = buildNotification();
-            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification);
-        } catch (Exception e) {
-            Log.w(TAG, "No se pudo refrescar la notificación: " + e.getMessage());
+        if (notificationManager != null) {
+            try {
+                notificationManager.notify(NOTIFICATION_ID, buildNotification());
+            } catch (Exception e) {
+                Log.w(TAG, "No se pudo actualizar notificación: " + e.getMessage());
+            }
         }
     }
 
-    /**
-     * Carga y reproduce el archivo real de audio.
-     */
     public synchronized boolean play(String path, String title, String artist) {
         this.currentTitle = (title != null && !title.isEmpty()) ? title : "Canción";
         this.currentArtist = (artist != null && !artist.isEmpty()) ? artist : "Titan Audio";
         this.currentPath = path != null ? path : "";
 
-        // Extraer carátula embebida real del archivo
         extractArtwork(this.currentPath);
 
-        Log.i(TAG, "Iniciando pista real: " + this.currentTitle + " (" + this.currentPath + ")");
+        Log.i(TAG, "Iniciando pista: " + this.currentTitle + " (" + this.currentPath + ")");
 
         try {
             if (mediaPlayer != null) {
@@ -320,7 +314,7 @@ public class AudioPlaybackService extends Service {
 
             boolean loaded = false;
 
-            // 1. Content URI de MediaStore (content://...)
+            // 1. Content URI de MediaStore
             if (path != null && path.startsWith("content://")) {
                 Uri contentUri = Uri.parse(path);
                 try {
@@ -329,43 +323,34 @@ public class AudioPlaybackService extends Service {
                         mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
                         afd.close();
                         loaded = true;
-                        Log.i(TAG, "Pista cargada mediante openAssetFileDescriptor");
                     }
-                } catch (Exception e1) {
-                    Log.w(TAG, "openAssetFileDescriptor fallo, usando context/uri", e1);
-                }
+                } catch (Exception ignored) {}
 
                 if (!loaded) {
                     try {
                         mediaPlayer.setDataSource(getApplicationContext(), contentUri);
                         loaded = true;
-                        Log.i(TAG, "Pista cargada mediante setDataSource(context, uri)");
-                    } catch (Exception e2) {
-                        Log.e(TAG, "Error final cargando content URI: " + path, e2);
-                    }
+                    } catch (Exception ignored) {}
                 }
             }
-            // 2. Stream HTTP remoto
+            // 2. Stream HTTP
             else if (path != null && (path.startsWith("http://") || path.startsWith("https://"))) {
                 mediaPlayer.setDataSource(path);
                 loaded = true;
             }
-            // 3. Ruta directa en almacenamiento (/storage/... o /sdcard/...)
+            // 3. Ruta directa
             else if (path != null && !path.isEmpty()) {
                 File file = new File(path);
                 if (file.exists() && file.canRead()) {
                     try (FileInputStream fis = new FileInputStream(file)) {
                         mediaPlayer.setDataSource(fis.getFD());
                         loaded = true;
-                        Log.i(TAG, "Pista cargada mediante FileInputStream");
-                    } catch (Exception e) {
-                        Log.w(TAG, "Error leyendo archivo: " + path, e);
-                    }
+                    } catch (Exception ignored) {}
                 }
             }
 
             if (!loaded) {
-                Log.e(TAG, "No se pudo cargar la fuente de audio real: " + path);
+                Log.e(TAG, "No se pudo cargar la fuente de audio: " + path);
                 return false;
             }
 
@@ -378,11 +363,11 @@ public class AudioPlaybackService extends Service {
                     applyEqualizer();
 
                     updateSessionMetadata();
-                    updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, mp.getCurrentPosition());
+                    updatePlaybackState(PlaybackState.STATE_PLAYING, mp.getCurrentPosition());
 
                     Notification notif = buildNotification();
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        ServiceCompat.startForeground(this, NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+                        startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
                     } else {
                         startForeground(NOTIFICATION_ID, notif);
                     }
@@ -390,33 +375,28 @@ public class AudioPlaybackService extends Service {
                     if (eventListener != null) {
                         eventListener.onPlaybackStateChanged(true, currentTitle, currentArtist);
                     }
-                    Log.i(TAG, "Reproducción en curso con notificación activa");
                 } catch (Exception err) {
-                    Log.e(TAG, "Error al arrancar MediaPlayer", err);
+                    Log.e(TAG, "Error iniciando reproducción", err);
                 }
             });
 
             mediaPlayer.setOnCompletionListener(mp -> {
-                Log.i(TAG, "Canción completada");
                 isPlaying = false;
-                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, mp.getDuration());
+                updatePlaybackState(PlaybackState.STATE_PAUSED, mp.getDuration());
                 updateNotification();
-                if (eventListener != null) {
-                    eventListener.onNextRequested();
-                }
+                if (eventListener != null) eventListener.onNextRequested();
             });
 
             mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                Log.e(TAG, "Error en MediaPlayer: what=" + what + ", extra=" + extra);
                 isPlaying = false;
-                updatePlaybackState(PlaybackStateCompat.STATE_ERROR, 0);
+                updatePlaybackState(PlaybackState.STATE_ERROR, 0);
                 return false;
             });
 
             mediaPlayer.prepareAsync();
             return true;
         } catch (Exception e) {
-            Log.e(TAG, "Excepción iniciando reproducción", e);
+            Log.e(TAG, "Excepción en play()", e);
             isPlaying = false;
             return false;
         }
@@ -448,7 +428,7 @@ public class AudioPlaybackService extends Service {
         if (mediaPlayer != null && isPlaying) {
             mediaPlayer.pause();
             isPlaying = false;
-            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, mediaPlayer.getCurrentPosition());
+            updatePlaybackState(PlaybackState.STATE_PAUSED, mediaPlayer.getCurrentPosition());
             updateNotification();
             if (eventListener != null) {
                 eventListener.onPlaybackStateChanged(false, currentTitle, currentArtist);
@@ -460,11 +440,11 @@ public class AudioPlaybackService extends Service {
         if (mediaPlayer != null && !isPlaying) {
             mediaPlayer.start();
             isPlaying = true;
-            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, mediaPlayer.getCurrentPosition());
+            updatePlaybackState(PlaybackState.STATE_PLAYING, mediaPlayer.getCurrentPosition());
 
             Notification notif = buildNotification();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceCompat.startForeground(this, NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+                startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
             } else {
                 startForeground(NOTIFICATION_ID, notif);
             }
@@ -481,7 +461,7 @@ public class AudioPlaybackService extends Service {
                 mediaPlayer.stop();
             } catch (Exception ignored) {}
             isPlaying = false;
-            updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0);
+            updatePlaybackState(PlaybackState.STATE_STOPPED, 0);
             stopForeground(true);
             if (eventListener != null) {
                 eventListener.onPlaybackStateChanged(false, currentTitle, currentArtist);
@@ -492,7 +472,7 @@ public class AudioPlaybackService extends Service {
     public void seekTo(int msec) {
         if (mediaPlayer != null) {
             mediaPlayer.seekTo(msec);
-            updatePlaybackState(isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED, msec);
+            updatePlaybackState(isPlaying ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, msec);
         }
     }
 
@@ -567,9 +547,7 @@ public class AudioPlaybackService extends Service {
             }
             short bands = equalizer.getNumberOfBands();
             if (bands >= 3) {
-                short minLevel = equalizer.getBandLevelRange()[0];
                 short maxLevel = equalizer.getBandLevelRange()[1];
-
                 short bassMilli = (short) ((eqBass / 12.0f) * maxLevel);
                 short midMilli = (short) ((eqMid / 12.0f) * maxLevel);
                 short trebleMilli = (short) ((eqTreble / 12.0f) * maxLevel);
@@ -579,7 +557,7 @@ public class AudioPlaybackService extends Service {
                 equalizer.setBandLevel((short) (bands - 1), trebleMilli);
             }
         } catch (Exception e) {
-            Log.w(TAG, "Equalizer no disponible por hardware: " + e.getMessage());
+            Log.w(TAG, "Equalizer no disponible: " + e.getMessage());
         }
     }
 

@@ -4,33 +4,22 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- TITAN AUDIO — EMBLEMA ORIGINAL: T GEOMÉTRICA CON ONDAS ACÚSTICAS -->
-    <!-- T Central de Titanio -->
     <path
         android:fillColor="#00E5FF"
-        android:pathData="M34,32 L74,32 L74,40 L58,40 L58,76 L50,76 L50,40 L34,40 Z" />
+        android:pathData="M34,30 h40 v10 h-15 v38 h-10 v-38 h-15 z" />
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M38,36 L70,36 L70,38 L56,38 L56,74 L52,74 L52,38 L38,38 Z" />
-
-    <!-- Ondas Sonoras Titan Derecha -->
+        android:pathData="M38,34 h32 v3 h-11 v38 h-10 v-38 h-11 z" />
     <path
         android:fillColor="#00E5FF"
-        android:pathData="M80,44 C82.5,49.5 82.5,58.5 80,64 L84,66 C87,59.5 87,48.5 84,42 Z" />
+        android:pathData="M80,44 c2,5 2,15 0,20 l4,2 c3,-7 3,-17 0,-24 z" />
     <path
-        android:fillColor="#7B2CBF"
-        android:pathData="M89,38 C93,46.5 93,61.5 89,70 L93,72 C97.5,62.5 97.5,45.5 93,36 Z" />
-
-    <!-- Ondas Sonoras Titan Izquierda -->
+        android:fillColor="#7928CA"
+        android:pathData="M89,38 c4,8 4,24 0,32 l4,2 c5,-10 5,-26 0,-36 z" />
     <path
         android:fillColor="#00E5FF"
-        android:pathData="M28,44 C25.5,49.5 25.5,58.5 28,64 L24,66 C21,59.5 21,48.5 24,42 Z" />
+        android:pathData="M28,44 c-2,5 -2,15 0,20 l-4,2 c-3,-7 -3,-17 0,-24 z" />
     <path
-        android:fillColor="#7B2CBF"
-        android:pathData="M19,38 C15,46.5 15,61.5 19,70 L15,72 C10.5,62.5 10.5,45.5 15,36 Z" />
-
-    <!-- Punto Resonador Base -->
-    <path
-        android:fillColor="#00E5FF"
-        android:pathData="M54,82 C55.66,82 57,80.66 57,79 C57,77.34 55.66,76 54,76 C52.34,76 51,77.34 51,79 C51,80.66 52.34,82 54,82 Z" />
+        android:fillColor="#7928CA"
+        android:pathData="M19,38 c-4,8 -4,24 0,32 l-4,2 c-5,-10 -5,-26 0,-36 z" />
 </vector>
