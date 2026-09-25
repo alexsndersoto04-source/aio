@@ -27,12 +27,7 @@ android {
 
     buildTypes {
         release {
-            // If custom release keystore exists use it, otherwise sign with debug key for seamless sideloading
-            if (file("release.keystore").exists()) {
-                signingConfig signingConfigs.release
-            } else {
-                signingConfig signingConfigs.debug
-            }
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

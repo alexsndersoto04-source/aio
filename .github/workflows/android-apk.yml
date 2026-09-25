@@ -28,42 +28,42 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Generate release key for sideloading
-        working-directory: android
-        run: |
-          mkdir -p app/
-          if [ ! -f "app/release.keystore" ]; then
-            keytool -genkeypair -v \
-              -keystore app/release.keystore \
-              -alias titan \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass titan123 \
-              -keypass titan123 \
-              -dname "CN=TitanMusic, OU=Audio, O=Titan, L=City, S=State, C=ES"
-          fi
-
       - name: Build Android APK (Release)
         working-directory: android
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x gradlew
-          if ! ./gradlew assembleRelease --no-daemon --stacktrace > /tmp/build.log 2>&1; then
-            echo "Build failed. Posting error log to PR..."
-            tail -n 50 /tmp/build.log > /tmp/err_summary.log
+          if ! ./gradlew assembleRelease --no-daemon > /tmp/build.log 2>&1; then
+            echo "Build failed. Extrayendo causa del fallo..."
+            python3 -c '
+with open("/tmp/build.log") as f:
+    lines = f.readlines()
+extracted = []
+for i, l in enumerate(lines):
+    if any(k in l for k in ["* What went wrong:", "error:", "> Task :", "FAILURE:"]):
+        s = max(0, i - 2)
+        e = min(len(lines), i + 25)
+        extracted.extend(lines[s:e])
+if not extracted:
+    extracted = lines[-50:]
+with open("/tmp/err_summary.log", "w") as out:
+    out.writelines(extracted[:60])
+'
             gh pr comment 20 --body-file /tmp/err_summary.log || true
-            cat /tmp/build.log | tail -n 60
+            cat /tmp/err_summary.log
             exit 1
           fi
 
       - name: Verify APK structure
         run: |
           mkdir -p dist/
-          APK_SRC=$(find android/ -name "*.apk" | head -n 1)
+          APK_SRC=$(find android/app/build/outputs/apk/ -name "*.apk" | head -n 1)
           if [ -z "$APK_SRC" ]; then
-            echo "No APK found"
+            APK_SRC=$(find android/ -name "*.apk" | head -n 1)
+          fi
+          if [ -z "$APK_SRC" ]; then
+            echo "No APK found after build"
             exit 1
           fi
           echo "Found APK at: $APK_SRC"
