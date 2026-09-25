@@ -114,7 +114,7 @@ audio_engine = ["dep:symphonia", "dep:cpal"]
 # (reusa el decode local para duraciones antes de subir, y el motor
 # para reproducir streams). La sesión vive en JSON propio (feature
 # `serde` de grammers-session, sin SQLite/C).
-audio_cloud = ["audio_engine", "dep:grammers-client", "dep:grammers-session", "dep:grammers-mtsender", "dep:tokio"]
+audio_cloud = ["audio_engine", "dep:grammers-client", "dep:grammers-session", "dep:grammers-mtsender", "dep:grammers-tl-types", "dep:tokio"]
 
 # Phase 10 — Embedded key-value store and Redis client
 kv_mod       = ["dep:sled"]
@@ -251,6 +251,7 @@ symphonia         = { version = "0.5",  optional = true }
 grammers-client   = { git = "https://codeberg.org/Lonami/grammers.git", optional = true }
 grammers-mtsender = { git = "https://codeberg.org/Lonami/grammers.git", optional = true }
 grammers-session  = { git = "https://codeberg.org/Lonami/grammers.git", optional = true, default-features = false, features = ["serde"] }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", optional = true }
 
 # Phase 10 — Embedded key-value store + Redis client.
 # `sled` is pure-Rust, ACID, and produces a single on-disk file — perfect

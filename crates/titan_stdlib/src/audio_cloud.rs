@@ -706,7 +706,7 @@ fn ensure_channel(handle: &Handle, client: &Client) -> Result<PeerRef, CloudErro
     }
     // 2) No existe: crearlo (canal privado solo nuestro).
     run(handle, 60, async {
-        use grammers_client::grammers_tl_types as tl;
+        use grammers_tl_types as tl;
         let _: tl::enums::Updates = client
             .invoke(&tl::functions::channels::CreateChannel {
                 broadcast: true,
@@ -825,7 +825,7 @@ fn require_auth(handle: &Handle, client: &Client) -> Result<(), CloudError> {
 
 /// Extrae título/artista/duración de un documento de audio.
 fn track_from_media(msg_id: i32, caption: &str, media: &Media) -> Option<CloudTrack> {
-    use grammers_client::grammers_tl_types as tl;
+    use grammers_tl_types as tl;
     let doc = match media {
         Media::Document(doc) => doc,
         _ => return None,
@@ -997,7 +997,7 @@ pub fn delete(id: i64) -> Result<String, CloudError> {
     let (handle, client) = ensure_client()?;
     require_auth(&handle, &client)?;
     run(&handle, 60, async {
-        use grammers_client::grammers_tl_types as tl;
+        use grammers_tl_types as tl;
         let _: tl::enums::messages::AffectedMessages = client
             .invoke(&tl::functions::messages::DeleteMessages {
                 revoke: true,
@@ -1385,7 +1385,7 @@ mod tests {
 
     #[test]
     fn track_metadata_from_raw_document() {
-        use grammers_client::grammers_tl_types as tl;
+        use grammers_tl_types as tl;
         // Documento fabricado a mano: MP3 con etiqueta de audio.
         let raw_doc = tl::types::Document {
             id: 777,
