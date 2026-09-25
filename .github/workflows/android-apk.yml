@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
   build-apk:
@@ -45,21 +47,30 @@ jobs:
 
       - name: Build Android APK (Release)
         working-directory: android
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          if ! ./gradlew assembleRelease --no-daemon --stacktrace > /tmp/build.log 2>&1; then
+            echo "Build failed. Posting error log to PR..."
+            ERR_LOG=$(tail -n 60 /tmp/build.log)
+            gh pr comment 20 --body "### ❌ Gradle Build Error Log
+\`\`\`
+$ERR_LOG
+\`\`\`" || true
+            cat /tmp/build.log | tail -n 80
+            exit 1
+          fi
 
       - name: Verify APK structure
         run: |
           mkdir -p dist/
-          find android/ -name "*.apk" -ls || true
           APK_SRC=$(find android/ -name "*.apk" | head -n 1)
-          echo "::warning title=Found APK::$APK_SRC"
           if [ -z "$APK_SRC" ]; then
-            echo "::error title=No APK::No APK file found in android directory"
-            find android/app/build/ -maxdepth 4 -ls || true
+            echo "No APK found"
             exit 1
           fi
+          echo "Found APK at: $APK_SRC"
           cp "$APK_SRC" "dist/TitanMusic-v1.0.0.apk"
           ls -lh dist/TitanMusic-v1.0.0.apk
           sha256sum dist/TitanMusic-v1.0.0.apk > dist/TitanMusic-v1.0.0.apk.sha256
