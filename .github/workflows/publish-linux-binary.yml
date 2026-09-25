@@ -91,7 +91,12 @@ jobs:
           ' Cargo.toml > VERSION
           git rev-parse HEAD > COMMIT
 
+      # continue-on-error: el push puede fallar si el token del repo no tiene
+      # permiso de escritura de contenidos (Settings → Actions → General →
+      # Workflow permissions: "Read and write"). El binario SIEMPRE queda
+      # disponible como artifact de este job.
       - name: Publish to the binaries branch
+        continue-on-error: true
         run: |
           set -euo pipefail
           ROOT_DIR="$(git rev-parse --show-toplevel)"
@@ -131,3 +136,16 @@ jobs:
 
           echo "Publicado en la rama 'binaries':"
           git ls-files
+
+      - name: Upload binary as artifact (descargable desde la UI de GitHub)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zett-linux-x86_64-${{ github.run_number }}
+          path: |
+            zett-linux-x86_64
+            zett-linux-x86_64.sha256
+            VERSION
+            COMMIT
+          if-no-files-found: error
+          retention-days: 30
