@@ -3,53 +3,56 @@ package com.titan.music;
 import android.content.ContentUris;
 import android.content.Context;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.provider.MediaStore;
+import android.util.Base64;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 
 /**
- * Puente JavaScript <-> Android para la interfaz estilo Spotify.
+ * Interfaz de comunicación bidireccional entre la interfaz web y el sistema Android nativo.
  */
 public class WebAppInterface {
-    private static final String TAG = "WebAppInterface";
+    private static final String TAG = "TitanWebAppInterface";
 
-    private final Context context;
     private final MainActivity activity;
-    private final TelegramStreamingClient telegramClient;
+    private final Context context;
 
-    public WebAppInterface(Context context, MainActivity activity) {
-        this.context = context;
+    public WebAppInterface(MainActivity activity) {
         this.activity = activity;
-        this.telegramClient = new TelegramStreamingClient(context);
+        this.context = activity.getApplicationContext();
     }
+
+    private AudioPlaybackService getService() {
+        return activity.getAudioService();
+    }
+
+    // =========================================================================
+    // REPRODUCCIÓN NATIVA
+    // =========================================================================
 
     @JavascriptInterface
     public boolean playTrack(String path, String title, String artist, boolean isCloud) {
-        AudioPlaybackService service = activity.getAudioService();
-        int attempts = 0;
-        while (service == null && attempts < 5) {
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException ignored) {}
-            service = activity.getAudioService();
-            attempts++;
-        }
+        AudioPlaybackService service = getService();
         if (service != null) {
             return service.play(path, title, artist);
         }
-        Log.e(TAG, "AudioPlaybackService no disponible para playTrack");
+        Log.e(TAG, "AudioPlaybackService no disponible en playTrack");
         return false;
     }
 
     @JavascriptInterface
     public void pauseTrack() {
-        AudioPlaybackService service = activity.getAudioService();
+        AudioPlaybackService service = getService();
         if (service != null) {
             service.pause();
         }
@@ -57,7 +60,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void resumeTrack() {
-        AudioPlaybackService service = activity.getAudioService();
+        AudioPlaybackService service = getService();
         if (service != null) {
             service.resume();
         }
@@ -65,7 +68,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void stopTrack() {
-        AudioPlaybackService service = activity.getAudioService();
+        AudioPlaybackService service = getService();
         if (service != null) {
             service.stop();
         }
@@ -73,7 +76,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void seekTo(int seconds) {
-        AudioPlaybackService service = activity.getAudioService();
+        AudioPlaybackService service = getService();
         if (service != null) {
             service.seekTo(seconds * 1000);
         }
@@ -81,9 +84,9 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public String getPlaybackStatus() {
+        AudioPlaybackService service = getService();
         JSONObject obj = new JSONObject();
         try {
-            AudioPlaybackService service = activity.getAudioService();
             if (service != null) {
                 obj.put("playing", service.isPlaying());
                 obj.put("position", service.getPosition() / 1000);
@@ -91,20 +94,13 @@ public class WebAppInterface {
                 obj.put("volume", service.getVolume());
                 obj.put("crossfade", service.getCrossfade());
                 obj.put("gapless", service.isGapless());
-                int[] eq = service.getEqualizer();
-                obj.put("bass", eq[0]);
-                obj.put("mid", eq[1]);
-                obj.put("treble", eq[2]);
             } else {
                 obj.put("playing", false);
                 obj.put("position", 0);
-                obj.put("duration", 210);
+                obj.put("duration", 0);
                 obj.put("volume", 80);
                 obj.put("crossfade", 0.0);
                 obj.put("gapless", true);
-                obj.put("bass", 0);
-                obj.put("mid", 0);
-                obj.put("treble", 0);
             }
         } catch (Exception ignored) {}
         return obj.toString();
@@ -115,21 +111,68 @@ public class WebAppInterface {
         activity.runOnUiThread(activity::launchAudioFilePicker);
     }
 
+    /**
+     * Extrae la carátula embebida real (ID3 / FLAC metadata) de cualquier pista y la entrega en Base64.
+     */
+    @JavascriptInterface
+    public String getEmbeddedArtwork(String pathOrUri) {
+        if (pathOrUri == null || pathOrUri.isEmpty()) return "";
+
+        MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+        try {
+            if (pathOrUri.startsWith("content://")) {
+                mmr.setDataSource(context, Uri.parse(pathOrUri));
+            } else {
+                File f = new File(pathOrUri);
+                if (f.exists() && f.canRead()) {
+                    mmr.setDataSource(pathOrUri);
+                } else {
+                    return "";
+                }
+            }
+
+            byte[] art = mmr.getEmbeddedPicture();
+            if (art != null && art.length > 0) {
+                Bitmap bitmap = BitmapFactory.decodeByteArray(art, 0, art.length);
+                if (bitmap != null) {
+                    // Redimensionar para optimizar transferencia al WebView
+                    int maxDimension = 320;
+                    float scale = Math.min((float) maxDimension / bitmap.getWidth(), (float) maxDimension / bitmap.getHeight());
+                    if (scale < 1.0f) {
+                        int scaledW = Math.round(bitmap.getWidth() * scale);
+                        int scaledH = Math.round(bitmap.getHeight() * scale);
+                        bitmap = Bitmap.createScaledBitmap(bitmap, scaledW, scaledH, true);
+                    }
+
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos);
+                    byte[] compressed = baos.toByteArray();
+                    return "data:image/jpeg;base64," + Base64.encodeToString(compressed, Base64.NO_WRAP);
+                }
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "Sin carátula embebida en: " + pathOrUri);
+        } finally {
+            try { mmr.release(); } catch (Exception ignored) {}
+        }
+        return "";
+    }
+
     // =========================================================================
     // AJUSTES AVANZADOS HI-FI
     // =========================================================================
 
     @JavascriptInterface
-    public void setVolume(int percent) {
-        AudioPlaybackService service = activity.getAudioService();
+    public void setVolume(int volume) {
+        AudioPlaybackService service = getService();
         if (service != null) {
-            service.setVolume(percent);
+            service.setVolume(volume);
         }
     }
 
     @JavascriptInterface
     public void setCrossfade(float seconds) {
-        AudioPlaybackService service = activity.getAudioService();
+        AudioPlaybackService service = getService();
         if (service != null) {
             service.setCrossfade(seconds);
         }
@@ -137,23 +180,42 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void setGapless(boolean enabled) {
-        AudioPlaybackService service = activity.getAudioService();
+        AudioPlaybackService service = getService();
         if (service != null) {
             service.setGapless(enabled);
         }
     }
 
     @JavascriptInterface
-    public void setEqualizer(int bassDb, int midDb, int trebleDb) {
-        AudioPlaybackService service = activity.getAudioService();
+    public void setEqualizer(int bass, int mid, int treble) {
+        AudioPlaybackService service = getService();
         if (service != null) {
-            service.setEqualizer(bassDb, midDb, trebleDb);
+            service.setEqualizer(bass, mid, treble);
         }
     }
 
     @JavascriptInterface
-    public String getAudioDevices() {
-        AudioPlaybackService service = activity.getAudioService();
+    public String getEqualizerSettings() {
+        AudioPlaybackService service = getService();
+        JSONObject obj = new JSONObject();
+        try {
+            if (service != null) {
+                int[] eq = service.getEqualizer();
+                obj.put("bass", eq[0]);
+                obj.put("mid", eq[1]);
+                obj.put("treble", eq[2]);
+            } else {
+                obj.put("bass", 0);
+                obj.put("mid", 0);
+                obj.put("treble", 0);
+            }
+        } catch (Exception ignored) {}
+        return obj.toString();
+    }
+
+    @JavascriptInterface
+    public String getAvailableDevices() {
+        AudioPlaybackService service = getService();
         if (service != null) {
             return service.getAvailableDevices().toString();
         }
@@ -162,21 +224,19 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public String getSpectrumLevels() {
+        AudioPlaybackService service = getService();
         JSONArray arr = new JSONArray();
-        AudioPlaybackService service = activity.getAudioService();
         if (service != null) {
             float[] levels = service.getSpectrumLevels();
-            for (float lvl : levels) {
-                try {
-                    arr.put((double) lvl);
-                } catch (Exception ignored) {}
+            for (float l : levels) {
+                arr.put(Math.round(l * 100.0) / 100.0);
             }
         }
         return arr.toString();
     }
 
     // =========================================================================
-    // BIBLIOTECA DEL TELÉFONO (MEDIASTORE CON CONTENT URIs REALES)
+    // BIBLIOTECA DEL TELÉFONO (MEDIASTORE REAL)
     // =========================================================================
 
     @JavascriptInterface
@@ -192,7 +252,8 @@ public class WebAppInterface {
                     MediaStore.Audio.Media.DURATION,
                     MediaStore.Audio.Media.DATA
             };
-            String selection = MediaStore.Audio.Media.IS_MUSIC + " != 0";
+            // Filtrar audios reales de más de 10 segundos para excluir ringtones y efectos de sonido
+            String selection = MediaStore.Audio.Media.IS_MUSIC + " != 0 AND " + MediaStore.Audio.Media.DURATION + " > 10000";
 
             Cursor cursor = context.getContentResolver().query(collection, projection, selection, null, MediaStore.Audio.Media.TITLE + " ASC");
             if (cursor != null) {
@@ -207,18 +268,18 @@ public class WebAppInterface {
                     long id = cursor.getLong(idIdx);
                     String title = titleIdx >= 0 ? cursor.getString(titleIdx) : "Pista " + id;
                     String artist = artistIdx >= 0 ? cursor.getString(artistIdx) : "Artista desconocido";
-                    String album = albumIdx >= 0 ? cursor.getString(albumIdx) : "Teléfono";
+                    String album = albumIdx >= 0 ? cursor.getString(albumIdx) : "Dispositivo";
                     long durSecs = durIdx >= 0 ? cursor.getLong(durIdx) / 1000 : 180;
                     String rawPath = dataIdx >= 0 ? cursor.getString(dataIdx) : "";
 
                     Uri itemContentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
 
                     JSONObject song = new JSONObject();
-                    song.put("id", "local_" + id);
-                    song.put("title", (title != null && !title.isEmpty()) ? title : "Canción");
+                    song.put("id", "media_" + id);
+                    song.put("title", (title != null && !title.isEmpty()) ? title : "Canción " + id);
                     song.put("artist", (artist != null && !artist.equals("<unknown>")) ? artist : "Artista desconocido");
-                    song.put("album", (album != null && !album.isEmpty()) ? album : "Álbum");
-                    song.put("duration", durSecs > 0 ? durSecs : 180);
+                    song.put("album", (album != null && !album.isEmpty()) ? album : "Dispositivo");
+                    song.put("duration", durSecs);
                     song.put("path", itemContentUri.toString());
                     song.put("rawPath", rawPath != null ? rawPath : "");
                     song.put("source", "phone");
@@ -229,38 +290,8 @@ public class WebAppInterface {
                 cursor.close();
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error escaneando música del teléfono", e);
+            Log.e(TAG, "Error consultando MediaStore", e);
         }
-
         return array.toString();
-    }
-
-    // =========================================================================
-    // NUBE TELEGRAM
-    // =========================================================================
-
-    @JavascriptInterface
-    public String getTelegramStatus() {
-        return telegramClient.getStatus().toString();
-    }
-
-    @JavascriptInterface
-    public void setupTelegram(String apiId, String apiHash, String phone) {
-        telegramClient.setup(apiId, apiHash, phone);
-    }
-
-    @JavascriptInterface
-    public boolean verifyTelegramCode(String code, String password) {
-        return telegramClient.verifyCode(code, password);
-    }
-
-    @JavascriptInterface
-    public void logoutTelegram() {
-        telegramClient.logout();
-    }
-
-    @JavascriptInterface
-    public boolean downloadCloudTrack(String id, String title, String artist) {
-        return telegramClient.downloadExplicit(id, title, artist);
     }
 }

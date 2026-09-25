@@ -4,7 +4,33 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- TITAN AUDIO — EMBLEMA ORIGINAL: T GEOMÉTRICA CON ONDAS ACÚSTICAS -->
+    <!-- T Central de Titanio -->
     <path
-        android:fillColor="#1DB954"
-        android:pathData="M54,18 C34.1,18 18,34.1 18,54 C18,73.9 34.1,90 54,90 C73.9,90 90,73.9 90,54 C90,34.1 73.9,18 54,18 Z M67.5,67.2 C66.8,68.3 65.3,68.7 64.2,68 C55.3,62.6 44.5,61.4 31.9,64.3 C30.6,64.6 29.4,63.7 29.1,62.4 C28.8,61.1 29.7,59.9 31,59.6 C44.8,56.4 56.7,57.8 66.7,63.9 C67.7,64.6 68.1,66.1 67.5,67.2 Z M72.2,54.7 C71.3,56.1 69.4,56.6 68,55.7 C58.3,49.7 43.4,48 33.2,51.1 C31.6,51.6 29.9,50.7 29.4,49.1 C28.9,47.5 29.8,45.8 31.4,45.3 C43.3,41.7 59.8,43.6 70.9,50.5 C72.4,51.3 72.9,53.2 72.2,54.7 Z M72.7,41.9 C61.8,35.4 43.8,34.8 33.4,38 C31.6,38.5 29.7,37.5 29.2,35.7 C28.7,33.9 29.7,32 31.5,31.5 C43.5,27.8 63.4,28.5 75.9,36 C77.5,36.9 78,39 77.1,40.6 C76.2,42.2 74.2,42.7 72.7,41.9 Z" />
+        android:fillColor="#00E5FF"
+        android:pathData="M34,32 L74,32 L74,40 L58,40 L58,76 L50,76 L50,40 L34,40 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,36 L70,36 L70,38 L56,38 L56,74 L52,74 L52,38 L38,38 Z" />
+
+    <!-- Ondas Sonoras Titan Derecha -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M80,44 C82.5,49.5 82.5,58.5 80,64 L84,66 C87,59.5 87,48.5 84,42 Z" />
+    <path
+        android:fillColor="#7B2CBF"
+        android:pathData="M89,38 C93,46.5 93,61.5 89,70 L93,72 C97.5,62.5 97.5,45.5 93,36 Z" />
+
+    <!-- Ondas Sonoras Titan Izquierda -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M28,44 C25.5,49.5 25.5,58.5 28,64 L24,66 C21,59.5 21,48.5 24,42 Z" />
+    <path
+        android:fillColor="#7B2CBF"
+        android:pathData="M19,38 C15,46.5 15,61.5 19,70 L15,72 C10.5,62.5 10.5,45.5 15,36 Z" />
+
+    <!-- Punto Resonador Base -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,82 C55.66,82 57,80.66 57,79 C57,77.34 55.66,76 54,76 C52.34,76 51,77.34 51,79 C51,80.66 52.34,82 54,82 Z" />
 </vector>
