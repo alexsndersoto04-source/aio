@@ -254,8 +254,8 @@ public class WebAppInterface {
                     MediaStore.Audio.Media.DURATION,
                     MediaStore.Audio.Media.DATA
             };
-            // Filtrar audios reales de más de 10 segundos para excluir ringtones y efectos de sonido
-            String selection = MediaStore.Audio.Media.IS_MUSIC + " != 0 AND " + MediaStore.Audio.Media.DURATION + " > 10000";
+            // Filtrar audios de más de 3 segundos para excluir sonidos de sistema pero incluir toda la música real
+            String selection = MediaStore.Audio.Media.DURATION + " > 3000";
 
             Cursor cursor = context.getContentResolver().query(collection, projection, selection, null, MediaStore.Audio.Media.TITLE + " ASC");
             if (cursor != null) {

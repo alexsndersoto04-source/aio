@@ -33,8 +33,8 @@ import java.util.Random;
 /**
  * Servicio de reproducción de audio multimedia Titan Audio.
  *
- * Integra controles interactivos en la barra de notificaciones del sistema Android,
- * extracción de carátulas embebidas ID3 y decodificación nativa de archivos locales.
+ * Soporta reproducción en 2º plano de archivos locales reales (MediaStore / File Picker),
+ * streaming HTTP / HTTPS y pistas empaquetadas en Assets.
  */
 public class AudioPlaybackService extends Service {
     private static final String TAG = "TitanAudioService";
@@ -60,7 +60,7 @@ public class AudioPlaybackService extends Service {
 
     private boolean isPlaying = false;
     private float currentVolume = 0.85f;
-    private float crossfadeSecs = 0.0f;
+    private float crossfadeSecs = 3.0f;
     private boolean gaplessEnabled = true;
     private int eqBass = 0;
     private int eqMid = 0;
@@ -226,7 +226,7 @@ public class AudioPlaybackService extends Service {
 
             boolean loaded = false;
 
-            // 1. Content URI de MediaStore
+            // 1. Content URI de MediaStore o Storage Access Framework (Archivos locales reales)
             if (path != null && path.startsWith("content://")) {
                 Uri contentUri = Uri.parse(path);
                 try {
@@ -245,14 +245,50 @@ public class AudioPlaybackService extends Service {
                     } catch (Exception ignored) {}
                 }
             }
-            // 2. Stream HTTP
-            else if (path != null && (path.startsWith("http://") || path.startsWith("https://"))) {
-                mediaPlayer.setDataSource(path);
-                loaded = true;
+
+            // 2. Stream HTTP / HTTPS remoto
+            if (!loaded && path != null && (path.startsWith("http://") || path.startsWith("https://"))) {
+                try {
+                    mediaPlayer.setDataSource(path);
+                    loaded = true;
+                } catch (Exception e) {
+                    Log.w(TAG, "Error abriendo stream http: " + e.getMessage());
+                }
             }
-            // 3. Ruta directa del sistema de archivos
-            else if (path != null && !path.isEmpty()) {
-                File file = new File(path);
+
+            // 3. Archivos locales de Assets (audio/track_*.wav empaquetados en la app)
+            if (!loaded && path != null && (path.contains("audio/") || path.endsWith(".wav") || path.endsWith(".mp3") || path.startsWith("file:///android_asset/"))) {
+                String assetPath = path.replace("file:///android_asset/", "");
+                if (assetPath.startsWith("/")) assetPath = assetPath.substring(1);
+                if (!assetPath.startsWith("web/")) {
+                    assetPath = "web/" + assetPath;
+                }
+                try {
+                    AssetFileDescriptor afd = getAssets().openFd(assetPath);
+                    if (afd != null) {
+                        mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+                        afd.close();
+                        loaded = true;
+                    }
+                } catch (Exception e) {
+                    try {
+                        // Reintento sin prefijo web/
+                        String directAsset = path.replace("file:///android_asset/", "");
+                        if (directAsset.startsWith("/")) directAsset = directAsset.substring(1);
+                        AssetFileDescriptor afd = getAssets().openFd(directAsset);
+                        if (afd != null) {
+                            mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+                            afd.close();
+                            loaded = true;
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            // 4. Ruta directa del sistema de archivos (/storage/emulated/0/..., /sdcard/..., etc.)
+            if (!loaded && path != null && !path.isEmpty()) {
+                String cleanPath = path.replace("file://", "");
+                File file = new File(cleanPath);
                 if (file.exists() && file.canRead()) {
                     try (FileInputStream fis = new FileInputStream(file)) {
                         mediaPlayer.setDataSource(fis.getFD());
@@ -262,7 +298,7 @@ public class AudioPlaybackService extends Service {
             }
 
             if (!loaded) {
-                Log.e(TAG, "No se pudo cargar la fuente de audio: " + path);
+                Log.e(TAG, "No se pudo cargar la fuente de audio en ninguna ruta: " + path);
                 return false;
             }
 
@@ -285,7 +321,7 @@ public class AudioPlaybackService extends Service {
                         eventListener.onPlaybackStateChanged(true, currentTitle, currentArtist);
                     }
                 } catch (Exception err) {
-                    Log.e(TAG, "Error iniciando reproducción", err);
+                    Log.e(TAG, "Error iniciando reproducción en onPrepared", err);
                 }
             });
 
@@ -296,6 +332,7 @@ public class AudioPlaybackService extends Service {
             });
 
             mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                Log.e(TAG, "MediaPlayer error: what=" + what + ", extra=" + extra);
                 isPlaying = false;
                 return false;
             });
@@ -317,9 +354,9 @@ public class AudioPlaybackService extends Service {
         try {
             if (path.startsWith("content://")) {
                 mmr.setDataSource(this, Uri.parse(path));
-            } else {
-                File f = new File(path);
-                if (f.exists()) mmr.setDataSource(path);
+            } else if (!path.startsWith("http") && !path.contains("android_asset")) {
+                File f = new File(path.replace("file://", ""));
+                if (f.exists()) mmr.setDataSource(f.getAbsolutePath());
             }
             byte[] art = mmr.getEmbeddedPicture();
             if (art != null && art.length > 0) {

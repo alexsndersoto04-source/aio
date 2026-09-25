@@ -13,7 +13,7 @@
   // =========================================================================
   const state = {
     isAndroid: !!window.TitanBridge,
-    currentSource: 'cloud', // 'cloud' | 'phone' | 'telegram'
+    currentSource: 'phone', // Iniciar en el teléfono por defecto si hay Android
     
     // Bibliotecas
     cloudTracks: [],
@@ -44,6 +44,11 @@
     favorites: new Set()
   };
 
+  // Si no está en Android nativo, comenzar en la biblioteca del servidor
+  if (!state.isAndroid) {
+    state.currentSource = 'cloud';
+  }
+
   // =========================================================================
   // MOTOR WEB AUDIO API (Para navegador y escritorio)
   // =========================================================================
@@ -58,63 +63,66 @@
   let spectrumAnimationId = null;
 
   function initWebAudio() {
-    if (audioContext || state.isAndroid) return;
+    if (audioEl) return;
+
+    audioEl = new Audio();
+    audioEl.preload = 'auto';
 
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
+      if (AudioCtx) {
+        audioContext = new AudioCtx();
+        sourceNode = audioContext.createMediaElementSource(audioEl);
 
-      audioContext = new AudioCtx();
-      audioEl = new Audio();
-      audioEl.crossOrigin = 'anonymous';
+        // Filtro Graves (LowShelf 60Hz)
+        bassFilter = audioContext.createBiquadFilter();
+        bassFilter.type = 'lowshelf';
+        bassFilter.frequency.value = 60;
+        bassFilter.gain.value = state.eq.bass;
 
-      sourceNode = audioContext.createMediaElementSource(audioEl);
+        // Filtro Medios (Peaking 1000Hz)
+        midFilter = audioContext.createBiquadFilter();
+        midFilter.type = 'peaking';
+        midFilter.frequency.value = 1000;
+        midFilter.Q.value = 1.0;
+        midFilter.gain.value = state.eq.mid;
 
-      // Filtro Graves (LowShelf 60Hz)
-      bassFilter = audioContext.createBiquadFilter();
-      bassFilter.type = 'lowshelf';
-      bassFilter.frequency.value = 60;
-      bassFilter.gain.value = state.eq.bass;
+        // Filtro Agudos (HighShelf 10000Hz)
+        trebleFilter = audioContext.createBiquadFilter();
+        trebleFilter.type = 'highshelf';
+        trebleFilter.frequency.value = 10000;
+        trebleFilter.gain.value = state.eq.treble;
 
-      // Filtro Medios (Peaking 1000Hz)
-      midFilter = audioContext.createBiquadFilter();
-      midFilter.type = 'peaking';
-      midFilter.frequency.value = 1000;
-      midFilter.Q.value = 1.0;
-      midFilter.gain.value = state.eq.mid;
+        // Control de volumen maestro
+        gainNode = audioContext.createGain();
+        gainNode.gain.value = state.volume / 100;
 
-      // Filtro Agudos (HighShelf 10000Hz)
-      trebleFilter = audioContext.createBiquadFilter();
-      trebleFilter.type = 'highshelf';
-      trebleFilter.frequency.value = 10000;
-      trebleFilter.gain.value = state.eq.treble;
+        // Analizador de frecuencias FFT
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 64;
 
-      // Control de volumen maestro
-      gainNode = audioContext.createGain();
-      gainNode.gain.value = state.volume / 100;
-
-      // Analizador de frecuencias FFT
-      analyserNode = audioContext.createAnalyser();
-      analyserNode.fftSize = 64;
-
-      // Conexión del grafo de audio Hi-Fi
-      sourceNode.connect(bassFilter);
-      bassFilter.connect(midFilter);
-      midFilter.connect(trebleFilter);
-      trebleFilter.connect(gainNode);
-      gainNode.connect(analyserNode);
-      analyserNode.connect(audioContext.destination);
-
-      // Eventos del elemento HTML5 Audio
-      audioEl.addEventListener('timeupdate', onTimeUpdate);
-      audioEl.addEventListener('loadedmetadata', onLoadedMetadata);
-      audioEl.addEventListener('ended', onTrackEnded);
-      audioEl.addEventListener('play', () => setPlaybackState(true));
-      audioEl.addEventListener('pause', () => setPlaybackState(false));
-      audioEl.addEventListener('error', (e) => console.warn('Error en audio stream:', e));
+        // Conectar grafo
+        sourceNode.connect(bassFilter);
+        bassFilter.connect(midFilter);
+        midFilter.connect(trebleFilter);
+        trebleFilter.connect(gainNode);
+        gainNode.connect(analyserNode);
+        analyserNode.connect(audioContext.destination);
+      }
     } catch (e) {
-      console.warn('Web Audio API no soportado o restringido:', e);
+      console.warn('Web Audio API restringido, usando reproductor directo:', e);
     }
+
+    // Eventos del elemento HTML5 Audio
+    audioEl.addEventListener('timeupdate', onTimeUpdate);
+    audioEl.addEventListener('loadedmetadata', onLoadedMetadata);
+    audioEl.addEventListener('ended', onTrackEnded);
+    audioEl.addEventListener('play', () => setPlaybackState(true));
+    audioEl.addEventListener('pause', () => setPlaybackState(false));
+    audioEl.addEventListener('error', (e) => {
+      console.warn('Error en audio stream HTML5:', e);
+      setPlaybackState(false);
+    });
   }
 
   // =========================================================================
@@ -133,6 +141,8 @@
     audioFileInput: document.getElementById('audioFileInput'),
     hifiStudioBtn: document.getElementById('hifiStudioBtn'),
     playAllBtn: document.getElementById('playAllBtn'),
+    scanPhoneBtn: document.getElementById('scanPhoneBtn'),
+    openPickerBtn: document.getElementById('openPickerBtn'),
     
     // Secciones y títulos
     currentViewTitle: document.getElementById('currentViewTitle'),
@@ -204,12 +214,48 @@
   };
 
   // =========================================================================
+  // ESCANEO DE MÚSICA REAL DEL TELÉFONO
+  // =========================================================================
+
+  function scanDeviceTracks() {
+    if (state.isAndroid && window.TitanBridge && window.TitanBridge.scanLocalMusic) {
+      try {
+        const localJson = window.TitanBridge.scanLocalMusic();
+        const parsed = JSON.parse(localJson);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          state.phoneTracks = parsed.map(t => {
+            let art = '/api/artwork/default';
+            if (window.TitanBridge.getEmbeddedArtwork) {
+              try {
+                const b64 = window.TitanBridge.getEmbeddedArtwork(t.path);
+                if (b64 && b64.startsWith('data:image')) art = b64;
+              } catch (ignored) {}
+            }
+            return {
+              ...t,
+              artworkUrl: art
+            };
+          });
+          if (dom.phoneCount) dom.phoneCount.textContent = state.phoneTracks.length;
+          console.log(`Titan Audio: ${state.phoneTracks.length} canciones encontradas en el teléfono.`);
+        }
+      } catch (err) {
+        console.warn('Error escaneando MediaStore nativo:', err);
+      }
+    }
+    updateActiveView();
+  }
+
+  // =========================================================================
   // CARGA DE DATOS DESDE EL BACKEND FULL STACK
   // =========================================================================
 
   async function loadBackendData() {
+    // 1. Escanear teléfono primero
+    scanDeviceTracks();
+
     try {
-      // 1. Estado del servidor
+      // 2. Estado del servidor
       const resStatus = await fetch('/api/status');
       if (resStatus.ok) {
         const statusData = await resStatus.json();
@@ -218,7 +264,7 @@
         }
       }
 
-      // 2. Catálogo de pistas del servidor
+      // 3. Catálogo de pistas del servidor
       const resTracks = await fetch('/api/tracks');
       if (resTracks.ok) {
         const data = await resTracks.json();
@@ -228,7 +274,7 @@
         }
       }
 
-      // 3. Pistas de Telegram (Streaming en vivo)
+      // 4. Pistas de Telegram (Streaming en vivo)
       state.telegramTracks = [
         {
           id: 'tg_stream_1',
@@ -260,27 +306,9 @@
         }
       ];
 
-      // 4. Si estamos en Android, escanear MediaStore nativo
-      if (state.isAndroid && window.TitanBridge.scanLocalMusic) {
-        try {
-          const localJson = window.TitanBridge.scanLocalMusic();
-          const parsed = JSON.parse(localJson);
-          if (Array.isArray(parsed)) {
-            state.phoneTracks = parsed.map(t => ({
-              ...t,
-              artworkUrl: window.TitanBridge.getEmbeddedArtwork ? (window.TitanBridge.getEmbeddedArtwork(t.path) || '/api/artwork/default') : '/api/artwork/default'
-            }));
-            if (dom.phoneCount) dom.phoneCount.textContent = state.phoneTracks.length;
-          }
-        } catch (err) {
-          console.warn('Error leyendo MediaStore nativo:', err);
-        }
-      }
-
       updateActiveView();
     } catch (e) {
-      console.warn('Error conectando con el backend REST:', e);
-      // Fallback local con pistas maestras
+      console.warn('Servidor backend remoto no disponible, usando modo local:', e);
       if (state.cloudTracks.length === 0) {
         state.cloudTracks = [
           {
@@ -294,6 +322,7 @@
             format: 'FLAC Lossless',
             source: 'cloud',
             streamUrl: 'audio/track_synthwave.wav',
+            relativePath: 'audio/track_synthwave.wav',
             artworkUrl: '/api/artwork/trk_titan_1'
           },
           {
@@ -307,6 +336,7 @@
             format: 'WAV Lossless',
             source: 'cloud',
             streamUrl: 'audio/track_electronic.wav',
+            relativePath: 'audio/track_electronic.wav',
             artworkUrl: '/api/artwork/trk_titan_2'
           }
         ];
@@ -320,6 +350,11 @@
   // =========================================================================
 
   function updateActiveView() {
+    // Sincronizar pestaña activa en DOM
+    dom.tabBtns.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.source === state.currentSource);
+    });
+
     let sourceTracks = [];
     if (state.currentSource === 'cloud') {
       sourceTracks = state.cloudTracks;
@@ -386,8 +421,8 @@
         <div class="col-format">${escapeHtml(formatBadge)}</div>
         <div class="col-dur">${durText}</div>
         <div class="col-action">
-          <button class="row-action-btn" title="Más opciones">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+          <button class="row-action-btn" title="Reproducir">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
           </button>
         </div>
       `;
@@ -415,28 +450,43 @@
 
     updatePlayerMeta(track);
 
+    // Ruta de audio exacta
+    const audioPath = track.path || track.streamUrl || track.relativePath || '';
+
     // Si estamos en Android nativo, delegar a AudioPlaybackService con notificación y lockscreen
     if (state.isAndroid && window.TitanBridge) {
-      const audioPath = track.path || track.streamUrl || '';
       const isCloud = track.source === 'cloud' || track.source === 'telegram';
-      window.TitanBridge.playTrack(audioPath, track.title, track.artist, isCloud);
-      setPlaybackState(true);
+      const ok = window.TitanBridge.playTrack(audioPath, track.title, track.artist, isCloud);
+      if (ok) {
+        setPlaybackState(true);
+      } else {
+        // Fallback a HTML5 si el servicio nativo no abrió la ruta
+        playViaHtmlAudio(audioPath);
+      }
     } else {
       // Modo navegador / escritorio
-      initWebAudio();
-      if (audioContext && audioContext.state === 'suspended') {
-        audioContext.resume();
-      }
-
-      if (audioEl) {
-        const streamUrl = track.streamUrl || track.path || '';
-        audioEl.src = streamUrl;
-        audioEl.play().catch(e => console.warn('Autoplay bloqueado por navegador:', e));
-        setPlaybackState(true);
-      }
+      playViaHtmlAudio(audioPath);
     }
 
     highlightActiveRow();
+  }
+
+  function playViaHtmlAudio(src) {
+    initWebAudio();
+
+    if (audioContext && audioContext.state === 'suspended') {
+      audioContext.resume();
+    }
+
+    if (audioEl) {
+      audioEl.src = src;
+      audioEl.play().then(() => {
+        setPlaybackState(true);
+      }).catch(err => {
+        console.warn('Fallo reproduciendo vía HTML5 audio:', err);
+        setPlaybackState(false);
+      });
+    }
   }
 
   function togglePlayPause() {
@@ -455,7 +505,8 @@
   function pauseTrack() {
     if (state.isAndroid && window.TitanBridge) {
       window.TitanBridge.pauseTrack();
-    } else if (audioEl) {
+    }
+    if (audioEl) {
       audioEl.pause();
     }
     setPlaybackState(false);
@@ -464,7 +515,8 @@
   function resumeTrack() {
     if (state.isAndroid && window.TitanBridge) {
       window.TitanBridge.resumeTrack();
-    } else if (audioEl) {
+    }
+    if (audioEl && audioEl.src) {
       if (audioContext && audioContext.state === 'suspended') {
         audioContext.resume();
       }
@@ -512,7 +564,8 @@
     state.currentTime = seconds;
     if (state.isAndroid && window.TitanBridge) {
       window.TitanBridge.seekTo(Math.round(seconds));
-    } else if (audioEl) {
+    }
+    if (audioEl) {
       audioEl.currentTime = seconds;
     }
     updateTimeDisplay();
@@ -646,7 +699,6 @@
           }
         } catch (ignored) {}
       } else {
-        // Simulación sutil si no hay nodo activo
         for (let i = 0; i < 32; i++) {
           const r = Math.random() * 0.7 + 0.1;
           const h = Math.max(4, Math.round(r * 50));
@@ -735,45 +787,46 @@
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+      const objectUrl = URL.createObjectURL(file);
+      const newTrack = {
+        id: 'local_' + Date.now() + '_' + i,
+        title: file.name.replace(/\.[^/.]+$/, ''),
+        artist: 'Archivo Local',
+        album: 'Dispositivo',
+        genre: 'Local',
+        duration: 180,
+        format: 'Local File',
+        source: 'phone',
+        streamUrl: objectUrl,
+        path: objectUrl,
+        artworkUrl: '/api/artwork/default'
+      };
+
+      state.phoneTracks.unshift(newTrack);
+
+      // Intentar también subir al servidor si hay conexión
       try {
-        const res = await fetch('/api/tracks/upload', {
+        fetch('/api/tracks/upload', {
           method: 'POST',
           headers: {
             'Content-Type': file.type || 'audio/wav',
             'X-Filename': encodeURIComponent(file.name)
           },
           body: file
-        });
-
-        if (res.ok) {
-          const json = await res.json();
+        }).then(r => r.json()).then(json => {
           if (json.success && json.track) {
             state.cloudTracks.unshift(json.track);
+            if (dom.cloudCount) dom.cloudCount.textContent = state.cloudTracks.length;
           }
-        }
-      } catch (err) {
-        console.warn('Error subiendo pista al servidor:', err);
-        // Si falla la red, cargarla como archivo local en memoria
-        const objectUrl = URL.createObjectURL(file);
-        state.phoneTracks.unshift({
-          id: 'local_' + Date.now() + '_' + i,
-          title: file.name.replace(/\.[^/.]+$/, ''),
-          artist: 'Archivo Local',
-          album: 'Dispositivo',
-          genre: 'Local',
-          duration: 180,
-          format: 'Local File',
-          source: 'phone',
-          streamUrl: objectUrl,
-          path: objectUrl,
-          artworkUrl: '/api/artwork/default'
-        });
-      }
+        }).catch(ignored => {});
+      } catch (ignored) {}
     }
 
-    if (dom.cloudCount) dom.cloudCount.textContent = state.cloudTracks.length;
     if (dom.phoneCount) dom.phoneCount.textContent = state.phoneTracks.length;
+    state.currentSource = 'phone';
     updateActiveView();
+    // Reproducir la primera canción subida
+    playTrackByIndex(0);
   }
 
   // =========================================================================
@@ -784,8 +837,6 @@
     // Pestañas de biblioteca
     dom.tabBtns.forEach(btn => {
       btn.addEventListener('click', () => {
-        dom.tabBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
         state.currentSource = btn.dataset.source;
         updateActiveView();
       });
@@ -805,8 +856,11 @@
       updateActiveView();
     });
 
-    // Importación de música
+    // Acciones de importación y escaneo
     dom.importBtn.addEventListener('click', handleImportMusic);
+    if (dom.openPickerBtn) dom.openPickerBtn.addEventListener('click', handleImportMusic);
+    if (dom.scanPhoneBtn) dom.scanPhoneBtn.addEventListener('click', scanDeviceTracks);
+
     dom.audioFileInput.addEventListener('change', (e) => {
       uploadFiles(e.target.files);
     });
@@ -873,6 +927,7 @@
       state.isMuted = vol === 0;
 
       if (gainNode) gainNode.gain.value = vol / 100;
+      if (audioEl) audioEl.volume = vol / 100;
       if (state.isAndroid && window.TitanBridge && window.TitanBridge.setVolume) {
         window.TitanBridge.setVolume(vol);
       }
@@ -883,9 +938,11 @@
       if (state.isMuted) {
         dom.volumeSlider.value = 0;
         if (gainNode) gainNode.gain.value = 0;
+        if (audioEl) audioEl.volume = 0;
       } else {
         dom.volumeSlider.value = state.volume || 80;
         if (gainNode) gainNode.gain.value = (state.volume || 80) / 100;
+        if (audioEl) audioEl.volume = (state.volume || 80) / 100;
       }
     });
 
@@ -961,6 +1018,11 @@
   // INTEGRACIÓN BIDIRECCIONAL CON ANDROID NATIVO
   // =========================================================================
 
+  window.onPermissionsGranted = function () {
+    console.log('Permisos concedidos, escaneando música real del teléfono...');
+    scanDeviceTracks();
+  };
+
   window.onNativePlaybackStateChanged = function (isPlaying, title, artist) {
     setPlaybackState(isPlaying);
     if (state.currentTrack) {
@@ -973,12 +1035,13 @@
   window.onLocalTracksImported = function (jsonString) {
     try {
       const tracks = JSON.parse(jsonString);
-      if (Array.isArray(tracks)) {
+      if (Array.isArray(tracks) && tracks.length > 0) {
         state.phoneTracks = [...tracks, ...state.phoneTracks];
         if (dom.phoneCount) dom.phoneCount.textContent = state.phoneTracks.length;
-        if (state.currentSource === 'phone') {
-          updateActiveView();
-        }
+        state.currentSource = 'phone';
+        updateActiveView();
+        // Reproducir la canción recién importada
+        playTrackByIndex(0);
       }
     } catch (err) {
       console.warn('Error importando pistas locales:', err);
