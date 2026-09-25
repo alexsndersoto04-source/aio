@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   build-apk:
@@ -29,14 +30,23 @@ jobs:
 
       - name: Build Android APK (Release)
         working-directory: android
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon 2>&1 | tee /tmp/build.log || {
+            python3 ../scripts/extract_gradle_error.py
+            exit 1
+          }
 
       - name: Verify APK structure
         run: |
           mkdir -p dist/
-          APK_SRC=$(find android/ -name "*.apk" | head -n 1)
+          APK_SRC=$(find android/app/build/outputs/apk/ -name "*.apk" | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            APK_SRC=$(find android/ -name "*.apk" | head -n 1)
+          fi
           if [ -z "$APK_SRC" ]; then
             echo "No APK found after build"
             exit 1
