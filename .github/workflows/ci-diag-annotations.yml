@@ -43,6 +43,10 @@ jobs:
         with:
           toolchain: stable
 
+      # Fase 42A: el workspace con extras enlaza ALSA (cpal).
+      - name: System deps for native audio (cpal/ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 

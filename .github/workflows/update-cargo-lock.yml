@@ -12,6 +12,13 @@ name: Update Cargo.lock
 
 on:
   workflow_dispatch:
+  # El dispatch por API solo resuelve workflows de la rama default; este
+  # trigger hace que corra solo cuando el propio archivo cambia (el push
+  # del lock resultante no lo re-dispara: no coincide con paths).
+  push:
+    branches: ["arena/**"]
+    paths:
+      - ".github/workflows/update-cargo-lock.yml"
 
 permissions:
   contents: write
@@ -43,3 +50,5 @@ jobs:
           git add Cargo.lock
           git commit -m "chore: update Cargo.lock (CI, $(git rev-parse --short HEAD))"
           git push origin HEAD:${{ github.ref_name }}
+
+# ping fase42a: dispara la actualizacion del lock en esta rama
