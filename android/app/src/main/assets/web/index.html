@@ -1,337 +1,346 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <meta name="theme-color" content="#090a0f">
-    <title>Titan Audio — Reproductor Hi-Fi</title>
-    <link rel="stylesheet" href="app.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Titan Audio — Hi-Fi Full Stack</title>
+  <link rel="stylesheet" href="app.css">
 </head>
 <body>
+  <div class="app-root">
 
-    <!-- CONTENEDOR PRINCIPAL -->
-    <div id="appRoot" class="app-root">
+    <!-- BARRA SUPERIOR PROFESIONAL (SIN BORDES NI SOMBRAS) -->
+    <header class="top-nav">
+      <div class="brand">
+        <svg class="brand-glyph" viewBox="0 0 32 32" width="28" height="28">
+          <circle cx="16" cy="16" r="14" fill="#141722" />
+          <path d="M 8,16 Q 12,6 16,16 T 24,16" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" />
+          <circle cx="16" cy="16" r="3" fill="#ffffff" />
+        </svg>
+        <span class="brand-name">TITAN <span>AUDIO</span></span>
+        <span class="engine-tag">HI-FI LOSSLESS</span>
+      </div>
 
-        <!-- HEADER PRINCIPAL TITAN AUDIO -->
-        <header class="titan-header">
-            <div class="brand-container">
-                <!-- LOGO ORIGINAL TITAN: T GEOMÉTRICA CON ONDAS ACÚSTICAS -->
-                <div class="brand-emblem">
-                    <svg viewBox="0 0 40 40" width="32" height="32" fill="none">
-                        <!-- T Central -->
-                        <path d="M10 10 H30 V14 H22 V30 H18 V14 H10 Z" fill="#00E5FF" />
-                        <path d="M13 12 H27 V13 H21 V29 H19 V13 H13 Z" fill="#FFFFFF" opacity="0.9" />
-                        <!-- Ondas acústicas -->
-                        <path d="M33 16 C34.5 18 34.5 22 33 24" stroke="#00E5FF" stroke-width="2" stroke-linecap="round" />
-                        <path d="M37 13 C39.5 17 39.5 23 37 27" stroke="#7928CA" stroke-width="2" stroke-linecap="round" />
-                        <path d="M7 16 C5.5 18 5.5 22 7 24" stroke="#00E5FF" stroke-width="2" stroke-linecap="round" />
-                        <path d="M3 13 C0.5 17 0.5 23 3 27" stroke="#7928CA" stroke-width="2" stroke-linecap="round" />
-                    </svg>
-                </div>
-                <div class="brand-text">
-                    <span class="brand-title">TITAN</span>
-                    <span class="brand-sub">AUDIO HI-FI</span>
-                </div>
-            </div>
+      <div class="search-box">
+        <svg viewBox="0 0 24 24" width="16" height="16" class="search-icon">
+          <path fill="#8e95a5" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+        </svg>
+        <input type="text" id="searchInput" placeholder="Buscar canciones, artistas, géneros..." autocomplete="off">
+        <button id="clearSearchBtn" class="clear-search-btn" style="display:none;">&times;</button>
+      </div>
 
-            <div class="header-tools">
-                <button id="importFilesBtn" class="titan-tool-btn" title="Añadir canciones">
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                        <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-                    </svg>
-                </button>
-                <button id="refreshScanBtn" class="titan-tool-btn" title="Escanear teléfono">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-                        <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
-                    </svg>
-                </button>
-            </div>
-            <!-- Input oculto para importación en navegador web -->
-            <input type="file" id="webAudioFileInput" accept="audio/*" multiple style="display: none;">
-        </header>
+      <div class="nav-actions">
+        <button id="hifiStudioBtn" class="pill-btn" title="Ecualizador y Motor Hi-Fi">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+          <span>Estudio Hi-Fi</span>
+        </button>
+        <button id="importBtn" class="pill-btn primary" title="Añadir canciones">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <span>Añadir Música</span>
+        </button>
+        <input type="file" id="audioFileInput" accept="audio/*" multiple style="display:none;">
+      </div>
+    </header>
 
-        <!-- ÁREA CENTRAL DESPLAZABLE -->
-        <main id="mainScrollArea" class="main-scroll-area">
+    <!-- SELECTOR DE FUENTES (DUAL LIBRARY) -->
+    <nav class="library-tabs">
+      <button class="tab-btn active" data-source="cloud">
+        <span class="tab-indicator"></span>
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+        <span>Servidor Nube Full Stack</span>
+        <span class="badge" id="cloudCount">5</span>
+      </button>
 
-            <!-- PESTAÑA 1: INICIO -->
-            <section id="tabHome" class="tab-pane active">
-                <!-- HERO CARD DINÁMICA -->
-                <div class="titan-hero-card">
-                    <div class="hero-glow"></div>
-                    <div class="hero-content">
-                        <span id="heroGreeting" class="hero-tag">SISTEMA ACTIVO</span>
-                        <h2 id="heroMainText" class="hero-title">Tu música, sonido real</h2>
-                        <p id="heroSubText" class="hero-desc">Explora las canciones almacenadas en tu dispositivo con decodificación de alta fidelidad.</p>
-                        <div class="hero-actions">
-                            <button id="heroScanActionBtn" class="btn-titan-primary">
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
-                                Escanear teléfono
-                            </button>
-                            <button id="heroPickerActionBtn" class="btn-titan-secondary">
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
-                                Abrir archivos
-                            </button>
-                        </div>
-                    </div>
-                </div>
+      <button class="tab-btn" data-source="phone">
+        <span class="tab-indicator"></span>
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
+        <span>En este Teléfono</span>
+        <span class="badge" id="phoneCount">0</span>
+      </button>
 
-                <!-- CONTADOR DE CANCIONES -->
-                <div class="library-stat-bar">
-                    <span id="libraryCountText" class="stat-text">Cargando canciones del dispositivo...</span>
-                </div>
+      <button class="tab-btn" data-source="telegram">
+        <span class="tab-indicator"></span>
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 0 0-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
+        <span>Streaming Telegram</span>
+        <span class="badge live">LIVE</span>
+      </button>
+    </nav>
 
-                <!-- LISTA DE CANCIONES RECIENTES -->
-                <div class="section-title-wrap">
-                    <h3>Pistas en tu dispositivo</h3>
-                    <span id="totalTracksBadge" class="badge-count">0</span>
-                </div>
+    <!-- CONTENIDO PRINCIPAL -->
+    <main class="main-content">
 
-                <div id="homeTracksList" class="track-list">
-                    <!-- Filas inyectadas dinámicamente -->
-                </div>
-            </section>
+      <!-- BANNER DE ESTADO Y RESUMEN HI-FI -->
+      <section class="hero-banner">
+        <div class="hero-info">
+          <div class="hifi-status-row">
+            <span class="status-dot"></span>
+            <span class="status-label" id="backendStatusLabel">Full Stack API Activo</span>
+            <span class="engine-badge">24-bit / 96kHz Direct Stream</span>
+          </div>
+          <h1 class="hero-title" id="currentViewTitle">Biblioteca Maestra</h1>
+          <p class="hero-subtitle" id="currentViewSubtitle">Streaming puro de alta definición sin compresión destructiva</p>
+        </div>
+        <div class="hero-actions">
+          <button id="playAllBtn" class="hero-play-btn">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+            <span>Reproducir Todo</span>
+          </button>
+        </div>
+      </section>
 
-            <!-- PESTAÑA 2: BIBLIOTECA COMPLETA -->
-            <section id="tabLibrary" class="tab-pane">
-                <!-- BUSCADOR INTEGRADO -->
-                <div class="search-box-wrap">
-                    <div class="search-input-pill">
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                        <input type="text" id="libSearchInput" placeholder="Buscar por título, artista o álbum...">
-                        <button id="libSearchClearBtn" class="clear-icon" style="display: none;">✕</button>
-                    </div>
-                </div>
-
-                <!-- ACCIONES DE ORDENACIÓN -->
-                <div class="filter-chips-row">
-                    <button class="filter-chip active" data-sort="title">Título</button>
-                    <button class="filter-chip" data-sort="artist">Artista</button>
-                    <button class="filter-chip" data-sort="duration">Duración</button>
-                </div>
-
-                <div id="fullLibraryList" class="track-list">
-                    <!-- Se llena con las canciones reales -->
-                </div>
-            </section>
-
-            <!-- PESTAÑA 3: AJUSTES HI-FI -->
-            <section id="tabSettings" class="tab-pane">
-                <div class="pane-title-block">
-                    <h2>Motor de Audio Hi-Fi</h2>
-                    <p>Calibración y parámetros de decodificación</p>
-                </div>
-
-                <!-- VOLUMEN -->
-                <div class="titan-card">
-                    <div class="card-row-between">
-                        <span class="card-label">Volumen Principal</span>
-                        <span id="valVolume" class="card-val-accent">85%</span>
-                    </div>
-                    <input type="range" id="sliderVolume" class="titan-slider" min="0" max="100" value="85">
-                </div>
-
-                <!-- FUNDIDO CRUZADO (CROSSFADE) -->
-                <div class="titan-card">
-                    <div class="card-row-between">
-                        <span class="card-label">Fundido cruzado (Crossfade)</span>
-                        <span id="valCrossfade" class="card-val-accent">Desactivado</span>
-                    </div>
-                    <p class="card-hint">Evita silencios mezclando el final e inicio de canciones consecutivas.</p>
-                    <input type="range" id="sliderCrossfade" class="titan-slider" min="0" max="12" step="0.5" value="0">
-                    <div class="cf-chips-row">
-                        <button class="cf-chip active" data-cf="0">Off</button>
-                        <button class="cf-chip" data-cf="2">2s</button>
-                        <button class="cf-chip" data-cf="4">4s</button>
-                        <button class="cf-chip" data-cf="8">8s</button>
-                    </div>
-                </div>
-
-                <!-- ECUALIZADOR 3 BANDAS -->
-                <div class="titan-card">
-                    <div class="card-row-between">
-                        <span class="card-label">Ecualizador Paramétrico</span>
-                        <button id="resetEqBtn" class="btn-text-action">Restablecer</button>
-                    </div>
-
-                    <div class="eq-grid">
-                        <div class="eq-col">
-                            <span class="eq-title">GRAVES</span>
-                            <span id="valEqBass" class="eq-val">0 dB</span>
-                            <input type="range" id="sliderEqBass" class="titan-slider-vert" min="-12" max="12" value="0">
-                            <span class="eq-freq">250 Hz</span>
-                        </div>
-                        <div class="eq-col">
-                            <span class="eq-title">MEDIOS</span>
-                            <span id="valEqMid" class="eq-val">0 dB</span>
-                            <input type="range" id="sliderEqMid" class="titan-slider-vert" min="-12" max="12" value="0">
-                            <span class="eq-freq">1 kHz</span>
-                        </div>
-                        <div class="eq-col">
-                            <span class="eq-title">AGUDOS</span>
-                            <span id="valEqTreble" class="eq-val">0 dB</span>
-                            <input type="range" id="sliderEqTreble" class="titan-slider-vert" min="-12" max="12" value="0">
-                            <span class="eq-freq">4 kHz</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- REPRODUCCIÓN CONTINUA -->
-                <div class="titan-card">
-                    <div class="card-row-between">
-                        <div>
-                            <span class="card-label">Reproducción sin pausas (Gapless)</span>
-                            <p class="card-hint">Transición directa sin corte entre pistas consecutivas.</p>
-                        </div>
-                        <label class="titan-toggle">
-                            <input type="checkbox" id="toggleGapless" checked>
-                            <span class="toggle-track"></span>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- DISPOSITIVO DE SALIDA -->
-                <div class="titan-card">
-                    <span class="card-label">Salida de Audio</span>
-                    <div id="outputDevicesContainer" class="device-list-box">
-                        <div class="device-row active">
-                            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-                            <span>Altavoz del teléfono</span>
-                            <span class="check-mark">✓</span>
-                        </div>
-                    </div>
-                </div>
-            </section>
-        </main>
-
-        <!-- MINI REPRODUCTOR FLOTANTE (MINI PLAYER) -->
-        <div id="miniPlayer" class="titan-mini-player" style="display: none;">
-            <div class="mini-progress-bar">
-                <div id="miniProgressFill" class="mini-progress-fill"></div>
-            </div>
-            <div id="miniPlayerContent" class="mini-content-row">
-                <div class="mini-artwork-wrap">
-                    <img id="miniCoverImg" class="mini-cover-img" alt="Carátula" style="display: none;">
-                    <div id="miniCoverFallback" class="mini-cover-fallback">
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="#00E5FF"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
-                    </div>
-                </div>
-                <div class="mini-track-meta">
-                    <span id="miniTrackTitle" class="mini-title">Nombre de la canción</span>
-                    <span id="miniTrackArtist" class="mini-artist">Artista</span>
-                </div>
-                <div class="mini-controls">
-                    <button id="miniPlayPauseBtn" class="mini-btn-play" title="Reproducir / Pausa">
-                        <svg id="miniPlayIcon" viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                    </button>
-                    <button id="miniNextBtn" class="mini-btn-ctrl" title="Siguiente">
-                        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-                    </button>
-                </div>
-            </div>
+      <!-- LISTA DE CANCIONES (SIN BORDES, DISEÑO ULTRA-LIMPIO) -->
+      <section class="tracks-section">
+        <div class="tracks-header">
+          <span class="col-num">#</span>
+          <span class="col-title">TÍTULO</span>
+          <span class="col-album">ÁLBUM</span>
+          <span class="col-format">FORMATO</span>
+          <span class="col-dur">DURACIÓN</span>
+          <span class="col-action">ACCIÓN</span>
         </div>
 
-        <!-- BARRA DE NAVEGACIÓN INFERIOR (BOTTOM NAV) -->
-        <nav class="titan-bottom-nav">
-            <button class="nav-item active" data-tab="tabHome">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-                <span>Inicio</span>
-            </button>
-            <button class="nav-item" data-tab="tabLibrary">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/></svg>
-                <span>Tu Música</span>
-            </button>
-            <button class="nav-item" data-tab="tabSettings">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-                <span>Ajustes Hi-Fi</span>
-            </button>
-        </nav>
-
-        <!-- REPRODUCTOR A PANTALLA COMPLETA (FULL MODAL) -->
-        <div id="fullPlayerModal" class="titan-full-player">
-            <!-- HEADER DEL REPRODUCTOR -->
-            <div class="full-top-bar">
-                <button id="fullCloseBtn" class="full-nav-btn" title="Minimizar">
-                    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
-                </button>
-                <div class="full-header-info">
-                    <span class="full-header-tag">REPRODUCIENDO</span>
-                    <span class="full-header-src">ALMACENAMIENTO LOCAL</span>
-                </div>
-                <button id="fullSettingsBtn" class="full-nav-btn" title="Ajustes de audio">
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-                </button>
-            </div>
-
-            <!-- CARÁTULA PRINCIPAL CON RESPLANDOR AMBIENTAL -->
-            <div class="full-art-stage">
-                <div id="ambientGlow" class="ambient-glow"></div>
-                <div class="artwork-frame">
-                    <img id="fullCoverImg" class="full-cover-img" alt="Carátula" style="display: none;">
-                    <div id="fullCoverFallback" class="full-cover-fallback">
-                        <svg viewBox="0 0 80 80" width="64" height="64" fill="none">
-                            <circle cx="40" cy="40" r="38" stroke="#1c202d" stroke-width="2" />
-                            <circle cx="40" cy="40" r="28" stroke="#00E5FF" stroke-width="1.5" stroke-dasharray="4 4" />
-                            <path d="M34 26 H48 V32 H42 V54 H36 V32 H34 Z" fill="#00E5FF" />
-                            <circle cx="40" cy="40" r="6" fill="#7928CA" />
-                        </svg>
-                    </div>
-                </div>
-            </div>
-
-            <!-- METADATOS DE LA CANCIÓN -->
-            <div class="full-track-meta">
-                <div class="meta-texts">
-                    <h2 id="fullTrackTitle" class="full-title">Canción</h2>
-                    <p id="fullTrackArtist" class="full-artist">Artista</p>
-                </div>
-                <button id="fullLikeBtn" class="full-fav-btn" title="Marcar favorita">
-                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                </button>
-            </div>
-
-            <!-- BARRA DE TIEMPO (SCRUBBER) -->
-            <div class="full-scrubber-box">
-                <input type="range" id="fullScrubber" class="full-scrub-slider" min="0" max="100" value="0">
-                <div class="full-time-row">
-                    <span id="fullCurrentTime" class="time-label">0:00</span>
-                    <span id="fullTotalTime" class="time-label">0:00</span>
-                </div>
-            </div>
-
-            <!-- CONTROLES PRINCIPALES -->
-            <div class="full-ctrl-deck">
-                <button id="fullShuffleBtn" class="ctrl-btn-aux" title="Aleatorio">
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
-                </button>
-                <button id="fullPrevBtn" class="ctrl-btn-skip" title="Anterior">
-                    <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-                </button>
-                <button id="fullPlayPauseBtn" class="ctrl-btn-main" title="Reproducir / Pausa">
-                    <svg id="fullPlayPauseIcon" viewBox="0 0 24 24" width="32" height="32" fill="#000000"><path d="M8 5v14l11-7z"/></svg>
-                </button>
-                <button id="fullNextBtn" class="ctrl-btn-skip" title="Siguiente">
-                    <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-                </button>
-                <button id="fullRepeatBtn" class="ctrl-btn-aux" title="Repetir">
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-                </button>
-            </div>
-
-            <!-- PIE DE REPRODUCTOR -->
-            <div class="full-footer-info">
-                <span id="fullCodecLabel" class="codec-tag">DECODIFICADOR NATIVO • HI-RES</span>
-            </div>
+        <div class="tracks-list" id="tracksContainer">
+          <!-- Renderizado dinámico vía JavaScript -->
         </div>
 
-        <!-- NOTIFICACIÓN FLOTANTE (TOAST) -->
-        <div id="toastNotification" class="titan-toast">
-            <span id="toastMessage">Notificación</span>
+        <!-- Estado vacío si no hay canciones -->
+        <div id="emptyState" class="empty-state" style="display:none;">
+          <svg viewBox="0 0 24 24" width="48" height="48" fill="#575e70"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          <p class="empty-title">Sin pistas en esta categoría</p>
+          <p class="empty-desc">Toca "Añadir Música" para cargar canciones desde tu dispositivo o servidor.</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- REPRODUCTOR FLOTANTE INFERIOR (SIN BORDES NI SOMBRAS TOSTAS) -->
+    <footer class="player-bar">
+      <!-- Info de la pista actual -->
+      <div class="now-playing" id="nowPlayingToggle">
+        <img id="npArtwork" class="np-artwork" src="/api/artwork/trk_titan_1" alt="Carátula">
+        <div class="np-meta">
+          <div class="np-title" id="npTitle">Horizonte Estelar</div>
+          <div class="np-artist" id="npArtist">Titan Sound Lab</div>
+        </div>
+        <button class="icon-btn like-btn" id="likeBtn" title="Favorito">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        </button>
+      </div>
+
+      <!-- Controles de reproducción principales -->
+      <div class="player-controls">
+        <div class="buttons-row">
+          <button class="ctrl-btn" id="shuffleBtn" title="Aleatorio">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+          </button>
+          <button class="ctrl-btn" id="prevBtn" title="Anterior">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button class="ctrl-btn play-main" id="playBtn" title="Reproducir / Pausa">
+            <svg id="playIcon" viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+            <svg id="pauseIcon" viewBox="0 0 24 24" width="26" height="26" style="display:none;"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <button class="ctrl-btn" id="nextBtn" title="Siguiente">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+          <button class="ctrl-btn" id="repeatBtn" title="Repetir">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+          </button>
         </div>
 
-        <!-- REPRODUCTOR HTML5 AUDIO PARA ENTORNO WEB DE ESCRITORIO -->
-        <audio id="htmlAudioPlayer" preload="auto" style="display: none;"></audio>
+        <!-- Línea de tiempo -->
+        <div class="timeline-row">
+          <span class="time-text" id="currentTime">0:00</span>
+          <div class="seek-bar-track" id="seekBarTrack">
+            <div class="seek-bar-progress" id="seekBarProgress"></div>
+            <div class="seek-bar-thumb" id="seekBarThumb"></div>
+          </div>
+          <span class="time-text" id="totalDuration">3:05</span>
+        </div>
+      </div>
+
+      <!-- Ajustes de audio y volumen -->
+      <div class="player-extras">
+        <button class="icon-btn" id="eqToggleBtn" title="Ecualizador">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10 20h4V4h-4v16zm-6 0h4v-8H4v8zM16 9v11h4V9h-4z"/></svg>
+        </button>
+
+        <div class="volume-container">
+          <button class="icon-btn" id="muteBtn" title="Silenciar">
+            <svg id="volIcon" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+          </button>
+          <input type="range" id="volumeSlider" min="0" max="100" value="85" class="clean-slider">
+        </div>
+
+        <button class="icon-btn" id="expandPlayerBtn" title="Pantalla Completa">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+        </button>
+      </div>
+    </footer>
+
+    <!-- MODAL ESTUDIO HI-FI (ECUALIZADOR, CROSSFADE, DISPOSITIVOS) -->
+    <div class="modal-overlay" id="hifiModal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <h2 class="modal-title">Estudio Hi-Fi Titan</h2>
+            <span class="modal-badge">Procesamiento de Audio 32-bit Float</span>
+          </div>
+          <button class="close-btn" id="closeHifiModal">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Espectro visualizador en tiempo real -->
+          <div class="spectrum-section">
+            <div class="section-label">ANALIZADOR DE ESPECTRO (TIEMPO REAL)</div>
+            <div class="spectrum-bars" id="spectrumBars">
+              <!-- 32 barras generadas dinámicamente -->
+            </div>
+          </div>
+
+          <!-- Ecualizador de 3 bandas -->
+          <div class="eq-section">
+            <div class="section-label">ECUALIZADOR PARAMÉTRICO DE 3 BANDAS</div>
+            <div class="eq-sliders-row">
+              <div class="eq-slider-col">
+                <span class="eq-val" id="bassVal">0 dB</span>
+                <input type="range" id="eqBass" min="-12" max="12" value="0" class="vertical-slider">
+                <span class="eq-label">GRAVES</span>
+                <span class="eq-freq">60 Hz</span>
+              </div>
+              <div class="eq-slider-col">
+                <span class="eq-val" id="midVal">0 dB</span>
+                <input type="range" id="eqMid" min="-12" max="12" value="0" class="vertical-slider">
+                <span class="eq-label">MEDIOS</span>
+                <span class="eq-freq">1.0 kHz</span>
+              </div>
+              <div class="eq-slider-col">
+                <span class="eq-val" id="trebleVal">0 dB</span>
+                <input type="range" id="eqTreble" min="-12" max="12" value="0" class="vertical-slider">
+                <span class="eq-label">AGUDOS</span>
+                <span class="eq-freq">10 kHz</span>
+              </div>
+            </div>
+
+            <!-- Presets del ecualizador -->
+            <div class="eq-presets" id="eqPresetsContainer">
+              <button class="preset-btn active" data-preset="flat">Plano</button>
+              <button class="preset-btn" data-preset="bass">Bass Boost</button>
+              <button class="preset-btn" data-preset="vocal">Acústico / Voz</button>
+              <button class="preset-btn" data-preset="electronic">Electrónica</button>
+            </div>
+          </div>
+
+          <!-- Ajustes de transición (Crossfade y Gapless) -->
+          <div class="transition-section">
+            <div class="section-label">TRANSICIÓN Y MOTOR DE SALIDA</div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <span class="setting-title">Fundido Cruzado (Crossfade)</span>
+                <span class="setting-sub">Mezcla suave entre el final y el inicio de cada pista</span>
+              </div>
+              <div class="setting-ctrl">
+                <span class="slider-value-tag" id="crossfadeVal">3.0 s</span>
+                <input type="range" id="crossfadeSlider" min="0" max="12" step="0.5" value="3.0" class="clean-slider">
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <span class="setting-title">Reproducción Gapless</span>
+                <span class="setting-sub">Cero silencio entre pistas de un mismo álbum</span>
+              </div>
+              <div class="setting-ctrl">
+                <label class="switch">
+                  <input type="checkbox" id="gaplessToggle" checked>
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <span class="setting-title">Dispositivo de Salida</span>
+                <span class="setting-sub">Ruta de audio seleccionada</span>
+              </div>
+              <div class="setting-ctrl">
+                <select id="audioDeviceSelect" class="clean-select">
+                  <option value="speaker">Altavoz del dispositivo</option>
+                  <option value="wired">Auriculares con cable</option>
+                  <option value="bluetooth">Audio Bluetooth Hi-Res</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <script src="app.js"></script>
+    <!-- VISTA INMERSIVA A PANTALLA COMPLETA (NOW PLAYING) -->
+    <div class="fullscreen-player" id="fullscreenPlayer">
+      <div class="fs-backdrop" id="fsBackdrop"></div>
+      <div class="fs-header">
+        <button class="icon-btn" id="closeFsPlayer">
+          <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+        </button>
+        <span class="fs-label">REPRODUCIENDO AHORA</span>
+        <button class="icon-btn" id="fsEqBtn">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M10 20h4V4h-4v16zm-6 0h4v-8H4v8zM16 9v11h4V9h-4z"/></svg>
+        </button>
+      </div>
+
+      <div class="fs-body">
+        <div class="fs-art-wrapper">
+          <img id="fsArtwork" class="fs-artwork" src="/api/artwork/trk_titan_1" alt="Carátula">
+        </div>
+
+        <div class="fs-meta">
+          <div class="fs-title-row">
+            <div>
+              <h2 class="fs-title" id="fsTitle">Horizonte Estelar</h2>
+              <p class="fs-artist" id="fsArtist">Titan Sound Lab</p>
+            </div>
+            <button class="icon-btn fs-like-btn" id="fsLikeBtn">
+              <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            </button>
+          </div>
+
+          <!-- Línea de tiempo grande -->
+          <div class="fs-timeline">
+            <div class="seek-bar-track fs-seek-track" id="fsSeekBarTrack">
+              <div class="seek-bar-progress" id="fsSeekBarProgress"></div>
+              <div class="seek-bar-thumb" id="fsSeekBarThumb"></div>
+            </div>
+            <div class="fs-time-row">
+              <span id="fsCurrentTime">0:00</span>
+              <span id="fsTotalDuration">3:05</span>
+            </div>
+          </div>
+
+          <!-- Controles grandes -->
+          <div class="fs-controls">
+            <button class="ctrl-btn" id="fsShuffleBtn">
+              <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+            </button>
+            <button class="ctrl-btn" id="fsPrevBtn">
+              <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+            </button>
+            <button class="ctrl-btn play-main fs-play-main" id="fsPlayBtn">
+              <svg id="fsPlayIcon" viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+              <svg id="fsPauseIcon" viewBox="0 0 24 24" width="34" height="34" style="display:none;"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            </button>
+            <button class="ctrl-btn" id="fsNextBtn">
+              <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+            </button>
+            <button class="ctrl-btn" id="fsRepeatBtn">
+              <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
 </body>
 </html>

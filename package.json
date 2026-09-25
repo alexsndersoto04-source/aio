@@ -2,6 +2,7 @@
   "name": "aio",
   "private": true,
   "scripts": {
-    "build": "npm --prefix frontend ci && npm --prefix frontend run build"
+    "build": "npm --prefix frontend ci && npm --prefix frontend run build",
+    "start:music": "node server/music-server.js"
   }
 }

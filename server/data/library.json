@@ -1,0 +1,114 @@
+{
+  "version": "1.0.0",
+  "tracks": [
+    {
+      "id": "trk_titan_1",
+      "title": "Horizonte Estelar",
+      "artist": "Titan Sound Lab",
+      "album": "Aura Neon",
+      "genre": "Synthwave / Hi-Fi",
+      "duration": 185,
+      "bitrate": "320 kbps",
+      "format": "FLAC / 24-bit",
+      "source": "cloud",
+      "filename": "track_synthwave.wav",
+      "relativePath": "audio/track_synthwave.wav",
+      "artworkColor": "#00e5ff",
+      "likes": 42,
+      "plays": 1240
+    },
+    {
+      "id": "trk_titan_2",
+      "title": "Pulso Electrónico",
+      "artist": "Kroma Beats",
+      "album": "Resonancia Cuántica",
+      "genre": "Electronic",
+      "duration": 160,
+      "bitrate": "320 kbps",
+      "format": "WAV Lossless",
+      "source": "cloud",
+      "filename": "track_electronic.wav",
+      "relativePath": "audio/track_electronic.wav",
+      "artworkColor": "#7928ca",
+      "likes": 38,
+      "plays": 980
+    },
+    {
+      "id": "trk_titan_3",
+      "title": "Niebla de Medianoche",
+      "artist": "Luna Lofi",
+      "album": "Café & Melancolía",
+      "genre": "Lo-Fi Chill",
+      "duration": 195,
+      "bitrate": "320 kbps",
+      "format": "FLAC Lossless",
+      "source": "cloud",
+      "filename": "track_lofi.wav",
+      "relativePath": "audio/track_lofi.wav",
+      "artworkColor": "#ff007a",
+      "likes": 56,
+      "plays": 2150
+    },
+    {
+      "id": "trk_titan_4",
+      "title": "Cuerdas al Viento",
+      "artist": "Alba Acústica",
+      "album": "Maderas Nobles",
+      "genre": "Acoustic Folk",
+      "duration": 210,
+      "bitrate": "320 kbps",
+      "format": "WAV Studio Master",
+      "source": "cloud",
+      "filename": "track_acoustic.wav",
+      "relativePath": "audio/track_acoustic.wav",
+      "artworkColor": "#f59e0b",
+      "likes": 29,
+      "plays": 870
+    },
+    {
+      "id": "trk_titan_5",
+      "title": "Furia de Titanio",
+      "artist": "Neon Rift",
+      "album": "Sobrecarga",
+      "genre": "Alternative Rock",
+      "duration": 175,
+      "bitrate": "320 kbps",
+      "format": "FLAC Lossless",
+      "source": "cloud",
+      "filename": "track_rock.wav",
+      "relativePath": "audio/track_rock.wav",
+      "artworkColor": "#ef4444",
+      "likes": 64,
+      "plays": 3120
+    }
+  ],
+  "playlists": [
+    {
+      "id": "pl_hifi_favorites",
+      "name": "Favoritos Hi-Fi",
+      "description": "Selección maestra con rango dinámico extendido",
+      "trackIds": [
+        "trk_titan_1",
+        "trk_titan_2",
+        "trk_titan_3"
+      ]
+    },
+    {
+      "id": "pl_late_night",
+      "name": "Sesión Nocturna",
+      "description": "Graves profundos y acústica relajante",
+      "trackIds": [
+        "trk_titan_3",
+        "trk_titan_4"
+      ]
+    }
+  ],
+  "telegramConfig": {
+    "configured": true,
+    "connected": true,
+    "channel": "Titan Music Cloud Vault",
+    "botName": "@TitanAudioCloudBot",
+    "totalCloudTracks": 340,
+    "streamingCacheMb": 0
+  }
+}
