@@ -1,1 +1,1 @@
-diagnóstico fase43-r9 2026-09-25T08:50:31Z (solo líneas de fallo)
+diagnóstico fase43-r11 2026-09-25T09:06:43Z (fix streaming + error typechecker)
