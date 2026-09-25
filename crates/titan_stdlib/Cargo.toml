@@ -29,6 +29,7 @@ extras = [
     "audio_mod",
     # Fase 42A — motor de audio nativo (decode dentro de Titan + salida directa)
     "audio_engine",
+    "audio_cloud",
     # Phase 10 — NoSQL key-value + Redis
     "kv_mod", "redis_mod",
     # Phase 11 — HTTP server + URL router (axum-style)
@@ -107,6 +108,13 @@ audio_mod    = ["dep:hound", "dep:nix"]
 # (salida directa CoreAudio/WASAPI/ALSA; excluido en Android, donde la
 # salida la pone el shell de la app en Fase 42B).
 audio_engine = ["dep:symphonia", "dep:cpal"]
+
+# Fase 43 — nube musical en Telegram (MTProto con grammers, Rust puro,
+# compila en todos los targets incl. Android). Implica audio_engine
+# (reusa el decode local para duraciones antes de subir, y el motor
+# para reproducir streams). La sesión vive en JSON propio (feature
+# `serde` de grammers-session, sin SQLite/C).
+audio_cloud = ["audio_engine", "dep:grammers-client", "dep:grammers-session", "dep:grammers-mtsender", "dep:grammers-tl-types", "dep:tokio"]
 
 # Phase 10 — Embedded key-value store and Redis client
 kv_mod       = ["dep:sled"]
@@ -191,7 +199,7 @@ hickory-resolver  = { version = "0.24", optional = true, default-features = fals
 # add `aws-lc-rs`, which would drag aws-lc-sys back in.
 lettre            = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "rustls-tls", "builder"] }
 base64            = { version = "0.22", optional = true }
-tokio             = { version = "1", optional = true, features = ["rt", "net"] }
+tokio             = { version = "1", optional = true, features = ["rt", "rt-multi-thread", "net", "sync", "time"] }
 once_cell         = { version = "1", optional = true }
 
 # Phase 4 — modern cryptography (all pure-Rust, no C deps)
@@ -234,6 +242,16 @@ hound             = { version = "3.5",  optional = true }
 # todos los targets, incluido Android. La salida (`cpal`) va aparte en
 # la sección [target] de abajo porque Android la excluye.
 symphonia         = { version = "0.5",  optional = true }
+
+# Fase 43 — cliente Telegram MTProto (todo Rust puro, sin C ni TLS del
+# sistema: MTProto trae su propia cripto). Desde git, como recomienda
+# upstream: el release 0.10.0 de crates.io está roto (grammers-crypto
+# 0.10.0 no compila contra glass_pumpkin 2.0.0-rc1); master trae el fix.
+# El Cargo.lock fija el rev exacto.
+grammers-client   = { git = "https://codeberg.org/Lonami/grammers.git", optional = true }
+grammers-mtsender = { git = "https://codeberg.org/Lonami/grammers.git", optional = true }
+grammers-session  = { git = "https://codeberg.org/Lonami/grammers.git", optional = true, default-features = false, features = ["serde"] }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", optional = true }
 
 # Phase 10 — Embedded key-value store + Redis client.
 # `sled` is pure-Rust, ACID, and produces a single on-disk file — perfect

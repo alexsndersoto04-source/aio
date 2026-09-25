@@ -16,11 +16,12 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::Mutex;
 
 use symphonia::core::codecs::{Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
@@ -41,6 +42,48 @@ pub enum DecodeError {
     Seek(String),
     #[error("invalid parameter: {0}")]
     Invalid(String),
+}
+
+// ------------------------------------------------------- cloud hooks (Fase 43)
+//
+// Las pistas nube (`cloud:<id>`) se abren por aquí igual que los
+// archivos: `audio_cloud` registra dos funciones y este módulo no
+// necesita saber nada de Telegram (cero acoplamiento, cero `cfg`).
+
+/// Prefijo de las pistas nube dentro del motor.
+pub const CLOUD_PREFIX: &str = "cloud:";
+
+/// Lo que `audio_cloud` le presta al decode: abrir un stream por id y
+/// describirlo (título bonito + duración de los atributos de Telegram).
+pub struct CloudHooks {
+    pub open: fn(i32) -> Result<Box<dyn MediaSource>, String>,
+    pub describe: fn(i32) -> Option<(String, f64)>,
+}
+
+static CLOUD_HOOKS: Mutex<Option<CloudHooks>> = Mutex::new(None);
+
+/// Registra (o re-registra) los hooks de la nube. Idempotente.
+pub fn register_cloud_hooks(hooks: CloudHooks) {
+    if let Ok(mut guard) = CLOUD_HOOKS.lock() {
+        *guard = Some(hooks);
+    }
+}
+
+/// `Some(id)` si `path` es una pista nube (`cloud:<id>`).
+pub fn cloud_id(path: &str) -> Option<i32> {
+    path.strip_prefix(CLOUD_PREFIX)?.parse().ok()
+}
+
+/// Título bonito para la UI (`cloud:7` → `☁ Artista — Título`).
+pub fn cloud_display(path: &str) -> String {
+    if let Some(id) = cloud_id(path) {
+        if let Ok(guard) = CLOUD_HOOKS.lock() {
+            if let Some((display, _)) = guard.as_ref().and_then(|h| (h.describe)(id)) {
+                return display;
+            }
+        }
+    }
+    path.to_string()
 }
 
 /// Container-level facts about a stream, without decoding audio.
@@ -100,7 +143,14 @@ pub struct FileDecoder {
 
 impl FileDecoder {
     /// Open `path` and pick the first track the bundled codecs can decode.
+    ///
+    /// `cloud:<id>` abre un stream de Telegram (Fase 43) en vez de un
+    /// archivo; todo lo demás (probe, seek, worker) funciona igual.
     pub fn open(path: &str) -> Result<Self, DecodeError> {
+        if let Some(id) = cloud_id(path) {
+            let (display, source) = Self::open_cloud(id)?;
+            return Self::open_source(source, &display, None);
+        }
         let file = File::open(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 DecodeError::NotFound(path.to_string())
@@ -108,9 +158,37 @@ impl FileDecoder {
                 DecodeError::Io(e)
             }
         })?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        Self::open_source(Box::new(file), path, ext.as_deref())
+    }
+
+    fn open_cloud(id: i32) -> Result<(String, Box<dyn MediaSource>), DecodeError> {
+        let key = format!("{CLOUD_PREFIX}{id}");
+        let guard = CLOUD_HOOKS
+            .lock()
+            .map_err(|_| DecodeError::NotFound(format!("{key} (nube bloqueada)")))?;
+        let hooks = guard.as_ref().ok_or_else(|| {
+            DecodeError::NotFound(format!("{key} (nube no iniciada: cloud_setup + login primero)"))
+        })?;
+        let (display, _duration) = (hooks.describe)(id).ok_or_else(|| {
+            DecodeError::NotFound(format!("{key} no está en caché; ejecuta cloud_library primero"))
+        })?;
+        let source = (hooks.open)(id).map_err(DecodeError::Unsupported)?;
+        Ok((display, source))
+    }
+
+    /// Open an already-built media source (file, memory, cloud stream…).
+    pub fn open_source(
+        source: Box<dyn MediaSource>,
+        label: &str,
+        ext: Option<&str>,
+    ) -> Result<Self, DecodeError> {
+        let mss = MediaSourceStream::new(source, Default::default());
         let mut hint = Hint::new();
-        if let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = ext {
             hint.with_extension(&ext.to_ascii_lowercase());
         }
         let probed = symphonia::default::get_probe()
@@ -120,7 +198,7 @@ impl FileDecoder {
                 &FormatOptions::default(),
                 &MetadataOptions::default(),
             )
-            .map_err(|e| DecodeError::Unsupported(format!("{path}: {e}")))?;
+            .map_err(|e| DecodeError::Unsupported(format!("{label}: {e}")))?;
         let format = probed.format;
 
         // First track one of the bundled decoders accepts wins. Trying is
@@ -153,7 +231,7 @@ impl FileDecoder {
         }
         let (track_id, decoder, sample_rate, channels, duration_secs, codec) =
             selected.ok_or_else(|| {
-                DecodeError::Unsupported(format!("no decodable audio track: {path}"))
+                DecodeError::Unsupported(format!("no decodable audio track: {label}"))
             })?;
         Ok(FileDecoder {
             format,

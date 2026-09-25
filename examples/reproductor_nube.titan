@@ -1,0 +1,91 @@
+// Fase 43: biblioteca doble (teléfono + nube de Telegram) con streaming puro.
+//
+// Las canciones de la nube se tocan directo de Telegram: solo viajan
+// unos segundos por adelantado y nada se guarda en el teléfono, salvo
+// que pidas descargar una con `std::audio::cloud_download`.
+//
+// Sin login muestra el estado y la guía, y termina en 0 (así corre en CI).
+
+fn main() {
+    print("==== Titan · Nube musical (Fase 43) ====")
+
+    print("---- 1. Estado (std::audio::cloud_status) ----")
+    let st = std::audio::cloud_status()
+    print("configurado:")
+    print(st.configured)
+    print("conectado:")
+    print(st.connected)
+    print("autorizado:")
+    print(st.authorized)
+    print("usuario:")
+    print(st.user)
+    print("nota:")
+    print(st.note)
+
+    print("---- 2. Teléfono (std::audio::scan_library) ----")
+    let telefono = std::audio::scan_library(".")
+    let total_tel = std::collections::length(telefono)
+    print("pistas en el teléfono:")
+    print(total_tel)
+
+    print("---- 3. Nube (std::audio::cloud_library) ----")
+    let intento = std::try::catch(|| std::audio::cloud_library())
+    match intento {
+        Result::Ok(nube) => {
+            let total = std::collections::length(nube)
+            print("pistas en la nube:")
+            print(total)
+            for i in 0..total {
+                let t = nube[i]
+                print("· pista nube:")
+                print(t.title)
+                print("  artista:")
+                print(t.artist)
+                print("  id:")
+                print(t.id)
+                print("  duración (s):")
+                print(t.duration_secs)
+            }
+            if total > 0 {
+                let primera = nube[0]
+                print("---- 4. Cola mixta (teléfono + nube) ----")
+                for i in 0..total_tel {
+                    print(std::audio::engine_queue_add(telefono[i].path))
+                }
+                print(std::audio::cloud_queue_add(primera.id))
+                let cola = std::audio::engine_queue_list()
+                print("en espera:")
+                print(std::collections::length(cola))
+
+                print("---- 5. Play nube (streaming puro) ----")
+                let repro = std::try::catch(|| std::audio::cloud_play(primera.id))
+                match repro {
+                    Result::Ok(msg) => {
+                        print(msg)
+                        std::time::sleep_ms(1500)
+                        let actual = std::audio::engine_current()
+                        print("sonando:")
+                        print(actual.path)
+                        print("posición (s):")
+                        print(std::audio::engine_position())
+                        print(std::audio::engine_stop())
+                    }
+                    Result::Err(e) => {
+                        print("sin salida de audio en esta máquina (CI/headless):")
+                        print(e)
+                    }
+                }
+            }
+        }
+        Result::Err(e) => {
+            print("nube no disponible (normal sin login):")
+            print(e)
+            print("guía rápida:")
+            print("1. crea tu app en https://my.telegram.org (api_id + api_hash)")
+            print("2. cloud_setup(api_id, api_hash)")
+            print("3. cloud_login_phone con tu numero, luego cloud_login_code con el codigo")
+        }
+    }
+
+    print("---- Listo. Streaming sin llenar el teléfono. ----")
+}
