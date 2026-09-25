@@ -1,13 +1,14 @@
 name: Publish Linux x86_64 binary
 
-# Builds the zett binary for x86_64 Linux (compatible with Debian 12 / glibc >= 2.35,
-# i.e. with the Arena sandbox) and publishes it to the `binaries` branch so it can
-# be fetched from any machine with repo access:
+# Compila el binario `titan` (paquete titan_cli) para x86_64 Linux y lo publica
+# en la rama `binaries` como `zett-linux-x86_64` (nómina del paquete zett, igual
+# que los .deb de Termux). Compatible con Debian 12 / glibc >= 2.35 (el sandbox
+# de Arena corre en ubuntu-22.04 para esto: glibc 2.35).
+#
+# Para obtenerlo en cualquier máquina con acceso al repo:
 #
 #   git fetch origin binaries
 #   git show binaries:zett-linux-x86_64 > zett && chmod +x zett
-#
-# The branch contains: zett-linux-x86_64 (executable), .sha256, VERSION, COMMIT.
 
 on:
   workflow_dispatch:
@@ -48,13 +49,13 @@ jobs:
           set +e
           echo "cargo: $(which cargo 2>/dev/null || echo MISSING)"
           cargo --version 2>&1 | head -1
-          cargo build --release --bin zett > /tmp/build.log 2>&1
+          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "=== intento warm fallido (rc=$rc); limpiando target y reintentando (cold) ==="
             tail -20 /tmp/build.log
             rm -rf target
-            cargo build --release --bin zett > /tmp/build2.log 2>&1
+            cargo build --locked --release -p titan_cli > /tmp/build2.log 2>&1
             rc2=$?
             if [ $rc2 -ne 0 ]; then
               echo "=== build cold también falló (rc=$rc2) ==="
@@ -67,7 +68,7 @@ jobs:
             fi
           fi
           echo "=== build OK ==="
-          ls -la target/release/zett
+          ls -la target/release/titan
 
       - name: Publish to the binaries branch
         id: publish
@@ -78,13 +79,17 @@ jobs:
           set -u
 
           fail() {
-            # Visible in the check-run annotations (readable via API without log download).
+            # Visible en las anotaciones del check-run (se lee por API sin
+            # descargar el log).
             echo "::error::[publish] $1"
             exit 1
           }
 
-          sha256sum target/release/zett > target/release/zett.sha256 || fail "sha256sum failed"
-          echo "Binary: $(du -h target/release/zett | cut -f1)"
+          # sha256 con el nombre final del archivo (para sha256sum -c directo)
+          sha256sum target/release/titan > /tmp/sha.txt || fail "sha256sum failed"
+          awk '{print $1 "  zett-linux-x86_64"}' /tmp/sha.txt \
+            > target/release/zett-linux-x86_64.sha256
+          echo "Binary: $(du -h target/release/titan | cut -f1)"
 
           {
             echo "release"
@@ -96,37 +101,41 @@ jobs:
 
           WORK=$(mktemp -d)
           trap 'rm -rf "$WORK"' EXIT
-          git clone --quiet https://x-access-token:$GITHUB_TOKEN@github.com/alexsndersoto04-source/aio.git "$WORK" || fail "git clone failed (token rejected?)"
+          git clone --quiet "https://x-access-token:$GITHUB_TOKEN@github.com/alexsndersoto04-source/aio.git" "$WORK" \
+            || fail "git clone failed (token rechazado?)"
           cd "$WORK"
           git config user.name "publish-bot"
           git config user.email "publish-bot@users.noreply.github.com"
 
-          # Sparse checkout: only the files we will commit.
+          # Sparse checkout: solo los archivos que vamos a commitear.
           git checkout --quiet main
           git sparse-checkout init --cone
           git sparse-checkout set zett-linux-x86_64 zett-linux-x86_64.sha256 VERSION COMMIT
-          echo "=== branch main contents ==="
+          echo "=== branch main contents (sparse) ==="
           git ls-files
-          echo "=== sha256 of the freshly built binary ==="
-          sha256sum "$GITHUB_WORKSPACE/target/release/zett"
-          echo "=== previous sha256 in the branch (if any) ==="
-          sha256sum zett-linux-x86_64.sha256 2>/dev/null || echo "(no previous version)"
-          echo "=== previous VERSION in the branch (if any) ==="
-          cat VERSION 2>/dev/null || echo "(no previous version)"
+          echo "=== sha256 del binario recién compilado ==="
+          cat "$GITHUB_WORKSPACE/target/release/zett-linux-x86_64.sha256"
+          echo "=== sha256 anterior en main (si existe) ==="
+          cat zett-linux-x86_64.sha256 2>/dev/null || echo "(no hay version anterior)"
+          echo "=== VERSION anterior en main (si existe) ==="
+          cat VERSION 2>/dev/null || echo "(no hay version anterior)"
 
-          cp "$GITHUB_WORKSPACE/target/release/zett" ./zett-linux-x86_64
-          cp "$GITHUB_WORKSPACE/target/release/zett.sha256" ./zett-linux-x86_64.sha256
+          cp "$GITHUB_WORKSPACE/target/release/titan" ./zett-linux-x86_64
+          cp "$GITHUB_WORKSPACE/target/release/zett-linux-x86_64.sha256" ./zett-linux-x86_64.sha256
           cp "$GITHUB_WORKSPACE/target/release/VERSION" ./VERSION
           cp "$GITHUB_WORKSPACE/target/release/COMMIT" ./COMMIT
 
           git add zett-linux-x86_64 zett-linux-x86_64.sha256 VERSION COMMIT
-          git commit --quiet -m "Publish zett-linux-x86_64 (commit $(cat COMMIT), $(date -u +%Y-%m-%d))" || fail "git commit failed (nothing to commit?)"
+          git commit --quiet -m "Publish zett-linux-x86_64 (commit $(cat COMMIT), $(date -u +%Y-%m-%d))" \
+            || fail "git commit failed (nada para commitear?)"
 
-          git push --force "https://x-access-token:$GITHUB_TOKEN@github.com/alexsndersoto04-source/aio.git" "HEAD:refs/heads/binaries" \
-            > /tmp/push.log 2>&1 || fail "git push to refs/heads/binaries failed — token probably lacks write permission"
+          git push --force "https://x-access-token:$GITHUB_TOKEN@github.com/alexsndersoto04-source/aio.git" \
+            "HEAD:refs/heads/binaries" > /tmp/push.log 2>&1 \
+            || { echo "--- git push output ---"; cat /tmp/push.log; \
+                 fail "git push a refs/heads/binaries falló — el token probablemente no tiene permiso de escritura"; }
           echo "--- git push output ---"
           cat /tmp/push.log
-          echo "::notice::[publish] Branch 'binaries' actualizada correctamente"
+          echo "::notice::[publish] Rama 'binaries' actualizada correctamente"
 
       - name: Upload binary as artifact (descargable desde la UI de GitHub)
         if: always()
@@ -134,8 +143,8 @@ jobs:
         with:
           name: zett-linux-x86_64-${{ github.run_id }}
           path: |
-            target/release/zett
-            target/release/zett.sha256
+            target/release/titan
+            target/release/zett-linux-x86_64.sha256
             target/release/VERSION
             target/release/COMMIT
           retention-days: 30
