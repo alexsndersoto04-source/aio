@@ -1,1 +1,1 @@
-diagnóstico fase43-r12 2026-09-25T09:10:14Z (fun→fn en reproductor_nube)
+diagnóstico fase43-r13 2026-09-25T09:14:28Z (publicación en verde + comentarios finales)

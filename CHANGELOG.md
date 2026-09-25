@@ -8,6 +8,7 @@
 - **Streaming honesto**: cada pista es `cloud:<id>` para el motor 42A (misma cola gapless, crossfade, EQ, 32 barras); seek re-pide desde el punto; `cloud_play` / `cloud_queue_add`; `engine_decode`/`engine_current`/`engine_queue_list` entienden pistas nube con títulos bonitos (`☁ Artista — Título`).
 - **Gestión explícita**: `cloud_upload` (detecta duración y etiquetas solo), `cloud_download(id, dest)` (lo único que toca disco) y `cloud_delete` (borra del canal).
 - Sin internet / sin login / sin bocinas: errores honestos en criollo, exit 0 en la demo. Documentación: `docs/CLOUD.md`.
+- Ajustes de la rama final: `Cargo.lock` regenerado en CI con el rev de grammers fijado (los builds `--locked` de Publish/Termux vuelven a verde), `CloudMediaSource::read` ya no confunde la marca de agua del fetch con la posición de consumo (fin de stream falso que truncaba pistas al primer pedazo) y `reproductor_nube.titan` usa `fn` (el parser lo rechazaba).
 - Registro actualizado: **809 funciones nativas** registradas en `std::*`.
 
 ---
