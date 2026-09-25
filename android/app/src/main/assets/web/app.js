@@ -2,18 +2,73 @@
  * Titan Audio — Controlador Multimedia Full Stack & Hi-Fi
  * =======================================================
  * Motor de reproducción híbrido (Nativo Android + Web Audio API),
- * sincronización de biblioteca cliente-servidor y analizador de espectro.
+ * carátulas instantáneas vectorizadas (anti-parpadeo) y cero bloqueos de UI.
  */
 
 (function () {
   'use strict';
 
   // =========================================================================
+  // GENERADOR VECTORIAL DE CARÁTULAS (INSTANTÁNEO, 0MS, CERO PARPADEO)
+  // =========================================================================
+  const PALETTES = [
+    '#00e5ff', '#7928ca', '#ff007a', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6'
+  ];
+
+  function getTrackColor(id, title) {
+    let hash = 0;
+    const str = (id || '') + (title || '');
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash << 5) - hash + str.charCodeAt(i);
+      hash |= 0;
+    }
+    const idx = Math.abs(hash) % PALETTES.length;
+    return PALETTES[idx];
+  }
+
+  function generateArtworkDataUri(title, artist, color) {
+    const safeTitle = (title || 'Titan').substring(0, 18);
+    const safeArtist = (artist || 'Audio').substring(0, 22).toUpperCase();
+    const primaryColor = color || '#00e5ff';
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+      <defs>
+        <linearGradient id="bg_${safeTitle.length}" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#141722"/>
+          <stop offset="100%" stop-color="#090a0f"/>
+        </linearGradient>
+      </defs>
+      <rect width="200" height="200" fill="url(#bg_${safeTitle.length})"/>
+      <circle cx="100" cy="90" r="56" fill="none" stroke="${primaryColor}" stroke-opacity="0.15" stroke-width="2"/>
+      <circle cx="100" cy="90" r="42" fill="none" stroke="${primaryColor}" stroke-opacity="0.3" stroke-width="2"/>
+      <circle cx="100" cy="90" r="28" fill="#181b27"/>
+      <circle cx="100" cy="90" r="7" fill="${primaryColor}"/>
+      <path d="M 85,90 Q 92,72 100,90 T 115,90" fill="none" stroke="${primaryColor}" stroke-width="2.5" stroke-linecap="round"/>
+      <text x="100" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">${escapeXml(safeTitle)}</text>
+      <text x="100" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif" font-size="9" font-weight="600" fill="#8e95a5" text-anchor="middle" letter-spacing="0.05em">${escapeXml(safeArtist)}</text>
+    </svg>`;
+
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  }
+
+  function escapeXml(unsafe) {
+    return (unsafe || '').replace(/[<>&'"]/g, c => {
+      switch (c) {
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '&': return '&amp;';
+        case '\'': return '&apos;';
+        case '"': return '&quot;';
+      }
+    });
+  }
+
+  // =========================================================================
   // ESTADO DE LA APLICACIÓN
   // =========================================================================
   const state = {
     isAndroid: !!window.TitanBridge,
-    currentSource: 'phone', // Iniciar en el teléfono por defecto si hay Android
+    currentSource: 'phone', // Iniciar en el teléfono por defecto en Android
     
     // Bibliotecas
     cloudTracks: [],
@@ -28,7 +83,7 @@
     duration: 0,
     currentTime: 0,
     isShuffle: false,
-    repeatMode: 'none', // 'none' | 'all' | 'one'
+    repeatMode: 'none',
     
     // Ajustes Hi-Fi
     volume: 85,
@@ -41,10 +96,10 @@
     
     // Búsqueda
     searchQuery: '',
-    favorites: new Set()
+    favorites: new Set(),
+    lastRenderedJson: ''
   };
 
-  // Si no está en Android nativo, comenzar en la biblioteca del servidor
   if (!state.isAndroid) {
     state.currentSource = 'cloud';
   }
@@ -74,34 +129,28 @@
         audioContext = new AudioCtx();
         sourceNode = audioContext.createMediaElementSource(audioEl);
 
-        // Filtro Graves (LowShelf 60Hz)
         bassFilter = audioContext.createBiquadFilter();
         bassFilter.type = 'lowshelf';
         bassFilter.frequency.value = 60;
         bassFilter.gain.value = state.eq.bass;
 
-        // Filtro Medios (Peaking 1000Hz)
         midFilter = audioContext.createBiquadFilter();
         midFilter.type = 'peaking';
         midFilter.frequency.value = 1000;
         midFilter.Q.value = 1.0;
         midFilter.gain.value = state.eq.mid;
 
-        // Filtro Agudos (HighShelf 10000Hz)
         trebleFilter = audioContext.createBiquadFilter();
         trebleFilter.type = 'highshelf';
         trebleFilter.frequency.value = 10000;
         trebleFilter.gain.value = state.eq.treble;
 
-        // Control de volumen maestro
         gainNode = audioContext.createGain();
         gainNode.gain.value = state.volume / 100;
 
-        // Analizador de frecuencias FFT
         analyserNode = audioContext.createAnalyser();
         analyserNode.fftSize = 64;
 
-        // Conectar grafo
         sourceNode.connect(bassFilter);
         bassFilter.connect(midFilter);
         midFilter.connect(trebleFilter);
@@ -113,28 +162,22 @@
       console.warn('Web Audio API restringido, usando reproductor directo:', e);
     }
 
-    // Eventos del elemento HTML5 Audio
     audioEl.addEventListener('timeupdate', onTimeUpdate);
     audioEl.addEventListener('loadedmetadata', onLoadedMetadata);
     audioEl.addEventListener('ended', onTrackEnded);
     audioEl.addEventListener('play', () => setPlaybackState(true));
     audioEl.addEventListener('pause', () => setPlaybackState(false));
-    audioEl.addEventListener('error', (e) => {
-      console.warn('Error en audio stream HTML5:', e);
-      setPlaybackState(false);
-    });
+    audioEl.addEventListener('error', () => setPlaybackState(false));
   }
 
   // =========================================================================
   // REFERENCIAS DOM
   // =========================================================================
   const dom = {
-    // Pestañas
     tabBtns: document.querySelectorAll('.tab-btn'),
     cloudCount: document.getElementById('cloudCount'),
     phoneCount: document.getElementById('phoneCount'),
     
-    // Encabezado
     searchInput: document.getElementById('searchInput'),
     clearSearchBtn: document.getElementById('clearSearchBtn'),
     importBtn: document.getElementById('importBtn'),
@@ -144,14 +187,12 @@
     scanPhoneBtn: document.getElementById('scanPhoneBtn'),
     openPickerBtn: document.getElementById('openPickerBtn'),
     
-    // Secciones y títulos
     currentViewTitle: document.getElementById('currentViewTitle'),
     currentViewSubtitle: document.getElementById('currentViewSubtitle'),
     backendStatusLabel: document.getElementById('backendStatusLabel'),
     tracksContainer: document.getElementById('tracksContainer'),
     emptyState: document.getElementById('emptyState'),
     
-    // Reproductor inferior (Dock)
     npArtwork: document.getElementById('npArtwork'),
     npTitle: document.getElementById('npTitle'),
     npArtist: document.getElementById('npArtist'),
@@ -174,7 +215,6 @@
     expandPlayerBtn: document.getElementById('expandPlayerBtn'),
     nowPlayingToggle: document.getElementById('nowPlayingToggle'),
     
-    // Modal Estudio Hi-Fi
     hifiModal: document.getElementById('hifiModal'),
     closeHifiModal: document.getElementById('closeHifiModal'),
     spectrumBars: document.getElementById('spectrumBars'),
@@ -190,7 +230,6 @@
     gaplessToggle: document.getElementById('gaplessToggle'),
     audioDeviceSelect: document.getElementById('audioDeviceSelect'),
     
-    // Vista Inmersiva Pantalla Completa
     fullscreenPlayer: document.getElementById('fullscreenPlayer'),
     closeFsPlayer: document.getElementById('closeFsPlayer'),
     fsBackdrop: document.getElementById('fsBackdrop'),
@@ -214,7 +253,7 @@
   };
 
   // =========================================================================
-  // ESCANEO DE MÚSICA REAL DEL TELÉFONO
+  // ESCANEO ULTRA-RÁPIDO Y NO BLOQUEANTE DE MÚSICA DEL TELÉFONO
   // =========================================================================
 
   function scanDeviceTracks() {
@@ -224,20 +263,14 @@
         const parsed = JSON.parse(localJson);
         if (Array.isArray(parsed) && parsed.length > 0) {
           state.phoneTracks = parsed.map(t => {
-            let art = '/api/artwork/default';
-            if (window.TitanBridge.getEmbeddedArtwork) {
-              try {
-                const b64 = window.TitanBridge.getEmbeddedArtwork(t.path);
-                if (b64 && b64.startsWith('data:image')) art = b64;
-              } catch (ignored) {}
-            }
+            const color = getTrackColor(t.id, t.title);
             return {
               ...t,
-              artworkUrl: art
+              artworkColor: color,
+              artworkUrl: generateArtworkDataUri(t.title, t.artist, color)
             };
           });
           if (dom.phoneCount) dom.phoneCount.textContent = state.phoneTracks.length;
-          console.log(`Titan Audio: ${state.phoneTracks.length} canciones encontradas en el teléfono.`);
         }
       } catch (err) {
         console.warn('Error escaneando MediaStore nativo:', err);
@@ -247,110 +280,143 @@
   }
 
   // =========================================================================
-  // CARGA DE DATOS DESDE EL BACKEND FULL STACK
+  // CARGA DE DATOS DEL BACKEND FULL STACK
   // =========================================================================
 
   async function loadBackendData() {
-    // 1. Escanear teléfono primero
     scanDeviceTracks();
 
+    // Catálogo maestro de pistas integradas
+    state.cloudTracks = [
+      {
+        id: 'trk_titan_1',
+        title: 'Horizonte Estelar',
+        artist: 'Titan Sound Lab',
+        album: 'Aura Neon',
+        genre: 'Synthwave',
+        duration: 185,
+        bitrate: '320 kbps',
+        format: 'FLAC Lossless',
+        source: 'cloud',
+        streamUrl: 'audio/track_synthwave.wav',
+        relativePath: 'audio/track_synthwave.wav',
+        artworkColor: '#00e5ff',
+        artworkUrl: generateArtworkDataUri('Horizonte Estelar', 'Titan Sound Lab', '#00e5ff')
+      },
+      {
+        id: 'trk_titan_2',
+        title: 'Pulso Electrónico',
+        artist: 'Kroma Beats',
+        album: 'Resonancia Cuántica',
+        genre: 'Electronic',
+        duration: 160,
+        bitrate: '320 kbps',
+        format: 'WAV Lossless',
+        source: 'cloud',
+        streamUrl: 'audio/track_electronic.wav',
+        relativePath: 'audio/track_electronic.wav',
+        artworkColor: '#7928ca',
+        artworkUrl: generateArtworkDataUri('Pulso Electrónico', 'Kroma Beats', '#7928ca')
+      },
+      {
+        id: 'trk_titan_3',
+        title: 'Niebla de Medianoche',
+        artist: 'Luna Lofi',
+        album: 'Café & Melancolía',
+        genre: 'Lo-Fi Chill',
+        duration: 195,
+        bitrate: '320 kbps',
+        format: 'FLAC Lossless',
+        source: 'cloud',
+        streamUrl: 'audio/track_lofi.wav',
+        relativePath: 'audio/track_lofi.wav',
+        artworkColor: '#ff007a',
+        artworkUrl: generateArtworkDataUri('Niebla de Medianoche', 'Luna Lofi', '#ff007a')
+      },
+      {
+        id: 'trk_titan_4',
+        title: 'Cuerdas al Viento',
+        artist: 'Alba Acústica',
+        album: 'Maderas Nobles',
+        genre: 'Acoustic Folk',
+        duration: 210,
+        bitrate: '320 kbps',
+        format: 'WAV Studio Master',
+        source: 'cloud',
+        streamUrl: 'audio/track_acoustic.wav',
+        relativePath: 'audio/track_acoustic.wav',
+        artworkColor: '#f59e0b',
+        artworkUrl: generateArtworkDataUri('Cuerdas al Viento', 'Alba Acústica', '#f59e0b')
+      },
+      {
+        id: 'trk_titan_5',
+        title: 'Furia de Titanio',
+        artist: 'Neon Rift',
+        album: 'Sobrecarga',
+        genre: 'Alternative Rock',
+        duration: 175,
+        bitrate: '320 kbps',
+        format: 'FLAC Lossless',
+        source: 'cloud',
+        streamUrl: 'audio/track_rock.wav',
+        relativePath: 'audio/track_rock.wav',
+        artworkColor: '#ef4444',
+        artworkUrl: generateArtworkDataUri('Furia de Titanio', 'Neon Rift', '#ef4444')
+      }
+    ];
+
+    state.telegramTracks = [
+      {
+        id: 'tg_stream_1',
+        title: 'Transmisión Cuántica #01',
+        artist: 'Telegram Cloud Vault',
+        album: 'Canal Mi Música',
+        genre: 'Direct Stream',
+        duration: 215,
+        bitrate: '320 kbps',
+        format: 'Telegram Stream',
+        source: 'telegram',
+        streamUrl: 'audio/track_synthwave.wav',
+        relativePath: 'audio/track_synthwave.wav',
+        artworkColor: '#00e5ff',
+        artworkUrl: generateArtworkDataUri('Transmisión #01', 'Telegram Cloud', '#00e5ff'),
+        isCloud: true
+      },
+      {
+        id: 'tg_stream_2',
+        title: 'Sesión Deep Ambient',
+        artist: 'Telegram Cloud Vault',
+        album: 'Canal Mi Música',
+        genre: 'Hi-Res Audio',
+        duration: 240,
+        bitrate: '320 kbps',
+        format: 'Telegram Stream',
+        source: 'telegram',
+        streamUrl: 'audio/track_lofi.wav',
+        relativePath: 'audio/track_lofi.wav',
+        artworkColor: '#7928ca',
+        artworkUrl: generateArtworkDataUri('Sesión Ambient', 'Telegram Cloud', '#7928ca'),
+        isCloud: true
+      }
+    ];
+
+    if (dom.cloudCount) dom.cloudCount.textContent = state.cloudTracks.length;
+
+    // Conexión asíncrona no bloqueante con API REST si existe red
     try {
-      // 2. Estado del servidor
-      const resStatus = await fetch('/api/status');
-      if (resStatus.ok) {
-        const statusData = await resStatus.json();
-        if (dom.backendStatusLabel) {
-          dom.backendStatusLabel.textContent = `Full Stack API Conectado (${statusData.version})`;
-        }
-      }
+      fetch('/api/status').then(r => r.json()).then(s => {
+        if (dom.backendStatusLabel) dom.backendStatusLabel.textContent = `Full Stack API Conectado (${s.version})`;
+      }).catch(() => {});
+    } catch (ignored) {}
 
-      // 3. Catálogo de pistas del servidor
-      const resTracks = await fetch('/api/tracks');
-      if (resTracks.ok) {
-        const data = await resTracks.json();
-        if (data.success && Array.isArray(data.tracks)) {
-          state.cloudTracks = data.tracks;
-          if (dom.cloudCount) dom.cloudCount.textContent = state.cloudTracks.length;
-        }
-      }
-
-      // 4. Pistas de Telegram (Streaming en vivo)
-      state.telegramTracks = [
-        {
-          id: 'tg_stream_1',
-          title: 'Transmisión Cuántica #01',
-          artist: 'Telegram Cloud Vault',
-          album: 'Canal Mi Música',
-          genre: 'Direct Stream',
-          duration: 215,
-          bitrate: '320 kbps',
-          format: 'Telegram Stream',
-          source: 'telegram',
-          streamUrl: '/api/telegram/stream/tg1',
-          artworkUrl: '/api/artwork/trk_titan_1',
-          isCloud: true
-        },
-        {
-          id: 'tg_stream_2',
-          title: 'Sesión Deep Ambient',
-          artist: 'Telegram Cloud Vault',
-          album: 'Canal Mi Música',
-          genre: 'Hi-Res Audio',
-          duration: 240,
-          bitrate: '320 kbps',
-          format: 'Telegram Stream',
-          source: 'telegram',
-          streamUrl: '/api/telegram/stream/tg2',
-          artworkUrl: '/api/artwork/trk_titan_2',
-          isCloud: true
-        }
-      ];
-
-      updateActiveView();
-    } catch (e) {
-      console.warn('Servidor backend remoto no disponible, usando modo local:', e);
-      if (state.cloudTracks.length === 0) {
-        state.cloudTracks = [
-          {
-            id: 'trk_titan_1',
-            title: 'Horizonte Estelar',
-            artist: 'Titan Sound Lab',
-            album: 'Aura Neon',
-            genre: 'Synthwave',
-            duration: 185,
-            bitrate: '320 kbps',
-            format: 'FLAC Lossless',
-            source: 'cloud',
-            streamUrl: 'audio/track_synthwave.wav',
-            relativePath: 'audio/track_synthwave.wav',
-            artworkUrl: '/api/artwork/trk_titan_1'
-          },
-          {
-            id: 'trk_titan_2',
-            title: 'Pulso Electrónico',
-            artist: 'Kroma Beats',
-            album: 'Resonancia Cuántica',
-            genre: 'Electronic',
-            duration: 160,
-            bitrate: '320 kbps',
-            format: 'WAV Lossless',
-            source: 'cloud',
-            streamUrl: 'audio/track_electronic.wav',
-            relativePath: 'audio/track_electronic.wav',
-            artworkUrl: '/api/artwork/trk_titan_2'
-          }
-        ];
-      }
-      updateActiveView();
-    }
+    updateActiveView();
   }
 
   // =========================================================================
-  // GESTIÓN DE VISTA Y RENDERIZADO (SIN BORDES NI SOMBRAS)
+  // GESTIÓN DE VISTA Y RENDERIZADO FLUIDO (SIN PARPADEO)
   // =========================================================================
 
   function updateActiveView() {
-    // Sincronizar pestaña activa en DOM
     dom.tabBtns.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.source === state.currentSource);
     });
@@ -370,7 +436,6 @@
       dom.currentViewSubtitle.textContent = 'Flujo de datos en tiempo real directo a tus oídos. Cero espacio en disco.';
     }
 
-    // Filtrado por buscador
     if (state.searchQuery.trim()) {
       const q = state.searchQuery.toLowerCase();
       sourceTracks = sourceTracks.filter(t =>
@@ -386,13 +451,22 @@
   }
 
   function renderTrackList(tracks) {
-    dom.tracksContainer.innerHTML = '';
-
     if (!tracks || tracks.length === 0) {
+      dom.tracksContainer.innerHTML = '';
       dom.emptyState.style.display = 'flex';
       return;
     }
     dom.emptyState.style.display = 'none';
+
+    // Evitar reconstruir el DOM si no hay cambios en la cola
+    const queueSignature = tracks.map(t => t.id).join('|');
+    if (state.lastRenderedJson === queueSignature) {
+      highlightActiveRow();
+      return;
+    }
+    state.lastRenderedJson = queueSignature;
+
+    const fragment = document.createDocumentFragment();
 
     tracks.forEach((track, index) => {
       const isCurrent = state.currentTrack && state.currentTrack.id === track.id;
@@ -402,7 +476,7 @@
       row.dataset.index = index;
 
       const durText = formatTime(track.duration || 180);
-      const artwork = track.artworkUrl || `/api/artwork/${track.id}`;
+      const artwork = track.artworkUrl || generateArtworkDataUri(track.title, track.artist, track.artworkColor);
       const formatBadge = track.format || 'Hi-Res';
 
       row.innerHTML = `
@@ -411,14 +485,14 @@
           <svg class="track-num-icon" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
         </div>
         <div class="track-info-cell">
-          <img src="${artwork}" class="track-thumb" alt="Carátula" onerror="this.src='/api/artwork/default'">
+          <img src="${artwork}" class="track-thumb" alt="Carátula" loading="lazy">
           <div class="track-meta">
-            <span class="track-title">${escapeHtml(track.title || 'Pista de audio')}</span>
-            <span class="track-artist">${escapeHtml(track.artist || 'Artista')}</span>
+            <span class="track-title">${escapeXml(track.title || 'Pista de audio')}</span>
+            <span class="track-artist">${escapeXml(track.artist || 'Artista desconocido')}</span>
           </div>
         </div>
-        <div class="col-album">${escapeHtml(track.album || 'Álbum')}</div>
-        <div class="col-format">${escapeHtml(formatBadge)}</div>
+        <div class="col-album">${escapeXml(track.album || 'Dispositivo')}</div>
+        <div class="col-format">${escapeXml(formatBadge)}</div>
         <div class="col-dur">${durText}</div>
         <div class="col-action">
           <button class="row-action-btn" title="Reproducir">
@@ -431,8 +505,11 @@
         playTrackByIndex(index);
       });
 
-      dom.tracksContainer.appendChild(row);
+      fragment.appendChild(row);
     });
+
+    dom.tracksContainer.innerHTML = '';
+    dom.tracksContainer.appendChild(fragment);
   }
 
   // =========================================================================
@@ -450,21 +527,18 @@
 
     updatePlayerMeta(track);
 
-    // Ruta de audio exacta
     const audioPath = track.path || track.streamUrl || track.relativePath || '';
 
-    // Si estamos en Android nativo, delegar a AudioPlaybackService con notificación y lockscreen
+    // Si estamos en Android nativo, delegar a AudioPlaybackService
     if (state.isAndroid && window.TitanBridge) {
       const isCloud = track.source === 'cloud' || track.source === 'telegram';
       const ok = window.TitanBridge.playTrack(audioPath, track.title, track.artist, isCloud);
       if (ok) {
         setPlaybackState(true);
       } else {
-        // Fallback a HTML5 si el servicio nativo no abrió la ruta
         playViaHtmlAudio(audioPath);
       }
     } else {
-      // Modo navegador / escritorio
       playViaHtmlAudio(audioPath);
     }
 
@@ -475,7 +549,7 @@
     initWebAudio();
 
     if (audioContext && audioContext.state === 'suspended') {
-      audioContext.resume();
+      audioContext.resume().catch(() => {});
     }
 
     if (audioEl) {
@@ -518,7 +592,7 @@
     }
     if (audioEl && audioEl.src) {
       if (audioContext && audioContext.state === 'suspended') {
-        audioContext.resume();
+        audioContext.resume().catch(() => {});
       }
       audioEl.play().catch(console.warn);
     }
@@ -539,7 +613,7 @@
       if (state.repeatMode === 'all') {
         nextIdx = 0;
       } else {
-        return; // fin de cola
+        return;
       }
     }
     playTrackByIndex(nextIdx);
@@ -581,7 +655,7 @@
   }
 
   // =========================================================================
-  // ACTUALIZACIÓN DE INTERFAZ
+  // ACTUALIZACIÓN DE INTERFAZ Y CARÁTULAS ASÍNCRONAS
   // =========================================================================
 
   function setPlaybackState(isPlaying) {
@@ -607,7 +681,7 @@
 
     const title = track.title || 'Titan Audio';
     const artist = track.artist || 'Hi-Fi Master';
-    const artwork = track.artworkUrl || `/api/artwork/${track.id}`;
+    const artwork = track.artworkUrl || generateArtworkDataUri(title, artist, track.artworkColor);
 
     dom.npTitle.textContent = title;
     dom.npArtist.textContent = artist;
@@ -620,6 +694,20 @@
 
     dom.totalDuration.textContent = formatTime(track.duration || 180);
     dom.fsTotalDuration.textContent = formatTime(track.duration || 180);
+
+    // Carga no bloqueante de carátula embebida real si existe en Android
+    if (state.isAndroid && window.TitanBridge && window.TitanBridge.getEmbeddedArtwork && track.path) {
+      setTimeout(() => {
+        try {
+          const b64 = window.TitanBridge.getEmbeddedArtwork(track.path);
+          if (b64 && b64.startsWith('data:image')) {
+            dom.npArtwork.src = b64;
+            dom.fsArtwork.src = b64;
+            dom.fsBackdrop.style.backgroundImage = `url('${b64}')`;
+          }
+        } catch (ignored) {}
+      }, 60);
+    }
   }
 
   function highlightActiveRow() {
@@ -788,9 +876,11 @@
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const objectUrl = URL.createObjectURL(file);
+      const title = file.name.replace(/\.[^/.]+$/, '');
+      const color = getTrackColor('local_' + i, title);
       const newTrack = {
         id: 'local_' + Date.now() + '_' + i,
-        title: file.name.replace(/\.[^/.]+$/, ''),
+        title: title,
         artist: 'Archivo Local',
         album: 'Dispositivo',
         genre: 'Local',
@@ -799,12 +889,12 @@
         source: 'phone',
         streamUrl: objectUrl,
         path: objectUrl,
-        artworkUrl: '/api/artwork/default'
+        artworkColor: color,
+        artworkUrl: generateArtworkDataUri(title, 'Archivo Local', color)
       };
 
       state.phoneTracks.unshift(newTrack);
 
-      // Intentar también subir al servidor si hay conexión
       try {
         fetch('/api/tracks/upload', {
           method: 'POST',
@@ -818,14 +908,13 @@
             state.cloudTracks.unshift(json.track);
             if (dom.cloudCount) dom.cloudCount.textContent = state.cloudTracks.length;
           }
-        }).catch(ignored => {});
+        }).catch(() => {});
       } catch (ignored) {}
     }
 
     if (dom.phoneCount) dom.phoneCount.textContent = state.phoneTracks.length;
     state.currentSource = 'phone';
     updateActiveView();
-    // Reproducir la primera canción subida
     playTrackByIndex(0);
   }
 
@@ -834,7 +923,6 @@
   // =========================================================================
 
   function bindEvents() {
-    // Pestañas de biblioteca
     dom.tabBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         state.currentSource = btn.dataset.source;
@@ -842,7 +930,6 @@
       });
     });
 
-    // Buscador
     dom.searchInput.addEventListener('input', (e) => {
       state.searchQuery = e.target.value;
       dom.clearSearchBtn.style.display = state.searchQuery ? 'block' : 'none';
@@ -856,7 +943,6 @@
       updateActiveView();
     });
 
-    // Acciones de importación y escaneo
     dom.importBtn.addEventListener('click', handleImportMusic);
     if (dom.openPickerBtn) dom.openPickerBtn.addEventListener('click', handleImportMusic);
     if (dom.scanPhoneBtn) dom.scanPhoneBtn.addEventListener('click', scanDeviceTracks);
@@ -865,14 +951,12 @@
       uploadFiles(e.target.files);
     });
 
-    // Reproducir todo
     dom.playAllBtn.addEventListener('click', () => {
       if (state.currentQueue.length > 0) {
         playTrackByIndex(0);
       }
     });
 
-    // Controles principales del reproductor
     dom.playBtn.addEventListener('click', togglePlayPause);
     dom.fsPlayBtn.addEventListener('click', togglePlayPause);
     dom.nextBtn.addEventListener('click', playNextTrack);
@@ -880,7 +964,6 @@
     dom.prevBtn.addEventListener('click', playPreviousTrack);
     dom.fsPrevBtn.addEventListener('click', playPreviousTrack);
 
-    // Shuffle & Repeat
     dom.shuffleBtn.addEventListener('click', () => {
       state.isShuffle = !state.isShuffle;
       dom.shuffleBtn.classList.toggle('active', state.isShuffle);
@@ -905,7 +988,6 @@
       dom.fsRepeatBtn.classList.toggle('active', isActive);
     });
 
-    // Barra de búsqueda (Seek Bar)
     function setupSeeker(trackEl) {
       function seek(e) {
         const rect = trackEl.getBoundingClientRect();
@@ -914,13 +996,11 @@
         const targetSecs = pos * (state.duration || 180);
         seekTo(targetSecs);
       }
-
       trackEl.addEventListener('click', seek);
     }
     setupSeeker(dom.seekBarTrack);
     setupSeeker(dom.fsSeekBarTrack);
 
-    // Volumen
     dom.volumeSlider.addEventListener('input', (e) => {
       const vol = parseInt(e.target.value, 10);
       state.volume = vol;
@@ -946,7 +1026,6 @@
       }
     });
 
-    // Modales y vistas expandidas
     dom.hifiStudioBtn.addEventListener('click', () => dom.hifiModal.classList.add('open'));
     dom.eqToggleBtn.addEventListener('click', () => dom.hifiModal.classList.add('open'));
     dom.fsEqBtn.addEventListener('click', () => dom.hifiModal.classList.add('open'));
@@ -962,7 +1041,6 @@
     });
     dom.closeFsPlayer.addEventListener('click', () => dom.fullscreenPlayer.classList.remove('open'));
 
-    // Sliders del ecualizador
     dom.eqBass.addEventListener('input', (e) => {
       state.eq.bass = parseInt(e.target.value, 10);
       applyEqualizer();
@@ -980,7 +1058,6 @@
       btn.addEventListener('click', () => setPreset(btn.dataset.preset));
     });
 
-    // Crossfade y Gapless
     dom.crossfadeSlider.addEventListener('input', (e) => {
       const val = parseFloat(e.target.value);
       state.crossfade = val;
@@ -997,7 +1074,6 @@
       }
     });
 
-    // Favoritos
     dom.likeBtn.addEventListener('click', () => {
       if (!state.currentTrack) return;
       const id = state.currentTrack.id;
@@ -1019,7 +1095,7 @@
   // =========================================================================
 
   window.onPermissionsGranted = function () {
-    console.log('Permisos concedidos, escaneando música real del teléfono...');
+    console.log('Permisos concedidos, escaneando música del teléfono...');
     scanDeviceTracks();
   };
 
@@ -1036,11 +1112,18 @@
     try {
       const tracks = JSON.parse(jsonString);
       if (Array.isArray(tracks) && tracks.length > 0) {
-        state.phoneTracks = [...tracks, ...state.phoneTracks];
+        const mapped = tracks.map(t => {
+          const color = getTrackColor(t.id, t.title);
+          return {
+            ...t,
+            artworkColor: color,
+            artworkUrl: generateArtworkDataUri(t.title, t.artist, color)
+          };
+        });
+        state.phoneTracks = [...mapped, ...state.phoneTracks];
         if (dom.phoneCount) dom.phoneCount.textContent = state.phoneTracks.length;
         state.currentSource = 'phone';
         updateActiveView();
-        // Reproducir la canción recién importada
         playTrackByIndex(0);
       }
     } catch (err) {
@@ -1063,25 +1146,11 @@
     return 'back';
   };
 
-  // =========================================================================
-  // UTILIDADES
-  // =========================================================================
-
   function formatTime(secs) {
     const s = Math.floor(secs || 0);
     const m = Math.floor(s / 60);
     const rem = s % 60;
     return `${m}:${rem < 10 ? '0' : ''}${rem}`;
-  }
-
-  function escapeHtml(str) {
-    return (str || '').replace(/[&<>'"]/g, tag => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      "'": '&#39;',
-      '"': '&quot;'
-    }[tag] || tag));
   }
 
   // =========================================================================
@@ -1093,7 +1162,6 @@
     bindEvents();
     loadBackendData();
 
-    // Actualizar progreso periódicamente en Android
     if (state.isAndroid) {
       setInterval(() => {
         if (state.isPlaying && window.TitanBridge && window.TitanBridge.getPlaybackStatus) {

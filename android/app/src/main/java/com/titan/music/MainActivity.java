@@ -96,13 +96,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Iniciar y conectar el servicio de audio
+        // Conectar el servicio de reproducción multimedia de forma segura
         Intent serviceIntent = new Intent(this, AudioPlaybackService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
-        }
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
 
         // Crear WebView de alto rendimiento a pantalla completa
