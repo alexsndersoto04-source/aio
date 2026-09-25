@@ -64,14 +64,14 @@ jobs:
           cargo build -q -p titan_cli > /tmp/cbuild.txt 2>&1 || true
           BIN=target/debug/titan
           {
-            echo "=== check reproductor_hifi ==="
             $BIN check examples/reproductor_hifi.titan 2>&1
-            echo "=== run reproductor_hifi ==="
+            echo "check_hifi_exit=$?"
             $BIN run examples/reproductor_hifi.titan 2>&1
-            echo "=== check reproductor_musica ==="
+            echo "run_hifi_exit=$?"
             $BIN check examples/reproductor_musica.titan 2>&1
-            echo "=== run reproductor_musica ==="
+            echo "check_musica_exit=$?"
             $BIN run examples/reproductor_musica.titan 2>&1
+            echo "run_musica_exit=$?"
           } > /tmp/examples.txt 2>&1 || true
           echo "ejemplos terminados; salida en /tmp/examples.txt"
 
@@ -88,8 +88,10 @@ jobs:
             grep -E "^warning: (unused|.*never (read|used|constructed))" /tmp/ctest.txt | head -2
             grep -E "test result: FAILED" /tmp/ctest.txt | head -2
             grep -E "panicked at" /tmp/ctest.txt | head -2
-            echo "--- examples tail ---"
-            tail -5 /tmp/examples.txt
+            echo "--- examples ---"
+            grep -E "_exit=" /tmp/examples.txt | head -4
+            grep -iE "error|panic|traceback|exception" /tmp/examples.txt | head -4
+            tail -2 /tmp/examples.txt
           } | head -12 | while IFS= read -r line; do
             echo "::error file=CI_DIAG.txt::${line:0:300}"
           done
