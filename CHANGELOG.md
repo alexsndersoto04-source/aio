@@ -1,5 +1,16 @@
 # Zett / TITAN — Changelog
 
+## 1.3.0 — Fase 43: Nube Musical en Telegram — Biblioteca Doble con Streaming Puro (`std::audio::cloud_*`) ☁️
+
+- Tus canciones viven en un canal privado de Telegram («Mi Música», se crea solo) y Titan las toca **directo de la nube**: solo viajan unos segundos por adelantado (MBs en memoria) y **nada se guarda en el teléfono**, salvo descarga explícita tuya. Como Spotify/YouTube.
+- **Login con tu cuenta** (MTProto, grammers 0.10, Rust puro): `cloud_setup(api_id, api_hash)` (app personal de https://my.telegram.org), `cloud_login_phone` → código → `cloud_login_code` (→ `cloud_login_password` si hay 2FA). Sesión persistente en `~/.titan/telegram.session.json` (JSON propio, sin SQLite/C); `cloud_status` (mapa de estado, nunca falla) y `cloud_logout` (borra sesión, respeta tus canciones y credenciales).
+- **Biblioteca doble** con `cloud_library` (`[{id, title, artist, duration_secs, size, file, mime}]`, metadatos de las etiquetas de audio de Telegram) + `std::audio::scan_library` del teléfono; ejemplo `examples/reproductor_nube.titan` las muestra juntas.
+- **Streaming honesto**: cada pista es `cloud:<id>` para el motor 42A (misma cola gapless, crossfade, EQ, 32 barras); seek re-pide desde el punto; `cloud_play` / `cloud_queue_add`; `engine_decode`/`engine_current`/`engine_queue_list` entienden pistas nube con títulos bonitos (`☁ Artista — Título`).
+- **Gestión explícita**: `cloud_upload` (detecta duración y etiquetas solo), `cloud_download(id, dest)` (lo único que toca disco) y `cloud_delete` (borra del canal).
+- Sin internet / sin login / sin bocinas: errores honestos en criollo, exit 0 en la demo. Documentación: `docs/CLOUD.md`.
+- Registro actualizado: **809 funciones nativas** registradas en `std::*`.
+
+---
 ## 1.2.0 — Fase 42A: Motor de Audio Nativo — Titan Decodifica y Suena Solo (`std::audio::engine_*`) 🔊
 
 - Titan deja de delegar el sonido: **decodifica MP3/FLAC/Vorbis/Opus/WAV/AAC dentro del binario** (`symphonia`, Rust puro, cero librerías del sistema) y lo empuja a las bocinas (`cpal`: CoreAudio / WASAPI / ALSA). Sin mpv, sin afplay, sin ayudantes.

@@ -743,7 +743,8 @@ fn worker_main(control: Arc<Control>, shared: Arc<Mutex<Shared>>, out_rate: u32,
 
 /// Start playing `path` (stopping whatever played before).
 pub fn play(path: &str) -> Result<String, EngineError> {
-    if !std::path::Path::new(path).is_file() {
+    // Fase 43: `cloud:<id>` no es un archivo; el probe lo valida.
+    if crate::audio_decode::cloud_id(path).is_none() && !std::path::Path::new(path).is_file() {
         return Err(EngineError::Invalid(format!("file not found: {path}")));
     }
     // Fail fast on undecodable files instead of spawning a worker that dies.
@@ -1006,8 +1007,16 @@ pub fn set_eq(bass: i64, mid: i64, treble: i64) -> Result<bool, EngineError> {
 
 /// Append `path` to the queue (works before the first `play()` too).
 pub fn queue_add(path: &str) -> Result<String, EngineError> {
-    if !std::path::Path::new(path).is_file() {
+    // Fase 43: `cloud:<id>` se valida contra la caché de la nube.
+    if crate::audio_decode::cloud_id(path).is_none() && !std::path::Path::new(path).is_file() {
         return Err(EngineError::Invalid(format!("file not found: {path}")));
+    }
+    if let Some(id) = crate::audio_decode::cloud_id(path) {
+        if crate::audio_decode::cloud_display(path) == path {
+            return Err(EngineError::Invalid(format!(
+                "cloud:{id} no está en caché; ejecuta cloud_library primero"
+            )));
+        }
     }
     let mut guard = lock_slot();
     let eng = guard.get_or_insert_with(Engine::fresh);
@@ -1045,11 +1054,16 @@ pub fn queue_list() -> Vec<String> {
     match guard.as_ref().and_then(|eng| eng.control.clone()) {
         Some(control) => crate::native::lock_recover(&control.queue)
             .iter()
-            .cloned()
+            .map(|p| crate::audio_decode::cloud_display(p))
             .collect(),
         None => guard
             .as_ref()
-            .map(|eng| eng.pending_queue.iter().cloned().collect())
+            .map(|eng| {
+                eng.pending_queue
+                    .iter()
+                    .map(|p| crate::audio_decode::cloud_display(p))
+                    .collect()
+            })
             .unwrap_or_default(),
     }
 }
@@ -1073,7 +1087,7 @@ pub fn next() -> Result<String, EngineError> {
         next_path
     };
     match next_path {
-        Some(path) => Ok(format!("next: {path}")),
+        Some(path) => Ok(format!("next: {}", crate::audio_decode::cloud_display(&path))),
         None => {
             let _ = stop();
             Ok("end of queue (stopped)".to_string())
@@ -1102,7 +1116,7 @@ pub fn prev() -> Result<String, EngineError> {
                 crate::native::lock_recover(&control.queue).push_front(outgoing);
             }
             *crate::native::lock_recover(&control.switch_to) = Some(path.clone());
-            Ok(format!("previous: {path}"))
+            Ok(format!("previous: {}", crate::audio_decode::cloud_display(&path)))
         }
         None => Err(EngineError::Invalid("no previous track".to_string())),
     }
@@ -1130,7 +1144,7 @@ pub fn current_track() -> Result<CurrentTrack, EngineError> {
         return Err(EngineError::Idle);
     }
     Ok(CurrentTrack {
-        path,
+        path: crate::audio_decode::cloud_display(&path),
         codec,
         position_secs: position_secs(),
         duration_secs,
@@ -1241,7 +1255,7 @@ pub fn status() -> EngineStatus {
         };
     EngineStatus {
         state: state_string(),
-        path,
+        path: crate::audio_decode::cloud_display(&path),
         codec,
         position_secs: position_secs(),
         duration_secs: duration_secs(),

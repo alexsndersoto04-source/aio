@@ -128,6 +128,8 @@ pub mod audio_player;
 pub mod audio_decode;
 #[cfg(feature = "audio_engine")]
 pub mod audio_engine;
+#[cfg(feature = "audio_cloud")]
+pub mod audio_cloud;
 
 // --- Phase 10: NoSQL — embedded key-value + Redis client ---------------
 #[cfg(feature = "kv_mod")]

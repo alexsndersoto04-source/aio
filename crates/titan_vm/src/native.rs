@@ -2981,6 +2981,93 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Map(map)
         }
 
+        // ---------------- Fase 43: nube musical Telegram ----------------
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_setup" => {
+            let api_id = int!();
+            let api_hash = string!();
+            Value::Str(stdlib::audio_cloud::setup(api_id, &api_hash).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_login_phone" => {
+            let phone = string!();
+            Value::Str(stdlib::audio_cloud::login_phone(&phone).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_login_code" => {
+            let code = string!();
+            Value::Str(stdlib::audio_cloud::login_code(&code).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_login_password" => {
+            let password = string!();
+            Value::Str(stdlib::audio_cloud::login_password(&password).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_status" => {
+            let st = stdlib::audio_cloud::status();
+            let mut map = BTreeMap::new();
+            map.insert("configured".into(), Value::Bool(st.configured));
+            map.insert("connected".into(), Value::Bool(st.connected));
+            map.insert("authorized".into(), Value::Bool(st.authorized));
+            map.insert("user".into(), Value::Str(st.user));
+            map.insert("phone".into(), Value::Str(st.phone));
+            map.insert("channel".into(), Value::Str(st.channel));
+            map.insert("session_file".into(), Value::Bool(st.session_file));
+            map.insert(
+                "cached_tracks".into(),
+                Value::Int(st.cached_tracks as i64),
+            );
+            map.insert("note".into(), Value::Str(st.note));
+            Value::Map(map)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_logout" => Value::Str(stdlib::audio_cloud::logout().map_err(error)?),
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_library" => Value::Array(
+            stdlib::audio_cloud::library()
+                .map_err(error)?
+                .into_iter()
+                .map(|t| {
+                    let mut map = BTreeMap::new();
+                    map.insert("id".into(), Value::Int(t.id as i64));
+                    map.insert("title".into(), Value::Str(t.title));
+                    map.insert("artist".into(), Value::Str(t.artist));
+                    map.insert("duration_secs".into(), Value::Float(t.duration_secs));
+                    map.insert("size".into(), Value::Int(t.size as i64));
+                    map.insert("file".into(), Value::Str(t.file));
+                    map.insert("mime".into(), Value::Str(t.mime));
+                    Value::Map(map)
+                })
+                .collect(),
+        ),
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_upload" => {
+            let path = string!();
+            Value::Str(stdlib::audio_cloud::upload(&path).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_download" => {
+            let id = int!();
+            let dest = string!();
+            Value::Str(stdlib::audio_cloud::download(id, &dest).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_delete" => {
+            let id = int!();
+            Value::Str(stdlib::audio_cloud::delete(id).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_queue_add" => {
+            let id = int!();
+            Value::Str(stdlib::audio_cloud::queue_add_cloud(id).map_err(error)?)
+        }
+        #[cfg(feature = "audio_cloud")]
+        "std::audio::cloud_play" => {
+            let id = int!();
+            Value::Str(stdlib::audio_cloud::play_cloud(id).map_err(error)?)
+        }
+
         // ---------------- Phase 10: sled key-value ----------------
         #[cfg(feature = "kv_mod")]
         "std::kv::open" => Value::Int(stdlib::kv_mod::open(&string!()).map_err(error)?),

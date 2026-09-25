@@ -72,6 +72,10 @@ jobs:
             echo "check_musica_exit=$?"
             $BIN run examples/reproductor_musica.titan 2>&1
             echo "run_musica_exit=$?"
+            $BIN check examples/reproductor_nube.titan 2>&1
+            echo "check_nube_exit=$?"
+            $BIN run examples/reproductor_nube.titan 2>&1
+            echo "run_nube_exit=$?"
           } > /tmp/examples.txt 2>&1 || true
           echo "ejemplos terminados; salida en /tmp/examples.txt"
 

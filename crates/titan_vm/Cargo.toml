@@ -20,6 +20,7 @@ extras = [
     "procfs_mod", "fswatch_mod", "signals_mod",
     "audio_mod",
     "audio_engine",
+    "audio_cloud",
     "kv_mod", "redis_mod",
     "server_mod", "router_mod",
     "plot_mod",
@@ -63,6 +64,7 @@ signals_mod   = ["titan_stdlib/signals_mod"]
 window_live   = ["titan_stdlib/window_live"]
 audio_mod     = ["titan_stdlib/audio_mod"]
 audio_engine  = ["titan_stdlib/audio_engine"]
+audio_cloud   = ["titan_stdlib/audio_cloud"]
 kv_mod        = ["titan_stdlib/kv_mod"]
 redis_mod     = ["titan_stdlib/redis_mod"]
 server_mod    = ["titan_stdlib/server_mod"]
