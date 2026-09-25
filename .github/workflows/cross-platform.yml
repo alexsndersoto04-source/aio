@@ -78,7 +78,18 @@ jobs:
         if: matrix.asset == 'linux-aarch64'
         run: |
           sudo dpkg --add-architecture arm64
-          sudo apt-get update
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's/^Types: deb/Architectures: amd64\nTypes: deb/' /etc/apt/sources.list.d/ubuntu.sources
+            sudo tee /etc/apt/sources.list.d/arm64-ports.sources <<'EOF'
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: noble noble-updates noble-security
+Components: main universe
+Architectures: arm64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+          fi
+          sudo apt-get update || true
           sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev:arm64 pkg-config
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
@@ -87,7 +98,18 @@ jobs:
         if: matrix.asset == 'linux-armv7hf'
         run: |
           sudo dpkg --add-architecture armhf
-          sudo apt-get update
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's/^Types: deb/Architectures: amd64\nTypes: deb/' /etc/apt/sources.list.d/ubuntu.sources
+            sudo tee /etc/apt/sources.list.d/armhf-ports.sources <<'EOF'
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: noble noble-updates noble-security
+Components: main universe
+Architectures: armhf
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+          fi
+          sudo apt-get update || true
           sudo apt-get install -y gcc-arm-linux-gnueabihf libasound2-dev:armhf pkg-config
           echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
