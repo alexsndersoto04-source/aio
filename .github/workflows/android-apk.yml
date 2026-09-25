@@ -10,7 +10,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  issues: write
 
 jobs:
   build-apk:
@@ -53,12 +52,9 @@ jobs:
           chmod +x gradlew
           if ! ./gradlew assembleRelease --no-daemon --stacktrace > /tmp/build.log 2>&1; then
             echo "Build failed. Posting error log to PR..."
-            ERR_LOG=$(tail -n 60 /tmp/build.log)
-            gh pr comment 20 --body "### ❌ Gradle Build Error Log
-\`\`\`
-$ERR_LOG
-\`\`\`" || true
-            cat /tmp/build.log | tail -n 80
+            tail -n 50 /tmp/build.log > /tmp/err_summary.log
+            gh pr comment 20 --body-file /tmp/err_summary.log || true
+            cat /tmp/build.log | tail -n 60
             exit 1
           fi
 
