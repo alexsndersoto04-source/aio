@@ -1,0 +1,120 @@
+// Demo Fase 42A: motor de audio nativo — Titan decodifica y suena por sí
+// solo (`std::audio::engine_*`, sin mpv ni ayudantes).
+// Ejecutar con:
+//     zett run examples/reproductor_hifi.titan
+//
+// Qué demuestra:
+// 1. Generar dos pistas WAV de 5 segundos (tonos LA y SOL)
+// 2. Verificar decode headless con `std::audio::engine_decode` (funciona
+//    hasta en CI, sin bocinas)
+// 3. Ajustar volumen, crossfade, gapless y EQ de 3 bandas
+// 4. Encolar pistas con `std::audio::engine_queue_*`
+// 5. Reproducir nativo: play, posición, niveles del visualizador, pausa,
+//    resume, seek, next, pista actual, estado y stop — degradando con
+//    elegancia donde no hay salida de audio.
+
+fn main() {
+    print("---- 1. Pistas de demostración (tonos de 5 s) ----")
+    let home = std::dirs::home()
+    let carpeta = home + "/zett-demo-hifi"
+    std::fs::create_dir(carpeta)
+    let pista_a = carpeta + "/tono-la.wav"
+    let pista_b = carpeta + "/tono-sol.wav"
+    let onda_a = std::audio::sine_wave(440.0, 5000, 44100, 0.5)
+    std::audio::write_wav(pista_a, onda_a, 44100, 1)
+    let onda_b = std::audio::sine_wave(392.0, 5000, 44100, 0.5)
+    std::audio::write_wav(pista_b, onda_b, 44100, 1)
+    print("Generadas en:")
+    print(carpeta)
+
+    print("---- 2. Chequeo headless (std::audio::engine_decode) ----")
+    let rep = std::audio::engine_decode(pista_a)
+    print("codec:")
+    print(rep.codec)
+    print("duración (s):")
+    print(rep.duration_secs)
+    print("sample rate:")
+    print(rep.sample_rate)
+    print("canales:")
+    print(rep.channels)
+    print("tramo verificado (s):")
+    print(rep.verified_secs)
+    print("pico:")
+    print(rep.peak)
+
+    print("---- 3. Ajustes (sobreviven entre pistas) ----")
+    print("volumen 70:")
+    print(std::audio::engine_set_volume(70))
+    print("crossfade 2 s:")
+    print(std::audio::engine_set_crossfade(2.0))
+    print("gapless:")
+    print(std::audio::engine_set_gapless(true))
+    print("EQ +3/0/-2 dB:")
+    print(std::audio::engine_set_eq(3, 0, -2))
+    let malo = std::try::catch(|| std::audio::engine_set_volume(101))
+    match malo {
+        Result::Ok(v) => print(v),
+        Result::Err(e) => print("volumen 101 rechazado: " + e),
+    }
+
+    print("---- 4. Cola (funciona antes del play) ----")
+    print(std::audio::engine_queue_add(pista_b))
+    let cola = std::audio::engine_queue_list()
+    print("en espera:")
+    print(std::collections::length(cola))
+
+    print("---- 5. Reproducción nativa (hifi-engine) ----")
+    let intento = std::try::catch(|| std::audio::engine_play(pista_a))
+    match intento {
+        Result::Ok(msg) => {
+            print(msg)
+            print("dispositivo:")
+            print(std::audio::engine_device())
+            print("estado:")
+            print(std::audio::engine_state())
+            for i in 0..4 {
+                std::time::sleep_ms(500)
+                print("posición (s):")
+                print(std::audio::engine_position())
+            }
+            let barras = std::audio::engine_levels()
+            print("barras del visualizador:")
+            print(std::collections::length(barras))
+            print("grave (banda 2):")
+            print(barras[2])
+            print("medio (banda 12):")
+            print(barras[12])
+            print(std::audio::engine_pause())
+            print("estado tras pausa:")
+            print(std::audio::engine_state())
+            std::time::sleep_ms(500)
+            print(std::audio::engine_resume())
+            print(std::audio::engine_seek(1.0))
+            let actual = std::audio::engine_current()
+            print("sonando:")
+            print(actual.path)
+            print("codec:")
+            print(actual.codec)
+            print(std::audio::engine_next())
+            std::time::sleep_ms(1000)
+            let st = std::audio::engine_status()
+            print("estado tras next:")
+            print(st.state)
+            print("volumen guardado:")
+            print(st.volume)
+            print("EQ graves guardado:")
+            print(st.eq[0])
+            print(std::audio::engine_stop())
+            print("estado final:")
+            print(std::audio::engine_state())
+        }
+        Result::Err(e) => {
+            print("sin salida de audio en esta máquina (CI/headless):")
+            print(e)
+            print("el chequeo headless de arriba ya validó decode + ajustes + cola")
+        }
+    }
+
+    print("---- Listo. Las pistas quedaron guardadas en: ----")
+    print(carpeta)
+}

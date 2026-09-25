@@ -7,7 +7,7 @@
 
 **TITAN** es un lenguaje de programación compilado y verificado estáticamente, implementado en Rust. Los programas usan la extensión **`.titan`**, se compilan a bytecode portable y se ejecutan en una máquina virtual de pila segura. **Zett** es el nombre de distribución del compilador, especialmente en Android/Termux; ambos nombres se refieren al mismo ecosistema.
 
-> **TITAN/Zett 1.0.0 — release estable.** Lenguaje compilado y verificado estáticamente: lexer, parser, typechecker, codegen, VM segura, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro reúne **771 funciones nativas únicas en 72 namespaces `std::*`** además de primitivas del runtime. Binarios oficiales en el release **[v1.0.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.0.0)** (Linux, macOS, Windows) y, en Android/Termux, instalación directa con `pkg install zett`.
+> **TITAN/Zett 1.0.0 — release estable.** Lenguaje compilado y verificado estáticamente: lexer, parser, typechecker, codegen, VM segura, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro reúne **797 funciones nativas únicas en 72 namespaces `std::*`** además de primitivas del runtime. Binarios oficiales en el release **[v1.0.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.0.0)** (Linux, macOS, Windows) y, en Android/Termux, instalación directa con `pkg install zett`.
 
 ```text
 TITAN source (.titan)
@@ -199,7 +199,7 @@ El runtime también incluye `spawn`, `join`, `join_timeout`, `cancel`, `channel`
 
 ## Biblioteca estándar
 
-La biblioteca estándar ofrece **771 funciones nativas registradas en 72 namespaces**. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
+La biblioteca estándar ofrece **797 funciones nativas registradas en 72 namespaces**. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
 
 | Área | Incluye |
 |---|---|

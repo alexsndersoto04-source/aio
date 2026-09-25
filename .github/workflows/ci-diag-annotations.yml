@@ -43,6 +43,10 @@ jobs:
         with:
           toolchain: stable
 
+      # Fase 42A: el workspace con extras enlaza ALSA (cpal).
+      - name: System deps for native audio (cpal/ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -53,19 +57,41 @@ jobs:
           cargo test --workspace --all-targets --no-fail-fast > /tmp/ctest.txt 2>&1 || true
           echo "cargo test terminado; salida completa en /tmp/ctest.txt"
 
+      - name: examples .titan (capturado, nunca falla el paso)
+        run: |
+          # Fase 42A: verifica los ejemplos de audio de verdad (check + run
+          # headless). El binario ya quedó compilado por el paso anterior.
+          cargo build -q -p titan_cli > /tmp/cbuild.txt 2>&1 || true
+          BIN=target/debug/titan
+          {
+            $BIN check examples/reproductor_hifi.titan 2>&1
+            echo "check_hifi_exit=$?"
+            $BIN run examples/reproductor_hifi.titan 2>&1
+            echo "run_hifi_exit=$?"
+            $BIN check examples/reproductor_musica.titan 2>&1
+            echo "check_musica_exit=$?"
+            $BIN run examples/reproductor_musica.titan 2>&1
+            echo "run_musica_exit=$?"
+          } > /tmp/examples.txt 2>&1 || true
+          echo "ejemplos terminados; salida en /tmp/examples.txt"
+
       - name: Emitir líneas de fallo como anotaciones
         if: always()
         run: |
           # El API de anotaciones solo conserva ~12 por job (2 automáticas +
           # ~10 de contenido): se emite SOLO el resumen del fallo.
+          # Fase 42A: pelar ANSI primero (cargo coloriza error/warning).
+          sed -i 's/\x1b\[[0-9;]*m//g' /tmp/ctest.txt
           {
-            grep -cE "test result: FAILED|^error(\[|:)|panicked at" /tmp/ctest.txt | sed 's/^/BADLINES=/'
-            grep -E "test result: FAILED" /tmp/ctest.txt | head -3
-            grep -E "^---- .* stdout ----$" /tmp/ctest.txt | head -3
+            grep -E "^error(\[|:)" /tmp/ctest.txt | head -4
+            grep -E "^ +-->" /tmp/ctest.txt | head -4
+            grep -E "^warning: (unused|.*never (read|used|constructed))" /tmp/ctest.txt | head -2
+            grep -E "test result: FAILED" /tmp/ctest.txt | head -2
             grep -E "panicked at" /tmp/ctest.txt | head -2
-            grep -E "assertion .{0,90}failed|^  left:|^ right:" /tmp/ctest.txt | head -4
-            grep -E "^error(\[|:)" /tmp/ctest.txt | head -3
-            tail -3 /tmp/ctest.txt
-          } | head -9 | while IFS= read -r line; do
+            echo "--- examples ---"
+            grep -E "_exit=" /tmp/examples.txt | head -4
+            grep -iE "error|panic|traceback|exception" /tmp/examples.txt | head -4
+            tail -2 /tmp/examples.txt
+          } | head -12 | while IFS= read -r line; do
             echo "::error file=CI_DIAG.txt::${line:0:300}"
           done

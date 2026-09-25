@@ -26,6 +26,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Fase 42A: el motor de audio nativo usa cpal/ALSA en Linux.
+      - name: System deps for native audio (cpal/ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -38,6 +42,15 @@ jobs:
 
       - name: cargo test (default features)
         run: cargo test --workspace --all-targets --no-fail-fast
+
+      # Fase 42A: los ejemplos de audio se verifican de verdad (check +
+      # run headless con degradación elegante, sin bocinas).
+      - name: audio examples end-to-end (headless)
+        run: |
+          cargo run -q -p titan_cli -- check examples/reproductor_hifi.titan
+          cargo run -q -p titan_cli -- run examples/reproductor_hifi.titan
+          cargo run -q -p titan_cli -- check examples/reproductor_musica.titan
+          cargo run -q -p titan_cli -- run examples/reproductor_musica.titan
 
       - name: cargo check (no default features)
         run: cargo check --workspace --all-targets --no-default-features

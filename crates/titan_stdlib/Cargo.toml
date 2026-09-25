@@ -27,6 +27,8 @@ extras = [
     "procfs_mod", "fswatch_mod", "signals_mod",
     # Phase 9 — Audio
     "audio_mod",
+    # Fase 42A — motor de audio nativo (decode dentro de Titan + salida directa)
+    "audio_engine",
     # Phase 10 — NoSQL key-value + Redis
     "kv_mod", "redis_mod",
     # Phase 11 — HTTP server + URL router (axum-style)
@@ -99,6 +101,12 @@ signals_mod  = ["dep:signal-hook"]
 # solo Unix, igual que en process_mod) da SIGSTOP/SIGCONT para pausar
 # reproductores externos. En no-Unix el módulo compila igual sin él.
 audio_mod    = ["dep:hound", "dep:nix"]
+
+# Fase 42A — motor de audio nativo: symphonia (Rust puro, decodifica
+# MP3/FLAC/Vorbis/Opus/WAV en todos los targets incl. Android) + cpal
+# (salida directa CoreAudio/WASAPI/ALSA; excluido en Android, donde la
+# salida la pone el shell de la app en Fase 42B).
+audio_engine = ["dep:symphonia", "dep:cpal"]
 
 # Phase 10 — Embedded key-value store and Redis client
 kv_mod       = ["dep:sled"]
@@ -221,6 +229,12 @@ signal-hook       = { version = "0.3",  optional = true }
 # never link against ALSA/AAudio (which would break in a stock Termux build).
 hound             = { version = "3.5",  optional = true }
 
+# Fase 42A — decode nativo dentro de Titan. `symphonia` es Rust puro
+# (MP3/FLAC/Vorbis/Opus/WAV/AAC sin librerías del sistema) y compila en
+# todos los targets, incluido Android. La salida (`cpal`) va aparte en
+# la sección [target] de abajo porque Android la excluye.
+symphonia         = { version = "0.5",  optional = true }
+
 # Phase 10 — Embedded key-value store + Redis client.
 # `sled` is pure-Rust, ACID, and produces a single on-disk file — perfect
 # for caches, sessions and app config without spinning up a database.
@@ -273,3 +287,6 @@ nix = { version = "0.29", optional = true, default-features = false, features = 
 # eso solo entra en targets no-Android. Pure-Rust: x11rb/wayland en
 # Linux, Win32 en Windows, Cocoa en macOS.
 minifb = { version = "0.27", optional = true }
+# Fase 42A — salida de audio directa. En Android compila el decode
+# (symphonia, arriba) pero no cpal: la salida la pone el shell.
+cpal = { version = "0.15", optional = true }

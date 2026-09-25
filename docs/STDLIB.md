@@ -8,7 +8,7 @@ The `titan_stdlib` crate provides memory-safe host capabilities for the compiler
 
 | Module | Capabilities |
 |---|---|
-| `audio` | WAV I/O + synthesis (hound); MP3/FLAC/OGG/WAV tags, library scanning and system-backend playback engine (`mpv`, `afplay`, `paplay`, `aplay`, `ffplay`) — Fase 41 |
+| `audio` | WAV I/O + synthesis (hound); MP3/FLAC/OGG/WAV tags, library scanning and system-backend playback engine (`mpv`, `afplay`, `paplay`, `aplay`, `ffplay`) — Fase 41 · native engine: in-binary decode (symphonia) + direct output (cpal), gapless/crossfade queue, persistent settings, 32-bar visualizer — Fase 42A |
 | `bytes` | Bounds-checked endian binary reader/writer, numeric and length-prefixed string formats |
 | `cache` | Capacity-bounded LRU cache with deterministic eviction |
 | `checksum` | FNV-1a, CRC-32, constant-time byte comparison |

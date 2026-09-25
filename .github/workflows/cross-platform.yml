@@ -40,6 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Fase 42A: cpal/ALSA en Linux.
+      - name: System deps for native audio (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --workspace --all-targets
         run: cargo test --workspace --all-targets
@@ -63,18 +67,29 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      # Fase 42A: cpal enlaza ALSA en Linux. x86_64 usa la lib nativa;
+      # los cruces ARM traen su sysroot multiarch + pkg-config cruzado.
+      - name: ALSA nativa (solo linux-x86_64)
+        if: matrix.asset == 'linux-x86_64'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - name: Linker cruzado aarch64 (solo el target linux-aarch64)
         if: matrix.asset == 'linux-aarch64'
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev:arm64 pkg-config
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
       - name: Linker cruzado armv7 (solo el target linux-armv7hf)
         if: matrix.asset == 'linux-armv7hf'
         run: |
+          sudo dpkg --add-architecture armhf
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-linux-gnueabihf
+          sudo apt-get install -y gcc-arm-linux-gnueabihf libasound2-dev:armhf pkg-config
           echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> "$GITHUB_ENV"
       - name: cargo build --release (titan_cli)
         run: cargo build --release -p titan_cli --target ${{ matrix.target }}
 

@@ -119,6 +119,16 @@ pub mod audio_tags;
 #[cfg(feature = "audio_mod")]
 pub mod audio_player;
 
+// --- Fase 42A: motor de audio nativo ---------------------------------
+// Decode MP3/FLAC/Vorbis/Opus/WAV dentro de Titan (symphonia, Rust puro)
+// + salida directa al dispositivo (cpal). `audio_decode` compila en todos
+// los targets; `audio_engine` responde output real fuera de Android y un
+// error honesto dentro (la salida la pone el shell de la app, Fase 42B).
+#[cfg(feature = "audio_engine")]
+pub mod audio_decode;
+#[cfg(feature = "audio_engine")]
+pub mod audio_engine;
+
 // --- Phase 10: NoSQL — embedded key-value + Redis client ---------------
 #[cfg(feature = "kv_mod")]
 pub mod kv_mod;

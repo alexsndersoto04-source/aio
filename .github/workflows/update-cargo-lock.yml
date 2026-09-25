@@ -1,0 +1,55 @@
+# One-shot: regenera Cargo.lock cuando se agregan dependencias y lo devuelve
+# a la rama. El sandbox de Arena no tiene toolchain ni red a crates.io, así
+# que la CI (que sí tiene ambas) es quien resuelve y fija versiones.
+#
+# Uso:
+#   gh workflow run update-cargo-lock.yml --ref arena/TU-RAMA
+#
+# Los workflows con `cargo build --locked` (publish-linux-binary, Termux)
+# vuelven a verde en cuanto este commit del lock aterriza.
+
+name: Update Cargo.lock
+
+on:
+  workflow_dispatch:
+  # El dispatch por API solo resuelve workflows de la rama default; este
+  # trigger hace que corra solo cuando el propio archivo cambia (el push
+  # del lock resultante no lo re-dispara: no coincide con paths).
+  push:
+    branches: ["arena/**"]
+    paths:
+      - ".github/workflows/update-cargo-lock.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: System deps for native audio (cpal/ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Update lockfile (minimal, workspace-wide check)
+        run: cargo check --workspace --all-targets
+
+      - name: Commit Cargo.lock back to the branch
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already up to date."
+            exit 0
+          fi
+          git config user.name "arena-lock-bot"
+          git config user.email "arena-lock-bot@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: update Cargo.lock (CI, $(git rev-parse --short HEAD))"
+          git push origin HEAD:${{ github.ref_name }}
+
+# ping fase42a: dispara la actualizacion del lock en esta rama
+# ping fase42a-fix5: regenera el lock con el codigo que compila
