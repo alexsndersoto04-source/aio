@@ -512,7 +512,7 @@ pub fn login_code(code: &str) -> Result<String, CloudError> {
     })?;
     match result {
         Ok(user) => {
-            let name = user.first_name().trim().to_string();
+            let name = user.first_name().unwrap_or_default().trim().to_string();
             let mut cfg = load_config();
             cfg.user_name = if name.is_empty() {
                 "yo".to_string()
@@ -553,7 +553,7 @@ pub fn login_password(password: &str) -> Result<String, CloudError> {
             .await
             .map_err(|e| CloudError::Auth(format!("contraseña inválida ({e})")))
     })?;
-    let name = user.first_name().trim().to_string();
+    let name = user.first_name().unwrap_or_default().trim().to_string();
     let mut cfg = load_config();
     cfg.user_name = if name.is_empty() {
         "yo".to_string()
@@ -715,6 +715,9 @@ fn ensure_channel(handle: &Handle, client: &Client) -> Result<PeerRef, CloudErro
                 about: "Mi nube musical (Titan)".to_string(),
                 geo_point: None,
                 address: None,
+                for_import: false,
+                forum: false,
+                ttl_period: None,
             })
             .await
             .map_err(|e| {
