@@ -1,1 +1,1 @@
-diagnóstico fase43-r11 2026-09-25T09:06:43Z (fix streaming + error typechecker)
+diagnóstico fase43-r12 2026-09-25T09:10:14Z (fun→fn en reproductor_nube)

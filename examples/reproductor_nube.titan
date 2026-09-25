@@ -6,7 +6,7 @@
 //
 // Sin login muestra el estado y la guía, y termina en 0 (así corre en CI).
 
-fun main() {
+fn main() {
     print("==== Titan · Nube musical (Fase 43) ====")
 
     print("---- 1. Estado (std::audio::cloud_status) ----")
