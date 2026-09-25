@@ -43,7 +43,29 @@ jobs:
           key: cargo-linux-x64-${{ hashFiles('Cargo.lock') }}
 
       - name: Build release
-        run: cargo build --release --bin zett
+        id: buildstep
+        run: |
+          cargo build --release --bin zett > /tmp/build.log 2>&1 || {
+            echo "=== intento warm fallido; limpiando target y reintentando (cold) ==="
+            tail -20 /tmp/build.log
+            rm -rf target
+            cargo build --release --bin zett > /tmp/build2.log 2>&1 || {
+              echo "=== build cold también falló ==="
+              tail -60 /tmp/build2.log
+              exit 1
+            }
+          }
+          echo "=== build OK ==="
+          ls -la target/release/zett
+
+      - name: Annotate build failure (visible via API)
+        if: steps.buildstep.outcome == 'failure'
+        run: |
+          LOG=/tmp/build.log
+          [ -f /tmp/build2.log ] && LOG=/tmp/build2.log
+          tail -12 "$LOG" 2>/dev/null | while IFS= read -r l; do
+            echo "::error::[build] $l"
+          done
 
       - name: Publish to the binaries branch
         id: publish
