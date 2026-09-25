@@ -148,3 +148,4 @@ jobs:
             target/release/VERSION
             target/release/COMMIT
           retention-days: 30
+# ping fase42a: verifica el binario release con el motor nativo
