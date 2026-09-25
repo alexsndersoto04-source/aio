@@ -1,0 +1,150 @@
+name: Publish Linux x86_64 binary
+
+# Compila el binario `titan` (paquete titan_cli) para x86_64 Linux y lo publica
+# en la rama `binaries` como `zett-linux-x86_64` (nómina del paquete zett, igual
+# que los .deb de Termux). Compatible con Debian 12 / glibc >= 2.35 (el sandbox
+# de Arena corre en ubuntu-22.04 para esto: glibc 2.35).
+#
+# Para obtenerlo en cualquier máquina con acceso al repo:
+#
+#   git fetch origin binaries
+#   git show binaries:zett-linux-x86_64 > zett && chmod +x zett
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'arena/**']
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/publish-linux-binary.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (libasound2)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-linux-x64-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build release
+        id: buildstep
+        run: |
+          set +e
+          echo "cargo: $(which cargo 2>/dev/null || echo MISSING)"
+          cargo --version 2>&1 | head -1
+          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "=== intento warm fallido (rc=$rc); limpiando target y reintentando (cold) ==="
+            tail -20 /tmp/build.log
+            rm -rf target
+            cargo build --locked --release -p titan_cli > /tmp/build2.log 2>&1
+            rc2=$?
+            if [ $rc2 -ne 0 ]; then
+              echo "=== build cold también falló (rc=$rc2) ==="
+              tail -60 /tmp/build2.log
+              echo "::error::[build] FAIL warm rc=$rc, cold rc=$rc2"
+              tail -12 /tmp/build2.log | while IFS= read -r l; do
+                echo "::error::[build] $l"
+              done
+              exit 1
+            fi
+          fi
+          echo "=== build OK ==="
+          ls -la target/release/titan
+
+      - name: Publish to the binaries branch
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          #!/bin/bash
+          set -u
+
+          fail() {
+            # Visible en las anotaciones del check-run (se lee por API sin
+            # descargar el log).
+            echo "::error::[publish] $1"
+            exit 1
+          }
+
+          # sha256 con el nombre final del archivo (para sha256sum -c directo)
+          sha256sum target/release/titan > /tmp/sha.txt || fail "sha256sum failed"
+          awk '{print $1 "  zett-linux-x86_64"}' /tmp/sha.txt \
+            > target/release/zett-linux-x86_64.sha256
+          echo "Binary: $(du -h target/release/titan | cut -f1)"
+
+          {
+            echo "release"
+            echo "v1.1.0-alpha"
+            date -u +"%Y-%m-%dT%H:%M:%SZ"
+          } > target/release/VERSION
+
+          git rev-parse HEAD > target/release/COMMIT
+
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+          git clone --quiet "https://x-access-token:$GITHUB_TOKEN@github.com/alexsndersoto04-source/aio.git" "$WORK" \
+            || fail "git clone failed (token rechazado?)"
+          cd "$WORK"
+          git config user.name "publish-bot"
+          git config user.email "publish-bot@users.noreply.github.com"
+
+          # Sparse checkout: solo los archivos que vamos a commitear.
+          git checkout --quiet main
+          git sparse-checkout init --cone
+          git sparse-checkout set zett-linux-x86_64 zett-linux-x86_64.sha256 VERSION COMMIT
+          echo "=== branch main contents (sparse) ==="
+          git ls-files
+          echo "=== sha256 del binario recién compilado ==="
+          cat "$GITHUB_WORKSPACE/target/release/zett-linux-x86_64.sha256"
+          echo "=== sha256 anterior en main (si existe) ==="
+          cat zett-linux-x86_64.sha256 2>/dev/null || echo "(no hay version anterior)"
+          echo "=== VERSION anterior en main (si existe) ==="
+          cat VERSION 2>/dev/null || echo "(no hay version anterior)"
+
+          cp "$GITHUB_WORKSPACE/target/release/titan" ./zett-linux-x86_64
+          cp "$GITHUB_WORKSPACE/target/release/zett-linux-x86_64.sha256" ./zett-linux-x86_64.sha256
+          cp "$GITHUB_WORKSPACE/target/release/VERSION" ./VERSION
+          cp "$GITHUB_WORKSPACE/target/release/COMMIT" ./COMMIT
+
+          git add zett-linux-x86_64 zett-linux-x86_64.sha256 VERSION COMMIT
+          git commit --quiet -m "Publish zett-linux-x86_64 (commit $(cat COMMIT), $(date -u +%Y-%m-%d))" \
+            || fail "git commit failed (nada para commitear?)"
+
+          git push --force "https://x-access-token:$GITHUB_TOKEN@github.com/alexsndersoto04-source/aio.git" \
+            "HEAD:refs/heads/binaries" > /tmp/push.log 2>&1 \
+            || { echo "--- git push output ---"; cat /tmp/push.log; \
+                 fail "git push a refs/heads/binaries falló — el token probablemente no tiene permiso de escritura"; }
+          echo "--- git push output ---"
+          cat /tmp/push.log
+          echo "::notice::[publish] Rama 'binaries' actualizada correctamente"
+
+      - name: Upload binary as artifact (descargable desde la UI de GitHub)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zett-linux-x86_64-${{ github.run_id }}
+          path: |
+            target/release/titan
+            target/release/zett-linux-x86_64.sha256
+            target/release/VERSION
+            target/release/COMMIT
+          retention-days: 30

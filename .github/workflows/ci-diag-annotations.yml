@@ -1,0 +1,71 @@
+# ============================================================================
+# Diagnóstico de CI vía anotaciones
+#
+# Los logs de los jobs viven en results-receiver.actions.githubusercontent.com,
+# un host NO alcanzable desde los entornos Arena. Pero las ANOTACIONES de los
+# jobs (mensajes ::error::/::warning::) SÍ son legibles por la API
+# (GET /actions/runs/{id}/jobs y /check-runs/{id}/annotations).
+#
+# Este workflow corrobora `cargo test --workspace --all-targets` y emite las
+# líneas de fallo como anotaciones, para poder leerlas desde Arena.
+#
+# Se dispara (y dispara NADA más) cuando cambia el marcador CI_DIAG.txt:
+#   echo "diagnóstico $(date)" > CI_DIAG.txt && git add CI_DIAG.txt && git commit
+# Borra el marcador (o deja de modificarlo) cuando no lo necesites.
+# ============================================================================
+
+name: CI diagnostics (annotations)
+
+on:
+  push:
+    branches: [main, "arena/**"]
+    paths:
+      - "CI_DIAG.txt"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-diag-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-test-annotations:
+    name: cargo test → anotaciones
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test (capturado, nunca falla el paso)
+        run: |
+          # || true: el runner ejecuta con errexit; sin esto el paso morirá
+          # antes de que el paso de anotaciones pueda leer /tmp/ctest.txt.
+          cargo test --workspace --all-targets --no-fail-fast > /tmp/ctest.txt 2>&1 || true
+          echo "cargo test terminado; salida completa en /tmp/ctest.txt"
+
+      - name: Emitir líneas de fallo como anotaciones
+        if: always()
+        run: |
+          # El API de anotaciones solo conserva ~12 por job (2 automáticas +
+          # ~10 de contenido): se emite SOLO el resumen del fallo.
+          {
+            grep -cE "test result: FAILED|^error(\[|:)|panicked at" /tmp/ctest.txt | sed 's/^/BADLINES=/'
+            grep -E "test result: FAILED" /tmp/ctest.txt | head -3
+            grep -E "^---- .* stdout ----$" /tmp/ctest.txt | head -3
+            grep -E "panicked at" /tmp/ctest.txt | head -2
+            grep -E "assertion .{0,90}failed|^  left:|^ right:" /tmp/ctest.txt | head -4
+            grep -E "^error(\[|:)" /tmp/ctest.txt | head -3
+            tail -3 /tmp/ctest.txt
+          } | head -9 | while IFS= read -r line; do
+            echo "::error file=CI_DIAG.txt::${line:0:300}"
+          done

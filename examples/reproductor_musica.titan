@@ -1,0 +1,142 @@
+// Demo Fase 41: base del reproductor de música — metadatos, biblioteca y
+// motor de reproducción (`std::audio::tags`, `std::audio::scan_library`,
+// `std::audio::player_*`).
+// Ejecutar con:
+//     zett run examples/reproductor_musica.titan
+//
+// Qué demuestra:
+// 1. Generar dos pistas WAV de 5 segundos (tonos LA y SOL)
+// 2. Leer los metadatos de una pista con `std::audio::tags`
+// 3. Escanear una carpeta completa con `std::audio::scan_library`
+// 4. Reproducir con el backend del sistema (mpv, afplay, paplay, aplay,
+//    ffplay o SoundPlayer en Windows): play, posición, pausa, resume,
+//    volumen, cola, next/prev, pista actual y stop — degradando con
+//    elegancia donde no hay soporte.
+// 5. Extraer la carátula embebida con std::audio::cover (bytes).
+//
+// Con mpv instalado (Termux: `pkg install mpv`) el control es completo.
+
+fn main() {
+    print("---- 1. Pistas de demostración (tonos de 5 s) ----")
+    let home = std::dirs::home()
+    let carpeta = home + "/zett-demo-musica"
+    std::fs::create_dir(carpeta)
+    let pista_a = carpeta + "/tono-la.wav"
+    let pista_b = carpeta + "/tono-sol.wav"
+    let onda_a = std::audio::sine_wave(440.0, 5000, 44100, 0.5)
+    std::audio::write_wav(pista_a, onda_a, 44100, 1)
+    let onda_b = std::audio::sine_wave(392.0, 5000, 44100, 0.5)
+    std::audio::write_wav(pista_b, onda_b, 44100, 1)
+    print("Generadas en:")
+    print(carpeta)
+
+    print("---- 2. Metadatos de una pista (std::audio::tags) ----")
+    let info = std::audio::tags(pista_a)
+    print("formato:")
+    print(info.format)
+    print("duración (s):")
+    print(info.duration_secs)
+    print("sample rate:")
+    print(info.sample_rate)
+    print("canales:")
+    print(info.channels)
+    print("duración vía std::audio::duration:")
+    print(std::audio::duration(pista_a))
+
+    print("---- 3. Biblioteca (std::audio::scan_library) ----")
+    let biblioteca = std::audio::scan_library(carpeta)
+    let total = std::collections::length(biblioteca)
+    print("pistas encontradas:")
+    print(total)
+    for i in 0..total {
+        let t = biblioteca[i]
+        print("· pista:")
+        print(t.path)
+        print("  formato:")
+        print(t.format)
+        print("  duración:")
+        print(t.duration_secs)
+    }
+
+    print("---- 4. Motor de reproducción (backend del sistema) ----")
+    let backend = std::audio::player_backend()
+    print("backend detectado:")
+    print(backend)
+    if backend == "" {
+        print("No hay reproductor del sistema disponible.")
+        print("Instala uno: pkg install mpv (Termux) · apt install mpv (Linux) · brew install mpv (macOS).")
+        print("El resto de la demo (etiquetas y biblioteca) ya funcionó sin audio.")
+    } else {
+        print(std::audio::player_play(pista_a))
+        for i in 0..4 {
+            std::time::sleep_ms(500)
+            print("posición (s):")
+            print(std::audio::player_position())
+        }
+        let pausa = std::try::catch(|| std::audio::player_pause())
+        match pausa {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("pausa no disponible: " + e),
+        }
+        std::time::sleep_ms(1000)
+        let sigo = std::try::catch(|| std::audio::player_resume())
+        match sigo {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("resume no disponible: " + e),
+        }
+        let vol = std::try::catch(|| std::audio::player_set_volume(60))
+        match vol {
+            Result::Ok(aplicado) => {
+                print("volumen aplicado:")
+                print(aplicado)
+            }
+            Result::Err(e) => print("volumen no disponible: " + e),
+        }
+        let salto = std::try::catch(|| std::audio::player_seek(1.0))
+        match salto {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("seek no disponible: " + e),
+        }
+        let cola = std::try::catch(|| std::audio::player_queue_add(pista_b))
+        match cola {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("cola no disponible: " + e),
+        }
+        let actual = std::try::catch(|| std::audio::player_current())
+        match actual {
+            Result::Ok(t) => {
+                print("pista actual:")
+                print(t.title)
+                print("índice en la cola:")
+                print(t.index)
+                print("tamaño de la cola:")
+                print(t.count)
+            }
+            Result::Err(e) => print("estado actual no disponible: " + e),
+        }
+        let siguiente = std::try::catch(|| std::audio::player_next())
+        match siguiente {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("saltar pista no disponible: " + e),
+        }
+        let atras = std::try::catch(|| std::audio::player_prev())
+        match atras {
+            Result::Ok(msg) => print(msg),
+            Result::Err(e) => print("volver atrás no disponible: " + e),
+        }
+        std::time::sleep_ms(2000)
+        print("posición tras 2 s más (s):")
+        print(std::audio::player_position())
+        print(std::audio::player_stop())
+    }
+
+    print("---- 5. Carátula embebida (std::audio::cover) ----")
+    let portada = std::try::catch(|| std::audio::cover(pista_a))
+    match portada {
+        Result::Ok(bytes) => print("portada de la WAV generada: {std::bytes::length(bytes)} bytes (0 si no lleva carátula)"),
+        Result::Err(e) => print("portada no disponible: " + e),
+    }
+
+    print("---- Listo. Las pistas quedaron guardadas en: ----")
+    print(carpeta)
+}

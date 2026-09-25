@@ -1,22 +1,15 @@
 # ============================================================================
-# TEMPLATE — Workflow de CI para compilar el binario Zett para Termux AArch64.
+# Termux AArch64 (64-bit) CI
 #
-# Tu Redmi 9C (MediaTek Helio G22) es aarch64 (64-bit). El workflow
-# termux-arm.yml existente compila armv7 (32-bit), que NO se ejecuta en tu
-# teléfono. Este workflow compila aarch64 y sube un .deb instalable.
+# Compila el binario zett para aarch64-linux-android con el clang del NDK
+# como linker, verifica estructuralmente el ELF (file/readelf) y empaqueta
+# un .deb instalable en Termux (dpkg -i zett_*.deb). El artifact
+# `zett-termux-aarch64-<run>` contiene el .deb, el binario crudo,
+# SHA256SUMS, VERSION y COMMIT.
 #
-# CÓMO ACTIVARLO (desde Termux, porque Arena no tiene permiso de workflows):
-#
-#   cd aio
-#   git pull origin arena/01a01dfc-aio
-#   cp docs/TERMUX_AARCH64_WORKFLOW.yml .github/workflows/termux-aarch64.yml
-#   git add .github/workflows/termux-aarch64.yml
-#   git commit -m "Add Termux AArch64 build workflow for 64-bit devices"
-#   git push origin arena/01a01dfc-aio
-#
-# Una vez pusheado, cada push a arena/** dispara este workflow y deja un
-# artifact `zett-termux-aarch64-<run>` descargable. El .deb dentro se instala
-# en Termux con:  dpkg -i zett_*.deb
+# Nota: el setup del SDK Android NO usa android-actions/setup-android —
+# esa action está rota desde 2026-09-14 (Google retiró el paquete legacy
+# "tools" del repositorio del SDK). Ver scripts/setup-android-ci.sh.
 # ============================================================================
 
 name: Termux AArch64 (64-bit)
@@ -57,7 +50,7 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Install Android command-line tools
-        uses: android-actions/setup-android@v3
+        run: bash scripts/setup-android-ci.sh
 
       - name: Cache Rust AArch64 build
         uses: Swatinem/rust-cache@v2

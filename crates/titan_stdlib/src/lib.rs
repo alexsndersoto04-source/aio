@@ -110,6 +110,15 @@ pub mod signals_mod;
 #[cfg(feature = "audio_mod")]
 pub mod audio_mod;
 
+// --- Fase 41: base del reproductor de música ----------------------------
+// Metadatos de pistas (MP3/WAV/FLAC/OGG) + escaneo de biblioteca.
+#[cfg(feature = "audio_mod")]
+pub mod audio_tags;
+// Motor de reproducción sobre reproductores del sistema (mpv, afplay,
+// paplay, aplay, ffplay, SoundPlayer de Windows).
+#[cfg(feature = "audio_mod")]
+pub mod audio_player;
+
 // --- Phase 10: NoSQL — embedded key-value + Redis client ---------------
 #[cfg(feature = "kv_mod")]
 pub mod kv_mod;
