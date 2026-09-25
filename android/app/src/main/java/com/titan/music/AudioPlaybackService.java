@@ -173,10 +173,10 @@ public class AudioPlaybackService extends Service {
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setOngoing(isPlaying)
                 .setShowWhen(false)
-                .addAction(android.R.drawable.ic_media_previous, "Anterior", piPrev)
-                .addAction(isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
+                .addAction(R.drawable.ic_skip_previous, "Anterior", piPrev)
+                .addAction(isPlaying ? R.drawable.ic_pause : R.drawable.ic_play_arrow,
                         isPlaying ? "Pausa" : "Reproducir", piToggle)
-                .addAction(android.R.drawable.ic_media_next, "Siguiente", piNext);
+                .addAction(R.drawable.ic_skip_next, "Siguiente", piNext);
 
         if (currentArtwork != null) {
             builder.setLargeIcon(currentArtwork);
