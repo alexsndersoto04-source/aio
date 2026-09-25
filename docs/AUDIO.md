@@ -129,6 +129,31 @@ Detalles de diseño:
 * Termux/Android mantiene además la vía clásica de la Fase 9
   (`termux-media-player`): `std::audio::play`, `pause`, `stop`, `record_*`.
 
+### Pruebas sin dispositivo de audio (headless / sandbox)
+
+En máquinas sin audio (CI, sandbox, contenedores) el backend `mpv` no
+puede abrir un driver de salida y el motor de reproducción no puede
+exercitarse con él. Dos vías para probar `std::audio::player_*` igual:
+
+1. **mpv real en silencioso**: añade `ao=null` a `~/.config/mpv/mpv.conf`
+   (driver de salida nulo: "suena" sin audio, el reloj avanza y el
+   socket IPC responde completo).
+
+2. **Shim de protocolo** (`scripts/mpv_shim.py`): doble de Python del
+   subconjunto del JSON-IPC de mpv que usa este módulo
+   (`get_property`, `set_property`, `seek`, `loadfile append-play`,
+   `playlist-*`, `quit`). Instalándolo como `/usr/local/bin/mpv`,
+   `player_backend()` detecta "mpv" y todo el motor se ejercita de
+   verdad contra el cliente IPC de TITAN:
+
+   ```bash
+   sudo cp scripts/mpv_shim.py /usr/local/bin/mpv && sudo chmod +x /usr/local/bin/mpv
+   zett run examples/reproductor_musica.titan
+   ```
+
+   El shim registra cada comando recibido en `/tmp/mpv-shim-debug.log`
+   (útil para auditar los payloads que envía el cliente).
+
 ## 4. Ejemplo completo
 
 `examples/reproductor_musica.titan` — genera dos tonos, lee sus
