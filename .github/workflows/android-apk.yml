@@ -47,21 +47,19 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle_build.log || {
-            ERR=$(grep -A 2 -B 1 -m 5 -E "error:|FAILURE:|cannot find symbol" /tmp/gradle_build.log | tr '\n' ' ' | cut -c 1-250)
-            echo "::error title=Gradle Error::$ERR"
-            exit 1
-          }
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Verify APK structure
         run: |
           mkdir -p dist/
-          APK_SRC="android/app/build/outputs/apk/release/app-release.apk"
-          if [ ! -f "$APK_SRC" ]; then
-            APK_SRC=$(find android/app/build/outputs/apk/ -name "*.apk" | head -n 1)
+          find android/ -name "*.apk" -ls || true
+          APK_SRC=$(find android/ -name "*.apk" | head -n 1)
+          echo "::warning title=Found APK::$APK_SRC"
+          if [ -z "$APK_SRC" ]; then
+            echo "::error title=No APK::No APK file found in android directory"
+            find android/app/build/ -maxdepth 4 -ls || true
+            exit 1
           fi
-          echo "Found APK at: $APK_SRC"
-          test -s "$APK_SRC"
           cp "$APK_SRC" "dist/TitanMusic-v1.0.0.apk"
           ls -lh dist/TitanMusic-v1.0.0.apk
           sha256sum dist/TitanMusic-v1.0.0.apk > dist/TitanMusic-v1.0.0.apk.sha256
