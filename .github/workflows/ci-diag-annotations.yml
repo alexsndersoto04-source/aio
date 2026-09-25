@@ -57,6 +57,24 @@ jobs:
           cargo test --workspace --all-targets --no-fail-fast > /tmp/ctest.txt 2>&1 || true
           echo "cargo test terminado; salida completa en /tmp/ctest.txt"
 
+      - name: examples .titan (capturado, nunca falla el paso)
+        run: |
+          # Fase 42A: verifica los ejemplos de audio de verdad (check + run
+          # headless). El binario ya quedó compilado por el paso anterior.
+          cargo build -q -p titan_cli > /tmp/cbuild.txt 2>&1 || true
+          BIN=target/debug/titan
+          {
+            echo "=== check reproductor_hifi ==="
+            $BIN check examples/reproductor_hifi.titan 2>&1
+            echo "=== run reproductor_hifi ==="
+            $BIN run examples/reproductor_hifi.titan 2>&1
+            echo "=== check reproductor_musica ==="
+            $BIN check examples/reproductor_musica.titan 2>&1
+            echo "=== run reproductor_musica ==="
+            $BIN run examples/reproductor_musica.titan 2>&1
+          } > /tmp/examples.txt 2>&1 || true
+          echo "ejemplos terminados; salida en /tmp/examples.txt"
+
       - name: Emitir líneas de fallo como anotaciones
         if: always()
         run: |
@@ -70,7 +88,8 @@ jobs:
             grep -E "^warning: (unused|.*never (read|used|constructed))" /tmp/ctest.txt | head -2
             grep -E "test result: FAILED" /tmp/ctest.txt | head -2
             grep -E "panicked at" /tmp/ctest.txt | head -2
-            tail -2 /tmp/ctest.txt
-          } | head -9 | while IFS= read -r line; do
+            echo "--- examples tail ---"
+            tail -5 /tmp/examples.txt
+          } | head -12 | while IFS= read -r line; do
             echo "::error file=CI_DIAG.txt::${line:0:300}"
           done
