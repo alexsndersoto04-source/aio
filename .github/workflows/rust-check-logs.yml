@@ -94,6 +94,10 @@ jobs:
                          examples/custom_errors.titan examples/pipeline_spaceship.titan; do
                   echo "== $f"; timeout 60 target/release/titan run "$f" 2>&1 | tail -3; echo "rc=$?"
                 done
+                if [ -f selfhost/verify_lexer.sh ]; then
+                  echo "== selfhost: lexer Titan vs lexer Rust"
+                  bash selfhost/verify_lexer.sh target/release/titan 2>&1 | tail -15
+                fi
                 if [ -f ci-bench/bench.titan ]; then
                   echo "== bench"; timeout 300 target/release/titan run ci-bench/bench.titan 2>&1
                 fi
