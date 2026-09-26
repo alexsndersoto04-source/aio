@@ -238,7 +238,7 @@ public class WebAppInterface {
     }
 
     // =========================================================================
-    // BIBLIOTECA DEL TELÉFONO (FILTRADO PROFESIONAL DE MÚSICA REAL)
+    // BIBLIOTECA DEL TELÉFONO (METADATOS COMPLETOS REALES)
     // =========================================================================
 
     @JavascriptInterface
@@ -252,7 +252,10 @@ public class WebAppInterface {
                     MediaStore.Audio.Media.ARTIST,
                     MediaStore.Audio.Media.ALBUM,
                     MediaStore.Audio.Media.DURATION,
-                    MediaStore.Audio.Media.DATA
+                    MediaStore.Audio.Media.DATA,
+                    MediaStore.Audio.Media.SIZE,
+                    MediaStore.Audio.Media.YEAR,
+                    MediaStore.Audio.Media.DATE_ADDED
             };
 
             // Filtrado profesional: canciones de al menos 40 segundos para excluir notas de voz, ringtones y audios de apps
@@ -273,6 +276,9 @@ public class WebAppInterface {
                 int albumIdx = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM);
                 int durIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION);
                 int dataIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DATA);
+                int sizeIdx = cursor.getColumnIndex(MediaStore.Audio.Media.SIZE);
+                int yearIdx = cursor.getColumnIndex(MediaStore.Audio.Media.YEAR);
+                int dateAddedIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED);
 
                 while (cursor.moveToNext()) {
                     long id = cursor.getLong(idIdx);
@@ -281,6 +287,9 @@ public class WebAppInterface {
                     String album = albumIdx >= 0 ? cursor.getString(albumIdx) : "Dispositivo";
                     long durSecs = durIdx >= 0 ? cursor.getLong(durIdx) / 1000 : 180;
                     String rawPath = dataIdx >= 0 ? cursor.getString(dataIdx) : "";
+                    long sizeBytes = sizeIdx >= 0 ? cursor.getLong(sizeIdx) : 0;
+                    int year = yearIdx >= 0 ? cursor.getInt(yearIdx) : 0;
+                    long dateAdded = dateAddedIdx >= 0 ? cursor.getLong(dateAddedIdx) : 0;
 
                     // Exclusión rigurosa de cachés de voz, TTS, ringtones, WhatsApp y grabaciones temporales
                     String lowerPath = (rawPath != null ? rawPath : "").toLowerCase(Locale.ROOT);
@@ -301,6 +310,18 @@ public class WebAppInterface {
                         continue;
                     }
 
+                    // Extraer nombre de la carpeta real
+                    String folder = "Música";
+                    if (rawPath != null && rawPath.contains("/")) {
+                        int lastSlash = rawPath.lastIndexOf('/');
+                        if (lastSlash > 0) {
+                            int prevSlash = rawPath.lastIndexOf('/', lastSlash - 1);
+                            if (prevSlash >= 0) {
+                                folder = rawPath.substring(prevSlash + 1, lastSlash);
+                            }
+                        }
+                    }
+
                     Uri itemContentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
 
                     JSONObject song = new JSONObject();
@@ -311,6 +332,10 @@ public class WebAppInterface {
                     song.put("duration", durSecs);
                     song.put("path", itemContentUri.toString());
                     song.put("rawPath", rawPath != null ? rawPath : "");
+                    song.put("size", sizeBytes);
+                    song.put("year", year);
+                    song.put("folder", folder);
+                    song.put("dateAdded", dateAdded);
                     song.put("source", "phone");
                     song.put("isCloud", false);
                     song.put("downloaded", true);

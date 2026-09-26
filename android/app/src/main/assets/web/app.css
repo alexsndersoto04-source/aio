@@ -123,15 +123,6 @@ html, body {
   padding: 0 4px;
 }
 
-.search-mic-btn {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 /* =========================================================================
    2. CUERPO CON SCROLL
    ========================================================================= */
@@ -141,7 +132,7 @@ html, body {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px 16px 140px 16px; /* Espacio para el mini reproductor y barra inferior */
+  padding: 8px 16px 140px 16px;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -475,6 +466,85 @@ html, body {
 }
 
 /* =========================================================================
+   6.1 TARJETAS DE GRUPOS (ARTISTAS, ÁLBUMES, CARPETAS, LISTAS)
+   ========================================================================= */
+
+.group-card-row {
+  display: flex;
+  align-items: center;
+  padding: 10px 8px;
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  gap: 14px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.group-card-row:active {
+  background-color: var(--bg-subtle);
+}
+
+.group-icon-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, #ede9fe, #ddd6fe);
+  color: var(--primary-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.group-album-cover {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.group-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.group-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.group-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.group-arrow {
+  color: var(--text-light);
+  flex-shrink: 0;
+}
+
+.group-back-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 12px 0;
+  cursor: pointer;
+  color: var(--primary-accent);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* =========================================================================
    7. ESTADO VACÍO
    ========================================================================= */
 
@@ -536,7 +606,7 @@ html, body {
   background: linear-gradient(135deg, #8a2be2 0%, #a855f7 100%);
   box-shadow: 0 6px 20px rgba(138, 43, 226, 0.35);
   z-index: 40;
-  overflow: visible; /* Para que el disco de vinilo sobresalga a la izquierda */
+  overflow: visible;
   cursor: pointer;
 }
 
@@ -546,7 +616,7 @@ html, body {
   position: relative;
   display: flex;
   align-items: center;
-  padding: 0 16px 0 58px; /* Espacio para el vinilo a la izquierda */
+  padding: 0 16px 0 58px;
   gap: 12px;
 }
 
@@ -806,7 +876,7 @@ html, body {
 }
 
 /* =========================================================================
-   11. REPRODUCTOR A PANTALLA COMPLETA (NOW PLAYING INMERSIVO EN MODO CLARO)
+   11. REPRODUCTOR A PANTALLA COMPLETA (NOW PLAYING)
    ========================================================================= */
 
 .fullscreen-modal {
@@ -937,7 +1007,7 @@ html, body {
 }
 
 .fs-favorite-btn.liked {
-  color: #ef4444; /* Rojo corazón */
+  color: #ef4444;
 }
 
 /* Scrubber / Barra de Progreso */
@@ -1091,6 +1161,8 @@ html, body {
   transform: translateY(100%);
   transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.1);
+  max-height: 80vh;
+  overflow-y: auto;
 }
 
 .action-sheet.active {
@@ -1161,6 +1233,7 @@ html, body {
   font-weight: 600;
   cursor: pointer;
   border-radius: var(--radius-sm);
+  text-align: left;
 }
 
 .sheet-item:active {
@@ -1169,6 +1242,56 @@ html, body {
 
 .sheet-item.active {
   color: var(--primary-accent);
+}
+
+/* Tarjeta de Detalles del Archivo */
+.file-details-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background-color: var(--bg-subtle);
+  padding: 14px;
+  border-radius: var(--radius-md);
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.detail-key {
+  color: var(--text-muted);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.detail-val {
+  color: var(--text-main);
+  font-weight: 500;
+  text-align: right;
+  word-break: break-word;
+}
+
+.detail-val.file-path {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--primary-accent);
+}
+
+.create-pl-inline-btn {
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--primary-accent);
+  background-color: rgba(124, 58, 237, 0.04);
+  color: var(--primary-accent);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
 }
 
 /* Modal de Ecualizador */
