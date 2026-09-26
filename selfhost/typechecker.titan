@@ -1,0 +1,1545 @@
+// ============================================================================
+// Typechecker de Titan escrito en Titan (self-hosting, fase 3).
+//
+// Traducción fiel de crates/titan_typechecker/src/lib.rs: mismas reglas, mismos
+// mensajes y el mismo orden de diagnósticos. Verificación diferencial:
+// `typecheck_dump(texto)` produce el mismo texto que `titan typecheck <archivo>`
+// (typechecker de Rust) byte por byte.
+//
+// Entrada: el AST de selfhost/parser.titan (struct Node, ver su tabla).
+// Tipos: struct Ty (unión etiquetada, igual que el enum `Type` de Rust):
+//   k = "Int" "Float" "Bool" "String" "Char" "Nil" "Unit" "Never" "Unknown"
+//       "Array"(items=[elem]) "Tuple"(items) "Named"(name)
+//       "Function"(items=params, ret=resultado)
+// `==` entre structs de Titan compara por contenido, igual que el PartialEq
+// derivado de Rust.
+//
+// Las ramas de Rust para `Pattern::Struct`, `Pattern::Tuple`, `Stmt::Assign` y
+// `Expr::Let` no se traducen: el parser nunca produce esos nodos (solo existen
+// para ASTs sintéticos), así que no pueden afectar a ningún programa fuente.
+// ============================================================================
+
+import parser
+import natives
+
+struct Ty {
+    k: string,
+    name: string,
+    items: array,
+    ret: any,
+}
+
+struct Sig {
+    params: array,
+    result: Ty,
+}
+
+// Un diagnóstico: el mensaje (Display del TypeError) y su span (o nil).
+struct Diag {
+    msg: string,
+    span: any,
+}
+
+// ------------------------------------------------------------------- tipos
+
+fn mkt(k: string) -> Ty {
+    Ty { k: k, name: "", items: [], ret: nil }
+}
+
+fn tarr(elem: Ty) -> Ty {
+    Ty { k: "Array", name: "", items: [elem], ret: nil }
+}
+
+fn ttup(items: array) -> Ty {
+    Ty { k: "Tuple", name: "", items: items, ret: nil }
+}
+
+fn tnamed(name: string) -> Ty {
+    Ty { k: "Named", name: name, items: [], ret: nil }
+}
+
+fn tfn(params: array, result: Ty) -> Ty {
+    Ty { k: "Function", name: "", items: params, ret: result }
+}
+
+fn mixed_name() -> string {
+    "$titan::mixed-element"
+}
+
+fn is_k(t: Ty, k: string) -> bool {
+    t.k == k
+}
+
+fn is_named(t: Ty, name: string) -> bool {
+    t.k == "Named" && t.name == name
+}
+
+// Escapado de `{:?}` de Rust para un String (entre comillas).
+fn debug_str(s: string) -> string {
+    let mut out = "\""
+    for c in s {
+        if c == '"' {
+            out += "\\\""
+        } else if c == '\\' {
+            out += "\\\\"
+        } else if c == '\n' {
+            out += "\\n"
+        } else if c == '\r' {
+            out += "\\r"
+        } else if c == '\t' {
+            out += "\\t"
+        } else if c == '\0' {
+            out += "\\0"
+        } else {
+            let code = std::text::char_code(c)
+            if code < 32 || code == 127 {
+                out += "\\u{" + hex_lower(code) + "}"
+            } else {
+                out += c
+            }
+        }
+    }
+    out + "\""
+}
+
+fn hex_lower(n: int) -> string {
+    let digits = "0123456789abcdef"
+    if n == 0 {
+        return "0"
+    }
+    let mut out = ""
+    let mut v = n
+    while v > 0 {
+        out = std::text::substring(digits, v % 16, v % 16 + 1) + out
+        v = v / 16
+    }
+    out
+}
+
+// `{:?}` del enum Type de Rust.
+fn tdebug(t: Ty) -> string {
+    let k = t.k
+    if k == "Array" {
+        return "Array(" + tdebug(t.items[0]) + ")"
+    }
+    if k == "Tuple" {
+        return "Tuple([" + tdebug_list(t.items) + "])"
+    }
+    if k == "Named" {
+        return "Named(" + debug_str(t.name) + ")"
+    }
+    if k == "Function" {
+        return "Function([" + tdebug_list(t.items) + "], " + tdebug(t.ret) + ")"
+    }
+    k
+}
+
+fn tdebug_list(items: array) -> string {
+    let mut out = ""
+    let mut i = 0
+    while i < len(items) {
+        if i > 0 {
+            out += ", "
+        }
+        out += tdebug(items[i])
+        i += 1
+    }
+    out
+}
+
+// Display de Type: el tipo "mixto" interno se imprime como `mixed`.
+fn tdisp(t: Ty) -> string {
+    if is_named(t, mixed_name()) {
+        return "mixed"
+    }
+    tdebug(t)
+}
+
+// ------------------------------------------------- mensajes (Display de TypeError)
+
+fn m_mismatch(expected: Ty, found: Ty) -> string {
+    "type mismatch: expected " + tdisp(expected) + ", found " + tdisp(found)
+}
+
+fn m_unknown_var(name: string) -> string {
+    "unknown variable or function '" + name + "'"
+}
+
+fn m_not_callable(name: string) -> string {
+    "'" + name + "' is not callable"
+}
+
+fn m_arity(expected: int, found: int) -> string {
+    "function expected {expected} arguments, found {found}"
+}
+
+fn m_invalid_unary(op: string, operand: Ty) -> string {
+    "invalid operand for " + op + ": " + tdisp(operand)
+}
+
+fn m_invalid_operands(op: string, left: Ty, right: Ty) -> string {
+    "invalid operands for " + op + ": " + tdisp(left) + " and " + tdisp(right)
+}
+
+fn m_not_indexable(target: Ty) -> string {
+    "value of type " + tdisp(target) + " cannot be indexed"
+}
+
+fn m_index_oob(index: int, length: int) -> string {
+    "index {index} is out of bounds for a tuple of length {length}"
+}
+
+fn m_not_iterable(target: Ty) -> string {
+    "value of type " + tdisp(target) + " is not iterable"
+}
+
+fn m_unknown_method(receiver: Ty, method: string) -> string {
+    "type " + tdisp(receiver) + " has no method '" + method + "'"
+}
+
+fn m_invalid_assign_target() -> string {
+    "assignment target must be a mutable local variable in the current function"
+}
+
+fn m_outside_function() -> string {
+    "return used outside a function or closure"
+}
+
+fn m_missing_return(name: string, expected: Ty) -> string {
+    "function '" + name + "' can finish without returning " + tdisp(expected)
+}
+
+fn m_inconsistent_returns(name: string, first: Ty, second: Ty) -> string {
+    "function '" + name + "' returns incompatible types " + tdisp(first) + " and " + tdisp(second)
+}
+
+fn m_duplicate(kind: string, name: string) -> string {
+    "duplicate " + kind + " declaration '" + name + "'"
+}
+
+fn m_unknown_type(name: string) -> string {
+    "unknown type '" + name + "'"
+}
+
+fn m_invalid_type_args(name: string, expected: int, found: int) -> string {
+    "type '" + name + "' expects {expected} type arguments, found {found}"
+}
+
+fn m_recursive_constant(cycle: string) -> string {
+    "recursive constant dependency: " + cycle
+}
+
+fn m_recursive_alias(name: string) -> string {
+    "type alias '" + name + "' is recursive"
+}
+
+fn m_invalid_impl_target(name: string) -> string {
+    "impl target '" + name + "' is not a declared struct"
+}
+
+fn m_trait_method_mismatch(trait_name: string, target: string, method: string) -> string {
+    "method '" + method + "' in impl " + trait_name + " for " + target + " has an incompatible signature"
+}
+
+fn m_missing_trait_method(trait_name: string, target: string, method: string) -> string {
+    "impl " + trait_name + " for " + target + " is missing required method '" + method + "'"
+}
+
+fn m_unknown_trait_method(trait_name: string, method: string) -> string {
+    "method '" + method + "' is not declared by trait '" + trait_name + "'"
+}
+
+fn m_missing_field(structure: string, field: string) -> string {
+    "missing field '" + field + "' in struct '" + structure + "'"
+}
+
+fn m_unknown_field(structure: string, field: string) -> string {
+    "unknown field '" + field + "' in struct '" + structure + "'"
+}
+
+fn m_duplicate_field(structure: string, field: string) -> string {
+    "field '" + field + "' appears more than once in struct literal '" + structure + "'"
+}
+
+fn m_invalid_argument(function: string, expected: string, found: Ty) -> string {
+    "invalid argument to '" + function + "': expected " + expected + ", found " + tdisp(found)
+}
+
+fn m_invalid_interpolation(expression: string) -> string {
+    "invalid string interpolation expression '" + expression + "'"
+}
+
+fn m_no_fields(target: Ty) -> string {
+    "value of type " + tdisp(target) + " has no fields"
+}
+
+fn m_invalid_pattern(message: string) -> string {
+    "invalid pattern: " + message
+}
+
+fn m_unknown_variant(enumeration: string, variant: string) -> string {
+    "unknown variant '" + enumeration + "::" + variant + "'"
+}
+
+fn m_non_exhaustive() -> string {
+    "non-exhaustive match; add a catch-all arm"
+}
+
+fn m_non_exhaustive_enum(enumeration: string, missing: array) -> string {
+    let mut list = "["
+    let mut i = 0
+    while i < len(missing) {
+        if i > 0 {
+            list += ", "
+        }
+        list += debug_str(missing[i])
+        i += 1
+    }
+    "non-exhaustive match for enum '" + enumeration + "'; missing " + list + "]"
+}
+
+fn m_unreachable_pattern(arm: int) -> string {
+    "match arm {arm} has an unreachable pattern"
+}
+
+fn m_outside_loop() -> string {
+    "break/continue used outside a loop"
+}
+
+fn m_invalid_try() -> string {
+    "operator ? requires an Option or Result value"
+}
+
+fn m_unsupported(feature: string) -> string {
+    "unsupported language feature: " + feature
+}
+
+fn m_entry_params(found: int) -> string {
+    "entry point 'main' must take no parameters, but {found} were declared"
+}
+
+// Estado del typechecker (equivale a los campos de `TypeEnv` en Rust).
+// Titan no permite asignar campos de struct, así que cada cambio construye un
+// Env nuevo con `set_<campo>` (generado por un script: es solo repetición).
+struct Env {
+    scopes: array,
+    bindings: array,
+    functions: map,
+    base: map,
+    structs: map,
+    variants: map,
+    base_variants: map,
+    constants: map,
+    ctypes: map,
+    cdecls: map,
+    cstack: array,
+    checked: map,
+    traits: map,
+    aliases: map,
+    errors: array,
+    ret: Ty,
+    cands: array,
+    loop_depth: int,
+    breaks: array,
+    fdepth: int,
+    natives: map,
+}
+
+fn set_scopes(e: Env, v) -> Env {
+    Env { scopes: v, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_bindings(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: v, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_functions(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: v, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_base(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: v, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_structs(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: v, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_variants(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: v, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_base_variants(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: v, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_constants(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: v, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_ctypes(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: v, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_cdecls(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: v, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_cstack(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: v, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_checked(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: v, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_traits(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: v, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_aliases(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: v, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_errors(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: v, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_ret(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: v, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_cands(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: v, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_loop_depth(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: v, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_breaks(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: v, fdepth: e.fdepth, natives: e.natives }
+}
+
+fn set_fdepth(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: v, natives: e.natives }
+}
+
+fn set_natives(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: v }
+}
+
+// ------------------------------------------------------- errores y spans
+
+fn err(e: Env, msg: string) -> Env {
+    set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: nil }))
+}
+
+fn err_at(e: Env, msg: string, span: Span) -> Env {
+    set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: span }))
+}
+
+// assign_error_span: los errores emitidos desde `start` que aún no tienen
+// ubicación reciben `span`.
+fn assign_span(e: Env, start: int, span: Span) -> Env {
+    let errs = e.errors
+    if len(errs) <= start {
+        return e
+    }
+    let mut out = std::array::slice(errs, 0, start)
+    let mut i = start
+    while i < len(errs) {
+        let d = errs[i]
+        if d.span == nil {
+            out = std::array::push(out, Diag { msg: d.msg, span: span })
+        } else {
+            out = std::array::push(out, d)
+        }
+        i += 1
+    }
+    set_errors(e, out)
+}
+
+// ------------------------------------------------------ AST -> tipo
+
+fn type_from_ast(t) -> Ty {
+    let k = t.kind
+    if k == "t_named" {
+        let name = t.text
+        if name == "int" || name == "i32" || name == "i64" || name == "u64" || name == "usize" {
+            return mkt("Int")
+        }
+        if name == "float" || name == "f32" || name == "f64" {
+            return mkt("Float")
+        }
+        if name == "bool" {
+            return mkt("Bool")
+        }
+        if name == "string" || name == "str" {
+            return mkt("String")
+        }
+        if name == "char" {
+            return mkt("Char")
+        }
+        if (name == "Array" || name == "Vec") && len(t.list) > 0 {
+            return tarr(type_from_ast(t.list[0]))
+        }
+        if name == "array" {
+            return tarr(mkt("Unknown"))
+        }
+        if name == "map" {
+            return tnamed("map")
+        }
+        if name == "any" {
+            return mkt("Unknown")
+        }
+        return tnamed(name)
+    }
+    if k == "t_slice" || k == "t_array" {
+        return tarr(type_from_ast(t.a))
+    }
+    if k == "t_tuple" {
+        return ttup(types_from_ast(t.list))
+    }
+    if k == "t_fn" {
+        return tfn(types_from_ast(t.list), type_from_ast(t.a))
+    }
+    if k == "t_unit" {
+        return mkt("Unit")
+    }
+    if k == "t_never" {
+        return mkt("Never")
+    }
+    // t_ref
+    type_from_ast(t.a)
+}
+
+fn types_from_ast(list: array) -> array {
+    let mut out = []
+    for t in list {
+        out = std::array::push(out, type_from_ast(t))
+    }
+    out
+}
+
+// Anotación opcional (nil = sin anotar) con el tipo por defecto indicado.
+fn ann_or(t, default: Ty) -> Ty {
+    if t == nil {
+        return default
+    }
+    type_from_ast(t)
+}
+
+fn direct_named_type(t) -> string {
+    if t.kind == "t_named" && len(t.list) == 0 {
+        return t.text
+    }
+    ""
+}
+
+// --------------------------------------------------------- compatibilidad
+
+fn compatible(a: Ty, b: Ty) -> bool {
+    if a == b {
+        return true
+    }
+    if a.k == "Never" {
+        return false
+    }
+    if a.k == "Unknown" {
+        return true
+    }
+    if b.k == "Unknown" || b.k == "Never" {
+        return true
+    }
+    if (a.k == "Unit" && b.k == "Nil") || (a.k == "Nil" && b.k == "Unit") {
+        return true
+    }
+    if a.k == "Array" && b.k == "Array" {
+        return compatible(a.items[0], b.items[0])
+    }
+    if a.k == "Tuple" && b.k == "Tuple" {
+        if len(a.items) != len(b.items) {
+            return false
+        }
+        let mut i = 0
+        while i < len(a.items) {
+            if !compatible(a.items[i], b.items[i]) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    if a.k == "Function" && b.k == "Function" {
+        return function_type_compatible(a.items, a.ret, b.items, b.ret)
+    }
+    false
+}
+
+fn function_parameter_accepts(parameter: Ty, argument: Ty) -> bool {
+    if parameter == argument || argument.k == "Never" || parameter.k == "Unknown" {
+        return true
+    }
+    if argument.k == "Unknown" || parameter.k == "Never" {
+        return false
+    }
+    if (parameter.k == "Unit" && argument.k == "Nil") || (parameter.k == "Nil" && argument.k == "Unit") {
+        return true
+    }
+    if parameter.k == "Array" && argument.k == "Array" {
+        return function_parameter_accepts(parameter.items[0], argument.items[0])
+    }
+    if parameter.k == "Tuple" && argument.k == "Tuple" {
+        if len(parameter.items) != len(argument.items) {
+            return false
+        }
+        let mut i = 0
+        while i < len(parameter.items) {
+            if !function_parameter_accepts(parameter.items[i], argument.items[i]) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    if parameter.k == "Function" && argument.k == "Function" {
+        return function_type_compatible(parameter.items, parameter.ret, argument.items, argument.ret)
+    }
+    false
+}
+
+fn function_result_compatible(expected: Ty, found: Ty) -> bool {
+    if expected == found || found.k == "Never" || expected.k == "Unknown" {
+        return true
+    }
+    if found.k == "Unknown" || expected.k == "Never" {
+        return false
+    }
+    if (expected.k == "Unit" && found.k == "Nil") || (expected.k == "Nil" && found.k == "Unit") {
+        return true
+    }
+    if expected.k == "Array" && found.k == "Array" {
+        return function_result_compatible(expected.items[0], found.items[0])
+    }
+    if expected.k == "Tuple" && found.k == "Tuple" {
+        if len(expected.items) != len(found.items) {
+            return false
+        }
+        let mut i = 0
+        while i < len(expected.items) {
+            if !function_result_compatible(expected.items[i], found.items[i]) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    if expected.k == "Function" && found.k == "Function" {
+        return function_type_compatible(expected.items, expected.ret, found.items, found.ret)
+    }
+    false
+}
+
+fn function_type_compatible(expected_params: array, expected_result: Ty, found_params: array, found_result: Ty) -> bool {
+    if len(expected_params) != len(found_params) {
+        return false
+    }
+    let mut i = 0
+    while i < len(found_params) {
+        if !function_parameter_accepts(found_params[i], expected_params[i]) {
+            return false
+        }
+        i += 1
+    }
+    function_result_compatible(expected_result, found_result)
+}
+
+fn native_compatible(expected: Ty, found: Ty) -> bool {
+    if compatible(expected, found) || (expected.k == "Float" && found.k == "Int") {
+        return true
+    }
+    if is_named(expected, "bytes") && found.k == "String" {
+        return true
+    }
+    if expected.k == "Array" && found.k == "Array" {
+        return native_compatible(expected.items[0], found.items[0])
+    }
+    if expected.k == "Array" && found.k == "Tuple" {
+        for item in found.items {
+            if !native_compatible(expected.items[0], item) {
+                return false
+            }
+        }
+        return true
+    }
+    false
+}
+
+fn is_numeric(t: Ty) -> bool {
+    t.k == "Int" || t.k == "Float" || t.k == "Unknown"
+}
+
+// Option<Ty>: nil = None.
+fn common_type(types: array) -> any {
+    if len(types) == 0 {
+        return nil
+    }
+    let first = types[0]
+    let mut i = 1
+    while i < len(types) {
+        if !compatible(first, types[i]) {
+            return nil
+        }
+        i += 1
+    }
+    first
+}
+
+fn common_or_unknown(types: array) -> Ty {
+    let c = common_type(types)
+    if c == nil {
+        return mkt("Unknown")
+    }
+    c
+}
+
+fn sequence_item_type(t: Ty) -> any {
+    if t.k == "Array" {
+        return t.items[0]
+    }
+    if t.k == "Tuple" {
+        return common_or_unknown(t.items)
+    }
+    if t.k == "Unknown" {
+        return mkt("Unknown")
+    }
+    nil
+}
+
+fn sequence_matches(expected_item: Ty, found: Ty) -> bool {
+    if found.k == "Array" {
+        return compatible(expected_item, found.items[0])
+    }
+    if found.k == "Tuple" {
+        for item in found.items {
+            if !compatible(expected_item, item) {
+                return false
+            }
+        }
+        return true
+    }
+    found.k == "Unknown" || found.k == "Never"
+}
+
+fn is_length_supported(t: Ty) -> bool {
+    t.k == "Array" || t.k == "Tuple" || t.k == "String" || t.k == "Unknown" || is_named(t, "bytes") || is_named(t, "map")
+}
+
+// Option<usize>: -1 = None.
+fn builtin_method_arity(receiver: Ty, method: string) -> int {
+    if receiver.k == "Array" || receiver.k == "Tuple" {
+        if method == "len" {
+            return 0
+        }
+        if method == "map" || method == "filter" || method == "sort_by" || method == "find" || method == "any" || method == "all" {
+            return 1
+        }
+        if method == "fold" {
+            return 2
+        }
+        return -1
+    }
+    if receiver.k == "String" || is_named(receiver, "bytes") || is_named(receiver, "map") {
+        if method == "len" {
+            return 0
+        }
+    }
+    -1
+}
+
+fn function_signature(function, self_type: string) -> Sig {
+    let mut params = []
+    let mut i = 0
+    while i < len(function.list) {
+        let p = function.list[i]
+        if i == 0 && p.text == "self" && p.a == nil && self_type != "" {
+            params = std::array::push(params, tnamed(self_type))
+        } else {
+            params = std::array::push(params, ann_or(p.a, mkt("Unknown")))
+        }
+        i += 1
+    }
+    Sig { params: params, result: ann_or(function.b, mkt("Unit")) }
+}
+
+// ------------------------------------------------ nativas de la stdlib
+
+fn native_type(name: string) -> Ty {
+    if name == "Any" {
+        return mkt("Unknown")
+    }
+    if name == "Bytes" {
+        return tnamed("bytes")
+    }
+    if name == "Array" {
+        return tarr(mkt("Unknown"))
+    }
+    if name == "Map" {
+        return tnamed("map")
+    }
+    if name == "Option" {
+        return tnamed("Option")
+    }
+    // Int Float Bool String Nil Never: mismo nombre que en Type.
+    mkt(name)
+}
+
+// Divide `s` por el carácter `sep` (conserva los trozos vacíos).
+fn split_on(s: string, sep: char) -> array {
+    let mut parts = []
+    let mut cur = ""
+    for c in s {
+        if c == sep {
+            parts = std::array::push(parts, cur)
+            cur = ""
+        } else {
+            cur += c
+        }
+    }
+    std::array::push(parts, cur)
+}
+
+// "nombre P1,P2 -> R" (natives.titan) -> mapa nombre -> Sig. Sin parámetros la
+// lista queda vacía: "nombre  -> R".
+fn load_natives() -> map {
+    let mut m = std::map::new()
+    for line in native_table() {
+        let parts = split_on(line, ' ')
+        let name = parts[0]
+        let plist = parts[1]
+        let result = parts[3]
+        let mut params = []
+        if plist != "" {
+            for p in split_on(plist, ',') {
+                params = std::array::push(params, native_type(p))
+            }
+        }
+        m = std::map::insert(m, name, Sig { params: params, result: native_type(result) })
+    }
+    m
+}
+
+// ------------------------------------------- firmas integradas (TypeEnv::new)
+
+fn builtin_functions() -> map {
+    let mut m = std::map::new()
+    m = std::map::insert(m, "print", Sig { params: [mkt("Unknown")], result: mkt("Nil") })
+    m = std::map::insert(m, "println", Sig { params: [mkt("Unknown")], result: mkt("Nil") })
+    m = std::map::insert(m, "len", Sig { params: [mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "map", Sig { params: [mkt("Unknown"), mkt("Unknown")], result: tarr(mkt("Unknown")) })
+    m = std::map::insert(m, "filter", Sig { params: [mkt("Unknown"), mkt("Unknown")], result: tarr(mkt("Unknown")) })
+    m = std::map::insert(m, "fold", Sig { params: [mkt("Unknown"), mkt("Unknown"), mkt("Unknown")], result: mkt("Unknown") })
+    m = std::map::insert(m, "sort_by", Sig { params: [mkt("Unknown"), mkt("Unknown")], result: tarr(mkt("Unknown")) })
+    m = std::map::insert(m, "find", Sig { params: [mkt("Unknown"), mkt("Unknown")], result: mkt("Unknown") })
+    m = std::map::insert(m, "any", Sig { params: [mkt("Unknown"), mkt("Unknown")], result: mkt("Bool") })
+    m = std::map::insert(m, "all", Sig { params: [mkt("Unknown"), mkt("Unknown")], result: mkt("Bool") })
+    m = std::map::insert(m, "join", Sig { params: [tnamed("Task")], result: mkt("Unknown") })
+    m = std::map::insert(m, "join_timeout", Sig { params: [tnamed("Task"), mkt("Int")], result: tnamed("Option") })
+    m = std::map::insert(m, "cancel", Sig { params: [tnamed("Task")], result: mkt("Bool") })
+    m = std::map::insert(m, "channel", Sig { params: [mkt("Int")], result: ttup([tnamed("Sender"), tnamed("Receiver")]) })
+    m = std::map::insert(m, "send", Sig { params: [tnamed("Sender"), mkt("Unknown")], result: mkt("Nil") })
+    m = std::map::insert(m, "recv", Sig { params: [tnamed("Receiver")], result: mkt("Unknown") })
+    m = std::map::insert(m, "recv_timeout", Sig { params: [tnamed("Receiver"), mkt("Int")], result: tnamed("Option") })
+    m = std::map::insert(m, "select", Sig { params: [tarr(tnamed("Receiver")), mkt("Int")], result: tnamed("Option") })
+    m = std::map::insert(m, "std::net::tcp_listen", Sig { params: [mkt("String")], result: tnamed("TcpListener") })
+    m = std::map::insert(m, "std::net::tcp_local_addr", Sig { params: [tnamed("TcpListener")], result: mkt("String") })
+    m = std::map::insert(m, "std::net::tcp_accept", Sig { params: [tnamed("TcpListener")], result: ttup([tnamed("TcpStream"), mkt("String")]) })
+    m = std::map::insert(m, "std::net::tcp_connect", Sig { params: [mkt("String")], result: tnamed("TcpStream") })
+    m = std::map::insert(m, "std::net::tcp_read", Sig { params: [tnamed("TcpStream"), mkt("Int")], result: tnamed("bytes") })
+    m = std::map::insert(m, "std::net::tcp_write", Sig { params: [tnamed("TcpStream"), tnamed("bytes")], result: mkt("Int") })
+    m = std::map::insert(m, "std::net::tcp_set_timeout", Sig { params: [tnamed("TcpStream"), mkt("Int")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::net::tcp_close", Sig { params: [mkt("Unknown")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::http::serve_connection", Sig { params: [tnamed("TcpListener"), tfn([tnamed("map")], tnamed("map")), mkt("Int")], result: mkt("String") })
+    m = std::map::insert(m, "std::http::router", Sig { params: [], result: tnamed("HttpRouter") })
+    m = std::map::insert(m, "std::http::route", Sig { params: [tnamed("HttpRouter"), mkt("String"), mkt("String"), tfn([tnamed("map")], mkt("Unknown"))], result: mkt("Nil") })
+    m = std::map::insert(m, "std::http::middleware", Sig { params: [tnamed("HttpRouter"), tfn([tnamed("map")], tnamed("map"))], result: mkt("Nil") })
+    m = std::map::insert(m, "std::http::after", Sig { params: [tnamed("HttpRouter"), tfn([tnamed("map")], tnamed("map"))], result: mkt("Nil") })
+    m = std::map::insert(m, "std::http::on_error", Sig { params: [tnamed("HttpRouter"), tfn([tnamed("map"), tnamed("map")], tnamed("map"))], result: mkt("Nil") })
+    m = std::map::insert(m, "std::http::dispatch", Sig { params: [tnamed("HttpRouter"), tnamed("map")], result: mkt("Unknown") })
+    m = std::map::insert(m, "std::tls::connect", Sig { params: [mkt("String"), mkt("String")], result: tnamed("TlsStream") })
+    m = std::map::insert(m, "std::tls::server_config", Sig { params: [mkt("String"), mkt("String")], result: tnamed("TlsServerConfig") })
+    m = std::map::insert(m, "std::tls::accept", Sig { params: [tnamed("TcpListener"), tnamed("TlsServerConfig")], result: ttup([tnamed("TlsStream"), mkt("String")]) })
+    m = std::map::insert(m, "std::tls::read", Sig { params: [tnamed("TlsStream"), mkt("Int")], result: tnamed("bytes") })
+    m = std::map::insert(m, "std::tls::write", Sig { params: [tnamed("TlsStream"), tnamed("bytes")], result: mkt("Int") })
+    m = std::map::insert(m, "std::tls::close", Sig { params: [tnamed("TlsStream")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::ws::decoder", Sig { params: [mkt("Int")], result: tnamed("WebSocketDecoder") })
+    m = std::map::insert(m, "std::ws::decoder_push", Sig { params: [tnamed("WebSocketDecoder"), tnamed("bytes")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::ws::decoder_next", Sig { params: [tnamed("WebSocketDecoder"), mkt("Bool")], result: tnamed("Option") })
+    m = std::map::insert(m, "std::ws::connect", Sig { params: [mkt("String"), mkt("String"), mkt("Int")], result: tnamed("WebSocket") })
+    m = std::map::insert(m, "std::ws::attach_tcp", Sig { params: [tnamed("TcpStream"), mkt("Bool"), mkt("Int")], result: tnamed("WebSocket") })
+    m = std::map::insert(m, "std::ws::attach_tls", Sig { params: [tnamed("TlsStream"), mkt("Bool"), mkt("Int")], result: tnamed("WebSocket") })
+    m = std::map::insert(m, "std::ws::send_text", Sig { params: [tnamed("WebSocket"), mkt("String")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::ws::send_binary", Sig { params: [tnamed("WebSocket"), tnamed("bytes")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::ws::receive", Sig { params: [tnamed("WebSocket")], result: mkt("Unknown") })
+    m = std::map::insert(m, "std::ws::close", Sig { params: [tnamed("WebSocket"), mkt("Int"), mkt("String")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::server::control", Sig { params: [mkt("Int")], result: tnamed("ServerControl") })
+    m = std::map::insert(m, "std::server::try_acquire", Sig { params: [tnamed("ServerControl")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::server::release", Sig { params: [tnamed("ServerControl")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::server::shutdown", Sig { params: [tnamed("ServerControl")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::server::stats", Sig { params: [tnamed("ServerControl")], result: tnamed("map") })
+    m = std::map::insert(m, "std::server::health_response", Sig { params: [tnamed("ServerControl")], result: tnamed("map") })
+    m = std::map::insert(m, "std::sqlite::open", Sig { params: [mkt("String")], result: tnamed("Sqlite") })
+    m = std::map::insert(m, "std::sqlite::memory", Sig { params: [], result: tnamed("Sqlite") })
+    m = std::map::insert(m, "std::sqlite::execute", Sig { params: [tnamed("Sqlite"), mkt("String"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::sqlite::query", Sig { params: [tnamed("Sqlite"), mkt("String"), mkt("Unknown")], result: tarr(tnamed("map")) })
+    m = std::map::insert(m, "std::sqlite::begin", Sig { params: [tnamed("Sqlite")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::sqlite::commit", Sig { params: [tnamed("Sqlite")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::sqlite::rollback", Sig { params: [tnamed("Sqlite")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::sqlite::migrate", Sig { params: [tnamed("Sqlite"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::sqlite::last_insert_id", Sig { params: [tnamed("Sqlite")], result: mkt("Int") })
+    m = std::map::insert(m, "std::sqlite::close", Sig { params: [tnamed("Sqlite")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::sqlite::ping", Sig { params: [tnamed("Sqlite")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::sqlite::pool", Sig { params: [mkt("String"), mkt("Int")], result: tnamed("SqlitePool") })
+    m = std::map::insert(m, "std::sqlite::acquire", Sig { params: [tnamed("SqlitePool"), mkt("Int")], result: tnamed("Option") })
+    m = std::map::insert(m, "std::sqlite::pool_stats", Sig { params: [tnamed("SqlitePool")], result: tnamed("map") })
+    m = std::map::insert(m, "std::sqlite::pool_health", Sig { params: [tnamed("SqlitePool"), mkt("Int")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::sqlite::pool_close", Sig { params: [tnamed("SqlitePool")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::postgres::connect", Sig { params: [mkt("String")], result: tnamed("Postgres") })
+    m = std::map::insert(m, "std::postgres::connect_tls", Sig { params: [mkt("String")], result: tnamed("Postgres") })
+    m = std::map::insert(m, "std::postgres::execute", Sig { params: [tnamed("Postgres"), mkt("String"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::postgres::query", Sig { params: [tnamed("Postgres"), mkt("String"), mkt("Unknown")], result: tarr(tnamed("map")) })
+    m = std::map::insert(m, "std::postgres::begin", Sig { params: [tnamed("Postgres")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::postgres::commit", Sig { params: [tnamed("Postgres")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::postgres::rollback", Sig { params: [tnamed("Postgres")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::postgres::cancel", Sig { params: [tnamed("Postgres")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::postgres::migrate", Sig { params: [tnamed("Postgres"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::postgres::close", Sig { params: [tnamed("Postgres")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::postgres::pool", Sig { params: [mkt("String"), mkt("Int"), mkt("Bool")], result: tnamed("PostgresPool") })
+    m = std::map::insert(m, "std::postgres::acquire", Sig { params: [tnamed("PostgresPool"), mkt("Int")], result: tnamed("Option") })
+    m = std::map::insert(m, "std::postgres::pool_stats", Sig { params: [tnamed("PostgresPool")], result: tnamed("map") })
+    m = std::map::insert(m, "std::postgres::ping", Sig { params: [tnamed("Postgres")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::postgres::pool_health", Sig { params: [tnamed("PostgresPool"), mkt("Int")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::postgres::pool_close", Sig { params: [tnamed("PostgresPool")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::mysql::connect", Sig { params: [mkt("String")], result: tnamed("Mysql") })
+    m = std::map::insert(m, "std::mysql::execute", Sig { params: [tnamed("Mysql"), mkt("String"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::mysql::query", Sig { params: [tnamed("Mysql"), mkt("String"), mkt("Unknown")], result: tarr(tnamed("map")) })
+    m = std::map::insert(m, "std::mysql::begin", Sig { params: [tnamed("Mysql")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::mysql::commit", Sig { params: [tnamed("Mysql")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::mysql::rollback", Sig { params: [tnamed("Mysql")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::mysql::migrate", Sig { params: [tnamed("Mysql"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::mysql::last_insert_id", Sig { params: [tnamed("Mysql")], result: mkt("Int") })
+    m = std::map::insert(m, "std::mysql::close", Sig { params: [tnamed("Mysql")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::mysql::ping", Sig { params: [tnamed("Mysql")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::mysql::pool", Sig { params: [mkt("String"), mkt("Int")], result: tnamed("MysqlPool") })
+    m = std::map::insert(m, "std::mysql::acquire", Sig { params: [tnamed("MysqlPool"), mkt("Int")], result: tnamed("Option") })
+    m = std::map::insert(m, "std::mysql::pool_stats", Sig { params: [tnamed("MysqlPool")], result: tnamed("map") })
+    m = std::map::insert(m, "std::mysql::pool_health", Sig { params: [tnamed("MysqlPool"), mkt("Int")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::mysql::pool_close", Sig { params: [tnamed("MysqlPool")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::db::execute", Sig { params: [mkt("Unknown"), mkt("String"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::db::query", Sig { params: [mkt("Unknown"), mkt("String"), mkt("Unknown")], result: tarr(tnamed("map")) })
+    m = std::map::insert(m, "std::db::begin", Sig { params: [mkt("Unknown")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::db::commit", Sig { params: [mkt("Unknown")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::db::rollback", Sig { params: [mkt("Unknown")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::db::migrate", Sig { params: [mkt("Unknown"), mkt("Unknown")], result: mkt("Int") })
+    m = std::map::insert(m, "std::db::close", Sig { params: [mkt("Unknown")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::db::ping", Sig { params: [mkt("Unknown")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::runtime::memory_limit", Sig { params: [], result: mkt("Int") })
+    m = std::map::insert(m, "std::runtime::allocated_bytes", Sig { params: [], result: mkt("Int") })
+    m = std::map::insert(m, "std::runtime::gc_live_count", Sig { params: [], result: mkt("Int") })
+    m = std::map::insert(m, "std::runtime::gc_collect", Sig { params: [], result: mkt("Int") })
+    m = std::map::insert(m, "std::runtime::gc_threshold", Sig { params: [], result: mkt("Int") })
+    m = std::map::insert(m, "std::runtime::gc_set_threshold", Sig { params: [mkt("Int")], result: mkt("Nil") })
+    m = std::map::insert(m, "std::runtime::active_tasks", Sig { params: [], result: mkt("Int") })
+    m = std::map::insert(m, "std::runtime::heap_dump", Sig { params: [mkt("String")], result: mkt("Bool") })
+    m = std::map::insert(m, "std::runtime::optimize_level", Sig { params: [], result: mkt("Int") })
+    m = std::map::insert(m, "std::runtime::fast_path_enabled", Sig { params: [], result: mkt("Bool") })
+    m = std::map::insert(m, "std::runtime::benchmark", Sig { params: [mkt("Int"), tfn([], mkt("Unknown"))], result: tnamed("map") })
+    m = std::map::insert(m, "std::runtime::spawn_quota", Sig { params: [mkt("Int"), tfn([], mkt("Unknown"))], result: tnamed("Task") })
+    m
+}
+
+// enum_variants iniciales: nombre cualificado -> [] (sin payload) o [Ty].
+fn builtin_variants() -> map {
+    let mut m = std::map::new()
+    m = std::map::insert(m, "Option::None", [])
+    m = std::map::insert(m, "Option::Some", [mkt("Unknown")])
+    m = std::map::insert(m, "Result::Ok", [mkt("Unknown")])
+    m = std::map::insert(m, "Result::Err", [mkt("Unknown")])
+    m
+}
+
+// Sintaxis Titan de una anotación de tipo (Display de TypeExpr).
+fn type_expr_text(t) -> string {
+    let k = t.kind
+    if k == "t_named" {
+        if len(t.list) == 0 {
+            return t.text
+        }
+        return t.text + "<" + type_expr_list(t.list) + ">"
+    }
+    if k == "t_ref" {
+        if t.flag {
+            return "&mut " + type_expr_text(t.a)
+        }
+        return "&" + type_expr_text(t.a)
+    }
+    if k == "t_slice" {
+        return "[" + type_expr_text(t.a) + "]"
+    }
+    if k == "t_array" {
+        if t.b.kind == "int" {
+            let n = t.b.a
+            return "[" + type_expr_text(t.a) + "; {n}]"
+        }
+        return "[" + type_expr_text(t.a) + "; _]"
+    }
+    if k == "t_tuple" {
+        if len(t.list) == 1 {
+            return "(" + type_expr_list(t.list) + ",)"
+        }
+        return "(" + type_expr_list(t.list) + ")"
+    }
+    if k == "t_fn" {
+        return "fn(" + type_expr_list(t.list) + ") -> " + type_expr_text(t.a)
+    }
+    if k == "t_unit" {
+        return "()"
+    }
+    "!"
+}
+
+fn type_expr_list(list: array) -> string {
+    let mut out = ""
+    let mut i = 0
+    while i < len(list) {
+        if i > 0 {
+            out += ", "
+        }
+        out += type_expr_text(list[i])
+        i += 1
+    }
+    out
+}
+
+// ------------------------------------------ validación de declaraciones
+
+// Estado de declaration_errors: conjuntos (mapas nombre -> true) y la lista
+// de (mensaje, span).
+struct DeclSt {
+    values: map,
+    types: map,
+    impls: map,
+    errs: array,
+}
+
+fn decl_err(st: DeclSt, msg: string, span: Span) -> DeclSt {
+    DeclSt { values: st.values, types: st.types, impls: st.impls, errs: std::array::push(st.errs, (msg, span)) }
+}
+
+fn decl_insert(st: DeclSt, namespace: string, kind: string, name: string, span: Span) -> DeclSt {
+    if namespace == "value" {
+        if std::map::contains(st.values, name) {
+            return decl_err(st, m_duplicate(kind, name), span)
+        }
+        return DeclSt { values: std::map::insert(st.values, name, true), types: st.types, impls: st.impls, errs: st.errs }
+    }
+    if std::map::contains(st.types, name) {
+        return decl_err(st, m_duplicate(kind, name), span)
+    }
+    DeclSt { values: st.values, types: std::map::insert(st.types, name, true), impls: st.impls, errs: st.errs }
+}
+
+fn decl_parameters(st0: DeclSt, owner: string, params: array) -> DeclSt {
+    let mut st = st0
+    let mut names = std::map::new()
+    for p in params {
+        if std::map::contains(names, p.text) {
+            st = decl_err(st, m_duplicate("parameter", owner + "::" + p.text), p.span)
+        } else {
+            names = std::map::insert(names, p.text, true)
+        }
+        if p.b != nil {
+            st = decl_err(st, m_unsupported("default parameter '" + owner + "::" + p.text + "'"), p.span)
+        }
+    }
+    st
+}
+
+fn decl_unimplemented(st: DeclSt, owner: string, function) -> DeclSt {
+    if function.flag {
+        return decl_err(st, m_unsupported("extern function '" + owner + "' without runtime linkage"), function.span)
+    }
+    if function.c == nil {
+        return decl_err(st, m_unsupported("bodyless function '" + owner + "' outside a trait declaration"), function.span)
+    }
+    st
+}
+
+// Nombres ya vistos de una lista de nodos: devuelve los spans duplicados
+// como errores con el `kind` dado.
+fn decl_members(st0: DeclSt, owner: string, members: array, kind: string) -> DeclSt {
+    let mut st = st0
+    let mut seen = std::map::new()
+    for m in members {
+        if !std::map::contains(seen, m.text) {
+            seen = std::map::insert(seen, m.text, true)
+            continue
+        }
+        st = decl_err(st, m_duplicate(kind, owner + "::" + m.text), m.span)
+    }
+    st
+}
+
+fn decl_visit(st0: DeclSt, items: array) -> DeclSt {
+    let mut st = st0
+    for item in items {
+        let k = item.kind
+        if k == "fn" {
+            st = decl_insert(st, "value", "function", item.text, item.span)
+            st = decl_parameters(st, item.text, item.list)
+            st = decl_unimplemented(st, item.text, item)
+            if item.text == "main" && len(item.list) > 0 {
+                st = decl_err(st, m_entry_params(len(item.list)), item.span)
+            }
+        } else if k == "const" {
+            st = decl_insert(st, "value", "constant", item.text, item.span)
+        } else if k == "struct" {
+            st = decl_insert(st, "type", "type", item.text, item.span)
+            st = decl_members(st, item.text, item.list, "field")
+        } else if k == "enum" {
+            st = decl_insert(st, "type", "type", item.text, item.span)
+            st = decl_members(st, item.text, item.list, "enum variant")
+        } else if k == "trait" {
+            st = decl_insert(st, "type", "trait", item.text, item.span)
+            let mut seen = std::map::new()
+            for method in item.list {
+                let qualified = item.text + "::" + method.text
+                if std::map::contains(seen, method.text) {
+                    st = decl_err(st, m_duplicate("trait method", qualified), method.span)
+                } else {
+                    seen = std::map::insert(seen, method.text, true)
+                }
+                st = decl_parameters(st, qualified, method.list)
+                if method.c != nil && method.b == nil {
+                    st = decl_err(st, m_unsupported("trait default method '" + qualified + "' without an explicit return type"), method.span)
+                }
+            }
+        } else if k == "typealias" {
+            st = decl_insert(st, "type", "type", item.text, item.span)
+        } else if k == "impl" {
+            let mut target = direct_named_type(item.b)
+            if target == "" {
+                target = "<invalid>"
+            }
+            if item.a != nil {
+                let implementation = item.a + " for " + target
+                if std::map::contains(st.impls, implementation) {
+                    st = decl_err(st, m_duplicate("impl", implementation), item.span)
+                } else {
+                    st = DeclSt { values: st.values, types: st.types, impls: std::map::insert(st.impls, implementation, true), errs: st.errs }
+                }
+            }
+            let mut seen = std::map::new()
+            for method in item.list {
+                let qualified = target + "::" + method.text
+                if std::map::contains(seen, method.text) {
+                    st = decl_err(st, m_duplicate("method", qualified), method.span)
+                } else {
+                    seen = std::map::insert(seen, method.text, true)
+                }
+                st = decl_parameters(st, qualified, method.list)
+                st = decl_unimplemented(st, qualified, method)
+            }
+        } else if k == "module" {
+            st = decl_visit(st, item.list)
+        }
+    }
+    st
+}
+
+fn declaration_errors(base: map, items: array) -> array {
+    let mut values = std::map::new()
+    for name in std::map::keys(base) {
+        if !std::text::contains(name, "::") {
+            values = std::map::insert(values, name, true)
+        }
+    }
+    let st = DeclSt { values: values, types: builtin_type_names(base), impls: std::map::new(), errs: [] }
+    decl_visit(st, items).errs
+}
+
+fn collect_type_names(t: Ty, names0: map) -> map {
+    let mut names = names0
+    if t.k == "Named" {
+        return std::map::insert(names, t.name, true)
+    }
+    if t.k == "Array" {
+        return collect_type_names(t.items[0], names)
+    }
+    if t.k == "Tuple" {
+        for item in t.items {
+            names = collect_type_names(item, names)
+        }
+        return names
+    }
+    if t.k == "Function" {
+        for p in t.items {
+            names = collect_type_names(p, names)
+        }
+        return collect_type_names(t.ret, names)
+    }
+    names
+}
+
+fn builtin_type_names(base: map) -> map {
+    let mut names = std::map::new()
+    for n in ["int", "i32", "i64", "u64", "usize", "float", "f32", "f64", "bool", "string", "str", "char", "Array", "Vec", "array", "map", "any", "Option", "Result"] {
+        names = std::map::insert(names, n, true)
+    }
+    for sig in std::map::values(base) {
+        for p in sig.params {
+            names = collect_type_names(p, names)
+        }
+        names = collect_type_names(sig.result, names)
+    }
+    names
+}
+
+fn collect_declared_type_names(items: array, names0: map) -> map {
+    let mut names = names0
+    for item in items {
+        if item.kind == "struct" || item.kind == "enum" || item.kind == "typealias" {
+            names = std::map::insert(names, item.text, true)
+        } else if item.kind == "module" {
+            names = collect_declared_type_names(item.list, names)
+        }
+    }
+    names
+}
+
+// ---------------------------------------- declared_type_errors (tipos usados)
+
+// unknown: nombre -> span; invalid: clave -> (nombre, esperado, hallado, span);
+// unsupported: rasgo -> span. En los tres gana el primer span visto.
+struct Issues {
+    unknown: map,
+    invalid: map,
+    unsupported: map,
+}
+
+fn iss_unknown(is: Issues, name: string, span: Span) -> Issues {
+    if std::map::contains(is.unknown, name) {
+        return is
+    }
+    Issues { unknown: std::map::insert(is.unknown, name, span), invalid: is.invalid, unsupported: is.unsupported }
+}
+
+fn iss_invalid(is: Issues, name: string, expected: int, found: int, span: Span) -> Issues {
+    let key = name + "\n{expected}\n{found}"
+    if std::map::contains(is.invalid, key) {
+        return is
+    }
+    Issues { unknown: is.unknown, invalid: std::map::insert(is.invalid, key, (name, expected, found, span)), unsupported: is.unsupported }
+}
+
+fn iss_unsupported(is: Issues, feature: string, span: Span) -> Issues {
+    if std::map::contains(is.unsupported, feature) {
+        return is
+    }
+    Issues { unknown: is.unknown, invalid: is.invalid, unsupported: std::map::insert(is.unsupported, feature, span) }
+}
+
+fn dt_type(t, known: map, is0: Issues, span: Span) -> Issues {
+    let mut is = is0
+    let k = t.kind
+    if k == "t_named" {
+        if std::map::contains(known, t.text) {
+            let mut expected = 0
+            if t.text == "Array" || t.text == "Vec" {
+                expected = 1
+            }
+            if len(t.list) != expected {
+                is = iss_invalid(is, t.text, expected, len(t.list), span)
+            }
+        } else {
+            is = iss_unknown(is, t.text, span)
+        }
+        for g in t.list {
+            is = dt_type(g, known, is, span)
+        }
+        return is
+    }
+    if k == "t_ref" {
+        is = iss_unsupported(is, "reference types", span)
+        return dt_type(t.a, known, is, span)
+    }
+    if k == "t_slice" {
+        return dt_type(t.a, known, is, span)
+    }
+    if k == "t_array" {
+        is = iss_unsupported(is, "fixed-size array types", span)
+        is = dt_type(t.a, known, is, span)
+        return dt_expr(t.b, known, is)
+    }
+    if k == "t_tuple" {
+        for el in t.list {
+            is = dt_type(el, known, is, span)
+        }
+        return is
+    }
+    if k == "t_fn" {
+        for p in t.list {
+            is = dt_type(p, known, is, span)
+        }
+        return dt_type(t.a, known, is, span)
+    }
+    is
+}
+
+fn dt_params(params: array, known: map, is0: Issues) -> Issues {
+    let mut is = is0
+    for p in params {
+        if p.a != nil {
+            is = dt_type(p.a, known, is, p.span)
+        }
+        if p.b != nil {
+            is = dt_expr(p.b, known, is)
+        }
+    }
+    is
+}
+
+fn dt_pattern(p, known: map, is: Issues) -> Issues {
+    let k = p.kind
+    if k == "p_lit" {
+        return dt_expr(p.a, known, is)
+    }
+    if k == "p_enum" && p.a != nil {
+        return dt_pattern(p.a, known, is)
+    }
+    if k == "p_or" {
+        return dt_pattern(p.b, known, dt_pattern(p.a, known, is))
+    }
+    is
+}
+
+fn dt_block(b, known: map, is0: Issues) -> Issues {
+    let mut is = is0
+    for s in b.list {
+        if s.kind == "sexpr" {
+            is = dt_expr(s.a, known, is)
+        } else if s.kind == "slet" {
+            if s.a != nil {
+                is = dt_type(s.a, known, is, s.span)
+            }
+            is = dt_expr(s.b, known, is)
+        } else if s.kind == "sitem" {
+            is = dt_item(s.a, known, is)
+        }
+    }
+    if b.a != nil {
+        is = dt_expr(b.a, known, is)
+    }
+    is
+}
+
+fn dt_exprs(list: array, known: map, is0: Issues) -> Issues {
+    let mut is = is0
+    for x in list {
+        is = dt_expr(x, known, is)
+    }
+    is
+}
+
+fn dt_expr(x, known: map, is: Issues) -> Issues {
+    let k = x.kind
+    if k == "array" || k == "tuple" {
+        return dt_exprs(x.list, known, is)
+    }
+    if k == "structlit" {
+        return dt_exprs(x.list2, known, is)
+    }
+    if k == "binary" || k == "range" || k == "index" || k == "assign" {
+        return dt_expr(x.b, known, dt_expr(x.a, known, is))
+    }
+    if k == "unary" || k == "field" || k == "spawn" || k == "try" {
+        return dt_expr(x.a, known, is)
+    }
+    if k == "call" || k == "methodcall" {
+        return dt_exprs(x.list, known, dt_expr(x.a, known, is))
+    }
+    if k == "if" {
+        let mut r = dt_block(x.b, known, dt_expr(x.a, known, is))
+        if x.c != nil {
+            r = dt_block(x.c, known, r)
+        }
+        return r
+    }
+    if k == "match" {
+        let mut r = dt_expr(x.a, known, is)
+        for arm in x.list {
+            r = dt_pattern(arm.a, known, r)
+            if arm.b != nil {
+                r = dt_expr(arm.b, known, r)
+            }
+            r = dt_block(arm.c, known, r)
+        }
+        return r
+    }
+    if k == "for" {
+        return dt_block(x.c, known, dt_expr(x.b, known, dt_pattern(x.a, known, is)))
+    }
+    if k == "while" {
+        return dt_block(x.b, known, dt_expr(x.a, known, is))
+    }
+    if k == "loop" {
+        return dt_block(x.a, known, is)
+    }
+    if k == "block" {
+        return dt_block(x, known, is)
+    }
+    if k == "break" || k == "return" {
+        if x.a != nil {
+            return dt_expr(x.a, known, is)
+        }
+        return is
+    }
+    if k == "closure" {
+        let mut r = dt_params(x.list, known, is)
+        if x.a != nil {
+            r = dt_type(x.a, known, r, x.span)
+        }
+        return dt_expr(x.b, known, r)
+    }
+    is
+}
+
+fn dt_methods(methods: array, known: map, is0: Issues) -> Issues {
+    let mut is = is0
+    for m in methods {
+        is = dt_params(m.list, known, is)
+        if m.b != nil {
+            is = dt_type(m.b, known, is, m.span)
+        }
+        if m.c != nil {
+            is = dt_block(m.c, known, is)
+        }
+    }
+    is
+}
+
+fn dt_item(item, known: map, is0: Issues) -> Issues {
+    let mut is = is0
+    let k = item.kind
+    if k == "fn" {
+        return dt_methods([item], known, is)
+    }
+    if k == "struct" {
+        for f in item.list {
+            is = dt_type(f.a, known, is, f.span)
+        }
+        return is
+    }
+    if k == "enum" {
+        for v in item.list {
+            if v.a != nil {
+                is = dt_type(v.a, known, is, v.span)
+            }
+        }
+        return is
+    }
+    if k == "trait" {
+        return dt_methods(item.list, known, is)
+    }
+    if k == "impl" {
+        is = dt_type(item.b, known, is, item.span)
+        return dt_methods(item.list, known, is)
+    }
+    if k == "const" {
+        if item.a != nil {
+            is = dt_type(item.a, known, is, item.span)
+        }
+        return dt_expr(item.b, known, is)
+    }
+    if k == "typealias" {
+        return dt_type(item.a, known, is, item.span)
+    }
+    if k == "module" {
+        for it in item.list {
+            is = dt_item(it, known, is)
+        }
+    }
+    is
+}
+
+// Orden: desconocidos por nombre, luego argumentos inválidos por
+// (nombre, esperado, hallado), luego rasgos no soportados por nombre. Las
+// claves de los mapas de Titan ya salen ordenadas (BTreeMap).
+fn declared_type_errors(items: array, known: map) -> array {
+    let mut is = Issues { unknown: std::map::new(), invalid: std::map::new(), unsupported: std::map::new() }
+    for item in items {
+        is = dt_item(item, known, is)
+    }
+    let mut out = []
+    for name in std::map::keys(is.unknown) {
+        out = std::array::push(out, (m_unknown_type(name), std::map::get(is.unknown, name)))
+    }
+    let invalid = sort_by(std::map::values(is.invalid), |l, r| cmp_invalid(l, r))
+    for entry in invalid {
+        out = std::array::push(out, (m_invalid_type_args(entry.0, entry.1, entry.2), entry.3))
+    }
+    for feature in std::map::keys(is.unsupported) {
+        out = std::array::push(out, (m_unsupported(feature), std::map::get(is.unsupported, feature)))
+    }
+    out
+}
+
+fn cmp_invalid(l, r) -> int {
+    if l.0 < r.0 {
+        return -1
+    }
+    if l.0 > r.0 {
+        return 1
+    }
+    if l.1 != r.1 {
+        return l.1 - r.1
+    }
+    l.2 - r.2
+}
+
+fn alias_reaches(origin: string, t: Ty, aliases: map, visited: map) -> bool {
+    if t.k == "Named" {
+        if t.name == origin {
+            return true
+        }
+        if !std::map::contains(aliases, t.name) {
+            return false
+        }
+        if std::map::contains(visited, t.name) {
+            return false
+        }
+        return alias_reaches(origin, std::map::get(aliases, t.name), aliases, std::map::insert(visited, t.name, true))
+    }
+    if t.k == "Array" {
+        return alias_reaches(origin, t.items[0], aliases, visited)
+    }
+    if t.k == "Tuple" {
+        for item in t.items {
+            if alias_reaches(origin, item, aliases, visited) {
+                return true
+            }
+        }
+        return false
+    }
+    if t.k == "Function" {
+        for p in t.items {
+            if alias_reaches(origin, p, aliases, visited) {
+                return true
+            }
+        }
+        return alias_reaches(origin, t.ret, aliases, visited)
+    }
+    false
+}
+
