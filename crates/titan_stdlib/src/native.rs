@@ -227,6 +227,16 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::text::substring", [String, Int, Int], String),
     native!("std::text::words", [String], Array),
     native!("std::text::lines", [String], Array),
+    // Self-hosting fase 1: acceso por carácter y clasificación Unicode.
+    // chars(s) -> [char] (O(n) una vez; indexar el array es O(1)).
+    native!("std::text::chars", [String], Array),
+    // char_code('a') -> 97 ; from_char_code(97) -> 'a'
+    native!("std::text::char_code", [Any], Int),
+    native!("std::text::from_char_code", [Int], Any),
+    // Clasificación Unicode idéntica a char::is_* de Rust (la que usa el lexer).
+    native!("std::text::is_alphabetic", [Any], Bool),
+    native!("std::text::is_alphanumeric", [Any], Bool),
+    native!("std::text::is_whitespace", [Any], Bool),
     native!("std::encoding::hex_encode", [Bytes], String),
     native!("std::encoding::hex_decode", [String], Bytes),
     native!("std::encoding::base64_encode", [Bytes], String),

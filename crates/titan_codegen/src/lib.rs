@@ -32,6 +32,11 @@ pub enum Op {
     PushStr(usize),
     PushLocal(usize),
     StoreLocal(usize),
+    /// Mueve el valor de un local a la pila dejando `nil` en su lugar. Solo
+    /// se emite cuando el local se sobrescribe a continuación
+    /// (`x = std::array::push(x, v)`, `s += "txt"`), así que es invisible
+    /// para el programa y evita copiar el valor.
+    TakeLocal(usize),
     Pop,
     Dup,
     Add,
@@ -1047,9 +1052,47 @@ impl AstCompiler {
             )));
         }
         if let Some(op) = op {
-            self.emit(Op::PushLocal(local));
+            // `x op= v`: si `v` no lee `x`, el valor viejo de `x` se mueve
+            // (TakeLocal) en vez de copiarse; `s += "txt"` queda amortizado O(1).
+            if expr_mentions(value, name) {
+                self.emit(Op::PushLocal(local));
+            } else {
+                self.emit(Op::TakeLocal(local));
+            }
             self.compile_expr(value)?;
             self.emit(binary_instruction(op)?);
+        } else if let Some(args) = self.movable_update_call(value, name) {
+            // `x = std::array::push(x, v)` y similares: el primer argumento es
+            // el propio `x`, que se sobrescribe al terminar. Se mueve en vez de
+            // copiarse, así la actualización no duplica el contenedor.
+            self.emit(Op::TakeLocal(local));
+            for arg in &args[1..] {
+                self.compile_expr(arg)?;
+            }
+            let Expr::Call { callee, .. } = value else {
+                unreachable!("movable_update_call only matches calls")
+            };
+            let Expr::Ident { name: native, .. } = callee.as_ref() else {
+                unreachable!("movable_update_call only matches named natives")
+            };
+            self.emit_native_call(native, args.len())?;
+        } else if let Expr::Binary {
+            left,
+            op: BinaryOp::Add,
+            right,
+            ..
+        } = value
+        {
+            // `s = s + v` con `v` que no lee `s`: mover `s`.
+            if matches!(left.as_ref(), Expr::Ident { name: n, .. } if n == name)
+                && !expr_mentions(right, name)
+            {
+                self.emit(Op::TakeLocal(local));
+                self.compile_expr(right)?;
+                self.emit(Op::Add);
+            } else {
+                self.compile_expr(value)?;
+            }
         } else {
             self.compile_expr(value)?;
         }
@@ -1490,12 +1533,95 @@ impl AstCompiler {
             .rev()
             .find_map(|scope| scope.get(name).copied())
     }
+    /// Si `value` es `NATIVE(name, ...)` con NATIVE una actualización
+    /// funcional conocida (devuelve su primer argumento modificado) y el resto
+    /// de argumentos no lee `name`, devuelve los argumentos.
+    fn movable_update_call<'e>(&self, value: &'e Expr, name: &str) -> Option<&'e [Expr]> {
+        let Expr::Call { callee, args, .. } = value else {
+            return None;
+        };
+        let Expr::Ident { name: native, .. } = callee.as_ref() else {
+            return None;
+        };
+        if !MOVABLE_UPDATE_NATIVES.contains(&native.as_str())
+            || self.find_local(native).is_some()
+            || !titan_stdlib::native::contains(native)
+        {
+            return None;
+        }
+        let (first, rest) = args.split_first()?;
+        if !matches!(first, Expr::Ident { name: n, .. } if n == name) {
+            return None;
+        }
+        if rest.iter().any(|arg| expr_mentions(arg, name)) {
+            return None;
+        }
+        Some(args)
+    }
+
+    fn emit_native_call(&mut self, native: &str, argc: usize) -> Result<(), CodegenError> {
+        self.emit(Op::CallNative {
+            name: native.to_string(),
+            argc,
+        });
+        Ok(())
+    }
+
     fn is_local_mutable(&self, name: &str) -> bool {
         self.local_mutability
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).copied())
             .unwrap_or(false)
+    }
+}
+
+/// Natives que devuelven su primer argumento actualizado. En
+/// `x = NATIVE(x, ...)` el valor viejo de `x` se descarta, así que puede
+/// moverse (TakeLocal) en vez de copiarse.
+const MOVABLE_UPDATE_NATIVES: &[&str] = &[
+    "std::array::push",
+    "std::array::pop",
+    "std::array::set",
+    "std::array::concat",
+    "std::map::insert",
+    "std::map::insert_new",
+    "std::map::remove",
+    "std::bytes::concat",
+];
+
+/// ¿Puede `expr` leer la variable `name`? Conservador: ante cualquier
+/// construcción no analizada (bloques, closures, control de flujo) responde
+/// `true`, y entonces no se aplica ninguna optimización.
+fn expr_mentions(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::String { .. }
+        | Expr::Char { .. }
+        | Expr::Bool { .. }
+        | Expr::Nil { .. } => false,
+        // La interpolación referencia variables por nombre dentro del texto.
+        Expr::StringTemplate { value, .. } => value.contains(name),
+        Expr::Ident { name: n, .. } => n == name,
+        Expr::Array { elements, .. } | Expr::Tuple { elements, .. } => {
+            elements.iter().any(|e| expr_mentions(e, name))
+        }
+        Expr::StructLit { fields, .. } => fields.iter().any(|(_, e)| expr_mentions(e, name)),
+        Expr::Binary { left, right, .. } => expr_mentions(left, name) || expr_mentions(right, name),
+        Expr::Range { start, end, .. } => expr_mentions(start, name) || expr_mentions(end, name),
+        Expr::Unary { expr, .. } | Expr::Try { expr, .. } => expr_mentions(expr, name),
+        Expr::Call { callee, args, .. } => {
+            expr_mentions(callee, name) || args.iter().any(|a| expr_mentions(a, name))
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            expr_mentions(receiver, name) || args.iter().any(|a| expr_mentions(a, name))
+        }
+        Expr::Index { target, index, .. } => {
+            expr_mentions(target, name) || expr_mentions(index, name)
+        }
+        Expr::FieldAccess { target, .. } => expr_mentions(target, name),
+        _ => true,
     }
 }
 

@@ -1068,6 +1068,13 @@ impl Vm {
                         index,
                     },
                 )?),
+                Op::TakeLocal(index) => {
+                    let slot = locals.get_mut(index).ok_or_else(|| VmError::InvalidLocal {
+                        function: function.name.clone(),
+                        index,
+                    })?;
+                    stack.push(std::mem::replace(slot, Value::Nil));
+                }
                 Op::StoreLocal(index) => {
                     let value = pop(&mut stack, &function.name)?;
                     let slot = locals.get_mut(index).ok_or_else(|| VmError::InvalidLocal {
@@ -4637,7 +4644,7 @@ fn value_alloc_estimate(value: &Value) -> usize {
 
 fn array_value(value: Value) -> Result<Vec<Value>, VmError> {
     match value {
-        Value::Array(values) | Value::Tuple(values) => Ok(values),
+        Value::Array(values) | Value::Tuple(values) => Ok(values.into_inner()),
         _ => Err(VmError::Type("operation requires an array".into())),
     }
 }

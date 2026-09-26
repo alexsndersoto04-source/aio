@@ -1874,7 +1874,9 @@ fn apply_type_effect(
             state.stack.push(ValueKind::Numeric);
         }
         Op::PushNil => state.stack.push(ValueKind::Unknown),
-        Op::PushLocal(local) => state.stack.push(state.locals[*local].clone()),
+        Op::PushLocal(local) | Op::TakeLocal(local) => {
+            state.stack.push(state.locals[*local].clone())
+        }
         Op::StoreLocal(local) => {
             state.locals[*local] = state.stack.pop().expect("stack analysis ran first");
         }
@@ -2136,7 +2138,9 @@ fn validate_operation(
     operation: &Op,
 ) -> Result<(), WasmError> {
     match operation {
-        Op::PushLocal(index) | Op::StoreLocal(index) if *index >= function.locals => {
+        Op::PushLocal(index) | Op::StoreLocal(index) | Op::TakeLocal(index)
+            if *index >= function.locals =>
+        {
             Err(WasmError::InvalidLocal {
                 function: function.name.clone(),
                 local: *index,
@@ -2225,6 +2229,7 @@ fn validate_operation(
         | Op::PushNil
         | Op::PushStr(_)
         | Op::PushLocal(_)
+        | Op::TakeLocal(_)
         | Op::StoreLocal(_)
         | Op::Pop
         | Op::Dup
@@ -2274,7 +2279,8 @@ fn stack_effect(operation: &Op) -> (usize, usize) {
         | Op::PushChar(_)
         | Op::PushNil
         | Op::PushStr(_)
-        | Op::PushLocal(_) => (0, 1),
+        | Op::PushLocal(_)
+        | Op::TakeLocal(_) => (0, 1),
         Op::StoreLocal(_) | Op::Pop | Op::JumpIfFalse(_) => (1, 0),
         Op::Dup => (1, 2),
         Op::Add
@@ -2351,7 +2357,8 @@ fn emit_operation(
                 strings.handles[*string],
             );
         }
-        Op::PushLocal(local) => {
+        // En WASM mover y copiar un local son la misma instrucción.
+        Op::PushLocal(local) | Op::TakeLocal(local) => {
             body.instruction(&Instruction::LocalGet(*local as u32));
             body.instruction(&Instruction::LocalSet(layout.stack_base + height as u32));
         }

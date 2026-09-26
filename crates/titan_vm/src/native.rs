@@ -154,6 +154,22 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .map(|v| Value::Str(v.into()))
                 .collect(),
         ),
+        "std::text::chars" => Value::Array(string!().chars().map(Value::Char).collect()),
+        "std::text::char_code" => match take!() {
+            Value::Char(c) => Value::Int(i64::from(u32::from(c))),
+            _ => return Err("expected char".into()),
+        },
+        "std::text::from_char_code" => {
+            let code = int!();
+            let c = u32::try_from(code)
+                .ok()
+                .and_then(char::from_u32)
+                .ok_or_else(|| format!("{code} is not a valid Unicode scalar value"))?;
+            Value::Char(c)
+        }
+        "std::text::is_alphabetic" => Value::Bool(expect_char(take!())?.is_alphabetic()),
+        "std::text::is_alphanumeric" => Value::Bool(expect_char(take!())?.is_alphanumeric()),
+        "std::text::is_whitespace" => Value::Bool(expect_char(take!())?.is_whitespace()),
         "std::text::lines" => {
             Value::Array(string!().lines().map(|v| Value::Str(v.into())).collect())
         }
@@ -592,7 +608,8 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             stdlib::json::flatten(&to_json(take!())?)
                 .into_iter()
                 .map(|(path, value)| Ok(Value::tuple(vec![Value::Str(path), from_json(value)?])))
-                .collect::<Result<Vec<_>, String>>()?,
+                .collect::<Result<Vec<_>, String>>()?
+                .into(),
         ),
 
         "std::array::set" => {
@@ -5246,6 +5263,13 @@ fn expect_bytes(value: Value) -> Result<Vec<u8>, String> {
         Value::Bytes(v) => Ok(v),
         Value::Str(v) => Ok(v.into_bytes()),
         _ => Err("expected bytes or string".into()),
+    }
+}
+fn expect_char(value: Value) -> Result<char, String> {
+    if let Value::Char(c) = value {
+        Ok(c)
+    } else {
+        Err("expected char".into())
     }
 }
 fn expect_int(value: Value) -> Result<i64, String> {
