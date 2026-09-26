@@ -1,0 +1,10 @@
+let s = "sin cerrar
+let t = "linea
+otra"
+let c = 'ab'
+let d = ''
+let e = '\q'
+let f = "\q escape invalido"
+@ $ `
+# solo
+/* sin cerrar

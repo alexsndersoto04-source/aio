@@ -1,0 +1,8 @@
+let café = "a\n\t\"q\" \\ \0 \r"
+let c = 'x' let d = '\n' let e = '\'' let f = 'ñ'
+// comentario con ñ y 😀
+/* bloque /* anidado */ sigue */ fn main() {}
+x += 1 -= 2 *= 3 /= 4 %= 5 -> => == != <= >= <=> |> || && :: .. ..= #{ } ~ ^ ? ! & |
+1_000 3.14 2e10 1.5E-3 7e+2 1e 0..10 1.foo 12_
+_ _x __ x_1 self as extern type mod go spawn unsafe
+😀 = 1

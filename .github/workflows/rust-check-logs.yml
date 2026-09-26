@@ -75,10 +75,16 @@ jobs:
         run: |
           set +e
           if [ "$(cat /tmp/logs/check.rc)" = "0" ]; then
-            cargo test -p titan_lexer -p titan_parser -p titan_typechecker \
-              -p titan_codegen -p titan_vm -p titan_cli --no-fail-fast \
-              > /tmp/logs/test.txt 2>&1
+            cargo test --workspace --all-targets --no-fail-fast \
+              > /tmp/logs/test.full.txt 2>&1
             echo $? > /tmp/logs/test.rc
+            # Resumen: fallos con su contexto + resultados por binario de test.
+            {
+              grep -E "^test result|Running " /tmp/logs/test.full.txt
+              echo "=== FALLOS ==="
+              grep -B2 -A25 -E "^---- .* stdout ----" /tmp/logs/test.full.txt | head -300
+              grep -A30 "^failures:$" /tmp/logs/test.full.txt | head -80
+            } > /tmp/logs/test.txt
             cargo build --release -p titan_cli > /tmp/logs/build.txt 2>&1
             echo $? > /tmp/logs/build.rc
             if [ -x target/release/titan ]; then
