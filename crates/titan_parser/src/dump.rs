@@ -77,7 +77,10 @@ fn q(text: &str) -> String {
 }
 
 fn sp(span: Span) -> String {
-    format!("@{}:{}:{}..{}", span.line, span.column, span.start, span.end)
+    format!(
+        "@{}:{}:{}..{}",
+        span.line, span.column, span.start, span.end
+    )
 }
 
 fn binop(op: BinaryOp) -> &'static str {

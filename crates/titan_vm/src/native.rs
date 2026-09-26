@@ -2852,13 +2852,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Str(stdlib::audio_player::queue_clear().map_err(error)?)
         }
         #[cfg(feature = "audio_mod")]
-        "std::audio::player_next" => {
-            Value::Str(stdlib::audio_player::queue_next().map_err(error)?)
-        }
+        "std::audio::player_next" => Value::Str(stdlib::audio_player::queue_next().map_err(error)?),
         #[cfg(feature = "audio_mod")]
-        "std::audio::player_prev" => {
-            Value::Str(stdlib::audio_player::queue_prev().map_err(error)?)
-        }
+        "std::audio::player_prev" => Value::Str(stdlib::audio_player::queue_prev().map_err(error)?),
         #[cfg(feature = "audio_mod")]
         "std::audio::player_current" => {
             let cur = stdlib::audio_player::current_track().map_err(error)?;
@@ -2886,9 +2882,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "audio_engine")]
         "std::audio::engine_pause" => Value::Str(stdlib::audio_engine::pause().map_err(error)?),
         #[cfg(feature = "audio_engine")]
-        "std::audio::engine_resume" => {
-            Value::Str(stdlib::audio_engine::resume().map_err(error)?)
-        }
+        "std::audio::engine_resume" => Value::Str(stdlib::audio_engine::resume().map_err(error)?),
         #[cfg(feature = "audio_engine")]
         "std::audio::engine_position" => Value::Float(stdlib::audio_engine::position_secs()),
         #[cfg(feature = "audio_engine")]

@@ -4832,9 +4832,7 @@ fn declaration_errors(
                         }
                     }
                 }
-                Item::TypeAlias(alias) => {
-                    insert(state, "type", "type", &alias.name, alias.span)
-                }
+                Item::TypeAlias(alias) => insert(state, "type", "type", &alias.name, alias.span),
                 Item::Impl(block) => {
                     let target = direct_named_type(&block.target_type).unwrap_or("<invalid>");
                     if let Some(trait_name) = &block.trait_name {
@@ -5986,7 +5984,10 @@ mod tests {
         let source = "fn main() { let mut n = 0 let mut s = \"\" let c = 2 if c == 1 { n = 1 } else if c == 2 { s = \"dos\" } else { n = 3 } print(n) print(s) }";
         assert!(check(source).is_ok(), "{:?}", check(source));
         // Como valor, las ramas siguen teniendo que coincidir.
-        assert!(check("fn main() { let c = 1 let x: int = if c == 1 { 1 } else { \"no\" } print(x) }").is_err());
+        assert!(check(
+            "fn main() { let c = 1 let x: int = if c == 1 { 1 } else { \"no\" } print(x) }"
+        )
+        .is_err());
     }
 
     #[test]

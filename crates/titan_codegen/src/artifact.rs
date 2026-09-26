@@ -151,7 +151,8 @@ fn validate(module: &CompiledModule) -> Result<(), ArtifactError> {
                     return invalid(&format!("{} references missing string {index}", location()))
                 }
                 Op::PushLocal(index) | Op::StoreLocal(index) | Op::TakeLocal(index)
-                    if *index >= function.locals => {
+                    if *index >= function.locals =>
+                {
                     return invalid(&format!("{} references missing local {index}", location()))
                 }
                 Op::Jump(target) | Op::JumpIfFalse(target) if *target > function.code.len() => {

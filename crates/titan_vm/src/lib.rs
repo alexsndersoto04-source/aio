@@ -3,11 +3,11 @@
 mod debug;
 mod native;
 pub mod shared;
-pub use shared::Shared;
 pub use debug::{
     Breakpoint, DebugCommand, DebugController, DebugEvent, DebugFrame, DebugHook, DebugMode,
     Debugger,
 };
+pub use shared::Shared;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
@@ -1348,9 +1348,10 @@ impl Vm {
                     let receiver = pop(&mut stack, &function.name)?;
                     if let Value::Struct { name, .. } = &receiver {
                         let qualified = format!("{}::{}", name, method);
-                        let callee = *self.module.method_table.get(&qualified).ok_or_else(|| {
-                            VmError::Type(format!("undefined method '{}'", qualified))
-                        })?;
+                        let callee =
+                            *self.module.method_table.get(&qualified).ok_or_else(|| {
+                                VmError::Type(format!("undefined method '{}'", qualified))
+                            })?;
                         let mut full_args = Vec::with_capacity(args.len() + 1);
                         full_args.push(receiver);
                         full_args.extend(args);
@@ -4867,7 +4868,8 @@ mod tests {
             Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Bool(true)])
         );
         assert_eq!(
-            run("fn main() { ['a' < 'b', 'z' >= 'a', \"abc\" < \"abd\", \"b\" <= \"a\"] }").unwrap(),
+            run("fn main() { ['a' < 'b', 'z' >= 'a', \"abc\" < \"abd\", \"b\" <= \"a\"] }")
+                .unwrap(),
             Value::array(vec![
                 Value::Bool(true),
                 Value::Bool(true),
