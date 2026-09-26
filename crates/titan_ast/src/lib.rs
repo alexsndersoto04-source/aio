@@ -161,3 +161,61 @@ pub enum TypeExpr {
     Never,
     Infer(usize),
 }
+
+/// Titan source syntax of a type annotation (`[int]`, `(int, &mut str)`,
+/// `fn(int) -> bool`), used in diagnostics. Before this existed the
+/// typechecker printed the Rust `Debug` form of the AST in user-facing
+/// messages, e.g. `impl target 'Slice { inner: Named { name: "int", generics:
+/// [] } }' is not a declared struct`.
+impl std::fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn list(f: &mut std::fmt::Formatter<'_>, items: &[TypeExpr]) -> std::fmt::Result {
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{item}")?;
+            }
+            Ok(())
+        }
+        match self {
+            TypeExpr::Named { name, generics } => {
+                f.write_str(name)?;
+                if !generics.is_empty() {
+                    f.write_str("<")?;
+                    list(f, generics)?;
+                    f.write_str(">")?;
+                }
+                Ok(())
+            }
+            TypeExpr::Reference { inner, is_mut } => {
+                f.write_str(if *is_mut { "&mut " } else { "&" })?;
+                write!(f, "{inner}")
+            }
+            TypeExpr::Slice { inner } => write!(f, "[{inner}]"),
+            TypeExpr::Array { inner, size } => match size.as_ref() {
+                Expr::Int { value, .. } => write!(f, "[{inner}; {value}]"),
+                _ => write!(f, "[{inner}; _]"),
+            },
+            TypeExpr::Tuple { elements } => {
+                f.write_str("(")?;
+                list(f, elements)?;
+                if elements.len() == 1 {
+                    f.write_str(",")?;
+                }
+                f.write_str(")")
+            }
+            TypeExpr::Function {
+                params,
+                return_type,
+            } => {
+                f.write_str("fn(")?;
+                list(f, params)?;
+                write!(f, ") -> {return_type}")
+            }
+            TypeExpr::Unit => f.write_str("()"),
+            TypeExpr::Never => f.write_str("!"),
+            TypeExpr::Infer(_) => f.write_str("_"),
+        }
+    }
+}

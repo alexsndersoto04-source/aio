@@ -1502,7 +1502,7 @@ impl TypeEnv {
                     let Some(target) = direct_named_type(&block.target_type) else {
                         self.push_error_at(
                             TypeError::InvalidImplTarget {
-                                name: format!("{:?}", block.target_type),
+                                name: block.target_type.to_string(),
                             },
                             block.span,
                         );
@@ -6002,6 +6002,17 @@ mod tests {
 
     fn check(source: &str) -> Result<(), Vec<TypeError>> {
         TypeEnv::new().check_program(&parse(source))
+    }
+
+    #[test]
+    fn invalid_impl_target_is_reported_in_titan_syntax() {
+        let errors = check("impl [int] { } impl (int, &mut str) { } fn main() { }").unwrap_err();
+        for name in ["[int]", "(int, &mut str)"] {
+            assert!(
+                errors.contains(&TypeError::InvalidImplTarget { name: name.into() }),
+                "{errors:?}"
+            );
+        }
     }
 
     #[test]
