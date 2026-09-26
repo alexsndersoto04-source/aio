@@ -1,0 +1,17 @@
+// Uso: titan run selfhost/tokens.titan <archivo.titan>
+// Imprime el volcado canónico de tokens producido por el lexer escrito en
+// Titan. Debe ser idéntico a `titan tokens <archivo.titan>` (lexer de Rust).
+import lexer
+
+fn main() {
+    let args = std::env::args()
+    if len(args) < 4 {
+        print("uso: titan run selfhost/tokens.titan <archivo.titan>")
+        return
+    }
+    let path = args[3]
+    let text = std::fs::read_text(path)
+    let dump = dump_tokens(text)
+    // print() añade el salto de línea final que ya trae el volcado.
+    print(std::text::substring(dump, 0, len(dump) - 1))
+}

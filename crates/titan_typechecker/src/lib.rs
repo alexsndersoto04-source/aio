@@ -2127,6 +2127,12 @@ impl TypeEnv {
                 Stmt::Assign {
                     target, op, value, ..
                 } => self.check_assignment(target, *op, value),
+                // Un if/match en posición de sentencia descarta su valor: sus
+                // ramas pueden terminar en tipos distintos (p. ej. asignaciones
+                // `x = 1` / `s = "a"`), como documenta TITAN_SYNTAX.md.
+                Stmt::Expr(expr @ (Expr::If { .. } | Expr::Match { .. })) => {
+                    self.check_expr_expected(expr, &Type::Unknown)
+                }
                 Stmt::Expr(expr) => self.check_expr(expr),
                 Stmt::Item(_) => {
                     self.errors.push(TypeError::UnsupportedFeature {
@@ -5973,6 +5979,14 @@ mod tests {
 
     fn check(source: &str) -> Result<(), Vec<TypeError>> {
         TypeEnv::new().check_program(&parse(source))
+    }
+
+    #[test]
+    fn statement_if_branches_may_end_in_different_types() {
+        let source = "fn main() { let mut n = 0 let mut s = \"\" let c = 2 if c == 1 { n = 1 } else if c == 2 { s = \"dos\" } else { n = 3 } print(n) print(s) }";
+        assert!(check(source).is_ok(), "{:?}", check(source));
+        // Como valor, las ramas siguen teniendo que coincidir.
+        assert!(check("fn main() { let c = 1 let x: int = if c == 1 { 1 } else { \"no\" } print(x) }").is_err());
     }
 
     #[test]
