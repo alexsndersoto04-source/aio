@@ -1,0 +1,2054 @@
+diff --git a/crates/titan_cli/tests/moon_e2e.rs b/crates/titan_cli/tests/moon_e2e.rs
+index baa358b..25a7688 100644
+--- a/crates/titan_cli/tests/moon_e2e.rs
++++ b/crates/titan_cli/tests/moon_e2e.rs
+@@ -208,7 +208,12 @@ fn tail_of_file(path: &Path, lines: usize) -> String {
+ fn result_line(text: &str) -> String {
+     text.lines()
+         .find(|line| line.contains("RESULTADO:"))
+-        .map(|line| line.trim().trim_matches('=').trim().replace("RESULTADO:", ""))
++        .map(|line| {
++            line.trim()
++                .trim_matches('=')
++                .trim()
++                .replace("RESULTADO:", "")
++        })
+         .map(|line| line.trim().to_string())
+         .unwrap_or_else(|| "sin línea de resultado".to_string())
+ }
+@@ -234,7 +239,10 @@ fn node_invocation() -> Option<Vec<String>> {
+     }
+     let flagged = vec!["--experimental-websocket".to_string()];
+     if node_has_websocket("node", &flagged) {
+-        return Some(vec!["node".to_string(), "--experimental-websocket".to_string()]);
++        return Some(vec![
++            "node".to_string(),
++            "--experimental-websocket".to_string(),
++        ]);
+     }
+     let npx = ["--yes".to_string(), NODE_FALLBACK.to_string()];
+     if node_has_websocket("npx", &npx) {
+@@ -326,7 +334,10 @@ fn start_postgres() {
+ }
+ 
+ fn database_is_ready() -> bool {
+-    runs_ok("docker", &docker_args(&["exec", CONTAINER, "pg_isready", "-U", "moon"]))
++    runs_ok(
++        "docker",
++        &docker_args(&["exec", CONTAINER, "pg_isready", "-U", "moon"]),
++    )
+ }
+ 
+ fn wait_for_database() {
+@@ -413,17 +424,17 @@ fn run_e2e(moon: &Path, node: &[String], log_path: &Path) {
+         // El resultado exacto queda como aviso: así se puede comprobar el
+         // «N PASS / 0 FAIL» desde la API sin descargar los registros del job
+         // (que GitHub no siempre deja leer).
+-        notice("Moon E2E · resultado", &format!("{header}\n\n```\n{short}\n```"));
++        notice(
++            "Moon E2E · resultado",
++            &format!("{header}\n\n```\n{short}\n```"),
++        );
+         println!("Moon E2E correcto");
+         return;
+     }
+ 
+     let fallos = failures_block(&stdout);
+     publish_summary(&format!("{header}\n\n```\n{fallos}\n```"));
+-    annotate(
+-        "Moon E2E · resumen",
+-        &format!("{header}\n\n{fallos}"),
+-    );
++    annotate("Moon E2E · resumen", &format!("{header}\n\n{fallos}"));
+     // El log completo, en trozos: GitHub corta el mensaje de una anotación
+     // a ~4 KB, así que un log largo hay que repartirlo o no se ve.
+     annotate_long("Moon E2E · log API", &tail_of_file(log_path, 2000));
+diff --git a/crates/titan_codegen/src/artifact.rs b/crates/titan_codegen/src/artifact.rs
+index 6ba42f3..72ccd4f 100644
+--- a/crates/titan_codegen/src/artifact.rs
++++ b/crates/titan_codegen/src/artifact.rs
+@@ -151,7 +151,8 @@ fn validate(module: &CompiledModule) -> Result<(), ArtifactError> {
+                     return invalid(&format!("{} references missing string {index}", location()))
+                 }
+                 Op::PushLocal(index) | Op::StoreLocal(index) | Op::TakeLocal(index)
+-                    if *index >= function.locals => {
++                    if *index >= function.locals =>
++                {
+                     return invalid(&format!("{} references missing local {index}", location()))
+                 }
+                 Op::Jump(target) | Op::JumpIfFalse(target) if *target > function.code.len() => {
+@@ -324,9 +325,8 @@ mod tests {
+             Op::Ret,
+         ];
+         module.functions[0].code = code.clone();
+-        module.functions[0].debug_locations = std::iter::repeat_with(|| None)
+-            .take(code.len())
+-            .collect();
++        module.functions[0].debug_locations =
++            std::iter::repeat_with(|| None).take(code.len()).collect();
+         let encoded = BytecodeArtifact::encode(&module).expect("range sentinel must encode");
+         let decoded = BytecodeArtifact::decode(&encoded).expect("range sentinel must decode");
+         assert_eq!(decoded.functions[0].code, code);
+diff --git a/crates/titan_codegen/src/lib.rs b/crates/titan_codegen/src/lib.rs
+index f4c8035..34163eb 100644
+--- a/crates/titan_codegen/src/lib.rs
++++ b/crates/titan_codegen/src/lib.rs
+@@ -699,9 +699,7 @@ impl AstCompiler {
+             Expr::Loop { body, .. } => self.compile_loop(body)?,
+             Expr::Break { value, .. } => {
+                 if value.is_some() {
+-                    return Err(CodegenError::Unsupported(
+-                        "values carried by break".into(),
+-                    ));
++                    return Err(CodegenError::Unsupported("values carried by break".into()));
+                 }
+                 let jump = self.jump();
+                 self.loops
+diff --git a/crates/titan_dap/src/lib.rs b/crates/titan_dap/src/lib.rs
+index fb2caf6..7b2a7f6 100644
+--- a/crates/titan_dap/src/lib.rs
++++ b/crates/titan_dap/src/lib.rs
+@@ -503,11 +503,7 @@ mod tests {
+         let root = std::env::temp_dir().join(format!("titan-dap-errors-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&root);
+         titan_pkg::create_project(&root, "dap_errors").unwrap();
+-        std::fs::write(
+-            root.join("src/main.titan"),
+-            "fn main() {\n    1 + true\n}",
+-        )
+-        .unwrap();
++        std::fs::write(root.join("src/main.titan"), "fn main() {\n    1 + true\n}").unwrap();
+         let error = load_program(root.to_str().unwrap()).unwrap_err();
+         // El diagnostico nombra ahora el archivo antes de la linea y la
+         // columna, para que un proyecto de varios modulos no obligue a
+diff --git a/crates/titan_lsp/src/lib.rs b/crates/titan_lsp/src/lib.rs
+index 21bcec3..cf59cef 100644
+--- a/crates/titan_lsp/src/lib.rs
++++ b/crates/titan_lsp/src/lib.rs
+@@ -132,14 +132,16 @@ impl TitanLsp {
+                 Ok(program) => {
+                     let mut types = titan_typechecker::TypeEnv::new();
+                     if let Err(errors) = types.check_program_diagnostics(&program) {
+-                        output.extend(errors.into_iter().map(|diagnostic| Diagnostic {
+-                            range: diagnostic
+-                                .span
+-                                .map(|span| span_range(source, span))
+-                                .unwrap_or_default(),
+-                            severity: 1,
+-                            source: "titan".into(),
+-                            message: diagnostic.error.to_string(),
++                        output.extend(errors.into_iter().map(|diagnostic| {
++                            Diagnostic {
++                                range: diagnostic
++                                    .span
++                                    .map(|span| span_range(source, span))
++                                    .unwrap_or_default(),
++                                severity: 1,
++                                source: "titan".into(),
++                                message: diagnostic.error.to_string(),
++                            }
+                         }));
+                     }
+                 }
+@@ -640,11 +642,7 @@ mod tests {
+     #[test]
+     fn publishes_type_errors_at_their_expression_range() {
+         let mut lsp = TitanLsp::new();
+-        lsp.open_document(
+-            "file:///x.titan",
+-            "fn main() {\n    1 + true\n}",
+-            1,
+-        );
++        lsp.open_document("file:///x.titan", "fn main() {\n    1 + true\n}", 1);
+         let diagnostic = lsp
+             .diagnostics("file:///x.titan")
+             .into_iter()
+diff --git a/crates/titan_parser/src/dump.rs b/crates/titan_parser/src/dump.rs
+index a04e070..ae98769 100644
+--- a/crates/titan_parser/src/dump.rs
++++ b/crates/titan_parser/src/dump.rs
+@@ -77,7 +77,10 @@ fn q(text: &str) -> String {
+ }
+ 
+ fn sp(span: Span) -> String {
+-    format!("@{}:{}:{}..{}", span.line, span.column, span.start, span.end)
++    format!(
++        "@{}:{}:{}..{}",
++        span.line, span.column, span.start, span.end
++    )
+ }
+ 
+ fn binop(op: BinaryOp) -> &'static str {
+diff --git a/crates/titan_pkg/src/install.rs b/crates/titan_pkg/src/install.rs
+index 31e311c..4ac8d5f 100644
+--- a/crates/titan_pkg/src/install.rs
++++ b/crates/titan_pkg/src/install.rs
+@@ -108,4 +108,4 @@ pub fn installed_path(root: &Path, name: &str, version: &str) -> PathBuf {
+         .join("packages")
+         .join(name)
+         .join(version)
+-}
+\ No newline at end of file
++}
+diff --git a/crates/titan_pkg/src/registry.rs b/crates/titan_pkg/src/registry.rs
+index 87c9962..e9b9a38 100644
+--- a/crates/titan_pkg/src/registry.rs
++++ b/crates/titan_pkg/src/registry.rs
+@@ -266,4 +266,4 @@ mod tests {
+         };
+         assert!(verify_signature(&release).is_ok());
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/crates/titan_stdlib/src/audio_cloud.rs b/crates/titan_stdlib/src/audio_cloud.rs
+index ac2f01e..7f859ba 100644
+--- a/crates/titan_stdlib/src/audio_cloud.rs
++++ b/crates/titan_stdlib/src/audio_cloud.rs
+@@ -30,9 +30,9 @@ use std::path::PathBuf;
+ use std::sync::{Arc, Mutex};
+ use std::time::Duration;
+ 
++use grammers_client::client::{LoginToken, PasswordToken};
+ use grammers_client::media::{Attribute, Downloadable, Media};
+ use grammers_client::message::InputMessage;
+-use grammers_client::client::{LoginToken, PasswordToken};
+ use grammers_client::{Client, SignInError};
+ use grammers_mtsender::{SenderPool, SenderPoolFatHandle};
+ use grammers_session::types::{
+@@ -129,8 +129,8 @@ fn load_config() -> CloudConfig {
+ fn save_config(cfg: &CloudConfig) -> Result<(), CloudError> {
+     let dir = titan_dir()?;
+     std::fs::create_dir_all(&dir)?;
+-    let bytes = serde_json::to_vec_pretty(cfg)
+-        .map_err(|e| CloudError::Io(format!("config JSON: {e}")))?;
++    let bytes =
++        serde_json::to_vec_pretty(cfg).map_err(|e| CloudError::Io(format!("config JSON: {e}")))?;
+     std::fs::write(config_path()?, bytes)?;
+     Ok(())
+ }
+@@ -288,10 +288,7 @@ impl Session for JsonFileSession {
+         Box::pin(async move { Ok(self.data()?.updates_state.clone()) })
+     }
+ 
+-    fn set_update_state(
+-        &self,
+-        update: UpdateState,
+-    ) -> BoxFuture<'_, Result<(), JsonSessionError>> {
++    fn set_update_state(&self, update: UpdateState) -> BoxFuture<'_, Result<(), JsonSessionError>> {
+         Box::pin(async move {
+             let mut data = self.data()?;
+             match update {
+@@ -366,7 +363,9 @@ fn slot() -> &'static Mutex<CloudState> {
+ }
+ 
+ fn lock_slot() -> std::sync::MutexGuard<'static, CloudState> {
+-    slot().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
++    slot()
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
+ }
+ 
+ /// Corre un futuro con tope de tiempo, desde código normal (no-async).
+@@ -374,15 +373,14 @@ fn run<T, F>(handle: &Handle, secs: u64, fut: F) -> Result<T, CloudError>
+ where
+     F: std::future::Future<Output = Result<T, CloudError>>,
+ {
+-    handle
+-        .block_on(async move {
+-            match tokio::time::timeout(Duration::from_secs(secs), fut).await {
+-                Ok(inner) => inner,
+-                Err(_) => Err(CloudError::Net(format!(
+-                    "Telegram no respondió en {secs} s (¿hay internet?)"
+-                ))),
+-            }
+-        })
++    handle.block_on(async move {
++        match tokio::time::timeout(Duration::from_secs(secs), fut).await {
++            Ok(inner) => inner,
++            Err(_) => Err(CloudError::Net(format!(
++                "Telegram no respondió en {secs} s (¿hay internet?)"
++            ))),
++        }
++    })
+ }
+ 
+ /// Runtime compartido (hilos propios; se puede llamar desde el hilo
+@@ -411,7 +409,8 @@ fn ensure_client() -> Result<(Handle, Client), CloudError> {
+     let cfg = load_config();
+     if cfg.api_id == 0 || cfg.api_hash.is_empty() {
+         return Err(CloudError::Setup(
+-            "falta cloud_setup(api_id, api_hash): crea tu app en https://my.telegram.org".to_string(),
++            "falta cloud_setup(api_id, api_hash): crea tu app en https://my.telegram.org"
++                .to_string(),
+         ));
+     }
+     let handle = rt_handle()?;
+@@ -424,7 +423,9 @@ fn ensure_client() -> Result<(Handle, Client), CloudError> {
+     ));
+     let pool = SenderPool::new(Arc::clone(&session), cfg.api_id);
+     let SenderPool {
+-        runner, handle: pool_handle, ..
++        runner,
++        handle: pool_handle,
++        ..
+     } = pool;
+     // La tarea queda andando sola (detached) hasta que se suelte el pool.
+     handle.spawn(runner.run());
+@@ -469,8 +470,9 @@ pub fn login_phone(phone: &str) -> Result<String, CloudError> {
+     }
+     let (handle, client) = ensure_client()?;
+     let cfg = load_config();
+-    let authorized =
+-        run(&handle, 30, async { Ok(client.is_authorized().await.map_err(rpc_err)?) })?;
++    let authorized = run(&handle, 30, async {
++        Ok(client.is_authorized().await.map_err(rpc_err)?)
++    })?;
+     if authorized {
+         let mut cfg = cfg;
+         cfg.phone = phone.to_string();
+@@ -539,11 +541,14 @@ pub fn login_code(code: &str) -> Result<String, CloudError> {
+ /// Segundo factor (solo si `cloud_login_code` pidió contraseña).
+ pub fn login_password(password: &str) -> Result<String, CloudError> {
+     if password.is_empty() {
+-        return Err(CloudError::Auth("la contraseña no puede estar vacía".to_string()));
++        return Err(CloudError::Auth(
++            "la contraseña no puede estar vacía".to_string(),
++        ));
+     }
+-    let token = lock_slot().password.take().ok_or_else(|| {
+-        CloudError::Auth("no hay login esperando contraseña".to_string())
+-    })?;
++    let token = lock_slot()
++        .password
++        .take()
++        .ok_or_else(|| CloudError::Auth("no hay login esperando contraseña".to_string()))?;
+     let (handle, client) = ensure_client()?;
+     let user = run(&handle, 60, async {
+         client
+@@ -928,9 +933,10 @@ pub fn upload(path: &str) -> Result<String, CloudError> {
+     require_auth(&handle, &client)?;
+     let channel = ensure_channel(&handle, &client)?;
+     let uploaded = run(&handle, 1800, async {
+-        client.upload_file(path).await.map_err(|e| {
+-            CloudError::Net(format!("falló la subida de {file_name} ({e})"))
+-        })
++        client
++            .upload_file(path)
++            .await
++            .map_err(|e| CloudError::Net(format!("falló la subida de {file_name} ({e})")))
+     })?;
+     let caption = match (&title, &artist) {
+         (Some(t), Some(a)) => format!("{a} — {t}"),
+@@ -938,13 +944,14 @@ pub fn upload(path: &str) -> Result<String, CloudError> {
+         _ => file_name.to_string(),
+     };
+     let msg = run(&handle, 120, async {
+-        let message = InputMessage::new().text(caption).document(uploaded).attribute(
+-            Attribute::Audio {
++        let message = InputMessage::new()
++            .text(caption)
++            .document(uploaded)
++            .attribute(Attribute::Audio {
+                 duration: Duration::from_secs(probed.duration_secs.max(0.0) as u64),
+                 title,
+                 performer: artist,
+-            },
+-        );
++            });
+         client
+             .send_message(channel, message)
+             .await
+@@ -968,7 +975,9 @@ pub fn download(id: i64, dest: &str) -> Result<String, CloudError> {
+         .get(&id)
+         .map(|r| r.media.clone())
+         .ok_or_else(|| {
+-            CloudError::Track(format!("cloud:{id} no está en caché; ejecuta cloud_library primero"))
++            CloudError::Track(format!(
++                "cloud:{id} no está en caché; ejecuta cloud_library primero"
++            ))
+         })?;
+     let (handle, client) = ensure_client()?;
+     require_auth(&handle, &client)?;
+@@ -1140,20 +1149,19 @@ impl MediaSource for CloudMediaSource {
+ // ------------------------------------------------------- puente al motor
+ 
+ fn describe(id: i32) -> Option<(String, f64)> {
+-    lock_slot().refs.get(&id).map(|r| {
+-        (
+-            format!("☁ {} — {}", r.artist, r.title),
+-            r.duration_secs,
+-        )
+-    })
++    lock_slot()
++        .refs
++        .get(&id)
++        .map(|r| (format!("☁ {} — {}", r.artist, r.title), r.duration_secs))
+ }
+ 
+ fn open_stream(id: i32) -> Result<Box<dyn MediaSource>, String> {
+     let (handle, client, media, size) = {
+         let guard = lock_slot();
+-        let r = guard.refs.get(&id).ok_or_else(|| {
+-            format!("cloud:{id} no está en caché; ejecuta cloud_library primero")
+-        })?;
++        let r = guard
++            .refs
++            .get(&id)
++            .ok_or_else(|| format!("cloud:{id} no está en caché; ejecuta cloud_library primero"))?;
+         let client = guard
+             .client
+             .clone()
+@@ -1176,12 +1184,10 @@ fn open_stream(id: i32) -> Result<Box<dyn MediaSource>, String> {
+ 
+ /// Conecta este módulo con el motor (una vez; idempotente).
+ pub fn ensure_hooks() {
+-    crate::audio_decode::register_cloud_hooks(
+-        crate::audio_decode::CloudHooks {
+-            open: open_stream,
+-            describe,
+-        },
+-    );
++    crate::audio_decode::register_cloud_hooks(crate::audio_decode::CloudHooks {
++        open: open_stream,
++        describe,
++    });
+ }
+ 
+ /// Mete una pista nube a la cola (`cloud:<id>`).
+@@ -1255,7 +1261,10 @@ mod tests {
+             }
+         }
+         let size = mock.size();
+-        (CloudMediaSource::new(Box::new(Wrap(mock.clone())), size), mock)
++        (
++            CloudMediaSource::new(Box::new(Wrap(mock.clone())), size),
++            mock,
++        )
+     }
+ 
+     #[test]
+@@ -1346,7 +1355,12 @@ mod tests {
+             );
+         }
+         let head: Vec<String> = pcm.iter().take(4).map(|s| format!("{s:.4}")).collect();
+-        let tail: Vec<String> = pcm.iter().rev().take(2).map(|s| format!("{s:.4}")).collect();
++        let tail: Vec<String> = pcm
++            .iter()
++            .rev()
++            .take(2)
++            .map(|s| format!("{s:.4}"))
++            .collect();
+         assert!(
+             pcm.len() > 20_000,
+             "samples={} fetches={} head=[{}] tail=[{}]",
+diff --git a/crates/titan_stdlib/src/audio_decode.rs b/crates/titan_stdlib/src/audio_decode.rs
+index e4b74dc..8b03909 100644
+--- a/crates/titan_stdlib/src/audio_decode.rs
++++ b/crates/titan_stdlib/src/audio_decode.rs
+@@ -171,10 +171,14 @@ impl FileDecoder {
+             .lock()
+             .map_err(|_| DecodeError::NotFound(format!("{key} (nube bloqueada)")))?;
+         let hooks = guard.as_ref().ok_or_else(|| {
+-            DecodeError::NotFound(format!("{key} (nube no iniciada: cloud_setup + login primero)"))
++            DecodeError::NotFound(format!(
++                "{key} (nube no iniciada: cloud_setup + login primero)"
++            ))
+         })?;
+         let (display, _duration) = (hooks.describe)(id).ok_or_else(|| {
+-            DecodeError::NotFound(format!("{key} no está en caché; ejecuta cloud_library primero"))
++            DecodeError::NotFound(format!(
++                "{key} no está en caché; ejecuta cloud_library primero"
++            ))
+         })?;
+         let source = (hooks.open)(id).map_err(DecodeError::Unsupported)?;
+         Ok((display, source))
+@@ -229,8 +233,8 @@ impl FileDecoder {
+                 break;
+             }
+         }
+-        let (track_id, decoder, sample_rate, channels, duration_secs, codec) =
+-            selected.ok_or_else(|| {
++        let (track_id, decoder, sample_rate, channels, duration_secs, codec) = selected
++            .ok_or_else(|| {
+                 DecodeError::Unsupported(format!("no decodable audio track: {label}"))
+             })?;
+         Ok(FileDecoder {
+@@ -513,7 +517,8 @@ impl Biquad {
+     }
+ 
+     fn process(&mut self, x: f32) -> f32 {
+-        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1
++        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
++            - self.a1 * self.y1
+             - self.a2 * self.y2;
+         self.x2 = self.x1;
+         self.x1 = x;
+@@ -662,7 +667,11 @@ mod tests {
+         fs::remove_file(&path).ok();
+         assert_eq!(info.sample_rate, 44_100);
+         assert_eq!(info.channels, 2);
+-        assert!((info.duration_secs - 1.0).abs() < 0.05, "{}", info.duration_secs);
++        assert!(
++            (info.duration_secs - 1.0).abs() < 0.05,
++            "{}",
++            info.duration_secs
++        );
+         assert!(!info.codec.is_empty());
+     }
+ 
+@@ -673,7 +682,11 @@ mod tests {
+         fs::remove_file(&path).ok();
+         assert_eq!(dec.sample_rate, 44_100);
+         assert_eq!(dec.channels, 2);
+-        assert!((dec.decoded_secs - 0.5).abs() < 0.05, "{}", dec.decoded_secs);
++        assert!(
++            (dec.decoded_secs - 0.5).abs() < 0.05,
++            "{}",
++            dec.decoded_secs
++        );
+         let peak = dec.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+         assert!(peak > 0.4 && peak <= 1.0, "peak={peak}");
+         // Stereo interleave: left and right carry the same tone.
+@@ -697,7 +710,11 @@ mod tests {
+         dec.fill(&mut chunk, 4410).unwrap(); // ~0.1 s
+         assert!(dec.position_secs() > 0.05, "{}", dec.position_secs());
+         dec.seek(1.0).unwrap();
+-        assert!((dec.position_secs() - 1.0).abs() < 0.15, "{}", dec.position_secs());
++        assert!(
++            (dec.position_secs() - 1.0).abs() < 0.15,
++            "{}",
++            dec.position_secs()
++        );
+         assert!(dec.seek(99.0).is_err());
+         assert!(dec.seek(-1.0).is_err());
+         fs::remove_file(&path).ok();
+@@ -725,7 +742,11 @@ mod tests {
+     fn resample_changes_length_proportionally() {
+         let input: Vec<f32> = (0..4410).map(|n| (n as f32) / 4410.0).collect();
+         let up = resample_linear(&input, 1, 44_100, 48_000);
+-        assert!((up.len() as f64 / 4800.0 - 1.0).abs() < 0.05, "len={}", up.len());
++        assert!(
++            (up.len() as f64 / 4800.0 - 1.0).abs() < 0.05,
++            "len={}",
++            up.len()
++        );
+         assert!((up[0] - 0.0).abs() < 1e-3);
+         assert!((up[up.len() - 1] - 1.0).abs() < 0.05);
+     }
+diff --git a/crates/titan_stdlib/src/audio_engine.rs b/crates/titan_stdlib/src/audio_engine.rs
+index 7b2f31e..fa79bba 100644
+--- a/crates/titan_stdlib/src/audio_engine.rs
++++ b/crates/titan_stdlib/src/audio_engine.rs
+@@ -197,7 +197,9 @@ fn slot() -> &'static Mutex<Option<Engine>> {
+ }
+ 
+ fn lock_slot() -> std::sync::MutexGuard<'static, Option<Engine>> {
+-    slot().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
++    slot()
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
+ }
+ 
+ // `cpal::Stream` is `!Send` by design (same story as `minifb::Window`),
+@@ -410,7 +412,8 @@ fn ensure_output(eng: &mut Engine) -> Result<(), EngineError> {
+ #[cfg(target_os = "android")]
+ fn ensure_output(_eng: &mut Engine) -> Result<(), EngineError> {
+     Err(EngineError::Unsupported(
+-        "native output is wired by the app shell (Fase 42B); decode-only on this target".to_string(),
++        "native output is wired by the app shell (Fase 42B); decode-only on this target"
++            .to_string(),
+     ))
+ }
+ 
+@@ -622,8 +625,7 @@ fn worker_main(control: Arc<Control>, shared: Arc<Mutex<Shared>>, out_rate: u32,
+                 let c = crate::native::lock_recover(&control.current);
+                 (s.frames_rendered, c.start_frame, c.duration_secs)
+             };
+-            let rendered_pos =
+-                rendered.saturating_sub(start_frame) as f64 / out_rate.max(1) as f64;
++            let rendered_pos = rendered.saturating_sub(start_frame) as f64 / out_rate.max(1) as f64;
+             let remaining = duration - rendered_pos;
+             if duration > 0.0 && remaining < cfg.crossfade_secs && remaining > 0.25 {
+                 if let Some(path) = crate::native::lock_recover(&control.queue).pop_front() {
+@@ -650,9 +652,7 @@ fn worker_main(control: Arc<Control>, shared: Arc<Mutex<Shared>>, out_rate: u32,
+         let mut promote = false;
+         if let Some(ov) = overlap.as_mut() {
+             let mut head = Vec::new();
+-            let _ = ov
+-                .next
+-                .fill(&mut head, main.len() / out_ch.max(1));
++            let _ = ov.next.fill(&mut head, main.len() / out_ch.max(1));
+             let ov_ch = ov.next.channels().max(1) as usize;
+             let mut head_rs =
+                 audio_decode::resample_linear(&head, ov_ch, ov.next.sample_rate(), out_rate);
+@@ -1087,7 +1087,10 @@ pub fn next() -> Result<String, EngineError> {
+         next_path
+     };
+     match next_path {
+-        Some(path) => Ok(format!("next: {}", crate::audio_decode::cloud_display(&path))),
++        Some(path) => Ok(format!(
++            "next: {}",
++            crate::audio_decode::cloud_display(&path)
++        )),
+         None => {
+             let _ = stop();
+             Ok("end of queue (stopped)".to_string())
+@@ -1116,7 +1119,10 @@ pub fn prev() -> Result<String, EngineError> {
+                 crate::native::lock_recover(&control.queue).push_front(outgoing);
+             }
+             *crate::native::lock_recover(&control.switch_to) = Some(path.clone());
+-            Ok(format!("previous: {}", crate::audio_decode::cloud_display(&path)))
++            Ok(format!(
++                "previous: {}",
++                crate::audio_decode::cloud_display(&path)
++            ))
+         }
+         None => Err(EngineError::Invalid("no previous track".to_string())),
+     }
+@@ -1173,12 +1179,9 @@ pub fn levels() -> [f32; 32] {
+ /// Headless check: probe + decode up to 5 s. Works everywhere, needs no
+ /// output device — this is what CI and the future streaming cache use.
+ pub fn decode_report(path: &str) -> Result<DecodeReport, EngineError> {
+-    let decoded =
+-        audio_decode::decode_file(path, VERIFY_SECS).map_err(|e| EngineError::Decode(e.to_string()))?;
+-    let peak = decoded
+-        .samples
+-        .iter()
+-        .fold(0.0f32, |m, s| m.max(s.abs()));
++    let decoded = audio_decode::decode_file(path, VERIFY_SECS)
++        .map_err(|e| EngineError::Decode(e.to_string()))?;
++    let peak = decoded.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+     Ok(DecodeReport {
+         duration_secs: if decoded.duration_secs > 0.0 {
+             decoded.duration_secs
+@@ -1202,57 +1205,66 @@ pub fn device() -> String {
+ }
+ 
+ pub fn status() -> EngineStatus {
+-    let (path, codec, sample_rate, channels, volume_percent, crossfade_secs, gapless, eq_db, queue_len, device) =
+-        {
+-            let guard = lock_slot();
+-            match guard.as_ref() {
+-                Some(eng) => {
+-                    let (path, codec, sample_rate, channels, queue_len) = match eng.control.clone()
+-                    {
+-                        Some(control) => {
+-                            let current = crate::native::lock_recover(&control.current);
+-                            let queue_len = crate::native::lock_recover(&control.queue).len();
+-                            (
+-                                current.path.clone(),
+-                                current.codec.clone(),
+-                                current.rate,
+-                                current.channels,
+-                                queue_len,
+-                            )
+-                        }
+-                        None => (String::new(), String::new(), 0, 0, eng.pending_queue.len()),
+-                    };
+-                    (
+-                        path,
+-                        codec,
+-                        sample_rate,
+-                        channels,
+-                        (eng.config.volume * 100.0).round() as i64,
+-                        eng.config.crossfade_secs,
+-                        eng.config.gapless,
+-                        [
+-                            eng.config.eq_db[0].round() as i64,
+-                            eng.config.eq_db[1].round() as i64,
+-                            eng.config.eq_db[2].round() as i64,
+-                        ],
+-                        queue_len,
+-                        eng.device_label.clone(),
+-                    )
+-                }
+-                None => (
+-                    String::new(),
+-                    String::new(),
+-                    0,
+-                    0,
+-                    80,
+-                    0.0,
+-                    true,
+-                    [0, 0, 0],
+-                    0,
+-                    String::new(),
+-                ),
++    let (
++        path,
++        codec,
++        sample_rate,
++        channels,
++        volume_percent,
++        crossfade_secs,
++        gapless,
++        eq_db,
++        queue_len,
++        device,
++    ) = {
++        let guard = lock_slot();
++        match guard.as_ref() {
++            Some(eng) => {
++                let (path, codec, sample_rate, channels, queue_len) = match eng.control.clone() {
++                    Some(control) => {
++                        let current = crate::native::lock_recover(&control.current);
++                        let queue_len = crate::native::lock_recover(&control.queue).len();
++                        (
++                            current.path.clone(),
++                            current.codec.clone(),
++                            current.rate,
++                            current.channels,
++                            queue_len,
++                        )
++                    }
++                    None => (String::new(), String::new(), 0, 0, eng.pending_queue.len()),
++                };
++                (
++                    path,
++                    codec,
++                    sample_rate,
++                    channels,
++                    (eng.config.volume * 100.0).round() as i64,
++                    eng.config.crossfade_secs,
++                    eng.config.gapless,
++                    [
++                        eng.config.eq_db[0].round() as i64,
++                        eng.config.eq_db[1].round() as i64,
++                        eng.config.eq_db[2].round() as i64,
++                    ],
++                    queue_len,
++                    eng.device_label.clone(),
++                )
+             }
+-        };
++            None => (
++                String::new(),
++                String::new(),
++                0,
++                0,
++                80,
++                0.0,
++                true,
++                [0, 0, 0],
++                0,
++                String::new(),
++            ),
++        }
++    };
+     EngineStatus {
+         state: state_string(),
+         path: crate::audio_decode::cloud_display(&path),
+@@ -1339,7 +1351,11 @@ mod tests {
+         fs::remove_dir_all(&dir).ok();
+         assert_eq!(report.sample_rate, 44_100);
+         assert_eq!(report.channels, 2);
+-        assert!((report.duration_secs - 1.0).abs() < 0.05, "{}", report.duration_secs);
++        assert!(
++            (report.duration_secs - 1.0).abs() < 0.05,
++            "{}",
++            report.duration_secs
++        );
+         assert!(report.peak > 0.4, "peak={}", report.peak);
+         assert!(report.verified_secs > 0.0);
+         assert!(!report.codec.is_empty());
+diff --git a/crates/titan_stdlib/src/audio_player.rs b/crates/titan_stdlib/src/audio_player.rs
+index 547cc35..8e62534 100644
+--- a/crates/titan_stdlib/src/audio_player.rs
++++ b/crates/titan_stdlib/src/audio_player.rs
+@@ -104,9 +104,7 @@ fn find_in_dirs(bin: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+     let bin = format!("{bin}.exe");
+     #[cfg(not(windows))]
+     let bin = bin.to_string();
+-    dirs.iter()
+-        .map(|d| d.join(&bin))
+-        .find(|p| p.is_file())
++    dirs.iter().map(|d| d.join(&bin)).find(|p| p.is_file())
+ }
+ 
+ fn path_dirs() -> Vec<PathBuf> {
+@@ -232,7 +230,8 @@ fn mpv_play(path: &Path, st: &mut PlayerState) -> Result<Option<Child>, PlayerEr
+         .duration_since(std::time::UNIX_EPOCH)
+         .map(|d| d.as_nanos())
+         .unwrap_or(0);
+-    let sock = std::env::temp_dir().join(format!("zett-audio-{}-{}.sock", std::process::id(), nanos));
++    let sock =
++        std::env::temp_dir().join(format!("zett-audio-{}-{}.sock", std::process::id(), nanos));
+     let _ = std::fs::remove_file(&sock); // stale socket from a crashed run
+     let child = Command::new("mpv")
+         .arg("--no-video")
+@@ -270,7 +269,9 @@ fn mpv_play(path: &Path, st: &mut PlayerState) -> Result<Option<Child>, PlayerEr
+         .set_write_timeout(Some(Duration::from_millis(800)))
+         .ok();
+     let reader = writer.try_clone()?;
+-    reader.set_read_timeout(Some(Duration::from_millis(200))).ok();
++    reader
++        .set_read_timeout(Some(Duration::from_millis(200)))
++        .ok();
+     st.ipc = Some(Ipc {
+         writer,
+         reader,
+@@ -350,7 +351,11 @@ fn signal_pause(child: Option<&mut Child>, pause: bool) -> Result<(), PlayerErro
+         i32::try_from(child.id())
+             .map_err(|_| PlayerError::Control("process id out of range".into()))?,
+     );
+-    let sig = if pause { Signal::SIGSTOP } else { Signal::SIGCONT };
++    let sig = if pause {
++        Signal::SIGSTOP
++    } else {
++        Signal::SIGCONT
++    };
+     kill(pid, sig).map_err(|e| PlayerError::Control(format!("signal failed: {e}")))?;
+     Ok(())
+ }
+@@ -585,7 +590,9 @@ fn do_seek(st: &mut PlayerState, _secs: f64) -> Result<String, PlayerError> {
+ /// Set the volume (0..=100). Returns `true` when the backend applied it.
+ pub fn set_volume(percent: i64) -> Result<bool, PlayerError> {
+     if !(0..=100).contains(&percent) {
+-        return Err(PlayerError::Invalid("volume must be between 0 and 100".into()));
++        return Err(PlayerError::Invalid(
++            "volume must be between 0 and 100".into(),
++        ));
+     }
+     let mut guard = lock_slot();
+     let st = guard.as_mut().ok_or(PlayerError::Idle)?;
+@@ -765,10 +772,14 @@ fn do_current_track(st: &mut PlayerState) -> Result<CurrentTrack, PlayerError> {
+     let mut out = CurrentTrack::default();
+     out.index = -1;
+     if let Ok(reply) = ipc_cmd(st, r#"{"command":["get_property","playlist-index"]}"#) {
+-        out.index = extract_float_after(&reply, "data").map(|v| v as i64).unwrap_or(-1);
++        out.index = extract_float_after(&reply, "data")
++            .map(|v| v as i64)
++            .unwrap_or(-1);
+     }
+     if let Ok(reply) = ipc_cmd(st, r#"{"command":["get_property","playlist-count"]}"#) {
+-        out.count = extract_float_after(&reply, "data").map(|v| v as i64).unwrap_or(0);
++        out.count = extract_float_after(&reply, "data")
++            .map(|v| v as i64)
++            .unwrap_or(0);
+     }
+     if let Ok(reply) = ipc_cmd(st, r#"{"command":["get_property","media-title"]}"#) {
+         out.title = extract_json_string_after(&reply, "data").unwrap_or_default();
+@@ -846,7 +857,10 @@ mod tests {
+             extract_float_after(r#"{"data":null,"error":"success"}"#, "data"),
+             None
+         );
+-        assert_eq!(extract_float_after(r#"{"data":3,"error":"success"}"#, "data"), Some(3.0));
++        assert_eq!(
++            extract_float_after(r#"{"data":3,"error":"success"}"#, "data"),
++            Some(3.0)
++        );
+     }
+ 
+     #[cfg(unix)]
+@@ -875,10 +889,7 @@ mod tests {
+     #[test]
+     fn volume_bounds_are_enforced() {
+         // Idle + out-of-range volume: the parameter check fires first.
+-        assert!(matches!(
+-            set_volume(150),
+-            Err(PlayerError::Invalid(_))
+-        ));
++        assert!(matches!(set_volume(150), Err(PlayerError::Invalid(_))));
+     }
+ 
+     #[test]
+diff --git a/crates/titan_stdlib/src/audio_tags.rs b/crates/titan_stdlib/src/audio_tags.rs
+index ad590a0..31d1fa5 100644
+--- a/crates/titan_stdlib/src/audio_tags.rs
++++ b/crates/titan_stdlib/src/audio_tags.rs
+@@ -257,9 +257,7 @@ fn u64le(b: &[u8], at: usize) -> Option<u64> {
+ /// ID3 "syncsafe" integer: 4 bytes, 7 bits each, top bit always zero.
+ fn syncsafe(b: &[u8], at: usize) -> Option<u32> {
+     let s = b.get(at..at.checked_add(4)?)?;
+-    Some(
+-        ((s[0] as u32) << 21) | ((s[1] as u32) << 14) | ((s[2] as u32) << 7) | (s[3] as u32),
+-    )
++    Some(((s[0] as u32) << 21) | ((s[1] as u32) << 14) | ((s[2] as u32) << 7) | (s[3] as u32))
+ }
+ 
+ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+@@ -445,7 +443,10 @@ pub(crate) fn parse_id3v2_frames(buf: &[u8], major: u8, tag_flags: u8) -> Id3Tag
+     while pos + hdr_len <= end && guard < 4096 {
+         guard += 1;
+         let id = String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string();
+-        if !id.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()) {
++        if !id
++            .bytes()
++            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
++        {
+             break;
+         }
+         let (fsize, fflags) = if major == 2 {
+@@ -461,8 +462,8 @@ pub(crate) fn parse_id3v2_frames(buf: &[u8], major: u8, tag_flags: u8) -> Id3Tag
+             (u32be(buf, pos + 4).unwrap_or(0) as usize, buf[pos + 9])
+         };
+         // Compressed or encrypted frames are skipped (we do not inflate).
+-        let broken_frame = (major == 3 && (fflags & 0xC0) != 0)
+-            || (major == 4 && (fflags & 0x0C) != 0);
++        let broken_frame =
++            (major == 3 && (fflags & 0xC0) != 0) || (major == 4 && (fflags & 0x0C) != 0);
+         let fstart = pos + hdr_len;
+         if fsize == 0 || fstart.checked_add(fsize).map(|e| e > end).unwrap_or(true) {
+             break;
+@@ -522,7 +523,11 @@ fn apic_image_bytes(id: &str, content: &[u8]) -> Option<Vec<u8>> {
+         while i + 1 < slice.len() && (slice[i] != 0 || slice[i + 1] != 0) {
+             i += 2;
+         }
+-        if i < slice.len() { Some(i + 2) } else { None }
++        if i < slice.len() {
++            Some(i + 2)
++        } else {
++            None
++        }
+     } else {
+         content[pos..].iter().position(|&b| b == 0).map(|p| p + 1)
+     };
+@@ -558,7 +563,10 @@ fn parse_id3v2_whole(data: &[u8]) -> Id3Tags {
+     let major = data[3];
+     let flags = data[5];
+     let tag_size = syncsafe(data, 6).unwrap_or(0) as usize;
+-    let end = std::cmp::min(10usize.checked_add(tag_size).unwrap_or(data.len()), data.len());
++    let end = std::cmp::min(
++        10usize.checked_add(tag_size).unwrap_or(data.len()),
++        data.len(),
++    );
+     let raw = &data[10..end];
+     let buf = if (flags & 0x80) != 0 {
+         de_unsync(raw)
+@@ -678,10 +686,18 @@ fn parse_id3v1(tail: &[u8]) -> Id3Tags {
+ 
+ // ---------------------------------------------------------------------- MP3
+ 
+-const MP3_BITRATES_V1_L1: [u16; 15] = [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448];
+-const MP3_BITRATES_V1_L2: [u16; 15] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384];
+-const MP3_BITRATES_V1_L3: [u16; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+-const MP3_BITRATES_V2_L1: [u16; 15] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256];
++const MP3_BITRATES_V1_L1: [u16; 15] = [
++    0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
++];
++const MP3_BITRATES_V1_L2: [u16; 15] = [
++    0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
++];
++const MP3_BITRATES_V1_L3: [u16; 15] = [
++    0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
++];
++const MP3_BITRATES_V2_L1: [u16; 15] = [
++    0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
++];
+ const MP3_BITRATES_V2: [u16; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+ const MP3_RATES_V1: [u16; 3] = [44100, 48000, 32000];
+ const MP3_RATES_V2: [u16; 3] = [22050, 24000, 16000];
+@@ -797,7 +813,11 @@ fn find_first_frame(buf: &[u8], from: usize) -> Option<Mp3Frame> {
+     None
+ }
+ 
+-fn parse_mp3(head: &[u8], tail: &[u8], file_len: u64) -> (Id3Tags, f64, u32, u16, u32, &'static str) {
++fn parse_mp3(
++    head: &[u8],
++    tail: &[u8],
++    file_len: u64,
++) -> (Id3Tags, f64, u32, u16, u32, &'static str) {
+     let mut tags = Id3Tags::default();
+     let mut dur = 0f64;
+     let mut rate = 0u32;
+@@ -1161,7 +1181,10 @@ mod tests {
+         c.extend_from_slice(b"Desc");
+         c.push(0);
+         c.extend_from_slice(b"\x89PNG-data");
+-        assert_eq!(apic_image_bytes("APIC", &c).as_deref(), Some(b"\x89PNG-data".as_slice()));
++        assert_eq!(
++            apic_image_bytes("APIC", &c).as_deref(),
++            Some(b"\x89PNG-data".as_slice())
++        );
+ 
+         // UTF-16 (enc 1) with a 2-byte description terminator.
+         let mut u = vec![1u8];
+@@ -1170,11 +1193,17 @@ mod tests {
+         u.push(3);
+         u.extend_from_slice(&[68, 0, 0, 0]); // description "D\0\0\0"
+         u.extend_from_slice(b"jpegbytes");
+-        assert_eq!(apic_image_bytes("APIC", &u).as_deref(), Some(b"jpegbytes".as_slice()));
++        assert_eq!(
++            apic_image_bytes("APIC", &u).as_deref(),
++            Some(b"jpegbytes".as_slice())
++        );
+ 
+         // PIC (ID3v2.2): 3-byte image id + raw data.
+         let p = [b'J', b'P', b'G', 0xDE, 0xAD, 0xBE, 0xEF];
+-        assert_eq!(apic_image_bytes("PIC", &p).as_deref(), Some(b"\xDE\xAD\xBE\xEF".as_slice()));
++        assert_eq!(
++            apic_image_bytes("PIC", &p).as_deref(),
++            Some(b"\xDE\xAD\xBE\xEF".as_slice())
++        );
+     }
+ 
+     #[test]
+@@ -1191,7 +1220,10 @@ mod tests {
+         }
+         body.extend_from_slice(&(5u32).to_be_bytes()); // data length
+         body.extend_from_slice(b"COVER");
+-        assert_eq!(flac_picture_bytes(&body).as_deref(), Some(b"COVER".as_slice()));
++        assert_eq!(
++            flac_picture_bytes(&body).as_deref(),
++            Some(b"COVER".as_slice())
++        );
+ 
+         // Truncated block: no image, but no panic either.
+         assert_eq!(flac_picture_bytes(&[0, 0, 0]), None);
+@@ -1252,7 +1284,7 @@ mod tests {
+         head.extend_from_slice(&[0x00, 0, 0, 34]);
+         head.extend_from_slice(&si);
+         head.extend_from_slice(&[0x84]); // last block, type 4
+-        // FLAC escribe la longitud del bloque en 24 bits (3 bytes BE).
++                                         // FLAC escribe la longitud del bloque en 24 bits (3 bytes BE).
+         let vlen = (vc.len() as u32).to_be_bytes();
+         head.extend_from_slice(&vlen[1..]);
+         head.extend_from_slice(&vc);
+@@ -1389,7 +1421,7 @@ mod tests {
+         v.extend_from_slice(&176400u32.to_le_bytes()); // byte rate
+         v.extend_from_slice(&4u16.to_le_bytes()); // block align
+         v.extend_from_slice(&16u16.to_le_bytes()); // bits
+-        // LIST INFO
++                                                   // LIST INFO
+         let mut info: Vec<u8> = Vec::new();
+         info.extend_from_slice(b"INFO");
+         info.extend_from_slice(b"INAM");
+diff --git a/crates/titan_stdlib/src/lib.rs b/crates/titan_stdlib/src/lib.rs
+index 944be47..8b37e69 100644
+--- a/crates/titan_stdlib/src/lib.rs
++++ b/crates/titan_stdlib/src/lib.rs
+@@ -124,12 +124,12 @@ pub mod audio_player;
+ // + salida directa al dispositivo (cpal). `audio_decode` compila en todos
+ // los targets; `audio_engine` responde output real fuera de Android y un
+ // error honesto dentro (la salida la pone el shell de la app, Fase 42B).
++#[cfg(feature = "audio_cloud")]
++pub mod audio_cloud;
+ #[cfg(feature = "audio_engine")]
+ pub mod audio_decode;
+ #[cfg(feature = "audio_engine")]
+ pub mod audio_engine;
+-#[cfg(feature = "audio_cloud")]
+-pub mod audio_cloud;
+ 
+ // --- Phase 10: NoSQL — embedded key-value + Redis client ---------------
+ #[cfg(feature = "kv_mod")]
+diff --git a/crates/titan_stdlib/src/native.rs b/crates/titan_stdlib/src/native.rs
+index 2112440..2dd7cbc 100644
+--- a/crates/titan_stdlib/src/native.rs
++++ b/crates/titan_stdlib/src/native.rs
+@@ -999,18 +999,8 @@ pub static NATIVES: &[NativeSignature] = &[
+         Nil,
+         UserInterface
+     ),
+-    native!(
+-        "std::progress::increment",
+-        [Int, Int],
+-        Nil,
+-        UserInterface
+-    ),
+-    native!(
+-        "std::progress::finish",
+-        [Int, String],
+-        Nil,
+-        UserInterface
+-    ),
++    native!("std::progress::increment", [Int, Int], Nil, UserInterface),
++    native!("std::progress::finish", [Int, String], Nil, UserInterface),
+     native!("std::progress::abandon", [Int], Nil, UserInterface),
+     // --- Phase 7: Images (image crate) ---
+     // Load / save are gated with Filesystem so `--sandbox` blocks them.
+@@ -1076,12 +1066,7 @@ pub static NATIVES: &[NativeSignature] = &[
+         Filesystem
+     ),
+     native!("std::fswatch::open", [String, Bool], Int, Filesystem),
+-    native!(
+-        "std::fswatch::next_event",
+-        [Int, Int],
+-        String,
+-        Filesystem
+-    ),
++    native!("std::fswatch::next_event", [Int, Int], String, Filesystem),
+     native!("std::fswatch::close", [Int], Nil, Filesystem),
+     // --- Phase 8: Unix signals (signal-hook) ---
+     native!("std::signals::install", [String], Nil, Process),
+@@ -1138,19 +1123,9 @@ pub static NATIVES: &[NativeSignature] = &[
+         Filesystem
+     ),
+     native!("std::kv::open_tree", [Int, String], Int, Filesystem),
+-    native!(
+-        "std::kv::tree_insert",
+-        [Int, Bytes, Bytes],
+-        Any,
+-        Filesystem
+-    ),
++    native!("std::kv::tree_insert", [Int, Bytes, Bytes], Any, Filesystem),
+     native!("std::kv::tree_get", [Int, Bytes], Any, Filesystem),
+-    native!(
+-        "std::kv::tree_remove",
+-        [Int, Bytes],
+-        Any,
+-        Filesystem
+-    ),
++    native!("std::kv::tree_remove", [Int, Bytes], Any, Filesystem),
+     native!("std::kv::tree_len", [Int], Int, Filesystem),
+     native!("std::kv::tree_keys", [Int], Array, Filesystem),
+     // --- Phase 10: Redis client ---
+diff --git a/crates/titan_stdlib/src/pdf_mod.rs b/crates/titan_stdlib/src/pdf_mod.rs
+index e2ed389..e11e51b 100644
+--- a/crates/titan_stdlib/src/pdf_mod.rs
++++ b/crates/titan_stdlib/src/pdf_mod.rs
+@@ -281,10 +281,13 @@ fn check_runtime_growth(
+             limit: MAX_RUNTIME_LOGICAL_BYTES,
+         });
+     }
+-    let new_pages = runtime.pages.checked_add(pages).ok_or(PdfError::ResourceLimit {
+-        resource: "PDF runtime pages",
+-        limit: MAX_PAGES_PER_RUNTIME,
+-    })?;
++    let new_pages = runtime
++        .pages
++        .checked_add(pages)
++        .ok_or(PdfError::ResourceLimit {
++            resource: "PDF runtime pages",
++            limit: MAX_PAGES_PER_RUNTIME,
++        })?;
+     if new_pages > MAX_PAGES_PER_RUNTIME {
+         return Err(PdfError::ResourceLimit {
+             resource: "PDF runtime pages",
+@@ -410,11 +413,7 @@ fn ensure_open(state: &DocState, handle: i64) -> Result<(), PdfError> {
+     }
+ }
+ 
+-fn validate_size(
+-    value: &str,
+-    resource: &'static str,
+-    limit: usize,
+-) -> Result<(), PdfError> {
++fn validate_size(value: &str, resource: &'static str, limit: usize) -> Result<(), PdfError> {
+     if value.len() > limit {
+         return Err(PdfError::ResourceLimit { resource, limit });
+     }
+@@ -493,9 +492,7 @@ fn validate_font_size(value: f64) -> Result<f32, PdfError> {
+ }
+ 
+ fn validate_thickness(value: f64) -> Result<f32, PdfError> {
+-    if !value.is_finite()
+-        || !(MIN_LINE_THICKNESS_PT..=MAX_LINE_THICKNESS_PT).contains(&value)
+-    {
++    if !value.is_finite() || !(MIN_LINE_THICKNESS_PT..=MAX_LINE_THICKNESS_PT).contains(&value) {
+         return Err(PdfError::InvalidArgument(
+             "line thickness must be finite and between 0.01 and 1000 pt",
+         ));
+@@ -558,25 +555,28 @@ fn reserve_growth(
+             limit: MAX_DOCUMENT_LOGICAL_BYTES,
+         });
+     }
+-    let document_pages = state.pages.len().checked_add(pages).ok_or(
+-        PdfError::ResourceLimit {
++    let document_pages = state
++        .pages
++        .len()
++        .checked_add(pages)
++        .ok_or(PdfError::ResourceLimit {
+             resource: "PDF document pages",
+             limit: MAX_PAGES_PER_DOCUMENT,
+-        },
+-    )?;
++        })?;
+     if document_pages > MAX_PAGES_PER_DOCUMENT {
+         return Err(PdfError::ResourceLimit {
+             resource: "PDF document pages",
+             limit: MAX_PAGES_PER_DOCUMENT,
+         });
+     }
+-    let document_commands = state
+-        .command_count
+-        .checked_add(commands)
+-        .ok_or(PdfError::ResourceLimit {
+-            resource: "PDF document drawing commands",
+-            limit: MAX_COMMANDS_PER_DOCUMENT,
+-        })?;
++    let document_commands =
++        state
++            .command_count
++            .checked_add(commands)
++            .ok_or(PdfError::ResourceLimit {
++                resource: "PDF document drawing commands",
++                limit: MAX_COMMANDS_PER_DOCUMENT,
++            })?;
+     if document_commands > MAX_COMMANDS_PER_DOCUMENT {
+         return Err(PdfError::ResourceLimit {
+             resource: "PDF document drawing commands",
+@@ -660,11 +660,7 @@ pub fn add_page(
+     layer_name: &str,
+ ) -> Result<usize, PdfError> {
+     let _permit = reserve_operation()?;
+-    validate_text(
+-        layer_name,
+-        "PDF layer name bytes",
+-        MAX_LAYER_NAME_BYTES,
+-    )?;
++    validate_text(layer_name, "PDF layer name bytes", MAX_LAYER_NAME_BYTES)?;
+     let width_mm = validate_page_size(width_mm)?;
+     let height_mm = validate_page_size(height_mm)?;
+     let bytes = PAGE_OVERHEAD
+@@ -809,13 +805,7 @@ fn render_snapshot(snapshot: DocState) -> Result<Vec<u8>, PdfError> {
+                     font_size_pt,
+                     x_mm,
+                     y_mm,
+-                } => layer.use_text(
+-                    text,
+-                    *font_size_pt,
+-                    Mm(*x_mm),
+-                    Mm(*y_mm),
+-                    &font,
+-                ),
++                } => layer.use_text(text, *font_size_pt, Mm(*x_mm), Mm(*y_mm), &font),
+                 DrawCommand::Color { red, green, blue } => {
+                     let color = Color::Rgb(Rgb::new(*red, *green, *blue, None));
+                     layer.set_fill_color(color.clone());
+@@ -888,7 +878,9 @@ fn create_temp_output(target: &Path) -> Result<(File, TempOutput), PdfError> {
+     let parent = target.parent().unwrap_or_else(|| Path::new("."));
+     let file_name = target
+         .file_name()
+-        .ok_or(PdfError::InvalidArgument("PDF output path has no file name"))?
++        .ok_or(PdfError::InvalidArgument(
++            "PDF output path has no file name",
++        ))?
+         .to_string_lossy();
+     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+     for _ in 0..TEMP_FILE_ATTEMPTS {
+@@ -983,9 +975,7 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
+             .filter(|((owner, _), _)| *owner == runtime_id)
+             .map(|(_, state)| Arc::clone(state))
+             .collect::<Vec<_>>();
+-        registry
+-            .docs
+-            .retain(|(owner, _), _| *owner != runtime_id);
++        registry.docs.retain(|(owner, _), _| *owner != runtime_id);
+         registry.reserved.remove(&runtime_id);
+         states
+     };
+@@ -1023,16 +1013,7 @@ mod tests {
+             let path = temp_path("round-trip", runtime_id);
+             let path_string = path.to_string_lossy().into_owned();
+             let document = new("Titan test", 210.0, 297.0).unwrap();
+-            add_text(
+-                document,
+-                0,
+-                0,
+-                "Hola desde TITAN",
+-                18.0,
+-                20.0,
+-                270.0,
+-            )
+-            .unwrap();
++            add_text(document, 0, 0, "Hola desde TITAN", 18.0, 20.0, 270.0).unwrap();
+             add_line(document, 0, 0, 20.0, 260.0, 190.0, 260.0, 0.5).unwrap();
+             set_color(document, 0, 0, 0.2, 0.6, 0.8).unwrap();
+             add_rect(document, 0, 0, 20.0, 200.0, 50.0, 30.0).unwrap();
+@@ -1138,10 +1119,7 @@ mod tests {
+             let replacement = new("replacement", 100.0, 100.0).unwrap();
+ 
+             for index in 1..MAX_PAGES_PER_DOCUMENT {
+-                assert_eq!(
+-                    add_page(replacement, 100.0, 100.0, "Layer").unwrap(),
+-                    index
+-                );
++                assert_eq!(add_page(replacement, 100.0, 100.0, "Layer").unwrap(), index);
+             }
+             assert!(matches!(
+                 add_page(replacement, 100.0, 100.0, "Layer"),
+@@ -1226,10 +1204,9 @@ mod tests {
+             let chunk = "x".repeat(MAX_TEXT_BYTES);
+             let first = new("bytes one", 100.0, 100.0).unwrap();
+             let per_command = COMMAND_OVERHEAD + chunk.len();
+-            let initial_bytes = crate::native::lock_recover(&get_document(first).unwrap())
+-                .logical_bytes;
+-            let chunks_per_document =
+-                (MAX_DOCUMENT_LOGICAL_BYTES - initial_bytes) / per_command;
++            let initial_bytes =
++                crate::native::lock_recover(&get_document(first).unwrap()).logical_bytes;
++            let chunks_per_document = (MAX_DOCUMENT_LOGICAL_BYTES - initial_bytes) / per_command;
+             for _ in 0..chunks_per_document {
+                 add_text(first, 0, 0, &chunk, 10.0, 0.0, 0.0).unwrap();
+             }
+@@ -1316,7 +1293,10 @@ mod tests {
+             std::fs::create_dir_all(&directory).unwrap();
+             let directory_string = directory.to_string_lossy().into_owned();
+             assert!(save(document, &directory_string).is_err());
+-            let prefix = format!(".{}.titan-pdf-", directory.file_name().unwrap().to_string_lossy());
++            let prefix = format!(
++                ".{}.titan-pdf-",
++                directory.file_name().unwrap().to_string_lossy()
++            );
+             assert!(!directory
+                 .parent()
+                 .unwrap()
+diff --git a/crates/titan_stdlib/src/process_mod.rs b/crates/titan_stdlib/src/process_mod.rs
+index 5c652e5..e48fa03 100644
+--- a/crates/titan_stdlib/src/process_mod.rs
++++ b/crates/titan_stdlib/src/process_mod.rs
+@@ -557,9 +557,7 @@ pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
+ pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
+     let entry = background_entry(handle)?;
+     let mut entry = crate::native::lock_recover(&entry);
+-    let background = entry
+-        .as_mut()
+-        .ok_or(ProcessError::UnknownHandle(handle))?;
++    let background = entry.as_mut().ok_or(ProcessError::UnknownHandle(handle))?;
+     match background
+         .child
+         .try_wait()
+@@ -574,9 +572,7 @@ pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
+ pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
+     let entry = background_entry(handle)?;
+     let mut entry = crate::native::lock_recover(&entry);
+-    let background = entry
+-        .as_mut()
+-        .ok_or(ProcessError::UnknownHandle(handle))?;
++    let background = entry.as_mut().ok_or(ProcessError::UnknownHandle(handle))?;
+     background
+         .child
+         .kill()
+@@ -587,9 +583,7 @@ pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
+ pub fn spawn_pid(handle: u64) -> Result<u32, ProcessError> {
+     let entry = background_entry(handle)?;
+     let entry = crate::native::lock_recover(&entry);
+-    let background = entry
+-        .as_ref()
+-        .ok_or(ProcessError::UnknownHandle(handle))?;
++    let background = entry.as_ref().ok_or(ProcessError::UnknownHandle(handle))?;
+     Ok(background.child.id())
+ }
+ 
+diff --git a/crates/titan_stdlib/src/server_mod.rs b/crates/titan_stdlib/src/server_mod.rs
+index ead816b..2a04924 100644
+--- a/crates/titan_stdlib/src/server_mod.rs
++++ b/crates/titan_stdlib/src/server_mod.rs
+@@ -394,9 +394,7 @@ impl HandleReservation {
+         }
+ 
+         let id = registry.next_id;
+-        registry.next_id = id
+-            .checked_add(1)
+-            .ok_or(ServerError::HandleSpaceExhausted)?;
++        registry.next_id = id.checked_add(1).ok_or(ServerError::HandleSpaceExhausted)?;
+         release_reservation(&mut registry, self.runtime_id, self.kind);
+         let key = (self.runtime_id, id);
+         match resource {
+@@ -461,11 +459,7 @@ fn take_websocket(handle: i64) -> Option<Arc<WsEntry>> {
+         .remove(&handle_key(handle))
+ }
+ 
+-fn validate_size(
+-    value: &str,
+-    resource: &'static str,
+-    limit: usize,
+-) -> Result<(), ServerError> {
++fn validate_size(value: &str, resource: &'static str, limit: usize) -> Result<(), ServerError> {
+     if value.len() > limit {
+         return Err(ServerError::ResourceLimit { resource, limit });
+     }
+@@ -523,9 +517,9 @@ fn find_header_end(bytes: &[u8]) -> Option<usize> {
+ 
+ fn is_header_name(name: &str) -> bool {
+     !name.is_empty()
+-        && name.bytes().all(|byte| {
+-            byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+-        })
++        && name
++            .bytes()
++            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+ }
+ 
+ fn is_header_value(value: &str) -> bool {
+@@ -677,7 +671,8 @@ fn parse_request(mut stream: TcpStream, remote_addr: String) -> Result<RequestEn
+             "multiple Content-Length headers are not accepted",
+         ));
+     }
+-    if transfer_encodings.len() > 1 || (!content_lengths.is_empty() && !transfer_encodings.is_empty())
++    if transfer_encodings.len() > 1
++        || (!content_lengths.is_empty() && !transfer_encodings.is_empty())
+     {
+         return Err(ServerError::InvalidRequest(
+             "ambiguous request body framing",
+@@ -744,11 +739,7 @@ fn parse_request(mut stream: TcpStream, remote_addr: String) -> Result<RequestEn
+ /// Start an HTTP/1.1 server on a numeric IP address and port.
+ pub fn start(addr: &str) -> Result<i64, ServerError> {
+     let _operation = reserve_operation()?;
+-    validate_size(
+-        addr,
+-        "HTTP bind address bytes",
+-        MAX_BIND_ADDRESS_BYTES,
+-    )?;
++    validate_size(addr, "HTTP bind address bytes", MAX_BIND_ADDRESS_BYTES)?;
+     let address = addr.parse::<SocketAddr>().map_err(|_| {
+         ServerError::InvalidArgument(
+             "bind address must be a numeric IP and port, such as 127.0.0.1:8080 or [::1]:8080",
+@@ -847,12 +838,7 @@ pub fn path(handle: i64) -> Result<String, ServerError> {
+     let _operation = reserve_operation()?;
+     let request = get_request(handle)?;
+     ensure_request_open(&request, handle)?;
+-    Ok(request
+-        .target
+-        .split('?')
+-        .next()
+-        .unwrap_or("/")
+-        .to_string())
++    Ok(request.target.split('?').next().unwrap_or("/").to_string())
+ }
+ 
+ pub fn query(handle: i64) -> Result<String, ServerError> {
+@@ -961,11 +947,7 @@ impl BodyReader<'_> {
+         Ok(())
+     }
+ 
+-    fn read_line(
+-        &mut self,
+-        limit: usize,
+-        operation: &'static str,
+-    ) -> Result<Vec<u8>, ServerError> {
++    fn read_line(&mut self, limit: usize, operation: &'static str) -> Result<Vec<u8>, ServerError> {
+         let mut line = Vec::new();
+         loop {
+             if line.len() >= limit {
+@@ -1033,12 +1015,13 @@ fn read_chunked_body(reader: &mut BodyReader<'_>) -> Result<Vec<u8>, ServerError
+                 if trailer.is_empty() {
+                     return Ok(output);
+                 }
+-                trailer_bytes = trailer_bytes.checked_add(trailer.len()).ok_or(
+-                    ServerError::ResourceLimit {
+-                        resource: "HTTP trailer bytes",
+-                        limit: MAX_TRAILER_BYTES,
+-                    },
+-                )?;
++                trailer_bytes =
++                    trailer_bytes
++                        .checked_add(trailer.len())
++                        .ok_or(ServerError::ResourceLimit {
++                            resource: "HTTP trailer bytes",
++                            limit: MAX_TRAILER_BYTES,
++                        })?;
+                 if trailer_bytes > MAX_TRAILER_BYTES {
+                     return Err(ServerError::ResourceLimit {
+                         resource: "HTTP trailer bytes",
+@@ -1087,10 +1070,7 @@ pub fn body(handle: i64) -> Result<Vec<u8>, ServerError> {
+         return Err(ServerError::BodyConsumed);
+     }
+     io.body_consumed = true;
+-    let mut stream = io
+-        .stream
+-        .take()
+-        .ok_or(ServerError::ClosedRequest(handle))?;
++    let mut stream = io.stream.take().ok_or(ServerError::ClosedRequest(handle))?;
+     if request.expect_continue {
+         if let Err(error) = write_all_deadline(
+             &mut stream,
+@@ -1201,7 +1181,11 @@ fn validate_response_parts(
+     }
+     let mut total = content_type.len();
+     for (name, value) in extra_headers {
+-        validate_size(name, "HTTP response header name bytes", MAX_HEADER_NAME_BYTES)?;
++        validate_size(
++            name,
++            "HTTP response header name bytes",
++            MAX_HEADER_NAME_BYTES,
++        )?;
+         validate_size(
+             value,
+             "HTTP response header value bytes",
+@@ -1247,10 +1231,7 @@ fn send_response(
+     let request = take_request(handle)?;
+     ensure_request_open(&request, handle)?;
+     let mut io = crate::native::lock_recover(&request.io);
+-    let mut stream = io
+-        .stream
+-        .take()
+-        .ok_or(ServerError::ClosedRequest(handle))?;
++    let mut stream = io.stream.take().ok_or(ServerError::ClosedRequest(handle))?;
+     let payload_length = if matches!(status, 100..=199 | 204 | 304) {
+         0
+     } else {
+@@ -1390,15 +1371,12 @@ pub fn upgrade_websocket(handle: i64, max_message: usize) -> Result<i64, ServerE
+     }
+     let key = one_header(&request, "Sec-WebSocket-Key")?;
+     validate_size(key, "Sec-WebSocket-Key bytes", 128)?;
+-    let accept = ws_codec::accept_key(key)
+-        .map_err(|_| ServerError::Upgrade("invalid Sec-WebSocket-Key"))?;
++    let accept =
++        ws_codec::accept_key(key).map_err(|_| ServerError::Upgrade("invalid Sec-WebSocket-Key"))?;
+     let reservation = reserve_handle(HandleKind::WebSocket)?;
+     let request = take_request(handle)?;
+     let mut io = crate::native::lock_recover(&request.io);
+-    let mut stream = io
+-        .stream
+-        .take()
+-        .ok_or(ServerError::ClosedRequest(handle))?;
++    let mut stream = io.stream.take().ok_or(ServerError::ClosedRequest(handle))?;
+     let response = format!(
+         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+     );
+@@ -1459,12 +1437,8 @@ fn receive_websocket(
+                 // lectura ya lo tiene este hilo, y así no se cruza con un
+                 // evento en vivo que salga en el mismo instante).
+                 let mut writer = crate::native::lock_recover(&websocket.writer);
+-                let pong_result = write_all_deadline(
+-                    &mut writer,
+-                    &pong,
+-                    deadline,
+-                    "write WebSocket pong",
+-                );
++                let pong_result =
++                    write_all_deadline(&mut writer, &pong, deadline, "write WebSocket pong");
+                 drop(writer);
+                 pong_result?;
+                 return Ok(("ping".into(), String::new(), payload));
+@@ -1480,12 +1454,7 @@ fn receive_websocket(
+                 payload.extend_from_slice(reason.as_bytes());
+                 let close = ws_codec::encode_frame(true, WS_OP_CLOSE, &payload, None)?;
+                 let mut writer = crate::native::lock_recover(&websocket.writer);
+-                let _ = write_all_deadline(
+-                    &mut writer,
+-                    &close,
+-                    deadline,
+-                    "echo WebSocket close",
+-                );
++                let _ = write_all_deadline(&mut writer, &close, deadline, "echo WebSocket close");
+                 drop(writer);
+                 return Ok(("close".into(), reason, payload));
+             }
+@@ -1814,9 +1783,7 @@ mod tests {
+                 move || {
+                     let mut stream = TcpStream::connect(addr).unwrap();
+                     stream
+-                        .write_all(
+-                            b"POST /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nx",
+-                        )
++                        .write_all(b"POST /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nx")
+                         .unwrap();
+                     // Outlive the server deadline so the read fails as a
+                     // timeout rather than as an early end of stream.
+@@ -1875,8 +1842,8 @@ mod tests {
+                 assert!(String::from_utf8(handshake)
+                     .unwrap()
+                     .starts_with("HTTP/1.1 101 Switching Protocols"));
+-                let frame = ws_codec::encode_frame(true, WS_OP_TEXT, b"hello", Some([1, 2, 3, 4]))
+-                    .unwrap();
++                let frame =
++                    ws_codec::encode_frame(true, WS_OP_TEXT, b"hello", Some([1, 2, 3, 4])).unwrap();
+                 stream.write_all(&frame).unwrap();
+                 let mut response = [0u8; 7];
+                 stream.read_exact(&mut response).unwrap();
+diff --git a/crates/titan_typechecker/src/lib.rs b/crates/titan_typechecker/src/lib.rs
+index 2180b87..f3fad66 100644
+--- a/crates/titan_typechecker/src/lib.rs
++++ b/crates/titan_typechecker/src/lib.rs
+@@ -235,7 +235,9 @@ impl std::fmt::Display for TypeDiagnostic {
+                 "{}:{}:{}: {}",
+                 file, span.line, span.column, self.error
+             ),
+-            (None, Some(span)) => write!(formatter, "{}:{}: {}", span.line, span.column, self.error),
++            (None, Some(span)) => {
++                write!(formatter, "{}:{}: {}", span.line, span.column, self.error)
++            }
+             _ => std::fmt::Display::fmt(&self.error, formatter),
+         }
+     }
+@@ -1989,8 +1991,7 @@ impl TypeEnv {
+ 
+     fn check_function(&mut self, function: &FunctionDecl) {
+         let error_start = self.errors.len();
+-        let previous_file =
+-            std::mem::replace(&mut self.current_file, function.source_file.clone());
++        let previous_file = std::mem::replace(&mut self.current_file, function.source_file.clone());
+         self.check_function_inner(function);
+         // La ubicacion se asigna con el archivo de ESTA funcion todavia en
+         // curso: si se restaurase antes, los errores que solo reciben su
+@@ -2185,11 +2186,7 @@ impl TypeEnv {
+         }
+     }
+ 
+-    fn restore_control_flow(
+-        &mut self,
+-        candidate_count: Option<usize>,
+-        loop_broke: Option<bool>,
+-    ) {
++    fn restore_control_flow(&mut self, candidate_count: Option<usize>, loop_broke: Option<bool>) {
+         if let (Some(candidates), Some(count)) =
+             (self.return_candidates.last_mut(), candidate_count)
+         {
+@@ -3160,8 +3157,7 @@ impl TypeEnv {
+                 // and declared constants. Constants are expression aliases in
+                 // codegen, so accepting them here keeps the documented
+                 // `"limit={LIMIT}"` form executable rather than checker-only.
+-                if self.is_local_binding(source)
+-                    || self.constant_declarations.contains_key(source)
++                if self.is_local_binding(source) || self.constant_declarations.contains_key(source)
+                 {
+                     let result = self.check_expr(&Expr::Ident {
+                         name: source.into(),
+@@ -3865,11 +3861,8 @@ impl TypeEnv {
+         expected: &Type,
+         reachable: &mut bool,
+     ) -> bool {
+-        let accepts_utf8 = index == 1
+-            && matches!(
+-                function,
+-                "std::net::tcp_write" | "std::tls::write"
+-            );
++        let accepts_utf8 =
++            index == 1 && matches!(function, "std::net::tcp_write" | "std::tls::write");
+         let sequence_item = match (function, index) {
+             ("select", 0) => Some(Type::Named("Receiver".into())),
+             (
+@@ -4153,9 +4146,7 @@ impl TypeEnv {
+             Add if right == Type::String => Type::String,
+             Add | Sub | Mul | Div if is_numeric(&left) && compatible(&left, &right) => left,
+             Mod if compatible(&Type::Int, &left) && compatible(&Type::Int, &right) => Type::Int,
+-            And | Or | Xor
+-                if compatible(&Type::Int, &left) && compatible(&Type::Int, &right) =>
+-            {
++            And | Or | Xor if compatible(&Type::Int, &left) && compatible(&Type::Int, &right) => {
+                 Type::Int
+             }
+             _ => {
+@@ -4682,13 +4673,7 @@ fn declaration_errors(
+         errors: Vec<(TypeError, Span)>,
+     }
+ 
+-    fn insert(
+-        state: &mut State,
+-        namespace: &str,
+-        kind: &str,
+-        name: &str,
+-        span: Span,
+-    ) {
++    fn insert(state: &mut State, namespace: &str, kind: &str, name: &str, span: Span) {
+         let names = if namespace == "value" {
+             &mut state.values
+         } else {
+@@ -4832,9 +4817,7 @@ fn declaration_errors(
+                         }
+                     }
+                 }
+-                Item::TypeAlias(alias) => {
+-                    insert(state, "type", "type", &alias.name, alias.span)
+-                }
++                Item::TypeAlias(alias) => insert(state, "type", "type", &alias.name, alias.span),
+                 Item::Impl(block) => {
+                     let target = direct_named_type(&block.target_type).unwrap_or("<invalid>");
+                     if let Some(trait_name) = &block.trait_name {
+@@ -5302,18 +5285,20 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<(TypeErr
+     unknown
+         .into_iter()
+         .map(|(name, span)| (TypeError::UnknownType { name }, span))
+-        .chain(invalid_arguments.into_iter().map(
+-            |((name, expected, found), span)| {
+-                (
+-                    TypeError::InvalidTypeArguments {
+-                        name,
+-                        expected,
+-                        found,
+-                    },
+-                    span,
+-                )
+-            },
+-        ))
++        .chain(
++            invalid_arguments
++                .into_iter()
++                .map(|((name, expected, found), span)| {
++                    (
++                        TypeError::InvalidTypeArguments {
++                            name,
++                            expected,
++                            found,
++                        },
++                        span,
++                    )
++                }),
++        )
+         .chain(
+             unsupported
+                 .into_iter()
+@@ -5490,9 +5475,7 @@ fn sequence_item_type(ty: &Type) -> Option<Type> {
+ fn sequence_matches(expected_item: &Type, found: &Type) -> bool {
+     match found {
+         Type::Array(item) => compatible(expected_item, item),
+-        Type::Tuple(items) => items
+-            .iter()
+-            .all(|item| compatible(expected_item, item)),
++        Type::Tuple(items) => items.iter().all(|item| compatible(expected_item, item)),
+         Type::Unknown | Type::Never => true,
+         _ => false,
+     }
+@@ -5986,7 +5969,10 @@ mod tests {
+         let source = "fn main() { let mut n = 0 let mut s = \"\" let c = 2 if c == 1 { n = 1 } else if c == 2 { s = \"dos\" } else { n = 3 } print(n) print(s) }";
+         assert!(check(source).is_ok(), "{:?}", check(source));
+         // Como valor, las ramas siguen teniendo que coincidir.
+-        assert!(check("fn main() { let c = 1 let x: int = if c == 1 { 1 } else { \"no\" } print(x) }").is_err());
++        assert!(check(
++            "fn main() { let c = 1 let x: int = if c == 1 { 1 } else { \"no\" } print(x) }"
++        )
++        .is_err());
+     }
+ 
+     #[test]
+@@ -6074,9 +6060,7 @@ mod tests {
+             .to_string()
+             .starts_with(&format!("{}:{}: ", span.line, span.column)));
+ 
+-        let declarations = parse(
+-            "fn main() {}\nfn duplicate() {}\nfn duplicate() {}",
+-        );
++        let declarations = parse("fn main() {}\nfn duplicate() {}\nfn duplicate() {}");
+         let diagnostics = TypeEnv::new()
+             .check_program_diagnostics(&declarations)
+             .unwrap_err();
+@@ -6146,8 +6130,7 @@ mod tests {
+         assert!(check("fn main() { spawn 42 }").is_err());
+         assert!(check("fn main() { select(42, 10) }").is_err());
+         assert!(
+-            check("fn main() { let endpoints = channel(1) select([endpoints[0]], 10) }")
+-                .is_err()
++            check("fn main() { let endpoints = channel(1) select([endpoints[0]], 10) }").is_err()
+         );
+         assert!(check("fn main() { select([\"not a receiver\"], 10) }").is_err());
+         assert!(check(
+@@ -6296,8 +6279,9 @@ mod tests {
+         assert!(check("fn main() { let a = -1.5 let b = ~7 }").is_ok());
+         assert!(check("fn main() { 5.0 % 2.0 }").is_err());
+         assert!(check("fn main() { [1, 2].filter(|value| value % 2 == 0) }").is_ok());
+-        assert!(check("fn bits(left: any, right: any) -> int { left & right } fn main() {}")
+-            .is_ok());
++        assert!(
++            check("fn bits(left: any, right: any) -> int { left & right } fn main() {}").is_ok()
++        );
+         assert!(check("fn main() { true | 1 }").is_err());
+         assert!(check("fn unit() {} fn main() { nil == unit() unit() == nil }").is_ok());
+     }
+@@ -6513,9 +6497,7 @@ mod tests {
+     #[test]
+     fn validates_string_template_references_and_calls() {
+         assert!(check("fn main() { print(\"value={missing}\") }").is_err());
+-        assert!(
+-            check("const LIMIT: int = 20 fn main() { print(\"limit={LIMIT}\") }").is_ok()
+-        );
++        assert!(check("const LIMIT: int = 20 fn main() { print(\"limit={LIMIT}\") }").is_ok());
+         assert!(check("fn id(value: int) -> int { value } fn main() { let value = 1 print(\"value={id(value)}\") }").is_ok());
+         assert!(check("fn id(value: int) -> int { value } fn main() { let bad = \"x\" print(\"value={id(bad)}\") }").is_err());
+         assert!(
+@@ -6540,10 +6522,7 @@ mod tests {
+             "const RENDER: fn(int) -> int = |value| value + 1 fn main() { print(\"value={RENDER(41)}\") }"
+         )
+         .is_ok());
+-        assert!(check(
+-            "fn main() { let render = 1 print(\"value={render(41)}\") }"
+-        )
+-        .is_err());
++        assert!(check("fn main() { let render = 1 print(\"value={render(41)}\") }").is_err());
+         assert!(check(
+             "fn halt() -> ! { loop {} } fn render() -> ! { \"value={halt()}\" } fn main() {}"
+         )
+@@ -6721,14 +6700,8 @@ mod tests {
+             "fn inferred() { while false { return \"unreachable\" } 1 } fn main() { let result: int = inferred() }"
+         )
+         .is_ok());
+-        assert!(check(
+-            "fn halt() -> ! { if true { loop {} } else { 1 } } fn main() {}"
+-        )
+-        .is_ok());
+-        assert!(check(
+-            "fn halt() -> ! { if false { 1 } else { loop {} } } fn main() {}"
+-        )
+-        .is_ok());
++        assert!(check("fn halt() -> ! { if true { loop {} } else { 1 } } fn main() {}").is_ok());
++        assert!(check("fn halt() -> ! { if false { 1 } else { loop {} } } fn main() {}").is_ok());
+     }
+ 
+     #[test]
+@@ -6747,10 +6720,7 @@ mod tests {
+             "fn halt_and() -> ! { loop { false && { break } } } fn halt_or() -> ! { loop { true || { break } } } fn main() {}"
+         )
+         .is_ok());
+-        assert!(check(
+-            "fn halt() -> ! { loop { if false { break } } } fn main() {}"
+-        )
+-        .is_ok());
++        assert!(check("fn halt() -> ! { loop { if false { break } } } fn main() {}").is_ok());
+         assert!(check(
+             "fn halt() -> ! { loop { if true { loop {} } else { break } } } fn main() {}"
+         )
+@@ -6849,9 +6819,10 @@ mod tests {
+             Type::Named("Result".into())
+         );
+         assert_eq!(environment.lookup("later"), Some(Type::Int));
+-        assert!(environment.errors.iter().any(
+-            |error| matches!(error, TypeError::UnknownVariable { name } if name == "later")
+-        ));
++        assert!(environment
++            .errors
++            .iter()
++            .any(|error| matches!(error, TypeError::UnknownVariable { name } if name == "later")));
+     }
+ 
+     #[test]
+@@ -7129,10 +7100,9 @@ mod tests {
+             "enum Choice { First, Second } fn read() -> int { match (Choice::First) { Choice::First if false => \"unreachable\", Choice::First => 1, Choice::Second => 0 } } fn main() {}"
+         )
+         .is_ok());
+-        assert!(check(
+-            "fn read() -> int { match 1 { 1 => 42, _ => true + 1 } } fn main() {}"
+-        )
+-        .is_err());
++        assert!(
++            check("fn read() -> int { match 1 { 1 => 42, _ => true + 1 } } fn main() {}").is_err()
++        );
+     }
+ 
+     #[test]
+@@ -7229,9 +7199,7 @@ mod tests {
+             .unwrap_err();
+         let diagnostic = diagnostics
+             .iter()
+-            .find(|diagnostic| {
+-                matches!(&diagnostic.error, TypeError::EntryPointParameters { .. })
+-            })
++            .find(|diagnostic| matches!(&diagnostic.error, TypeError::EntryPointParameters { .. }))
+             .expect("expected entry point diagnostic");
+         let span = diagnostic
+             .span
+@@ -7247,7 +7215,8 @@ mod tests {
+     fn statement_position_branches_need_no_common_type() {
+         // One branch acts, the other produces a value: nothing consumes the
+         // value of the `if`, so the two branches may differ.
+-        let source = "fn act() {} fn run(flag: bool) { let mut n = 0 if flag { act() } else { n = 1 } }";
++        let source =
++            "fn act() {} fn run(flag: bool) { let mut n = 0 if flag { act() } else { n = 1 } }";
+         assert!(check(source).is_ok());
+         // The same rule applies to the arms of a `match` used as a statement.
+         let source = "fn read(flag: bool) { let value = match flag { true => { } false => 1 } }";
+@@ -7286,7 +7255,8 @@ mod tests {
+     fn every_value_can_be_compared_against_nil() {
+         let source = "fn main() { let mut rows: array = [] if rows == nil { rows = [] } }";
+         assert!(check(source).is_ok());
+-        let source = "fn main() { let mut m = std::map::new() if m != nil { m = std::map::new() } }";
++        let source =
++            "fn main() { let mut m = std::map::new() if m != nil { m = std::map::new() } }";
+         assert!(check(source).is_ok());
+     }
+ 
+diff --git a/crates/titan_vm/src/lib.rs b/crates/titan_vm/src/lib.rs
+index 575779b..1d508fd 100644
+--- a/crates/titan_vm/src/lib.rs
++++ b/crates/titan_vm/src/lib.rs
+@@ -3,11 +3,11 @@
+ mod debug;
+ mod native;
+ pub mod shared;
+-pub use shared::Shared;
+ pub use debug::{
+     Breakpoint, DebugCommand, DebugController, DebugEvent, DebugFrame, DebugHook, DebugMode,
+     Debugger,
+ };
++pub use shared::Shared;
+ 
+ use std::collections::{BTreeMap, HashMap};
+ use std::io::{Read, Write};
+@@ -759,9 +759,7 @@ impl Vm {
+                         debugger,
+                     )?);
+                 }
+-                self.track_allocation(
+-                    output.len().saturating_mul(32).saturating_add(64),
+-                )?;
++                self.track_allocation(output.len().saturating_mul(32).saturating_add(64))?;
+                 Ok(Value::array(output))
+             }
+             ("filter", 1) => {
+@@ -793,9 +791,7 @@ impl Vm {
+                         return Err(VmError::Type("filter predicate must return bool".into()));
+                     }
+                 }
+-                self.track_allocation(
+-                    output.len().saturating_mul(32).saturating_add(64),
+-                )?;
++                self.track_allocation(output.len().saturating_mul(32).saturating_add(64))?;
+                 Ok(Value::array(output))
+             }
+             ("fold", 2) => {
+@@ -882,9 +878,7 @@ impl Vm {
+                 if let Some(error) = order_err {
+                     return Err(error);
+                 }
+-                self.track_allocation(
+-                    output.len().saturating_mul(32).saturating_add(64),
+-                )?;
++                self.track_allocation(output.len().saturating_mul(32).saturating_add(64))?;
+                 Ok(Value::array(output))
+             }
+             ("find", 1) => {
+@@ -1348,9 +1342,10 @@ impl Vm {
+                     let receiver = pop(&mut stack, &function.name)?;
+                     if let Value::Struct { name, .. } = &receiver {
+                         let qualified = format!("{}::{}", name, method);
+-                        let callee = *self.module.method_table.get(&qualified).ok_or_else(|| {
+-                            VmError::Type(format!("undefined method '{}'", qualified))
+-                        })?;
++                        let callee =
++                            *self.module.method_table.get(&qualified).ok_or_else(|| {
++                                VmError::Type(format!("undefined method '{}'", qualified))
++                            })?;
+                         let mut full_args = Vec::with_capacity(args.len() + 1);
+                         full_args.push(receiver);
+                         full_args.extend(args);
+@@ -4867,7 +4862,8 @@ mod tests {
+             Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Bool(true)])
+         );
+         assert_eq!(
+-            run("fn main() { ['a' < 'b', 'z' >= 'a', \"abc\" < \"abd\", \"b\" <= \"a\"] }").unwrap(),
++            run("fn main() { ['a' < 'b', 'z' >= 'a', \"abc\" < \"abd\", \"b\" <= \"a\"] }")
++                .unwrap(),
+             Value::array(vec![
+                 Value::Bool(true),
+                 Value::Bool(true),
+@@ -4972,7 +4968,10 @@ mod tests {
+             next_runtime_resource_id(&identifiers).unwrap(),
+             u64::MAX - 1
+         );
+-        assert_eq!(next_runtime_resource_id(&identifiers), Err(VmError::Overflow));
++        assert_eq!(
++            next_runtime_resource_id(&identifiers),
++            Err(VmError::Overflow)
++        );
+         assert_eq!(identifiers.load(Ordering::Acquire), u64::MAX);
+ 
+         let stats = AtomicU64::new(u64::MAX);
+@@ -5301,17 +5300,22 @@ mod tests {
+     fn try_operator_unwraps_and_returns_the_wrapper_early() {
+         // `?` unwraps Ok/Some to their payload.
+         assert_eq!(
+-            run("fn main() { ok() } fn ok() -> int { let value = Result::Ok(41)? value + 1 }").unwrap(),
++            run("fn main() { ok() } fn ok() -> int { let value = Result::Ok(41)? value + 1 }")
++                .unwrap(),
+             Value::Int(42)
+         );
+         assert_eq!(
+-            run("fn main() { some() } fn some() -> int { let value = Option::Some(41)? value + 1 }").unwrap(),
++            run(
++                "fn main() { some() } fn some() -> int { let value = Option::Some(41)? value + 1 }"
++            )
++            .unwrap(),
+             Value::Int(42)
+         );
+         // `?` on Err/None returns the wrapper from the function immediately,
+         // skipping the rest of the body.
+         assert_eq!(
+-            run("fn main() { err() } fn err() -> Result { Result::Err(\"boom\")? Result::Ok(99) }").unwrap(),
++            run("fn main() { err() } fn err() -> Result { Result::Err(\"boom\")? Result::Ok(99) }")
++                .unwrap(),
+             Value::Enum {
+                 name: "Result".into(),
+                 variant: "Err".into(),
+@@ -5319,7 +5323,8 @@ mod tests {
+             }
+         );
+         assert_eq!(
+-            run("fn main() { none() } fn none() -> Option { Option::None? Option::Some(99) }").unwrap(),
++            run("fn main() { none() } fn none() -> Option { Option::None? Option::Some(99) }")
++                .unwrap(),
+             Value::Enum {
+                 name: "Option".into(),
+                 variant: "None".into(),
+@@ -5380,7 +5385,8 @@ mod tests {
+             Value::Str("42".into())
+         );
+         assert_eq!(
+-            run("const RENDER: fn(int) -> int = |value| value + 1 fn main() { \"{RENDER(41)}\" }").unwrap(),
++            run("const RENDER: fn(int) -> int = |value| value + 1 fn main() { \"{RENDER(41)}\" }")
++                .unwrap(),
+             Value::Str("42".into())
+         );
+     }
+diff --git a/crates/titan_vm/src/native.rs b/crates/titan_vm/src/native.rs
+index a92f3cc..b9a0a4d 100644
+--- a/crates/titan_vm/src/native.rs
++++ b/crates/titan_vm/src/native.rs
+@@ -2852,13 +2852,9 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
+             Value::Str(stdlib::audio_player::queue_clear().map_err(error)?)
+         }
+         #[cfg(feature = "audio_mod")]
+-        "std::audio::player_next" => {
+-            Value::Str(stdlib::audio_player::queue_next().map_err(error)?)
+-        }
++        "std::audio::player_next" => Value::Str(stdlib::audio_player::queue_next().map_err(error)?),
+         #[cfg(feature = "audio_mod")]
+-        "std::audio::player_prev" => {
+-            Value::Str(stdlib::audio_player::queue_prev().map_err(error)?)
+-        }
++        "std::audio::player_prev" => Value::Str(stdlib::audio_player::queue_prev().map_err(error)?),
+         #[cfg(feature = "audio_mod")]
+         "std::audio::player_current" => {
+             let cur = stdlib::audio_player::current_track().map_err(error)?;
+@@ -2886,9 +2882,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
+         #[cfg(feature = "audio_engine")]
+         "std::audio::engine_pause" => Value::Str(stdlib::audio_engine::pause().map_err(error)?),
+         #[cfg(feature = "audio_engine")]
+-        "std::audio::engine_resume" => {
+-            Value::Str(stdlib::audio_engine::resume().map_err(error)?)
+-        }
++        "std::audio::engine_resume" => Value::Str(stdlib::audio_engine::resume().map_err(error)?),
+         #[cfg(feature = "audio_engine")]
+         "std::audio::engine_position" => Value::Float(stdlib::audio_engine::position_secs()),
+         #[cfg(feature = "audio_engine")]
+@@ -3032,10 +3026,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
+             map.insert("phone".into(), Value::Str(st.phone));
+             map.insert("channel".into(), Value::Str(st.channel));
+             map.insert("session_file".into(), Value::Bool(st.session_file));
+-            map.insert(
+-                "cached_tracks".into(),
+-                Value::Int(st.cached_tracks as i64),
+-            );
++            map.insert("cached_tracks".into(), Value::Int(st.cached_tracks as i64));
+             map.insert("note".into(), Value::Str(st.note));
+             Value::map(map)
+         }
+@@ -6880,8 +6871,7 @@ mod tests {
+             ],
+             capabilities,
+         )
+-        .unwrap()
+-        else {
++        .unwrap() else {
+             panic!("PDF new should return a handle");
+         };
+         assert_eq!(
+@@ -6964,10 +6954,8 @@ mod tests {
+             Value::Int(1)
+         );
+ 
+-        let path = std::env::temp_dir().join(format!(
+-            "titan-vm-pdf-bindings-{}.pdf",
+-            std::process::id()
+-        ));
++        let path =
++            std::env::temp_dir().join(format!("titan-vm-pdf-bindings-{}.pdf", std::process::id()));
+         let path_string = path.to_string_lossy().into_owned();
+         assert!(invoke(
+             "std::pdf::save",
+@@ -6983,12 +6971,7 @@ mod tests {
+         .unwrap();
+         assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+         assert_eq!(
+-            invoke(
+-                "std::pdf::close",
+-                vec![Value::Int(handle)],
+-                capabilities
+-            )
+-            .unwrap(),
++            invoke("std::pdf::close", vec![Value::Int(handle)], capabilities).unwrap(),
+             Value::Nil
+         );
+         std::fs::remove_file(path).unwrap();

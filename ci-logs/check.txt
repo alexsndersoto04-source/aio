@@ -1,21 +1,30 @@
     Updating crates.io index
+ Downloading crates ...
+  Downloaded ar_archive_writer v0.5.3
+  Downloaded object v0.39.1
+  Downloaded psm v0.1.32
+  Downloaded stacker v0.1.25
     Checking titan_lexer v1.0.0 (/home/runner/work/aio/aio/crates/titan_lexer)
     Checking titan_tls v1.0.0 (/home/runner/work/aio/aio/crates/titan_tls)
-    Checking titan_mysql v1.0.0 (/home/runner/work/aio/aio/crates/titan_mysql)
-    Checking titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
-    Checking titan_ast v1.0.0 (/home/runner/work/aio/aio/crates/titan_ast)
+   Compiling object v0.39.1
+   Compiling stacker v0.1.25
     Checking titan_stdlib v1.0.0 (/home/runner/work/aio/aio/crates/titan_stdlib)
-    Checking titan_postgres v1.0.0 (/home/runner/work/aio/aio/crates/titan_postgres)
+    Checking titan_ast v1.0.0 (/home/runner/work/aio/aio/crates/titan_ast)
     Checking titan_parser v1.0.0 (/home/runner/work/aio/aio/crates/titan_parser)
+    Checking titan_postgres v1.0.0 (/home/runner/work/aio/aio/crates/titan_postgres)
+    Checking titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
+    Checking titan_mysql v1.0.0 (/home/runner/work/aio/aio/crates/titan_mysql)
     Checking titan_macros v1.0.0 (/home/runner/work/aio/aio/crates/titan_macros)
     Checking titan_gc v1.0.0 (/home/runner/work/aio/aio/crates/titan_gc)
     Checking titan_typechecker v1.0.0 (/home/runner/work/aio/aio/crates/titan_typechecker)
     Checking titan_pkg v1.0.0 (/home/runner/work/aio/aio/crates/titan_pkg)
+   Compiling ar_archive_writer v0.5.3
     Checking titan_codegen v1.0.0 (/home/runner/work/aio/aio/crates/titan_codegen)
     Checking titan_lsp v1.0.0 (/home/runner/work/aio/aio/crates/titan_lsp)
-    Checking titan_vm v1.0.0 (/home/runner/work/aio/aio/crates/titan_vm)
+   Compiling psm v0.1.32
     Checking titan_wasm v1.0.0 (/home/runner/work/aio/aio/crates/titan_wasm)
+    Checking titan_vm v1.0.0 (/home/runner/work/aio/aio/crates/titan_vm)
     Checking titan_dap v1.0.0 (/home/runner/work/aio/aio/crates/titan_dap)
-    Checking titan_runtime v1.0.0 (/home/runner/work/aio/aio/crates/titan_runtime)
     Checking titan_cli v1.0.0 (/home/runner/work/aio/aio/crates/titan_cli)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.71s
+    Checking titan_runtime v1.0.0 (/home/runner/work/aio/aio/crates/titan_runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.03s
