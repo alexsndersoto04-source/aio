@@ -106,6 +106,16 @@ EOF
 zett run hi.titan       # Usa ./titan si compilaste desde el código fuente.
 ```
 
+### Sandbox / entorno de agente (Linux x86-64, sin compilar)
+
+```bash
+bash scripts/sandbox-zett.sh     # binario precompilado de la rama `binaries`, verificado por SHA-256
+export PATH="$HOME/.local/bin:$PATH"
+zett version                     # también disponible como `titan`
+```
+
+Si el sistema no tiene `libasound.so.2`, el script genera un stub de ALSA: todo funciona salvo la salida de audio real.
+
 ## Compilar desde el código fuente
 
 Requisitos: Rust estable reciente, `rustfmt` y `clippy`.
