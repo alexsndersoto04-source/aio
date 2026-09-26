@@ -36,8 +36,10 @@ cero
 positivo (7)
 ---- Listo ----
 rc=0
+== selfhost: lexer Titan vs lexer Rust
+archivos: 89  idénticos: 89  distintos: 0
 == bench
-push 20000: 11 ms
+push 20000: 10 ms
 index 20000: 8 ms (suma 199990000)
-call(arr) 20000: 13 ms (suma 199990000)
+call(arr) 20000: 11 ms (suma 199990000)
 semantica de valor: original[0]=0 copia[0]=99
