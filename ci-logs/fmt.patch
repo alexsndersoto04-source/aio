@@ -1516,10 +1516,10 @@ index ead816b..2a04924 100644
                  let mut response = [0u8; 7];
                  stream.read_exact(&mut response).unwrap();
 diff --git a/crates/titan_typechecker/src/lib.rs b/crates/titan_typechecker/src/lib.rs
-index bc00dce..0ff2872 100644
+index a55cf46..8157181 100644
 --- a/crates/titan_typechecker/src/lib.rs
 +++ b/crates/titan_typechecker/src/lib.rs
-@@ -244,7 +244,9 @@ impl std::fmt::Display for TypeDiagnostic {
+@@ -248,7 +248,9 @@ impl std::fmt::Display for TypeDiagnostic {
                  "{}:{}:{}: {}",
                  file, span.line, span.column, self.error
              ),
@@ -1530,7 +1530,7 @@ index bc00dce..0ff2872 100644
              _ => std::fmt::Display::fmt(&self.error, formatter),
          }
      }
-@@ -1470,9 +1472,8 @@ impl TypeEnv {
+@@ -1474,9 +1476,8 @@ impl TypeEnv {
              })
              .collect();
          // Source order (then name), independent of HashMap iteration order.
@@ -1542,7 +1542,7 @@ index bc00dce..0ff2872 100644
          for (name, span) in recursive {
              if let Some(span) = span {
                  self.push_error_at(TypeError::RecursiveTypeAlias { name }, span);
-@@ -2006,8 +2007,7 @@ impl TypeEnv {
+@@ -2010,8 +2011,7 @@ impl TypeEnv {
  
      fn check_function(&mut self, function: &FunctionDecl) {
          let error_start = self.errors.len();
@@ -1552,7 +1552,7 @@ index bc00dce..0ff2872 100644
          self.check_function_inner(function);
          // La ubicacion se asigna con el archivo de ESTA funcion todavia en
          // curso: si se restaurase antes, los errores que solo reciben su
-@@ -2202,11 +2202,7 @@ impl TypeEnv {
+@@ -2206,11 +2206,7 @@ impl TypeEnv {
          }
      }
  
@@ -1565,7 +1565,7 @@ index bc00dce..0ff2872 100644
          if let (Some(candidates), Some(count)) =
              (self.return_candidates.last_mut(), candidate_count)
          {
-@@ -3181,8 +3177,7 @@ impl TypeEnv {
+@@ -3185,8 +3181,7 @@ impl TypeEnv {
                  // and declared constants. Constants are expression aliases in
                  // codegen, so accepting them here keeps the documented
                  // `"limit={LIMIT}"` form executable rather than checker-only.
@@ -1575,7 +1575,7 @@ index bc00dce..0ff2872 100644
                  {
                      let result = self.check_expr(&Expr::Ident {
                          name: source.into(),
-@@ -3886,11 +3881,8 @@ impl TypeEnv {
+@@ -3890,11 +3885,8 @@ impl TypeEnv {
          expected: &Type,
          reachable: &mut bool,
      ) -> bool {
@@ -1589,7 +1589,7 @@ index bc00dce..0ff2872 100644
          let sequence_item = match (function, index) {
              ("select", 0) => Some(Type::Named("Receiver".into())),
              (
-@@ -4174,9 +4166,7 @@ impl TypeEnv {
+@@ -4178,9 +4170,7 @@ impl TypeEnv {
              Add if right == Type::String => Type::String,
              Add | Sub | Mul | Div if is_numeric(&left) && compatible(&left, &right) => left,
              Mod if compatible(&Type::Int, &left) && compatible(&Type::Int, &right) => Type::Int,
@@ -1600,7 +1600,7 @@ index bc00dce..0ff2872 100644
                  Type::Int
              }
              _ => {
-@@ -4707,13 +4697,7 @@ fn declaration_errors(
+@@ -4711,13 +4701,7 @@ fn declaration_errors(
          errors: Vec<(TypeError, Span)>,
      }
  
@@ -1615,7 +1615,7 @@ index bc00dce..0ff2872 100644
          let names = if namespace == "value" {
              &mut state.values
          } else {
-@@ -5325,18 +5309,20 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<(TypeErr
+@@ -5329,18 +5313,20 @@ fn declared_type_errors(items: &[Item], known: &HashSet<String>) -> Vec<(TypeErr
      unknown
          .into_iter()
          .map(|(name, span)| (TypeError::UnknownType { name }, span))
@@ -1648,7 +1648,7 @@ index bc00dce..0ff2872 100644
          .chain(
              unsupported
                  .into_iter()
-@@ -5513,9 +5499,7 @@ fn sequence_item_type(ty: &Type) -> Option<Type> {
+@@ -5517,9 +5503,7 @@ fn sequence_item_type(ty: &Type) -> Option<Type> {
  fn sequence_matches(expected_item: &Type, found: &Type) -> bool {
      match found {
          Type::Array(item) => compatible(expected_item, item),
@@ -1659,7 +1659,7 @@ index bc00dce..0ff2872 100644
          Type::Unknown | Type::Never => true,
          _ => false,
      }
-@@ -6120,9 +6104,7 @@ mod tests {
+@@ -6146,9 +6130,7 @@ mod tests {
              .to_string()
              .starts_with(&format!("{}:{}: ", span.line, span.column)));
  
@@ -1670,7 +1670,7 @@ index bc00dce..0ff2872 100644
          let diagnostics = TypeEnv::new()
              .check_program_diagnostics(&declarations)
              .unwrap_err();
-@@ -6192,8 +6174,7 @@ mod tests {
+@@ -6218,8 +6200,7 @@ mod tests {
          assert!(check("fn main() { spawn 42 }").is_err());
          assert!(check("fn main() { select(42, 10) }").is_err());
          assert!(
@@ -1680,7 +1680,7 @@ index bc00dce..0ff2872 100644
          );
          assert!(check("fn main() { select([\"not a receiver\"], 10) }").is_err());
          assert!(check(
-@@ -6342,8 +6323,9 @@ mod tests {
+@@ -6368,8 +6349,9 @@ mod tests {
          assert!(check("fn main() { let a = -1.5 let b = ~7 }").is_ok());
          assert!(check("fn main() { 5.0 % 2.0 }").is_err());
          assert!(check("fn main() { [1, 2].filter(|value| value % 2 == 0) }").is_ok());
@@ -1692,7 +1692,7 @@ index bc00dce..0ff2872 100644
          assert!(check("fn main() { true | 1 }").is_err());
          assert!(check("fn unit() {} fn main() { nil == unit() unit() == nil }").is_ok());
      }
-@@ -6559,9 +6541,7 @@ mod tests {
+@@ -6585,9 +6567,7 @@ mod tests {
      #[test]
      fn validates_string_template_references_and_calls() {
          assert!(check("fn main() { print(\"value={missing}\") }").is_err());
@@ -1703,7 +1703,7 @@ index bc00dce..0ff2872 100644
          assert!(check("fn id(value: int) -> int { value } fn main() { let value = 1 print(\"value={id(value)}\") }").is_ok());
          assert!(check("fn id(value: int) -> int { value } fn main() { let bad = \"x\" print(\"value={id(bad)}\") }").is_err());
          assert!(
-@@ -6586,10 +6566,7 @@ mod tests {
+@@ -6612,10 +6592,7 @@ mod tests {
              "const RENDER: fn(int) -> int = |value| value + 1 fn main() { print(\"value={RENDER(41)}\") }"
          )
          .is_ok());
@@ -1715,7 +1715,7 @@ index bc00dce..0ff2872 100644
          assert!(check(
              "fn halt() -> ! { loop {} } fn render() -> ! { \"value={halt()}\" } fn main() {}"
          )
-@@ -6767,14 +6744,8 @@ mod tests {
+@@ -6793,14 +6770,8 @@ mod tests {
              "fn inferred() { while false { return \"unreachable\" } 1 } fn main() { let result: int = inferred() }"
          )
          .is_ok());
@@ -1732,7 +1732,7 @@ index bc00dce..0ff2872 100644
      }
  
      #[test]
-@@ -6793,10 +6764,7 @@ mod tests {
+@@ -6819,10 +6790,7 @@ mod tests {
              "fn halt_and() -> ! { loop { false && { break } } } fn halt_or() -> ! { loop { true || { break } } } fn main() {}"
          )
          .is_ok());
@@ -1744,7 +1744,7 @@ index bc00dce..0ff2872 100644
          assert!(check(
              "fn halt() -> ! { loop { if true { loop {} } else { break } } } fn main() {}"
          )
-@@ -6895,9 +6863,10 @@ mod tests {
+@@ -6921,9 +6889,10 @@ mod tests {
              Type::Named("Result".into())
          );
          assert_eq!(environment.lookup("later"), Some(Type::Int));
@@ -1758,7 +1758,7 @@ index bc00dce..0ff2872 100644
      }
  
      #[test]
-@@ -7175,10 +7144,9 @@ mod tests {
+@@ -7201,10 +7170,9 @@ mod tests {
              "enum Choice { First, Second } fn read() -> int { match (Choice::First) { Choice::First if false => \"unreachable\", Choice::First => 1, Choice::Second => 0 } } fn main() {}"
          )
          .is_ok());
@@ -1772,7 +1772,7 @@ index bc00dce..0ff2872 100644
      }
  
      #[test]
-@@ -7275,9 +7243,7 @@ mod tests {
+@@ -7301,9 +7269,7 @@ mod tests {
              .unwrap_err();
          let diagnostic = diagnostics
              .iter()
@@ -1783,7 +1783,7 @@ index bc00dce..0ff2872 100644
              .expect("expected entry point diagnostic");
          let span = diagnostic
              .span
-@@ -7293,7 +7259,8 @@ mod tests {
+@@ -7319,7 +7285,8 @@ mod tests {
      fn statement_position_branches_need_no_common_type() {
          // One branch acts, the other produces a value: nothing consumes the
          // value of the `if`, so the two branches may differ.
@@ -1793,7 +1793,7 @@ index bc00dce..0ff2872 100644
          assert!(check(source).is_ok());
          // The same rule applies to the arms of a `match` used as a statement.
          let source = "fn read(flag: bool) { let value = match flag { true => { } false => 1 } }";
-@@ -7332,7 +7299,8 @@ mod tests {
+@@ -7358,7 +7325,8 @@ mod tests {
      fn every_value_can_be_compared_against_nil() {
          let source = "fn main() { let mut rows: array = [] if rows == nil { rows = [] } }";
          assert!(check(source).is_ok());
