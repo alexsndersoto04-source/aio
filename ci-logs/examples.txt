@@ -1,0 +1,43 @@
+== examples/hello.titan
+Hello, TITAN!
+rc=0
+== examples/fibonacci.titan
+fib(17) = 1597
+fib(18) = 2584
+fib(19) = 4181
+rc=0
+== examples/impl_structs.titan
+puntos: (3, 4) (4, 2)
+rects: Rect(6x4) Rect(5x5)
+---- Listo ----
+rc=0
+== examples/traits.titan
+Pan integral tiene 3 unidades
+Cafe: vacio
+---- Listo ----
+rc=0
+== examples/json_api.titan
+  consultado_por: titan-cli
+  fase:           25-B
+---- Listo ----
+rc=0
+== examples/destructuring.titan
+id=99 -> (7, 8)
+u=3 v=99
+---- Listo ----
+rc=0
+== examples/custom_errors.titan
+ERR [HTTP 404] no existe el recurso con id=999
+
+---- Listo ----
+rc=0
+== examples/pipeline_spaceship.titan
+cero
+positivo (7)
+---- Listo ----
+rc=0
+== bench
+push 20000: 11 ms
+index 20000: 7 ms (suma 199990000)
+call(arr) 20000: 12 ms (suma 199990000)
+semantica de valor: original[0]=0 copia[0]=99

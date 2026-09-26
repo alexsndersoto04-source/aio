@@ -1,122 +1,21 @@
-error[E0308]: `?` operator has incompatible types
-   --> crates/titan_vm/src/native.rs:592:13
-    |
-592 | /             stdlib::json::flatten(&to_json(take!())?)
-593 | |                 .into_iter()
-594 | |                 .map(|(path, value)| Ok(Value::tuple(vec![Value::Str(path), from_json(value)?])))
-595 | |                 .collect::<Result<Vec<_>, String>>()?,
-    | |_____________________________________________________^ expected `Shared<Vec<Value>>`, found `Vec<Value>`
-    |
-    = note: `?` operator cannot convert from `Vec<_>` to `shared::Shared<Vec<_>>`
-    = note: expected struct `shared::Shared<Vec<_>>`
-               found struct `Vec<_>`
-help: call `Into::into` on this expression to convert `Vec<Value>` into `shared::Shared<Vec<Value>>`
-    |
-595 |                 .collect::<Result<Vec<_>, String>>()?.into(),
-    |                                                      +++++++
-
-error[E0308]: `?` operator has incompatible types
-   --> crates/titan_vm/src/native.rs:592:13
-    |
-592 | /             stdlib::json::flatten(&to_json(take!())?)
-593 | |                 .into_iter()
-594 | |                 .map(|(path, value)| Ok(Value::tuple(vec![Value::Str(path), from_json(value)?])))
-595 | |                 .collect::<Result<Vec<_>, String>>()?,
-    | |_____________________________________________________^ expected `Shared<Vec<Value>>`, found `Vec<Value>`
-    |
-    = note: `?` operator cannot convert from `Vec<_>` to `shared::Shared<Vec<_>>`
-    = note: expected struct `shared::Shared<Vec<_>>`
-               found struct `Vec<_>`
-help: call `Into::into` on this expression to convert `Vec<Value>` into `shared::Shared<Vec<Value>>`
-    |
-595 |                 .collect::<Result<Vec<_>, String>>()?.into(),
-    |                                                      +++++++
-
-error[E0308]: mismatched types
-    --> crates/titan_vm/src/lib.rs:4640:59
-     |
-4640 |         Value::Array(values) | Value::Tuple(values) => Ok(values),
-     |                                                        -- ^^^^^^ expected `Vec<Value>`, found `Shared<Vec<Value>>`
-     |                                                        |
-     |                                                        arguments to this enum variant are incorrect
-     |
-     = note: expected struct `Vec<_>`
-                found struct `shared::Shared<Vec<_>>`
-help: the type constructed contains `shared::Shared<Vec<Value>>` due to the type of the argument passed
-    --> crates/titan_vm/src/lib.rs:4640:56
-     |
-4640 |         Value::Array(values) | Value::Tuple(values) => Ok(values),
-     |                                                        ^^^------^
-     |                                                           |
-     |                                                           this argument influences the type of `Ok`
-note: tuple variant defined here
-    --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/result.rs:561:4
-help: try using a conversion method
-     |
-4640 |         Value::Array(values) | Value::Tuple(values) => Ok(values.to_vec()),
-     |                                                                 +++++++++
-
-error[E0308]: mismatched types
-    --> crates/titan_vm/src/lib.rs:4640:59
-     |
-4640 |         Value::Array(values) | Value::Tuple(values) => Ok(values),
-     |                                                        -- ^^^^^^ expected `Vec<Value>`, found `Shared<Vec<Value>>`
-     |                                                        |
-     |                                                        arguments to this enum variant are incorrect
-     |
-     = note: expected struct `Vec<_>`
-                found struct `shared::Shared<Vec<_>>`
-help: the type constructed contains `shared::Shared<Vec<Value>>` due to the type of the argument passed
-    --> crates/titan_vm/src/lib.rs:4640:56
-     |
-4640 |         Value::Array(values) | Value::Tuple(values) => Ok(values),
-     |                                                        ^^^------^
-     |                                                           |
-     |                                                           this argument influences the type of `Ok`
-note: tuple variant defined here
-    --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/result.rs:561:4
-help: try using a conversion method
-     |
-4640 |         Value::Array(values) | Value::Tuple(values) => Ok(values.to_vec()),
-     |                                                                 +++++++++
-
-    Checking postgres v0.19.14
-    Checking serde_spanned v0.6.9
-    Checking toml_datetime v0.6.11
-   Compiling curve25519-dalek-derive v0.1.1
-    Checking signature v2.2.0
-    Checking titan_codegen v1.0.0 (/home/runner/work/aio/aio/crates/titan_codegen)
-    Checking winnow v0.7.15
-    Checking toml_write v0.1.2
-    Checking ed25519 v2.2.3
-    Checking titan_mysql v1.0.0 (/home/runner/work/aio/aio/crates/titan_mysql)
-    Checking titan_postgres v1.0.0 (/home/runner/work/aio/aio/crates/titan_postgres)
-    Checking ed25519-dalek v2.2.0
-   Compiling wasm-encoder v0.240.0
-   Compiling wasmparser v0.240.0
-    Checking foldhash v0.1.5
-    Checking hashbrown v0.15.5
-    Checking toml_edit v0.22.27
-    Checking anstyle-parse v1.0.0
-    Checking anstyle v1.0.14
-    Checking colorchoice v1.0.5
-    Checking leb128fmt v0.1.0
-    Checking anstyle-query v1.1.5
-    Checking is_terminal_polyfill v1.70.2
-    Checking anstream v1.0.0
-    Checking clap_lex v1.1.0
-    Checking toml v0.8.23
-    Checking clap_builder v4.6.0
-    Checking titan_pkg v1.0.0 (/home/runner/work/aio/aio/crates/titan_pkg)
-   Compiling clap_derive v4.6.1
-    Checking rusqlite v0.32.1
-    Checking titan_lsp v1.0.0 (/home/runner/work/aio/aio/crates/titan_lsp)
+    Updating crates.io index
+    Checking titan_lexer v1.0.0 (/home/runner/work/aio/aio/crates/titan_lexer)
+    Checking titan_tls v1.0.0 (/home/runner/work/aio/aio/crates/titan_tls)
     Checking titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
+    Checking titan_mysql v1.0.0 (/home/runner/work/aio/aio/crates/titan_mysql)
+    Checking titan_ast v1.0.0 (/home/runner/work/aio/aio/crates/titan_ast)
+    Checking titan_stdlib v1.0.0 (/home/runner/work/aio/aio/crates/titan_stdlib)
+    Checking titan_parser v1.0.0 (/home/runner/work/aio/aio/crates/titan_parser)
+    Checking titan_postgres v1.0.0 (/home/runner/work/aio/aio/crates/titan_postgres)
+    Checking titan_macros v1.0.0 (/home/runner/work/aio/aio/crates/titan_macros)
+    Checking titan_gc v1.0.0 (/home/runner/work/aio/aio/crates/titan_gc)
+    Checking titan_typechecker v1.0.0 (/home/runner/work/aio/aio/crates/titan_typechecker)
+    Checking titan_pkg v1.0.0 (/home/runner/work/aio/aio/crates/titan_pkg)
+    Checking titan_codegen v1.0.0 (/home/runner/work/aio/aio/crates/titan_codegen)
+    Checking titan_lsp v1.0.0 (/home/runner/work/aio/aio/crates/titan_lsp)
     Checking titan_vm v1.0.0 (/home/runner/work/aio/aio/crates/titan_vm)
-    Checking yasna v0.5.2
-    Checking rcgen v0.13.2
-    Checking clap v4.6.1
     Checking titan_wasm v1.0.0 (/home/runner/work/aio/aio/crates/titan_wasm)
-error: could not compile `titan_vm` (lib) due to 2 previous errors
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `titan_vm` (lib test) due to 2 previous errors
+    Checking titan_dap v1.0.0 (/home/runner/work/aio/aio/crates/titan_dap)
+    Checking titan_cli v1.0.0 (/home/runner/work/aio/aio/crates/titan_cli)
+    Checking titan_runtime v1.0.0 (/home/runner/work/aio/aio/crates/titan_runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.05s
