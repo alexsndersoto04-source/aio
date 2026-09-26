@@ -275,8 +275,11 @@ fn fib(n: int) -> int {
 - The last expression of a block is its value; `return` is optional.
 - Calls are arity-checked at compile time and again in the VM.
 - Recursion is bounded by a call-depth limit (default **4096** frames,
-  `call depth limit exceeded`) and by a total instruction budget (default **10,000,000**,
-  `instruction limit exceeded`). Both are configurable when embedding the VM.
+  `call depth limit exceeded`). Untrusted code is also bounded by a total instruction
+  budget (default **10,000,000**, `instruction limit exceeded`): it applies to
+  `--sandbox` runs and to embedders that keep the `Vm::new` default; a normal
+  `titan run` / `exec` / `debug` has no instruction budget. Both are configurable when
+  embedding the VM.
 
 ### 6.1 Closures
 

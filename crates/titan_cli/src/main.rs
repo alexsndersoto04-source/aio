@@ -321,7 +321,7 @@ fn cmd_debug(input: &str, breakpoint_specs: &[String], sandbox: bool) {
         let mut vm = if sandbox {
             titan_vm::Vm::sandboxed(module)
         } else {
-            titan_vm::Vm::new(module)
+            titan_vm::Vm::new(module).with_instruction_limit(usize::MAX)
         };
         vm.run_debug(&mut debugger)
     });
@@ -656,10 +656,14 @@ fn run_module(
     module: titan_codegen::CompiledModule,
     sandbox: bool,
 ) -> Result<Option<titan_vm::Value>, titan_vm::VmError> {
+    // The instruction budget bounds untrusted code: it applies to --sandbox.
+    // A trusted program (a server, a compiler written in Titan) must be able
+    // to compute for as long as it needs; with the 10M default every
+    // `titan run` was cut off after roughly half a second of computation.
     let mut vm = if sandbox {
         titan_vm::Vm::sandboxed(module)
     } else {
-        titan_vm::Vm::new(module)
+        titan_vm::Vm::new(module).with_instruction_limit(usize::MAX)
     };
     vm.run()
 }
