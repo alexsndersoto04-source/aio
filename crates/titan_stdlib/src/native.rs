@@ -237,6 +237,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::text::is_alphabetic", [Any], Bool),
     native!("std::text::is_alphanumeric", [Any], Bool),
     native!("std::text::is_whitespace", [Any], Bool),
+    native!("std::text::is_uppercase", [Any], Bool),
     native!("std::encoding::hex_encode", [Bytes], String),
     native!("std::encoding::hex_decode", [String], Bytes),
     native!("std::encoding::base64_encode", [Bytes], String),

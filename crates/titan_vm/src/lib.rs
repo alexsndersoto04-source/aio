@@ -4909,6 +4909,10 @@ mod tests {
                 Value::Bool(false)
             ])
         );
+        assert_eq!(
+            run("fn main() { let cs = std::text::chars(\"ÑaZ\"); [std::text::is_uppercase(cs[0]), std::text::is_uppercase(cs[1]), std::text::is_uppercase(cs[2])] }").unwrap(),
+            Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Bool(true)])
+        );
     }
 
     fn run_sandboxed(source: &str) -> Result<Value, String> {

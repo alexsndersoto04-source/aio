@@ -170,6 +170,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::text::is_alphabetic" => Value::Bool(expect_char(take!())?.is_alphabetic()),
         "std::text::is_alphanumeric" => Value::Bool(expect_char(take!())?.is_alphanumeric()),
         "std::text::is_whitespace" => Value::Bool(expect_char(take!())?.is_whitespace()),
+        "std::text::is_uppercase" => Value::Bool(expect_char(take!())?.is_uppercase()),
         "std::text::lines" => {
             Value::Array(string!().lines().map(|v| Value::Str(v.into())).collect())
         }
