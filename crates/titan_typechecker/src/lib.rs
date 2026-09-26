@@ -174,6 +174,10 @@ pub enum TypeError {
         target: String,
         method: String,
     },
+    /// `impl Missing for S`: previously reported as "unknown variable or
+    /// function 'trait 'Missing''".
+    #[error("unknown trait '{name}'")]
+    UnknownTrait { name: String },
     #[error("method '{method}' is not declared by trait '{trait_name}'")]
     UnknownTraitMethod { trait_name: String, method: String },
     #[error("missing field '{field}' in struct '{structure}'")]
@@ -1796,8 +1800,8 @@ impl TypeEnv {
                             }
                         } else {
                             self.push_error_at(
-                                TypeError::UnknownVariable {
-                                    name: format!("trait '{}'", trait_name),
+                                TypeError::UnknownTrait {
+                                    name: trait_name.clone(),
                                 },
                                 block.span,
                             );
@@ -6013,6 +6017,17 @@ mod tests {
                 "{errors:?}"
             );
         }
+    }
+
+    #[test]
+    fn impl_of_an_undeclared_trait_reports_unknown_trait() {
+        let errors = check("struct A { x: int } impl Nope for A { } fn main() { }").unwrap_err();
+        assert!(
+            errors.contains(&TypeError::UnknownTrait {
+                name: "Nope".into()
+            }),
+            "{errors:?}"
+        );
     }
 
     #[test]
