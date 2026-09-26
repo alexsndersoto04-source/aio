@@ -1,0 +1,1 @@
+fn invalid_factory() -> fn(string) -> int { |value| value * 2 } fn main() {}

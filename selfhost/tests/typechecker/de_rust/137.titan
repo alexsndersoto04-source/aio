@@ -1,0 +1,1 @@
+fn id(value: int) -> int { value } fn main() { let value = 1 print("value={id(value)}") }

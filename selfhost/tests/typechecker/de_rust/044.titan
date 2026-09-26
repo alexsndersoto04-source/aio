@@ -1,0 +1,1 @@
+fn main() { let router = std::http::router() std::http::middleware(router, |request| 42) }

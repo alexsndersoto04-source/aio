@@ -1,0 +1,1 @@
+fn inferred() { match true { true => 1, false => return "unreachable" } } fn main() { let value: int = inferred() }

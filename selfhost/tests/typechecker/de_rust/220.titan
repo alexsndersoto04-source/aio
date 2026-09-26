@@ -1,0 +1,1 @@
+fn value() -> int { while true { return 1 break } } fn main() {}

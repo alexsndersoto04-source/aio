@@ -1,0 +1,1 @@
+fn inferred() { let value = Result::Ok(1)? Result::Ok(value) } fn main() { inferred() }

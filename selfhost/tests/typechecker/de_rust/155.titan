@@ -1,0 +1,1 @@
+type Text = string fn main() { let mut value: Text = "text"; value -= 1 }

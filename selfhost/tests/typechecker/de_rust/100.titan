@@ -1,0 +1,1 @@
+fn main() { map(42, |value| value) }

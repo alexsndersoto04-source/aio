@@ -1,0 +1,1 @@
+fn main() { let halt = || loop {} let impossible: ! = halt() }

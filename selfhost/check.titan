@@ -1,0 +1,16 @@
+// Uso: titan run selfhost/check.titan <archivo.titan>
+// Imprime los diagnósticos del typechecker escrito en Titan. Debe ser
+// idéntico a `titan typecheck <archivo.titan>` (typechecker de Rust).
+import typechecker
+
+fn main() {
+    let args = std::env::args()
+    if len(args) < 4 {
+        print("uso: titan run selfhost/check.titan <archivo.titan>")
+        return
+    }
+    let text = std::fs::read_text(args[3])
+    let dump = typecheck_dump(text)
+    // print() añade el salto de línea final que ya trae el volcado.
+    print(std::text::substring(dump, 0, len(dump) - 1))
+}

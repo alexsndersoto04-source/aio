@@ -1,0 +1,1 @@
+fn halt() -> ! { if false { 1 } else { loop {} } } fn main() {}

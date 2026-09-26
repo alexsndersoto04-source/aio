@@ -1,0 +1,1 @@
+fn main() { let pair = (1, "two") let value: string = pair.1 }

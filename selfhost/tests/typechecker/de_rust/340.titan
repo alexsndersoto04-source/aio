@@ -1,0 +1,2 @@
+fn read() -> int { print("x")
+-1 }

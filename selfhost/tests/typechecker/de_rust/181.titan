@@ -1,0 +1,1 @@
+fn nested() -> ! { loop { loop { break } } } fn main() {}

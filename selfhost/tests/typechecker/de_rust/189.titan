@@ -1,0 +1,1 @@
+fn consume(value: int) -> int { value } fn halt() -> ! { consume(loop {}) } fn main() {}

@@ -1,0 +1,1 @@
+fn flexible(value: any) -> string { "ok" } fn apply(callback: fn(string) -> any) -> any { callback("x") } fn main() { apply(flexible) }

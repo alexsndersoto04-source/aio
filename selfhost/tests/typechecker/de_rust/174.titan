@@ -1,0 +1,1 @@
+fn invalid() -> ! { return 1 } fn main() {}

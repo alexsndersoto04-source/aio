@@ -1,0 +1,1 @@
+enum Choice { Number(int), Empty } fn read(choice: Choice) -> int { match choice { Choice::Number => 1, Choice::Empty => 0 } } fn main() {}

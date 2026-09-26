@@ -1,0 +1,1 @@
+type Pair = (int, int) fn keep_pair(pair: (int, int), value: int) -> (int, int) { pair } fn main() { let initial: Pair = (0, 0) let result: Pair = [1, 2].fold(initial, keep_pair) result }

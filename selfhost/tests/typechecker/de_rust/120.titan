@@ -1,0 +1,1 @@
+fn choose() -> fn(int) -> int { if true { |value| value + 1 } else { 42 } } fn main() {}

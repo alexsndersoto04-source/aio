@@ -1,0 +1,1 @@
+fn main() { std::encoding::hex_encode(42) }

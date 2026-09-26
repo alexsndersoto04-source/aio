@@ -1,0 +1,1 @@
+fn inferred() { loop { return 1 break } } fn main() { let value: int = inferred() }

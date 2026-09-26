@@ -1,0 +1,1 @@
+fn main() { let value: int = FIRST } const FIRST = SECOND + 1 const SECOND = 41

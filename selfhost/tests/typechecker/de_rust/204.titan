@@ -1,0 +1,1 @@
+fn inferred() { [1].fold(loop {}, return 1) } fn main() { let impossible: ! = inferred() }

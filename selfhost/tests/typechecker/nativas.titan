@@ -1,0 +1,20 @@
+// Llamadas a funciones nativas: aridad y tipos de argumentos.
+fn main() {
+    let a = std::text::length()
+    let b = std::text::length("a", "b")
+    let c = std::text::length(5)
+    let d = std::text::substring("abc", "1", 2)
+    let e: string = std::text::uppercase("x")
+    let f: int = std::text::uppercase("x")
+    let g = std::map::get(#{}, "k")
+    let h = std::math::sqrt("x")
+    let l = println(1, 2, 3)
+    let m = print()
+    let n = len()
+    let o = len(1, 2)
+    let p = std::try::catch()
+    let q = std::try::catch(5)
+    let r = std::try::catch(|v: int| v, "x")
+    let s = std::try::catch(|v| v + 1, 2)
+    print(a + b + c)
+}

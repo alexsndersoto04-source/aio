@@ -1,0 +1,1 @@
+fn make() -> Later { Later { value: 1 } } struct Later { value: int } fn main() { make() }

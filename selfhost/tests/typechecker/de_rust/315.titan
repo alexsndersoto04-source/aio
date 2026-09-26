@@ -1,0 +1,1 @@
+fn read(value: bool) -> int { match value { true if value => 1, true => 2, false => 0 } } fn main() {}

@@ -1,0 +1,1 @@
+struct Point { x: int } fn main() { Point { x: 1, x: 2 } }

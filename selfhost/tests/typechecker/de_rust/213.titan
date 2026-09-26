@@ -1,0 +1,1 @@
+fn inferred() { false && return 1 true } fn main() { let result: bool = inferred() }

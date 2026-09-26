@@ -11,7 +11,8 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 0 | Preparar la VM de Rust para poder ejecutar un compilador escrito en Titan | ✅ hecho |
 | 1 | **Lexer** en Titan (`selfhost/lexer.titan`) | ✅ idéntico al de Rust |
 | 2 | **Parser** en Titan (`selfhost/parser.titan`) | ✅ idéntico al de Rust |
-| 3 | **Typechecker** en Titan | ⏳ siguiente |
+| 3 | **Typechecker** en Titan (`selfhost/typechecker.titan`) | ✅ idéntico al de Rust |
+| 4a | Siguiente: **codegen** (empieza la fase 4) | ⏳ siguiente |
 | 4 | **Codegen** en Titan → ejecutables nativos (sin VM en Rust) | pendiente |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | pendiente |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | pendiente |
@@ -23,6 +24,7 @@ bash scripts/sandbox-zett.sh            # binario de la rama `binaries`
 export PATH="$HOME/.local/bin:$PATH"
 bash selfhost/verify_lexer.sh            # lexer Titan vs lexer Rust, byte a byte
 bash selfhost/verify_parser.sh           # parser Titan vs parser Rust, byte a byte
+bash selfhost/verify_typechecker.sh      # typechecker Titan vs Rust, byte a byte
 zett run ci-bench/bench.titan            # rendimiento de la VM
 ```
 
@@ -98,6 +100,52 @@ Defectos reales del Titan en Rust encontrados en esta fase (corregidos):
    solo con `--sandbox` (documentado en `docs/SPEC.md` §6).
 3. Nueva nativa `std::text::is_uppercase` (el parser la necesita para
    distinguir `Punto { x: 1 }` de un bloque).
+
+## Fase 3 — typechecker
+
+- `selfhost/typechecker.titan` (~4.700 líneas): traducción fiel de
+  `crates/titan_typechecker/src/lib.rs`: declaraciones duplicadas, tipos
+  desconocidos, alias recursivos, traits/impls, inferencia del tipo de
+  retorno (por rondas, igual que Rust), closures y callbacks, interpolación
+  de texto, llamadas a nativas/variantes/métodos, cobertura de `match`
+  (enums, bool, literales), análisis de "siempre devuelve"/"puede salir del
+  bucle" y los mismos mensajes en el mismo orden.
+- `zett typecheck ARCHIVO` (oculto) imprime `ok` o una línea `diag:` por
+  diagnóstico (typechecker de Rust); `zett run selfhost/check.titan ARCHIVO`
+  lo mismo con el de Titan.
+- Firmas de las 816 nativas: `selfhost/natives.titan`, generado por
+  `selfhost/gen_natives.sh` desde `zett natives`. **Es temporal**: cuando la
+  biblioteca estándar esté en Titan (fase 6) las firmas saldrán de ella.
+- Verificación: 448 archivos, 2.737 líneas de diagnósticos, **idénticos**.
+  Incluye `selfhost/tests/typechecker/de_rust/` (los 341 programas de los
+  tests de Rust, guardados para cuando se borre Rust) y 7 archivos propios.
+- Fuzzing diferencial: 2.100 programas mutados al azar (que Rust acepta o
+  rechaza con diagnósticos): **todos idénticos**.
+- Prueba de mutación: se plantaron errores en el typechecker de Titan. Con
+  solo los tests de Rust, 4 de 6 **no** se detectaban; se escribieron
+  `colecciones`, `flujo`, `nativas`, `patrones`, `plantillas`, `llamadas` y
+  `varios.titan` y ahora se detectan todos. Tres errores plantados resultaron
+  ser "equivalentes" (no cambian nunca el resultado, p. ej. un `loop` sin
+  `break` ya es de tipo `Never` por otro camino) y se sustituyeron.
+
+Defectos reales del Titan en Rust encontrados en esta fase:
+
+1. (corregido) Un `impl` de un método que no existe en el trait daba un error
+   equivocado ("unknown variable"); ahora `MissingTraitMethod`.
+2. (corregido) `impl Nope for A` con un trait inexistente decía
+   "unknown variable or function 'trait 'Nope''"; ahora `unknown trait 'Nope'`.
+3. (corregido) Los tipos de un `impl` inválido se mostraban con el `Debug`
+   de Rust (`Array(Named(...))`); ahora en sintaxis Titan (`[int]`).
+4. (corregido) Leer de un mapa copiaba el mapa entero: 20.000 lecturas
+   tardaban 31,9 s; ahora 13 ms.
+5. (corregido) El orden de los errores cambiaba entre ejecuciones.
+6. (pendiente) Un `if` con ramas de tipos distintos, como **última**
+   expresión del cuerpo de un `for`, da "type mismatch"; en cualquier otro
+   sitio se acepta. El código Titan lo esquiva con `continue`.
+7. (pendiente) Varios errores dentro de `main` salen con posición `1:1` o la
+   de la función en lugar de la línea real.
+8. (pendiente) `zett check`/`zett run` imprimen cada error de compilación dos
+   veces.
 
 ## Pendientes conocidos (anotados para no olvidarlos)
 

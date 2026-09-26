@@ -1,0 +1,1 @@
+fn use_specific(local: Sqlite, postgres: Postgres, mysql: Mysql) { std::sqlite::execute(local, "SELECT 1", []) std::postgres::query(postgres, "SELECT 1", (1, "two")) std::mysql::migrate(mysql, []) } fn main() {}

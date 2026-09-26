@@ -1,0 +1,1 @@
+fn halt() -> ! { let mut value = 0 value = loop {} } fn main() {}

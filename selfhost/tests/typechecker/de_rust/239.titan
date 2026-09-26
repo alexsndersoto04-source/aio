@@ -1,0 +1,1 @@
+fn main() { let result = std::try::catch(|value| value + 1, 2) print(result) }

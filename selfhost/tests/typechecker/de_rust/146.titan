@@ -1,0 +1,1 @@
+fn halt() -> ! { loop {} } fn render() -> ! { "value={halt()}" } fn main() {}

@@ -1,0 +1,15 @@
+// Plantillas vacías, módulo, patrones inalcanzables y nativas sin argumentos.
+fn main() {
+    print("vacío {} y {  } y {x}")
+    let m = 7 % 2
+    let s: string = m
+    let q: float = 7 % 2
+    match 3 {
+        v => print(v)
+        1 => print(1)
+    }
+    match true {
+        x => print(x)
+    }
+    let r = std::text::length()
+}

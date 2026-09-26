@@ -1,0 +1,1 @@
+fn pending(first: int, second: int = first) -> int { second }

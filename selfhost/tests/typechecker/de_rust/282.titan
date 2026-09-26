@@ -1,0 +1,1 @@
+type Alias24 = int fn identity(value: Alias0) -> int { value } fn main() { identity(1) }

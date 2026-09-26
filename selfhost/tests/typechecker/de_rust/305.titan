@@ -1,0 +1,1 @@
+fn read() -> int { match 1 { 1 => 42, _ => "unreachable" } } fn main() {}

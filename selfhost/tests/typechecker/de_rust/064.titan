@@ -1,0 +1,1 @@
+const FIRST: int = SECOND const SECOND: int = FIRST fn main() {}

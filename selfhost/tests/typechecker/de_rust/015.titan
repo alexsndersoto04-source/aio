@@ -1,0 +1,1 @@
+type Payload = string fn main() { let value: Payload = "Titan" std::encoding::hex_encode(value) }

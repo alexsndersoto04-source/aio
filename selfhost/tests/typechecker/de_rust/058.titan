@@ -1,0 +1,1 @@
+const INCREMENT: fn(int) -> int = |value| value + 1 fn main() { let result: int = INCREMENT(41) }

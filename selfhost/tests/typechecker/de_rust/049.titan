@@ -1,0 +1,1 @@
+fn main() { std::runtime::spawn_quota(1024, || 42) }

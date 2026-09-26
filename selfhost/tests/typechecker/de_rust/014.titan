@@ -1,0 +1,1 @@
+type Text = string fn main() { let value: Text = "Titan" std::text::reverse(value) }

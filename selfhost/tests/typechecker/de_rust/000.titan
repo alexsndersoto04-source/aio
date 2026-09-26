@@ -1,0 +1,1 @@
+impl [int] { } impl (int, &mut str) { } fn main() { }

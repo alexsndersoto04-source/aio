@@ -1,0 +1,1 @@
+fn unit() {} fn main() { nil == unit() unit() == nil }

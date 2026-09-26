@@ -1,0 +1,1 @@
+fn read(value: int) -> int { match value { _ => 0, 1 => 1 } } fn main() {}

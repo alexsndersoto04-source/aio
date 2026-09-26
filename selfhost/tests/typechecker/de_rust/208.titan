@@ -1,0 +1,1 @@
+fn stop(value: int) -> ! { loop {} } fn main() { let values: [int] = filter([1], stop) }

@@ -1,0 +1,1 @@
+fn query(local: Sqlite) { std::sqlite::execute(local, "SELECT 1", "not parameters") } fn main() {}

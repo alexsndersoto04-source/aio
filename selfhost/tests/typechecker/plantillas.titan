@@ -1,0 +1,17 @@
+// Interpolación de texto: caminos válidos e inválidos.
+const LIMITE: int = 10
+
+fn doble(n: int) -> int {
+    n * 2
+}
+
+fn main() {
+    let x = 5
+    let nombre = "ana"
+    print("vacío {} y {  }")
+    print("x={x} límite={LIMITE} doble={doble(x)} lit={doble(-3)} mas={doble(+4)}")
+    print("malo {x + 1} {doble(x} {nada} {doble(nada)} {doble(1, 2)} {no_existe(1)}")
+    print("grande {doble(9223372036854775807)} {doble(9223372036854775808)} {doble(-9223372036854775808)}")
+    print("ruta {std::math::abs(x)} {a..b} {1abc} {_ok} sin cerrar {x")
+    print("coma {doble(,)} {doble( x , )}")
+}

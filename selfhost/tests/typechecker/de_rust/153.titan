@@ -1,0 +1,1 @@
+type Count = int fn main() { let mut value: Count = 1; value += 2; let result: Count = value }

@@ -1,0 +1,1 @@
+fn inferred() { if false { return "unreachable" } 1 } fn main() { let result: int = inferred() }

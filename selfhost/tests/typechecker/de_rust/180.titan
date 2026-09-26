@@ -1,0 +1,1 @@
+fn exits(flag: bool) -> int { loop { if flag { break } } } fn main() {}

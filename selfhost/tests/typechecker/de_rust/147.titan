@@ -1,0 +1,1 @@
+fn halt() -> ! { loop {} } fn inferred() { "value={halt()}" } fn main() { let impossible: ! = inferred() }

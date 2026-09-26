@@ -1,0 +1,1 @@
+fn apply(callback: fn(string) -> int) -> int { callback("x") } fn main() { apply(|value| value * 2) }

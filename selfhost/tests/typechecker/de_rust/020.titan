@@ -1,0 +1,1 @@
+type Inboxes = [Receiver] fn choose(inboxes: Inboxes) { select(inboxes, 10) } fn main() {}
