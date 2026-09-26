@@ -1,4 +1,4 @@
-use crate::{val_to_string, RuntimeCapabilities, Value, VmError};
+use crate::{val_to_string, RuntimeCapabilities, Shared, Value, VmError};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -634,7 +634,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::array(values)
         }
         "std::array::slice" => {
-            let values = array!();
+            let values = expect_array_shared(take!())?;
             let start = nonnegative(int!())?;
             let end = nonnegative(int!())?;
             if start > end || end > values.len() {
@@ -662,7 +662,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         "std::collections::length" => Value::Int(to_i64(value_length(&take!())?)?),
         "std::collections::contains" => {
-            let values = array!();
+            let values = expect_array_shared(take!())?;
             Value::Bool(values.contains(&take!()))
         }
         "std::collections::reverse" => {
@@ -680,7 +680,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::array(output)
         }
         "std::collections::join" => {
-            let values = array!();
+            let values = expect_array_shared(take!())?;
             let separator = string!();
             Value::Str(
                 values
@@ -704,7 +704,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             )
         }
         "std::map::new" => Value::map(BTreeMap::new()),
-        "std::map::length" => Value::Int(to_i64(expect_map(take!())?.len())?),
+        "std::map::length" => Value::Int(to_i64(expect_map_shared(take!())?.len())?),
         "std::map::insert_new" => {
             let mut values = expect_map(take!())?;
             let key = string!();
@@ -715,15 +715,18 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::map(values)
         }
         "std::map::keys" => {
-            Value::Array(expect_map(take!())?.into_keys().map(Value::Str).collect())
+            let values = expect_map_shared(take!())?;
+            Value::Array(values.keys().cloned().map(Value::Str).collect())
         }
-        "std::map::values" => Value::Array(expect_map(take!())?.into_values().collect()),
+        "std::map::values" => {
+            Value::Array(expect_map_shared(take!())?.values().cloned().collect())
+        }
         "std::map::contains" => {
-            let values = expect_map(take!())?;
+            let values = expect_map_shared(take!())?;
             Value::Bool(values.contains_key(&string!()))
         }
         "std::map::get" => {
-            let values = expect_map(take!())?;
+            let values = expect_map_shared(take!())?;
             values.get(&string!()).cloned().unwrap_or(Value::Nil)
         }
         "std::map::insert" => {
@@ -5292,6 +5295,26 @@ fn expect_array(value: Value) -> Result<Vec<Value>, String> {
     match value {
         Value::Array(v) | Value::Tuple(v) => Ok(v.into_inner()),
         _ => Err("expected array".into()),
+    }
+}
+/// Read-only access to an array argument. Unlike `expect_array` it never
+/// copies: `into_inner` clones the whole vector whenever the caller still
+/// holds the value (the usual case, e.g. `contains(xs, x)`), which made every
+/// lookup O(n).
+fn expect_array_shared(value: Value) -> Result<Shared<Vec<Value>>, String> {
+    match value {
+        Value::Array(v) | Value::Tuple(v) => Ok(v),
+        _ => Err("expected array".into()),
+    }
+}
+/// Read-only access to a map argument without copying it (see
+/// `expect_array_shared`): `std::map::get` on a 20k-entry map took ~1.6 ms per
+/// call because each lookup cloned the whole map.
+fn expect_map_shared(value: Value) -> Result<Shared<BTreeMap<String, Value>>, String> {
+    if let Value::Map(values) = value {
+        Ok(values)
+    } else {
+        Err("expected map".into())
     }
 }
 fn expect_map(value: Value) -> Result<BTreeMap<String, Value>, String> {

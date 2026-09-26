@@ -1460,7 +1460,7 @@ impl TypeEnv {
     fn validate_type_aliases(&mut self, items: &[Item]) {
         let mut spans = HashMap::new();
         collect_type_alias_spans(items, &mut spans);
-        let recursive: Vec<_> = self
+        let mut recursive: Vec<_> = self
             .type_aliases
             .iter()
             .filter_map(|(name, target)| {
@@ -1469,6 +1469,10 @@ impl TypeEnv {
                     .then(|| (name.clone(), spans.get(name).copied()))
             })
             .collect();
+        // Source order (then name), independent of HashMap iteration order.
+        recursive.sort_by_key(|(name, span)| {
+            (span.map(|span| (span.line, span.column)), name.clone())
+        });
         for (name, span) in recursive {
             if let Some(span) = span {
                 self.push_error_at(TypeError::RecursiveTypeAlias { name }, span);
@@ -2305,7 +2309,11 @@ impl TypeEnv {
                             });
                         }
                     }
-                    for field in expected_fields.keys() {
+                    // Sorted: HashMap iteration order is random per process, which
+                    // made the order of these diagnostics change between runs.
+                    let mut expected_names: Vec<&String> = expected_fields.keys().collect();
+                    expected_names.sort();
+                    for field in expected_names {
                         if !supplied.contains(field.as_str()) {
                             self.errors.push(TypeError::MissingField {
                                 structure: name.clone(),
@@ -4506,7 +4514,9 @@ impl TypeEnv {
                         message: "both sides of an or-pattern must bind the same names".into(),
                     });
                 }
-                for name in left_names.intersection(&right_names) {
+                let mut shared: Vec<&String> = left_names.intersection(&right_names).collect();
+                shared.sort();
+                for name in shared {
                     let left_type = left_scope.get(name).cloned().unwrap_or(Type::Unknown);
                     let right_type = right_scope.get(name).cloned().unwrap_or(Type::Unknown);
                     self.require_compatible(&left_type, &right_type);
@@ -4613,7 +4623,9 @@ impl TypeEnv {
                     self.bind_pattern(pattern, &field_type);
                 }
                 if !rest {
-                    for field in schema.keys() {
+                    let mut schema_names: Vec<&String> = schema.keys().collect();
+                    schema_names.sort();
+                    for field in schema_names {
                         if !supplied.contains(field.as_str()) {
                             self.errors.push(TypeError::MissingField {
                                 structure: name.clone(),
