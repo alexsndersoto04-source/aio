@@ -54,3 +54,4 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 14
+# ping selfhost-fase2: reconstruir con Cargo.lock actualizado (stacker)
