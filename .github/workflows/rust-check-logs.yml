@@ -9,6 +9,7 @@
 #   ci-logs/check.txt   salida de `cargo check` (errores de rustc tal cual)
 #   ci-logs/check.json  diagnósticos en JSON (spans exactos)
 #   ci-logs/test.txt    salida de `cargo test` de los crates del núcleo
+#   ci-logs/fmt.patch   lo que `cargo fmt` cambiaría (vacío = ya formateado)
 #   ci-logs/STATUS      resumen de una línea: commit, check=rc, test=rc
 # ============================================================================
 name: Rust check → ci-logs
@@ -21,6 +22,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust-check-logs.yml"
+      - "selfhost/**"
   workflow_dispatch:
 
 permissions:
@@ -43,6 +45,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt → parche (no modifica la rama)
+        run: |
+          mkdir -p /tmp/logs
+          cargo fmt --all || true
+          git diff > /tmp/logs/fmt.patch
+          git checkout -- .
 
       - name: cargo check (capturado)
         run: |
@@ -98,6 +107,10 @@ jobs:
                   echo "== selfhost: lexer Titan vs lexer Rust"
                   bash selfhost/verify_lexer.sh target/release/titan 2>&1 | tail -15
                 fi
+                if [ -f selfhost/verify_parser.sh ]; then
+                  echo "== selfhost: parser Titan vs parser Rust"
+                  bash selfhost/verify_parser.sh target/release/titan 2>&1 | tail -25
+                fi
                 if [ -f ci-bench/bench.titan ]; then
                   echo "== bench"; timeout 300 target/release/titan run ci-bench/bench.titan 2>&1
                 fi
@@ -119,6 +132,7 @@ jobs:
           cp /tmp/logs/check.txt /tmp/logs/check.json ci-logs/
           cp /tmp/logs/test.txt ci-logs/ 2>/dev/null || true
           cp /tmp/logs/examples.txt ci-logs/ 2>/dev/null || true
+          cp /tmp/logs/fmt.patch ci-logs/ 2>/dev/null || true
           tail -60 /tmp/logs/build.txt > ci-logs/build.txt 2>/dev/null || true
           echo "commit=$SHA check=$(cat /tmp/logs/check.rc) test=$(cat /tmp/logs/test.rc 2>/dev/null) build=$(cat /tmp/logs/build.rc 2>/dev/null || echo -)" > ci-logs/STATUS
           git config user.name "ci-logs-bot"

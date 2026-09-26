@@ -365,6 +365,11 @@ const MAX_DATABASE_POOL_SIZE: usize = 64;
 /// programas reales: Moon se caía con «stack overflow» al atender su primera
 /// petición. Son 16 MiB de reserva virtual: sólo se comprometen si se usan.
 const TASK_STACK_BYTES: usize = 16 * 1024 * 1024;
+/// Minimum native stack that must remain before running another Titan frame
+/// (one interpreter frame plus whatever a native function may need).
+const STACK_RED_ZONE: usize = 1024 * 1024;
+/// Size of each extra native stack segment allocated by `stacker`.
+const STACK_SEGMENT: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 struct ResourceQuota {
@@ -986,6 +991,13 @@ impl Vm {
         }
     }
 
+    /// Every Titan call runs `execute_frame` recursively on the native stack,
+    /// and one interpreter frame is large (tens of KB). Without growth, an
+    /// 8 MB main thread overflowed after ~450 nested Titan calls and the
+    /// process aborted, long before the documented `max_call_depth` (4096)
+    /// could report a clean `CallDepth` error. `stacker` allocates a new stack
+    /// segment when less than `STACK_RED_ZONE` remains, so the depth limit is
+    /// the real, reachable limit on every thread (root VM and tasks).
     fn execute(
         &mut self,
         function_id: usize,
@@ -997,6 +1009,19 @@ impl Vm {
         if depth >= self.max_call_depth {
             return Err(VmError::CallDepth);
         }
+        stacker::maybe_grow(STACK_RED_ZONE, STACK_SEGMENT, || {
+            self.execute_frame(function_id, args, captures, depth, debugger)
+        })
+    }
+
+    fn execute_frame(
+        &mut self,
+        function_id: usize,
+        args: Vec<Value>,
+        captures: Vec<Value>,
+        depth: usize,
+        debugger: &mut Option<&mut dyn DebugHook>,
+    ) -> Result<Value, VmError> {
         self.track_allocation(64)?;
         // El módulo es inmutable durante la ejecución: se comparte con un Arc
         // en vez de clonar el BytecodeFunc (todo su código) en cada llamada.
@@ -4817,6 +4842,22 @@ mod tests {
             .map_err(|e| e.to_string())
             .map(|v| v.unwrap())
     }
+    #[test]
+    fn deep_recursion_reaches_the_call_depth_limit_without_crashing() {
+        // Antes: el hilo nativo se quedaba sin pila hacia ~450 llamadas
+        // anidadas y el proceso abortaba ("stack overflow"). Los tests corren
+        // en hilos de 2 MB, así que esto ejercita el crecimiento de la pila.
+        let source = |n: usize| {
+            format!(
+                "fn rec(n: int) -> int {{ if n == 0 {{ return 0 }} 1 + rec(n - 1) }} \
+                 fn main() {{ rec({n}) }}"
+            )
+        };
+        assert_eq!(run(&source(4000)).unwrap(), Value::Int(4000));
+        let error = run(&source(10_000)).unwrap_err();
+        assert!(error.contains("call depth limit exceeded"), "{error}");
+    }
+
     #[test]
     fn ordered_comparison_is_exact_for_large_ints_and_supports_chars_strings() {
         // 2^53 + 1 vs 2^53: como f64 ambos valen lo mismo; como i64 no.

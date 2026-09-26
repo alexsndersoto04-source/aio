@@ -1,5 +1,8 @@
 //! Recursive-descent and Pratt parser for Titan.
 
+mod dump;
+pub use dump::dump_ast;
+
 use thiserror::Error;
 use titan_ast::*;
 use titan_lexer::{Span, Token, TokenKind};

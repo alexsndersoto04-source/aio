@@ -62,6 +62,9 @@ pub enum Command {
     /// Print the canonical token dump of a source file (self-hosting oracle)
     #[command(hide = true)]
     Tokens { input: String },
+    /// Print the canonical AST dump of a source file (self-hosting oracle)
+    #[command(hide = true)]
+    Ast { input: String },
     /// Parse and type-check a file or project without producing an artifact
     Check {
         #[arg(default_value = ".")]
@@ -163,6 +166,10 @@ fn main() {
         } => cmd_publish(&project, &key, &registry),
         Command::Tokens { input } => match std::fs::read_to_string(&input) {
             Ok(source) => print!("{}", titan_lexer::dump_tokens(&source)),
+            Err(error) => fatal("READ ERROR", format!("{input}: {error}")),
+        },
+        Command::Ast { input } => match std::fs::read_to_string(&input) {
+            Ok(source) => print!("{}", titan_parser::dump_ast(&source)),
             Err(error) => fatal("READ ERROR", format!("{input}: {error}")),
         },
         Command::Check { input } => cmd_check(&input),

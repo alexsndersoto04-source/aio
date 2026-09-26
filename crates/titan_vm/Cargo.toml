@@ -89,6 +89,9 @@ titan_postgres = { path = "../titan_postgres" }
 titan_mysql = { path = "../titan_mysql" }
 serde_json.workspace = true
 thiserror.workspace = true
+# Crecimiento de la pila nativa para la recursión del intérprete (ver
+# Vm::execute). Mismo mecanismo que usa rustc.
+stacker = "0.1"
 
 [dev-dependencies]
 titan_lexer = { path = "../titan_lexer" }
