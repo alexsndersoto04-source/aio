@@ -49,7 +49,13 @@ jobs:
           git config user.email "arena-lock-bot@users.noreply.github.com"
           git add Cargo.lock
           git commit -m "chore: update Cargo.lock (CI, $(git rev-parse --short HEAD))"
-          git push origin HEAD:${{ github.ref_name }}
+          # La rama puede avanzar mientras corre el job: rebase y reintento.
+          for i in 1 2 3 4 5; do
+            git push origin HEAD:${{ github.ref_name }} && exit 0
+            git fetch origin ${{ github.ref_name }}
+            git rebase origin/${{ github.ref_name }}
+          done
+          exit 1
 
 # ping fase42a: dispara la actualizacion del lock en esta rama
 # ping fase42a-fix5: regenera el lock con el codigo que compila
