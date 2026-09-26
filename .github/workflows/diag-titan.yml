@@ -1,12 +1,16 @@
 name: Diag titan
 on:
   push:
+    branches: [main, "arena/**"]
+  pull_request:
     branches: [main]
 jobs:
   titan-diag:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: System deps for native audio (cpal/ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: zett check con error en anotación

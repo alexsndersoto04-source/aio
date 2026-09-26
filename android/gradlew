@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Gradle startup script for TitanMusic Android build
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# If gradle is already on the PATH, prefer using it directly
+if command -v gradle >/dev/null 2>&1; then
+    exec gradle "$@"
+fi
+
+# Fallback: look for wrapper jar
+WRAPPER_JAR="$DIR/gradle/wrapper/gradle-wrapper.jar"
+if [[ -f "$WRAPPER_JAR" ]]; then
+    exec java -jar "$WRAPPER_JAR" "$@"
+fi
+
+echo "Neither gradle nor gradle-wrapper.jar was found." >&2
+exit 1

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Titan Audio</string>
+    <string name="channel_name">Titan Reproductor Multimedia</string>
+    <string name="channel_description">Controles de reproducción y carátula en la barra de estado</string>
+</resources>

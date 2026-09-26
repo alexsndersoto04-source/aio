@@ -1,0 +1,78 @@
+name: Android APK (Titan Music)
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-apk:
+    name: Build and package Titan Music Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Android APK (Release)
+        working-directory: android
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon 2>&1 | tee /tmp/build.log || {
+            python3 ../scripts/extract_gradle_error.py
+            exit 1
+          }
+
+      - name: Verify APK structure
+        run: |
+          mkdir -p dist/
+          APK_SRC=$(find android/app/build/outputs/apk/ -name "*.apk" | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            APK_SRC=$(find android/ -name "*.apk" | head -n 1)
+          fi
+          if [ -z "$APK_SRC" ]; then
+            echo "No APK found after build"
+            exit 1
+          fi
+          echo "Found APK at: $APK_SRC"
+          cp "$APK_SRC" "dist/TitanMusic-v1.0.0.apk"
+          ls -lh dist/TitanMusic-v1.0.0.apk
+          sha256sum dist/TitanMusic-v1.0.0.apk > dist/TitanMusic-v1.0.0.apk.sha256
+          cat dist/TitanMusic-v1.0.0.apk.sha256
+
+      - name: Upload APK as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanMusic-Android-APK
+          path: |
+            dist/TitanMusic-v1.0.0.apk
+            dist/TitanMusic-v1.0.0.apk.sha256
+          retention-days: 30
+
+      - name: Attach APK to GitHub Releases (Sideload direct download)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          LATEST_TAG=$(gh release list -L 1 | awk '{print $1}')
+          if [ -n "$LATEST_TAG" ]; then
+            echo "Subiendo APK a la release $LATEST_TAG..."
+            gh release upload "$LATEST_TAG" dist/TitanMusic-v1.0.0.apk --clobber || true
+          fi
