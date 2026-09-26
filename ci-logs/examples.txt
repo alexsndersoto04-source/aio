@@ -38,6 +38,6 @@ positivo (7)
 rc=0
 == bench
 push 20000: 11 ms
-index 20000: 7 ms (suma 199990000)
-call(arr) 20000: 12 ms (suma 199990000)
+index 20000: 8 ms (suma 199990000)
+call(arr) 20000: 13 ms (suma 199990000)
 semantica de valor: original[0]=0 copia[0]=99

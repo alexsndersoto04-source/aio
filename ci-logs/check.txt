@@ -1,12 +1,12 @@
     Updating crates.io index
     Checking titan_lexer v1.0.0 (/home/runner/work/aio/aio/crates/titan_lexer)
     Checking titan_tls v1.0.0 (/home/runner/work/aio/aio/crates/titan_tls)
-    Checking titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
     Checking titan_mysql v1.0.0 (/home/runner/work/aio/aio/crates/titan_mysql)
-    Checking titan_ast v1.0.0 (/home/runner/work/aio/aio/crates/titan_ast)
+    Checking titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
     Checking titan_stdlib v1.0.0 (/home/runner/work/aio/aio/crates/titan_stdlib)
-    Checking titan_parser v1.0.0 (/home/runner/work/aio/aio/crates/titan_parser)
     Checking titan_postgres v1.0.0 (/home/runner/work/aio/aio/crates/titan_postgres)
+    Checking titan_ast v1.0.0 (/home/runner/work/aio/aio/crates/titan_ast)
+    Checking titan_parser v1.0.0 (/home/runner/work/aio/aio/crates/titan_parser)
     Checking titan_macros v1.0.0 (/home/runner/work/aio/aio/crates/titan_macros)
     Checking titan_gc v1.0.0 (/home/runner/work/aio/aio/crates/titan_gc)
     Checking titan_typechecker v1.0.0 (/home/runner/work/aio/aio/crates/titan_typechecker)
@@ -18,4 +18,4 @@
     Checking titan_dap v1.0.0 (/home/runner/work/aio/aio/crates/titan_dap)
     Checking titan_cli v1.0.0 (/home/runner/work/aio/aio/crates/titan_cli)
     Checking titan_runtime v1.0.0 (/home/runner/work/aio/aio/crates/titan_runtime)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.05s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.55s
