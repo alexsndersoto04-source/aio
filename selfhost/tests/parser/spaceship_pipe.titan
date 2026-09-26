@@ -1,0 +1,9 @@
+fn main() {
+    let a = x <=> y <=> z
+    let b = 1 + 2 <=> 3 * 4
+    let c = a < b <=> c
+    let d = v |> f |> g(1, 2) |> h()
+    let (q, r) = (1 <=> 2, 3 <=> 4)
+    let Point { x, y } = p <=> q
+    for (i, j) in xs { let k = i <=> j }
+}

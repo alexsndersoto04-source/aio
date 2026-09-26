@@ -1,0 +1,16 @@
+// Uso: titan run selfhost/ast.titan <archivo.titan>
+// Imprime el volcado canónico del AST producido por el parser escrito en
+// Titan. Debe ser idéntico a `titan ast <archivo.titan>` (parser de Rust).
+import parser
+
+fn main() {
+    let args = std::env::args()
+    if len(args) < 4 {
+        print("uso: titan run selfhost/ast.titan <archivo.titan>")
+        return
+    }
+    let text = std::fs::read_text(args[3])
+    let dump = dump_ast(text)
+    // print() añade el salto de línea final que ya trae el volcado.
+    print(std::text::substring(dump, 0, len(dump) - 1))
+}
