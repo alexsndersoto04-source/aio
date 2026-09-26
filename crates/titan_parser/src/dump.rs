@@ -53,6 +53,10 @@ pub fn dump_ast(source: &str) -> String {
 /// Escape used for every string in the dump: backslash, double quote, the
 /// usual control escapes, and any other char below U+0020 or U+007F as
 /// `\u{hex}` (lowercase). Everything else is copied verbatim.
+pub fn dump_escape(text: &str) -> String {
+    esc(text)
+}
+
 fn esc(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {

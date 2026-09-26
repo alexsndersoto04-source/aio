@@ -65,6 +65,12 @@ pub enum Command {
     /// Print the canonical AST dump of a source file (self-hosting oracle)
     #[command(hide = true)]
     Ast { input: String },
+    /// Print the canonical typechecker diagnostics of a file (self-hosting oracle)
+    #[command(hide = true)]
+    Typecheck { input: String },
+    /// Print the native function signature registry (self-hosting data)
+    #[command(hide = true)]
+    Natives,
     /// Parse and type-check a file or project without producing an artifact
     Check {
         #[arg(default_value = ".")]
@@ -172,6 +178,11 @@ fn main() {
             Ok(source) => print!("{}", titan_parser::dump_ast(&source)),
             Err(error) => fatal("READ ERROR", format!("{input}: {error}")),
         },
+        Command::Typecheck { input } => match std::fs::read_to_string(&input) {
+            Ok(source) => print!("{}", typecheck_dump(&source)),
+            Err(error) => fatal("READ ERROR", format!("{input}: {error}")),
+        },
+        Command::Natives => print!("{}", natives_dump()),
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Wasm { input, output } => cmd_wasm(&input, output),
@@ -650,6 +661,40 @@ fn compile_program(program: &titan_ast::Program) -> Result<titan_codegen::Compil
     titan_codegen::AstCompiler::new()
         .compile_program(program)
         .map_err(|error| error.to_string())
+}
+
+/// Canonical typechecker output for one source file (self-hosting oracle).
+/// If lexing or parsing fails, the AST dump (which then only lists those
+/// errors) is printed instead; otherwise `ok` or one `diag:` line per
+/// diagnostic, in the order the typechecker reports them.
+fn typecheck_dump(source: &str) -> String {
+    let mut lexer = titan_lexer::Lexer::new(source);
+    let (tokens, errors) = lexer.tokenize();
+    if !errors.is_empty() {
+        return titan_parser::dump_ast(source);
+    }
+    let mut parser = titan_parser::Parser::new(tokens.to_vec());
+    let Ok(program) = parser.parse_program() else {
+        return titan_parser::dump_ast(source);
+    };
+    match titan_typechecker::TypeEnv::new().check_program_diagnostics(&program) {
+        Ok(()) => "ok\n".into(),
+        Err(diagnostics) => diagnostics
+            .iter()
+            .map(|d| format!("diag: {}\n", titan_parser::dump_escape(&d.to_string())))
+            .collect(),
+    }
+}
+
+/// Native registry: `name param,param -> result`, one per line, in order.
+fn natives_dump() -> String {
+    titan_typechecker::TypeEnv::native_signatures()
+        .iter()
+        .map(|n| {
+            let params: Vec<String> = n.params.iter().map(|p| format!("{p:?}")).collect();
+            format!("{} {} -> {:?}\n", n.name, params.join(","), n.result)
+        })
+        .collect()
 }
 
 fn run_module(

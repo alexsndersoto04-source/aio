@@ -1,7 +1,7 @@
 //! Recursive-descent and Pratt parser for Titan.
 
 mod dump;
-pub use dump::dump_ast;
+pub use dump::{dump_ast, dump_escape};
 
 use thiserror::Error;
 use titan_ast::*;

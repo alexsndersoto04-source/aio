@@ -165,6 +165,15 @@ pub enum TypeError {
         target: String,
         method: String,
     },
+    /// Previously reported as `UnknownVariable` with the whole sentence as the
+    /// "variable name": "unknown variable or function 'impl T for S: missing
+    /// required method 'm''".
+    #[error("impl {trait_name} for {target} is missing required method '{method}'")]
+    MissingTraitMethod {
+        trait_name: String,
+        target: String,
+        method: String,
+    },
     #[error("method '{method}' is not declared by trait '{trait_name}'")]
     UnknownTraitMethod { trait_name: String, method: String },
     #[error("missing field '{field}' in struct '{structure}'")]
@@ -1323,6 +1332,11 @@ impl TypeEnv {
     /// Runs semantic analysis while preserving source locations for consumers
     /// such as the language server. The legacy `check_program` API remains
     /// available for embedders that only need the error values.
+    /// The native function registry this checker types calls against.
+    pub fn native_signatures() -> &'static [titan_stdlib::native::NativeSignature] {
+        titan_stdlib::native::NATIVES
+    }
+
     pub fn check_program_diagnostics(
         &mut self,
         program: &Program,
@@ -1767,11 +1781,10 @@ impl TypeEnv {
                                 } else {
                                     // Required method missing.
                                     self.push_error_at(
-                                        TypeError::UnknownVariable {
-                                            name: format!(
-                                                "impl {} for {}: missing required method '{}'",
-                                                trait_name, type_name, tm.name
-                                            ),
+                                        TypeError::MissingTraitMethod {
+                                            trait_name: trait_name.clone(),
+                                            target: type_name.clone(),
+                                            method: tm.name.clone(),
                                         },
                                         block.span,
                                     );
@@ -5977,6 +5990,26 @@ mod tests {
 
     fn check(source: &str) -> Result<(), Vec<TypeError>> {
         TypeEnv::new().check_program(&parse(source))
+    }
+
+    #[test]
+    fn missing_trait_method_has_its_own_diagnostic() {
+        let errors = check(
+            "trait Tr { fn m(self) -> int; } struct A { x: int } \
+             impl Tr for A { } fn main() { }",
+        )
+        .unwrap_err();
+        assert!(
+            errors.contains(&TypeError::MissingTraitMethod {
+                trait_name: "Tr".into(),
+                target: "A".into(),
+                method: "m".into(),
+            }),
+            "{errors:?}"
+        );
+        assert!(!errors
+            .iter()
+            .any(|error| matches!(error, TypeError::UnknownVariable { .. })));
     }
 
     #[test]
