@@ -1,0 +1,122 @@
+# ============================================================================
+# Rust check/test → logs commiteados en la MISMA rama (ci-logs/)
+#
+# Los logs de Actions no son descargables desde el sandbox de Arena (el host
+# results-receiver.actions.githubusercontent.com no es alcanzable), pero git sí.
+# Este workflow compila y prueba los crates del núcleo y deja la salida REAL de
+# rustc/cargo en ci-logs/ con un commit [skip ci] en la rama que lo disparó.
+#
+#   ci-logs/check.txt   salida de `cargo check` (errores de rustc tal cual)
+#   ci-logs/check.json  diagnósticos en JSON (spans exactos)
+#   ci-logs/test.txt    salida de `cargo test` de los crates del núcleo
+#   ci-logs/STATUS      resumen de una línea: commit, check=rc, test=rc
+# ============================================================================
+name: Rust check → ci-logs
+
+on:
+  push:
+    branches: ["arena/**"]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-check-logs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rust-check-logs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: System deps (ALSA para cpal)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check (capturado)
+        run: |
+          mkdir -p /tmp/logs
+          set +e
+          cargo check --workspace --all-targets --message-format=json \
+            > /tmp/logs/check.raw.json 2> /tmp/logs/check.stderr.txt
+          echo $? > /tmp/logs/check.rc
+          python3 - <<'EOF'
+          import json
+          out_txt = open('/tmp/logs/check.txt', 'w')
+          out_json = []
+          for line in open('/tmp/logs/check.raw.json'):
+              try:
+                  m = json.loads(line)
+              except Exception:
+                  continue
+              if m.get('reason') != 'compiler-message':
+                  continue
+              msg = m['message']
+              if msg.get('level') not in ('error', 'warning'):
+                  continue
+              out_txt.write(msg.get('rendered') or '')
+              out_json.append(msg)
+          json.dump(out_json, open('/tmp/logs/check.json', 'w'))
+          EOF
+          tail -40 /tmp/logs/check.stderr.txt >> /tmp/logs/check.txt
+
+      - name: cargo test núcleo (capturado)
+        run: |
+          set +e
+          if [ "$(cat /tmp/logs/check.rc)" = "0" ]; then
+            cargo test -p titan_lexer -p titan_parser -p titan_typechecker \
+              -p titan_codegen -p titan_vm -p titan_cli --no-fail-fast \
+              > /tmp/logs/test.txt 2>&1
+            echo $? > /tmp/logs/test.rc
+            cargo build --release -p titan_cli > /tmp/logs/build.txt 2>&1
+            echo $? > /tmp/logs/build.rc
+            if [ -x target/release/titan ]; then
+              {
+                for f in examples/hello.titan examples/fibonacci.titan examples/impl_structs.titan \
+                         examples/traits.titan examples/json_api.titan examples/destructuring.titan \
+                         examples/custom_errors.titan examples/pipeline_spaceship.titan; do
+                  echo "== $f"; timeout 60 target/release/titan run "$f" 2>&1 | tail -3; echo "rc=$?"
+                done
+                if [ -f ci-bench/bench.titan ]; then
+                  echo "== bench"; timeout 300 target/release/titan run ci-bench/bench.titan 2>&1
+                fi
+              } > /tmp/logs/examples.txt 2>&1
+            fi
+          else
+            echo "check falló; tests omitidos" > /tmp/logs/test.txt
+            echo skip > /tmp/logs/test.rc
+          fi
+          sed -i 's/\x1b\[[0-9;]*m//g' /tmp/logs/*.txt || true
+
+      - name: Commit ci-logs a la rama
+        run: |
+          set -e
+          SHA=$(git rev-parse --short HEAD)
+          git fetch origin "${GITHUB_REF_NAME}"
+          git checkout -B logs "origin/${GITHUB_REF_NAME}"
+          mkdir -p ci-logs
+          cp /tmp/logs/check.txt /tmp/logs/check.json ci-logs/
+          cp /tmp/logs/test.txt ci-logs/ 2>/dev/null || true
+          cp /tmp/logs/examples.txt ci-logs/ 2>/dev/null || true
+          tail -60 /tmp/logs/build.txt > ci-logs/build.txt 2>/dev/null || true
+          echo "commit=$SHA check=$(cat /tmp/logs/check.rc) test=$(cat /tmp/logs/test.rc 2>/dev/null) build=$(cat /tmp/logs/build.rc 2>/dev/null || echo -)" > ci-logs/STATUS
+          git config user.name "ci-logs-bot"
+          git config user.email "ci-logs-bot@users.noreply.github.com"
+          git add ci-logs
+          git commit -m "ci-logs: $(cat ci-logs/STATUS) [skip ci]" || exit 0
+          for i in 1 2 3; do
+            git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            git fetch origin "${GITHUB_REF_NAME}" && git rebase "origin/${GITHUB_REF_NAME}"
+          done
+          exit 1

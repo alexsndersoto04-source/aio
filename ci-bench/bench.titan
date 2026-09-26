@@ -1,0 +1,31 @@
+// Benchmark de rendimiento de la VM (patrones que necesita un compilador
+// escrito en Titan). Imprime milisegundos por prueba.
+fn get(a, i: int) -> int { a[i] }
+
+fn main() {
+    let n = 20000
+    let t0 = std::time::unix_millis()
+    let mut acc = []
+    for i in 0..n { acc = std::array::push(acc, i) }
+    let t1 = std::time::unix_millis()
+    let ms_push = t1 - t0
+    print("push {n}: {ms_push} ms")
+
+    let mut s = 0
+    for i in 0..n { s = s + acc[i] }
+    let t2 = std::time::unix_millis()
+    let ms_index = t2 - t1
+    print("index {n}: {ms_index} ms (suma {s})")
+
+    let mut s2 = 0
+    for i in 0..n { s2 = s2 + get(acc, i) }
+    let t3 = std::time::unix_millis()
+    let ms_call = t3 - t2
+    print("call(arr) {n}: {ms_call} ms (suma {s2})")
+
+    let copia = acc
+    let copia = std::array::set(copia, 0, 99)
+    let original0 = acc[0]
+    let copia0 = copia[0]
+    print("semantica de valor: original[0]={original0} copia[0]={copia0}")
+}

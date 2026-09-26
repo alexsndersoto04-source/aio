@@ -2,6 +2,8 @@
 
 mod debug;
 mod native;
+pub mod shared;
+pub use shared::Shared;
 pub use debug::{
     Breakpoint, DebugCommand, DebugController, DebugEvent, DebugFrame, DebugHook, DebugMode,
     Debugger,
@@ -29,12 +31,12 @@ pub enum Value {
     Str(String),
     Bytes(Vec<u8>),
     Nil,
-    Array(Vec<Value>),
-    Tuple(Vec<Value>),
-    Map(BTreeMap<String, Value>),
+    Array(Shared<Vec<Value>>),
+    Tuple(Shared<Vec<Value>>),
+    Map(Shared<BTreeMap<String, Value>>),
     Struct {
         name: String,
-        fields: BTreeMap<String, Value>,
+        fields: Shared<BTreeMap<String, Value>>,
     },
     Enum {
         name: String,
@@ -62,6 +64,21 @@ pub enum Value {
     PostgresPool(u64),
     Mysql(u64),
     MysqlPool(u64),
+}
+
+impl Value {
+    /// Construye un `Value::Array` a partir de un `Vec` (sin copia).
+    pub fn array(values: Vec<Value>) -> Value {
+        Value::Array(Shared::new(values))
+    }
+    /// Construye un `Value::Tuple` a partir de un `Vec` (sin copia).
+    pub fn tuple(values: Vec<Value>) -> Value {
+        Value::Tuple(Shared::new(values))
+    }
+    /// Construye un `Value::Map` a partir de un `BTreeMap` (sin copia).
+    pub fn map(values: BTreeMap<String, Value>) -> Value {
+        Value::Map(Shared::new(values))
+    }
 }
 
 pub fn val_to_string(value: &Value) -> String {
@@ -511,7 +528,7 @@ impl Drop for RuntimeState {
 }
 
 pub struct Vm {
-    module: CompiledModule,
+    module: Arc<CompiledModule>,
     instruction_limit: usize,
     instructions: usize,
     max_call_depth: usize,
@@ -550,7 +567,7 @@ impl Drop for Vm {
 impl Vm {
     pub fn new(module: CompiledModule) -> Self {
         Self {
-            module,
+            module: Arc::new(module),
             instruction_limit: 10_000_000,
             instructions: 0,
             max_call_depth: 4096,
@@ -640,7 +657,7 @@ impl Vm {
         }
 
         let task_id = next_runtime_resource_id(&self.runtime.next_task)?;
-        let module = self.module.clone();
+        let module = Arc::clone(&self.module);
         let runtime = Arc::clone(&self.runtime);
         let capabilities = self.capabilities;
         let output = self.output.clone();
@@ -740,7 +757,7 @@ impl Vm {
                 self.track_allocation(
                     output.len().saturating_mul(32).saturating_add(64),
                 )?;
-                Ok(Value::Array(output))
+                Ok(Value::array(output))
             }
             ("filter", 1) => {
                 let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
@@ -774,7 +791,7 @@ impl Vm {
                 self.track_allocation(
                     output.len().saturating_mul(32).saturating_add(64),
                 )?;
-                Ok(Value::Array(output))
+                Ok(Value::array(output))
             }
             ("fold", 2) => {
                 let mut args = args.into_iter();
@@ -863,7 +880,7 @@ impl Vm {
                 self.track_allocation(
                     output.len().saturating_mul(32).saturating_add(64),
                 )?;
-                Ok(Value::Array(output))
+                Ok(Value::array(output))
             }
             ("find", 1) => {
                 let callable = args.into_iter().next().ok_or_else(|| VmError::Arity {
@@ -981,15 +998,16 @@ impl Vm {
             return Err(VmError::CallDepth);
         }
         self.track_allocation(64)?;
-        let function = self
-            .module
+        // El módulo es inmutable durante la ejecución: se comparte con un Arc
+        // en vez de clonar el BytecodeFunc (todo su código) en cada llamada.
+        let module = Arc::clone(&self.module);
+        let function = module
             .functions
             .get(function_id)
-            .cloned()
             .ok_or(VmError::InvalidFunction(function_id))?;
         if args.len() != function.arity {
             return Err(VmError::Arity {
-                function: function.name,
+                function: function.name.clone(),
                 expected: function.arity,
                 found: args.len(),
             });
@@ -1510,7 +1528,7 @@ impl Vm {
                     map.insert("total_ms".into(), Value::Int(total_ms));
                     map.insert("ns_per_op".into(), Value::Int(ns_per_op));
                     map.insert("ops_per_sec".into(), Value::Int(ops_per_sec));
-                    stack.push(Value::Map(map));
+                    stack.push(Value::map(map));
                 }
                 Op::JoinTask => {
                     let Value::Task(task_id) = pop(&mut stack, &function.name)? else {
@@ -1627,7 +1645,7 @@ impl Vm {
                             receiver: Mutex::new(receiver),
                         }),
                     );
-                    stack.push(Value::Tuple(vec![
+                    stack.push(Value::tuple(vec![
                         Value::ChannelSender(channel_id),
                         Value::ChannelReceiver(channel_id),
                     ]));
@@ -1731,7 +1749,7 @@ impl Vm {
                             };
                             match received {
                                 Ok(value) => {
-                                    stack.push(option_some(Value::Tuple(vec![
+                                    stack.push(option_some(Value::tuple(vec![
                                         Value::Int(index as i64),
                                         value,
                                     ])));
@@ -1811,7 +1829,7 @@ impl Vm {
                         .map_err(|_| VmError::Type("stream registry poisoned".into()))?
                         .insert(stream_id, Arc::new(Mutex::new(stream)));
                     permit.commit();
-                    stack.push(Value::Tuple(vec![
+                    stack.push(Value::tuple(vec![
                         Value::TcpStream(stream_id),
                         Value::Str(peer.to_string()),
                     ]));
@@ -2327,7 +2345,7 @@ impl Vm {
                         .map_err(|_| VmError::Type("TLS stream registry poisoned".into()))?
                         .insert(id, Arc::new(Mutex::new(stream)));
                     permit.commit();
-                    stack.push(Value::Tuple(vec![
+                    stack.push(Value::tuple(vec![
                         Value::TlsStream(id),
                         Value::Str(peer.to_string()),
                     ]));
@@ -2803,7 +2821,7 @@ impl Vm {
                 Op::SqlitePoolStats => {
                     let pool = sqlite_pool(&self.runtime, pop(&mut stack, &function.name)?)?;
                     let stats = pool.stats().map_err(sqlite_error)?;
-                    stack.push(Value::Map(BTreeMap::from([
+                    stack.push(Value::map(BTreeMap::from([
                         ("maximum".into(), Value::Int(stats.maximum as i64)),
                         ("total".into(), Value::Int(stats.total as i64)),
                         ("idle".into(), Value::Int(stats.idle as i64)),
@@ -2990,7 +3008,7 @@ impl Vm {
                     let stats = postgres_pool(&self.runtime, pop(&mut stack, &function.name)?)?
                         .stats()
                         .map_err(postgres_error)?;
-                    stack.push(Value::Map(BTreeMap::from([
+                    stack.push(Value::map(BTreeMap::from([
                         ("maximum".into(), Value::Int(stats.maximum as i64)),
                         ("total".into(), Value::Int(stats.total as i64)),
                         ("idle".into(), Value::Int(stats.idle as i64)),
@@ -3160,7 +3178,7 @@ impl Vm {
                     let stats = mysql_pool(&self.runtime, pop(&mut stack, &function.name)?)?
                         .stats()
                         .map_err(mysql_error)?;
-                    stack.push(Value::Map(BTreeMap::from([
+                    stack.push(Value::map(BTreeMap::from([
                         ("maximum".into(), Value::Int(stats.maximum as i64)),
                         ("total".into(), Value::Int(stats.total as i64)),
                         ("idle".into(), Value::Int(stats.idle as i64)),
@@ -3500,12 +3518,12 @@ impl Vm {
                 Op::NewArray(count) => {
                     let values = take_args(&mut stack, count, &function.name)?;
                     self.track_allocation(values.len().saturating_mul(32).saturating_add(64))?;
-                    stack.push(Value::Array(values));
+                    stack.push(Value::array(values));
                 }
                 Op::NewTuple(count) => {
                     let values = take_args(&mut stack, count, &function.name)?;
                     self.track_allocation(values.len().saturating_mul(32).saturating_add(64))?;
-                    stack.push(Value::Tuple(values));
+                    stack.push(Value::tuple(values));
                 }
                 Op::Index => {
                     let index_value = pop(&mut stack, &function.name)?;
@@ -3644,7 +3662,7 @@ fn http_request_value(request: titan_stdlib::http::Request, peer: &str) -> Value
     map.insert("body".into(), Value::Bytes(request.body));
     map.insert("keep_alive".into(), Value::Bool(request.keep_alive));
     map.insert("peer".into(), Value::Str(peer.into()));
-    Value::Map(map)
+    Value::map(map)
 }
 fn http_router(runtime: &RuntimeState, id: u64) -> Result<Arc<Mutex<HttpRouterState>>, VmError> {
     runtime
@@ -3670,7 +3688,7 @@ fn request_method_path(request: &Value) -> Result<(String, String), VmError> {
     Ok((method, path))
 }
 fn http_error_value(error: &VmError) -> Value {
-    Value::Map(BTreeMap::from([
+    Value::map(BTreeMap::from([
         ("message".into(), Value::Str(error.to_string())),
         (
             "kind".into(),
@@ -3689,11 +3707,11 @@ fn http_error_value(error: &VmError) -> Value {
     ]))
 }
 fn http_not_found() -> Value {
-    Value::Map(BTreeMap::from([
+    Value::map(BTreeMap::from([
         ("status".into(), Value::Int(404)),
         (
             "headers".into(),
-            Value::Map(BTreeMap::from([(
+            Value::map(BTreeMap::from([(
                 "Content-Type".into(),
                 Value::Str("text/plain; charset=utf-8".into()),
             )])),
@@ -3722,7 +3740,7 @@ fn http_response_value(
             .map_err(|_| VmError::Type("HTTP response status out of range".into()))?,
         _ => return Err(VmError::Type("HTTP response status must be int".into())),
     };
-    let headers = match map.remove("headers").unwrap_or(Value::Map(BTreeMap::new())) {
+    let headers = match map.remove("headers").unwrap_or(Value::map(BTreeMap::new())) {
         Value::Map(headers) => headers
             .into_iter()
             .map(|(key, value)| {
@@ -4131,7 +4149,7 @@ fn server_try_acquire(control: &ServerControl) -> bool {
 }
 fn server_stats(control: &ServerControl) -> Value {
     let shutting_down = control.shutting_down.load(Ordering::Acquire);
-    Value::Map(BTreeMap::from([
+    Value::map(BTreeMap::from([
         ("maximum".into(), Value::Int(control.maximum as i64)),
         (
             "active".into(),
@@ -4163,11 +4181,11 @@ fn server_health_response(control: &ServerControl) -> Value {
         ready,
         active
     );
-    Value::Map(BTreeMap::from([
+    Value::map(BTreeMap::from([
         ("status".into(), Value::Int(if ready { 200 } else { 503 })),
         (
             "headers".into(),
-            Value::Map(BTreeMap::from([
+            Value::map(BTreeMap::from([
                 (
                     "Content-Type".into(),
                     Value::Str("application/json; charset=utf-8".into()),
@@ -4496,23 +4514,23 @@ fn websocket_decoder(
 fn websocket_message_value(message: titan_stdlib::websocket::Message) -> Value {
     use titan_stdlib::websocket::Message;
     match message {
-        Message::Text(text) => Value::Map(BTreeMap::from([
+        Message::Text(text) => Value::map(BTreeMap::from([
             ("type".into(), Value::Str("text".into())),
             ("text".into(), Value::Str(text)),
         ])),
-        Message::Binary(data) => Value::Map(BTreeMap::from([
+        Message::Binary(data) => Value::map(BTreeMap::from([
             ("type".into(), Value::Str("binary".into())),
             ("data".into(), Value::Bytes(data)),
         ])),
-        Message::Ping(data) => Value::Map(BTreeMap::from([
+        Message::Ping(data) => Value::map(BTreeMap::from([
             ("type".into(), Value::Str("ping".into())),
             ("data".into(), Value::Bytes(data)),
         ])),
-        Message::Pong(data) => Value::Map(BTreeMap::from([
+        Message::Pong(data) => Value::map(BTreeMap::from([
             ("type".into(), Value::Str("pong".into())),
             ("data".into(), Value::Bytes(data)),
         ])),
-        Message::Close { code, reason } => Value::Map(BTreeMap::from([
+        Message::Close { code, reason } => Value::map(BTreeMap::from([
             ("type".into(), Value::Str("close".into())),
             (
                 "code".into(),
@@ -4761,7 +4779,7 @@ fn make_range(args: Vec<Value>) -> Result<Value, VmError> {
     } else {
         Vec::new()
     };
-    Ok(Value::Array(values))
+    Ok(Value::array(values))
 }
 
 #[cfg(test)]
@@ -4899,7 +4917,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             Vm::new(module).with_task_limit(1).run().unwrap(),
-            Some(Value::Array(vec![Value::Int(1), Value::Int(2)]))
+            Some(Value::array(vec![Value::Int(1), Value::Int(2)]))
         );
     }
 
@@ -4908,7 +4926,7 @@ mod tests {
         let module = compile("fn main() { let normal = spawn || std::runtime::memory_limit() let first = join(normal) let requested = std::runtime::spawn_quota(999999, || std::runtime::memory_limit()); [first, join(requested)] }").unwrap();
         assert_eq!(
             Vm::new(module).with_memory_limit(1_234).run().unwrap(),
-            Some(Value::Array(vec![Value::Int(1_234), Value::Int(1_234)]))
+            Some(Value::array(vec![Value::Int(1_234), Value::Int(1_234)]))
         );
     }
 
@@ -5325,7 +5343,7 @@ mod tests {
     }
     #[test]
     fn runtime_memory_quota_and_stats_work_from_titan() {
-        assert_eq!(run("fn main() { let t = std::runtime::spawn_quota(500, || { let s = \"long allocation string creation for memory tracking in child task 1234567890\" + \" more bytes\" return 42 }) let r = join(t) let mem = std::runtime::memory_limit() let alloc = std::runtime::allocated_bytes() let live = std::runtime::gc_live_count() let coll = std::runtime::gc_collect(); [r, mem, alloc >= 0, live >= 0, coll >= 0] }").unwrap(), Value::Array(vec![Value::Int(42), Value::Int(-1), Value::Bool(true), Value::Bool(true), Value::Bool(true)]));
+        assert_eq!(run("fn main() { let t = std::runtime::spawn_quota(500, || { let s = \"long allocation string creation for memory tracking in child task 1234567890\" + \" more bytes\" return 42 }) let r = join(t) let mem = std::runtime::memory_limit() let alloc = std::runtime::allocated_bytes() let live = std::runtime::gc_live_count() let coll = std::runtime::gc_collect(); [r, mem, alloc >= 0, live >= 0, coll >= 0] }").unwrap(), Value::array(vec![Value::Int(42), Value::Int(-1), Value::Bool(true), Value::Bool(true), Value::Bool(true)]));
     }
     #[test]
     fn runtime_heap_dump_and_gc_threshold_work_from_titan() {
@@ -5335,7 +5353,7 @@ mod tests {
         let source = format!("fn main() {{ std::runtime::gc_set_threshold(2048 * 1024) let th = std::runtime::gc_threshold() let tasks = std::runtime::active_tasks() let ok = std::runtime::heap_dump(\"{}\"); [th, tasks, ok] }}", escaped_path);
         assert_eq!(
             run(&source).unwrap(),
-            Value::Array(vec![
+            Value::array(vec![
                 Value::Int(2048 * 1024),
                 Value::Int(0),
                 Value::Bool(true)
@@ -5345,7 +5363,7 @@ mod tests {
     }
     #[test]
     fn runtime_benchmark_and_fast_paths_work_from_titan() {
-        assert_eq!(run("fn main() { let opt = std::runtime::optimize_level() let fp = std::runtime::fast_path_enabled() let stats = std::runtime::benchmark(10, || { let x = 100 + 200 return x }); [opt, fp, stats.iterations] }").unwrap(), Value::Array(vec![Value::Int(2), Value::Bool(true), Value::Int(10)]));
+        assert_eq!(run("fn main() { let opt = std::runtime::optimize_level() let fp = std::runtime::fast_path_enabled() let stats = std::runtime::benchmark(10, || { let x = 100 + 200 return x }); [opt, fp, stats.iterations] }").unwrap(), Value::array(vec![Value::Int(2), Value::Bool(true), Value::Int(10)]));
     }
     #[test]
     fn try_unwraps_success_and_propagates_failure() {
@@ -5666,12 +5684,12 @@ mod tests {
         assert_eq!(
             run("fn main(){std::input::set_touch_point(0,33,44,true) std::input::touch_pos(0)}")
                 .unwrap(),
-            Value::Array(vec![Value::Int(33), Value::Int(44), Value::Bool(true)])
+            Value::array(vec![Value::Int(33), Value::Int(44), Value::Bool(true)])
         );
     }
     #[test]
     fn sqlite_migrations_are_idempotent_from_titan() {
-        assert_eq!(run("fn main(){let db=std::sqlite::memory() let migrations=std::json::parse(\"[{\\\"version\\\":1,\\\"name\\\":\\\"create_items\\\",\\\"sql\\\":\\\"CREATE TABLE items(id INTEGER PRIMARY KEY);\\\"}]\") let first=std::sqlite::migrate(db,migrations) let second=std::sqlite::migrate(db,migrations) std::sqlite::close(db); [first,second]}").unwrap(),Value::Array(vec![Value::Int(1),Value::Int(0)]));
+        assert_eq!(run("fn main(){let db=std::sqlite::memory() let migrations=std::json::parse(\"[{\\\"version\\\":1,\\\"name\\\":\\\"create_items\\\",\\\"sql\\\":\\\"CREATE TABLE items(id INTEGER PRIMARY KEY);\\\"}]\") let first=std::sqlite::migrate(db,migrations) let second=std::sqlite::migrate(db,migrations) std::sqlite::close(db); [first,second]}").unwrap(),Value::array(vec![Value::Int(1),Value::Int(0)]));
     }
     #[test]
     fn sqlite_pool_leases_are_reused_from_titan() {
@@ -5681,7 +5699,7 @@ mod tests {
         let source=format!("fn main(){{let pool=std::sqlite::pool(\"{}\",1) let first=std::sqlite::acquire(pool,1000)? let pending=std::sqlite::acquire(pool,1) std::sqlite::close(first) let second=std::sqlite::acquire(pool,1000)? let stats=std::sqlite::pool_stats(pool) std::sqlite::close(second) std::sqlite::pool_close(pool); [pending,stats.total]}}",escaped_path);
         assert_eq!(
             run(&source).unwrap(),
-            Value::Array(vec![
+            Value::array(vec![
                 Value::Enum {
                     name: "Option".into(),
                     variant: "None".into(),
@@ -5700,7 +5718,7 @@ mod tests {
         let source=format!("fn main(){{let pool=std::sqlite::pool(\"{}\",1) let health=std::sqlite::pool_health(pool,1000) let conn=std::sqlite::acquire(pool,1000)? let ping=std::sqlite::ping(conn) std::sqlite::close(conn) std::sqlite::pool_close(pool); [health,ping]}}",escaped_path);
         assert_eq!(
             run(&source).unwrap(),
-            Value::Array(vec![Value::Bool(true), Value::Bool(true)])
+            Value::array(vec![Value::Bool(true), Value::Bool(true)])
         );
         let _ = std::fs::remove_file(path);
     }
@@ -5714,11 +5732,11 @@ mod tests {
     }
     #[test]
     fn server_control_enforces_backpressure_and_shutdown() {
-        assert_eq!(run("fn main(){let control=std::server::control(2) let a=std::server::try_acquire(control) let b=std::server::try_acquire(control) let rejected=std::server::try_acquire(control) std::server::release(control) std::server::shutdown(control) let after=std::server::try_acquire(control) let stats=std::server::stats(control); [a,b,rejected,after,stats.active,stats.ready]}").unwrap(),Value::Array(vec![Value::Bool(true),Value::Bool(true),Value::Bool(false),Value::Bool(false),Value::Int(1),Value::Bool(false)]));
+        assert_eq!(run("fn main(){let control=std::server::control(2) let a=std::server::try_acquire(control) let b=std::server::try_acquire(control) let rejected=std::server::try_acquire(control) std::server::release(control) std::server::shutdown(control) let after=std::server::try_acquire(control) let stats=std::server::stats(control); [a,b,rejected,after,stats.active,stats.ready]}").unwrap(),Value::array(vec![Value::Bool(true),Value::Bool(true),Value::Bool(false),Value::Bool(false),Value::Int(1),Value::Bool(false)]));
     }
     #[test]
     fn health_responses_and_dispatch_metrics_reflect_lifecycle() {
-        assert_eq!(run("fn main(){let control=std::server::control(10) let healthy=std::server::health_response(control) let router=std::http::router() let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/missing\\\"}\") std::http::dispatch(router,request) let requests=std::metrics::counter_get(\"http.requests.total\") std::server::shutdown(control) let draining=std::server::health_response(control); [healthy.status,draining.status,requests]}").unwrap(),Value::Array(vec![Value::Int(200),Value::Int(503),Value::Int(1)]));
+        assert_eq!(run("fn main(){let control=std::server::control(10) let healthy=std::server::health_response(control) let router=std::http::router() let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/missing\\\"}\") std::http::dispatch(router,request) let requests=std::metrics::counter_get(\"http.requests.total\") std::server::shutdown(control) let draining=std::server::health_response(control); [healthy.status,draining.status,requests]}").unwrap(),Value::array(vec![Value::Int(200),Value::Int(503),Value::Int(1)]));
     }
     #[test]
     fn http_routing_is_callable_from_titan() {
@@ -5770,7 +5788,7 @@ mod tests {
     #[test]
     fn response_middleware_and_rate_limits_work() {
         assert_eq!(run("fn main(){let router=std::http::router() std::http::route(router,\"GET\",\"/\",|request|std::json::parse(\"{\\\"status\\\":200,\\\"body\\\":\\\"ok\\\"}\")) std::http::after(router,|response|std::http::security_headers(response)) let request=std::json::parse(\"{\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/\\\"}\") let response=std::http::dispatch(router,request) std::map::get(response.headers,\"X-Frame-Options\")}").unwrap(),Value::Str("DENY".into()));
-        assert_eq!(run("fn main(){let a=std::http::rate_limit(\"vm-test-key\",2,60000) let b=std::http::rate_limit(\"vm-test-key\",2,60000) let c=std::http::rate_limit(\"vm-test-key\",2,60000); [a,b,c]}").unwrap(),Value::Array(vec![Value::Bool(true),Value::Bool(true),Value::Bool(false)]));
+        assert_eq!(run("fn main(){let a=std::http::rate_limit(\"vm-test-key\",2,60000) let b=std::http::rate_limit(\"vm-test-key\",2,60000) let c=std::http::rate_limit(\"vm-test-key\",2,60000); [a,b,c]}").unwrap(),Value::array(vec![Value::Bool(true),Value::Bool(true),Value::Bool(false)]));
     }
     #[test]
     fn high_level_http_server_invokes_titan_handler() {

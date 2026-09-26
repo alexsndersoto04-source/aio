@@ -255,7 +255,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 Value::Enum {
                     name: "Option".into(),
                     variant: "Some".into(),
-                    payload: Some(Box::new(Value::Map(map))),
+                    payload: Some(Box::new(Value::map(map))),
                 }
             } else {
                 Value::Enum {
@@ -355,7 +355,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
                 .map_err(|_| "HTTP request identifier space exhausted")?;
             request.insert("request_id".into(), Value::Str(format!("titan-{id:016x}")));
-            Value::Map(request)
+            Value::map(request)
         }
         "std::http::rate_limit" => {
             let key = string!();
@@ -406,7 +406,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 timeout: Duration::from_millis(timeout),
             })
             .map_err(error)?;
-            Value::Map(BTreeMap::from([
+            Value::map(BTreeMap::from([
                 ("status".into(), Value::Int(response.status as i64)),
                 (
                     "headers".into(),
@@ -432,7 +432,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                     .map_err(error)?
                     .into_iter()
                     .map(|part| {
-                        Value::Map(BTreeMap::from([
+                        Value::map(BTreeMap::from([
                             ("name".into(), Value::Str(part.name)),
                             (
                                 "filename".into(),
@@ -539,7 +539,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 Some(frame) => Value::Enum {
                     name: "Option".into(),
                     variant: "Some".into(),
-                    payload: Some(Box::new(Value::Map(BTreeMap::from([
+                    payload: Some(Box::new(Value::map(BTreeMap::from([
                         ("fin".into(), Value::Bool(frame.fin)),
                         ("opcode".into(), Value::Int(frame.opcode as i64)),
                         ("payload".into(), Value::Bytes(frame.payload)),
@@ -591,7 +591,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::json::flatten" => Value::Array(
             stdlib::json::flatten(&to_json(take!())?)
                 .into_iter()
-                .map(|(path, value)| Ok(Value::Tuple(vec![Value::Str(path), from_json(value)?])))
+                .map(|(path, value)| Ok(Value::tuple(vec![Value::Str(path), from_json(value)?])))
                 .collect::<Result<Vec<_>, String>>()?,
         ),
 
@@ -603,17 +603,17 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 return Err("array index out of bounds".into());
             };
             *slot = value;
-            Value::Array(values)
+            Value::array(values)
         }
         "std::array::push" => {
             let mut values = array!();
             values.push(take!());
-            Value::Array(values)
+            Value::array(values)
         }
         "std::array::pop" => {
             let mut values = array!();
             let _ = values.pop();
-            Value::Array(values)
+            Value::array(values)
         }
         "std::array::slice" => {
             let values = array!();
@@ -622,12 +622,12 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             if start > end || end > values.len() {
                 return Err("invalid array slice range".into());
             }
-            Value::Array(values[start..end].to_vec())
+            Value::array(values[start..end].to_vec())
         }
         "std::array::concat" => {
             let mut left = array!();
             left.extend(array!());
-            Value::Array(left)
+            Value::array(left)
         }
         "std::array::filled" => {
             let n = nonnegative(int!())?;
@@ -650,7 +650,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::collections::reverse" => {
             let mut values = array!();
             values.reverse();
-            Value::Array(values)
+            Value::array(values)
         }
         "std::collections::deduplicate" => {
             let mut output = Vec::new();
@@ -659,7 +659,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                     output.push(value);
                 }
             }
-            Value::Array(output)
+            Value::array(output)
         }
         "std::collections::join" => {
             let values = array!();
@@ -681,11 +681,11 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Array(
                 values
                     .chunks(size)
-                    .map(|part| Value::Array(part.to_vec()))
+                    .map(|part| Value::array(part.to_vec()))
                     .collect(),
             )
         }
-        "std::map::new" => Value::Map(BTreeMap::new()),
+        "std::map::new" => Value::map(BTreeMap::new()),
         "std::map::length" => Value::Int(to_i64(expect_map(take!())?.len())?),
         "std::map::insert_new" => {
             let mut values = expect_map(take!())?;
@@ -694,7 +694,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 return Err("map key already exists".into());
             }
             values.insert(key, take!());
-            Value::Map(values)
+            Value::map(values)
         }
         "std::map::keys" => {
             Value::Array(expect_map(take!())?.into_keys().map(Value::Str).collect())
@@ -712,12 +712,12 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             let mut values = expect_map(take!())?;
             let key = string!();
             values.insert(key, take!());
-            Value::Map(values)
+            Value::map(values)
         }
         "std::map::remove" => {
             let mut values = expect_map(take!())?;
             values.remove(&string!());
-            Value::Map(values)
+            Value::map(values)
         }
 
         "std::math::sqrt" => checked_float(float!().sqrt(), "sqrt domain error")?,
@@ -923,11 +923,11 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                     response
                         .headers
                         .into_iter()
-                        .map(|(k, v)| Value::Tuple(vec![Value::Str(k), Value::Str(v)]))
+                        .map(|(k, v)| Value::tuple(vec![Value::Str(k), Value::Str(v)]))
                         .collect(),
                 ),
             );
-            Value::Map(map)
+            Value::map(map)
         }
         "std::web::query_exists"
         | "std::web::set_text"
@@ -1081,7 +1081,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         }
         "std::input::mouse_pos" => {
             let (x, y) = stdlib::input::mouse_pos();
-            Value::Array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y))])
+            Value::array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y))])
         }
         "std::input::is_mouse_button_pressed" => {
             let btn = int!() as u8;
@@ -1090,7 +1090,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::input::touch_pos" => {
             let idx = int!() as u32;
             let (x, y, active) = stdlib::input::touch_pos(idx);
-            Value::Array(vec![
+            Value::array(vec![
                 Value::Int(i64::from(x)),
                 Value::Int(i64::from(y)),
                 Value::Bool(active),
@@ -2324,7 +2324,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "term_mod")]
         "std::term::size" => {
             let (columns, rows) = stdlib::term_mod::size().map_err(error)?;
-            Value::Array(vec![Value::Int(columns as i64), Value::Int(rows as i64)])
+            Value::array(vec![Value::Int(columns as i64), Value::Int(rows as i64)])
         }
         #[cfg(feature = "term_mod")]
         "std::term::flush" => {
@@ -2849,7 +2849,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             map.insert("count".into(), Value::Int(cur.count));
             map.insert("title".into(), Value::Str(cur.title));
             map.insert("path".into(), Value::Str(cur.path));
-            Value::Map(map)
+            Value::map(map)
         }
         #[cfg(feature = "audio_mod")]
         "std::audio::cover" => {
@@ -2934,7 +2934,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             map.insert("duration_secs".into(), Value::Float(cur.duration_secs));
             map.insert("state".into(), Value::Str(cur.state));
             map.insert("queue_len".into(), Value::Int(cur.queue_len as i64));
-            Value::Map(map)
+            Value::map(map)
         }
         #[cfg(feature = "audio_engine")]
         "std::audio::engine_levels" => Value::Array(
@@ -2954,7 +2954,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             map.insert("codec".into(), Value::Str(rep.codec));
             map.insert("verified_secs".into(), Value::Float(rep.verified_secs));
             map.insert("peak".into(), Value::Float(rep.peak as f64));
-            Value::Map(map)
+            Value::map(map)
         }
         #[cfg(feature = "audio_engine")]
         "std::audio::engine_device" => Value::Str(stdlib::audio_engine::device()),
@@ -2978,7 +2978,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             );
             map.insert("queue_len".into(), Value::Int(st.queue_len as i64));
             map.insert("device".into(), Value::Str(st.device));
-            Value::Map(map)
+            Value::map(map)
         }
 
         // ---------------- Fase 43: nube musical Telegram ----------------
@@ -3019,7 +3019,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 Value::Int(st.cached_tracks as i64),
             );
             map.insert("note".into(), Value::Str(st.note));
-            Value::Map(map)
+            Value::map(map)
         }
         #[cfg(feature = "audio_cloud")]
         "std::audio::cloud_logout" => Value::Str(stdlib::audio_cloud::logout().map_err(error)?),
@@ -3037,7 +3037,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                     map.insert("size".into(), Value::Int(t.size as i64));
                     map.insert("file".into(), Value::Str(t.file));
                     map.insert("mime".into(), Value::Str(t.mime));
-                    Value::Map(map)
+                    Value::map(map)
                 })
                 .collect(),
         ),
@@ -3346,7 +3346,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Array(
                 pairs
                     .into_iter()
-                    .map(|(k, v)| Value::Array(vec![Value::Str(k), Value::Str(v)]))
+                    .map(|(k, v)| Value::array(vec![Value::Str(k), Value::Str(v)]))
                     .collect(),
             )
         }
@@ -3481,7 +3481,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "server_mod")]
         "std::server::ws_recv" => {
             let (kind, text, bytes) = stdlib::server_mod::ws_recv(int!()).map_err(error)?;
-            Value::Array(vec![
+            Value::array(vec![
                 Value::Str(kind),
                 Value::Str(text),
                 Value::Bytes(bytes),
@@ -3550,7 +3550,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                                 .collect(),
                         ),
                     );
-                    Value::Map(m)
+                    Value::map(m)
                 }
                 None => Value::Nil,
             }
@@ -3685,7 +3685,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             let text = string!();
             let special = boolean!();
             let enc = stdlib::tokenize_mod::encode(h, &text, special).map_err(error)?;
-            Value::Map(encoding_to_map(enc))
+            Value::map(encoding_to_map(enc))
         }
         #[cfg(feature = "tokenize_mod")]
         "std::tokenize::encode_padded" => {
@@ -3698,7 +3698,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             let special = boolean!();
             let enc = stdlib::tokenize_mod::encode_padded(h, &text, max_length, pad_id, special)
                 .map_err(error)?;
-            Value::Map(encoding_to_map(enc))
+            Value::map(encoding_to_map(enc))
         }
         #[cfg(feature = "tokenize_mod")]
         "std::tokenize::encode_batch" => {
@@ -3712,7 +3712,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Array(
                 batch
                     .into_iter()
-                    .map(|e| Value::Map(encoding_to_map(e)))
+                    .map(|e| Value::map(encoding_to_map(e)))
                     .collect(),
             )
         }
@@ -3817,7 +3817,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let (values, out_shape) = stdlib::onnx_mod::run_f32(h, &shape, &data).map_err(error)?;
-            Value::Map(onnx_output_to_map(values, out_shape))
+            Value::map(onnx_output_to_map(values, out_shape))
         }
         #[cfg(feature = "onnx_mod")]
         "std::onnx::run_ids" => {
@@ -3841,7 +3841,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .collect::<Result<Vec<i64>, _>>()?;
             let (values, out_shape) =
                 stdlib::onnx_mod::run_i64_in_f32_out(h, &shape, &data).map_err(error)?;
-            Value::Map(onnx_output_to_map(values, out_shape))
+            Value::map(onnx_output_to_map(values, out_shape))
         }
         #[cfg(feature = "onnx_mod")]
         "std::onnx::load_bert" => {
@@ -3884,7 +3884,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .collect::<Result<Vec<i64>, _>>()?;
             let (values, out_shape) =
                 stdlib::onnx_mod::run_two_i64(h, &shape, &ids, &mask).map_err(error)?;
-            Value::Map(onnx_output_to_map(values, out_shape))
+            Value::map(onnx_output_to_map(values, out_shape))
         }
         #[cfg(feature = "onnx_mod")]
         "std::onnx::run_bert3" => {
@@ -3918,7 +3918,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .collect::<Result<Vec<i64>, _>>()?;
             let (values, out_shape) =
                 stdlib::onnx_mod::run_three_i64(h, &shape, &ids, &mask, &types).map_err(error)?;
-            Value::Map(onnx_output_to_map(values, out_shape))
+            Value::map(onnx_output_to_map(values, out_shape))
         }
         #[cfg(feature = "onnx_mod")]
         "std::onnx::run_bert_pooled" => {
@@ -3943,7 +3943,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
                 .collect::<Result<Vec<i64>, _>>()?;
             let (values, out_shape) =
                 stdlib::onnx_mod::run_bert_pooled(h, batch, seq, &ids, &mask).map_err(error)?;
-            Value::Map(onnx_output_to_map(values, out_shape))
+            Value::map(onnx_output_to_map(values, out_shape))
         }
 
         // ---------------- Phase 12 pt.4: vector math ----------------
@@ -4152,7 +4152,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Array(
                 aps.into_iter()
                     .map(|ap| {
-                        Value::Map(BTreeMap::from([
+                        Value::map(BTreeMap::from([
                             ("ssid".into(), Value::Str(ap.ssid)),
                             ("bssid".into(), Value::Str(ap.bssid)),
                             ("rssi".into(), Value::Int(ap.rssi)),
@@ -4174,7 +4174,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         #[cfg(feature = "wifi_mod")]
         "std::wifi::connection_info" => {
             match stdlib::wifi_mod::connection_info().map_err(error)? {
-                Some(ci) => Value::Map(BTreeMap::from([
+                Some(ci) => Value::map(BTreeMap::from([
                     ("ssid".into(), Value::Str(ci.ssid)),
                     ("bssid".into(), Value::Str(ci.bssid)),
                     ("ip".into(), Value::Str(ci.ip)),
@@ -4336,7 +4336,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::process::env_vars" => Value::Array(
             stdlib::process_mod::env_vars()
                 .into_iter()
-                .map(|(k, v)| Value::Tuple(vec![Value::Str(k), Value::Str(v)]))
+                .map(|(k, v)| Value::tuple(vec![Value::Str(k), Value::Str(v)]))
                 .collect(),
         ),
         #[cfg(feature = "process_mod")]
@@ -4650,7 +4650,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             Value::Array(
                 items
                     .into_iter()
-                    .map(|(k, v)| Value::Tuple(vec![Value::Str(k), Value::Int(v)]))
+                    .map(|(k, v)| Value::tuple(vec![Value::Str(k), Value::Int(v)]))
                     .collect(),
             )
         }
@@ -4957,7 +4957,7 @@ fn process_output_to_value(out: stdlib::process_mod::ProcessOutput) -> Value {
     m.insert("stderr".into(), Value::Str(out.stderr));
     m.insert("exit_code".into(), Value::Int(out.exit_code as i64));
     m.insert("duration_ms".into(), Value::Int(out.duration_ms as i64));
-    Value::Map(m)
+    Value::map(m)
 }
 
 fn metrics_snapshot(snapshot: stdlib::metrics::Snapshot) -> Value {
@@ -4977,7 +4977,7 @@ fn metrics_snapshot(snapshot: stdlib::metrics::Snapshot) -> Value {
         .map(|(name, value)| {
             (
                 name,
-                Value::Map(BTreeMap::from([
+                Value::map(BTreeMap::from([
                     (
                         "count".into(),
                         Value::Int(i64::try_from(value.count).unwrap_or(i64::MAX)),
@@ -4989,10 +4989,10 @@ fn metrics_snapshot(snapshot: stdlib::metrics::Snapshot) -> Value {
             )
         })
         .collect();
-    Value::Map(BTreeMap::from([
-        ("counters".into(), Value::Map(counters)),
-        ("gauges".into(), Value::Map(gauges)),
-        ("histograms".into(), Value::Map(histograms)),
+    Value::map(BTreeMap::from([
+        ("counters".into(), Value::map(counters)),
+        ("gauges".into(), Value::map(gauges)),
+        ("histograms".into(), Value::map(histograms)),
     ]))
 }
 
@@ -5124,11 +5124,11 @@ fn websocket_validate_accept(response: &[u8], key: &str) -> Result<bool, String>
     )
 }
 fn http_response_map(status: i64, content_type: &str, body: Vec<u8>) -> Value {
-    Value::Map(BTreeMap::from([
+    Value::map(BTreeMap::from([
         ("status".into(), Value::Int(status)),
         (
             "headers".into(),
-            Value::Map(BTreeMap::from([(
+            Value::map(BTreeMap::from([(
                 "Content-Type".into(),
                 Value::Str(content_type.into()),
             )])),
@@ -5150,7 +5150,7 @@ fn with_response_headers(
     };
     let headers = response_map
         .entry("headers".into())
-        .or_insert_with(|| Value::Map(BTreeMap::new()));
+        .or_insert_with(|| Value::map(BTreeMap::new()));
     let Value::Map(headers) = headers else {
         return Err("HTTP response headers must be map".into());
     };
@@ -5271,13 +5271,13 @@ fn expect_float(value: Value) -> Result<f64, String> {
 }
 fn expect_array(value: Value) -> Result<Vec<Value>, String> {
     match value {
-        Value::Array(v) | Value::Tuple(v) => Ok(v),
+        Value::Array(v) | Value::Tuple(v) => Ok(v.into_inner()),
         _ => Err("expected array".into()),
     }
 }
 fn expect_map(value: Value) -> Result<BTreeMap<String, Value>, String> {
     if let Value::Map(values) = value {
-        Ok(values)
+        Ok(values.into_inner())
     } else {
         Err("expected map".into())
     }
@@ -5337,7 +5337,7 @@ fn process_output(output: stdlib::process::ProcessOutput) -> Value {
     map.insert("stdout".into(), Value::Bytes(output.stdout));
     map.insert("stderr".into(), Value::Bytes(output.stderr));
     map.insert("timed_out".into(), Value::Bool(output.timed_out));
-    Value::Map(map)
+    Value::map(map)
 }
 
 #[cfg(feature = "http_full_mod")]
@@ -5412,7 +5412,7 @@ fn http_full_response_to_value(response: stdlib::http_full_mod::Response) -> Val
     );
     map.insert("body".into(), Value::Bytes(response.body));
     map.insert("final_url".into(), Value::Str(response.final_url));
-    Value::Map(map)
+    Value::map(map)
 }
 
 #[cfg(feature = "archive_mod")]
@@ -5445,7 +5445,7 @@ fn archive_entries_to_value(entries: Vec<stdlib::archive_mod::ArchiveEntry>) -> 
                 let mut map = BTreeMap::new();
                 map.insert("name".into(), Value::Str(entry.name));
                 map.insert("bytes".into(), Value::Bytes(entry.bytes));
-                Value::Map(map)
+                Value::map(map)
             })
             .collect(),
     )
@@ -5466,7 +5466,7 @@ fn audio_read_result(samples: Vec<f32>, sample_rate: u32, channels: u16, bits: u
     map.insert("sample_rate".into(), Value::Int(sample_rate as i64));
     map.insert("channels".into(), Value::Int(channels as i64));
     map.insert("bits_per_sample".into(), Value::Int(bits as i64));
-    Value::Map(map)
+    Value::map(map)
 }
 
 #[cfg(feature = "audio_mod")]
@@ -5511,7 +5511,7 @@ fn audio_track_map(info: &stdlib::audio_tags::TrackInfo) -> Value {
     map.insert("channels".into(), Value::Int(info.channels as i64));
     map.insert("bitrate_kbps".into(), Value::Int(info.bitrate_kbps as i64));
     map.insert("has_cover".into(), Value::Bool(info.has_cover));
-    Value::Map(map)
+    Value::map(map)
 }
 
 #[cfg(feature = "audio_mod")]
@@ -6479,7 +6479,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             out,
-            Value::Array(vec![
+            Value::array(vec![
                 Value::Str("1".into()),
                 Value::Str("22".into()),
                 Value::Str("333".into()),
@@ -6641,12 +6641,12 @@ mod tests {
         );
         let built = invoke(
             "std::url::build_query",
-            vec![Value::Array(vec![
-                Value::Array(vec![
+            vec![Value::array(vec![
+                Value::array(vec![
                     Value::Str("q".into()),
                     Value::Str("hola mundo".into()),
                 ]),
-                Value::Array(vec![Value::Str("n".into()), Value::Str("1".into())]),
+                Value::array(vec![Value::Str("n".into()), Value::Str("1".into())]),
             ])],
             RuntimeCapabilities::all(),
         )
@@ -6719,9 +6719,9 @@ mod tests {
             let mut map = BTreeMap::new();
             map.insert("name".to_string(), Value::Str(name.into()));
             map.insert("bytes".to_string(), Value::Bytes(bytes));
-            Value::Map(map)
+            Value::map(map)
         };
-        let entries = Value::Array(vec![
+        let entries = Value::array(vec![
             entry_map("hola.txt", b"hola".to_vec()),
             entry_map("mundo.txt", b"mundo".to_vec()),
         ]);
@@ -6759,7 +6759,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             names,
-            Value::Array(vec![
+            Value::array(vec![
                 Value::Str("hola.txt".into()),
                 Value::Str("mundo.txt".into())
             ])
