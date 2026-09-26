@@ -1,9 +1,6 @@
-# Titan Audio — Reproductor Hi-Fi & Arquitectura Full Stack Profesional 🎵📱
+# Mi Música — Reproductor Hi-Fi & Arquitectura Full Stack en Modo Claro 🎵📱
 
-Una plataforma musical de nivel profesional, completa de extremo a extremo:
-1. **Backend Multimedia en Tiempo Real:** Servidor de streaming con soporte RFC 7233 de rangos parciales (HTTP 206), biblioteca dinámica indexada y API REST.
-2. **Frontend Móvil Ultra-Limpio:** Diseño continuo, minimalista y oscuro sin marcos pesados, flechas desalineadas ni etiquetas técnicas impropias.
-3. **Núcleo Android Nativo con MediaStyle:** Integración directa con el sistema operativo mediante `MediaSessionCompat` y `NotificationCompat.MediaStyle`, mostrando controles multimedia táctiles nativos (⏮, ⏯, ⏭) y carátula en alta definición, con icono de estado propio y sin rastro de terceros.
+Una aplicación de música nativa para Android y entorno Full Stack con el diseño en modo claro limpio, refinado y moderno inspirado en el reproductor de MIUI / HyperOS, con identidad propia, reproducción de música 100% real de tu teléfono, carátulas reales, disco de vinilo flotante, ecualizador de hardware y barra multimedia interactiva en pantalla de bloqueo.
 
 ---
 
@@ -15,38 +12,47 @@ Una plataforma musical de nivel profesional, completa de extremo a extremo:
 
 ---
 
-## 🚀 Mejoras de Ingeniería y Diseño Profesional
+## 🌟 Novedades y Diseño Inspirado en las Capturas (Modo Claro)
 
-### 1. Barra de Notificaciones y Pantalla de Bloqueo Nativas (`MediaStyle`)
-* **Controles táctiles multimedia integrados:** Se implementó `NotificationCompat.MediaStyle` conectado a `MediaSessionCompat`. En lugar de botones de texto genéricos (`[ Anterior ] [ Reproducir ] [ Siguiente ]`), el sistema operativo Android muestra la tarjeta de reproductor multimedia oficial con botones vectoriales de salto y pausa.
-* **Icono de barra de estado exclusivo (`ic_stat_music`):** Icono monocromático vectorial de la onda acústica de Titan Audio, eliminando cualquier icono residual o fallback del sistema.
-* **Iconos del lanzador en todas las densidades:** Paquetes PNG dedicados para pantallas mdpi, hdpi, xhdpi, xxhdpi y xxxhdpi con la identidad visual propia de Titan Audio.
+### 1. Interfaz en Modo Claro (Limpia, Espaciosa y sin Bordes Toscos)
+* **Lienzo blanco luminoso (`#ffffff` / `#f6f7f9`):** Tipografía nítida en gris oscuro y negro (`#111827`), con toques violetas (`#7c3aed`).
+* **Barra superior de búsqueda:** Caja redondeada con icono de lupa, texto de búsqueda interactivo y botón de micrófono.
+* **Carrusel de tarjetas superiores:**
+  - **Favoritos:** Tarjeta con icono de corazón y contador real de tus pistas favoritas.
+  - **Listas de reproducción:** Acceso directo a tus colecciones de música.
+  - **Recientes:** Historial de las canciones que has escuchado hoy.
+* **Pestañas segmentadas:** `Canciones` (cápsula negra activa con letras blancas), `Artistas`, `Álbumes`, `Carpetas` y `Nube Streaming`.
+* **Barra de herramientas:**
+  - Botón circular de **«Reproducción aleatoria»** con contador total de canciones.
+  - Botón de ordenación (**⇅**) para ordenar alfabéticamente (A-Z), por artista o por duración.
 
-### 2. Filtrado Inteligente de Música Real (Cero Archivos Residuales)
-* El escáner de memoria de Android (`MediaStore`) ahora aplica un filtro inteligente de duración (`>= 40s`) y excluye automáticamente notas de voz de WhatsApp/Telegram, sintetizadores TTS, ringtones, alarmas y cachés temporales.
-* Solo aparecen en tu biblioteca las canciones completas que realmente tienes en el teléfono.
+### 2. Lista de Canciones con Detalles Reales
+* Carátula cuadrada redondeada (48x48 px) con mini-icono de nota musical.
+* Título de la pista en negrita + icono de dispositivo con `Artista | Álbum`.
+* **Canción en reproducción activa:** Título destacado en color violeta con ecualizador animado de 4 barras (`ılıl`) en tiempo real.
+* Menú contextual de tres puntos (**⋮**) para cada pista: añadir a favoritos, reproducir a continuación o ver detalles del archivo.
 
-### 3. Rediseño Completo de la Interfaz (Limpia, Alineada y Sin Bordes)
-* **Eliminación de elementos desalineados:** Se corrigió la estructura visual para eliminar flechas sueltas debajo de los números de pista.
-* **Mini reproductor flotante:**
-  - Carátula de 44x44 px a la izquierda.
-  - Título y artista completos con ajuste elíptico en el centro.
-  - Botones táctiles de reproducción y avance a la derecha.
-  - Barra de progreso sutil de 2 px en color cian neón (`#00e5ff`) en el borde superior.
-* **Reproductor a pantalla completa:** Al pulsar sobre el mini reproductor, se despliega la vista inmersiva con carátula de alta resolución, control deslizante de tiempo (scrubber) con minutos/segundos y panel de control completo.
-* **Navegación limpia:** Segmentos intuitivos (`Mi Teléfono`, `Nube Streaming`, `Telegram`) sin textos técnicos fuera de lugar.
+### 3. Mini Reproductor Flotante con Disco de Vinilo Giratorio
+* **Diseño flotante en cápsula violeta:** Fondo en degradado amatista (`#8a2be2` a `#a855f7`).
+* **Disco de vinilo saliente:** A la izquierda sobresale un disco de vinilo circular con la carátula de tu canción en el centro, que **gira continuamente mientras la música suena**.
+* Controles rápidos táctiles: Botón circular translúcido de Reproducir/Pausa y botón de Siguiente.
+* Al pulsar sobre el reproductor flotante, se despliega el **Reproductor a Pantalla Completa**.
 
-### 4. Estudio Hi-Fi y Procesamiento de Audio
-* **Ecualizador paramétrico de 3 bandas:** Ajustes de Graves (60 Hz), Medios (1.0 kHz) y Agudos (10 kHz) de -12 dB a +12 dB.
-* **Visualizador de espectro:** 32 barras dinámicas en tiempo real.
-* **Crossfade (0 a 12 s):** Transición suave y continua entre canciones consecutivas.
-* **Modo Gapless:** Reproducción sin silencios entre pistas.
+### 4. Reproductor a Pantalla Completa y Panel Lateral
+* **Now Playing Inmersivo en Modo Claro:** Carátula grande (280x280 px), título grande, botón de corazón para favoritos, barra de deslizamiento (scrubber) con tiempos (`0:45 / 4:17`), y botones de reproducción.
+* **Menú Lateral (Drawer):** Deslizable desde la izquierda con acceso a:
+  - **Ecualizador Hi-Fi:** Graves, Medios y Agudos con presets.
+  - **Temporizador de Apagado (Sleep Timer):** 15 min, 30 min, 45 min, 60 min o al final de la canción.
+  - **Escanear teléfono:** Actualiza la lista con cualquier canción nueva descargada.
+
+### 5. Barra de Notificaciones y Pantalla de Bloqueo Nativas (`MediaStyle`)
+* Tarjeta multimedia oficial de Android con botones táctiles (⏮, ⏯, ⏭).
+* Icono blanco exclusivo de la onda acústica en la barra de estado superior.
 
 ---
 
-## 📲 Guía Rápida de Instalación
+## 📲 Pasos para Instalar en tu Móvil
 
-1. Descarga el archivo: **[TitanMusic-v1.0.0.apk](https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.26/TitanMusic-v1.0.0.apk)**.
-2. Pulsa en la descarga para instalar o actualizar.
-3. Abre **Titan Audio**: tu música aparecerá de inmediato en pantalla.
-4. Toca cualquier canción para reproducir y desliza la cortina superior de tu teléfono para ver la barra multimedia nativa de Android.
+1. Descarga el APK: **[TitanMusic-v1.0.0.apk](https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.26/TitanMusic-v1.0.0.apk)**.
+2. Pulsa en la descarga y selecciona **Instalar / Actualizar**.
+3. Abre la aplicación y disfruta de la nueva interfaz en modo claro idéntica a tus capturas.

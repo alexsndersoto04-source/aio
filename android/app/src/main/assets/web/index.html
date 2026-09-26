@@ -3,313 +3,419 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Titan Audio — Hi-Fi Studio</title>
+  <title>Mi Música — Reproductor Hi-Fi</title>
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
   <div class="app-root">
 
-    <!-- BARRA SUPERIOR PROFESIONAL (ESTILO TITAN AUDIO) -->
-    <header class="top-nav">
-      <div class="brand">
-        <div class="brand-emblem">
-          <svg viewBox="0 0 32 32" width="28" height="28">
-            <rect width="32" height="32" rx="8" fill="#121622"/>
-            <path d="M7 9h18v4H18v12h-4V13H7V9z" fill="#00e5ff"/>
-            <circle cx="16" cy="19" r="2.5" fill="#ffffff"/>
-            <path d="M24 14c1.5 1.5 1.5 4.5 0 6M27 12c2.5 2.5 2.5 7.5 0 10M8 14c-1.5 1.5-1.5 4.5 0 6M5 12c-2.5 2.5-2.5 7.5 0 10" stroke="#00e5ff" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+    <!-- BARRA SUPERIOR (HEADER) -->
+    <header class="app-header">
+      <!-- Botón de Menú / Ajustes (despliega el panel lateral) -->
+      <button class="header-icon-btn" id="openDrawerBtn" title="Menú y Ajustes">
+        <svg viewBox="0 0 24 24" width="22" height="22">
+          <path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>
+        </svg>
+      </button>
+
+      <!-- Barra de Búsqueda Integrada -->
+      <div class="header-search-box">
+        <svg viewBox="0 0 24 24" width="18" height="18" class="search-lens-icon">
+          <path fill="#9ca3af" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 14z"/>
+        </svg>
+        <input type="text" id="globalSearchInput" placeholder="Buscar canciones, listas de reproducció..." autocomplete="off">
+        <button id="clearSearchBtn" class="clear-search-btn" style="display:none;">&times;</button>
+        <button class="search-mic-btn" id="micSearchBtn" title="Búsqueda por voz">
+          <svg viewBox="0 0 24 24" width="18" height="18">
+            <path fill="#6b7280" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z"/>
           </svg>
-        </div>
-        <div class="brand-text">
-          <span class="brand-title">TITAN <span>AUDIO</span></span>
-          <span class="brand-badge">HI-RES LOSSLESS</span>
-        </div>
-      </div>
-
-      <div class="header-actions">
-        <button id="hifiStudioBtn" class="action-pill" title="Estudio Hi-Fi y Ecualizador">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-          <span>Estudio Hi-Fi</span>
         </button>
-
-        <button id="openPickerBtn" class="action-pill primary" title="Seleccionar archivos de música">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-          <span>Añadir</span>
-        </button>
-        <input type="file" id="audioFileInput" accept="audio/*" multiple style="display:none;">
       </div>
     </header>
 
-    <!-- BARRA DE BÚSQUEDA FLUIDA -->
-    <div class="search-container">
-      <div class="search-input-wrapper">
-        <svg viewBox="0 0 24 24" width="18" height="18" class="search-icon">
-          <path fill="#717a8e" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-        </svg>
-        <input type="text" id="searchInput" placeholder="Buscar canciones, artistas, álbumes..." autocomplete="off">
-        <button id="clearSearchBtn" class="clear-search-btn" style="display:none;">&times;</button>
-      </div>
-    </div>
+    <!-- ÁREA DE CONTENIDO CON SCROLL -->
+    <div class="scroll-body" id="scrollBody">
 
-    <!-- PESTAÑAS DE BIBLIOTECA (ELEGANTE SELECTOR SEGMENTADO) -->
-    <nav class="library-nav">
-      <button class="nav-segment active" data-source="phone">
-        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
-        <span>Mi Teléfono</span>
-        <span class="count-tag" id="phoneCount">0</span>
-      </button>
-
-      <button class="nav-segment" data-source="cloud">
-        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
-        <span>Nube Streaming</span>
-        <span class="count-tag" id="cloudCount">5</span>
-      </button>
-
-      <button class="nav-segment" data-source="telegram">
-        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 0 0-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-        <span>Telegram</span>
-      </button>
-    </nav>
-
-    <!-- LISTA PRINCIPAL DE CANCIONES -->
-    <main class="main-content">
-      <div class="library-summary-row">
-        <div class="summary-meta">
-          <span class="summary-title" id="currentViewTitle">Canciones en este teléfono</span>
-          <span class="summary-sub" id="currentViewSubtitle">Música local sin conexión</span>
-        </div>
-        <div class="summary-actions">
-          <button id="scanPhoneBtn" class="pill-btn-outline" title="Actualizar lista de canciones del teléfono">
-            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-            <span>Escanear</span>
-          </button>
-          <button id="playAllBtn" class="pill-btn-play" title="Reproducir todo">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-            <span>Reproducir</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- CONTENEDOR DE CANCIONES (1 FILA LIMPIA POR CANCIÓN) -->
-      <section class="tracks-list" id="tracksContainer">
-        <!-- Renderizado dinámico vía JavaScript -->
-      </section>
-
-      <!-- Estado vacío si no hay canciones -->
-      <div id="emptyState" class="empty-state" style="display:none;">
-        <div class="empty-icon-wrap">
-          <svg viewBox="0 0 24 24" width="40" height="40" fill="#576074"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
-        </div>
-        <p class="empty-title">Sin canciones en esta sección</p>
-        <p class="empty-desc">Toca "Escanear" para cargar tu biblioteca o "Añadir" para abrir archivos de música.</p>
-      </div>
-    </main>
-
-    <!-- MINI REPRODUCTOR INFERIOR ELEGANTE -->
-    <footer class="mini-player" id="miniPlayer">
-      <!-- Barra de progreso superior sutil (2px) -->
-      <div class="mini-progress-track">
-        <div class="mini-progress-fill" id="miniProgressFill"></div>
-      </div>
-
-      <div class="mini-player-content">
-        <!-- Carátula + Metadatos (Tocar abre el reproductor a pantalla completa) -->
-        <div class="mini-meta-group" id="miniMetaTrigger">
-          <img id="miniArtwork" class="mini-thumb" src="" alt="Carátula">
-          <div class="mini-text">
-            <span class="mini-title" id="miniTitle">Sin reproducción</span>
-            <span class="mini-artist" id="miniArtist">Titan Audio Hi-Fi</span>
+      <!-- TARJETAS SUPERIORES (FAVORITOS, LISTAS, RECIENTES) -->
+      <section class="cards-carousel">
+        <!-- Tarjeta 1: Favoritos -->
+        <div class="feature-card card-favorites" id="cardFavorites">
+          <div class="card-bg-overlay"></div>
+          <div class="card-content">
+            <div class="card-icon-wrap heart-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            </div>
+            <span class="card-label">Favoritos</span>
+            <span class="card-sub" id="favCountBadge">0 canciones</span>
           </div>
         </div>
 
-        <!-- Controles rápidos táctiles -->
-        <div class="mini-controls">
-          <button class="mini-btn" id="miniPrevBtn" title="Anterior">
-            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+        <!-- Tarjeta 2: Listas de reproducción -->
+        <div class="feature-card card-playlists" id="cardPlaylists">
+          <div class="card-bg-overlay"></div>
+          <div class="card-content">
+            <div class="card-icon-wrap disc-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/></svg>
+            </div>
+            <span class="card-label">Listas de reproducción</span>
+            <span class="card-sub" id="playlistCountBadge">3 listas</span>
+          </div>
+        </div>
+
+        <!-- Tarjeta 3: Recientes -->
+        <div class="feature-card card-recent" id="cardRecent">
+          <div class="card-bg-overlay"></div>
+          <div class="card-content">
+            <div class="card-icon-wrap clock-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+            </div>
+            <span class="card-label">Recientes</span>
+            <span class="card-sub" id="recentCountBadge">Escuchadas hoy</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- BARRA DE PESTAÑAS (CANCIONES, ARTISTAS, ÁLBUMES, CARPETAS, NUBE) -->
+      <nav class="sub-tabs-bar">
+        <button class="sub-tab-pill active" data-tab="songs">Canciones</button>
+        <button class="sub-tab-pill" data-tab="artists">Artistas</button>
+        <button class="sub-tab-pill" data-tab="albums">Álbumes</button>
+        <button class="sub-tab-pill" data-tab="folders">Carpetas</button>
+        <button class="sub-tab-pill" data-tab="cloud">Nube Streaming</button>
+      </nav>
+
+      <!-- BARRA DE HERRAMIENTAS Y ORDENACIÓN -->
+      <div class="toolbar-row">
+        <!-- Botón Reproducción Aleatoria -->
+        <button class="shuffle-play-all-btn" id="shuffleAllBtn">
+          <div class="play-circle-black">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#ffffff" d="M8 5v14l11-7z"/></svg>
+          </div>
+          <span>Reproducción aleatoria</span>
+          <span class="total-tracks-pill" id="totalTracksCount">0</span>
+        </button>
+
+        <!-- Botones de Acción Derecha (Ordenar y Escanear) -->
+        <div class="toolbar-right-actions">
+          <button class="icon-tool-btn" id="sortToggleBtn" title="Ordenar lista">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path fill="currentColor" d="M9 3L5 6.99h3V14h2V6.99h3L9 3zm7 14.01V10h-2v7.01h-3L15 21l4-3.99h-3z"/>
+            </svg>
           </button>
-          <button class="mini-play-btn" id="miniPlayBtn" title="Reproducir / Pausa">
-            <svg id="miniPlayIcon" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-            <svg id="miniPauseIcon" viewBox="0 0 24 24" width="24" height="24" style="display:none;"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-          </button>
-          <button class="mini-btn" id="miniNextBtn" title="Siguiente">
-            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          <button class="icon-tool-btn" id="filterOptionsBtn" title="Opciones de visualización">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path fill="currentColor" d="M3 18h6v-2H3v2zM3 6v2h18V6H3zm0 7h12v-2H3v2z"/>
+            </svg>
           </button>
         </div>
       </div>
-    </footer>
 
-    <!-- REPRODUCTOR A PANTALLA COMPLETA (NOW PLAYING) -->
-    <div class="fullscreen-player" id="fullscreenPlayer">
-      <div class="fs-backdrop" id="fsBackdrop"></div>
+      <!-- LISTA DE CANCIONES (FONDO CLARO, ESTILO ELEGANTE) -->
+      <section class="songs-container" id="songsContainer">
+        <!-- Filas generadas dinámicamente -->
+      </section>
 
-      <header class="fs-header">
-        <button class="fs-icon-btn" id="closeFsPlayer" title="Cerrar">
-          <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
-        </button>
-        <div class="fs-header-title">
-          <span class="fs-header-sub">REPRODUCIENDO</span>
-          <span class="fs-badge" id="fsFormatBadge">HI-RES AUDIO</span>
+      <!-- Estado Vacío -->
+      <div class="empty-state-card" id="emptyState" style="display:none;">
+        <div class="empty-icon-circle">
+          <svg viewBox="0 0 24 24" width="36" height="36" fill="#9ca3af"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
         </div>
-        <button class="fs-icon-btn" id="fsEqBtn" title="Ajustes Hi-Fi">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-        </button>
-      </header>
+        <h3 class="empty-title">Sin canciones</h3>
+        <p class="empty-desc">No se encontraron pistas de música en esta categoría.</p>
+        <button class="empty-action-btn" id="emptyScanBtn">Escanear dispositivo</button>
+      </div>
 
-      <div class="fs-body">
-        <!-- Carátula grande en alta definición -->
-        <div class="fs-art-container">
-          <img id="fsArtwork" class="fs-artwork" src="" alt="Carátula">
+    </div>
+
+    <!-- MINI REPRODUCTOR FLOTANTE CON EFECTO VINILO -->
+    <div class="floating-dock-player" id="floatingPlayer">
+      <div class="dock-inner" id="dockTrigger">
+        <!-- Disco de vinilo saliente con carátula en el centro -->
+        <div class="vinyl-disc-wrap">
+          <div class="vinyl-disc" id="vinylDisc">
+            <img class="vinyl-center-art" id="dockArtwork" src="" alt="Carátula">
+          </div>
         </div>
 
         <!-- Título y Artista -->
-        <div class="fs-meta-row">
-          <div class="fs-meta-text">
-            <h1 class="fs-title" id="fsTitle">Sin reproducción</h1>
-            <p class="fs-artist" id="fsArtist">Titan Audio</p>
+        <div class="dock-meta">
+          <span class="dock-title" id="dockTitle">Sin reproducción</span>
+          <span class="dock-artist" id="dockArtist">Selecciona una pista</span>
+        </div>
+
+        <!-- Botones de Control Rápidos -->
+        <div class="dock-actions">
+          <button class="dock-play-circle" id="dockPlayBtn" title="Reproducir / Pausa">
+            <svg id="dockPlayIcon" viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M8 5v14l11-7z"/></svg>
+            <svg id="dockPauseIcon" viewBox="0 0 24 24" width="18" height="18" style="display:none;"><path fill="#ffffff" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <button class="dock-next-btn" id="dockNextBtn" title="Siguiente canción">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="#ffffff" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- BARRA DE NAVEGACIÓN INFERIOR (5 PESTAÑAS) -->
+    <nav class="bottom-tab-bar">
+      <button class="bottom-nav-item active" data-nav="local">
+        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9v7c0 1.1.9 2 2 2h4v-8H5v-1a7 7 0 0 1 14 0v1h-4v8h4c1.1 0 2-.9 2-2v-7a9 9 0 0 0-9-9z"/></svg>
+        <span>Local</span>
+      </button>
+
+      <button class="bottom-nav-item" data-nav="discover">
+        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/></svg>
+        <span>Descubrir</span>
+      </button>
+
+      <button class="bottom-nav-item center-creativity" id="centerHifiBtn" title="Estudio Hi-Fi y Efectos">
+        <div class="creativity-plus-box">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#ffffff" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+        </div>
+        <span>Estudio</span>
+      </button>
+
+      <button class="bottom-nav-item" data-nav="search">
+        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <span>Buscar</span>
+      </button>
+
+      <button class="bottom-nav-item" data-nav="profile">
+        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+        <span>Perfil</span>
+      </button>
+    </nav>
+
+    <!-- PANEL LATERAL (DRAWER) -->
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+    <aside class="side-drawer" id="sideDrawer">
+      <div class="drawer-header">
+        <div class="drawer-brand">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="#111827"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          <span class="drawer-title">Mi Música</span>
+        </div>
+      </div>
+
+      <div class="drawer-menu-list">
+        <div class="drawer-item" id="drawerEqItem">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+          <span class="drawer-label">Ecualizador y Estudio Hi-Fi</span>
+        </div>
+
+        <div class="drawer-item" id="drawerSleepTimerItem">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+          <div class="drawer-col">
+            <span class="drawer-label">Temporizador de apagado</span>
+            <span class="drawer-sub" id="sleepTimerStatus">Desactivado</span>
           </div>
-          <button class="fs-like-btn" id="fsLikeBtn" title="Marcar como favorito">
-            <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        </div>
+
+        <div class="drawer-item" id="drawerScanItem">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          <span class="drawer-label">Escanear teléfono</span>
+        </div>
+
+        <div class="drawer-item" id="drawerPickerItem">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+          <span class="drawer-label">Abrir carpeta o archivo</span>
+        </div>
+
+        <hr class="drawer-divider">
+
+        <div class="drawer-item" id="drawerInfoItem">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM11 9h2V7h-2v2z"/></svg>
+          <span class="drawer-label">Preguntas frecuentes y ayuda</span>
+        </div>
+
+        <div class="drawer-item" id="drawerPrivacyItem">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
+          <span class="drawer-label">Política de Privacidad</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- REPRODUCTOR A PANTALLA COMPLETA (NOW PLAYING INMERSIVO) -->
+    <div class="fullscreen-modal" id="fullscreenModal">
+      <header class="fs-top-bar">
+        <button class="fs-btn" id="closeFsBtn" title="Cerrar">
+          <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+        </button>
+        <div class="fs-header-center">
+          <span class="fs-reproducing-badge">REPRODUCIENDO</span>
+          <span class="fs-source-badge" id="fsSourceBadge">AUDIO LOCAL HI-RES</span>
+        </div>
+        <button class="fs-btn" id="fsOptionsBtn" title="Opciones de canción">
+          <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+        </button>
+      </header>
+
+      <div class="fs-main-body">
+        <!-- Carátula grande con esquinas redondeadas -->
+        <div class="fs-album-art-wrap">
+          <img id="fsArtworkImg" class="fs-album-art" src="" alt="Carátula">
+        </div>
+
+        <!-- Título y Artista -->
+        <div class="fs-track-info-row">
+          <div class="fs-text-col">
+            <h1 class="fs-track-title" id="fsTitle">Sin reproducción</h1>
+            <p class="fs-track-artist" id="fsArtist">Selecciona una canción</p>
+          </div>
+          <button class="fs-favorite-btn" id="fsFavBtn" title="Marcar como favorito">
+            <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
           </button>
         </div>
 
-        <!-- Barra de deslizamiento / Scrubbing -->
-        <div class="fs-seeker">
-          <div class="fs-seek-track" id="fsSeekTrack">
-            <div class="fs-seek-progress" id="fsSeekProgress"></div>
-            <div class="fs-seek-thumb" id="fsSeekThumb"></div>
+        <!-- Barra de progreso táctil (Scrubber) -->
+        <div class="fs-progress-container">
+          <div class="fs-scrubber-bar" id="fsScrubber">
+            <div class="fs-scrubber-fill" id="fsScrubberFill"></div>
+            <div class="fs-scrubber-thumb" id="fsScrubberThumb"></div>
           </div>
-          <div class="fs-time-labels">
-            <span id="fsCurrentTime">0:00</span>
-            <span id="fsTotalDuration">0:00</span>
+          <div class="fs-timestamps">
+            <span id="fsTimeCurrent">0:00</span>
+            <span id="fsTimeTotal">0:00</span>
           </div>
         </div>
 
-        <!-- Controles principales de audio -->
-        <div class="fs-controls">
-          <button class="fs-ctrl-btn" id="fsShuffleBtn" title="Aleatorio">
+        <!-- Controles multimedia grandes -->
+        <div class="fs-player-controls">
+          <button class="fs-sub-ctrl" id="fsShuffleToggle" title="Modo aleatorio">
             <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
           </button>
 
-          <button class="fs-ctrl-btn" id="fsPrevBtn" title="Anterior">
-            <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          <button class="fs-main-ctrl" id="fsPrevTrackBtn" title="Anterior">
+            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
           </button>
 
-          <button class="fs-play-btn" id="fsPlayBtn" title="Reproducir / Pausa">
-            <svg id="fsPlayIcon" viewBox="0 0 24 24" width="36" height="36"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-            <svg id="fsPauseIcon" viewBox="0 0 24 24" width="36" height="36" style="display:none;"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          <button class="fs-play-pause-circle" id="fsPlayPauseBtn" title="Reproducir / Pausa">
+            <svg id="fsPlayIcon" viewBox="0 0 24 24" width="36" height="36"><path fill="#ffffff" d="M8 5v14l11-7z"/></svg>
+            <svg id="fsPauseIcon" viewBox="0 0 24 24" width="36" height="36" style="display:none;"><path fill="#ffffff" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
           </button>
 
-          <button class="fs-ctrl-btn" id="fsNextBtn" title="Siguiente">
-            <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          <button class="fs-main-ctrl" id="fsNextTrackBtn" title="Siguiente">
+            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
           </button>
 
-          <button class="fs-ctrl-btn" id="fsRepeatBtn" title="Repetir">
+          <button class="fs-sub-ctrl" id="fsRepeatToggle" title="Repetir">
             <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
           </button>
         </div>
 
-        <!-- Dispositivo de salida activo -->
-        <div class="fs-device-indicator">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-          <span id="fsActiveDevice">Altavoz del dispositivo</span>
+        <!-- Barra inferior: Botón Ecualizador y Salida de audio -->
+        <div class="fs-footer-row">
+          <button class="fs-footer-pill" id="fsEqDrawerBtn">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+            <span>Ecualizador</span>
+          </button>
+
+          <button class="fs-footer-pill" id="fsDeviceIndicator">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+            <span id="fsDeviceName">Altavoz del teléfono</span>
+          </button>
         </div>
       </div>
     </div>
 
-    <!-- MODAL ESTUDIO HI-FI (ECUALIZADOR, CROSSFADE, SALIDA) -->
-    <div class="modal-overlay" id="hifiModal">
-      <div class="modal-sheet">
-        <div class="modal-header">
-          <div>
-            <h2 class="modal-title">Estudio Hi-Fi</h2>
-            <span class="modal-subtitle">Procesamiento de Audio de 32-bit</span>
-          </div>
-          <button class="modal-close-btn" id="closeHifiModal">&times;</button>
+    <!-- DIÁLOGO DE OPCIONES DE PISTA (BOTTOM SHEET) -->
+    <div class="sheet-backdrop" id="trackMenuBackdrop"></div>
+    <div class="action-sheet" id="trackMenuSheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-track-preview">
+        <img class="sheet-thumb" id="sheetThumb" src="" alt="Carátula">
+        <div class="sheet-meta">
+          <span class="sheet-title" id="sheetTitle">Nombre de la canción</span>
+          <span class="sheet-artist" id="sheetArtist">Artista</span>
+        </div>
+      </div>
+      <div class="sheet-items">
+        <button class="sheet-item" id="sheetPlayNextBtn">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          <span>Reproducir a continuación</span>
+        </button>
+        <button class="sheet-item" id="sheetToggleFavBtn">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          <span id="sheetFavLabel">Añadir a favoritos</span>
+        </button>
+        <button class="sheet-item" id="sheetInfoBtn">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM11 9h2V7h-2v2z"/></svg>
+          <span>Detalles del archivo</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- MODAL DE ORDENACIÓN (SORT SHEET) -->
+    <div class="sheet-backdrop" id="sortBackdrop"></div>
+    <div class="action-sheet" id="sortSheet">
+      <div class="sheet-handle"></div>
+      <h4 class="sheet-heading">Ordenar canciones</h4>
+      <div class="sheet-items">
+        <button class="sheet-item sort-option active" data-sort="name">
+          <span>Nombre de canción (A-Z)</span>
+        </button>
+        <button class="sheet-item sort-option" data-sort="artist">
+          <span>Artista (A-Z)</span>
+        </button>
+        <button class="sheet-item sort-option" data-sort="duration">
+          <span>Duración</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- MODAL DE TEMPORIZADOR DE APAGADO -->
+    <div class="sheet-backdrop" id="timerBackdrop"></div>
+    <div class="action-sheet" id="timerSheet">
+      <div class="sheet-handle"></div>
+      <h4 class="sheet-heading">Temporizador de apagado</h4>
+      <div class="sheet-items">
+        <button class="sheet-item timer-option" data-mins="0"><span>Desactivado</span></button>
+        <button class="sheet-item timer-option" data-mins="15"><span>15 minutos</span></button>
+        <button class="sheet-item timer-option" data-mins="30"><span>30 minutos</span></button>
+        <button class="sheet-item timer-option" data-mins="45"><span>45 minutos</span></button>
+        <button class="sheet-item timer-option" data-mins="60"><span>60 minutos</span></button>
+        <button class="sheet-item timer-option" data-mins="-1"><span>Al final de la canción</span></button>
+      </div>
+    </div>
+
+    <!-- MODAL DE ESTUDIO HI-FI & ECUALIZADOR (FONDO CLARO) -->
+    <div class="sheet-backdrop" id="eqBackdrop"></div>
+    <div class="action-sheet eq-sheet" id="eqSheet">
+      <div class="sheet-handle"></div>
+      <div class="eq-sheet-header">
+        <h3 class="eq-title">Ecualizador Hi-Fi</h3>
+        <span class="eq-sub">Ajuste de frecuencias nativo</span>
+      </div>
+
+      <!-- Ecualizador de 3 bandas -->
+      <div class="eq-sliders-container">
+        <div class="eq-col-box">
+          <span class="eq-db-indicator" id="bassDbVal">0 dB</span>
+          <input type="range" id="eqBassSlider" min="-12" max="12" value="0" class="vertical-eq-slider">
+          <span class="eq-band-name">GRAVES</span>
+          <span class="eq-band-freq">60 Hz</span>
         </div>
 
-        <div class="modal-body">
-          <!-- Espectro en tiempo real -->
-          <div class="setting-group">
-            <div class="group-header">ANALIZADOR DE ESPECTRO</div>
-            <div class="spectrum-visualizer" id="spectrumBars">
-              <!-- 32 barras generadas dinámicamente -->
-            </div>
-          </div>
-
-          <!-- Ecualizador de 3 bandas -->
-          <div class="setting-group">
-            <div class="group-header">ECUALIZADOR DE 3 BANDAS</div>
-            <div class="eq-columns">
-              <div class="eq-col">
-                <span class="eq-db-badge" id="bassVal">0 dB</span>
-                <input type="range" id="eqBass" min="-12" max="12" value="0" class="vertical-slider">
-                <span class="eq-band-label">GRAVES</span>
-                <span class="eq-freq-label">60 Hz</span>
-              </div>
-              <div class="eq-col">
-                <span class="eq-db-badge" id="midVal">0 dB</span>
-                <input type="range" id="eqMid" min="-12" max="12" value="0" class="vertical-slider">
-                <span class="eq-band-label">MEDIOS</span>
-                <span class="eq-freq-label">1.0 kHz</span>
-              </div>
-              <div class="eq-col">
-                <span class="eq-db-badge" id="trebleVal">0 dB</span>
-                <input type="range" id="eqTreble" min="-12" max="12" value="0" class="vertical-slider">
-                <span class="eq-band-label">AGUDOS</span>
-                <span class="eq-freq-label">10 kHz</span>
-              </div>
-            </div>
-
-            <div class="eq-preset-row">
-              <button class="preset-pill active" data-preset="flat">Plano</button>
-              <button class="preset-pill" data-preset="bass">Bass Boost</button>
-              <button class="preset-pill" data-preset="vocal">Voces</button>
-              <button class="preset-pill" data-preset="electronic">Club</button>
-            </div>
-          </div>
-
-          <!-- Crossfade y Gapless -->
-          <div class="setting-group">
-            <div class="group-header">TRANSICIONES</div>
-            <div class="control-row">
-              <div>
-                <span class="row-label">Fundido Cruzado (Crossfade)</span>
-                <span class="row-sub">Mezcla suave entre pistas</span>
-              </div>
-              <div class="row-control">
-                <span class="slider-val" id="crossfadeVal">3.0 s</span>
-                <input type="range" id="crossfadeSlider" min="0" max="12" step="0.5" value="3.0" class="h-slider">
-              </div>
-            </div>
-
-            <div class="control-row">
-              <div>
-                <span class="row-label">Reproducción Gapless</span>
-                <span class="row-sub">Sin pausas entre canciones</span>
-              </div>
-              <div class="row-control">
-                <label class="switch">
-                  <input type="checkbox" id="gaplessToggle" checked>
-                  <span class="slider-round"></span>
-                </label>
-              </div>
-            </div>
-
-            <div class="control-row">
-              <div>
-                <span class="row-label">Salida de Audio</span>
-                <span class="row-sub">Dispositivo de reproducción</span>
-              </div>
-              <div class="row-control">
-                <select id="audioDeviceSelect" class="clean-dropdown">
-                  <option value="speaker">Altavoz del teléfono</option>
-                  <option value="wired">Auriculares con cable</option>
-                  <option value="bluetooth">Audio Bluetooth Hi-Res</option>
-                </select>
-              </div>
-            </div>
-          </div>
+        <div class="eq-col-box">
+          <span class="eq-db-indicator" id="midDbVal">0 dB</span>
+          <input type="range" id="eqMidSlider" min="-12" max="12" value="0" class="vertical-eq-slider">
+          <span class="eq-band-name">MEDIOS</span>
+          <span class="eq-band-freq">1.0 kHz</span>
         </div>
+
+        <div class="eq-col-box">
+          <span class="eq-db-indicator" id="trebleDbVal">0 dB</span>
+          <input type="range" id="eqTrebleSlider" min="-12" max="12" value="0" class="vertical-eq-slider">
+          <span class="eq-band-name">AGUDOS</span>
+          <span class="eq-band-freq">10 kHz</span>
+        </div>
+      </div>
+
+      <!-- Presets de Ecualizador -->
+      <div class="eq-presets-wrap">
+        <button class="preset-tag active" data-preset="flat">Plano</button>
+        <button class="preset-tag" data-preset="bass">Graves potentes</button>
+        <button class="preset-tag" data-preset="vocal">Voces claras</button>
+        <button class="preset-tag" data-preset="electronic">Club / Ritmo</button>
       </div>
     </div>
 
