@@ -37,11 +37,11 @@ positivo (7)
 ---- Listo ----
 rc=0
 == selfhost: lexer Titan vs lexer Rust
-archivos: 97  idénticos: 97  distintos: 0
+archivos: 98  idénticos: 98  distintos: 0
 == selfhost: parser Titan vs parser Rust
-archivos: 97  idénticos: 97  distintos: 0  (líneas de AST idénticas: 56969)
+archivos: 98  idénticos: 98  distintos: 0  (líneas de AST idénticas: 58971)
 == bench
-push 20000: 7 ms
-index 20000: 5 ms (suma 199990000)
-call(arr) 20000: 7 ms (suma 199990000)
+push 20000: 10 ms
+index 20000: 9 ms (suma 199990000)
+call(arr) 20000: 13 ms (suma 199990000)
 semantica de valor: original[0]=0 copia[0]=99
