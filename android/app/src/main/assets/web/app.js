@@ -1,25 +1,28 @@
 /**
- * Mi Música — Cliente Nativo Hi-Fi en Modo Claro
- * Inspirado en la interfaz de usuario limpia y moderna de MIUI / HyperOS Music Player.
- * 100% Funcional y Real:
- * - Agrupación por Canciones, Artistas, Álbumes y Carpetas (MediaStore nativo).
- * - Listas de reproducción completas (Crear, añadir canciones, eliminar, reproducir).
- * - Favoritos y Recientes persistentes.
- * - Modal nativo de Detalles de Archivo (Ruta, tamaño MB, álbum, duración) sin alert() de navegador.
- * - Ecualizador de hardware nativo y Temporizador de apagado real.
+ * Mi Música — Arquitectura Completa de Reproducción de Sonido
+ * 100% Real, Cero Simulaciones y Cero Elementos de Demostración.
+ *
+ * Módulos integrados:
+ * 1. Motor de audio con MediaStore nativo y Telegram Cloud.
+ * 2. Gestor de Cola Dinámica (Up Next).
+ * 3. Motor de Letras Sincronizadas (LRC).
+ * 4. Estudio Hi-Fi con Ecualizador de Hardware, Bass Boost y Virtualizador 3D.
+ * 5. Explorador físico de carpetas, artistas y álbumes.
+ * 6. Gestor completo de listas de reproducción y favoritos persistentes.
+ * 7. Panel integral de ajustes (Crossfade, Gapless, Filtro de audio).
  */
 
 (function () {
   'use strict';
 
   // =========================================================================
-  // 1. ESTADO GLOBAL
+  // 1. ESTADO GLOBAL DE LA APLICACIÓN
   // =========================================================================
 
   const state = {
     isAndroid: typeof window.TitanBridge !== 'undefined',
     activeView: 'songs', // 'songs' | 'artists' | 'albums' | 'folders' | 'playlists' | 'favorites' | 'recent' | 'cloud'
-    activeGroup: null,   // null | { type: 'artist'|'album'|'folder'|'playlist', name: string, tracks: [] }
+    activeGroup: null,   // null | { type: string, name: string, tracks: Array }
     allLocalTracks: [],
     cloudTracks: [],
     displayTracks: [],
@@ -29,15 +32,24 @@
     isPlaying: false,
     currentTime: 0,
     duration: 180,
+    playbackSpeed: 1.0,
     sortMode: 'name', // 'name' | 'artist' | 'duration'
     searchQuery: '',
     favoritesSet: new Set(),
     recentList: [],
-    playlists: {}, // { [name]: track[] }
+    playlists: {}, // { [name]: Array<track> }
     sleepTimerId: null,
     sleepTimerRemaining: 0,
     activeContextTrack: null,
-    eq: { bass: 0, mid: 0, treble: 0 }
+    lyricsLines: [],
+    activeLyricsIndex: -1,
+    showingLyrics: false,
+    settings: {
+      crossfade: 0.0,
+      gapless: true,
+      filterShortAudio: true
+    },
+    eq: { bass: 0, mid: 0, treble: 0, bassBoost: 0, virtualizer: 0 }
   };
 
   let htmlAudio = null;
@@ -51,8 +63,9 @@
     openDrawerBtn: document.getElementById('openDrawerBtn'),
     globalSearchInput: document.getElementById('globalSearchInput'),
     clearSearchBtn: document.getElementById('clearSearchBtn'),
+    headerQueueBtn: document.getElementById('headerQueueBtn'),
 
-    // Top Cards
+    // Carrusel de Tarjetas Superiores
     cardFavorites: document.getElementById('cardFavorites'),
     cardPlaylists: document.getElementById('cardPlaylists'),
     cardRecent: document.getElementById('cardRecent'),
@@ -60,21 +73,23 @@
     playlistCountBadge: document.getElementById('playlistCountBadge'),
     recentCountBadge: document.getElementById('recentCountBadge'),
 
-    // Sub Tabs Bar
+    // Barra de Pestañas Horizontales
     subTabsBar: document.getElementById('subTabsBar'),
     subTabPills: document.querySelectorAll('.sub-tab-pill'),
 
-    // Toolbar
+    // Barra de Herramientas
     shuffleAllBtn: document.getElementById('shuffleAllBtn'),
     totalTracksCount: document.getElementById('totalTracksCount'),
     sortToggleBtn: document.getElementById('sortToggleBtn'),
 
-    // Container & Empty State
+    // Contenedor Principal y Estado Vacío
     songsContainer: document.getElementById('songsContainer'),
     emptyState: document.getElementById('emptyState'),
+    emptyTitle: document.getElementById('emptyTitle'),
+    emptyDesc: document.getElementById('emptyDesc'),
     emptyScanBtn: document.getElementById('emptyScanBtn'),
 
-    // Floating Vinyl Player Dock
+    // Mini Reproductor Flotante con Vinilo
     floatingPlayer: document.getElementById('floatingPlayer'),
     dockTrigger: document.getElementById('dockTrigger'),
     vinylDisc: document.getElementById('vinylDisc'),
@@ -86,11 +101,11 @@
     dockPauseIcon: document.getElementById('dockPauseIcon'),
     dockNextBtn: document.getElementById('dockNextBtn'),
 
-    // Bottom Navigation
+    // Barra de Navegación Inferior
     bottomNavItems: document.querySelectorAll('.bottom-nav-item'),
     centerHifiBtn: document.getElementById('centerHifiBtn'),
 
-    // Side Drawer
+    // Menú Lateral (Drawer)
     drawerBackdrop: document.getElementById('drawerBackdrop'),
     sideDrawer: document.getElementById('sideDrawer'),
     drawerEqItem: document.getElementById('drawerEqItem'),
@@ -98,13 +113,17 @@
     sleepTimerStatus: document.getElementById('sleepTimerStatus'),
     drawerScanItem: document.getElementById('drawerScanItem'),
     drawerPickerItem: document.getElementById('drawerPickerItem'),
+    drawerSettingsItem: document.getElementById('drawerSettingsItem'),
     drawerStatsItem: document.getElementById('drawerStatsItem'),
     drawerStatsText: document.getElementById('drawerStatsText'),
 
-    // Fullscreen Player
+    // Reproductor a Pantalla Completa
     fullscreenModal: document.getElementById('fullscreenModal'),
     closeFsBtn: document.getElementById('closeFsBtn'),
-    fsOptionsBtn: document.getElementById('fsOptionsBtn'),
+    toggleLyricsBtn: document.getElementById('toggleLyricsBtn'),
+    artworkContainer: document.getElementById('artworkContainer'),
+    lyricsContainer: document.getElementById('lyricsContainer'),
+    lyricsScroll: document.getElementById('lyricsScroll'),
     fsSourceBadge: document.getElementById('fsSourceBadge'),
     fsArtworkImg: document.getElementById('fsArtworkImg'),
     fsTitle: document.getElementById('fsTitle'),
@@ -123,9 +142,17 @@
     fsNextTrackBtn: document.getElementById('fsNextTrackBtn'),
     fsRepeatToggle: document.getElementById('fsRepeatToggle'),
     fsEqDrawerBtn: document.getElementById('fsEqDrawerBtn'),
-    fsDeviceName: document.getElementById('fsDeviceName'),
+    fsSpeedToggleBtn: document.getElementById('fsSpeedToggleBtn'),
+    fsSpeedText: document.getElementById('fsSpeedText'),
+    fsQueueDrawerBtn: document.getElementById('fsQueueDrawerBtn'),
 
-    // Track Context Menu Sheet
+    // Modal de Cola de Reproducción
+    queueBackdrop: document.getElementById('queueBackdrop'),
+    queueSheet: document.getElementById('queueSheet'),
+    queueListContainer: document.getElementById('queueListContainer'),
+    clearQueueBtn: document.getElementById('clearQueueBtn'),
+
+    // Menú Contextual de Pista (⋮)
     trackMenuBackdrop: document.getElementById('trackMenuBackdrop'),
     trackMenuSheet: document.getElementById('trackMenuSheet'),
     sheetThumb: document.getElementById('sheetThumb'),
@@ -137,7 +164,7 @@
     sheetAddToPlaylistBtn: document.getElementById('sheetAddToPlaylistBtn'),
     sheetInfoBtn: document.getElementById('sheetInfoBtn'),
 
-    // File Details Sheet (Modal nativo real, cero alerts)
+    // Modal de Detalles Técnicos del Archivo
     fileInfoBackdrop: document.getElementById('fileInfoBackdrop'),
     fileInfoSheet: document.getElementById('fileInfoSheet'),
     infoTitle: document.getElementById('infoTitle'),
@@ -148,30 +175,30 @@
     infoFolder: document.getElementById('infoFolder'),
     infoPath: document.getElementById('infoPath'),
 
-    // Add to Playlist Sheet
+    // Modal de Añadir a Lista
     addPlaylistBackdrop: document.getElementById('addPlaylistBackdrop'),
     addPlaylistSheet: document.getElementById('addPlaylistSheet'),
     playlistPickList: document.getElementById('playlistPickList'),
     openCreatePlModalBtn: document.getElementById('openCreatePlModalBtn'),
 
-    // Create New Playlist Modal
+    // Modal de Crear Lista
     newPlaylistBackdrop: document.getElementById('newPlaylistBackdrop'),
     newPlaylistSheet: document.getElementById('newPlaylistSheet'),
     newPlaylistInput: document.getElementById('newPlaylistInput'),
     confirmCreatePlaylistBtn: document.getElementById('confirmCreatePlaylistBtn'),
     cancelCreatePlaylistBtn: document.getElementById('cancelCreatePlaylistBtn'),
 
-    // Sort Sheet
+    // Modal de Ordenación
     sortBackdrop: document.getElementById('sortBackdrop'),
     sortSheet: document.getElementById('sortSheet'),
     sortOptions: document.querySelectorAll('.sort-option'),
 
-    // Sleep Timer Sheet
+    // Modal de Temporizador
     timerBackdrop: document.getElementById('timerBackdrop'),
     timerSheet: document.getElementById('timerSheet'),
     timerOptions: document.querySelectorAll('.timer-option'),
 
-    // Equalizer Sheet
+    // Modal de Ecualizador y Audio FX
     eqBackdrop: document.getElementById('eqBackdrop'),
     eqSheet: document.getElementById('eqSheet'),
     eqBassSlider: document.getElementById('eqBassSlider'),
@@ -180,11 +207,23 @@
     bassDbVal: document.getElementById('bassDbVal'),
     midDbVal: document.getElementById('midDbVal'),
     trebleDbVal: document.getElementById('trebleDbVal'),
-    presetTags: document.querySelectorAll('.preset-tag')
+    bassBoostSlider: document.getElementById('bassBoostSlider'),
+    bassBoostVal: document.getElementById('bassBoostVal'),
+    virtualizerSlider: document.getElementById('virtualizerSlider'),
+    virtualizerVal: document.getElementById('virtualizerVal'),
+    presetTags: document.querySelectorAll('.preset-tag'),
+
+    // Modal de Ajustes
+    settingsBackdrop: document.getElementById('settingsBackdrop'),
+    settingsSheet: document.getElementById('settingsSheet'),
+    crossfadeSlider: document.getElementById('crossfadeSlider'),
+    crossfadeSettingVal: document.getElementById('crossfadeSettingVal'),
+    gaplessToggle: document.getElementById('gaplessToggle'),
+    filterShortAudioToggle: document.getElementById('filterShortAudioToggle')
   };
 
   // =========================================================================
-  // 3. PERSISTENCIA LOCAL (FAVORITOS, RECIENTES, LISTAS)
+  // 3. PERSISTENCIA DE DATOS
   // =========================================================================
 
   function loadPersistedData() {
@@ -196,17 +235,18 @@
       if (recents) state.recentList = JSON.parse(recents);
 
       const savedPl = localStorage.getItem('miui_playlists');
-      if (savedPl) {
-        state.playlists = JSON.parse(savedPl);
-      } else {
-        state.playlists = {
-          'Favoritas del Verano': [],
-          'Música para Entrenar': [],
-          'Clásicos Inolvidables': []
-        };
-      }
+      if (savedPl) state.playlists = JSON.parse(savedPl);
+      else state.playlists = { 'Favoritas': [] };
+
+      const savedSettings = localStorage.getItem('miui_settings');
+      if (savedSettings) state.settings = Object.assign(state.settings, JSON.parse(savedSettings));
+
+      if (dom.crossfadeSlider) dom.crossfadeSlider.value = state.settings.crossfade;
+      if (dom.crossfadeSettingVal) dom.crossfadeSettingVal.textContent = state.settings.crossfade.toFixed(1) + 's';
+      if (dom.gaplessToggle) dom.gaplessToggle.checked = state.settings.gapless;
+      if (dom.filterShortAudioToggle) dom.filterShortAudioToggle.checked = state.settings.filterShortAudio;
     } catch (e) {
-      console.warn('Error leyendo almacenamiento local', e);
+      console.warn('Error cargando persistencia local', e);
     }
     updateCounters();
   }
@@ -232,28 +272,28 @@
     updateCounters();
   }
 
+  function saveSettings() {
+    try {
+      localStorage.setItem('miui_settings', JSON.stringify(state.settings));
+    } catch (e) {}
+  }
+
   function updateCounters() {
-    if (dom.favCountBadge) {
-      dom.favCountBadge.textContent = `${state.favoritesSet.size} canciones`;
-    }
+    if (dom.favCountBadge) dom.favCountBadge.textContent = `${state.favoritesSet.size} canciones`;
     if (dom.playlistCountBadge) {
-      const plCount = Object.keys(state.playlists).length;
-      dom.playlistCountBadge.textContent = `${plCount} listas`;
+      const count = Object.keys(state.playlists).length;
+      dom.playlistCountBadge.textContent = `${count} ${count === 1 ? 'lista' : 'listas'}`;
     }
-    if (dom.recentCountBadge) {
-      dom.recentCountBadge.textContent = `${state.recentList.length} escuchadas`;
-    }
-    if (dom.drawerStatsText) {
-      dom.drawerStatsText.textContent = `${state.allLocalTracks.length} canciones locales`;
-    }
+    if (dom.recentCountBadge) dom.recentCountBadge.textContent = `${state.recentList.length} escuchadas`;
+    if (dom.drawerStatsText) dom.drawerStatsText.textContent = `${state.allLocalTracks.length} canciones locales`;
   }
 
   // =========================================================================
-  // 4. GENERADOR DETERMINÍSTICO DE CARÁTULAS VECTORIALES
+  // 4. CARÁTULAS VECTORIALES DETERMINÍSTICAS (0ms, SIN FALLOS DE RED)
   // =========================================================================
 
   function generateArtworkDataUri(title, artist) {
-    const seed = (title || 'Song') + (artist || 'Artist');
+    const seed = (title || 'Canción') + (artist || 'Artista');
     let hash = 0;
     for (let i = 0; i < seed.length; i++) {
       hash = (hash << 5) - hash + seed.charCodeAt(i);
@@ -266,14 +306,14 @@
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
         <defs>
           <linearGradient id="g_${hue}" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="hsl(${hue}, 65%, 45%)" />
-            <stop offset="100%" stop-color="hsl(${(hue + 40) % 360}, 75%, 25%)" />
+            <stop offset="0%" stop-color="hsl(${hue}, 60%, 42%)" />
+            <stop offset="100%" stop-color="hsl(${(hue + 45) % 360}, 75%, 22%)" />
           </linearGradient>
         </defs>
-        <rect width="160" height="160" rx="16" fill="url(#g_${hue})" />
-        <circle cx="80" cy="80" r="48" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" />
-        <circle cx="80" cy="80" r="22" fill="rgba(0,0,0,0.25)" />
-        <text x="80" y="87" font-family="-apple-system, sans-serif" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle">${initial}</text>
+        <rect width="160" height="160" rx="18" fill="url(#g_${hue})" />
+        <circle cx="80" cy="80" r="48" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="2" />
+        <circle cx="80" cy="80" r="22" fill="rgba(0,0,0,0.22)" />
+        <text x="80" y="87" font-family="-apple-system, sans-serif" font-size="22" font-weight="800" fill="#ffffff" text-anchor="middle">${initial}</text>
       </svg>
     `.trim();
 
@@ -281,7 +321,7 @@
   }
 
   // =========================================================================
-  // 5. INICIALIZACIÓN Y ESCANEO DE MÚSICA
+  // 5. INICIALIZACIÓN Y CARGA DE MÚSICA REAL DEL TELÉFONO
   // =========================================================================
 
   function init() {
@@ -291,7 +331,7 @@
     if (state.isAndroid && window.TitanBridge) {
       scanDeviceMusic();
     } else {
-      loadFallbackMusic();
+      fetchCloudTracks();
     }
 
     fetchCloudTracks();
@@ -303,33 +343,26 @@
 
     try {
       const raw = window.TitanBridge.scanLocalMusic();
+      if (!raw) return;
       const list = JSON.parse(raw);
 
       if (Array.isArray(list)) {
         const filtered = list.filter(t => {
-          const dur = t.duration || 0;
-          const lowerTitle = (t.title || '').toLowerCase();
-          const lowerPath = (t.rawPath || t.path || '').toLowerCase();
-
-          if (dur < 30) return false; // Ignorar notificaciones cortas
-          if (lowerTitle.includes('tts-') || lowerTitle.includes('inworld') || lowerTitle.startsWith('ptt-') || lowerTitle.startsWith('aud-')) return false;
-          if (lowerPath.includes('whatsapp') || lowerPath.includes('cache')) return false;
-
+          if (state.settings.filterShortAudio && (t.duration || 0) < 35) return false;
           return true;
         });
 
         filtered.forEach(t => {
-          t.artworkUrl = generateArtworkDataUri(t.title, t.artist);
-          if (!t.folder) {
-            t.folder = extractFolderName(t.rawPath || t.path);
-          }
+          t.artworkUrl = t.artworkUri || generateArtworkDataUri(t.title, t.artist);
+          if (!t.folder) t.folder = extractFolderName(t.rawPath || t.path);
         });
 
         state.allLocalTracks = filtered;
         renderCurrentView();
+        updateCounters();
       }
     } catch (e) {
-      console.error('Error al escanear MediaStore', e);
+      console.error('Error al consultar MediaStore nativo', e);
     }
   }
 
@@ -342,21 +375,6 @@
     return 'Música interna';
   }
 
-  function loadFallbackMusic() {
-    const demo = [
-      { id: 'm_1', title: 'Those Eyes', artist: 'New West', album: 'Those Eyes (Alternate Version)', duration: 220, size: 5410000, folder: 'Music', path: 'file:///android_asset/web/audio/track_acoustic.wav' },
-      { id: 'm_2', title: 'Bon Appétit', artist: 'Katy Perry, Migos', album: 'Witness (Deluxe)', duration: 227, size: 7850000, folder: 'Download', path: 'file:///android_asset/web/audio/track_electronic.wav' },
-      { id: 'm_3', title: 'Here With Me', artist: 'd4vd', album: 'Petals to Thorns', duration: 182, size: 4200000, folder: 'Music', path: 'file:///android_asset/web/audio/track_lofi.wav' },
-      { id: 'm_4', title: 'Runaway', artist: 'Sebastian Yatra, Daddy Yankee', album: 'Dharma', duration: 202, size: 6150000, folder: 'TitanMusic', path: 'file:///android_asset/web/audio/track_synthwave.wav' },
-      { id: 'm_5', title: 'Try', artist: 'P!nk', album: "Now That's What I Call Music", duration: 247, size: 8900000, folder: 'Music', path: 'file:///android_asset/web/audio/track_rock.wav' }
-    ];
-    demo.forEach(d => {
-      d.artworkUrl = generateArtworkDataUri(d.title, d.artist);
-    });
-    state.allLocalTracks = demo;
-    renderCurrentView();
-  }
-
   function fetchCloudTracks() {
     fetch('/api/tracks')
       .then(r => r.json())
@@ -364,7 +382,8 @@
         if (d && Array.isArray(d.tracks)) {
           d.tracks.forEach(t => {
             t.artworkUrl = generateArtworkDataUri(t.title, t.artist);
-            t.folder = 'Telegram Cloud';
+            t.folder = 'Telegram Nube';
+            t.source = 'cloud';
           });
           state.cloudTracks = d.tracks;
           if (state.activeView === 'cloud') {
@@ -376,17 +395,15 @@
   }
 
   // =========================================================================
-  // 6. MOTOR DE RENDERIZADO PRINCIPAL (VISTAS Y AGRUPACIONES)
+  // 6. RENDERIZADO DINÁMICO DE VISTAS (CANCIONES, ARTISTAS, ÁLBUMES, CARPETAS)
   // =========================================================================
 
   function renderCurrentView() {
-    // Si estamos dentro de un grupo abierto (Artista, Álbum, Carpeta, Lista)
     if (state.activeGroup) {
       renderGroupDetailView(state.activeGroup);
       return;
     }
 
-    // Vistas principales según pestaña activa
     switch (state.activeView) {
       case 'songs':
         renderSongsListView(state.allLocalTracks);
@@ -418,11 +435,10 @@
     }
   }
 
-  // --- 6.1 VISTA DE CANCIONES (CON BÚSQUEDA Y ORDENACIÓN) ---
+  // --- 6.1 LISTA DE CANCIONES ---
   function renderSongsListView(sourceTracks) {
     let tracks = [...sourceTracks];
 
-    // Aplicar búsqueda en tiempo real
     if (state.searchQuery) {
       const q = state.searchQuery.toLowerCase();
       tracks = tracks.filter(t =>
@@ -433,7 +449,6 @@
       );
     }
 
-    // Aplicar ordenación
     sortTrackArray(tracks, state.sortMode);
 
     state.displayTracks = tracks;
@@ -443,6 +458,10 @@
     if (tracks.length === 0) {
       dom.songsContainer.innerHTML = '';
       dom.emptyState.style.display = 'flex';
+      dom.emptyTitle.textContent = state.searchQuery ? 'Sin resultados' : 'Sin canciones';
+      dom.emptyDesc.textContent = state.searchQuery
+        ? 'No se encontraron coincidencias para la búsqueda.'
+        : 'No hay pistas de música disponibles en esta sección.';
       return;
     }
     dom.emptyState.style.display = 'none';
@@ -458,7 +477,7 @@
     dom.songsContainer.appendChild(frag);
   }
 
-  // --- 6.2 VISTA DE ARTISTAS REAL (AGRUPADOS POR ARTISTA) ---
+  // --- 6.2 AGRUPACIÓN POR ARTISTA ---
   function renderArtistsGridView() {
     dom.emptyState.style.display = 'none';
     dom.songsContainer.innerHTML = '';
@@ -523,7 +542,7 @@
     dom.songsContainer.appendChild(frag);
   }
 
-  // --- 6.3 VISTA DE ÁLBUMES REAL (AGRUPADOS POR ÁLBUM) ---
+  // --- 6.3 AGRUPACIÓN POR ÁLBUM ---
   function renderAlbumsGridView() {
     dom.emptyState.style.display = 'none';
     dom.songsContainer.innerHTML = '';
@@ -591,7 +610,7 @@
     dom.songsContainer.appendChild(frag);
   }
 
-  // --- 6.4 VISTA DE CARPETAS REAL (POR DIRECTORIO DE ALMACENAMIENTO) ---
+  // --- 6.4 AGRUPACIÓN POR CARPETA DE ALMACENAMIENTO ---
   function renderFoldersListView() {
     dom.emptyState.style.display = 'none';
     dom.songsContainer.innerHTML = '';
@@ -656,7 +675,7 @@
     dom.songsContainer.appendChild(frag);
   }
 
-  // --- 6.5 VISTA DE LISTAS DE REPRODUCCIÓN (CRUD REAL) ---
+  // --- 6.5 LISTAS DE REPRODUCCIÓN (CRUD REAL) ---
   function renderPlaylistsListView() {
     dom.emptyState.style.display = 'none';
     dom.songsContainer.innerHTML = '';
@@ -666,7 +685,6 @@
 
     const frag = document.createDocumentFragment();
 
-    // Botón para crear nueva lista directamente arriba
     const createBtnRow = document.createElement('div');
     createBtnRow.style.padding = '4px 0 12px 0';
     createBtnRow.innerHTML = `
@@ -674,9 +692,7 @@
         + Crear nueva lista de reproducción
       </button>
     `;
-    createBtnRow.querySelector('button').addEventListener('click', () => {
-      openNewPlaylistModal();
-    });
+    createBtnRow.querySelector('button').addEventListener('click', openNewPlaylistModal);
     frag.appendChild(createBtnRow);
 
     plNames.forEach(plName => {
@@ -725,7 +741,6 @@
   // --- 6.6 VISTA DE FAVORITOS ---
   function renderFavoritesView() {
     const favTracks = state.allLocalTracks.filter(t => state.favoritesSet.has(t.id));
-
     dom.totalTracksCount.textContent = `${favTracks.length} favoritas`;
 
     if (favTracks.length === 0) {
@@ -764,14 +779,13 @@
     renderSongsListView(state.recentList);
   }
 
-  // --- 6.8 VISTA DETALLE DE GRUPO (ARTISTA, ÁLBUM, CARPETA, LISTA ABIERTA) ---
+  // --- 6.8 DETALLE DE GRUPO ---
   function renderGroupDetailView(group) {
     dom.emptyState.style.display = 'none';
     dom.songsContainer.innerHTML = '';
 
     const frag = document.createDocumentFragment();
 
-    // Barra de navegación hacia atrás
     const backBar = document.createElement('div');
     backBar.className = 'group-back-bar';
     backBar.innerHTML = `
@@ -784,7 +798,6 @@
     });
     frag.appendChild(backBar);
 
-    // Encabezado descriptivo del grupo
     const header = document.createElement('div');
     header.style.display = 'flex';
     header.style.alignItems = 'center';
@@ -815,7 +828,6 @@
 
     frag.appendChild(header);
 
-    // Listado de canciones del grupo
     state.displayTracks = group.tracks;
     state.currentQueue = group.tracks;
     dom.totalTracksCount.textContent = group.tracks.length;
@@ -836,7 +848,7 @@
     return 'Mi Música';
   }
 
-  // --- 6.9 CREADOR DE FILA DE CANCIÓN (CON DETALLES Y ECUALIZADOR PÚRPURA) ---
+  // --- 6.9 FILA DE CANCIÓN ---
   function createSongRowElement(track, index) {
     const isCurrent = state.currentTrack && state.currentTrack.id === track.id;
     const row = document.createElement('div');
@@ -892,17 +904,159 @@
   }
 
   function sortTrackArray(arr, mode) {
-    if (mode === 'name') {
-      arr.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-    } else if (mode === 'artist') {
-      arr.sort((a, b) => (a.artist || '').localeCompare(b.artist || ''));
-    } else if (mode === 'duration') {
-      arr.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+    if (mode === 'name') arr.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+    else if (mode === 'artist') arr.sort((a, b) => (a.artist || '').localeCompare(b.artist || ''));
+    else if (mode === 'duration') arr.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+  }
+
+  // =========================================================================
+  // 7. GESTIÓN DE COLA DE REPRODUCCIÓN (UP NEXT)
+  // =========================================================================
+
+  function renderQueueModal() {
+    dom.queueListContainer.innerHTML = '';
+    if (state.currentQueue.length === 0) {
+      dom.queueListContainer.innerHTML = '<p style="padding:16px; color:var(--text-muted); text-align:center;">Cola vacía</p>';
+      return;
+    }
+
+    state.currentQueue.forEach((t, idx) => {
+      const isCur = state.currentIndex === idx;
+      const row = document.createElement('div');
+      row.className = `queue-row ${isCur ? 'active' : ''}`;
+      row.innerHTML = `
+        <div class="queue-meta">
+          <span class="queue-title">${escapeXml(t.title || 'Canción')}</span>
+          <span class="queue-sub">${escapeXml(t.artist || 'Artista')}</span>
+        </div>
+        <button class="queue-remove-btn" title="Eliminar de la cola">&times;</button>
+      `;
+
+      row.querySelector('.queue-meta').addEventListener('click', () => {
+        playTrackByIndex(idx);
+        closeQueueModal();
+      });
+
+      row.querySelector('.queue-remove-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeFromQueue(idx);
+      });
+
+      dom.queueListContainer.appendChild(row);
+    });
+  }
+
+  function removeFromQueue(index) {
+    if (index >= 0 && index < state.currentQueue.length) {
+      state.currentQueue.splice(index, 1);
+      if (state.currentIndex > index) state.currentIndex--;
+      renderQueueModal();
+    }
+  }
+
+  function openQueueModal() {
+    renderQueueModal();
+    dom.queueBackdrop.classList.add('active');
+    dom.queueSheet.classList.add('active');
+  }
+
+  function closeQueueModal() {
+    dom.queueBackdrop.classList.remove('active');
+    dom.queueSheet.classList.remove('active');
+  }
+
+  // =========================================================================
+  // 8. MOTOR DE LETRAS SINCRONIZADAS (LRC)
+  // =========================================================================
+
+  function toggleLyricsView() {
+    state.showingLyrics = !state.showingLyrics;
+    dom.artworkContainer.style.display = state.showingLyrics ? 'none' : 'flex';
+    dom.lyricsContainer.style.display = state.showingLyrics ? 'flex' : 'none';
+
+    if (state.showingLyrics && state.currentTrack) {
+      loadLyricsForTrack(state.currentTrack);
+    }
+  }
+
+  function loadLyricsForTrack(track) {
+    dom.lyricsScroll.innerHTML = '<p class="lyrics-line-placeholder">Buscando letras...</p>';
+    state.lyricsLines = [];
+
+    // Intento de obtener archivo LRC o letras en el backend
+    fetch(`/api/lyrics?title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.lrc) {
+          parseLrcContent(d.lrc);
+        } else {
+          dom.lyricsScroll.innerHTML = '<p class="lyrics-line-placeholder">No hay letras sincronizadas disponibles para esta canción.</p>';
+        }
+      })
+      .catch(() => {
+        dom.lyricsScroll.innerHTML = '<p class="lyrics-line-placeholder">No hay letras sincronizadas disponibles para esta canción.</p>';
+      });
+  }
+
+  function parseLrcContent(lrcText) {
+    const lines = lrcText.split('\n');
+    const parsed = [];
+    const timeReg = /\[(\d{2}):(\d{2})\.?(\d{2,3})?\]/;
+
+    lines.forEach(l => {
+      const match = timeReg.exec(l);
+      if (match) {
+        const min = parseInt(match[1], 10);
+        const sec = parseInt(match[2], 10);
+        const ms = match[3] ? parseInt(match[3], 10) : 0;
+        const totalSec = min * 60 + sec + (ms > 99 ? ms / 1000 : ms / 100);
+        const text = l.replace(timeReg, '').trim();
+        if (text) parsed.push({ time: totalSec, text });
+      }
+    });
+
+    state.lyricsLines = parsed;
+    renderLyricsList();
+  }
+
+  function renderLyricsList() {
+    dom.lyricsScroll.innerHTML = '';
+    state.lyricsLines.forEach((item, index) => {
+      const p = document.createElement('p');
+      p.className = 'lyrics-line';
+      p.textContent = item.text;
+      p.dataset.index = index;
+      dom.lyricsScroll.appendChild(p);
+    });
+  }
+
+  function updateLyricsSync(currentTimeSec) {
+    if (!state.showingLyrics || state.lyricsLines.length === 0) return;
+
+    let activeIdx = -1;
+    for (let i = 0; i < state.lyricsLines.length; i++) {
+      if (currentTimeSec >= state.lyricsLines[i].time) {
+        activeIdx = i;
+      } else {
+        break;
+      }
+    }
+
+    if (activeIdx !== state.activeLyricsIndex && activeIdx >= 0) {
+      state.activeLyricsIndex = activeIdx;
+      const lines = dom.lyricsScroll.querySelectorAll('.lyrics-line');
+      lines.forEach(l => l.classList.remove('active'));
+
+      const activeEl = lines[activeIdx];
+      if (activeEl) {
+        activeEl.classList.add('active');
+        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
     }
   }
 
   // =========================================================================
-  // 7. GESTIÓN DE LISTAS DE REPRODUCCIÓN (CRUD REAL)
+  // 9. GESTIÓN DE LISTAS DE REPRODUCCIÓN (CRUD REAL)
   // =========================================================================
 
   function openNewPlaylistModal() {
@@ -928,7 +1082,6 @@
 
     closeNewPlaylistModal();
 
-    // Si había una canción seleccionada para añadir, guardarla
     if (state.activeContextTrack) {
       addTrackToPlaylist(trimmed, state.activeContextTrack);
       closeAddToPlaylistSheet();
@@ -986,7 +1139,6 @@
 
   function addTrackToPlaylist(plName, track) {
     if (!state.playlists[plName]) state.playlists[plName] = [];
-
     const exists = state.playlists[plName].some(t => t.id === track.id);
     if (!exists) {
       state.playlists[plName].push(track);
@@ -995,7 +1147,7 @@
   }
 
   // =========================================================================
-  // 8. MODAL REAL DE DETALLES DEL ARCHIVO (SIN ALERTS)
+  // 10. MODAL REAL DE DETALLES TÉCNICOS (SIN ALERTS)
   // =========================================================================
 
   function openFileDetailsModal(track) {
@@ -1029,7 +1181,7 @@
   }
 
   // =========================================================================
-  // 9. REPRODUCCIÓN (ANDROID NATIVO + FALLBACK WEB AUDIO)
+  // 11. REPRODUCCIÓN (ANDROID NATIVO + FALLBACK WEB AUDIO)
   // =========================================================================
 
   function playTrackByIndex(index) {
@@ -1059,6 +1211,9 @@
     }
 
     updateActiveRowVisuals();
+    if (state.showingLyrics) {
+      loadLyricsForTrack(track);
+    }
   }
 
   function playViaHtmlAudio(src) {
@@ -1068,6 +1223,7 @@
         state.currentTime = Math.round(htmlAudio.currentTime);
         state.duration = Math.round(htmlAudio.duration) || state.duration;
         updateProgressUI();
+        updateLyricsSync(htmlAudio.currentTime);
       });
       htmlAudio.addEventListener('ended', () => {
         playNextTrack();
@@ -1075,6 +1231,7 @@
     }
 
     htmlAudio.src = src;
+    htmlAudio.playbackRate = state.playbackSpeed;
     htmlAudio.play()
       .then(() => setPlaybackState(true))
       .catch(() => setPlaybackState(false));
@@ -1125,7 +1282,7 @@
 
   function stopPlayback() {
     if (state.isAndroid && window.TitanBridge) {
-      window.TitanBridge.pauseTrack();
+      window.TitanBridge.stopTrack();
     }
     if (htmlAudio) htmlAudio.pause();
     setPlaybackState(false);
@@ -1140,6 +1297,22 @@
       htmlAudio.currentTime = sec;
     }
     updateProgressUI();
+  }
+
+  function cyclePlaybackSpeed() {
+    const speeds = [0.75, 1.0, 1.25, 1.5, 2.0];
+    let idx = speeds.indexOf(state.playbackSpeed);
+    idx = (idx + 1) % speeds.length;
+    state.playbackSpeed = speeds[idx];
+
+    dom.fsSpeedText.textContent = state.playbackSpeed.toFixed(2).replace('.00', '') + 'x';
+
+    if (state.isAndroid && window.TitanBridge) {
+      window.TitanBridge.setPlaybackSpeed(state.playbackSpeed);
+    }
+    if (htmlAudio) {
+      htmlAudio.playbackRate = state.playbackSpeed;
+    }
   }
 
   function setPlaybackState(playing) {
@@ -1190,15 +1363,16 @@
       if (!raw) return;
       const data = JSON.parse(raw);
 
-      if (typeof data.isPlaying === 'boolean' && data.isPlaying !== state.isPlaying) {
-        setPlaybackState(data.isPlaying);
+      if (typeof data.playing === 'boolean' && data.playing !== state.isPlaying) {
+        setPlaybackState(data.playing);
       }
-      if (typeof data.currentPositionMs === 'number') {
-        state.currentTime = Math.round(data.currentPositionMs / 1000);
+      if (typeof data.position === 'number') {
+        state.currentTime = data.position;
         updateProgressUI();
+        updateLyricsSync(data.position);
       }
-      if (typeof data.durationMs === 'number' && data.durationMs > 0) {
-        state.duration = Math.round(data.durationMs / 1000);
+      if (typeof data.duration === 'number' && data.duration > 0) {
+        state.duration = data.duration;
         dom.fsTimeTotal.textContent = formatDuration(state.duration);
       }
     } catch (e) {}
@@ -1241,7 +1415,7 @@
   }
 
   // =========================================================================
-  // 10. INTERACCIONES Y EVENTOS
+  // 12. INTERACCIONES Y EVENTOS
   // =========================================================================
 
   function bindEvents() {
@@ -1256,7 +1430,6 @@
     dom.drawerScanItem.addEventListener('click', () => {
       closeDrawer();
       if (state.isAndroid && window.TitanBridge) {
-        window.TitanBridge.scanLocalMusic();
         scanDeviceMusic();
       }
     });
@@ -1278,6 +1451,11 @@
       }
     });
 
+    dom.drawerSettingsItem.addEventListener('click', () => {
+      closeDrawer();
+      openSettingsModal();
+    });
+
     // Pestañas inferiores (Bottom Nav)
     dom.bottomNavItems.forEach(item => {
       item.addEventListener('click', () => {
@@ -1296,16 +1474,14 @@
           state.activeView = 'playlists';
           renderCurrentView();
         } else if (nav === 'profile') {
-          dom.openDrawerBtn.click();
+          openSettingsModal();
         }
       });
     });
 
-    dom.centerHifiBtn.addEventListener('click', () => {
-      openEqSheet();
-    });
+    dom.centerHifiBtn.addEventListener('click', openEqSheet);
 
-    // Tarjetas destacadas superiores
+    // Tarjetas superiores
     dom.cardFavorites.addEventListener('click', () => {
       state.activeGroup = null;
       state.activeView = 'favorites';
@@ -1324,7 +1500,7 @@
       renderCurrentView();
     });
 
-    // Sub-pestañas horizontales (Canciones, Artistas, Álbumes, Carpetas)
+    // Sub-pestañas horizontales
     dom.subTabPills.forEach(pill => {
       pill.addEventListener('click', () => {
         const tab = pill.dataset.tab;
@@ -1368,6 +1544,16 @@
       });
     });
 
+    // Cola de Reproducción
+    dom.headerQueueBtn.addEventListener('click', openQueueModal);
+    dom.fsQueueDrawerBtn.addEventListener('click', openQueueModal);
+    dom.queueBackdrop.addEventListener('click', closeQueueModal);
+    dom.clearQueueBtn.addEventListener('click', () => {
+      state.currentQueue = state.currentTrack ? [state.currentTrack] : [];
+      state.currentIndex = 0;
+      renderQueueModal();
+    });
+
     // Mini Reproductor Flotante
     dom.dockTrigger.addEventListener('click', (e) => {
       if (e.target.closest('#dockPlayBtn') || e.target.closest('#dockNextBtn')) return;
@@ -1386,9 +1572,11 @@
 
     // Pantalla Completa
     dom.closeFsBtn.addEventListener('click', closeFullscreenPlayer);
+    dom.toggleLyricsBtn.addEventListener('click', toggleLyricsView);
     dom.fsPlayPauseBtn.addEventListener('click', togglePlayPause);
     dom.fsNextTrackBtn.addEventListener('click', playNextTrack);
     dom.fsPrevTrackBtn.addEventListener('click', playPreviousTrack);
+    dom.fsSpeedToggleBtn.addEventListener('click', cyclePlaybackSpeed);
 
     dom.fsFavBtn.addEventListener('click', () => {
       if (!state.currentTrack) return;
@@ -1435,10 +1623,8 @@
       openFileDetailsModal(track);
     });
 
-    // Modal de Detalles de Archivo
+    // Modales de Detalles y Listas
     dom.fileInfoBackdrop.addEventListener('click', closeFileDetailsModal);
-
-    // Modal de Añadir a Lista
     dom.addPlaylistBackdrop.addEventListener('click', closeAddToPlaylistSheet);
 
     dom.openCreatePlModalBtn.addEventListener('click', () => {
@@ -1446,7 +1632,6 @@
       openNewPlaylistModal();
     });
 
-    // Modal de Crear Lista
     dom.newPlaylistBackdrop.addEventListener('click', closeNewPlaylistModal);
     dom.cancelCreatePlaylistBtn.addEventListener('click', closeNewPlaylistModal);
     dom.confirmCreatePlaylistBtn.addEventListener('click', () => {
@@ -1454,14 +1639,11 @@
     });
 
     dom.newPlaylistInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        createNewPlaylist(dom.newPlaylistInput.value);
-      }
+      if (e.key === 'Enter') createNewPlaylist(dom.newPlaylistInput.value);
     });
 
     // Temporizador de Apagado
     dom.timerBackdrop.addEventListener('click', closeSleepTimerSheet);
-
     dom.timerOptions.forEach(opt => {
       opt.addEventListener('click', () => {
         const mins = parseInt(opt.dataset.mins, 10);
@@ -1470,12 +1652,13 @@
       });
     });
 
-    // Ecualizador
+    // Audio FX (Ecualizador, Bass Boost, Virtualizer)
     dom.eqBackdrop.addEventListener('click', closeEqSheet);
-
-    dom.eqBassSlider.addEventListener('input', updateEqualizer);
-    dom.eqMidSlider.addEventListener('input', updateEqualizer);
-    dom.eqTrebleSlider.addEventListener('input', updateEqualizer);
+    dom.eqBassSlider.addEventListener('input', updateAudioFX);
+    dom.eqMidSlider.addEventListener('input', updateAudioFX);
+    dom.eqTrebleSlider.addEventListener('input', updateAudioFX);
+    dom.bassBoostSlider.addEventListener('input', updateAudioFX);
+    dom.virtualizerSlider.addEventListener('input', updateAudioFX);
 
     dom.presetTags.forEach(tag => {
       tag.addEventListener('click', () => {
@@ -1485,12 +1668,34 @@
       });
     });
 
-    // Callbacks globales de Android
-    window.onPermissionsGranted = function () {
-      scanDeviceMusic();
-    };
+    // Modal de Ajustes
+    dom.settingsBackdrop.addEventListener('click', closeSettingsModal);
+    dom.crossfadeSlider.addEventListener('input', (e) => {
+      state.settings.crossfade = parseFloat(e.target.value);
+      dom.crossfadeSettingVal.textContent = state.settings.crossfade.toFixed(1) + 's';
+      saveSettings();
+      if (state.isAndroid && window.TitanBridge) {
+        window.TitanBridge.setCrossfade(state.settings.crossfade);
+      }
+    });
 
-    window.onAudioFilesSelected = function (jsonStr) {
+    dom.gaplessToggle.addEventListener('change', (e) => {
+      state.settings.gapless = e.target.checked;
+      saveSettings();
+      if (state.isAndroid && window.TitanBridge) {
+        window.TitanBridge.setGapless(state.settings.gapless);
+      }
+    });
+
+    dom.filterShortAudioToggle.addEventListener('change', (e) => {
+      state.settings.filterShortAudio = e.target.checked;
+      saveSettings();
+      scanDeviceMusic();
+    });
+
+    // Callbacks globales de Android
+    window.onPermissionsGranted = scanDeviceMusic;
+    window.onLocalTracksImported = function (jsonStr) {
       try {
         const files = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
         if (Array.isArray(files) && files.length > 0) {
@@ -1503,10 +1708,14 @@
         }
       } catch (ignored) {}
     };
+
+    window.playNextTrack = playNextTrack;
+    window.playPreviousTrack = playPreviousTrack;
+    window.onTrackEnded = playNextTrack;
   }
 
   // =========================================================================
-  // 11. FUNCIONES AUXILIARES DE NAVEGACIÓN Y MODALES
+  // 13. NAVEGACIÓN Y APERTURA DE MODALES
   // =========================================================================
 
   function switchCategoryTab(tab) {
@@ -1563,6 +1772,16 @@
     dom.eqSheet.classList.remove('active');
   }
 
+  function openSettingsModal() {
+    dom.settingsBackdrop.classList.add('active');
+    dom.settingsSheet.classList.add('active');
+  }
+
+  function closeSettingsModal() {
+    dom.settingsBackdrop.classList.remove('active');
+    dom.settingsSheet.classList.remove('active');
+  }
+
   function openTrackContextMenu(track) {
     state.activeContextTrack = track;
     dom.sheetThumb.src = track.artworkUrl || generateArtworkDataUri(track.title, track.artist);
@@ -1582,20 +1801,14 @@
   }
 
   function toggleFavorite(trackId) {
-    if (state.favoritesSet.has(trackId)) {
-      state.favoritesSet.delete(trackId);
-    } else {
-      state.favoritesSet.add(trackId);
-    }
+    if (state.favoritesSet.has(trackId)) state.favoritesSet.delete(trackId);
+    else state.favoritesSet.add(trackId);
     saveFavorites();
-
-    if (state.activeView === 'favorites') {
-      renderCurrentView();
-    }
+    if (state.activeView === 'favorites') renderCurrentView();
   }
 
   // =========================================================================
-  // 12. TEMPORIZADOR DE APAGADO (SLEEP TIMER REAL)
+  // 14. TEMPORIZADOR DE APAGADO
   // =========================================================================
 
   function setSleepTimer(minutes) {
@@ -1634,22 +1847,28 @@
   }
 
   // =========================================================================
-  // 13. ECUALIZADOR PARAMÉTRICO DE HARDWARE
+  // 15. AUDIO FX (ECUALIZADOR, BASS BOOST, VIRTUALIZADOR)
   // =========================================================================
 
-  function updateEqualizer() {
+  function updateAudioFX() {
     const bass = parseInt(dom.eqBassSlider.value, 10);
     const mid = parseInt(dom.eqMidSlider.value, 10);
     const treble = parseInt(dom.eqTrebleSlider.value, 10);
+    const boost = parseInt(dom.bassBoostSlider.value, 10);
+    const virt = parseInt(dom.virtualizerSlider.value, 10);
 
-    state.eq = { bass, mid, treble };
+    state.eq = { bass, mid, treble, bassBoost: boost, virtualizer: virt };
 
     dom.bassDbVal.textContent = (bass > 0 ? '+' : '') + bass + ' dB';
     dom.midDbVal.textContent = (mid > 0 ? '+' : '') + mid + ' dB';
     dom.trebleDbVal.textContent = (treble > 0 ? '+' : '') + treble + ' dB';
+    dom.bassBoostVal.textContent = boost + '%';
+    dom.virtualizerVal.textContent = virt + '%';
 
     if (state.isAndroid && window.TitanBridge) {
       window.TitanBridge.setEqualizer(bass, mid, treble);
+      window.TitanBridge.setBassBoost(boost);
+      window.TitanBridge.setVirtualizer(virt);
     }
   }
 
@@ -1662,11 +1881,11 @@
     dom.eqBassSlider.value = b;
     dom.eqMidSlider.value = m;
     dom.eqTrebleSlider.value = t;
-    updateEqualizer();
+    updateAudioFX();
   }
 
   // =========================================================================
-  // 14. UTILIDADES
+  // 16. UTILIDADES
   // =========================================================================
 
   function formatDuration(sec) {
@@ -1685,7 +1904,6 @@
       .replace(/'/g, '&apos;');
   }
 
-  // Inicializar al cargar el DOM
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

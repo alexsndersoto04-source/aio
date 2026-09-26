@@ -21,6 +21,7 @@ import java.util.Locale;
 
 /**
  * Interfaz de comunicación bidireccional entre la interfaz web y el sistema Android nativo.
+ * Proporciona acceso a MediaStore, AudioFX (Equalizer, BassBoost, Virtualizer) y sistema de archivos.
  */
 public class WebAppInterface {
     private static final String TAG = "TitanWebAppInterface";
@@ -76,35 +77,20 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
-    public void seekTo(int seconds) {
+    public void seekTo(int milliseconds) {
         AudioPlaybackService service = getService();
         if (service != null) {
-            service.seekTo(seconds * 1000);
+            service.seekTo(milliseconds);
         }
     }
 
     @JavascriptInterface
     public String getPlaybackStatus() {
         AudioPlaybackService service = getService();
-        JSONObject obj = new JSONObject();
-        try {
-            if (service != null) {
-                obj.put("playing", service.isPlaying());
-                obj.put("position", service.getPosition() / 1000);
-                obj.put("duration", service.getDuration() / 1000);
-                obj.put("volume", service.getVolume());
-                obj.put("crossfade", service.getCrossfade());
-                obj.put("gapless", service.isGapless());
-            } else {
-                obj.put("playing", false);
-                obj.put("position", 0);
-                obj.put("duration", 0);
-                obj.put("volume", 80);
-                obj.put("crossfade", 0.0);
-                obj.put("gapless", true);
-            }
-        } catch (Exception ignored) {}
-        return obj.toString();
+        if (service != null) {
+            return service.getPlaybackStatusJson();
+        }
+        return "{\"playing\":false,\"position\":0,\"duration\":0}";
     }
 
     @JavascriptInterface
@@ -112,9 +98,10 @@ public class WebAppInterface {
         activity.runOnUiThread(activity::launchAudioFilePicker);
     }
 
-    /**
-     * Extrae la carátula embebida real (ID3 / FLAC metadata) de cualquier pista y la entrega en Base64.
-     */
+    // =========================================================================
+    // EXTRACCIÓN REAL DE METADATOS Y CARÁTULAS EMBEBIDAS
+    // =========================================================================
+
     @JavascriptInterface
     public String getEmbeddedArtwork(String pathOrUri) {
         if (pathOrUri == null || pathOrUri.isEmpty()) return "";
@@ -159,7 +146,7 @@ public class WebAppInterface {
     }
 
     // =========================================================================
-    // AJUSTES AVANZADOS HI-FI
+    // EFECTOS DE AUDIO Y HARDWARE (AUDIO FX)
     // =========================================================================
 
     @JavascriptInterface
@@ -195,62 +182,45 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
-    public String getEqualizerSettings() {
+    public void setBassBoost(int strengthPercent) {
         AudioPlaybackService service = getService();
-        JSONObject obj = new JSONObject();
-        try {
-            if (service != null) {
-                int[] eq = service.getEqualizer();
-                obj.put("bass", eq[0]);
-                obj.put("mid", eq[1]);
-                obj.put("treble", eq[2]);
-            } else {
-                obj.put("bass", 0);
-                obj.put("mid", 0);
-                obj.put("treble", 0);
-            }
-        } catch (Exception ignored) {}
-        return obj.toString();
+        if (service != null) {
+            service.setBassBoost(strengthPercent);
+        }
     }
 
     @JavascriptInterface
-    public String getAvailableDevices() {
+    public void setVirtualizer(int strengthPercent) {
         AudioPlaybackService service = getService();
         if (service != null) {
-            return service.getAvailableDevices().toString();
+            service.setVirtualizer(strengthPercent);
         }
-        return "[]";
     }
 
     @JavascriptInterface
-    public String getSpectrumLevels() {
+    public void setPlaybackSpeed(float speed) {
         AudioPlaybackService service = getService();
-        JSONArray arr = new JSONArray();
         if (service != null) {
-            float[] levels = service.getSpectrumLevels();
-            for (float l : levels) {
-                try {
-                    arr.put(Math.round(l * 100.0) / 100.0);
-                } catch (Exception ignored) {}
-            }
+            service.setPlaybackSpeed(speed);
         }
-        return arr.toString();
     }
 
     // =========================================================================
-    // BIBLIOTECA DEL TELÉFONO (METADATOS COMPLETOS REALES)
+    // BIBLIOTECA DEL TELÉFONO (MEDIASTORE REAL CON METADATOS COMPLETOS)
     // =========================================================================
 
     @JavascriptInterface
     public String scanLocalMusic() {
         JSONArray array = new JSONArray();
+
         try {
-            Uri collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+            Uri audioUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
             String[] projection = {
                     MediaStore.Audio.Media._ID,
                     MediaStore.Audio.Media.TITLE,
                     MediaStore.Audio.Media.ARTIST,
                     MediaStore.Audio.Media.ALBUM,
+                    MediaStore.Audio.Media.ALBUM_ID,
                     MediaStore.Audio.Media.DURATION,
                     MediaStore.Audio.Media.DATA,
                     MediaStore.Audio.Media.SIZE,
@@ -258,22 +228,19 @@ public class WebAppInterface {
                     MediaStore.Audio.Media.DATE_ADDED
             };
 
-            // Filtrado profesional: canciones de al menos 40 segundos para excluir notas de voz, ringtones y audios de apps
-            String selection = MediaStore.Audio.Media.DURATION + " >= 40000";
+            String selection = MediaStore.Audio.Media.IS_MUSIC + " != 0 AND " + MediaStore.Audio.Media.DURATION + " >= 20000";
+            String sortOrder = MediaStore.Audio.Media.TITLE + " COLLATE NOCASE ASC";
 
-            Cursor cursor = context.getContentResolver().query(
-                    collection,
-                    projection,
-                    selection,
-                    null,
-                    MediaStore.Audio.Media.TITLE + " ASC"
-            );
+            try (Cursor cursor = context.getContentResolver().query(audioUri, projection, selection, null, sortOrder)) {
+                if (cursor == null) {
+                    return array.toString();
+                }
 
-            if (cursor != null) {
                 int idIdx = cursor.getColumnIndex(MediaStore.Audio.Media._ID);
                 int titleIdx = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE);
                 int artistIdx = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST);
                 int albumIdx = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM);
+                int albumIdIdx = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID);
                 int durIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION);
                 int dataIdx = cursor.getColumnIndex(MediaStore.Audio.Media.DATA);
                 int sizeIdx = cursor.getColumnIndex(MediaStore.Audio.Media.SIZE);
@@ -282,35 +249,31 @@ public class WebAppInterface {
 
                 while (cursor.moveToNext()) {
                     long id = cursor.getLong(idIdx);
-                    String title = titleIdx >= 0 ? cursor.getString(titleIdx) : "Pista " + id;
+                    String title = titleIdx >= 0 ? cursor.getString(titleIdx) : "Sin título";
                     String artist = artistIdx >= 0 ? cursor.getString(artistIdx) : "Artista desconocido";
-                    String album = albumIdx >= 0 ? cursor.getString(albumIdx) : "Dispositivo";
+                    String album = albumIdx >= 0 ? cursor.getString(albumIdx) : "Álbum desconocido";
+                    long albumId = albumIdIdx >= 0 ? cursor.getLong(albumIdIdx) : -1;
                     long durSecs = durIdx >= 0 ? cursor.getLong(durIdx) / 1000 : 180;
                     String rawPath = dataIdx >= 0 ? cursor.getString(dataIdx) : "";
                     long sizeBytes = sizeIdx >= 0 ? cursor.getLong(sizeIdx) : 0;
                     int year = yearIdx >= 0 ? cursor.getInt(yearIdx) : 0;
                     long dateAdded = dateAddedIdx >= 0 ? cursor.getLong(dateAddedIdx) : 0;
 
-                    // Exclusión rigurosa de cachés de voz, TTS, ringtones, WhatsApp y grabaciones temporales
                     String lowerPath = (rawPath != null ? rawPath : "").toLowerCase(Locale.ROOT);
                     String lowerTitle = (title != null ? title : "").toLowerCase(Locale.ROOT);
 
-                    if (lowerPath.contains("/notifications/") ||
-                        lowerPath.contains("/ringtones/") ||
-                        lowerPath.contains("/alarms/") ||
-                        lowerPath.contains("/whatsapp/media/whatsapp voice") ||
-                        lowerPath.contains("/whatsapp/media/whatsapp audio") ||
-                        lowerPath.contains("/telegram/telegram audio/voice") ||
-                        lowerPath.contains("/android/data/") ||
-                        lowerPath.contains("cache") ||
-                        lowerTitle.contains("tts-") ||
-                        lowerTitle.contains("inworld") ||
-                        lowerTitle.startsWith("ptt-") ||
-                        lowerTitle.startsWith("aud-")) {
+                    if (lowerPath.contains("whatsapp") ||
+                            lowerPath.contains("telegram/telegram audio") ||
+                            lowerPath.contains("/cache") ||
+                            lowerPath.contains("/notifications") ||
+                            lowerPath.contains("/ringtones") ||
+                            lowerTitle.startsWith("ptt-") ||
+                            lowerTitle.startsWith("aud-") ||
+                            lowerTitle.contains("tts-") ||
+                            lowerTitle.contains("inworld")) {
                         continue;
                     }
 
-                    // Extraer nombre de la carpeta real
                     String folder = "Música";
                     if (rawPath != null && rawPath.contains("/")) {
                         int lastSlash = rawPath.lastIndexOf('/');
@@ -323,12 +286,17 @@ public class WebAppInterface {
                     }
 
                     Uri itemContentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
+                    String albumArtUri = "";
+                    if (albumId >= 0) {
+                        Uri artworkUri = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId);
+                        albumArtUri = artworkUri.toString();
+                    }
 
                     JSONObject song = new JSONObject();
-                    song.put("id", "media_" + id);
-                    song.put("title", (title != null && !title.isEmpty()) ? title : "Canción " + id);
+                    song.put("id", "phone_" + id);
+                    song.put("title", (title != null && !title.isEmpty()) ? title : "Pista " + id);
                     song.put("artist", (artist != null && !artist.equals("<unknown>")) ? artist : "Artista desconocido");
-                    song.put("album", (album != null && !album.isEmpty()) ? album : "Dispositivo");
+                    song.put("album", (album != null && !album.equals("<unknown>")) ? album : "Dispositivo");
                     song.put("duration", durSecs);
                     song.put("path", itemContentUri.toString());
                     song.put("rawPath", rawPath != null ? rawPath : "");
@@ -336,16 +304,18 @@ public class WebAppInterface {
                     song.put("year", year);
                     song.put("folder", folder);
                     song.put("dateAdded", dateAdded);
+                    song.put("artworkUri", albumArtUri);
                     song.put("source", "phone");
                     song.put("isCloud", false);
                     song.put("downloaded", true);
+
                     array.put(song);
                 }
-                cursor.close();
             }
         } catch (Exception e) {
             Log.e(TAG, "Error consultando MediaStore", e);
         }
+
         return array.toString();
     }
 }

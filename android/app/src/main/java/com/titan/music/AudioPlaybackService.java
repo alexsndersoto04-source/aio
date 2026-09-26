@@ -5,72 +5,45 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ServiceInfo;
-import android.content.res.AssetFileDescriptor;
+import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.AudioAttributes;
 import android.media.AudioManager;
-import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
+import android.media.PlaybackParams;
+import android.media.audiofx.BassBoost;
 import android.media.audiofx.Equalizer;
+import android.media.audiofx.Virtualizer;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
-import android.util.Log;
 
+import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
-import androidx.media.app.NotificationCompat.MediaStyle;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.util.Random;
+import java.io.InputStream;
 
 /**
- * Servicio de reproducción multimedia profesional Titan Audio.
- *
- * Integra MediaSessionCompat nativo de Android, MediaStyle para controles interactivos
- * en cortina de notificaciones y pantalla de bloqueo, y motor de ecualización Hi-Fi.
+ * Servicio Nativo de Reproducción en Primer Plano con Integración Completa de AudioFX.
+ * Incorpora Ecualizador de Hardware, Bass Boost, Virtualizador 3D, AudioFocus y MediaSession.
  */
-public class AudioPlaybackService extends Service {
-    private static final String TAG = "TitanAudioService";
-    public static final String CHANNEL_ID = "titan_audio_channel";
-    public static final int NOTIFICATION_ID = 1001;
-
-    public static final String ACTION_TOGGLE = "com.titan.music.ACTION_TOGGLE";
-    public static final String ACTION_PLAY = "com.titan.music.ACTION_PLAY";
-    public static final String ACTION_PAUSE = "com.titan.music.ACTION_PAUSE";
-    public static final String ACTION_NEXT = "com.titan.music.ACTION_NEXT";
-    public static final String ACTION_PREV = "com.titan.music.ACTION_PREV";
-    public static final String ACTION_STOP = "com.titan.music.ACTION_STOP";
-
-    private final IBinder binder = new LocalBinder();
-    private MediaPlayer mediaPlayer;
-    private Equalizer equalizer;
-    private NotificationManager notificationManager;
-    private MediaSessionCompat mediaSession;
-
-    private String currentTitle = "Sin reproducción";
-    private String currentArtist = "Titan Audio";
-    private String currentPath = "";
-    private Bitmap currentArtwork = null;
-    private Bitmap defaultArtwork = null;
-
-    private boolean isPlaying = false;
-    private float currentVolume = 0.85f;
-    private float crossfadeSecs = 3.0f;
-    private boolean gaplessEnabled = true;
-    private int eqBass = 0;
-    private int eqMid = 0;
-    private int eqTreble = 0;
+public class AudioPlaybackService extends Service implements
+        MediaPlayer.OnPreparedListener,
+        MediaPlayer.OnCompletionListener,
+        MediaPlayer.OnErrorListener,
+        AudioManager.OnAudioFocusChangeListener {
 
     public interface PlaybackEventListener {
         void onPlaybackStateChanged(boolean isPlaying, String title, String artist);
@@ -78,11 +51,40 @@ public class AudioPlaybackService extends Service {
         void onPreviousRequested();
     }
 
+    public static final String ACTION_PLAY = "com.titan.music.ACTION_PLAY";
+    public static final String ACTION_PAUSE = "com.titan.music.ACTION_PAUSE";
+    public static final String ACTION_TOGGLE = "com.titan.music.ACTION_TOGGLE";
+    public static final String ACTION_NEXT = "com.titan.music.ACTION_NEXT";
+    public static final String ACTION_PREV = "com.titan.music.ACTION_PREV";
+    public static final String ACTION_STOP = "com.titan.music.ACTION_STOP";
+
+    private static final String CHANNEL_ID = "titan_music_playback_channel";
+    private static final int NOTIFICATION_ID = 1001;
+
+    private final IBinder binder = new LocalBinder();
+    private MediaPlayer mediaPlayer;
+    private AudioManager audioManager;
+    private MediaSessionCompat mediaSession;
+
+    // Efectos de Hardware Nativo de Android
+    private Equalizer hardwareEqualizer;
+    private BassBoost hardwareBassBoost;
+    private Virtualizer hardwareVirtualizer;
+
     private PlaybackEventListener eventListener;
 
-    public void setPlaybackEventListener(PlaybackEventListener listener) {
-        this.eventListener = listener;
-    }
+    private String currentTitle = "Titan Music";
+    private String currentArtist = "Reproductor Hi-Fi";
+    private String currentPath = "";
+    private long currentDurationMs = 0;
+    private Bitmap currentArtwork = null;
+    private boolean isPrepared = false;
+    private float currentPlaybackSpeed = 1.0f;
+    private int currentVolume = 100;
+    private float crossfadeSeconds = 0.0f;
+    private boolean gaplessEnabled = true;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public class LocalBinder extends Binder {
         public AudioPlaybackService getService() {
@@ -90,596 +92,530 @@ public class AudioPlaybackService extends Service {
         }
     }
 
+    private final BroadcastReceiver becomingNoisyReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(intent.getAction())) {
+                pause();
+            }
+        }
+    };
+
     @Override
     public void onCreate() {
         super.onCreate();
-        notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        try {
-            defaultArtwork = BitmapFactory.decodeResource(getResources(), R.drawable.default_artwork);
-        } catch (Exception ignored) {}
-
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         createNotificationChannel();
         initMediaSession();
+        initMediaPlayer();
+
+        IntentFilter filter = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+        registerReceiver(becomingNoisyReceiver, filter);
+    }
+
+    public void setPlaybackEventListener(PlaybackEventListener listener) {
+        this.eventListener = listener;
+    }
+
+    private void initMediaPlayer() {
+        if (mediaPlayer != null) {
+            releaseAudioEffects();
+            mediaPlayer.release();
+        }
+
+        mediaPlayer = new MediaPlayer();
+        mediaPlayer.setAudioAttributes(new AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .build());
+
+        mediaPlayer.setOnPreparedListener(this);
+        mediaPlayer.setOnCompletionListener(this);
+        mediaPlayer.setOnErrorListener(this);
+
+        initAudioEffects();
+    }
+
+    private void initAudioEffects() {
+        try {
+            int audioSessionId = mediaPlayer.getAudioSessionId();
+            if (audioSessionId != 0) {
+                hardwareEqualizer = new Equalizer(0, audioSessionId);
+                hardwareEqualizer.setEnabled(true);
+
+                hardwareBassBoost = new BassBoost(0, audioSessionId);
+                hardwareBassBoost.setEnabled(true);
+
+                hardwareVirtualizer = new Virtualizer(0, audioSessionId);
+                hardwareVirtualizer.setEnabled(true);
+            }
+        } catch (Exception e) {
+            android.util.Log.w("AudioService", "AudioFX inicialización info: " + e.getMessage());
+        }
+    }
+
+    private void releaseAudioEffects() {
+        try {
+            if (hardwareEqualizer != null) {
+                hardwareEqualizer.setEnabled(false);
+                hardwareEqualizer.release();
+                hardwareEqualizer = null;
+            }
+            if (hardwareBassBoost != null) {
+                hardwareBassBoost.setEnabled(false);
+                hardwareBassBoost.release();
+                hardwareBassBoost = null;
+            }
+            if (hardwareVirtualizer != null) {
+                hardwareVirtualizer.setEnabled(false);
+                hardwareVirtualizer.release();
+                hardwareVirtualizer = null;
+            }
+        } catch (Exception ignored) {}
     }
 
     private void initMediaSession() {
-        try {
-            mediaSession = new MediaSessionCompat(this, "TitanAudioSession");
-            mediaSession.setFlags(
-                    MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS |
-                    MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
-            );
-
-            mediaSession.setCallback(new MediaSessionCompat.Callback() {
-                @Override
-                public void onPlay() {
-                    resume();
-                }
-
-                @Override
-                public void onPause() {
-                    pause();
-                }
-
-                @Override
-                public void onSkipToNext() {
-                    if (eventListener != null) eventListener.onNextRequested();
-                }
-
-                @Override
-                public void onSkipToPrevious() {
-                    if (eventListener != null) eventListener.onPreviousRequested();
-                }
-
-                @Override
-                public void onStop() {
-                    stop();
-                }
-
-                @Override
-                public void onSeekTo(long pos) {
-                    seekTo((int) pos);
-                }
-            });
-
-            mediaSession.setActive(true);
-            updateMediaSessionState();
-        } catch (Exception e) {
-            Log.e(TAG, "Error inicializando MediaSessionCompat", e);
-        }
-    }
-
-    private void updateMediaSessionState() {
-        if (mediaSession == null) return;
-        try {
-            long actions = PlaybackStateCompat.ACTION_PLAY |
-                    PlaybackStateCompat.ACTION_PAUSE |
-                    PlaybackStateCompat.ACTION_PLAY_PAUSE |
-                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
-                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
-                    PlaybackStateCompat.ACTION_STOP |
-                    PlaybackStateCompat.ACTION_SEEK_TO;
-
-            PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
-                    .setActions(actions)
-                    .setState(
-                            isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED,
-                            getPosition(),
-                            1.0f
-                    );
-            mediaSession.setPlaybackState(stateBuilder.build());
-
-            Bitmap art = currentArtwork != null ? currentArtwork : defaultArtwork;
-            MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
-                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
-                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
-                    .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, "Titan Hi-Fi")
-                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, getDuration());
-
-            if (art != null) {
-                metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, art);
-                metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, art);
+        mediaSession = new MediaSessionCompat(this, "TitanAudioSession");
+        mediaSession.setCallback(new MediaSessionCompat.Callback() {
+            @Override
+            public void onPlay() { resume(); }
+            @Override
+            public void onPause() { pause(); }
+            @Override
+            public void onSkipToNext() {
+                if (eventListener != null) eventListener.onNextRequested();
+                triggerWebEvent("onNextRequested");
             }
-            mediaSession.setMetadata(metaBuilder.build());
-        } catch (Exception e) {
-            Log.w(TAG, "Error actualizando MediaSessionCompat", e);
-        }
+            @Override
+            public void onSkipToPrevious() {
+                if (eventListener != null) eventListener.onPreviousRequested();
+                triggerWebEvent("onPrevRequested");
+            }
+            @Override
+            public void onStop() { stop(); }
+            @Override
+            public void onSeekTo(long pos) { seekTo((int) pos); }
+        });
+        mediaSession.setActive(true);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getAction() != null) {
             String action = intent.getAction();
-            Log.d(TAG, "onStartCommand acción: " + action);
             switch (action) {
-                case ACTION_TOGGLE:
-                    if (isPlaying) {
-                        pause();
-                    } else {
-                        resume();
-                    }
-                    break;
                 case ACTION_PLAY:
                     resume();
                     break;
                 case ACTION_PAUSE:
                     pause();
                     break;
+                case ACTION_TOGGLE:
+                    if (isPlaying()) pause();
+                    else resume();
+                    break;
                 case ACTION_NEXT:
                     if (eventListener != null) eventListener.onNextRequested();
+                    triggerWebEvent("onNextRequested");
                     break;
                 case ACTION_PREV:
                     if (eventListener != null) eventListener.onPreviousRequested();
+                    triggerWebEvent("onPrevRequested");
                     break;
                 case ACTION_STOP:
                     stop();
+                    stopSelf();
                     break;
             }
         }
         return START_NOT_STICKY;
     }
 
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Titan Reproductor Multimedia",
-                    NotificationManager.IMPORTANCE_LOW
-            );
-            channel.setDescription("Controles interactivos de reproducción multimedia");
-            channel.setShowBadge(true);
-            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+    // =========================================================================
+    // API PÚBLICA DE REPRODUCCIÓN (MÉTODOS NATIVOS)
+    // =========================================================================
 
-            if (notificationManager != null) {
-                notificationManager.createNotificationChannel(channel);
-            }
-        }
+    public boolean play(String path, String title, String artist) {
+        return playUri(path, title, artist, null);
     }
 
-    private Notification buildNotification() {
-        Intent contentIntent = new Intent(this, MainActivity.class);
-        contentIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent piContent = PendingIntent.getActivity(
-                this, 0, contentIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
-        );
+    public boolean playUri(String uriString, String title, String artist, @Nullable String artworkUriStr) {
+        currentTitle = (title != null && !title.isEmpty()) ? title : "Canción";
+        currentArtist = (artist != null && !artist.isEmpty()) ? artist : "Artista";
+        currentPath = uriString;
+        isPrepared = false;
 
-        PendingIntent piPrev = PendingIntent.getService(
-                this, 1, new Intent(this, AudioPlaybackService.class).setAction(ACTION_PREV),
-                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
-        );
+        loadArtworkBitmap(artworkUriStr);
 
-        PendingIntent piToggle = PendingIntent.getService(
-                this, 2, new Intent(this, AudioPlaybackService.class).setAction(ACTION_TOGGLE),
-                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
-        );
-
-        PendingIntent piNext = PendingIntent.getService(
-                this, 3, new Intent(this, AudioPlaybackService.class).setAction(ACTION_NEXT),
-                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
-        );
-
-        PendingIntent piStop = PendingIntent.getService(
-                this, 4, new Intent(this, AudioPlaybackService.class).setAction(ACTION_STOP),
-                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
-        );
-
-        Bitmap art = currentArtwork != null ? currentArtwork : defaultArtwork;
-
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_stat_music)
-                .setContentTitle(currentTitle)
-                .setContentText(currentArtist)
-                .setSubText("Titan Audio")
-                .setContentIntent(piContent)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setOngoing(isPlaying)
-                .setShowWhen(false)
-                .addAction(R.drawable.ic_skip_previous, "Anterior", piPrev)
-                .addAction(isPlaying ? R.drawable.ic_pause : R.drawable.ic_play_arrow,
-                        isPlaying ? "Pausa" : "Reproducir", piToggle)
-                .addAction(R.drawable.ic_skip_next, "Siguiente", piNext);
-
-        if (art != null) {
-            builder.setLargeIcon(art);
+        int result = audioManager.requestAudioFocus(this, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        if (result != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            return false;
         }
-
-        if (mediaSession != null) {
-            MediaStyle mediaStyle = new MediaStyle()
-                    .setMediaSession(mediaSession.getSessionToken())
-                    .setShowActionsInCompactView(0, 1, 2)
-                    .setShowCancelButton(true)
-                    .setCancelButtonIntent(piStop);
-            builder.setStyle(mediaStyle);
-        }
-
-        return builder.build();
-    }
-
-    private void updateNotification() {
-        updateMediaSessionState();
-        if (notificationManager != null) {
-            try {
-                notificationManager.notify(NOTIFICATION_ID, buildNotification());
-            } catch (Exception e) {
-                Log.w(TAG, "Error actualizando notificación: " + e.getMessage());
-            }
-        }
-    }
-
-    public synchronized boolean play(String path, String title, String artist) {
-        this.currentTitle = (title != null && !title.isEmpty()) ? title : "Canción";
-        this.currentArtist = (artist != null && !artist.isEmpty()) ? artist : "Titan Audio";
-        this.currentPath = path != null ? path : "";
-
-        extractArtwork(this.currentPath);
-
-        Log.i(TAG, "Iniciando reproducción: " + this.currentTitle + " (" + this.currentPath + ")");
 
         try {
-            if (mediaPlayer != null) {
-                try {
-                    mediaPlayer.stop();
-                    mediaPlayer.reset();
-                    mediaPlayer.release();
-                } catch (Exception ignored) {}
-                mediaPlayer = null;
-            }
-
-            if (equalizer != null) {
-                try {
-                    equalizer.release();
-                } catch (Exception ignored) {}
-                equalizer = null;
-            }
-
-            mediaPlayer = new MediaPlayer();
-            mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
-
-            boolean loaded = false;
-
-            // 1. Content URI de MediaStore o Storage Access Framework
-            if (path != null && path.startsWith("content://")) {
-                Uri contentUri = Uri.parse(path);
-                try {
-                    AssetFileDescriptor afd = getContentResolver().openAssetFileDescriptor(contentUri, "r");
-                    if (afd != null) {
-                        mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
-                        afd.close();
-                        loaded = true;
-                    }
-                } catch (Exception ignored) {}
-
-                if (!loaded) {
-                    try {
-                        mediaPlayer.setDataSource(getApplicationContext(), contentUri);
-                        loaded = true;
-                    } catch (Exception ignored) {}
-                }
-            }
-
-            // 2. Stream HTTP / HTTPS remoto
-            if (!loaded && path != null && (path.startsWith("http://") || path.startsWith("https://"))) {
-                try {
-                    mediaPlayer.setDataSource(path);
-                    loaded = true;
-                } catch (Exception e) {
-                    Log.w(TAG, "Error abriendo stream http: " + e.getMessage());
-                }
-            }
-
-            // 3. Fallback de archivos empaquetados en Assets
-            if (!loaded && path != null && path.contains("android_asset/")) {
-                try {
-                    String assetRelative = path.substring(path.indexOf("android_asset/") + "android_asset/".length());
-                    if (assetRelative.startsWith("/")) assetRelative = assetRelative.substring(1);
-                    AssetFileDescriptor afd = getAssets().openFd(assetRelative);
-                    if (afd != null) {
-                        mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
-                        afd.close();
-                        loaded = true;
-                    }
-                } catch (Exception ignored) {
-                    try {
-                        String directAsset = path.replace("file:///android_asset/", "");
-                        if (directAsset.startsWith("/")) directAsset = directAsset.substring(1);
-                        AssetFileDescriptor afd = getAssets().openFd(directAsset);
-                        if (afd != null) {
-                            mediaPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
-                            afd.close();
-                            loaded = true;
-                        }
-                    } catch (Exception ignored2) {}
-                }
-            }
-
-            // 4. Ruta directa del sistema de archivos
-            if (!loaded && path != null && !path.isEmpty()) {
-                String cleanPath = path.replace("file://", "");
-                File file = new File(cleanPath);
-                if (file.exists() && file.canRead()) {
-                    try (FileInputStream fis = new FileInputStream(file)) {
-                        mediaPlayer.setDataSource(fis.getFD());
-                        loaded = true;
-                    } catch (Exception ignored) {}
-                }
-            }
-
-            if (!loaded) {
-                Log.e(TAG, "No se pudo cargar la fuente de audio en ninguna ruta: " + path);
-                return false;
-            }
-
-            mediaPlayer.setVolume(currentVolume, currentVolume);
-
-            mediaPlayer.setOnPreparedListener(mp -> {
-                try {
-                    mp.start();
-                    isPlaying = true;
-                    applyEqualizer();
-                    updateMediaSessionState();
-
-                    Notification notif = buildNotification();
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-                    } else {
-                        startForeground(NOTIFICATION_ID, notif);
-                    }
-
-                    if (eventListener != null) {
-                        eventListener.onPlaybackStateChanged(true, currentTitle, currentArtist);
-                    }
-                } catch (Exception err) {
-                    Log.e(TAG, "Error iniciando reproducción en onPrepared", err);
-                }
-            });
-
-            mediaPlayer.setOnCompletionListener(mp -> {
-                isPlaying = false;
-                updateNotification();
-                if (eventListener != null) eventListener.onNextRequested();
-            });
-
-            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                Log.e(TAG, "MediaPlayer error: what=" + what + ", extra=" + extra);
-                isPlaying = false;
-                return false;
-            });
-
+            initMediaPlayer();
+            Uri uri = Uri.parse(uriString);
+            mediaPlayer.setDataSource(this, uri);
             mediaPlayer.prepareAsync();
+
+            startForeground(NOTIFICATION_ID, buildNotification(false));
             return true;
         } catch (Exception e) {
-            Log.e(TAG, "Excepción en play()", e);
-            isPlaying = false;
+            android.util.Log.e("AudioService", "Error reproduciendo archivo: " + uriString, e);
             return false;
         }
     }
 
-    private void extractArtwork(String path) {
+    private void loadArtworkBitmap(@Nullable String uriStr) {
         currentArtwork = null;
-        if (path == null || path.isEmpty()) return;
-
-        MediaMetadataRetriever mmr = new MediaMetadataRetriever();
-        try {
-            if (path.startsWith("content://")) {
-                mmr.setDataSource(this, Uri.parse(path));
-            } else if (!path.startsWith("http") && !path.contains("android_asset")) {
-                File f = new File(path.replace("file://", ""));
-                if (f.exists()) mmr.setDataSource(f.getAbsolutePath());
-            }
-            byte[] art = mmr.getEmbeddedPicture();
-            if (art != null && art.length > 0) {
-                currentArtwork = BitmapFactory.decodeByteArray(art, 0, art.length);
-            }
-        } catch (Exception ignored) {
-        } finally {
-            try { mmr.release(); } catch (Exception ignored) {}
-        }
-    }
-
-    public void pause() {
-        if (mediaPlayer != null && isPlaying) {
-            mediaPlayer.pause();
-            isPlaying = false;
-            updateNotification();
-            if (eventListener != null) {
-                eventListener.onPlaybackStateChanged(false, currentTitle, currentArtist);
-            }
+        if (uriStr != null && !uriStr.isEmpty()) {
+            try {
+                Uri artUri = Uri.parse(uriStr);
+                InputStream is = getContentResolver().openInputStream(artUri);
+                if (is != null) {
+                    currentArtwork = BitmapFactory.decodeStream(is);
+                    is.close();
+                }
+            } catch (Exception ignored) {}
         }
     }
 
     public void resume() {
-        if (mediaPlayer != null && !isPlaying) {
-            mediaPlayer.start();
-            isPlaying = true;
-            updateMediaSessionState();
-
-            Notification notif = buildNotification();
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            } else {
-                startForeground(NOTIFICATION_ID, notif);
+        if (mediaPlayer != null && isPrepared) {
+            int result = audioManager.requestAudioFocus(this, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                mediaPlayer.start();
+                applyPlaybackSpeed(currentPlaybackSpeed);
+                updateNotificationAndSession(true);
+                notifyStateChanged(true);
             }
+        }
+    }
 
-            if (eventListener != null) {
-                eventListener.onPlaybackStateChanged(true, currentTitle, currentArtist);
-            }
+    public void pause() {
+        if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+            mediaPlayer.pause();
+            updateNotificationAndSession(false);
+            notifyStateChanged(false);
         }
     }
 
     public void stop() {
         if (mediaPlayer != null) {
-            try {
+            if (mediaPlayer.isPlaying()) {
                 mediaPlayer.stop();
-            } catch (Exception ignored) {}
-            isPlaying = false;
-            updateMediaSessionState();
-            stopForeground(true);
-            if (eventListener != null) {
-                eventListener.onPlaybackStateChanged(false, currentTitle, currentArtist);
             }
+            mediaPlayer.reset();
+            isPrepared = false;
         }
+        audioManager.abandonAudioFocus(this);
+        updateNotificationAndSession(false);
+        notifyStateChanged(false);
+        stopForeground(true);
     }
 
     public void seekTo(int msec) {
-        if (mediaPlayer != null) {
+        if (mediaPlayer != null && isPrepared) {
             mediaPlayer.seekTo(msec);
-            updateMediaSessionState();
+            updateNotificationAndSession(isPlaying());
         }
     }
 
     public boolean isPlaying() {
-        return mediaPlayer != null && mediaPlayer.isPlaying();
+        try {
+            return mediaPlayer != null && isPrepared && mediaPlayer.isPlaying();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public int getPosition() {
-        if (mediaPlayer != null) {
-            try {
-                return mediaPlayer.getCurrentPosition();
-            } catch (Exception ignored) {}
+        try {
+            return (mediaPlayer != null && isPrepared) ? mediaPlayer.getCurrentPosition() : 0;
+        } catch (Exception e) {
+            return 0;
         }
-        return 0;
     }
 
     public int getDuration() {
-        if (mediaPlayer != null) {
-            try {
-                int dur = mediaPlayer.getDuration();
-                return dur > 0 ? dur : 180000;
-            } catch (Exception ignored) {}
-        }
-        return 180000;
-    }
-
-    public void setVolume(int percent) {
-        float vol = Math.max(0.0f, Math.min(1.0f, percent / 100.0f));
-        this.currentVolume = vol;
-        if (mediaPlayer != null) {
-            mediaPlayer.setVolume(vol, vol);
+        try {
+            return (mediaPlayer != null && isPrepared) ? mediaPlayer.getDuration() : (int) currentDurationMs;
+        } catch (Exception e) {
+            return (int) currentDurationMs;
         }
     }
 
     public int getVolume() {
-        return Math.round(currentVolume * 100);
+        return currentVolume;
     }
 
-    public void setCrossfade(float seconds) {
-        this.crossfadeSecs = Math.max(0.0f, Math.min(12.0f, seconds));
+    public void setVolume(int volume) {
+        this.currentVolume = Math.max(0, Math.min(100, volume));
+        if (mediaPlayer != null) {
+            float vol = currentVolume / 100.0f;
+            mediaPlayer.setVolume(vol, vol);
+        }
     }
 
     public float getCrossfade() {
-        return this.crossfadeSecs;
+        return crossfadeSeconds;
+    }
+
+    public void setCrossfade(float seconds) {
+        this.crossfadeSeconds = Math.max(0.0f, Math.min(12.0f, seconds));
+    }
+
+    public boolean isGapless() {
+        return gaplessEnabled;
     }
 
     public void setGapless(boolean enabled) {
         this.gaplessEnabled = enabled;
     }
 
-    public boolean isGapless() {
-        return this.gaplessEnabled;
+    public void setPlaybackSpeed(float speed) {
+        currentPlaybackSpeed = speed;
+        applyPlaybackSpeed(speed);
     }
+
+    private void applyPlaybackSpeed(float speed) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && mediaPlayer != null && isPrepared) {
+            try {
+                PlaybackParams params = mediaPlayer.getPlaybackParams();
+                params.setSpeed(speed);
+                mediaPlayer.setPlaybackParams(params);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    // =========================================================================
+    // EFECTOS DE HARDWARE NATIVOS (AUDIO FX)
+    // =========================================================================
 
     public void setEqualizer(int bassDb, int midDb, int trebleDb) {
-        this.eqBass = Math.max(-12, Math.min(12, bassDb));
-        this.eqMid = Math.max(-12, Math.min(12, midDb));
-        this.eqTreble = Math.max(-12, Math.min(12, trebleDb));
-        applyEqualizer();
-    }
-
-    public int[] getEqualizer() {
-        return new int[]{eqBass, eqMid, eqTreble};
-    }
-
-    private void applyEqualizer() {
-        if (mediaPlayer == null) return;
+        if (hardwareEqualizer == null) return;
         try {
-            if (equalizer == null) {
-                equalizer = new Equalizer(0, mediaPlayer.getAudioSessionId());
-                equalizer.setEnabled(true);
+            short numBands = hardwareEqualizer.getNumberOfBands();
+            if (numBands <= 0) return;
+
+            short minEq = hardwareEqualizer.getBandLevelRange()[0];
+            short maxEq = hardwareEqualizer.getBandLevelRange()[1];
+
+            short bassLevel = (short) Math.max(minEq, Math.min(maxEq, bassDb * 100));
+            short midLevel = (short) Math.max(minEq, Math.min(maxEq, midDb * 100));
+            short trebleLevel = (short) Math.max(minEq, Math.min(maxEq, trebleDb * 100));
+
+            if (numBands >= 5) {
+                hardwareEqualizer.setBandLevel((short) 0, bassLevel);
+                hardwareEqualizer.setBandLevel((short) 1, bassLevel);
+                hardwareEqualizer.setBandLevel((short) 2, midLevel);
+                hardwareEqualizer.setBandLevel((short) 3, trebleLevel);
+                hardwareEqualizer.setBandLevel((short) 4, trebleLevel);
+            } else if (numBands >= 3) {
+                hardwareEqualizer.setBandLevel((short) 0, bassLevel);
+                hardwareEqualizer.setBandLevel((short) 1, midLevel);
+                hardwareEqualizer.setBandLevel((short) 2, trebleLevel);
             }
-            short bands = equalizer.getNumberOfBands();
-            if (bands >= 3) {
-                short maxLevel = equalizer.getBandLevelRange()[1];
-                short bassMilli = (short) ((eqBass / 12.0f) * maxLevel);
-                short midMilli = (short) ((eqMid / 12.0f) * maxLevel);
-                short trebleMilli = (short) ((eqTreble / 12.0f) * maxLevel);
-
-                equalizer.setBandLevel((short) 0, bassMilli);
-                equalizer.setBandLevel((short) (bands / 2), midMilli);
-                equalizer.setBandLevel((short) (bands - 1), trebleMilli);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Equalizer no disponible: " + e.getMessage());
-        }
-    }
-
-    public JSONArray getAvailableDevices() {
-        JSONArray arr = new JSONArray();
-        try {
-            JSONObject dev1 = new JSONObject();
-            dev1.put("id", 1);
-            dev1.put("name", "Altavoz del dispositivo");
-            dev1.put("type", "speaker");
-            dev1.put("active", true);
-            arr.put(dev1);
-
-            JSONObject dev2 = new JSONObject();
-            dev2.put("id", 2);
-            dev2.put("name", "Auriculares con cable");
-            dev2.put("type", "wired");
-            dev2.put("active", false);
-            arr.put(dev2);
-
-            JSONObject dev3 = new JSONObject();
-            dev3.put("id", 3);
-            dev3.put("name", "Audio Bluetooth Hi-Res");
-            dev3.put("type", "bluetooth");
-            dev3.put("active", false);
-            arr.put(dev3);
         } catch (Exception ignored) {}
-        return arr;
     }
 
-    public float[] getSpectrumLevels() {
-        float[] levels = new float[32];
-        if (isPlaying) {
-            Random r = new Random();
-            for (int i = 0; i < 32; i++) {
-                float factor = (i < 10) ? (1.0f + eqBass / 24.0f) : (i > 20 ? (1.0f + eqTreble / 24.0f) : (1.0f + eqMid / 24.0f));
-                levels[i] = Math.max(0.05f, Math.min(1.0f, (r.nextFloat() * 0.7f + 0.2f) * factor));
-            }
+    public void setBassBoost(int strengthPercent) {
+        if (hardwareBassBoost == null) return;
+        try {
+            short strength = (short) Math.max(0, Math.min(1000, strengthPercent * 10));
+            hardwareBassBoost.setStrength(strength);
+        } catch (Exception ignored) {}
+    }
+
+    public void setVirtualizer(int strengthPercent) {
+        if (hardwareVirtualizer == null) return;
+        try {
+            short strength = (short) Math.max(0, Math.min(1000, strengthPercent * 10));
+            hardwareVirtualizer.setStrength(strength);
+        } catch (Exception ignored) {}
+    }
+
+    // =========================================================================
+    // ESTADO JSON PARA EL FRONTEND
+    // =========================================================================
+
+    public String getPlaybackStatusJson() {
+        try {
+            JSONObject obj = new JSONObject();
+            obj.put("playing", isPlaying());
+            obj.put("position", getPosition() / 1000);
+            obj.put("duration", getDuration() / 1000);
+            obj.put("title", currentTitle);
+            obj.put("artist", currentArtist);
+            obj.put("volume", currentVolume);
+            obj.put("speed", (double) currentPlaybackSpeed);
+            obj.put("crossfade", (double) crossfadeSeconds);
+            obj.put("gapless", gaplessEnabled);
+            return obj.toString();
+        } catch (Exception e) {
+            return "{\"playing\":false,\"position\":0,\"duration\":0}";
         }
-        return levels;
+    }
+
+    // =========================================================================
+    // CALLBACKS DE MEDIAPLAYER
+    // =========================================================================
+
+    @Override
+    public void onPrepared(MediaPlayer mp) {
+        isPrepared = true;
+        currentDurationMs = mp.getDuration();
+        mp.start();
+        applyPlaybackSpeed(currentPlaybackSpeed);
+        updateNotificationAndSession(true);
+        notifyStateChanged(true);
+        triggerWebEvent("onTrackPrepared");
     }
 
     @Override
-    public IBinder onBind(Intent intent) {
-        return binder;
+    public void onCompletion(MediaPlayer mp) {
+        updateNotificationAndSession(false);
+        notifyStateChanged(false);
+        if (eventListener != null) eventListener.onNextRequested();
+        triggerWebEvent("onTrackEnded");
+    }
+
+    @Override
+    public boolean onError(MediaPlayer mp, int what, int extra) {
+        isPrepared = false;
+        triggerWebEvent("onPlaybackError");
+        return true;
+    }
+
+    @Override
+    public void onAudioFocusChange(int focusChange) {
+        switch (focusChange) {
+            case AudioManager.AUDIOFOCUS_LOSS:
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                pause();
+                break;
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                if (mediaPlayer != null && isPlaying()) {
+                    mediaPlayer.setVolume(0.2f, 0.2f);
+                }
+                break;
+            case AudioManager.AUDIOFOCUS_GAIN:
+                if (mediaPlayer != null) {
+                    setVolume(currentVolume);
+                    resume();
+                }
+                break;
+        }
+    }
+
+    private void notifyStateChanged(boolean playing) {
+        if (eventListener != null) {
+            eventListener.onPlaybackStateChanged(playing, currentTitle, currentArtist);
+        }
+        triggerWebEvent("onPlaybackStateChanged");
+    }
+
+    private void updateNotificationAndSession(boolean playing) {
+        long stateActions = PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE |
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
+                PlaybackStateCompat.ACTION_SEEK_TO;
+
+        int state = playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+        mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
+                .setActions(stateActions)
+                .setState(state, getPosition(), currentPlaybackSpeed)
+                .build());
+
+        MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs);
+
+        if (currentArtwork != null) {
+            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtwork);
+        }
+
+        mediaSession.setMetadata(metaBuilder.build());
+
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
+            nm.notify(NOTIFICATION_ID, buildNotification(playing));
+        }
+    }
+
+    private Notification buildNotification(boolean playing) {
+        Intent contentIntent = new Intent(this, MainActivity.class);
+        PendingIntent pContent = PendingIntent.getActivity(this, 0, contentIntent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+        PendingIntent pPrev = PendingIntent.getService(this, 1, new Intent(this, AudioPlaybackService.class).setAction(ACTION_PREV), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent pToggle = PendingIntent.getService(this, 2, new Intent(this, AudioPlaybackService.class).setAction(ACTION_TOGGLE), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent pNext = PendingIntent.getService(this, 3, new Intent(this, AudioPlaybackService.class).setAction(ACTION_NEXT), PendingIntent.FLAG_IMMUTABLE);
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_music)
+                .setContentTitle(currentTitle)
+                .setContentText(currentArtist)
+                .setContentIntent(pContent)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .addAction(R.drawable.ic_skip_previous, "Anterior", pPrev)
+                .addAction(playing ? R.drawable.ic_pause : R.drawable.ic_play_arrow, playing ? "Pausa" : "Reproducir", pToggle)
+                .addAction(R.drawable.ic_skip_next, "Siguiente", pNext)
+                .setStyle(new androidx.media.app.NotificationCompat.MediaStyle()
+                        .setMediaSession(mediaSession.getSessionToken())
+                        .setShowActionsInCompactView(0, 1, 2));
+
+        if (currentArtwork != null) {
+            builder.setLargeIcon(currentArtwork);
+        }
+
+        return builder.build();
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "Reproducción de Música",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Controles multimedia en barra de estado y pantalla de bloqueo");
+            channel.setShowBadge(false);
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) nm.createNotificationChannel(channel);
+        }
+    }
+
+    private void triggerWebEvent(String eventName) {
+        mainHandler.post(() -> {
+            try {
+                MainActivity.dispatchWebEvent(eventName);
+            } catch (Exception ignored) {}
+        });
     }
 
     @Override
     public void onDestroy() {
+        super.onDestroy();
+        try {
+            unregisterReceiver(becomingNoisyReceiver);
+        } catch (Exception ignored) {}
+
+        releaseAudioEffects();
         if (mediaPlayer != null) {
-            try {
-                mediaPlayer.stop();
-                mediaPlayer.release();
-            } catch (Exception ignored) {}
-                mediaPlayer = null;
-        }
-        if (equalizer != null) {
-            try {
-                equalizer.release();
-            } catch (Exception ignored) {}
-            equalizer = null;
+            mediaPlayer.release();
+            mediaPlayer = null;
         }
         if (mediaSession != null) {
-            try {
-                mediaSession.setActive(false);
-                mediaSession.release();
-            } catch (Exception ignored) {}
+            mediaSession.release();
             mediaSession = null;
         }
-        super.onDestroy();
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return binder;
     }
 }

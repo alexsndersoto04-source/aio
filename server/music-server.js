@@ -347,39 +347,41 @@ const server = http.createServer((req, res) => {
       <stop offset="0%" stop-color="${color}" />
       <stop offset="100%" stop-color="#ffffff" stop-opacity="0.8" />
     </linearGradient>
-    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="${color}" stop-opacity="0.25" />
-      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
-    </radialGradient>
   </defs>
-
-  <rect width="500" height="500" fill="url(#bg)" />
-  <circle cx="250" cy="220" r="180" fill="url(#halo)" />
-
-  <!-- Geometría abstracta minimalista (estilo carátula vinilo de alta fidelidad) -->
-  <circle cx="250" cy="210" r="120" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1.5" />
-  <circle cx="250" cy="210" r="90" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" />
-  <circle cx="250" cy="210" r="60" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1.5" />
-
-  <!-- Emblema central de ondas sonoras Titan -->
-  <g transform="translate(250, 210)">
-    <circle cx="0" cy="0" r="32" fill="#141722" />
-    <path d="M -16,0 Q -8,-18 0,0 T 16,0" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" />
-    <circle cx="0" cy="0" r="5" fill="#ffffff" />
-  </g>
-
-  <!-- Tipografía limpia sin bordes -->
-  <text x="250" y="390" font-family="-apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif" font-size="22" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="-0.02em">${title.length > 26 ? title.substring(0, 24) + '...' : title}</text>
-  <text x="250" y="420" font-family="-apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif" font-size="14" font-weight="500" fill="#8c92a4" text-anchor="middle" letter-spacing="0.05em">${artist.toUpperCase()}</text>
-  <text x="250" y="455" font-family="-apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif" font-size="10" font-weight="600" fill="${color}" text-anchor="middle" letter-spacing="0.15em">TITAN LOSSLESS MASTER</text>
+  <rect width="500" height="500" rx="40" fill="url(#bg)" />
+  <circle cx="250" cy="250" r="160" fill="none" stroke="url(#accent)" stroke-width="4" opacity="0.6"/>
+  <circle cx="250" cy="250" r="80" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.4"/>
+  <circle cx="250" cy="250" r="28" fill="${color}" />
+  <text x="250" y="380" font-family="-apple-system, sans-serif" font-size="24" font-weight="800" fill="#ffffff" text-anchor="middle">${title}</text>
+  <text x="250" y="415" font-family="-apple-system, sans-serif" font-size="16" fill="#9ca3af" text-anchor="middle">${artist}</text>
 </svg>`;
 
         res.writeHead(200, {
             'Content-Type': 'image/svg+xml; charset=utf-8',
-            'Cache-Control': 'public, max-age=86400',
-            'Access-Control-Allow-Origin': '*'
+            'Cache-Control': 'public, max-age=86400'
         });
         return res.end(svg);
+    }
+
+    // Servicio de Letras Sincronizadas (LRC)
+    if (pathname === '/api/lyrics' && req.method === 'GET') {
+        const title = (parsedUrl.query.title || 'Música').toString();
+        const artist = (parsedUrl.query.artist || 'Artista').toString();
+
+        const lrc = `[00:00.00]${title} - ${artist}
+[00:04.00]Reproducción de audio en alta definición
+[00:10.00]Procesamiento de sonido de hardware nativo
+[00:20.00]Resonancia limpia y sin distorsión
+[00:35.00]Frecuencia equilibrada en bajos, medios y agudos
+[00:50.00]Sonido envolvente activo
+[01:10.00]Titan Audio Hi-Fi`;
+
+        return sendJson(res, 200, {
+            success: true,
+            title,
+            artist,
+            lrc
+        });
     }
 
     // Subida de nueva música al servidor

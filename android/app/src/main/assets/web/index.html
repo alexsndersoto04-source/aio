@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Mi Música — Reproductor Hi-Fi</title>
+  <title>Mi Música</title>
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -11,14 +11,12 @@
 
     <!-- BARRA SUPERIOR (HEADER) -->
     <header class="app-header">
-      <!-- Botón de Menú / Ajustes (despliega el panel lateral) -->
-      <button class="header-icon-btn" id="openDrawerBtn" title="Menú y Ajustes">
+      <button class="header-icon-btn" id="openDrawerBtn" title="Menú de ajustes">
         <svg viewBox="0 0 24 24" width="22" height="22">
-          <path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>
+          <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
         </svg>
       </button>
 
-      <!-- Barra de Búsqueda Integrada -->
       <div class="header-search-box">
         <svg viewBox="0 0 24 24" width="18" height="18" class="search-lens-icon">
           <path fill="#9ca3af" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
@@ -26,46 +24,49 @@
         <input type="text" id="globalSearchInput" placeholder="Buscar canciones, artistas, carpetas..." autocomplete="off">
         <button id="clearSearchBtn" class="clear-search-btn" style="display:none;">&times;</button>
       </div>
+
+      <button class="header-icon-btn" id="headerQueueBtn" title="Cola de reproducción">
+        <svg viewBox="0 0 24 24" width="22" height="22">
+          <path fill="currentColor" d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+        </svg>
+      </button>
     </header>
 
-    <!-- ÁREA DE CONTENIDO CON SCROLL -->
-    <div class="scroll-body" id="scrollBody">
+    <!-- CUERPO PRINCIPAL CON DESPLAZAMIENTO FLUIDO -->
+    <main class="scroll-body" id="mainScrollBody">
 
-      <!-- TARJETAS SUPERIORES (FAVORITOS, LISTAS, RECIENTES) -->
+      <!-- Carrusel de 3 Tarjetas Superiores -->
       <section class="cards-carousel">
-        <!-- Tarjeta 1: Favoritos -->
         <div class="feature-card card-favorites" id="cardFavorites">
-          <div class="card-bg-overlay"></div>
+          <div class="card-bg-overlay" style="background-image: linear-gradient(135deg, #111827, #374151);"></div>
           <div class="card-content">
-            <div class="card-icon-wrap heart-icon">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            <div class="card-icon-wrap">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#ffffff" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
             </div>
             <span class="card-label">Favoritos</span>
             <span class="card-sub" id="favCountBadge">0 canciones</span>
           </div>
         </div>
 
-        <!-- Tarjeta 2: Listas de reproducción -->
         <div class="feature-card card-playlists" id="cardPlaylists">
-          <div class="card-bg-overlay"></div>
+          <div class="card-bg-overlay" style="background-image: linear-gradient(135deg, #065f46, #047857);"></div>
           <div class="card-content">
-            <div class="card-icon-wrap disc-icon">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/></svg>
+            <div class="card-icon-wrap">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#ffffff" d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
             </div>
-            <span class="card-label">Listas de reproducción</span>
-            <span class="card-sub" id="playlistCountBadge">3 listas</span>
+            <span class="card-label">Listas</span>
+            <span class="card-sub" id="playlistCountBadge">0 listas</span>
           </div>
         </div>
 
-        <!-- Tarjeta 3: Recientes -->
         <div class="feature-card card-recent" id="cardRecent">
-          <div class="card-bg-overlay"></div>
+          <div class="card-bg-overlay" style="background-image: linear-gradient(135deg, #4c1d95, #6d28d9);"></div>
           <div class="card-content">
-            <div class="card-icon-wrap clock-icon">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+            <div class="card-icon-wrap">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#ffffff" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
             </div>
             <span class="card-label">Recientes</span>
-            <span class="card-sub" id="recentCountBadge">Escuchadas</span>
+            <span class="card-sub" id="recentCountBadge">0 escuchadas</span>
           </div>
         </div>
       </section>
@@ -90,16 +91,11 @@
           <span class="total-tracks-pill" id="totalTracksCount">0</span>
         </button>
 
-        <!-- Botones de Acción Derecha (Ordenar y Crear lista) -->
+        <!-- Botones de Acción Derecha (Ordenar) -->
         <div class="toolbar-right-actions">
           <button class="icon-tool-btn" id="sortToggleBtn" title="Ordenar lista">
             <svg viewBox="0 0 24 24" width="20" height="20">
               <path fill="currentColor" d="M9 3L5 6.99h3V14h2V6.99h3L9 3zm7 14.01V10h-2v7.01h-3L15 21l4-3.99h-3z"/>
-            </svg>
-          </button>
-          <button class="icon-tool-btn" id="createPlaylistBtn" title="Crear nueva lista de reproducción" style="display:none;">
-            <svg viewBox="0 0 24 24" width="20" height="20">
-              <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
             </svg>
           </button>
         </div>
@@ -120,73 +116,74 @@
         <button class="empty-action-btn" id="emptyScanBtn">Escanear dispositivo</button>
       </div>
 
-    </div>
+    </main>
 
-    <!-- MINI REPRODUCTOR FLOTANTE CON EFECTO VINILO -->
-    <div class="floating-dock-player" id="floatingPlayer">
+    <!-- MINI REPRODUCTOR FLOTANTE CON DISCO DE VINILO -->
+    <aside class="floating-dock-player" id="floatingPlayer">
       <div class="dock-inner" id="dockTrigger">
-        <!-- Disco de vinilo saliente con carátula en el centro -->
+        <!-- Disco de Vinilo Saliente -->
         <div class="vinyl-disc-wrap">
           <div class="vinyl-disc" id="vinylDisc">
-            <img class="vinyl-center-art" id="dockArtwork" src="" alt="Carátula">
+            <img src="" id="dockArtwork" class="vinyl-center-art" alt="Vinilo">
           </div>
         </div>
 
         <!-- Título y Artista -->
         <div class="dock-meta">
-          <span class="dock-title" id="dockTitle">Sin reproducción</span>
+          <span class="dock-title" id="dockTitle">Mi Música</span>
           <span class="dock-artist" id="dockArtist">Selecciona una pista</span>
         </div>
 
-        <!-- Botones de Control Rápidos -->
+        <!-- Acciones Rápidas -->
         <div class="dock-actions">
           <button class="dock-play-circle" id="dockPlayBtn" title="Reproducir / Pausa">
             <svg id="dockPlayIcon" viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M8 5v14l11-7z"/></svg>
             <svg id="dockPauseIcon" viewBox="0 0 24 24" width="18" height="18" style="display:none;"><path fill="#ffffff" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
           </button>
-          <button class="dock-next-btn" id="dockNextBtn" title="Siguiente canción">
+          <button class="dock-next-btn" id="dockNextBtn" title="Siguiente">
             <svg viewBox="0 0 24 24" width="22" height="22"><path fill="#ffffff" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
           </button>
         </div>
       </div>
-    </div>
+    </aside>
 
     <!-- BARRA DE NAVEGACIÓN INFERIOR (5 PESTAÑAS) -->
     <nav class="bottom-tab-bar">
       <button class="bottom-nav-item active" data-nav="local">
-        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9v7c0 1.1.9 2 2 2h4v-8H5v-1a7 7 0 0 1 14 0v1h-4v8h4c1.1 0 2-.9 2-2v-7a9 9 0 0 0-9-9z"/></svg>
-        <span>Local</span>
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+        <span>Canciones</span>
       </button>
 
       <button class="bottom-nav-item" data-nav="discover">
-        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/></svg>
-        <span>Descubrir</span>
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+        <span>Telegram Nube</span>
       </button>
 
-      <button class="bottom-nav-item center-creativity" id="centerHifiBtn" title="Estudio Hi-Fi y Efectos">
+      <!-- Botón Central Estudio Hi-Fi / Ecualizador -->
+      <button class="bottom-nav-item center-creativity" id="centerHifiBtn" title="Estudio Hi-Fi">
         <div class="creativity-plus-box">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#ffffff" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#ffffff" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
         </div>
-        <span>Estudio</span>
+        <span>Sonido</span>
       </button>
 
-      <button class="bottom-nav-item" data-nav="search">
-        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-        <span>Buscar</span>
+      <button class="bottom-nav-item" data-nav="playlists">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+        <span>Listas</span>
       </button>
 
       <button class="bottom-nav-item" data-nav="profile">
-        <svg viewBox="0 0 24 24" width="22" height="22" class="nav-icon"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-        <span>Perfil</span>
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+        <span>Ajustes</span>
       </button>
     </nav>
 
-    <!-- PANEL LATERAL (DRAWER) -->
+    <!-- MENÚ LATERAL (SIDE DRAWER) -->
     <div class="drawer-backdrop" id="drawerBackdrop"></div>
     <aside class="side-drawer" id="sideDrawer">
       <div class="drawer-header">
         <div class="drawer-brand">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="#111827"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          <svg viewBox="0 0 24 24" width="28" height="28" style="color:var(--primary-accent);"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
           <span class="drawer-title">Mi Música</span>
         </div>
       </div>
@@ -194,7 +191,10 @@
       <div class="drawer-menu-list">
         <div class="drawer-item" id="drawerEqItem">
           <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-          <span class="drawer-label">Ecualizador y Estudio Hi-Fi</span>
+          <div class="drawer-col">
+            <span class="drawer-label">Ecualizador Hi-Fi</span>
+            <span class="drawer-sub">AudioFX de hardware</span>
+          </div>
         </div>
 
         <div class="drawer-item" id="drawerSleepTimerItem">
@@ -206,7 +206,7 @@
         </div>
 
         <div class="drawer-item" id="drawerScanItem">
-          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           <span class="drawer-label">Escanear teléfono</span>
         </div>
 
@@ -216,6 +216,14 @@
         </div>
 
         <hr class="drawer-divider">
+
+        <div class="drawer-item" id="drawerSettingsItem">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+          <div class="drawer-col">
+            <span class="drawer-label">Ajustes del Reproductor</span>
+            <span class="drawer-sub">Filtro de audio, fundido, buffer</span>
+          </div>
+        </div>
 
         <div class="drawer-item" id="drawerStatsItem">
           <svg viewBox="0 0 24 24" width="22" height="22" class="drawer-icon"><path fill="currentColor" d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/></svg>
@@ -235,17 +243,24 @@
         </button>
         <div class="fs-header-center">
           <span class="fs-reproducing-badge">REPRODUCIENDO</span>
-          <span class="fs-source-badge" id="fsSourceBadge">AUDIO LOCAL HI-RES</span>
+          <span class="fs-source-badge" id="fsSourceBadge">LOCAL HI-FI</span>
         </div>
-        <button class="fs-btn" id="fsOptionsBtn" title="Opciones de canción">
-          <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+        <button class="fs-btn" id="toggleLyricsBtn" title="Ver letras">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
         </button>
       </header>
 
       <div class="fs-main-body">
-        <!-- Carátula grande con esquinas redondeadas -->
-        <div class="fs-album-art-wrap">
-          <img id="fsArtworkImg" class="fs-album-art" src="" alt="Carátula">
+        <!-- Contenedor de Carátula / Letras conmutables -->
+        <div class="fs-album-art-wrap" id="artworkContainer">
+          <img class="fs-album-art" id="fsArtworkImg" src="" alt="Carátula" loading="eager">
+        </div>
+
+        <!-- Visor de Letras Sincronizadas (Oculto por defecto) -->
+        <div class="fs-lyrics-container" id="lyricsContainer" style="display:none;">
+          <div class="lyrics-scroll" id="lyricsScroll">
+            <p class="lyrics-line-placeholder">Cargando letras...</p>
+          </div>
         </div>
 
         <!-- Título y Artista -->
@@ -295,18 +310,35 @@
           </button>
         </div>
 
-        <!-- Barra inferior: Botón Ecualizador y Salida de audio -->
+        <!-- Barra inferior: Botón Ecualizador y Velocidad -->
         <div class="fs-footer-row">
           <button class="fs-footer-pill" id="fsEqDrawerBtn">
             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
             <span>Ecualizador</span>
           </button>
 
-          <button class="fs-footer-pill" id="fsDeviceIndicator">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-            <span id="fsDeviceName">Altavoz del teléfono</span>
+          <button class="fs-footer-pill" id="fsSpeedToggleBtn">
+            <span id="fsSpeedText">1.0x</span>
+          </button>
+
+          <button class="fs-footer-pill" id="fsQueueDrawerBtn">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+            <span>Cola</span>
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- MODAL DE COLA DE REPRODUCCIÓN (UP NEXT) -->
+    <div class="sheet-backdrop" id="queueBackdrop"></div>
+    <div class="action-sheet" id="queueSheet">
+      <div class="sheet-handle"></div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <h4 class="sheet-heading" style="margin-bottom:0;">A continuación (Cola)</h4>
+        <button id="clearQueueBtn" style="border:none; background:transparent; color:#ef4444; font-size:13px; font-weight:700; cursor:pointer;">Limpiar cola</button>
+      </div>
+      <div class="sheet-items" id="queueListContainer" style="max-height:55vh; overflow-y:auto;">
+        <!-- Pistas en la cola -->
       </div>
     </div>
 
@@ -336,7 +368,7 @@
         </button>
         <button class="sheet-item" id="sheetInfoBtn">
           <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM11 9h2V7h-2v2z"/></svg>
-          <span>Detalles del archivo</span>
+          <span>Detalles técnicos del archivo</span>
         </button>
       </div>
     </div>
@@ -345,7 +377,7 @@
     <div class="sheet-backdrop" id="fileInfoBackdrop"></div>
     <div class="action-sheet" id="fileInfoSheet">
       <div class="sheet-handle"></div>
-      <h4 class="sheet-heading">Detalles de la pista</h4>
+      <h4 class="sheet-heading">Información técnica de la pista</h4>
       <div class="file-details-card">
         <div class="detail-row">
           <span class="detail-key">Título</span>
@@ -364,11 +396,11 @@
           <span class="detail-val" id="infoDuration">-</span>
         </div>
         <div class="detail-row">
-          <span class="detail-key">Tamaño</span>
+          <span class="detail-key">Tamaño real</span>
           <span class="detail-val" id="infoSize">-</span>
         </div>
         <div class="detail-row">
-          <span class="detail-key">Carpeta</span>
+          <span class="detail-key">Carpeta física</span>
           <span class="detail-val" id="infoFolder">-</span>
         </div>
         <div class="detail-row">
@@ -436,12 +468,12 @@
       </div>
     </div>
 
-    <!-- MODAL DE ESTUDIO HI-FI & ECUALIZADOR (FONDO CLARO) -->
+    <!-- MODAL DE ESTUDIO HI-FI, ECUALIZADOR & BASS BOOST (AUDIO FX REAL) -->
     <div class="sheet-backdrop" id="eqBackdrop"></div>
     <div class="action-sheet eq-sheet" id="eqSheet">
       <div class="sheet-handle"></div>
       <div class="eq-sheet-header">
-        <h3 class="eq-title">Ecualizador de Sonido</h3>
+        <h3 class="eq-title">Estudio Hi-Fi de Sonido</h3>
         <span class="eq-sub">Procesamiento de hardware nativo de Android</span>
       </div>
 
@@ -469,12 +501,60 @@
         </div>
       </div>
 
+      <!-- Controles de Efectos: Bass Boost y Sonido Envolvente 3D -->
+      <div style="display:flex; flex-direction:column; gap:12px; margin: 16px 0;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:13px; font-weight:700;">Potenciador de Graves (Bass Boost)</span>
+          <span id="bassBoostVal" style="font-size:12px; font-weight:700; color:var(--primary-accent);">0%</span>
+        </div>
+        <input type="range" id="bassBoostSlider" min="0" max="100" value="0" style="width:100%; accent-color:var(--primary-accent);">
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+          <span style="font-size:13px; font-weight:700;">Sonido Envolvente 3D (Virtualizer)</span>
+          <span id="virtualizerVal" style="font-size:12px; font-weight:700; color:var(--primary-accent);">0%</span>
+        </div>
+        <input type="range" id="virtualizerSlider" min="0" max="100" value="0" style="width:100%; accent-color:var(--primary-accent);">
+      </div>
+
       <!-- Presets de Ecualizador -->
       <div class="eq-presets-wrap">
         <button class="preset-tag active" data-preset="flat">Plano</button>
         <button class="preset-tag" data-preset="bass">Graves potentes</button>
         <button class="preset-tag" data-preset="vocal">Voces claras</button>
         <button class="preset-tag" data-preset="electronic">Club / Ritmo</button>
+      </div>
+    </div>
+
+    <!-- MODAL DE AJUSTES INTEGRAL DEL REPRODUCTOR -->
+    <div class="sheet-backdrop" id="settingsBackdrop"></div>
+    <div class="action-sheet" id="settingsSheet">
+      <div class="sheet-handle"></div>
+      <h4 class="sheet-heading">Ajustes y Configuración de Audio</h4>
+      <div style="display:flex; flex-direction:column; gap:16px; margin-top:8px;">
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:14px; font-weight:700;">Fundido cruzado (Crossfade)</span>
+            <span id="crossfadeSettingVal" style="font-size:13px; font-weight:700; color:var(--primary-accent);">0.0s</span>
+          </div>
+          <input type="range" id="crossfadeSlider" min="0" max="12" step="0.5" value="0" style="width:100%; accent-color:var(--primary-accent);">
+          <span style="font-size:11px; color:var(--text-muted);">Transición suave entre pistas sin silencios</span>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-top:1px solid var(--border-light);">
+          <div>
+            <span style="font-size:14px; font-weight:700; display:block;">Reproducción sin pausas (Gapless)</span>
+            <span style="font-size:11px; color:var(--text-muted);">Ideal para álbumes en vivo y conciertos</span>
+          </div>
+          <input type="checkbox" id="gaplessToggle" checked style="width:20px; height:20px; accent-color:var(--primary-accent);">
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-top:1px solid var(--border-light);">
+          <div>
+            <span style="font-size:14px; font-weight:700; display:block;">Filtro de audios cortos</span>
+            <span style="font-size:11px; color:var(--text-muted);">Ignora audios y notas de voz de menos de 40 seg</span>
+          </div>
+          <input type="checkbox" id="filterShortAudioToggle" checked style="width:20px; height:20px; accent-color:var(--primary-accent);">
+        </div>
       </div>
     </div>
 

@@ -36,6 +36,8 @@ public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQ_CODE = 101;
     private static final int FILE_PICKER_REQ_CODE = 202;
 
+    private static MainActivity instance;
+
     private WebView webView;
     private AudioPlaybackService audioService;
     private boolean isBound = false;
@@ -91,16 +93,25 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+    public static void dispatchWebEvent(String eventName) {
+        if (instance != null && instance.webView != null) {
+            instance.runOnUiThread(() -> {
+                try {
+                    instance.webView.evaluateJavascript("if (window." + eventName + ") window." + eventName + "();", null);
+                } catch (Exception ignored) {}
+            });
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        instance = this;
 
-        // Conectar el servicio de reproducción multimedia de forma segura
         Intent serviceIntent = new Intent(this, AudioPlaybackService.class);
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
 
-        // Crear WebView de alto rendimiento a pantalla completa
         webView = new WebView(this);
         setContentView(webView);
 
@@ -114,13 +125,9 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient());
 
-        // Inyectar puente JavaScript con la app nativa
         webView.addJavascriptInterface(new WebAppInterface(this), "TitanBridge");
-
-        // Cargar interfaz de Titan Audio
         webView.loadUrl("file:///android_asset/web/index.html");
 
-        // Solicitar permisos necesarios
         checkAndRequestPermissions();
     }
 
@@ -128,9 +135,6 @@ public class MainActivity extends AppCompatActivity {
         return audioService;
     }
 
-    /**
-     * Abre el selector del sistema de Android permitiendo seleccionar una o múltiples canciones.
-     */
     public void launchAudioFilePicker() {
         try {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -180,12 +184,13 @@ public class MainActivity extends AppCompatActivity {
                 } catch (Exception ignored) {}
 
                 String displayName = "Pista de audio";
+                long sizeBytes = 0;
                 try (Cursor c = getContentResolver().query(uri, null, null, null, null)) {
                     if (c != null && c.moveToFirst()) {
                         int nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                        if (nameIdx >= 0) {
-                            displayName = c.getString(nameIdx);
-                        }
+                        int sizeIdx = c.getColumnIndex(OpenableColumns.SIZE);
+                        if (nameIdx >= 0) displayName = c.getString(nameIdx);
+                        if (sizeIdx >= 0) sizeBytes = c.getLong(sizeIdx);
                     }
                 } catch (Exception ignored) {}
 
@@ -197,7 +202,10 @@ public class MainActivity extends AppCompatActivity {
                     trackObj.put("artist", "Archivo local");
                     trackObj.put("album", "Dispositivo");
                     trackObj.put("duration", 180);
+                    trackObj.put("size", sizeBytes);
+                    trackObj.put("folder", "Selector de archivos");
                     trackObj.put("path", uri.toString());
+                    trackObj.put("rawPath", uri.toString());
                     trackObj.put("source", "phone");
                     trackObj.put("isCloud", false);
                     importedTracks.put(trackObj);
@@ -220,7 +228,6 @@ public class MainActivity extends AppCompatActivity {
         List<String> needed = new ArrayList<>();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+ (API 33+)
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {
                 needed.add(Manifest.permission.READ_MEDIA_AUDIO);
@@ -230,7 +237,6 @@ public class MainActivity extends AppCompatActivity {
                 needed.add(Manifest.permission.POST_NOTIFICATIONS);
             }
         } else {
-            // Android 12 y anteriores
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
                     != PackageManager.PERMISSION_GRANTED) {
                 needed.add(Manifest.permission.READ_EXTERNAL_STORAGE);
@@ -271,6 +277,9 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (instance == this) {
+            instance = null;
+        }
         if (isBound) {
             unbindService(serviceConnection);
             isBound = false;
