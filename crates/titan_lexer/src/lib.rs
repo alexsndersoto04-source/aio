@@ -574,6 +574,68 @@ impl Lexer {
     }
 }
 
+/// Volcado canónico de tokens, una línea por token y luego una por error.
+///
+/// Formato (estable, pensado para comparar byte a byte con el lexer escrito en
+/// Titan durante el self-hosting):
+///
+/// ```text
+/// <line>:<column> <start>..<end> <Kind>[ <payload>]
+/// error: <mensaje>
+/// ```
+///
+/// `payload` aparece en Ident/IntLit/FloatLit (texto tal cual) y en
+/// StringLit/CharLit/Error (entre comillas, escapando `\\ " \n \r \t \0`).
+pub fn dump_tokens(source: &str) -> String {
+    let mut lexer = Lexer::new(source);
+    let (tokens, errors) = lexer.tokenize();
+    let mut out = String::new();
+    for token in tokens {
+        let span = token.span;
+        out.push_str(&format!(
+            "{}:{} {}..{} ",
+            span.line, span.column, span.start, span.end
+        ));
+        out.push_str(&kind_dump(&token.kind));
+        out.push('\n');
+    }
+    for error in errors {
+        out.push_str("error: ");
+        out.push_str(&dump_escape(&error.to_string()));
+        out.push('\n');
+    }
+    out
+}
+
+fn dump_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn kind_dump(kind: &TokenKind) -> String {
+    match kind {
+        TokenKind::Ident(v) => format!("Ident {v}"),
+        TokenKind::IntLit(v) => format!("IntLit {v}"),
+        TokenKind::FloatLit(v) => format!("FloatLit {v}"),
+        TokenKind::StringLit(v) => format!("StringLit \"{}\"", dump_escape(v)),
+        TokenKind::CharLit(c) => format!("CharLit \"{}\"", dump_escape(&c.to_string())),
+        TokenKind::Error(v) => format!("Error \"{}\"", dump_escape(v)),
+        TokenKind::Self_ => "Self_".into(),
+        other => format!("{other:?}"),
+    }
+}
+
 fn is_ident_start(c: char) -> bool {
     c == '_' || c.is_alphabetic()
 }
@@ -608,6 +670,16 @@ mod tests {
         assert!(errors.is_empty());
         assert!(matches!(&tokens[1].kind, TokenKind::Ident(s) if s == "café"));
         assert!(matches!(&tokens[3].kind, TokenKind::StringLit(s) if s == "a\n"));
+    }
+
+    #[test]
+    fn dump_format_is_stable() {
+        let dump = dump_tokens("let x = \"a\\n\" 'b' 1.5 @");
+        let expected = "1:1 0..3 Let\n1:5 4..5 Ident x\n1:7 6..7 Eq\n\
+                        1:9 8..13 StringLit \"a\\n\"\n1:15 14..17 CharLit \"b\"\n\
+                        1:19 18..21 FloatLit 1.5\n1:23 22..23 Error \"@\"\n1:24 23..23 Eof\n\
+                        error: invalid character '@' at 1:23\n";
+        assert_eq!(dump, expected);
     }
 
     #[test]

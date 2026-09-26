@@ -59,6 +59,9 @@ pub enum Command {
         #[arg(long, default_value = "https://registry.titan-lang.org")]
         registry: String,
     },
+    /// Print the canonical token dump of a source file (self-hosting oracle)
+    #[command(hide = true)]
+    Tokens { input: String },
     /// Parse and type-check a file or project without producing an artifact
     Check {
         #[arg(default_value = ".")]
@@ -158,6 +161,10 @@ fn main() {
             key,
             registry,
         } => cmd_publish(&project, &key, &registry),
+        Command::Tokens { input } => match std::fs::read_to_string(&input) {
+            Ok(source) => print!("{}", titan_lexer::dump_tokens(&source)),
+            Err(error) => fatal("READ ERROR", format!("{input}: {error}")),
+        },
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Wasm { input, output } => cmd_wasm(&input, output),

@@ -1179,12 +1179,12 @@ impl Vm {
                         stack.truncate(len - 2);
                         stack.push(Value::Bool(res));
                     } else {
-                        ordered(&mut stack, &function.name, |a, b| a < b)?;
+                        ordered(&mut stack, &function.name, |o| o.is_lt())?;
                     }
                 }
-                Op::Gt => ordered(&mut stack, &function.name, |a, b| a > b)?,
-                Op::Lte => ordered(&mut stack, &function.name, |a, b| a <= b)?,
-                Op::Gte => ordered(&mut stack, &function.name, |a, b| a >= b)?,
+                Op::Gt => ordered(&mut stack, &function.name, |o| o.is_gt())?,
+                Op::Lte => ordered(&mut stack, &function.name, |o| o.is_le())?,
+                Op::Gte => ordered(&mut stack, &function.name, |o| o.is_ge())?,
                 Op::BitAnd => integer_binary(&mut stack, &function.name, |a, b| a & b)?,
                 Op::BitOr => integer_binary(&mut stack, &function.name, |a, b| a | b)?,
                 Op::BitXor => integer_binary(&mut stack, &function.name, |a, b| a ^ b)?,
@@ -4682,20 +4682,25 @@ where
 }
 fn ordered<F>(stack: &mut Vec<Value>, function: &str, operation: F) -> Result<(), VmError>
 where
-    F: FnOnce(f64, f64) -> bool,
+    F: FnOnce(std::cmp::Ordering) -> bool,
 {
     let right = pop(stack, function)?;
     let left = pop(stack, function)?;
-    let (a, b) = match (left, right) {
-        (Value::Int(a), Value::Int(b)) => (a as f64, b as f64),
-        (Value::Float(a), Value::Float(b)) => (a, b),
+    // Los enteros se comparan como enteros: convertirlos a f64 perdía
+    // precisión por encima de 2^53 y daba resultados incorrectos.
+    let ordering = match (&left, &right) {
+        (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
+        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+        (Value::Char(a), Value::Char(b)) => Some(a.cmp(b)),
+        (Value::Str(a), Value::Str(b)) => Some(a.cmp(b)),
         _ => {
             return Err(VmError::Type(
-                "ordered comparison requires matching numbers".into(),
+                "ordered comparison requires matching numbers, chars or strings".into(),
             ))
         }
     };
-    stack.push(Value::Bool(operation(a, b)));
+    // NaN no está ordenado: toda comparación con NaN es falsa (IEEE 754).
+    stack.push(Value::Bool(ordering.is_some_and(operation)));
     Ok(())
 }
 fn integer_binary<F>(stack: &mut Vec<Value>, function: &str, operation: F) -> Result<(), VmError>
@@ -4812,6 +4817,59 @@ mod tests {
             .map_err(|e| e.to_string())
             .map(|v| v.unwrap())
     }
+    #[test]
+    fn ordered_comparison_is_exact_for_large_ints_and_supports_chars_strings() {
+        // 2^53 + 1 vs 2^53: como f64 ambos valen lo mismo; como i64 no.
+        assert_eq!(
+            run("fn main() { let a = 9007199254740993 let b = 9007199254740992; [a > b, a <= b, b < a] }")
+                .unwrap(),
+            Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Bool(true)])
+        );
+        assert_eq!(
+            run("fn main() { ['a' < 'b', 'z' >= 'a', \"abc\" < \"abd\", \"b\" <= \"a\"] }").unwrap(),
+            Value::array(vec![
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(false)
+            ])
+        );
+    }
+
+    #[test]
+    fn take_local_moves_without_changing_value_semantics() {
+        // push/set sobre el mismo local (TakeLocal) y una copia previa que no
+        // debe verse afectada.
+        assert_eq!(
+            run("fn main() { let mut a = [1, 2] let b = a a = std::array::push(a, 3) a = std::array::set(a, 0, 9) let mut s = \"x\" s += \"y\" s = s + \"z\"; [a, b, s] }")
+                .unwrap(),
+            Value::array(vec![
+                Value::array(vec![Value::Int(9), Value::Int(2), Value::Int(3)]),
+                Value::array(vec![Value::Int(1), Value::Int(2)]),
+                Value::Str("xyz".into()),
+            ])
+        );
+        // El segundo argumento lee el mismo local: no debe moverse.
+        assert_eq!(
+            run("fn main() { let mut a = [1] a = std::array::push(a, len(a)) a }").unwrap(),
+            Value::array(vec![Value::Int(1), Value::Int(1)])
+        );
+    }
+
+    #[test]
+    fn text_char_natives() {
+        assert_eq!(
+            run("fn main() { let cs = std::text::chars(\"añ\"); [len(cs), std::text::char_code(cs[1]), std::text::from_char_code(97), std::text::is_alphabetic(cs[1]), std::text::is_whitespace(cs[0])] }").unwrap(),
+            Value::array(vec![
+                Value::Int(2),
+                Value::Int(241),
+                Value::Char('a'),
+                Value::Bool(true),
+                Value::Bool(false)
+            ])
+        );
+    }
+
     fn run_sandboxed(source: &str) -> Result<Value, String> {
         Vm::sandboxed(compile(source)?)
             .run()

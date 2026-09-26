@@ -4121,7 +4121,11 @@ impl TypeEnv {
                 Type::Bool
             }
             Lt | Gt | Lte | Gte => {
-                if !is_numeric(&left) || !compatible(&left, &right) {
+                // Orden total en int, float, char (punto de código) y string
+                // (lexicográfico por bytes UTF-8, igual que en la VM).
+                let orderable = is_numeric(&left)
+                    || matches!(self.resolve_alias(&left), Type::Char | Type::String);
+                if !orderable || !compatible(&left, &right) {
                     self.invalid(op, left, right);
                 }
                 Type::Bool
