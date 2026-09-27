@@ -607,29 +607,26 @@ fn std__hash__sha256_bytes(v: any) -> any { hs_run(v, 1, true, "std::hash::sha25
 fn std__hash__sha512_bytes(v: any) -> any { hs_run(v, 3, true, "std::hash::sha512_bytes") }
 fn std__hash__blake3_bytes(v: any) -> any { hs_run(v, 6, true, "std::hash::blake3_bytes") }
 
-// HMAC (RFC 2104): H((K' ^ opad) || H((K' ^ ipad) || datos)).
-fn hs_hmac(kind: int, block: int, key: any, data: any, function: string) -> any {
-    rt_expect_bytes(key, function)
-    rt_expect_bytes(data, function)
+// HMAC (RFC 2104): H((K' ^ opad) || H((K' ^ ipad) || datos)). Devuelve un
+// bloque con los `hs_out_len(kind)` bytes (liberar con rt_free_block).
+fn hs_hmac_raw(kind: int, block: int, kp: int, klen: int, dp: int, dlen: int) -> int {
     let outlen = hs_out_len(kind)
     let k0 = rt_alloc(block + 8)
     hs_zero(k0, block)
-    let klen = rt_slen(key)
     if klen > block {
-        let kd = hs_digest(kind, rt_bdata(key), klen)
+        let kd = hs_digest(kind, kp, klen)
         hs_copy(k0, kd, outlen)
         rt_free_block(kd)
     } else {
-        hs_copy(k0, rt_bdata(key), klen)
+        hs_copy(k0, kp, klen)
     }
-    let dlen = rt_slen(data)
     let inner = rt_alloc(block + dlen + 8)
     let mut i = 0
     while i < block {
         std::raw::store8(inner + i, std::raw::load8(k0 + i) ^ 54)
         i += 1
     }
-    hs_copy(inner + block, rt_bdata(data), dlen)
+    hs_copy(inner + block, dp, dlen)
     let ih = hs_digest(kind, inner, block + dlen)
     let outer = rt_alloc(block + outlen + 8)
     i = 0
@@ -639,11 +636,18 @@ fn hs_hmac(kind: int, block: int, key: any, data: any, function: string) -> any 
     }
     hs_copy(outer + block, ih, outlen)
     let oh = hs_digest(kind, outer, block + outlen)
-    let s = hs_hex(oh, outlen)
     rt_free_block(k0)
     rt_free_block(inner)
     rt_free_block(ih)
     rt_free_block(outer)
+    oh
+}
+
+fn hs_hmac(kind: int, block: int, key: any, data: any, function: string) -> any {
+    rt_expect_bytes(key, function)
+    rt_expect_bytes(data, function)
+    let oh = hs_hmac_raw(kind, block, rt_bdata(key), rt_slen(key), rt_bdata(data), rt_slen(data))
+    let s = hs_hex(oh, hs_out_len(kind))
     rt_free_block(oh)
     s
 }

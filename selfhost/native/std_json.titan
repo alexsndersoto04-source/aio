@@ -17,7 +17,7 @@
 // ---------------------------------------------------------------- errores
 
 // Estado del analizador (memoria cruda): +0 datos, +8 largo, +16 índice,
-// +24 profundidad restante.
+// +24 profundidad restante, +32 función jwt, +40 validar UTF-8.
 fn js_pos_text(st: int, i0: int) -> any {
     let src = std::raw::load(st)
     let mut i = i0
@@ -39,14 +39,26 @@ fn js_pos_text(st: int, i0: int) -> any {
     rt_concat(rt_concat(rt_concat(" at line ", rt_int_to_str(line)), " column "), rt_int_to_str(col))
 }
 
+// +32: si no es 0, el analizador trabaja para std::jwt (bits del string con
+// el nombre de la función): el error sale como "JWT error: JSON error: ...".
+// +40: si no es 0, los strings se validan como UTF-8 (serde_json::from_slice).
+fn js_fail_at(st: int, code: string, i: int) {
+    let msg = rt_concat(code, js_pos_text(st, i))
+    let f = std::raw::load(st + 32)
+    if f != 0 {
+        rt_native_fail(std::raw::value(5, f), rt_concat("JWT error: JSON error: ", msg))
+    }
+    rt_native_fail("std::json::parse", msg)
+}
+
 // error(): posición del índice actual.
 fn js_error(st: int, code: string) {
-    rt_native_fail("std::json::parse", rt_concat(code, js_pos_text(st, std::raw::load(st + 16))))
+    js_fail_at(st, code, std::raw::load(st + 16))
 }
 
 // peek_error(): posición del byte siguiente (sin pasar del final).
 fn js_peek_error(st: int, code: string) {
-    rt_native_fail("std::json::parse", rt_concat(code, js_pos_text(st, std::raw::load(st + 16) + 1)))
+    js_fail_at(st, code, std::raw::load(st + 16) + 1)
 }
 
 // ---------------------------------------------------------------- lectura
@@ -450,7 +462,11 @@ fn js_parse_str(st: int) -> any {
         let c = std::raw::load8(src + i)
         std::raw::store(st + 16, i + 1)
         if c == 34 {
-            return sb_finish(b)
+            let out = sb_finish(b)
+            if std::raw::load(st + 40) != 0 && !rt_valid_utf8(std::raw::bits(out) + 16, rt_slen(out)) {
+                js_error(st, "invalid unicode code point")
+            }
+            return out
         }
         if c == 92 {
             js_escape(st, b)
@@ -618,11 +634,13 @@ fn js_parse_value(st: int) -> any {
 
 fn std__json__parse(text: any) -> any {
     rt_expect_str(text, "std::json::parse")
-    let st = rt_alloc(32)
+    let st = rt_alloc(48)
     std::raw::store(st, std::raw::bits(text) + 16)
     std::raw::store(st + 8, rt_slen(text))
     std::raw::store(st + 16, 0)
     std::raw::store(st + 24, 128)
+    std::raw::store(st + 32, 0)
+    std::raw::store(st + 40, 0)
     let v = js_parse_value(st)
     if js_skip_ws(st) >= 0 {
         js_peek_error(st, "trailing characters")

@@ -1,6 +1,7 @@
 // Runtime de los ejecutables nativos de Titan, escrito en Titan.
 import unicode
 import unicode_case
+import unicode_debug
 import std_text
 import std_core
 import std_hash
@@ -13,6 +14,8 @@ import std_vector
 import std_metrics
 import std_dirs
 import std_xml
+import std_rsa
+import std_jwt
 import errno
 import float
 import float_table
@@ -47,7 +50,8 @@ import float_table
 // Globales: +0 siguiente byte libre, +8 fin del bloque, +16 profundidad de
 // llamadas, +24 (reservado: manejadores de error), +32 pila inicial (argv),
 // +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table; las de
-// mayúsculas/minúsculas, slots 4..9, en +2336..+2376),
+// mayúsculas/minúsculas, slots 4..9, en +2336..+2376; la de escapes del
+// Debug de Rust, slot 10, en +2384),
 // +128 + 8*c listas de bloques libres de 16*c bytes (c = 1..256).
 //
 // Conteo de referencias (como el `Rc` de la VM): el campo +0 cuenta cuántos
@@ -1504,6 +1508,8 @@ fn rt_unicode_table(slot: int) -> int {
         text = uni_case_ignorable()
     } else if slot == 9 {
         text = uni_cased_strict()
+    } else if slot == 10 {
+        text = uni_debug_escape()
     }
     let p = std::raw::bits(text)
     let n = std::raw::load(p + 8)
@@ -1545,6 +1551,71 @@ fn rt_unicode_has(slot: int, c: int) -> bool {
         }
     }
     false
+}
+
+// El `{:?}` de Rust para un str (UTF-8 válido): entre comillas, con \" \\
+// \n \t \r \0 y \u{hex} para los caracteres de la tabla 10 (ver
+// unicode_debug.titan). Aparece en mensajes como `invalid type: string "..."`.
+fn rt_debug_str(src: int, n: int) -> any {
+    let b = sb_new(n + 2)
+    sb_byte(b, 34)
+    let mut i = 0
+    while i < n {
+        let c0 = std::raw::load8(src + i)
+        let mut c = c0
+        let mut w = 1
+        if c0 >= 240 {
+            c = std::raw::shl(c0 & 7, 18) | std::raw::shl(std::raw::load8(src + i + 1) & 63, 12) | std::raw::shl(std::raw::load8(src + i + 2) & 63, 6) | (std::raw::load8(src + i + 3) & 63)
+            w = 4
+        } else if c0 >= 224 {
+            c = std::raw::shl(c0 & 15, 12) | std::raw::shl(std::raw::load8(src + i + 1) & 63, 6) | (std::raw::load8(src + i + 2) & 63)
+            w = 3
+        } else if c0 >= 192 {
+            c = std::raw::shl(c0 & 31, 6) | (std::raw::load8(src + i + 1) & 63)
+            w = 2
+        }
+        if c == 34 || c == 92 {
+            sb_byte(b, 92)
+            sb_byte(b, c)
+        } else if c == 10 {
+            sb_byte(b, 92)
+            sb_byte(b, 110)
+        } else if c == 9 {
+            sb_byte(b, 92)
+            sb_byte(b, 116)
+        } else if c == 13 {
+            sb_byte(b, 92)
+            sb_byte(b, 114)
+        } else if c == 0 {
+            sb_byte(b, 92)
+            sb_byte(b, 48)
+        } else if c >= 32 && c <= 126 {
+            sb_byte(b, c)
+        } else if c < 32 || rt_unicode_has(10, c) {
+            sb_byte(b, 92)
+            sb_byte(b, 117)
+            sb_byte(b, 123)
+            let mut shift = 20
+            while shift > 0 && std::raw::shr(c, shift) == 0 {
+                shift -= 4
+            }
+            while shift >= 0 {
+                let d = std::raw::shr(c, shift) & 15
+                if d < 10 {
+                    sb_byte(b, 48 + d)
+                } else {
+                    sb_byte(b, 87 + d)
+                }
+                shift -= 4
+            }
+            sb_byte(b, 125)
+        } else {
+            sb_raw(b, src + i, w)
+        }
+        i += w
+    }
+    sb_byte(b, 34)
+    sb_finish(b)
 }
 
 fn std__text__is_alphabetic(c: any) -> any {

@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 280 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 285 / 816 nativas (`selfhost/native/cobertura.sh`) |
 
 ## Cómo verificar
 
@@ -353,6 +353,7 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::metrics (8), std::testing (2) | `std_metrics.titan` | nombres, cuotas (4096) y mensajes iguales; contador u64 con saturación; salida Prometheus e instantánea como la VM |
 | std::dirs (18) | `std_dirs.titan` | reglas de dirs 5.0.1 / dirs-sys 0.4.1 en Linux (variables XDG absolutas, `user-dirs.dirs` con el mismo analizador), `temp_dir` y `current_dir` de Rust, rutas no UTF-8 con U+FFFD como `to_string_lossy`. Sin `HOME` se lee `/etc/passwd` (la fuente "files" de glibc; LDAP/sssd no se consultan). Comparado en 250 entornos aleatorios (sin HOME, HOME vacío o no UTF-8, XDG relativos, varios `user-dirs.dirs`, TMPDIR vacío): 0 diferencias |
 | std::xml (4) | `std_xml.titan` | el mismo lector que quick-xml 0.36.2 (BOM, texto recortado, comentarios, CDATA, DOCTYPE con balance de `<`/`>`, instrucciones `<?…?>`, `>` dentro de comillas, nombres de cierre literales, atributos con los mismos errores y posiciones, entidades y `&#…;` con los mismos mensajes) y el mismo escritor; comparado con 6.300 documentos aleatorios (válidos, rotos y cortados): 0 diferencias. Un XML de 2,3 MB tarda ~0,95 s frente a ~0,49 s en la VM (casi todo es el asignador de memoria) |
+| std::jwt (5) | `std_jwt.titan`, `std_rsa.titan` | lo mismo que jsonwebtoken 9.3.1: base64url (con los mismos errores y posiciones que base64 0.22), lector JSON al estilo serde (cabecera con `Jwk`, enums, `untagged`, mismos mensajes y columnas), validación de `exp`/`aud`/`iss`; PEM (pem 3.0), ASN.1 (simple_asn1 0.6) y RSA escrito desde cero en Titan: comprobación de claves como ring 0.17 (mismos errores: `InconsistentComponents`, `TooLarge`, `PrivateModulusLenNotMultipleOf512Bits`…), firma PKCS#1 v1.5 + SHA-256 con CRT y verificación. Comparado con ~19.000 tokens HS256 y ~7.000 casos RS256 (claves de openssl de 1024 a 8192 bits, PKCS#1/PKCS#8/certificado/EC/Ed25519, DER alterado): 0 diferencias; openssl confirma que las firmas son válidas |
 
 Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
 "index out of bounds" en el runtime nativo; la VM dice "array index out of
