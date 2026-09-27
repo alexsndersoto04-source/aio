@@ -28,6 +28,8 @@
 
 import native::x64
 import native::elf
+import native::float
+import native::float_table
 
 // Trozo de código con referencias pendientes.
 //   b:   bytes
@@ -657,6 +659,54 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_push_i(0))
         return pc_add(p, x_push_i(0))
     }
+    // Aritmética de floats (bits IEEE 754 en enteros) con SSE2.
+    if name == "std::raw::fadd" || name == "std::raw::fsub" || name == "std::raw::fmul" || name == "std::raw::fdiv" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        p = pc_add(p, x_movq_xr(1, rcx))
+        if name == "std::raw::fadd" {
+            p = pc_add(p, x_addsd(0, 1))
+        } else if name == "std::raw::fsub" {
+            p = pc_add(p, x_subsd(0, 1))
+        } else if name == "std::raw::fmul" {
+            p = pc_add(p, x_mulsd(0, 1))
+        } else {
+            p = pc_add(p, x_divsd(0, 1))
+        }
+        p = pc_add(p, x_movq_rx(rax, 0))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // ffromint: el entero convertido a float (cvtsi2sd; exacto si |v| < 2^53).
+    if name == "std::raw::ffromint" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, x_cvtsi2sd(0, rax))
+        p = pc_add(p, x_movq_rx(rax, 0))
+        p = pc_add(p, x_add_ri(rsp, 16))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // fcmp: -1 menor, 0 igual, 1 mayor, 2 sin orden (algún NaN).
+    if name == "std::raw::fcmp" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        p = pc_add(p, x_movq_xr(1, rcx))
+        p = pc_add(p, x_ucomisd(0, 1))
+        p = pc_add(p, x_mov_ri(x_rdx(), 2))
+        p = pc_jl(p, x_jcc(x_cc_p(), 0), "fdone")
+        p = pc_add(p, x_mov_ri(x_rdx(), 0))
+        p = pc_jl(p, x_jcc(x_cc_e(), 0), "fdone")
+        p = pc_add(p, x_mov_ri(x_rdx(), -1))
+        p = pc_jl(p, x_jcc(x_cc_b(), 0), "fdone")
+        p = pc_add(p, x_mov_ri(x_rdx(), 1))
+        p = pc_label(p, "fdone")
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push(x_rdx()))
+        return pc_add(p, x_push_i(1))
+    }
     if name == "std::raw::syscall" {
         p = pc_add(p, x_load(rax, rsp, 104))
         p = pc_add(p, x_load(x_rdi(), rsp, 88))
@@ -699,6 +749,20 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
             b = 1
         }
         return pc_add(pc_add(p, x_push_i(b)), x_push_i(3))
+    }
+    if k == "PushFloat" {
+        // El texto es el de f64::to_string: vuelve a dar exactamente los mismos bits.
+        let bits = fl_parse(op.s)
+        if bits == nil {
+            return pc_error(p, "invalid float literal " + op.s)
+        }
+        if x_fits_i32(bits) {
+            p = pc_add(p, x_push_i(bits))
+        } else {
+            p = pc_add(p, x_mov_ri(x_rax(), bits))
+            p = pc_add(p, x_push(x_rax()))
+        }
+        return pc_add(p, x_push_i(2))
     }
     if k == "PushChar" {
         let code = std::text::char_code(std::text::chars(op.s)[0])

@@ -1,5 +1,7 @@
 // Runtime de los ejecutables nativos de Titan, escrito en Titan.
 import unicode
+import float
+import float_table
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust
@@ -461,7 +463,7 @@ fn rt_to_string(v: any) -> any {
         return rt_char_to_str(std::raw::bits(v))
     }
     if t == 2 {
-        std::raw::fail("native backend: float formatting is not implemented yet")
+        return fl_to_string(std::raw::bits(v))
     }
     if t == 6 {
         return rt_concat(rt_concat("bytes[", rt_int_to_str(rt_seq_len(v))), "]")
@@ -645,7 +647,7 @@ fn rt_add(a: any, b: any) -> any {
         return rt_concat_owned(a, b, owned)
     }
     if ta == 2 && tb == 2 {
-        std::raw::fail("native backend: float arithmetic is not implemented yet")
+        return std::raw::adopt(2, std::raw::fadd(std::raw::bits(a), std::raw::bits(b)))
     }
     if ta == 5 {
         return rt_concat_owned(a, rt_to_string(b), owned)
@@ -656,19 +658,21 @@ fn rt_add(a: any, b: any) -> any {
     std::raw::fail("type error: addition requires matching numbers or strings")
 }
 
-fn rt_float_pending(a: any, b: any) {
-    if std::raw::tag(a) == 2 && std::raw::tag(b) == 2 {
-        std::raw::fail("native backend: float arithmetic is not implemented yet")
-    }
+fn rt_both_float(a: any, b: any) -> bool {
+    std::raw::tag(a) == 2 && std::raw::tag(b) == 2
 }
 
 fn rt_sub(a: any, b: any) -> any {
-    rt_float_pending(a, b)
+    if rt_both_float(a, b) {
+        return std::raw::adopt(2, std::raw::fsub(std::raw::bits(a), std::raw::bits(b)))
+    }
     std::raw::fail("type error: subtraction requires matching numbers")
 }
 
 fn rt_mul(a: any, b: any) -> any {
-    rt_float_pending(a, b)
+    if rt_both_float(a, b) {
+        return std::raw::adopt(2, std::raw::fmul(std::raw::bits(a), std::raw::bits(b)))
+    }
     std::raw::fail("type error: multiplication requires matching numbers")
 }
 
@@ -679,7 +683,9 @@ fn rt_div(a: any, b: any) -> any {
     if std::raw::tag(b) == 2 && (std::raw::bits(b) == 0 || std::raw::bits(b) == (-9223372036854775807 - 1)) {
         std::raw::fail("division by zero")
     }
-    rt_float_pending(a, b)
+    if rt_both_float(a, b) {
+        return std::raw::adopt(2, std::raw::fdiv(std::raw::bits(a), std::raw::bits(b)))
+    }
     std::raw::fail("type error: division requires matching numbers")
 }
 
@@ -692,7 +698,7 @@ fn rt_mod(a: any, b: any) -> any {
 
 fn rt_neg(v: any) -> any {
     if std::raw::tag(v) == 2 {
-        std::raw::fail("native backend: float arithmetic is not implemented yet")
+        return std::raw::adopt(2, std::raw::bits(v) ^ (-9223372036854775807 - 1))
     }
     std::raw::fail(rt_concat("type error: cannot negate ", rt_to_string(v)))
 }
@@ -720,7 +726,7 @@ fn rt_eq(a: any, b: any) -> bool {
         return pa == pb
     }
     if t == 2 {
-        std::raw::fail("native backend: float comparison is not implemented yet")
+        return std::raw::fcmp(pa, pb) == 0
     }
     if t == 5 || t == 6 {
         return rt_str_eq(a, b)
@@ -844,26 +850,29 @@ fn rt_order(a: any, b: any) -> int {
             return rt_str_cmp(a, b)
         }
         if t == 2 {
-            std::raw::fail("native backend: float comparison is not implemented yet")
+            return std::raw::fcmp(std::raw::bits(a), std::raw::bits(b))
         }
     }
     std::raw::fail("type error: ordered comparison requires matching numbers, chars or strings")
 }
 
+// rt_order da 2 si no hay orden (NaN): entonces toda comparación es falsa.
 fn rt_lt(a: any, b: any) -> bool {
-    rt_order(a, b) < 0
+    rt_order(a, b) == -1
 }
 
 fn rt_gt(a: any, b: any) -> bool {
-    rt_order(a, b) > 0
+    rt_order(a, b) == 1
 }
 
 fn rt_le(a: any, b: any) -> bool {
-    rt_order(a, b) <= 0
+    let o = rt_order(a, b)
+    o == -1 || o == 0
 }
 
 fn rt_ge(a: any, b: any) -> bool {
-    rt_order(a, b) >= 0
+    let o = rt_order(a, b)
+    o == 1 || o == 0
 }
 
 // ------------------------------------------------------------ acceso
@@ -1621,10 +1630,62 @@ fn std__text__trim(s: any) -> any {
     rt_substr_bytes(s, a, b)
 }
 
-// Convertir texto decimal a float exige redondeo exacto (como Rust); aún no
-// está escrito para los ejecutables nativos, así que falla con un mensaje claro.
+// Como `text.trim().parse::<f64>().ok()` (ver float.titan).
 fn std__text__parse_float(s: any) -> any {
-    std::raw::fail("native backend: std::text::parse_float is not implemented yet")
+    rt_expect_str(s, "std::text::parse_float")
+    let n = fl_scan(std__text__trim(s))
+    if !n.ok {
+        return Option::None
+    }
+    if n.special {
+        return Option::Some(std::raw::adopt(2, n.bits))
+    }
+    Option::Some(std::raw::adopt(2, rt_float_from_decimal(n.negative, n.digits, n.exp)))
+}
+
+// 10^n exacto como float (0 <= n <= 22: todos se representan sin error).
+fn rt_pow10_float(n: int) -> int {
+    if n <= 18 {
+        let mut p = 1
+        let mut i = 0
+        while i < n {
+            p = p * 10
+            i += 1
+        }
+        return std::raw::ffromint(p)
+    }
+    let mut q = 1
+    let mut j = 18
+    while j < n {
+        q = q * 10
+        j += 1
+    }
+    std::raw::fmul(std::raw::ffromint(1000000000000000000), std::raw::ffromint(q))
+}
+
+// Camino rápido (Clinger): con <= 15 dígitos y |exp| <= 22 los dos números
+// son exactos en float y una sola operación del procesador redondea bien.
+// Si no, el cálculo exacto con enteros grandes de float.titan.
+fn rt_float_from_decimal(negative: bool, digits: array, exp: int) -> int {
+    let nd = len(digits)
+    if nd <= 15 && exp >= -22 && exp <= 22 {
+        let mut d = 0
+        for c in digits {
+            d = d * 10 + c
+        }
+        let mut bits = std::raw::ffromint(d)
+        if exp > 0 {
+            bits = std::raw::fmul(bits, rt_pow10_float(exp))
+        }
+        if exp < 0 {
+            bits = std::raw::fdiv(bits, rt_pow10_float(0 - exp))
+        }
+        if negative {
+            bits = bits ^ (-9223372036854775807 - 1)
+        }
+        return bits
+    }
+    fl_from_decimal(negative, digits, exp)
 }
 
 // ------------------------------------------------------------ sistema: archivos, rutas, entorno

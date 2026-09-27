@@ -13,7 +13,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 2 | **Parser** en Titan (`selfhost/parser.titan`) | ✅ idéntico al de Rust |
 | 3 | **Typechecker** en Titan (`selfhost/typechecker.titan`) | ✅ idéntico al de Rust |
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
-| 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias); faltan floats |
+| 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | pendiente |
 
@@ -241,11 +241,30 @@ Resultados (sesión 4 de la fase 4b):
   (`build.titan PROG SALIDA MAPA`).
 - Velocidad: el compilador Titan nativo compila `selfhost/bytecode.titan`
   (todo el compilador) en 6,7 s; el mismo compilador en la VM tarda 14,2 s.
-- `verify_native.sh`: 15/15 idénticos (incluye memoria, archivos, bytes).
-- El compilador nativo produce lo mismo que Rust en **466 de 489** archivos;
-  los 23 restantes tienen literales decimales: falta **floats** (texto →
-  float con redondeo exacto, float → texto, aritmética). Fallan con un
-  mensaje claro, nunca con un resultado falso.
+  (Medido en otra sesión; en la máquina de la sesión de floats tanto la
+  versión anterior como la nueva tardan ~25 s: la máquina era más lenta,
+  no el código.)
+- **Floats** (`native/float.titan`, todo con enteros exactos, sin tablas de
+  Rust):
+  - texto → float como `str::parse::<f64>` (redondeo al más cercano, empate
+    al par; subnormales, inf, nan). Camino rápido de Clinger (≤15 dígitos,
+    |exp| ≤ 22: una sola operación SSE exacta) y si no, división exacta con
+    enteros grandes;
+  - float → texto como `f64::to_string`: Grisu con números de 62 bits
+    (tabla de potencias de diez `native/float_table.titan`, generada por
+    `native/gen_float_table.titan` con enteros exactos) y, cuando Grisu no
+    puede garantizar el resultado (~1,4 %), Dragon exacto con las mismas
+    reglas de límites que `core::num::flt2dec`;
+  - aritmética (`addsd`/`subsd`/`mulsd`/`divsd`), comparaciones (`ucomisd`;
+    NaN nunca es igual ni ordenado), negación, división por 0.0/-0.0 = error.
+  - Comprobado: 20 000 textos aleatorios (VM contra float.titan) y 3 000×5
+    valores en un ejecutable nativo contra la VM: 0 diferencias.
+  - Velocidad: 20 000 conversiones ida y vuelta en 0,43 s (la VM: 0,03 s);
+    lo que queda es el coste general de listas/textos del runtime.
+- `verify_native.sh`: 18/18 idénticos (incluye memoria, archivos, bytes,
+  decimales y sus errores).
+- El compilador nativo produce lo mismo que Rust en **495 de 495** archivos
+  (`SELF=bytecode-nativo bash selfhost/verify_codegen.sh`).
 
 ## Fase 5 — punto fijo del bootstrap ✅
 
@@ -258,12 +277,11 @@ Resultados (sesión 4 de la fase 4b):
 3. `titanc2` se compila → `titanc3`.
 
 Resultado: las tres etapas son **idénticas byte a byte**
-(sha256 `01ba7b33…`); cada etapa nativa tarda ~24 s. El compilador no usa
+(sha256 `47ee5b77…` desde la sesión de floats); cada etapa nativa tarda ~24 s. El compilador no usa
 `std::process` ni FFI. Esta es la única vez que se usa el Titan de Rust
 (el arranque); a partir de `titanc1`, Titan se compila solo.
 
-Lo que falta para borrar Rust (fase 6): floats en el runtime nativo, el
-resto de nativas de la biblioteca estándar (~800; hoy el runtime tiene las
+Lo que falta para borrar Rust (fase 6): el resto de nativas de la biblioteca estándar (~800; hoy el runtime tiene las
 que usa el compilador), las herramientas del CLI (`titan run`, `fmt`,
 etc.) escritas en Titan, y ARM64 para Termux.
 
@@ -283,10 +301,8 @@ etc.) escritas en Titan, y ARM64 para Termux.
 - La clasificación Unicode usa hoy las tablas de Rust (nativas
   `is_alphabetic`, `is_alphanumeric`, `is_whitespace`, `is_uppercase`). En la
   fase 6 deben reemplazarse por tablas escritas en Titan.
-- El parser usa la nativa `std::text::parse_float` (conversión decimal→binario
-  de Rust, correctamente redondeada) y el volcado usa la conversión
-  float→texto de la VM (dígitos mínimos que reproducen el valor). En la fase 6
-  hay que escribir ambos algoritmos en Titan.
+- ~~parse_float / float→texto de Rust~~: hechos en Titan (`native/float.titan`)
+  para los ejecutables nativos.
 - Los mensajes de error del parser citan el token con el formato `{:?}` de
   Rust. Para caracteres Unicode exóticos Rust consulta su tabla de
   "imprimibles"; el parser en Titan aproxima esa tabla con los rangos

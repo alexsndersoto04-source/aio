@@ -1,0 +1,9 @@
+// Mezclar entero y decimal en una suma es un error de tipos en tiempo de ejecución.
+fn suma(a: any, b: any) -> any {
+    a + b
+}
+
+fn main() {
+    print(suma(1.25, 2.5))
+    print(suma(1, 2.5))
+}
