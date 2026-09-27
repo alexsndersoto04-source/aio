@@ -12,6 +12,7 @@ import std_datetime
 import std_vector
 import std_metrics
 import std_dirs
+import std_xml
 import errno
 import float
 import float_table

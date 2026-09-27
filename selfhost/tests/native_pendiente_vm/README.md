@@ -24,3 +24,10 @@ entorno del propio proceso):
 
 Con el `zett` precompilado la VM se cae (panic en dirs-sys); la versión en
 Titan y la VM corregida escriben `/escritorio` y una línea vacía para música.
+
+## Bug 14 (`std::xml::parse`)
+
+`std_error_xml_abierta.titan`: con etiquetas sin cerrar, el `zett`
+precompilado devuelve solo la última etiqueta abierta (`{tag: b, …}`) y pierde
+el resto del documento. La versión en Titan y la VM corregida dan el error
+`ill-formed document: start tag not closed: `</b>` not found before end of input`.

@@ -80,6 +80,17 @@ pub fn parse(text: &str) -> Result<Value, XmlError> {
         }
     }
 
+    // quick-xml no avisa si el documento termina con etiquetas abiertas; antes
+    // se devolvía solo la última etiqueta abierta y se perdía el resto del
+    // árbol (`<a><b>` daba `{tag: b}`). Ahora es un error, con el mensaje que
+    // quick-xml usa para ese caso.
+    if stack.len() > 1 {
+        let open = stack.pop().expect("open element").tag;
+        return Err(map_err(quick_xml::Error::IllFormed(
+            quick_xml::errors::IllFormedError::MissingEndTag(open),
+        )));
+    }
+
     let root = stack.pop().expect("root node");
     // Unwrap our synthetic __root__: if there is exactly one child, that's the document element.
     if root.tag == "__root__"
@@ -260,5 +271,16 @@ mod tests {
     #[test]
     fn rejects_malformed_xml() {
         assert!(parse("<a><b></a>").is_err());
+    }
+
+    #[test]
+    fn rejects_unclosed_elements_instead_of_dropping_them() {
+        let error = parse("<a><x/><b>hola").unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "XML parse error: ill-formed document: start tag not closed: `</b>` not found before end of input"
+        );
+        assert!(parse("<a>").is_err());
+        assert_eq!(parse("").unwrap()["tag"], "__root__");
     }
 }

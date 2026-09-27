@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 276 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 280 / 816 nativas (`selfhost/native/cobertura.sh`) |
 
 ## Cómo verificar
 
@@ -229,6 +229,15 @@ y se corregirán en los dos a la vez):
     esas líneas se ignoran como cualquier otra que no se entiende (con tests).
     En Titan (`std_dirs.titan`) igual. La prueba está en
     `tests/native_pendiente_vm/dirs_lineas_malas.titan`.
+14. **`std::xml::parse` perdía datos sin avisar** si el documento terminaba
+    con etiquetas abiertas: quick-xml no da error en ese caso y `xml_mod`
+    devolvía solo la última etiqueta abierta (`parse("<a><x/><b>hola")` daba
+    `{tag: b, text: hola}`: se perdían `<a>` y `<x/>`).
+
+    **Corregido en los dos lados.** Ahora es un error, con el mensaje que
+    quick-xml usa para ese caso: `ill-formed document: start tag not closed:
+    `</b>` not found before end of input` (con test en `xml_mod.rs`). La
+    prueba está en `tests/native_pendiente_vm/std_error_xml_abierta.titan`.
 
 ## Fase 4b — compilador nativo (bytecode → ejecutable x86-64)
 
@@ -343,6 +352,7 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::vector (8) | `std_vector.titan` | aritmética en f32 como la VM (suma que empieza en −0,0); comparado con 6 semillas de casos aleatorios |
 | std::metrics (8), std::testing (2) | `std_metrics.titan` | nombres, cuotas (4096) y mensajes iguales; contador u64 con saturación; salida Prometheus e instantánea como la VM |
 | std::dirs (18) | `std_dirs.titan` | reglas de dirs 5.0.1 / dirs-sys 0.4.1 en Linux (variables XDG absolutas, `user-dirs.dirs` con el mismo analizador), `temp_dir` y `current_dir` de Rust, rutas no UTF-8 con U+FFFD como `to_string_lossy`. Sin `HOME` se lee `/etc/passwd` (la fuente "files" de glibc; LDAP/sssd no se consultan). Comparado en 250 entornos aleatorios (sin HOME, HOME vacío o no UTF-8, XDG relativos, varios `user-dirs.dirs`, TMPDIR vacío): 0 diferencias |
+| std::xml (4) | `std_xml.titan` | el mismo lector que quick-xml 0.36.2 (BOM, texto recortado, comentarios, CDATA, DOCTYPE con balance de `<`/`>`, instrucciones `<?…?>`, `>` dentro de comillas, nombres de cierre literales, atributos con los mismos errores y posiciones, entidades y `&#…;` con los mismos mensajes) y el mismo escritor; comparado con 6.300 documentos aleatorios (válidos, rotos y cortados): 0 diferencias. Un XML de 2,3 MB tarda ~0,95 s frente a ~0,49 s en la VM (casi todo es el asignador de memoria) |
 
 Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
 "index out of bounds" en el runtime nativo; la VM dice "array index out of
