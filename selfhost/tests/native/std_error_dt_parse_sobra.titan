@@ -1,0 +1,4 @@
+// Sobra texto al final (con un espacio Unicode en el mensaje).
+fn main() {
+    print(std::datetime::parse("2024-01-02 03:04:05　x", "%Y-%m-%d %H:%M:%S"))
+}

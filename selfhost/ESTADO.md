@@ -203,6 +203,21 @@ y se corregirán en los dos a la vez):
     y el parser la rechaza después de `::` ("expected an identifier, found
     Nil"). La nativa existe pero es inalcanzable. Pendiente de decidir si se
     cambia el parser o el nombre de la función.
+12. **`std::datetime` hacía *panic* (la VM se caía con un mensaje interno de
+    Rust)** en dos casos, en vez de dar un error normal:
+    - `format` / `format_offset` con un formato no válido (`%Q`, `%-D`,
+      `%.4f`, `%` al final, o `%#z`, que solo sirve para leer): "a Display
+      implementation returned an error unexpectedly".
+    - `to_rfc2822` con años fuera de 0..=9999: "date cannot be represented by
+      RFC 2822".
+
+    **Corregido en los dos lados.** En Rust (`datetime_mod.rs`) ahora son
+    errores: `invalid format string '<fmt>': bad or unsupported format string`
+    (el tipo de error ya existía y no se usaba) y `timestamp <ts> cannot be
+    represented by RFC 2822 (years 0 to 9999 only)`, con tests. En Titan
+    (`std_datetime.titan`) se dan los mismos mensajes. Los programas que lo
+    prueban están en `tests/native_pendiente_vm/`: coincidirán cuando se use
+    un `zett` reconstruido con la corrección (el precompilado es anterior).
 
 ## Fase 4b — compilador nativo (bytecode → ejecutable x86-64)
 
@@ -314,9 +329,16 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::csv, std::uuid, std::stats | `std_misc.titan` | csv como el crate `csv` (comillas, CRLF, filas vacías); uuid v4/v7 con `getrandom` y el reloj; mean/median/quantile/variance/stddev con los mismos mensajes |
 | std::collections (57) | `std_collections.titan` | set, deque, cola de prioridad, mapa ordenado, contador y grafo con número identificador; las mismas cuotas que la VM (256 identificadores, 65536 entradas, 16 MiB, 4096 por estructura, 64 KiB por elemento) y los mismos órdenes de salida (Dijkstra con los desempates del `BinaryHeap` de Rust) |
 
+| std::datetime (47 de 49) | `std_datetime.titan` | calendario gregoriano proléptico (−262143 a 262142), formatos `%…` con el mismo tokenizador que `StrftimeItems` de chrono 0.4.45, lectura con el mismo algoritmo de `Parsed` (semanas ISO, `%U`/`%W`, `%s`, segundos intercalares, `%C`/`%y`) y los mismos 7 errores; RFC 3339/2822; aritmética de datetime_ext (con vuelta en el desborde, como Rust en release). Comparado además con 12.000 casos aleatorios y 89 casos límite escritos a mano: 0 diferencias. Faltan `to_timezone` y `timezone_offset_seconds` (necesitan la base de datos de zonas horarias de IANA, sesión propia) |
+
 Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
 "index out of bounds" en el runtime nativo; la VM dice "array index out of
 bounds".
+
+Defecto del runtime nativo encontrado con datetime y corregido: al imprimir un
+error sin capturar, `rt_flatten`/`rt_trim` solo reconocían espacios ASCII; el
+CLI de Rust usa `split_whitespace`/`trim`, que reconocen todos los espacios
+Unicode (por ejemplo U+3000). Ahora se usan los mismos.
 
 Pendiente en esta fase:
 - **Funciones trascendentes** (`sin`, `cos`, `tan`, `exp`, `ln`, `log`,
@@ -326,7 +348,10 @@ Pendiente en esta fase:
   ~0,11 s en la VM (serde en Rust optimizado). El tiempo se reparte entre el
   asignador de memoria y la conversión de floats; se mejorará junto con el
   asignador.
-- El resto de módulos (datetime, url, regex, net,
+- Zonas horarias de `std::datetime` (`to_timezone`,
+  `timezone_offset_seconds`, chrono-tz 0.10.4): hay que llevar a Titan la base
+  de datos de IANA con sus reglas.
+- El resto de módulos (url, regex, net,
   http, process…) y las herramientas del CLI.
 
 ## Pendientes conocidos (anotados para no olvidarlos)

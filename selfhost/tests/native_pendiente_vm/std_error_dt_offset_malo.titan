@@ -1,0 +1,4 @@
+// Bug 12: %#z solo sirve para leer; al formatear la VM hacía panic.
+fn main() {
+    print(std::datetime::format_offset(0, "%H %#z", -240))
+}

@@ -8,6 +8,7 @@ import std_random
 import std_json
 import std_misc
 import std_collections
+import std_datetime
 import errno
 import float
 import float_table
@@ -583,8 +584,36 @@ fn rt_is_space(b: int) -> bool {
     b == 32 || (b >= 9 && b <= 13)
 }
 
+// ¿Hay un espacio en blanco Unicode (White_Space) en el byte i? Devuelve su
+// ancho en bytes, o 0 si no lo es.
+fn rt_space_width(p: int, i: int) -> int {
+    let b = std::raw::load8(p + 16 + i)
+    if b < 128 {
+        if rt_is_space(b) {
+            return 1
+        }
+        return 0
+    }
+    let w = rt_utf8_width(b)
+    let mut c = b & 7
+    if w == 2 {
+        c = b & 31
+    } else if w == 3 {
+        c = b & 15
+    }
+    let mut k = 1
+    while k < w {
+        c = c * 64 + (std::raw::load8(p + 16 + i + k) & 63)
+        k += 1
+    }
+    if rt_unicode_has(3, c) {
+        return w
+    }
+    0
+}
+
 // Mensaje con los espacios en blanco (incluidos saltos de línea) reducidos a
-// uno solo, como `split_whitespace().join(" ")` (solo espacios ASCII).
+// uno solo, como `split_whitespace().join(" ")` (espacios Unicode).
 fn rt_flatten(s: any) -> any {
     let p = std::raw::bits(s)
     let n = std::raw::load(p + 8)
@@ -593,34 +622,46 @@ fn rt_flatten(s: any) -> any {
     let mut pending = false
     let mut i = 0
     while i < n {
-        let b = std::raw::load8(p + 16 + i)
-        if rt_is_space(b) {
+        let w = rt_space_width(p, i)
+        if w > 0 {
             pending = len > 0
+            i += w
         } else {
             if pending {
                 std::raw::store8(out + 16 + len, 32)
                 len += 1
                 pending = false
             }
-            std::raw::store8(out + 16 + len, b)
+            std::raw::store8(out + 16 + len, std::raw::load8(p + 16 + i))
             len += 1
+            i += 1
         }
-        i += 1
     }
     std::raw::store(out + 8, len)
     rt_sval(out)
 }
 
+// trim() de Rust (espacios Unicode en los dos extremos).
 fn rt_trim(s: any) -> any {
     let p = std::raw::bits(s)
     let n = std::raw::load(p + 8)
     let mut a = 0
-    while a < n && rt_is_space(std::raw::load8(p + 16 + a)) {
-        a += 1
+    while a < n && rt_space_width(p, a) > 0 {
+        a += rt_space_width(p, a)
     }
     let mut b = n
-    while b > a && rt_is_space(std::raw::load8(p + 15 + b)) {
-        b -= 1
+    let mut i = a
+    while i < n {
+        let w = rt_space_width(p, i)
+        if w > 0 {
+            i += w
+        } else {
+            i += rt_utf8_width(std::raw::load8(p + 16 + i))
+            b = i
+        }
+    }
+    if b < a {
+        b = a
     }
     let out = rt_str_alloc(b - a)
     rt_copy(out + 16, p + 16 + a, b - a)

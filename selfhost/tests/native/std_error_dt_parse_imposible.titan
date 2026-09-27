@@ -1,0 +1,4 @@
+// El día de la semana no coincide con la fecha.
+fn main() {
+    print(std::datetime::parse("Wed, 02 Jan 2024 03:04:05", "%a, %d %b %Y %H:%M:%S"))
+}

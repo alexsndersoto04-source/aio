@@ -1,0 +1,82 @@
+// std::datetime escrito en Titan (fase 6): formatos, lectura, RFC 3339/2822,
+// calendario y aritmética. Se compara con la VM de Rust (chrono 0.4.45).
+
+fn main() {
+    let instantes = [0, -1, 86399, 951782400, 1709164800, 1704164645, 1735689599, -62167219200, -62167305600, 253402300799, 253402300800, -8334601228800, 8210266876799, 1483228799, 4102444800, -2208988800, 1009843199, 1230768000]
+    let formatos = ["%Y-%m-%d %H:%M:%S", "%a %A %b %B %h %e %d %j", "%C %y %G %g %V %U %W %u %w %q", "%I %l %k %p %P %r %R %T %X %x %D %F %v %c", "%s %f %.f %.3f %.6f %.9f %3f %6f %9f", "%z %:z %::z %:::z %Z %+", "%-d %-m %_m %0e %_H %-j %_Y %-Y %0y", "%%%n%t|  |é|　|"]
+    for t in instantes {
+        for f in formatos {
+            print(std::datetime::format(t, f))
+        }
+        print(std::datetime::to_rfc3339(t), std::datetime::weekday(t), std::datetime::to_iso(t))
+        print(std::datetime::year(t), std::datetime::month(t), std::datetime::day(t), std::datetime::hour(t), std::datetime::minute(t), std::datetime::second(t))
+        print(std::datetime::day_of_week(t), std::datetime::day_of_year(t), std::datetime::week_of_year(t), std::datetime::quarter(t), std::datetime::is_weekend(t))
+        for off in [0, -240, -270, 330, 1439, -1439] {
+            print(std::datetime::format_offset(t, "%Y-%m-%d %H:%M:%S %Z %z %:z %s %+", off))
+        }
+    }
+    print(std::datetime::to_rfc2822(0), std::datetime::to_rfc2822(1709224245), std::datetime::to_rfc2822(253402300799))
+    // Fuera de rango: las funciones "ext" usan el instante 0.
+    print(std::datetime::year(9223372036854775807), std::datetime::to_iso(-9223372036854775807), std::datetime::add_seconds(9223372036854775807, 1))
+
+    let lecturas = [
+        ["2024-01-02 03:04:05", "%Y-%m-%d %H:%M:%S"],
+        ["1704164645", "%s"],
+        ["1704164645 2024", "%s %Y"],
+        ["2016-12-31 23:59:60", "%Y-%m-%d %H:%M:%S"],
+        ["1483228800 60", "%s %S"],
+        ["2024 366 10 20", "%Y %j %H %M"],
+        ["2020-W53-5 10:00:00", "%G-W%V-%u %T"],
+        ["2024 00 1 10:00:00", "%Y %U %w %T"],
+        ["2024 01 Mon 10:00:00", "%Y %W %a %T"],
+        ["Tue, 02 Jan 2024 03:04:05 +0000", "%a, %d %b %Y %H:%M:%S %z"],
+        ["Tuesday January 2 2024 03:04:05 PM", "%A %B %e %Y %I:%M:%S %p"],
+        ["TUESDAY JANUARY  2 2024 12:04:05 am", "%A %B %e %Y %I:%M:%S %p"],
+        ["2024-01-02T03:04:05+05:30", "%+"],
+        ["2024-01-02t03:04:05.123456789 UTC", "%+"],
+        ["2024-01-02 03:04:05.5", "%Y-%m-%d %H:%M:%S%.f"],
+        ["2024-01-02 03:04:05.123", "%Y-%m-%d %H:%M:%S.%3f"],
+        ["20 24-01-02 03:04:05", "%C %y-%m-%d %T"],
+        ["69-01-02 03:04:05", "%y-%m-%d %T"],
+        ["70-01-02 03:04:05", "%y-%m-%d %T"],
+        ["-2024-01-02 03:04:05", "%Y-%m-%d %T"],
+        ["+12345-01-02 03:04:05", "%Y-%m-%d %T"],
+        ["-262143-01-01 00:00:00", "%Y-%m-%d %T"],
+        ["2024-01-02 03:04:05 1", "%Y-%m-%d %T %q"],
+        ["2024-01-02 03:04:05 +05", "%Y-%m-%d %T %#z"],
+        ["2024-01-02 03:04:05 Z", "%Y-%m-%d %T %#z"],
+        ["2024-01-02 03:04:05 −0530", "%Y-%m-%d %T %z"],
+        ["2024-01-02 03:04:05 EST", "%Y-%m-%d %T %Z"],
+        ["2024-01-02 03:04", "%Y-%m-%d %H:%M"],
+        ["  2024-01-02　3:4:5", "%Y-%m-%d %H:%M:%S"],
+        ["2024-001 03:04:05 Mon", "%Y-%j %T %a"],
+        ["2024-06-01 03:04:05 21", "%Y-%m-%d %T %U"],
+        ["2024-01-02 01:04:05 PM 13", "%Y-%m-%d %I:%M:%S %p %H"]
+    ]
+    for par in lecturas {
+        print(par[0], "->", std::datetime::parse(par[0], par[1]))
+    }
+    for s in ["2024-01-02T03:04:05Z", "2024-01-02T03:04:60.5+00:00", "2016-12-31T23:59:60Z", "2024-01-02T03:04:05.123456789123-04:00", "2024-01-02T03:04:05+23:59", "2024-01-02T03:04:05−04:00", "2024-01-02 03:04:05z", "0000-01-01T00:00:00+23:59"] {
+        print(s, std::datetime::parse_rfc3339(s), std::datetime::from_iso(s))
+    }
+
+    print(std::datetime::from_ymd(2024, 2, 29), std::datetime::from_ymd_hms(2024, 2, 29, 23, 59, 59), std::datetime::from_ymd(4294969320, 4294967298, 1))
+    print(std::datetime::utc_ymd_hms(2024, 2, 29, 12, 0, 0), std::datetime::utc_ymd_hms(2023, 2, 29, 12, 0, 0), std::datetime::utc_ymd_hms(2024, 1, 1, 24, 0, 0))
+    for y in [1900, 2000, 2023, 2024, -4, -100, 262142, 4294969320] {
+        print(y, std::datetime::is_leap_year(y), std::datetime::days_in_month(y, 2), std::datetime::days_in_month(y, 12), std::datetime::days_in_month(y, 13))
+    }
+    let base = 1706659200
+    for n in [1, -1, 11, 12, 13, -13, 25, 1200, -9223372036854775807, 9223372036854775807] {
+        print(n, std::datetime::add_months(base, n), std::datetime::add_years(base, n), std::datetime::next_weekday(base, n % 9))
+    }
+    print(std::datetime::add_minutes(base, 90), std::datetime::add_hours(base, -5), std::datetime::add_days(base, 3), std::datetime::add_days(9223372036854775807, 1), std::datetime::add_days_ext(base, 3), std::datetime::add_weeks(base, 2))
+    print(std::datetime::diff_seconds(base, 0), std::datetime::diff_minutes(base, 0), std::datetime::diff_hours(0, base), std::datetime::diff_days(base, 0), std::datetime::diff_seconds(-9223372036854775807, 2))
+    print(std::datetime::is_before(1, 2), std::datetime::is_after(1, 2), std::datetime::is_same_day(base, base + 86399), std::datetime::is_same_day(base, base + 86400))
+    for d in [0, 3, -4, 59, 60, 3599, 3600, 86400, 604799, 604800, 2591999, 2592000, 31535999, 31536000, 63072000] {
+        print(std::datetime::humanize(base + d, base), std::datetime::humanize(base - d, base))
+    }
+    print(std::datetime::business_days_between(1704067200, 1706659200), std::datetime::business_days_between(1706659200, 1704067200), std::datetime::business_days_between(base, base), std::datetime::business_days_between(1704499200, 1704585600))
+    print(std::datetime::range_ext(0, 10, 3), std::datetime::range_ext(0, 10, 0), std::datetime::range_ext(5, 1, 1))
+    print(std::datetime::common_timezones())
+    print(std::datetime::now() > 1700000000, len(std::datetime::now_iso()) >= 25)
+}

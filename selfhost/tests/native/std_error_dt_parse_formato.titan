@@ -1,0 +1,4 @@
+// Formato no válido al leer.
+fn main() {
+    print(std::datetime::parse("2024", "%Y%Q"))
+}

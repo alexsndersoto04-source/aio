@@ -28,6 +28,29 @@ pub enum DateTimeError {
     },
     #[error("unsupported timezone '{0}' (only 'UTC' and fixed offsets like '-04:00' work today)")]
     Timezone(String),
+    #[error("timestamp {0} cannot be represented by RFC 2822 (years 0 to 9999 only)")]
+    Rfc2822(i64),
+}
+
+/// Error de chrono para un formato no válido ("bad or unsupported format
+/// string"). chrono no deja construirlo directamente: se obtiene pidiéndole
+/// que interprete un elemento de error.
+fn bad_format(format: &str) -> DateTimeError {
+    let mut parsed = chrono::format::Parsed::new();
+    let items = [chrono::format::Item::Error];
+    let source = chrono::format::parse(&mut parsed, "", items.iter())
+        .expect_err("Item::Error siempre falla");
+    DateTimeError::Format { format: format.into(), source }
+}
+
+/// Escribe una fecha ya formateada. `DelayedFormat::to_string()` hace panic
+/// si el formato tiene un especificador no válido (por ejemplo `%Q`, `%-D` o
+/// `%#z`, que solo sirve para leer); aquí se devuelve un error normal.
+fn render(format: &str, shown: impl std::fmt::Display) -> Result<String, DateTimeError> {
+    use std::fmt::Write;
+    let mut out = String::new();
+    write!(out, "{shown}").map_err(|_| bad_format(format))?;
+    Ok(out)
 }
 
 fn from_ts(ts: i64) -> Result<DateTime<Utc>, DateTimeError> {
@@ -46,7 +69,7 @@ pub fn now_iso() -> String {
 
 /// Format a Unix timestamp using [`chrono`] format directives (e.g. `%Y-%m-%d %H:%M:%S`).
 pub fn format(ts: i64, fmt: &str) -> Result<String, DateTimeError> {
-    Ok(from_ts(ts)?.format(fmt).to_string())
+    render(fmt, from_ts(ts)?.format(fmt))
 }
 
 /// Format a Unix timestamp as RFC 3339 (`2026-07-25T12:00:00+00:00`).
@@ -56,7 +79,12 @@ pub fn to_rfc3339(ts: i64) -> Result<String, DateTimeError> {
 
 /// Format a Unix timestamp as RFC 2822 (email-style: `Sat, 25 Jul 2026 12:00:00 +0000`).
 pub fn to_rfc2822(ts: i64) -> Result<String, DateTimeError> {
-    Ok(from_ts(ts)?.to_rfc2822())
+    let dt = from_ts(ts)?;
+    // chrono hace panic fuera de los años 0..=9999 (RFC 2822 usa 4 cifras).
+    if !(0..=9999).contains(&dt.year()) {
+        return Err(DateTimeError::Rfc2822(ts));
+    }
+    Ok(dt.to_rfc2822())
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp into Unix seconds.
@@ -132,7 +160,7 @@ pub fn weekday(ts: i64) -> Result<u32, DateTimeError> {
 pub fn format_offset(ts: i64, fmt: &str, offset_minutes: i32) -> Result<String, DateTimeError> {
     let offset = FixedOffset::east_opt(offset_minutes.saturating_mul(60))
         .ok_or_else(|| DateTimeError::Timezone(format!("{offset_minutes} minutes")))?;
-    Ok(from_ts(ts)?.with_timezone(&offset).format(fmt).to_string())
+    render(fmt, from_ts(ts)?.with_timezone(&offset).format(fmt))
 }
 
 #[cfg(test)]
@@ -196,5 +224,26 @@ mod tests {
     fn errors_are_reported_not_panicked() {
         assert!(parse("garbage", "%Y-%m-%d").is_err());
         assert!(parse_rfc3339("also garbage").is_err());
+    }
+
+    #[test]
+    fn bad_format_strings_are_errors_not_panics() {
+        for fmt in ["%Q", "a%-Dx", "%#z", "%", "%.4f"] {
+            let err = format(0, fmt).unwrap_err().to_string();
+            assert_eq!(err, format!("invalid format string '{fmt}': bad or unsupported format string"));
+            assert!(format_offset(0, fmt, -240).is_err());
+        }
+        assert_eq!(format(0, "%Y %%").unwrap(), "1970 %");
+    }
+
+    #[test]
+    fn rfc2822_outside_four_digit_years_is_an_error() {
+        let big = 253_402_300_800; // +10000-01-01
+        assert_eq!(
+            to_rfc2822(big).unwrap_err().to_string(),
+            "timestamp 253402300800 cannot be represented by RFC 2822 (years 0 to 9999 only)"
+        );
+        assert!(to_rfc2822(-62_167_219_201).is_err()); // año -1
+        assert_eq!(to_rfc2822(0).unwrap(), "Thu, 1 Jan 1970 00:00:00 +0000");
     }
 }

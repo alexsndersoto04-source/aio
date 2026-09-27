@@ -1,0 +1,4 @@
+// Fecha inexistente.
+fn main() {
+    print(std::datetime::from_ymd(2023, 2, 29))
+}

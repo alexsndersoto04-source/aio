@@ -1,0 +1,4 @@
+// Instante fuera del rango de fechas.
+fn main() {
+    print(std::datetime::to_rfc3339(9223372036854775807))
+}
