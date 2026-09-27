@@ -1,0 +1,1163 @@
+// Biblioteca estándar nativa: array, map, bytes, encoding, checksum, math
+// (lo exacto), time, path, fs (fase 6 del self-hosting). Reproduce
+// crates/titan_vm/src/native.rs y los módulos de crates/titan_stdlib.
+// Forma parte del runtime (lo importa runtime.titan): puede usar std::raw.
+
+// ------------------------------------------------------------ errores del sistema
+
+// Como el Display de io::Error de Rust: "<strerror> (os error N)".
+fn rt_os_error(errno: int) -> any {
+    let mut text = rt_concat("Unknown error ", rt_int_to_str(errno))
+    if errno >= 1 && errno <= 133 {
+        text = rt_errno_text(errno)
+    }
+    rt_concat(rt_concat(rt_concat(text, " (os error "), rt_int_to_str(errno)), ")")
+}
+
+// Trozo número n (desde 1) de la tabla de errno.titan.
+fn rt_errno_text(n: int) -> any {
+    let table = errno_messages()
+    let p = std::raw::bits(table)
+    let len = std::raw::load(p + 8)
+    let mut k = 1
+    let mut start = 0
+    let mut i = 0
+    while i <= len {
+        if i == len || std::raw::load8(p + 16 + i) == 124 {
+            if k == n {
+                return rt_substr_bytes(table, start, i)
+            }
+            k += 1
+            start = i + 1
+        }
+        i += 1
+    }
+    "Unknown error"
+}
+
+fn rt_nonnegative(v: any, function: string) -> int {
+    rt_expect_int(v, function)
+    let x = std::raw::bits(v)
+    if x < 0 {
+        rt_native_fail(function, "expected nonnegative integer")
+    }
+    x
+}
+
+// ------------------------------------------------------------ array
+
+fn std__array__pop(a: any) -> any {
+    rt_expect_array(a, "std::array::pop")
+    let n = rt_seq_len(a)
+    if n == 0 {
+        if std::raw::tag(a) == 7 {
+            return a
+        }
+        return []
+    }
+    if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
+        let e = rt_seq_data(a) + 16 * (n - 1)
+        std::raw::release(std::raw::load(e), std::raw::load(e + 8))
+        std::raw::store(std::raw::bits(a) + 8, n - 1)
+        return a
+    }
+    std__array__slice(a, 0, n - 1)
+}
+
+fn std__array__filled(count: any, value: any) -> any {
+    let n = rt_nonnegative(count, "std::array::filled")
+    let out = rt_seq_alloc(7, n, n)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(data, i, value)
+        i += 1
+    }
+    out
+}
+
+fn std__array__range(start: any, end: any) -> any {
+    rt_expect_int(start, "std::array::range")
+    rt_expect_int(end, "std::array::range")
+    let a = std::raw::bits(start)
+    let b = std::raw::bits(end)
+    if b < a {
+        rt_native_fail("std::array::range", "range end must be >= start")
+    }
+    let n = b - a
+    let out = rt_seq_alloc(7, n, n)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < n {
+        std::raw::store(data + 16 * i, 1)
+        std::raw::store(data + 16 * i + 8, a + i)
+        i += 1
+    }
+    out
+}
+
+// ------------------------------------------------------------ map
+
+fn std__map__insert_new(m: any, key: any, value: any) -> any {
+    rt_expect_map(m, "std::map::insert_new")
+    rt_expect_str(key, "std::map::insert_new")
+    let pos = rt_map_search(m, key)
+    if pos >= 0 {
+        rt_native_fail("std::map::insert_new", "map key already exists")
+    }
+    if std::raw::load(std::raw::bits(m)) == 1 {
+        return rt_map_put(m, pos, key, value)
+    }
+    rt_map_put(rt_map_copy(m, 1), pos, key, value)
+}
+
+fn std__map__remove(m: any, key: any) -> any {
+    rt_expect_map(m, "std::map::remove")
+    rt_expect_str(key, "std::map::remove")
+    let pos = rt_map_search(m, key)
+    if pos < 0 {
+        return m
+    }
+    let mut out = m
+    if std::raw::load(std::raw::bits(m)) != 1 {
+        out = rt_map_copy(m, 0)
+    }
+    let p = std::raw::bits(out)
+    let n = std::raw::load(p + 8)
+    let data = std::raw::load(p + 24)
+    let e = data + 24 * pos
+    std::raw::release(5, std::raw::load(e))
+    std::raw::release(std::raw::load(e + 8), std::raw::load(e + 16))
+    let mut w = 3 * pos
+    while w < 3 * (n - 1) {
+        std::raw::store(data + 8 * w, std::raw::load(data + 8 * w + 24))
+        w += 1
+    }
+    std::raw::store(p + 8, n - 1)
+    out
+}
+
+// ------------------------------------------------------------ bytes
+
+// Puntero a los datos y longitud de un bytes o string.
+fn rt_bdata(v: any) -> int {
+    std::raw::bits(v) + 16
+}
+
+fn std__bytes__length(b: any) -> any {
+    rt_expect_bytes(b, "std::bytes::length")
+    rt_slen(b)
+}
+
+fn std__bytes__concat(a: any, b: any) -> any {
+    rt_expect_bytes(a, "std::bytes::concat")
+    rt_expect_bytes(b, "std::bytes::concat")
+    let na = rt_slen(a)
+    let nb = rt_slen(b)
+    let p = rt_str_alloc(na + nb)
+    rt_copy(p + 16, rt_bdata(a), na)
+    rt_copy(p + 16 + na, rt_bdata(b), nb)
+    std::raw::adopt(6, p)
+}
+
+fn std__bytes__slice(b: any, start: any, end: any) -> any {
+    rt_expect_bytes(b, "std::bytes::slice")
+    let s = rt_nonnegative(start, "std::bytes::slice")
+    let e = rt_nonnegative(end, "std::bytes::slice")
+    if s > e || e > rt_slen(b) {
+        rt_native_fail("std::bytes::slice", "invalid byte slice bounds")
+    }
+    rt_bytes_from(rt_bdata(b) + s, e - s)
+}
+
+fn std__bytes__read_u32_le(b: any, offset: any) -> any {
+    rt_expect_bytes(b, "std::bytes::read_u32_le")
+    let o = rt_nonnegative(offset, "std::bytes::read_u32_le")
+    if o + 4 > rt_slen(b) {
+        rt_native_fail("std::bytes::read_u32_le", "not enough bytes for u32")
+    }
+    let p = rt_bdata(b) + o
+    std::raw::load8(p) + std::raw::load8(p + 1) * 256 + std::raw::load8(p + 2) * 65536 + std::raw::load8(p + 3) * 16777216
+}
+
+fn std__bytes__write_u32_le(v: any) -> any {
+    rt_expect_int(v, "std::bytes::write_u32_le")
+    let x = std::raw::bits(v)
+    if x < 0 || x > 4294967295 {
+        rt_native_fail("std::bytes::write_u32_le", "u32 value out of range")
+    }
+    let p = rt_str_alloc(4)
+    std::raw::store8(p + 16, x & 255)
+    std::raw::store8(p + 17, (x / 256) & 255)
+    std::raw::store8(p + 18, (x / 65536) & 255)
+    std::raw::store8(p + 19, (x / 16777216) & 255)
+    std::raw::adopt(6, p)
+}
+
+// ------------------------------------------------------------ encoding
+
+fn rt_hex_digit(d: int) -> int {
+    if d < 10 {
+        return 48 + d
+    }
+    87 + d
+}
+
+fn rt_hex_value(b: int) -> int {
+    if b >= 48 && b <= 57 {
+        return b - 48
+    }
+    if b >= 97 && b <= 102 {
+        return b - 87
+    }
+    if b >= 65 && b <= 70 {
+        return b - 55
+    }
+    -1
+}
+
+fn std__encoding__hex_encode(b: any) -> any {
+    rt_expect_bytes(b, "std::encoding::hex_encode")
+    let n = rt_slen(b)
+    let src = rt_bdata(b)
+    let p = rt_str_alloc(2 * n)
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(src + i)
+        std::raw::store8(p + 16 + 2 * i, rt_hex_digit(x / 16))
+        std::raw::store8(p + 17 + 2 * i, rt_hex_digit(x & 15))
+        i += 1
+    }
+    rt_sval(p)
+}
+
+fn std__encoding__hex_decode(s: any) -> any {
+    rt_expect_str(s, "std::encoding::hex_decode")
+    let n = rt_slen(s)
+    if n % 2 != 0 {
+        rt_native_fail("std::encoding::hex_decode", "invalid hexadecimal length")
+    }
+    let src = rt_bdata(s)
+    let p = rt_str_alloc(n / 2)
+    let mut i = 0
+    while i < n {
+        let a = rt_hex_value(std::raw::load8(src + i))
+        if a < 0 {
+            rt_free_block(p)
+            rt_native_fail("std::encoding::hex_decode", rt_concat("invalid hexadecimal character at byte ", rt_int_to_str(i)))
+        }
+        let b = rt_hex_value(std::raw::load8(src + i + 1))
+        if b < 0 {
+            rt_free_block(p)
+            rt_native_fail("std::encoding::hex_decode", rt_concat("invalid hexadecimal character at byte ", rt_int_to_str(i + 1)))
+        }
+        std::raw::store8(p + 16 + i / 2, a * 16 + b)
+        i += 2
+    }
+    std::raw::adopt(6, p)
+}
+
+fn rt_b64_digit(v: int) -> int {
+    if v < 26 {
+        return 65 + v
+    }
+    if v < 52 {
+        return 71 + v
+    }
+    if v < 62 {
+        return v - 4
+    }
+    if v == 62 {
+        return 43
+    }
+    47
+}
+
+fn rt_b64_value(b: int) -> int {
+    if b >= 65 && b <= 90 {
+        return b - 65
+    }
+    if b >= 97 && b <= 122 {
+        return b - 71
+    }
+    if b >= 48 && b <= 57 {
+        return b + 4
+    }
+    if b == 43 {
+        return 62
+    }
+    if b == 47 {
+        return 63
+    }
+    -1
+}
+
+fn std__encoding__base64_encode(b: any) -> any {
+    rt_expect_bytes(b, "std::encoding::base64_encode")
+    let n = rt_slen(b)
+    let src = rt_bdata(b)
+    let out = rt_str_alloc((n + 2) / 3 * 4)
+    let mut i = 0
+    let mut o = out + 16
+    while i < n {
+        let c = n - i
+        let b0 = std::raw::load8(src + i)
+        let mut b1 = 0
+        let mut b2 = 0
+        if c > 1 {
+            b1 = std::raw::load8(src + i + 1)
+        }
+        if c > 2 {
+            b2 = std::raw::load8(src + i + 2)
+        }
+        let bits = b0 * 65536 + b1 * 256 + b2
+        std::raw::store8(o, rt_b64_digit((bits / 262144) & 63))
+        std::raw::store8(o + 1, rt_b64_digit((bits / 4096) & 63))
+        if c > 1 {
+            std::raw::store8(o + 2, rt_b64_digit((bits / 64) & 63))
+        } else {
+            std::raw::store8(o + 2, 61)
+        }
+        if c > 2 {
+            std::raw::store8(o + 3, rt_b64_digit(bits & 63))
+        } else {
+            std::raw::store8(o + 3, 61)
+        }
+        o += 4
+        i += 3
+    }
+    rt_sval(out)
+}
+
+fn rt_b64_fail(p: int, at: int) {
+    rt_free_block(p)
+    rt_native_fail("std::encoding::base64_decode", rt_concat("invalid base64 data at byte ", rt_int_to_str(at)))
+}
+
+// Estricta, como crates/titan_stdlib/src/encoding.rs (rechaza relleno mal
+// puesto y bits sobrantes distintos de cero).
+fn std__encoding__base64_decode(s: any) -> any {
+    rt_expect_str(s, "std::encoding::base64_decode")
+    let n = rt_slen(s)
+    if n % 4 != 0 {
+        rt_native_fail("std::encoding::base64_decode", rt_concat("invalid base64 data at byte ", rt_int_to_str(n)))
+    }
+    let src = rt_bdata(s)
+    let p = rt_str_alloc(n / 4 * 3)
+    let mut outn = 0
+    let blocks = n / 4
+    let mut block = 0
+    while block < blocks {
+        let c = src + 4 * block
+        let last = block + 1 == blocks
+        let mut pad = 0
+        if std::raw::load8(c + 3) == 61 {
+            pad += 1
+        }
+        if std::raw::load8(c + 2) == 61 {
+            pad += 1
+        }
+        if std::raw::load8(c) == 61 || std::raw::load8(c + 1) == 61 || (!last && pad > 0) || (std::raw::load8(c + 2) == 61 && std::raw::load8(c + 3) != 61) {
+            rt_b64_fail(p, block * 4)
+        }
+        let mut bits = 0
+        let mut k = 0
+        let mut v1 = 0
+        let mut v2 = 0
+        while k < 4 {
+            let ch = std::raw::load8(c + k)
+            let mut v = 0
+            if ch != 61 {
+                v = rt_b64_value(ch)
+                if v < 0 {
+                    rt_b64_fail(p, block * 4 + k)
+                }
+            }
+            if k == 1 {
+                v1 = v
+            }
+            if k == 2 {
+                v2 = v
+            }
+            bits = bits * 64 + v
+            k += 1
+        }
+        if (pad == 2 && (v1 & 15) != 0) || (pad == 1 && (v2 & 3) != 0) {
+            rt_b64_fail(p, block * 4 + 1)
+        }
+        std::raw::store8(p + 16 + outn, (bits / 65536) & 255)
+        outn += 1
+        if pad < 2 {
+            std::raw::store8(p + 16 + outn, (bits / 256) & 255)
+            outn += 1
+        }
+        if pad == 0 {
+            std::raw::store8(p + 16 + outn, bits & 255)
+            outn += 1
+        }
+        block += 1
+    }
+    std::raw::store(p + 8, outn)
+    std::raw::adopt(6, p)
+}
+
+fn std__encoding__percent_encode(s: any) -> any {
+    rt_expect_str(s, "std::encoding::percent_encode")
+    let n = rt_slen(s)
+    let src = rt_bdata(s)
+    let b = sb_new(n + 8)
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(src + i)
+        let alnum = (x >= 48 && x <= 57) || (x >= 65 && x <= 90) || (x >= 97 && x <= 122)
+        if alnum || x == 45 || x == 46 || x == 95 || x == 126 {
+            sb_byte(b, x)
+        } else {
+            sb_byte(b, 37)
+            let hi = x / 16
+            let lo = x & 15
+            if hi < 10 {
+                sb_byte(b, 48 + hi)
+            } else {
+                sb_byte(b, 55 + hi)
+            }
+            if lo < 10 {
+                sb_byte(b, 48 + lo)
+            } else {
+                sb_byte(b, 55 + lo)
+            }
+        }
+        i += 1
+    }
+    sb_finish(b)
+}
+
+fn std__encoding__percent_decode(s: any) -> any {
+    rt_expect_str(s, "std::encoding::percent_decode")
+    let n = rt_slen(s)
+    let src = rt_bdata(s)
+    let b = sb_new(n + 8)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(src + i) == 37 {
+            // (sic) como el original: "%41" al final es válido, "%4" no.
+            if i + 2 >= n {
+                rt_native_fail("std::encoding::percent_decode", rt_concat("invalid percent encoding at byte ", rt_int_to_str(i)))
+            }
+            let a = rt_hex_value(std::raw::load8(src + i + 1))
+            let c = rt_hex_value(std::raw::load8(src + i + 2))
+            if a < 0 || c < 0 {
+                rt_native_fail("std::encoding::percent_decode", rt_concat("invalid percent encoding at byte ", rt_int_to_str(i)))
+            }
+            sb_byte(b, a * 16 + c)
+            i += 3
+        } else {
+            sb_byte(b, std::raw::load8(src + i))
+            i += 1
+        }
+    }
+    if !rt_valid_utf8(std::raw::load(b + 16), sb_len(b)) {
+        rt_native_fail("std::encoding::percent_decode", "decoded data is not UTF-8")
+    }
+    sb_finish(b)
+}
+
+// Error de String::from_utf8 como lo escribe Rust (Utf8Error):
+// "invalid utf-8 sequence of N bytes from index I" o
+// "incomplete utf-8 byte sequence from index I"; "" si es válido.
+fn rt_utf8_error(p: int, n: int) -> any {
+    let mut i = 0
+    while i < n {
+        let start = i
+        let first = std::raw::load8(p + i)
+        if first < 128 {
+            i += 1
+            continue
+        }
+        let mut w = 0
+        if first >= 194 && first <= 223 {
+            w = 2
+        } else if first >= 224 && first <= 239 {
+            w = 3
+        } else if first >= 240 && first <= 244 {
+            w = 4
+        }
+        if w == 0 {
+            return rt_utf8_bad(1, start)
+        }
+        i += 1
+        if i >= n {
+            return rt_utf8_incomplete(start)
+        }
+        let second = std::raw::load8(p + i)
+        if w == 2 {
+            if second < 128 || second > 191 {
+                return rt_utf8_bad(1, start)
+            }
+        } else {
+            let mut ok = false
+            if w == 3 {
+                ok = (first == 224 && second >= 160 && second <= 191) || (first >= 225 && first <= 236 && second >= 128 && second <= 191) || (first == 237 && second >= 128 && second <= 159) || (first >= 238 && second >= 128 && second <= 191)
+            } else {
+                ok = (first == 240 && second >= 144 && second <= 191) || (first >= 241 && first <= 243 && second >= 128 && second <= 191) || (first == 244 && second >= 128 && second <= 143)
+            }
+            if !ok {
+                return rt_utf8_bad(1, start)
+            }
+            let mut k = 2
+            while k < w {
+                i += 1
+                if i >= n {
+                    return rt_utf8_incomplete(start)
+                }
+                let x = std::raw::load8(p + i)
+                if x < 128 || x > 191 {
+                    return rt_utf8_bad(k, start)
+                }
+                k += 1
+            }
+        }
+        i += 1
+    }
+    ""
+}
+
+fn rt_utf8_bad(len: int, at: int) -> any {
+    rt_concat(rt_concat(rt_concat("invalid utf-8 sequence of ", rt_int_to_str(len)), " bytes from index "), rt_int_to_str(at))
+}
+
+fn rt_utf8_incomplete(at: int) -> any {
+    rt_concat("incomplete utf-8 byte sequence from index ", rt_int_to_str(at))
+}
+
+fn std__encoding__utf8_decode(b: any) -> any {
+    rt_expect_bytes(b, "std::encoding::utf8_decode")
+    let n = rt_slen(b)
+    let e = rt_utf8_error(rt_bdata(b), n)
+    if rt_slen(e) > 0 {
+        rt_native_fail("std::encoding::utf8_decode", e)
+    }
+    let p = rt_str_alloc(n)
+    rt_copy(p + 16, rt_bdata(b), n)
+    rt_sval(p)
+}
+
+// ------------------------------------------------------------ checksum
+
+fn std__checksum__fnv1a64(b: any) -> any {
+    rt_expect_bytes(b, "std::checksum::fnv1a64")
+    tx_fnv1a(rt_bdata(b), rt_slen(b))
+}
+
+fn std__checksum__crc32(b: any) -> any {
+    rt_expect_bytes(b, "std::checksum::crc32")
+    let p = rt_bdata(b)
+    let n = rt_slen(b)
+    let mut crc = 4294967295
+    let mut i = 0
+    while i < n {
+        crc = crc ^ std::raw::load8(p + i)
+        let mut k = 0
+        while k < 8 {
+            if (crc & 1) == 1 {
+                crc = (crc / 2) ^ 3988292384
+            } else {
+                crc = crc / 2
+            }
+            k += 1
+        }
+        i += 1
+    }
+    crc ^ 4294967295
+}
+
+fn std__checksum__constant_time_eq(a: any, b: any) -> any {
+    rt_expect_bytes(a, "std::checksum::constant_time_eq")
+    rt_expect_bytes(b, "std::checksum::constant_time_eq")
+    let na = rt_slen(a)
+    let nb = rt_slen(b)
+    let pa = rt_bdata(a)
+    let pb = rt_bdata(b)
+    let mut diff = na ^ nb
+    let mut max = na
+    if nb > max {
+        max = nb
+    }
+    let mut i = 0
+    while i < max {
+        let mut x = 0
+        let mut y = 0
+        if i < na {
+            x = std::raw::load8(pa + i)
+        }
+        if i < nb {
+            y = std::raw::load8(pb + i)
+        }
+        diff = diff | (x ^ y)
+        i += 1
+    }
+    diff == 0
+}
+
+// ------------------------------------------------------------ math (exacto)
+
+// Número (float, o int convertido como `as f64`) en bits.
+fn rt_expect_number(v: any, function: string) -> int {
+    let t = std::raw::tag(v)
+    if t == 2 {
+        return std::raw::bits(v)
+    }
+    if t == 1 {
+        return std::raw::ffromint(std::raw::bits(v))
+    }
+    rt_native_fail(function, "expected number")
+    0
+}
+
+fn rt_float(bits: int) -> any {
+    std::raw::adopt(2, bits)
+}
+
+fn rt_is_finite(bits: int) -> bool {
+    (std::raw::shr(bits, 52) & 2047) != 2047
+}
+
+fn rt_is_nan(bits: int) -> bool {
+    (std::raw::shr(bits, 52) & 2047) == 2047 && (bits & 4503599627370495) != 0
+}
+
+fn std__math__sqrt(x: any) -> any {
+    let r = std::raw::fsqrt(rt_expect_number(x, "std::math::sqrt"))
+    if !rt_is_finite(r) {
+        rt_native_fail("std::math::sqrt", "sqrt domain error")
+    }
+    rt_float(r)
+}
+
+fn std__math__abs(x: any) -> any {
+    rt_float(rt_expect_number(x, "std::math::abs") & 9223372036854775807)
+}
+
+// Parte entera hacia cero (f64::trunc) con bits: se borran los bits de la
+// fracción según el exponente.
+fn rt_trunc(bits: int) -> int {
+    let e = (std::raw::shr(bits, 52) & 2047) - 1023
+    if e >= 52 {
+        return bits
+    }
+    if e < 0 {
+        return bits & (-9223372036854775807 - 1)
+    }
+    let mask = std::raw::shr(4503599627370495, e)
+    bits & (-1 ^ mask)
+}
+
+fn rt_has_fraction(bits: int) -> bool {
+    rt_trunc(bits) != bits && !rt_is_nan(bits)
+}
+
+fn std__math__floor(x: any) -> any {
+    let b = rt_expect_number(x, "std::math::floor")
+    let t = rt_trunc(b)
+    if b < 0 && rt_has_fraction(b) {
+        return rt_float(std::raw::fsub(t, 4607182418800017408))
+    }
+    rt_float(t)
+}
+
+fn std__math__ceil(x: any) -> any {
+    let b = rt_expect_number(x, "std::math::ceil")
+    let t = rt_trunc(b)
+    if b >= 0 && rt_has_fraction(b) {
+        return rt_float(std::raw::fadd(t, 4607182418800017408))
+    }
+    rt_float(t)
+}
+
+// f64::round: la mitad se aleja del cero.
+fn std__math__round(x: any) -> any {
+    let b = rt_expect_number(x, "std::math::round")
+    if !rt_has_fraction(b) {
+        return rt_float(b)
+    }
+    let a = b & 9223372036854775807
+    let t = rt_trunc(a)
+    // fracción >= 0.5  ⇔  a - t >= 0.5 (resta exacta: mismo exponente o menor)
+    let mut r = t
+    if std::raw::fcmp(std::raw::fsub(a, t), 4602678819172646912) >= 0 {
+        r = std::raw::fadd(t, 4607182418800017408)
+    }
+    if b < 0 {
+        r = r | (-9223372036854775807 - 1)
+    }
+    rt_float(r)
+}
+
+fn std__math__to_float(x: any) -> any {
+    rt_expect_int(x, "std::math::to_float")
+    rt_float(std::raw::ffromint(std::raw::bits(x)))
+}
+
+// `as i64`: hacia cero, NaN = 0, satura en los extremos.
+fn std__math__to_int(x: any) -> any {
+    let b = rt_expect_number(x, "std::math::to_int")
+    if rt_is_nan(b) {
+        return 0
+    }
+    // 2^63 = 4890909195324358656 en bits
+    if b >= 0 && std::raw::fcmp(b, 4890909195324358656) >= 0 {
+        return 9223372036854775807
+    }
+    if b < 0 && std::raw::fcmp(b, -4332462841530417152) <= 0 {
+        return -9223372036854775807 - 1
+    }
+    std::raw::ftoint(b)
+}
+
+// ------------------------------------------------------------ time
+
+fn rt_clock(which: int) -> (int, int) {
+    let ts = rt_alloc(16)
+    std::raw::syscall(228, which, ts, 0, 0, 0, 0)
+    let s = std::raw::load(ts)
+    let ns = std::raw::load(ts + 8)
+    rt_free_block(ts)
+    return (s, ns)
+}
+
+fn std__time__unix_seconds() -> any {
+    let (s, ns) = rt_clock(0)
+    s
+}
+
+fn std__time__unix_millis() -> any {
+    let (s, ns) = rt_clock(0)
+    s * 1000 + ns / 1000000
+}
+
+fn std__time__sleep_ms(ms: any) -> any {
+    rt_expect_int(ms, "std::time::sleep_ms")
+    let v = std::raw::bits(ms)
+    if v < 0 {
+        rt_native_fail("std::time::sleep_ms", "milliseconds must be nonnegative")
+    }
+    let ts = rt_alloc(16)
+    std::raw::store(ts, v / 1000)
+    std::raw::store(ts + 8, (v % 1000) * 1000000)
+    // nanosleep; si una señal lo interrumpe, sigue con lo que falta.
+    while std::raw::syscall(35, ts, ts, 0, 0, 0, 0) == -4 {
+    }
+    rt_free_block(ts)
+    nil
+}
+
+// ------------------------------------------------------------ path
+
+// Último componente como lo da Path::file_name (nil si es "..", "/" o nada).
+fn rt_file_name(path: any) -> any {
+    let parts = rt_path_parts(path)
+    let n = len(parts)
+    if n == 0 {
+        return nil
+    }
+    let last = parts[n - 1]
+    if last == ".." || last == "/" || last == "." {
+        return nil
+    }
+    last
+}
+
+// rsplit_file_at_dot de Rust: (antes, después) del último punto.
+fn rt_split_dot(name: any) -> (any, any) {
+    if name == ".." {
+        return (name, nil)
+    }
+    let p = rt_bdata(name)
+    let n = rt_slen(name)
+    let mut i = n - 1
+    while i >= 0 && std::raw::load8(p + i) != 46 {
+        i -= 1
+    }
+    if i < 0 {
+        return (nil, name)
+    }
+    if i == 0 {
+        return (name, nil)
+    }
+    return (rt_substr_bytes(name, 0, i), rt_substr_bytes(name, i + 1, n))
+}
+
+fn std__path__file_name(path: any) -> any {
+    rt_expect_str(path, "std::path::file_name")
+    rt_file_name(path)
+}
+
+fn std__path__stem(path: any) -> any {
+    rt_expect_str(path, "std::path::stem")
+    let name = rt_file_name(path)
+    if name == nil {
+        return nil
+    }
+    let (before, after) = rt_split_dot(name)
+    if before != nil {
+        return before
+    }
+    after
+}
+
+fn std__path__extension(path: any) -> any {
+    rt_expect_str(path, "std::path::extension")
+    let name = rt_file_name(path)
+    if name == nil {
+        return nil
+    }
+    let (before, after) = rt_split_dot(name)
+    if before == nil {
+        return nil
+    }
+    after
+}
+
+// Como stdlib::path::normalize: quita ".", resuelve ".." con PathBuf::pop.
+fn rt_normalize(path: any) -> any {
+    let mut out = ""
+    for part in rt_path_parts(path) {
+        if part == "." {
+            continue
+        }
+        if part == ".." {
+            let parent = std__path__parent(out)
+            if parent == nil {
+                out = std__path__join(out, "..")
+            } else {
+                out = parent
+            }
+        } else {
+            out = std__path__join(out, part)
+        }
+    }
+    out
+}
+
+fn std__path__normalize(path: any) -> any {
+    rt_expect_str(path, "std::path::normalize")
+    rt_normalize(path)
+}
+
+fn std__path__absolute(path: any) -> any {
+    rt_expect_str(path, "std::path::absolute")
+    if rt_slen(path) > 0 && std::raw::load8(rt_bdata(path)) == 47 {
+        return rt_normalize(path)
+    }
+    rt_normalize(std__path__join(rt_getcwd(), path))
+}
+
+// ------------------------------------------------------------ fs
+
+fn rt_open(path: any, flags: int, mode: int) -> int {
+    let c = rt_cstr(path)
+    let fd = std::raw::syscall(2, c, flags, mode, 0, 0, 0)
+    rt_free_block(c)
+    fd
+}
+
+fn rt_path_call(nr: int, path: any) -> int {
+    let c = rt_cstr(path)
+    let r = std::raw::syscall(nr, c, 0, 0, 0, 0, 0)
+    rt_free_block(c)
+    r
+}
+
+fn std__fs__read_bytes(path: any) -> any {
+    rt_expect_str(path, "std::fs::read_bytes")
+    let fd = rt_open(path, 524288, 0)
+    if fd < 0 {
+        rt_native_fail("std::fs::read_bytes", rt_os_error(0 - fd))
+    }
+    let b = sb_new(65536)
+    let buf = rt_alloc(65536)
+    loop {
+        let got = std::raw::syscall(0, fd, buf, 65536, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_native_fail("std::fs::read_bytes", rt_os_error(0 - got))
+        }
+        if got == 0 {
+            break
+        }
+        sb_raw(b, buf, got)
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    sb_finish_bytes(b)
+}
+
+fn std__fs__append(path: any, content: any) -> any {
+    rt_expect_str(path, "std::fs::append")
+    rt_expect_bytes(content, "std::fs::append")
+    // O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666
+    let fd = rt_open(path, 525377, 438)
+    if fd < 0 {
+        rt_native_fail("std::fs::append", rt_os_error(0 - fd))
+    }
+    let r = rt_write_all(fd, rt_bdata(content), rt_slen(content))
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if r < 0 {
+        rt_native_fail("std::fs::append", rt_os_error(0 - r))
+    }
+    nil
+}
+
+// fs::create_dir_all de Rust: 0 si bien, -errno si no.
+fn rt_create_dir_all(path: any) -> int {
+    if rt_slen(path) == 0 {
+        return 0
+    }
+    let c = rt_cstr(path)
+    let r = std::raw::syscall(83, c, 511, 0, 0, 0, 0)
+    rt_free_block(c)
+    if r == 0 {
+        return 0
+    }
+    if r != -2 {
+        if rt_is_dir(path) {
+            return 0
+        }
+        return r
+    }
+    let parent = std__path__parent(path)
+    if parent == nil {
+        return -2
+    }
+    let pr = rt_create_dir_all(parent)
+    if pr < 0 {
+        return pr
+    }
+    let c2 = rt_cstr(path)
+    let r2 = std::raw::syscall(83, c2, 511, 0, 0, 0, 0)
+    rt_free_block(c2)
+    if r2 == 0 || rt_is_dir(path) {
+        return 0
+    }
+    r2
+}
+
+fn rt_is_dir(path: any) -> bool {
+    let mode = rt_stat_mode(path)
+    mode >= 0 && (mode & 61440) == 16384
+}
+
+fn std__fs__create_dir(path: any) -> any {
+    rt_expect_str(path, "std::fs::create_dir")
+    let r = rt_create_dir_all(path)
+    if r < 0 {
+        rt_native_fail("std::fs::create_dir", rt_os_error(0 - r))
+    }
+    nil
+}
+
+// Nombres de las entradas de un directorio (sin "." ni ".."), en el orden
+// del sistema; o -errno.
+fn rt_read_dir(path: any) -> any {
+    // O_RDONLY | O_DIRECTORY | O_CLOEXEC
+    let fd = rt_open(path, 589824, 0)
+    if fd < 0 {
+        return fd
+    }
+    let buf = rt_alloc(32768)
+    let mut names = []
+    loop {
+        let got = std::raw::syscall(217, fd, buf, 32768, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            rt_free_block(buf)
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            return got
+        }
+        if got == 0 {
+            break
+        }
+        let mut off = 0
+        while off < got {
+            let e = buf + off
+            let reclen = std::raw::load8(e + 16) + 256 * std::raw::load8(e + 17)
+            let name = rt_from_cstr(e + 19)
+            if name != "." && name != ".." {
+                names = std::array::push(names, name)
+            }
+            off += reclen
+        }
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    names
+}
+
+fn std__fs__list_dir(path: any) -> any {
+    rt_expect_str(path, "std::fs::list_dir")
+    let names = rt_read_dir(path)
+    if std::raw::tag(names) == 1 {
+        rt_native_fail("std::fs::list_dir", rt_os_error(0 - names))
+    }
+    let mut out = []
+    for name in rt_sort_strings(names) {
+        out = std::array::push(out, std__path__join(path, name))
+    }
+    out
+}
+
+// Ordena strings por bytes (inserción binaria; los directorios suelen ser cortos).
+fn rt_sort_strings(values: array) -> array {
+    let mut out = []
+    for v in values {
+        let mut lo = 0
+        let mut hi = len(out)
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if rt_str_cmp(out[mid], v) <= 0 {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        out = std::array::concat(std::array::push(std::array::slice(out, 0, lo), v), std::array::slice(out, lo, len(out)))
+    }
+    out
+}
+
+// fs::remove_dir_all: un enlace simbólico se borra sin seguirlo; si no, se
+// vacía el directorio (recursivo) y se borra. 0 o -errno.
+fn rt_remove_all(path: any, top: bool) -> int {
+    let st = rt_alloc(144)
+    let c = rt_cstr(path)
+    // lstat
+    let r = std::raw::syscall(6, c, st, 0, 0, 0, 0)
+    let mode = std::raw::load(st + 24) & 61440
+    rt_free_block(st)
+    if r < 0 {
+        rt_free_block(c)
+        return r
+    }
+    if mode != 16384 {
+        if top && mode != 40960 {
+            rt_free_block(c)
+            return -20
+        }
+        let u = std::raw::syscall(87, c, 0, 0, 0, 0, 0)
+        rt_free_block(c)
+        return u
+    }
+    rt_free_block(c)
+    let names = rt_read_dir(path)
+    if std::raw::tag(names) == 1 {
+        return names
+    }
+    for name in names {
+        let child = std__path__join(path, name)
+        let cr = rt_remove_all(child, false)
+        if cr < 0 {
+            return cr
+        }
+    }
+    rt_path_call(84, path)
+}
+
+fn std__fs__remove_dir(path: any) -> any {
+    rt_expect_str(path, "std::fs::remove_dir")
+    let r = rt_remove_all(path, true)
+    if r < 0 {
+        rt_native_fail("std::fs::remove_dir", rt_os_error(0 - r))
+    }
+    nil
+}
+
+fn std__fs__rename(from: any, to: any) -> any {
+    rt_expect_str(from, "std::fs::rename")
+    rt_expect_str(to, "std::fs::rename")
+    let a = rt_cstr(from)
+    let b = rt_cstr(to)
+    let r = std::raw::syscall(82, a, b, 0, 0, 0, 0)
+    rt_free_block(a)
+    rt_free_block(b)
+    if r < 0 {
+        rt_native_fail("std::fs::rename", rt_os_error(0 - r))
+    }
+    nil
+}
+
+fn std__fs__file_size(path: any) -> any {
+    rt_expect_str(path, "std::fs::file_size")
+    let st = rt_alloc(144)
+    let c = rt_cstr(path)
+    let r = std::raw::syscall(4, c, st, 0, 0, 0, 0)
+    rt_free_block(c)
+    let size = std::raw::load(st + 48)
+    rt_free_block(st)
+    if r < 0 {
+        rt_native_fail("std::fs::file_size", rt_os_error(0 - r))
+    }
+    size
+}
+
+// Como stdlib::io::atomic_write: archivo temporal ".NOMBRE.PID.N.tmp" junto
+// al destino (creado en exclusiva), escribir, fsync y renombrar encima.
+fn std__fs__atomic_write(path: any, content: any) -> any {
+    rt_expect_str(path, "std::fs::atomic_write")
+    rt_expect_bytes(content, "std::fs::atomic_write")
+    let mut parent = std__path__parent(path)
+    if parent == nil {
+        parent = "."
+    }
+    let made = rt_create_dir_all(parent)
+    if made < 0 {
+        rt_native_fail("std::fs::atomic_write", rt_os_error(0 - made))
+    }
+    let mut name = rt_file_name(path)
+    if name == nil {
+        name = "titan"
+    }
+    let pid = std::raw::syscall(39, 0, 0, 0, 0, 0, 0)
+    let mut attempt = 0
+    let mut temporary = ""
+    let mut fd = -1
+    loop {
+        temporary = std__path__join(parent, "." + name + "." + rt_int_to_str(pid) + "." + rt_int_to_str(attempt) + ".tmp")
+        // O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666
+        fd = rt_open(temporary, 524481, 438)
+        if fd == -17 {
+            attempt += 1
+            continue
+        }
+        if fd < 0 {
+            rt_native_fail("std::fs::atomic_write", rt_os_error(0 - fd))
+        }
+        break
+    }
+    let w = rt_write_all(fd, rt_bdata(content), rt_slen(content))
+    if w < 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        rt_native_fail("std::fs::atomic_write", rt_os_error(0 - w))
+    }
+    let s = std::raw::syscall(74, fd, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if s < 0 {
+        rt_native_fail("std::fs::atomic_write", rt_os_error(0 - s))
+    }
+    let a = rt_cstr(temporary)
+    let b = rt_cstr(path)
+    let r = std::raw::syscall(82, a, b, 0, 0, 0, 0)
+    if r < 0 {
+        std::raw::syscall(87, a, 0, 0, 0, 0, 0)
+    }
+    rt_free_block(a)
+    rt_free_block(b)
+    if r < 0 {
+        rt_native_fail("std::fs::atomic_write", rt_os_error(0 - r))
+    }
+    nil
+}

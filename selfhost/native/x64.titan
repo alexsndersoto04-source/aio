@@ -248,6 +248,10 @@ fn x_cqo() -> array { [72, 153] }
 // idiv r (rdx:rax / r)
 fn x_idiv(r: int) -> array { x_wrr([247], 7, r) }
 fn x_neg(r: int) -> array { x_wrr([247], 3, r) }
+// shl/shr/sar r64, cl (REX.W D3 /4, /5, /7)
+fn x_shl_cl(r: int) -> array { x_wrr([211], 4, r) }
+fn x_shr_cl(r: int) -> array { x_wrr([211], 5, r) }
+fn x_sar_cl(r: int) -> array { x_wrr([211], 7, r) }
 fn x_not(r: int) -> array { x_wrr([247], 2, r) }
 
 // setcc al; movzx rax, al

@@ -1,0 +1,124 @@
+// array, map, bytes, encoding, checksum, math exacto, time, path y fs.
+fn show(label: string, v: any) {
+    print(label + ": " + "{v}")
+}
+
+fn opt(v: any) -> string {
+    if v == nil {
+        return "nil"
+    }
+    "[" + "{v}" + "]"
+}
+
+fn main() {
+    let mut a = [1, 2, 3]
+    a = std::array::pop(a)
+    show("pop", a)
+    show("pop0", std::array::pop([]))
+    let b = [4, 5]
+    let c = std::array::pop(b)
+    show("pop-shared", "{b} {c}")
+    show("filled", std::array::filled(3, "x"))
+    show("filled0", std::array::filled(0, 1))
+    show("range", std::array::range(-2, 3))
+    show("range0", std::array::range(5, 5))
+    let mut m = std::map::new()
+    m = std::map::insert(m, "b", 2)
+    m = std::map::insert_new(m, "a", 1)
+    m = std::map::insert_new(m, "c", [3])
+    let m2 = std::map::remove(m, "b")
+    show("map", "{m} {m2}")
+    m = std::map::remove(m, "zz")
+    m = std::map::remove(m, "a")
+    show("map2", m)
+    let by = std::bytes::from_array([1, 2, 250, 255])
+    show("blen", std::bytes::length(by))
+    show("bcat", std::bytes::to_array(std::bytes::concat(by, "hi")))
+    show("bslice", std::bytes::to_array(std::bytes::slice(by, 1, 3)))
+    show("bslice0", std::bytes::to_array(std::bytes::slice(by, 4, 4)))
+    show("u32", std::bytes::read_u32_le(by, 0))
+    show("u32w", std::bytes::to_array(std::bytes::write_u32_le(4294967295)))
+    show("u32w2", std::bytes::read_u32_le(std::bytes::write_u32_le(305419896), 0))
+    show("hex", std::encoding::hex_encode("Titan\n"))
+    show("unhex", std::encoding::utf8_decode(std::encoding::hex_decode("546974616E")))
+    for t in ["", "f", "fo", "foo", "foob", "fooba", "foobar", "año 😀"] {
+        let e = std::encoding::base64_encode(t)
+        let d = std::encoding::utf8_decode(std::encoding::base64_decode(e))
+        print("b64 [" + t + "] " + e + " " + d)
+    }
+    show("b64bin", std::encoding::base64_encode(std::bytes::from_array([255, 254, 253, 0, 1])))
+    show("pct", std::encoding::percent_encode("año / 1?x=a&b~c-d_e.f"))
+    show("unpct", std::encoding::percent_decode("a%C3%B1o%20%2F%201%41"))
+    show("utf8", std::encoding::utf8_decode(std::bytes::from_array([104, 195, 177])))
+    show("fnv", std::checksum::fnv1a64("hola"))
+    show("fnv0", std::checksum::fnv1a64(""))
+    show("crc", std::checksum::crc32("The quick brown fox jumps over the lazy dog"))
+    show("crc0", std::checksum::crc32(""))
+    show("cte", std::checksum::constant_time_eq("abc", "abc"))
+    show("cte2", std::checksum::constant_time_eq("abc", "abd"))
+    show("cte3", std::checksum::constant_time_eq("abc", "ab"))
+    for x in [0.0, -0.0, 0.3, -0.3, 0.5, -0.5, 1.5, 2.5, -2.5, 2.4999999999999996, 1e300, -7.0, 4503599627370495.5, 123456.789] {
+        let f = std::math::floor(x)
+        let ce = std::math::ceil(x)
+        let r = std::math::round(x)
+        let ab = std::math::abs(x)
+        let ti = std::math::to_int(x)
+        print("{x}: {f} {ce} {r} {ab} {ti}")
+    }
+    show("sqrt", std::math::sqrt(2.0))
+    show("sqrt-int", std::math::sqrt(16))
+    show("sqrt0", std::math::sqrt(-0.0))
+    show("tofloat", std::math::to_float(-9007199254740993))
+    show("toint-big", std::math::to_int(1e30))
+    show("toint-neg", std::math::to_int(-1e30))
+    show("floor-int", std::math::floor(7))
+    match std::text::parse_float("nan") {
+        Option::Some(n) => show("toint-nan", std::math::to_int(n)),
+        Option::None => print("?"),
+    }
+    match std::text::parse_float("inf") {
+        Option::Some(n) => show("floor-inf", std::math::floor(n)),
+        Option::None => print("?"),
+    }
+    let t0 = std::time::unix_millis()
+    std::time::sleep_ms(30)
+    let t1 = std::time::unix_millis()
+    show("sleep", t1 - t0 >= 30 && t1 - t0 < 2000)
+    show("secs", std::time::unix_seconds() > 1700000000)
+    for p in ["a/b/c.txt", "/", "", ".", "..", "a/..", "a/.", "foo.tar.gz", ".bashrc", "foo.", "dir/", "/x/y/", "a//b", "./a"] {
+        let fname = opt(std::path::file_name(p))
+        let st = opt(std::path::stem(p))
+        let ex = opt(std::path::extension(p))
+        let no = std::path::normalize(p)
+        print("path [" + p + "] " + fname + " " + st + " " + ex + " [" + no + "]")
+    }
+    for p in ["a/./b/../c.txt", "../..", "/..", "/a/../..", "a/b/../../..", "../a/../b", "/a//b/./c/"] {
+        print("norm [" + p + "] [" + std::path::normalize(p) + "]")
+    }
+    let cwd = std::env::current_dir()
+    show("abs", std::path::absolute("x/../y") == std::path::join(cwd, "y"))
+    show("abs2", std::path::absolute("/a/./b/.."))
+    let dir = "/tmp/titan_nucleo_std"
+    if std::fs::exists(dir) {
+        std::fs::remove_dir(dir)
+    }
+    std::fs::create_dir(dir + "/sub/deep")
+    std::fs::create_dir(dir + "/sub")
+    std::fs::write_text(dir + "/b.txt", "hola")
+    std::fs::append(dir + "/b.txt", " mundo")
+    std::fs::append(dir + "/nuevo.txt", std::bytes::from_array([0, 1, 2]))
+    show("read", std::fs::read_text(dir + "/b.txt"))
+    show("rbytes", std::bytes::to_array(std::fs::read_bytes(dir + "/nuevo.txt")))
+    show("size", std::fs::file_size(dir + "/b.txt"))
+    std::fs::rename(dir + "/b.txt", dir + "/a.txt")
+    std::fs::atomic_write(dir + "/sub/deep/at.txt", "atómico")
+    std::fs::atomic_write(dir + "/sub/deep/at.txt", "otra vez")
+    show("atomic", std::fs::read_text(dir + "/sub/deep/at.txt"))
+    show("list", std::fs::list_dir(dir))
+    show("list2", std::fs::list_dir(dir + "/sub/deep"))
+    show("list3", std::fs::list_dir(dir + "/"))
+    std::fs::remove_dir(dir + "/sub")
+    show("list4", std::fs::list_dir(dir))
+    std::fs::remove_dir(dir)
+    show("gone", std::fs::exists(dir))
+}

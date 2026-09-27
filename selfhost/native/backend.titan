@@ -679,6 +679,43 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_push(rax))
         return pc_add(p, x_push_i(1))
     }
+    // Enteros sin comprobar desbordamiento (dan la vuelta, como wrapping_*
+    // de Rust) y desplazamientos de bits (la cuenta se toma módulo 64):
+    // para hashes y códigos de comprobación.
+    if name == "std::raw::wadd" || name == "std::raw::wsub" || name == "std::raw::wmul" || name == "std::raw::shl" || name == "std::raw::shr" || name == "std::raw::sar" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        if name == "std::raw::wadd" {
+            p = pc_add(p, x_add_rr(rax, rcx))
+        } else if name == "std::raw::wsub" {
+            p = pc_add(p, x_sub_rr(rax, rcx))
+        } else if name == "std::raw::wmul" {
+            p = pc_add(p, x_imul_rr(rax, rcx))
+        } else if name == "std::raw::shl" {
+            p = pc_add(p, x_shl_cl(rax))
+        } else if name == "std::raw::shr" {
+            p = pc_add(p, x_shr_cl(rax))
+        } else {
+            p = pc_add(p, x_sar_cl(rax))
+        }
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // fsqrt (sqrtsd, exacta) y ftoint (cvttsd2si: hacia cero).
+    if name == "std::raw::fsqrt" || name == "std::raw::ftoint" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        if name == "std::raw::fsqrt" {
+            p = pc_add(p, x_sqrtsd(0, 0))
+            p = pc_add(p, x_movq_rx(rax, 0))
+        } else {
+            p = pc_add(p, x_cvttsd2si(rax, 0))
+        }
+        p = pc_add(p, x_add_ri(rsp, 16))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
     // ffromint: el entero convertido a float (cvtsi2sd; exacto si |v| < 2^53).
     if name == "std::raw::ffromint" {
         p = pc_add(p, x_load(rax, rsp, 8))
@@ -1253,6 +1290,26 @@ fn bk_rt_tables(gr: G) -> (map, map) {
 }
 
 // Programa (gu) + runtime (gr) -> Result::Ok(bytes del ELF) o Err(mensajes).
+// "r" seguido solo de cifras: etiqueta de una función del runtime.
+fn bk_is_rt_label(t: string) -> bool {
+    if len(t) < 2 || !std::text::starts_with(t, "r") {
+        return false
+    }
+    for c in std::text::chars(std::text::substring(t, 1, len(t))) {
+        if c < '0' || c > '9' {
+            return false
+        }
+    }
+    true
+}
+
+fn bk_label_index(t: string) -> int {
+    match std::text::parse_int(std::text::substring(t, 1, len(t))) {
+        Option::Some(v) => v,
+        Option::None => -1,
+    }
+}
+
 fn bk_build(gu: G, gr: G) -> Result {
     let (rt, rt_arity) = bk_rt_tables(gr)
     let uctx = Ctx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, epi: 0 }
@@ -1288,9 +1345,21 @@ fn bk_build(gu: G, gr: G) -> Result {
         code = std::array::concat(code, piece.b)
         i += 1
     }
-    i = 0
-    for f in gr.funcs {
-        labels = std::map::insert(labels, "r{i}", len(code))
+    // Del runtime solo entran las funciones que se usan (como un enlazador):
+    // se recorren las referencias ya emitidas y cada función "rN" nueva se
+    // traduce y añade, con sus propias referencias, hasta que no queda ninguna.
+    let mut emitted = std::map::new()
+    let mut scan = 0
+    while scan < len(fx) {
+        let target = fx[scan].target
+        scan += 1
+        if !bk_is_rt_label(target) || std::map::contains(emitted, target) {
+            continue
+        }
+        emitted = std::map::insert(emitted, target, true)
+        let index = bk_label_index(target)
+        let f = gr.funcs[index]
+        labels = std::map::insert(labels, target, len(code))
         syms = std::array::push(syms, (len(code), "runtime:" + f.name))
         let piece = bk_function(rctx, f)
         let base = len(code)
@@ -1298,7 +1367,6 @@ fn bk_build(gu: G, gr: G) -> Result {
             fx = std::array::push(fx, Fx { off: r.off + base, kind: r.kind, target: r.target, n: r.n })
         }
         code = std::array::concat(code, piece.b)
-        i += 1
     }
     // Errores: construcciones que el compilador nativo aún no admite.
     let mut errors = []

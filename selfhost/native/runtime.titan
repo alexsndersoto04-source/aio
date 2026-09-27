@@ -1,5 +1,9 @@
 // Runtime de los ejecutables nativos de Titan, escrito en Titan.
 import unicode
+import unicode_case
+import std_text
+import std_core
+import errno
 import float
 import float_table
 //
@@ -32,7 +36,8 @@ import float_table
 // Cada bloque de memoria lleva delante (en -8) su tamaño útil.
 // Globales: +0 siguiente byte libre, +8 fin del bloque, +16 profundidad de
 // llamadas, +24 (reservado: manejadores de error), +32 pila inicial (argv),
-// +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table),
+// +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table; las de
+// mayúsculas/minúsculas, slots 4..9, en +2336..+2376),
 // +128 + 8*c listas de bloques libres de 16*c bytes (c = 1..256).
 //
 // Conteo de referencias (como el `Rc` de la VM): el campo +0 cuenta cuántos
@@ -1360,7 +1365,7 @@ fn std__array__set(a: any, index: any, x: any) -> any {
     let n = rt_seq_len(a)
     let i = std::raw::bits(index)
     if i < 0 || i >= n {
-        rt_native_fail("std::array::set", "index out of bounds")
+        rt_native_fail("std::array::set", "array index out of bounds")
     }
     if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
         let e = rt_seq_data(a) + 16 * i
@@ -1422,7 +1427,10 @@ fn rt_expect_char(v: any, function: string) -> int {
 // Rangos "inicio,fin,..." de unicode.titan convertidos (una sola vez) a
 // memoria: +0 número de enteros, +8.. los enteros.
 fn rt_unicode_table(slot: int) -> int {
-    let g = std::raw::globals() + 64 + 8 * slot
+    let mut g = std::raw::globals() + 64 + 8 * slot
+    if slot >= 4 {
+        g = std::raw::globals() + 2304 + 8 * slot
+    }
     let cached = std::raw::load(g)
     if cached != 0 {
         return cached
@@ -1434,6 +1442,18 @@ fn rt_unicode_table(slot: int) -> int {
         text = uni_alphanumeric()
     } else if slot == 2 {
         text = uni_uppercase()
+    } else if slot == 4 {
+        text = uni_upper_simple()
+    } else if slot == 5 {
+        text = uni_upper_multi()
+    } else if slot == 6 {
+        text = uni_lower_simple()
+    } else if slot == 7 {
+        text = uni_lower_multi()
+    } else if slot == 8 {
+        text = uni_case_ignorable()
+    } else if slot == 9 {
+        text = uni_cased_strict()
     }
     let p = std::raw::bits(text)
     let n = std::raw::load(p + 8)
@@ -1710,33 +1730,6 @@ fn rt_from_cstr(p: int) -> any {
 }
 
 // Texto de un error del sistema como lo muestra Rust: "... (os error N)".
-fn rt_os_error(errno: int) -> any {
-    let mut text = rt_concat("Unknown error ", rt_int_to_str(errno))
-    if errno == 1 {
-        text = "Operation not permitted"
-    } else if errno == 2 {
-        text = "No such file or directory"
-    } else if errno == 5 {
-        text = "Input/output error"
-    } else if errno == 12 {
-        text = "Cannot allocate memory"
-    } else if errno == 13 {
-        text = "Permission denied"
-    } else if errno == 20 {
-        text = "Not a directory"
-    } else if errno == 21 {
-        text = "Is a directory"
-    } else if errno == 23 {
-        text = "Too many open files in system"
-    } else if errno == 24 {
-        text = "Too many open files"
-    } else if errno == 36 {
-        text = "File name too long"
-    } else if errno == 40 {
-        text = "Too many levels of symbolic links"
-    }
-    rt_concat(rt_concat(rt_concat(text, " (os error "), rt_int_to_str(errno)), ")")
-}
 
 // Modo del archivo (siguiendo enlaces) o -1 si no se puede consultar.
 fn rt_stat_mode(path: any) -> int {

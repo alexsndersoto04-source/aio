@@ -1,0 +1,6 @@
+// Error de la biblioteca estándar: debe dar el mismo mensaje que la VM.
+fn main() {
+    print("antes")
+    let r = std::encoding::base64_decode("Zh==")
+    print(r)
+}
