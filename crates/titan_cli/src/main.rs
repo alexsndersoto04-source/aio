@@ -1,5 +1,7 @@
 //! Titan command-line compiler and project tooling.
 
+mod bytecode_dump;
+
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,6 +73,9 @@ pub enum Command {
     /// Print the native function signature registry (self-hosting data)
     #[command(hide = true)]
     Natives,
+    /// Print the canonical bytecode dump of a program (self-hosting oracle)
+    #[command(hide = true)]
+    Bytecode { input: String },
     /// Parse and type-check a file or project without producing an artifact
     Check {
         #[arg(default_value = ".")]
@@ -183,6 +188,7 @@ fn main() {
             Err(error) => fatal("READ ERROR", format!("{input}: {error}")),
         },
         Command::Natives => print!("{}", natives_dump()),
+        Command::Bytecode { input } => print!("{}", bytecode_dump_of(&input)),
         Command::Check { input } => cmd_check(&input),
         Command::Build { input, output } => cmd_build(&input, output),
         Command::Wasm { input, output } => cmd_wasm(&input, output),
@@ -683,6 +689,19 @@ fn typecheck_dump(source: &str) -> String {
             .iter()
             .map(|d| format!("diag: {}\n", titan_parser::dump_escape(&d.to_string())))
             .collect(),
+    }
+}
+
+/// Canonical bytecode of a program, loaded exactly like `titan build`/`run`
+/// (project loader with imports, typechecker, code generator). On failure a
+/// single `error: <escaped message>` line is printed instead.
+fn bytecode_dump_of(input: &str) -> String {
+    let result = titan_pkg::SourceProject::load(input)
+        .map_err(|error| error.to_string())
+        .and_then(|project| compile_program(&project.program));
+    match result {
+        Ok(module) => bytecode_dump::dump_module(&module),
+        Err(error) => format!("error: {}\n", titan_parser::dump_escape(&error)),
     }
 }
 
