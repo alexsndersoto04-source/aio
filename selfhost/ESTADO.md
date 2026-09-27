@@ -12,8 +12,8 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 1 | **Lexer** en Titan (`selfhost/lexer.titan`) | ✅ idéntico al de Rust |
 | 2 | **Parser** en Titan (`selfhost/parser.titan`) | ✅ idéntico al de Rust |
 | 3 | **Typechecker** en Titan (`selfhost/typechecker.titan`) | ✅ idéntico al de Rust |
-| 4a | Siguiente: **codegen** (empieza la fase 4) | ⏳ siguiente |
-| 4 | **Codegen** en Titan → ejecutables nativos (sin VM en Rust) | pendiente |
+| 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
+| 4b | Siguiente: bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) | ⏳ siguiente |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | pendiente |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | pendiente |
 
@@ -25,6 +25,7 @@ export PATH="$HOME/.local/bin:$PATH"
 bash selfhost/verify_lexer.sh            # lexer Titan vs lexer Rust, byte a byte
 bash selfhost/verify_parser.sh           # parser Titan vs parser Rust, byte a byte
 bash selfhost/verify_typechecker.sh      # typechecker Titan vs Rust, byte a byte
+bash selfhost/verify_codegen.sh          # cargador + codegen Titan vs Rust, byte a byte
 zett run ci-bench/bench.titan            # rendimiento de la VM
 ```
 
@@ -146,6 +147,47 @@ Defectos reales del Titan en Rust encontrados en esta fase:
    de la función en lugar de la línea real.
 8. (pendiente) `zett check`/`zett run` imprimen cada error de compilación dos
    veces.
+
+## Fase 4a — cargador de `import` y generador de bytecode
+
+- `selfhost/codegen.titan` (~1.560 líneas): traducción fiel de
+  `crates/titan_codegen/src/lib.rs`: resolución de nombres (local, constante
+  con detección de ciclos, variante, función), llamadas (nativas, variantes,
+  métodos, las 120 instrucciones dedicadas, `std::try::catch`), asignaciones
+  compuestas con `TakeLocal`, `for`/`while`/`loop` con `break`/`continue`,
+  `match` con patrones anidados, plantillas `"{x}"`, closures con capturas y
+  la tabla de métodos/structs/enums del módulo.
+- `selfhost/codegen_tables.titan`: las 120 instrucciones dedicadas, generada
+  por `selfhost/gen_codegen_tables.py` a partir del código Rust.
+- `selfhost/loader.titan`: traducción de `crates/titan_pkg/src/project.rs`
+  (`import a::b` → `a/b.titan` o `a/b/mod.titan`, cada archivo una vez,
+  ciclos, módulos de `stdlib/`, mismos mensajes de error).
+- `zett bytecode ARCHIVO` (oculto, `crates/titan_cli/src/bytecode_dump.rs`)
+  imprime el módulo compilado por Rust en un formato estable;
+  `zett run selfhost/bytecode.titan ARCHIVO` lo mismo con el cargador,
+  typechecker y generador de Titan.
+- El typechecker de Titan ahora sabe en qué archivo está cada error (como
+  Rust cuando carga un proyecto): `archivo:l:c: mensaje`.
+- Verificación: 461 archivos, 105.746 líneas, **idénticos** (215 programas
+  compilados y 234 mensajes de error). Incluye `selfhost/tests/codegen/`.
+- **El compilador en Titan se compila a sí mismo**: `selfhost/bytecode.titan`
+  (con todo lo que importa) da 53.845 líneas de bytecode, idénticas a las de
+  Rust.
+- Prueba de mutación: 8 errores plantados. 7 se detectaban; el que no (el
+  archivo de los errores de declaración) llevó a añadir
+  `tests/codegen/decl/` y ahora se detectan los 8.
+
+Defectos reales del Titan en Rust encontrados en esta fase (pendientes; el
+código en Titan los reproduce a propósito para que la comparación sea exacta
+y se corregirán en los dos a la vez):
+
+9. Los errores de declaración (p. ej. función duplicada) salen con el archivo
+   de la **última** función del programa, no con el suyo:
+   `tests/codegen/decl_wrong_file/` dice `main.titan:5:1` cuando el duplicado
+   está en `dup.titan:5:1`.
+10. El cargador de Titan todavía no admite proyectos con `Titan.toml`
+    (manifiesto y dependencias): los rechaza con un error explícito. En el
+    repositorio no hay ninguno.
 
 ## Pendientes conocidos (anotados para no olvidarlos)
 

@@ -35,9 +35,11 @@ struct Sig {
 }
 
 // Un diagnóstico: el mensaje (Display del TypeError) y su span (o nil).
+// file: archivo de origen (Option<String> de Rust) o nil.
 struct Diag {
     msg: string,
     span: any,
+    file: any,
 }
 
 // ------------------------------------------------------------------- tipos
@@ -347,104 +349,110 @@ struct Env {
     breaks: array,
     fdepth: int,
     natives: map,
+    cur_file: any,
 }
 
 fn set_scopes(e: Env, v) -> Env {
-    Env { scopes: v, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: v, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_bindings(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: v, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: v, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_functions(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: v, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: v, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_base(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: v, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: v, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_structs(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: v, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: v, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_variants(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: v, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: v, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_base_variants(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: v, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: v, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_constants(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: v, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: v, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_ctypes(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: v, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: v, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_cdecls(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: v, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: v, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_cstack(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: v, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: v, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_checked(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: v, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: v, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_traits(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: v, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: v, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_aliases(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: v, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: v, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_errors(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: v, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: v, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_ret(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: v, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: v, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_cands(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: v, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: v, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_loop_depth(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: v, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: v, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_breaks(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: v, fdepth: e.fdepth, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: v, fdepth: e.fdepth, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_fdepth(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: v, natives: e.natives }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: v, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn set_natives(e: Env, v) -> Env {
-    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: v }
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: v, cur_file: e.cur_file }
+}
+
+fn set_cur_file(e: Env, v) -> Env {
+    Env { scopes: e.scopes, bindings: e.bindings, functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: e.constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: e.cstack, checked: e.checked, traits: e.traits, aliases: e.aliases, errors: e.errors, ret: e.ret, cands: e.cands, loop_depth: e.loop_depth, breaks: e.breaks, fdepth: e.fdepth, natives: e.natives, cur_file: v }
 }
 
 // ------------------------------------------------------- errores y spans
 
 fn err(e: Env, msg: string) -> Env {
-    set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: nil }))
+    set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: nil, file: nil }))
 }
 
 fn err_at(e: Env, msg: string, span: Span) -> Env {
-    set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: span }))
+    set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: span, file: e.cur_file }))
 }
 
 // assign_error_span: los errores emitidos desde `start` que aún no tienen
-// ubicación reciben `span`.
+// ubicación reciben `span`, y los que aún no tienen archivo reciben el
+// archivo actual (por separado, igual que en Rust).
 fn assign_span(e: Env, start: int, span: Span) -> Env {
     let errs = e.errors
     if len(errs) <= start {
@@ -454,11 +462,15 @@ fn assign_span(e: Env, start: int, span: Span) -> Env {
     let mut i = start
     while i < len(errs) {
         let d = errs[i]
-        if d.span == nil {
-            out = std::array::push(out, Diag { msg: d.msg, span: span })
-        } else {
-            out = std::array::push(out, d)
+        let mut sp = d.span
+        if sp == nil {
+            sp = span
         }
+        let mut file = d.file
+        if file == nil {
+            file = e.cur_file
+        }
+        out = std::array::push(out, Diag { msg: d.msg, span: sp, file: file })
         i += 1
     }
     set_errors(e, out)
@@ -1746,7 +1758,7 @@ fn signatures_equal(e: Env, expected: Sig, found: Sig) -> bool {
 fn new_env() -> Env {
     let base = builtin_functions()
     let variants = builtin_variants()
-    Env { scopes: [std::map::new()], bindings: [std::map::new()], functions: base, base: base, structs: std::map::new(), variants: variants, base_variants: variants, constants: std::map::new(), ctypes: std::map::new(), cdecls: std::map::new(), cstack: [], checked: std::map::new(), traits: std::map::new(), aliases: std::map::new(), errors: [], ret: mkt("Unknown"), cands: [], loop_depth: 0, breaks: [], fdepth: 0, natives: load_natives() }
+    Env { scopes: [std::map::new()], bindings: [std::map::new()], functions: base, base: base, structs: std::map::new(), variants: variants, base_variants: variants, constants: std::map::new(), ctypes: std::map::new(), cdecls: std::map::new(), cstack: [], checked: std::map::new(), traits: std::map::new(), aliases: std::map::new(), errors: [], ret: mkt("Unknown"), cands: [], loop_depth: 0, breaks: [], fdepth: 0, natives: load_natives(), cur_file: nil }
 }
 
 fn reset_analysis_state(e: Env) -> Env {
@@ -1756,7 +1768,7 @@ fn reset_analysis_state(e: Env) -> Env {
         bindings = std::map::insert(bindings, name, (false, 0))
         constants = std::map::insert(constants, name, true)
     }
-    Env { scopes: [e.ctypes], bindings: [bindings], functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: [], checked: std::map::new(), traits: e.traits, aliases: e.aliases, errors: [], ret: mkt("Unknown"), cands: [], loop_depth: 0, breaks: [], fdepth: 0, natives: e.natives }
+    Env { scopes: [e.ctypes], bindings: [bindings], functions: e.functions, base: e.base, structs: e.structs, variants: e.variants, base_variants: e.base_variants, constants: constants, ctypes: e.ctypes, cdecls: e.cdecls, cstack: [], checked: std::map::new(), traits: e.traits, aliases: e.aliases, errors: [], ret: mkt("Unknown"), cands: [], loop_depth: 0, breaks: [], fdepth: 0, natives: e.natives, cur_file: e.cur_file }
 }
 
 fn count_inference_targets(items: array) -> int {
@@ -1905,12 +1917,49 @@ fn collect_impl(e0: Env, block) -> Env {
 
 // ------------------------------------------------------------ validación
 
+// Como en Rust, los errores de declaración reciben el archivo de la ÚLTIMA
+// función de nivel superior (defecto anotado en selfhost/ESTADO.md).
 fn validate_declarations(e0: Env, items: array) -> Env {
-    let mut e = e0
+    let previous = e0.cur_file
+    let mut e = set_cur_file(e0, nil)
+    for item in items {
+        if item.kind == "fn" {
+            e = set_cur_file(e, source_file_of(item))
+        }
+    }
     for d in declaration_errors(e.base, items) {
         e = err_at(e, d.0, d.1)
     }
-    e
+    set_cur_file(e, previous)
+}
+
+// FunctionDecl::source_file: el parser deja `text2` vacío; el cargador de
+// proyectos lo rellena con la ruta del archivo.
+fn source_file_of(function) -> any {
+    if function.text2 == "" {
+        return nil
+    }
+    function.text2
+}
+
+// assign_error_file: solo el archivo, sin tocar las ubicaciones.
+fn assign_file(e: Env, start: int) -> Env {
+    let errs = e.errors
+    if len(errs) <= start {
+        return e
+    }
+    let mut out = std::array::slice(errs, 0, start)
+    let mut i = start
+    while i < len(errs) {
+        let d = errs[i]
+        if d.file == nil {
+            out = std::array::push(out, Diag { msg: d.msg, span: d.span, file: e.cur_file })
+        } else {
+            out = std::array::push(out, d)
+        }
+        i += 1
+    }
+    set_errors(e, out)
 }
 
 fn collect_type_alias_spans(items: array, spans0: map) -> map {
@@ -2176,7 +2225,9 @@ fn check_constants_in(e0: Env, items: array) -> Env {
     let mut e = e0
     for item in items {
         if item.kind == "const" {
+            let start = len(e.errors)
             e = check_constant(e, item.text).1
+            e = assign_file(e, start)
         } else if item.kind == "module" {
             e = check_constants_in(e, item.list)
         }
@@ -2283,8 +2334,10 @@ fn find_sub(s: string, needle: string) -> int {
 
 fn check_function(e0: Env, function) -> Env {
     let start = len(e0.errors)
-    let e = check_function_inner(e0, function)
-    assign_span(e, start, function.span)
+    let previous = e0.cur_file
+    let e = check_function_inner(set_cur_file(e0, source_file_of(function)), function)
+    // El archivo de ESTA función sigue vigente al asignar la ubicación.
+    set_cur_file(assign_span(e, start, function.span), previous)
 }
 
 fn check_function_inner(e0: Env, function) -> Env {

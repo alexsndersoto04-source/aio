@@ -1,0 +1,52 @@
+struct Point {
+    x: int,
+    y: float,
+}
+
+impl Point {
+    fn norm(self) -> float {
+        self.y * 2.5
+    }
+}
+
+const LIMIT: int = 3 + OTHER
+const OTHER: int = 4
+
+fn apply(f: fn(int) -> int, v: int) -> int {
+    f(v)
+}
+
+fn main() {
+    let base = 10
+    let add = |n: int| n + base
+    let mut total = 0
+    for i in 0..LIMIT {
+        if i == 1 {
+            continue
+        }
+        total += apply(add, i)
+    }
+    let mut k = 0
+    while true {
+        k += 1
+        if k > 2 {
+            break
+        }
+    }
+    let p = Point { x: 1, y: 0.5 }
+    let c = 'ñ'
+    let items = [1, 2, 3]
+    let mut acc = ""
+    for v in items {
+        acc = acc + "{v} "
+    }
+    let r = std::try::catch(|| 1 / 0)
+    let o = Option::Some(4)
+    let got = match o {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+    print("{total} {k} {c} {acc} {got}")
+    print(p.norm())
+    print(r)
+}

@@ -1,0 +1,1558 @@
+// ============================================================================
+// Generador de bytecode de Titan escrito en Titan (self-hosting, fase 4a).
+//
+// Traducción fiel de crates/titan_codegen/src/lib.rs (AstCompiler): recibe el
+// AST de selfhost/parser.titan (ya validado por selfhost/typechecker.titan) y
+// produce el mismo módulo de bytecode que el generador de Rust: mismas
+// instrucciones, mismos índices de locales y de cadenas, mismas ubicaciones de
+// depuración y los mismos mensajes de error. Verificación diferencial:
+// `cg_dump_module` produce el mismo texto que `titan bytecode <archivo>`.
+//
+// Representación:
+//   - Op: una instrucción. `k` es el nombre de la variante de Rust; los demás
+//     campos se usan según la variante (ver cg_op_text).
+//   - G: estado del generador (el `AstCompiler` de Rust). Se pasa y se
+//     devuelve; los errores viajan como Result::Err(mensaje).
+//   - Los tipos de parámetros (`BytecodeType`) se guardan ya como texto
+//     `Debug` de Rust, que es lo único que se hace con ellos.
+// Todas las funciones llevan el prefijo `cg_` porque `import` junta todos los
+// nombres en un único espacio (y este archivo convive con el typechecker).
+// ============================================================================
+
+import typechecker
+import codegen_tables
+
+struct Op {
+    k: string,
+    n: int,
+    m: int,
+    s: string,
+    s2: string,
+    flag: bool,
+    list: array,
+}
+
+struct Meta {
+    name: string,
+    file: any,
+    arity: int,
+    params: array,
+    ret: any,
+    captures: int,
+}
+
+struct Func {
+    name: string,
+    file: any,
+    arity: int,
+    params: array,
+    ret: any,
+    captures: int,
+    locals: int,
+    max_stack: int,
+    code: array,
+    locs: array,
+}
+
+struct Loop {
+    breaks: array,
+    continues: array,
+    target: int,
+}
+
+struct G {
+    funcs: array,
+    strings: map,
+    table: array,
+    fids: map,
+    variants: map,
+    consts: map,
+    cexp: array,
+    locals: array,
+    muts: array,
+    next: int,
+    loops: array,
+    loc: any,
+    code: array,
+    locs: array,
+    meta: Meta,
+    dedicated: map,
+    natives: map,
+    structs: map,
+    enums: map,
+    methods: map,
+    entry: int,
+}
+
+fn gs_funcs(s: G, v) -> G {
+    G { funcs: v, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_strings(s: G, v) -> G {
+    G { funcs: s.funcs, strings: v, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_table(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: v, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_fids(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: v, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_variants(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: v, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_consts(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: v, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_cexp(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: v, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_locals(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: v, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_muts(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: v, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_next(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: v, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_loops(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: v, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_loc(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: v, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_code(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: v, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_locs(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: v, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_meta(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: v, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_dedicated(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: v, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_natives(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: v, structs: s.structs, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_structs(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: v, enums: s.enums, methods: s.methods, entry: s.entry }
+}
+
+fn gs_enums(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: v, methods: s.methods, entry: s.entry }
+}
+
+fn gs_methods(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: v, entry: s.entry }
+}
+
+fn gs_entry(s: G, v) -> G {
+    G { funcs: s.funcs, strings: s.strings, table: s.table, fids: s.fids, variants: s.variants, consts: s.consts, cexp: s.cexp, locals: s.locals, muts: s.muts, next: s.next, loops: s.loops, loc: s.loc, code: s.code, locs: s.locs, meta: s.meta, dedicated: s.dedicated, natives: s.natives, structs: s.structs, enums: s.enums, methods: s.methods, entry: v }
+}
+
+// ------------------------------------------------------------ instrucciones
+
+// usize::MAX de Rust: Jump/JumpIfFalse sin parchear y el índice centinela de
+// `Call` para rangos. Titan usa i64, así que se marca aparte y se imprime igual.
+fn cg_usize_max() -> string {
+    "18446744073709551615"
+}
+
+fn cg_op(k: string) -> Op {
+    Op { k: k, n: 0, m: 0, s: "", s2: "", flag: false, list: [] }
+}
+
+fn cg_op_n(k: string, n: int) -> Op {
+    Op { k: k, n: n, m: 0, s: "", s2: "", flag: false, list: [] }
+}
+
+fn cg_op_s(k: string, s: string, n: int) -> Op {
+    Op { k: k, n: n, m: 0, s: s, s2: "", flag: false, list: [] }
+}
+
+fn cg_join(items: array, sep: string) -> string {
+    let mut out = ""
+    let mut first = true
+    for item in items {
+        if !first {
+            out += sep
+        }
+        out += item
+        first = false
+    }
+    out
+}
+
+fn cg_quoted_list(items: array) -> string {
+    let mut parts = []
+    for item in items {
+        parts = std::array::push(parts, q(item))
+    }
+    "[" + cg_join(parts, ", ") + "]"
+}
+
+fn cg_int_list(items: array) -> string {
+    let mut parts = []
+    for item in items {
+        parts = std::array::push(parts, "{item}")
+    }
+    "[" + cg_join(parts, ", ") + "]"
+}
+
+// Llaves literales: dentro de un texto de Titan `{` abre una interpolación.
+fn cg_lb() -> string {
+    std::text::from_char_code(123)
+}
+
+fn cg_rb() -> string {
+    std::text::from_char_code(125)
+}
+
+// `Nombre { campo: valor, ... }` como el Debug de Rust para variantes con campos.
+fn cg_record(name: string, fields: array) -> string {
+    name + " " + cg_lb() + " " + cg_join(fields, ", ") + " " + cg_rb()
+}
+
+// Texto `Debug` de Rust de cada instrucción (salvo PushFloat/PushChar, que
+// usan Display y el escapado del volcado; ver crates/titan_cli/src/bytecode_dump.rs).
+fn cg_op_text(op: Op) -> string {
+    let k = op.k
+    let n = op.n
+    let m = op.m
+    if k == "PushInt" || k == "PushStr" || k == "PushLocal" || k == "StoreLocal" || k == "TakeLocal" || k == "CallValue" || k == "TryCall" || k == "Print" || k == "NewArray" || k == "NewTuple" {
+        return k + "({n})"
+    }
+    if k == "Jump" || k == "JumpIfFalse" {
+        if op.flag {
+            return k + "(" + cg_usize_max() + ")"
+        }
+        return k + "({n})"
+    }
+    if k == "PushFloat" {
+        return "PushFloat(" + op.s + ")"
+    }
+    if k == "PushBool" {
+        let b = op.flag
+        return "PushBool({b})"
+    }
+    if k == "PushChar" {
+        return "PushChar(" + q(op.s) + ")"
+    }
+    if k == "Call" {
+        let mut function = "{n}"
+        if op.flag {
+            function = cg_usize_max()
+        }
+        return cg_record("Call", ["function: " + function, "argc: {m}"])
+    }
+    if k == "CallNative" {
+        return cg_record("CallNative", ["name: " + q(op.s), "argc: {n}"])
+    }
+    if k == "CallMethod" {
+        return cg_record("CallMethod", ["method: " + q(op.s), "argc: {n}"])
+    }
+    if k == "MakeClosure" {
+        return cg_record("MakeClosure", ["function: {n}", "captures: " + cg_int_list(op.list)])
+    }
+    if k == "NewStruct" {
+        return cg_record("NewStruct", ["name: " + q(op.s), "fields: " + cg_quoted_list(op.list)])
+    }
+    if k == "GetField" {
+        return "GetField(" + q(op.s) + ")"
+    }
+    if k == "NewEnum" {
+        let b = op.flag
+        return cg_record("NewEnum", ["name: " + q(op.s), "variant: " + q(op.s2), "has_payload: {b}"])
+    }
+    if k == "EnumIs" {
+        return cg_record("EnumIs", ["name: " + q(op.s), "variant: " + q(op.s2)])
+    }
+    k
+}
+
+// ------------------------------------------------------------ estado
+
+fn cg_empty_meta() -> Meta {
+    Meta { name: "", file: nil, arity: 0, params: [], ret: nil, captures: 0 }
+}
+
+fn cg_empty_func() -> Func {
+    Func { name: "", file: nil, arity: 0, params: [], ret: nil, captures: 0, locals: 0, max_stack: 0, code: [], locs: [] }
+}
+
+fn cg_new(natives: map) -> G {
+    G { funcs: [], strings: std::map::new(), table: [], fids: std::map::new(), variants: std::map::new(), consts: std::map::new(), cexp: [], locals: [], muts: [], next: 0, loops: [], loc: nil, code: [], locs: [], meta: cg_empty_meta(), dedicated: cg_dedicated_table(), natives: natives, structs: std::map::new(), enums: std::map::new(), methods: std::map::new(), entry: 0 }
+}
+
+fn cg_native_names() -> map {
+    let mut m = std::map::new()
+    for line in native_table() {
+        m = std::map::insert(m, split_on(line, ' ')[0], true)
+    }
+    m
+}
+
+fn cg_emit(g: G, op: Op) -> G {
+    gs_locs(gs_code(g, std::array::push(g.code, op)), std::array::push(g.locs, g.loc))
+}
+
+fn cg_position(g: G) -> int {
+    len(g.code)
+}
+
+fn cg_jump(g: G) -> (G, int) {
+    let p = len(g.code)
+    let op = Op { k: "Jump", n: 0, m: 0, s: "", s2: "", flag: true, list: [] }
+    return (cg_emit(g, op), p)
+}
+
+fn cg_jump_if_false(g: G) -> (G, int) {
+    let p = len(g.code)
+    let op = Op { k: "JumpIfFalse", n: 0, m: 0, s: "", s2: "", flag: true, list: [] }
+    return (cg_emit(g, op), p)
+}
+
+fn cg_patch(g: G, at: int, target: int) -> G {
+    let op = g.code[at]
+    if op.k != "Jump" && op.k != "JumpIfFalse" {
+        return g
+    }
+    let fixed = Op { k: op.k, n: target, m: 0, s: "", s2: "", flag: false, list: [] }
+    gs_code(g, std::array::set(g.code, at, fixed))
+}
+
+fn cg_intern(g: G, value: string) -> (G, int) {
+    if std::map::contains(g.strings, value) {
+        return (g, std::map::get(g.strings, value))
+    }
+    let id = len(g.table)
+    let g2 = gs_strings(gs_table(g, std::array::push(g.table, value)), std::map::insert(g.strings, value, id))
+    return (g2, id)
+}
+
+fn cg_push_scope(g: G) -> G {
+    gs_muts(gs_locals(g, std::array::push(g.locals, std::map::new())), std::array::push(g.muts, std::map::new()))
+}
+
+fn cg_pop_scope(g: G) -> G {
+    gs_muts(gs_locals(g, std::array::slice(g.locals, 0, len(g.locals) - 1)), std::array::slice(g.muts, 0, len(g.muts) - 1))
+}
+
+fn cg_add_mutable_local(g: G, name: string, mutable: bool) -> (G, int) {
+    let id = g.next
+    let n = len(g.locals)
+    let locals = std::array::set(g.locals, n - 1, std::map::insert(g.locals[n - 1], name, id))
+    let muts = std::array::set(g.muts, n - 1, std::map::insert(g.muts[n - 1], name, mutable))
+    return (gs_muts(gs_locals(gs_next(g, id + 1), locals), muts), id)
+}
+
+fn cg_add_local(g: G, name: string) -> (G, int) {
+    cg_add_mutable_local(g, name, false)
+}
+
+fn cg_add_temp(g: G, prefix: string) -> (G, int) {
+    let n = g.next
+    cg_add_local(g, prefix + "{n}")
+}
+
+// Option<usize>: -1 = None.
+fn cg_find_local(g: G, name: string) -> int {
+    let mut i = len(g.locals) - 1
+    while i >= 0 {
+        if std::map::contains(g.locals[i], name) {
+            return std::map::get(g.locals[i], name)
+        }
+        i -= 1
+    }
+    -1
+}
+
+fn cg_is_local_mutable(g: G, name: string) -> bool {
+    let mut i = len(g.muts) - 1
+    while i >= 0 {
+        if std::map::contains(g.muts[i], name) {
+            return std::map::get(g.muts[i], name)
+        }
+        i -= 1
+    }
+    false
+}
+
+fn cg_span_of(e) -> any {
+    e.span
+}
+
+fn cg_zero_span() -> Span {
+    Span { line: 0, col: 0, start: 0, end: 0 }
+}
+
+// ------------------------------------------------------------ tipos
+
+// BytecodeType de Rust, como texto Debug.
+fn cg_bytecode_type(t, enums: map) -> string {
+    if t == nil {
+        return "Unknown"
+    }
+    let k = t.kind
+    if k == "t_named" {
+        let name = t.text
+        if name == "int" {
+            return "Int"
+        }
+        if name == "bool" {
+            return "Bool"
+        }
+        if name == "string" {
+            return "String"
+        }
+        if name == "map" && len(t.list) == 2 {
+            return "MapOf(" + cg_bytecode_type(t.list[0], enums) + ", " + cg_bytecode_type(t.list[1], enums) + ")"
+        }
+        if name == "map" {
+            return "Map"
+        }
+        if std::map::contains(enums, name) && len(t.list) > 0 {
+            let mut parts = []
+            for generic in t.list {
+                parts = std::array::push(parts, cg_bytecode_type(generic, enums))
+            }
+            return "EnumOf(" + q(name) + ", [" + cg_join(parts, ", ") + "])"
+        }
+        if std::map::contains(enums, name) {
+            return "Enum(" + q(name) + ")"
+        }
+        return "Struct(" + q(name) + ")"
+    }
+    if k == "t_array" || k == "t_slice" {
+        return "ArrayOf(" + cg_bytecode_type(t.a, enums) + ")"
+    }
+    if k == "t_tuple" {
+        let mut parts = []
+        for element in t.list {
+            parts = std::array::push(parts, cg_bytecode_type(element, enums))
+        }
+        return "TupleOf([" + cg_join(parts, ", ") + "])"
+    }
+    "Unknown"
+}
+
+// ------------------------------------------------------------ recolección
+
+fn cg_collect_struct_schemas(items: array, output: map) -> map {
+    let mut out = output
+    for item in items {
+        if item.kind == "struct" {
+            let mut fields = []
+            for f in item.list {
+                fields = std::array::push(fields, f.text)
+            }
+            out = std::map::insert(out, item.text, fields)
+            continue
+        }
+        if item.kind == "module" {
+            out = cg_collect_struct_schemas(item.list, out)
+        }
+    }
+    out
+}
+
+fn cg_collect_enum_schemas(items: array, output: map) -> map {
+    let mut out = output
+    for item in items {
+        if item.kind == "enum" {
+            let mut variants = []
+            for v in item.list {
+                variants = std::array::push(variants, v.text)
+            }
+            out = std::map::insert(out, item.text, variants)
+            continue
+        }
+        if item.kind == "module" {
+            out = cg_collect_enum_schemas(item.list, out)
+        }
+    }
+    out
+}
+
+fn cg_collect_traits(items: array, traits: map) -> map {
+    let mut out = traits
+    for item in items {
+        if item.kind == "trait" {
+            out = std::map::insert(out, item.text, item)
+            continue
+        }
+        if item.kind == "module" {
+            out = cg_collect_traits(item.list, out)
+        }
+    }
+    out
+}
+
+fn cg_named_type(name: string, span: Span) -> Node {
+    Node { kind: "t_named", text: name, text2: "", flag: false, a: nil, b: nil, c: nil, list: [], list2: [], span: span }
+}
+
+// Si el primer parámetro se llama `self` y no tiene tipo, recibe el del impl.
+fn cg_with_self_type(params: array, type_name: string, span: Span) -> array {
+    if len(params) == 0 {
+        return params
+    }
+    let first = params[0]
+    if first.text != "self" || first.a != nil {
+        return params
+    }
+    let fixed = Node { kind: first.kind, text: first.text, text2: first.text2, flag: first.flag, a: cg_named_type(type_name, span), b: first.b, c: first.c, list: first.list, list2: first.list2, span: first.span }
+    std::array::set(params, 0, fixed)
+}
+
+// Estado de la recolección: (funciones, constantes, variantes, métodos).
+fn cg_collect_items_with_traits(items: array, acc: (array, map, map, map), traits: map) -> (array, map, map, map) {
+    let (f0, c0, v0, m0) = acc
+    let mut functions = f0
+    let mut constants = c0
+    let mut variants = v0
+    let mut methods = m0
+    for item in items {
+        let k = item.kind
+        if k == "fn" {
+            functions = std::array::push(functions, item)
+            continue
+        }
+        if k == "const" {
+            constants = std::map::insert(constants, item.text, item.b)
+            continue
+        }
+        if k == "enum" {
+            for variant in item.list {
+                variants = std::map::insert(variants, item.text + "::" + variant.text, variant.a != nil)
+            }
+            continue
+        }
+        if k == "module" {
+            let (f1, c1, v1, m1) = cg_collect_items_with_traits(item.list, (functions, constants, variants, methods), traits)
+            functions = f1
+            constants = c1
+            variants = v1
+            methods = m1
+            continue
+        }
+        if k != "impl" || item.b.kind != "t_named" {
+            continue
+        }
+        let type_name = item.b.text
+        let mut provided = std::map::new()
+        for method in item.list {
+            provided = std::map::insert(provided, method.text, true)
+        }
+        for method in item.list {
+            let renamed_name = type_name + "::" + method.text
+            let params = cg_with_self_type(method.list, type_name, zero_span())
+            let renamed = Node { kind: method.kind, text: renamed_name, text2: method.text2, flag: method.flag, a: method.a, b: method.b, c: method.c, list: params, list2: method.list2, span: method.span }
+            methods = std::map::insert(methods, renamed_name, len(functions))
+            functions = std::array::push(functions, renamed)
+        }
+        if item.a == nil || !std::map::contains(traits, item.a) {
+            continue
+        }
+        let trait_decl = std::map::get(traits, item.a)
+        for tm in trait_decl.list {
+            if std::map::contains(provided, tm.text) || tm.c == nil {
+                continue
+            }
+            let synth_name = type_name + "::" + tm.text
+            let params = cg_with_self_type(tm.list, type_name, zero_span())
+            let synth = Node { kind: "fn", text: synth_name, text2: "", flag: false, a: nil, b: tm.b, c: tm.c, list: params, list2: [], span: tm.span }
+            methods = std::map::insert(methods, synth_name, len(functions))
+            functions = std::array::push(functions, synth)
+        }
+    }
+    return (functions, constants, variants, methods)
+}
+
+// ------------------------------------------------------------ programa
+
+fn cg_compile_program(g0: G, items: array) -> Result {
+    let mut g = g0
+    let mut variants = std::map::new()
+    variants = std::map::insert(variants, "Option::None", false)
+    variants = std::map::insert(variants, "Option::Some", true)
+    variants = std::map::insert(variants, "Result::Ok", true)
+    variants = std::map::insert(variants, "Result::Err", true)
+    let mut enums = std::map::new()
+    enums = std::map::insert(enums, "Option", ["None", "Some"])
+    enums = std::map::insert(enums, "Result", ["Ok", "Err"])
+    g = gs_structs(g, cg_collect_struct_schemas(items, std::map::new()))
+    g = gs_enums(g, cg_collect_enum_schemas(items, enums))
+    let traits = cg_collect_traits(items, std::map::new())
+    let (functions, constants, all_variants, methods) = cg_collect_items_with_traits(items, ([], std::map::new(), variants, std::map::new()), traits)
+    g = gs_consts(gs_variants(g, all_variants), constants)
+    let mut fids = std::map::new()
+    let mut index = 0
+    for f in functions {
+        if std::map::contains(fids, f.text) {
+            return Result::Err("unsupported construct: duplicate function '" + f.text + "'")
+        }
+        fids = std::map::insert(fids, f.text, index)
+        index += 1
+    }
+    g = gs_methods(gs_fids(g, fids), methods)
+    if !std::map::contains(fids, "main") {
+        return Result::Err("unknown function 'main'")
+    }
+    let entry = std::map::get(fids, "main")
+    let entry_arity = len(functions[entry].list)
+    if entry_arity != 0 {
+        return Result::Err("unsupported construct: entry point 'main' must take no arguments but {entry_arity} were declared")
+    }
+    g = gs_entry(g, entry)
+    let mut funcs = []
+    for f in functions {
+        funcs = std::array::push(funcs, cg_empty_func())
+    }
+    g = gs_funcs(g, funcs)
+    index = 0
+    for f in functions {
+        let (compiled, g2) = cg_compile_function(g, f)?
+        g = gs_funcs(g2, std::array::set(g2.funcs, index, compiled))
+        index += 1
+    }
+    Result::Ok(g)
+}
+
+fn cg_compile_function(g0: G, f) -> Result {
+    let mut g = g0
+    if f.flag {
+        return Result::Err("unsupported construct: extern function '" + f.text + "' has no runtime linkage implementation")
+    }
+    if f.c == nil {
+        return Result::Err("unsupported construct: bodyless function '" + f.text + "' outside a trait declaration")
+    }
+    for p in f.list {
+        if p.b != nil {
+            return Result::Err("unsupported construct: default parameters in function '" + f.text + "' have no bytecode implementation")
+        }
+    }
+    let mut params = []
+    for p in f.list {
+        params = std::array::push(params, cg_bytecode_type(p.a, g.enums))
+    }
+    let mut ret: any = nil
+    if f.b != nil {
+        ret = cg_bytecode_type(f.b, g.enums)
+    }
+    let mut file: any = nil
+    if f.text2 != "" {
+        file = f.text2
+    }
+    g = gs_meta(g, Meta { name: f.text, file: file, arity: len(f.list), params: params, ret: ret, captures: 0 })
+    g = gs_code(g, [])
+    g = gs_locs(g, [])
+    g = gs_locals(g, [std::map::new()])
+    g = gs_muts(g, [std::map::new()])
+    g = gs_next(g, 0)
+    g = gs_loops(g, [])
+    for p in f.list {
+        let (g2, slot) = cg_add_mutable_local(g, p.text, p.flag)
+        g = g2
+    }
+    g = cg_compile_block(g, f.c, true)?
+    if len(g.code) == 0 || g.code[len(g.code) - 1].k != "Ret" {
+        g = cg_emit(g, cg_op("Ret"))
+    }
+    return Result::Ok((cg_finish_func(g, 256), g))
+}
+
+fn cg_finish_func(g: G, max_stack: int) -> Func {
+    let m = g.meta
+    Func { name: m.name, file: m.file, arity: m.arity, params: m.params, ret: m.ret, captures: m.captures, locals: g.next, max_stack: max_stack, code: g.code, locs: g.locs }
+}
+
+fn cg_compile_block(g0: G, block, value_needed: bool) -> Result {
+    let mut g = cg_push_scope(g0)
+    for stmt in block.list {
+        g = cg_compile_stmt(g, stmt)?
+    }
+    if block.a != nil {
+        g = cg_compile_expr(g, block.a)?
+        if !value_needed {
+            g = cg_emit(g, cg_op("Pop"))
+        }
+    } else if value_needed {
+        g = cg_emit(g, cg_op("PushNil"))
+    }
+    Result::Ok(cg_pop_scope(g))
+}
+
+fn cg_is_terminal(e) -> bool {
+    e.kind == "return" || e.kind == "break" || e.kind == "continue"
+}
+
+fn cg_compile_stmt(g0: G, stmt) -> Result {
+    let mut g = g0
+    if stmt.kind == "sexpr" {
+        g = cg_compile_expr(g, stmt.a)?
+        if !cg_is_terminal(stmt.a) {
+            g = cg_emit(g, cg_op("Pop"))
+        }
+        return Result::Ok(g)
+    }
+    if stmt.kind == "slet" {
+        g = cg_compile_expr(g, stmt.b)?
+        let (g2, local) = cg_add_mutable_local(g, stmt.text, stmt.flag)
+        return Result::Ok(cg_emit(g2, cg_op_n("StoreLocal", local)))
+    }
+    Result::Err("unsupported construct: nested declarations are not executable yet")
+}
+
+// ------------------------------------------------------------ expresiones
+
+fn cg_compile_expr(g0: G, e) -> Result {
+    let previous = g0.loc
+    let g = cg_compile_expr_inner(gs_loc(g0, e.span), e)?
+    Result::Ok(gs_loc(g, previous))
+}
+
+fn cg_compile_exprs(g0: G, list: array) -> Result {
+    let mut g = g0
+    for x in list {
+        g = cg_compile_expr(g, x)?
+    }
+    Result::Ok(g)
+}
+
+fn cg_split_variant(name: string) -> Result {
+    let sep = find_sub(name, "::")
+    if sep < 0 {
+        return Result::Err("unsupported construct: invalid enum variant '" + name + "'")
+    }
+    Result::Ok((std::text::substring(name, 0, sep), std::text::substring(name, sep + 2, len(name))))
+}
+
+fn cg_new_enum(name: string, variant: string, has_payload: bool) -> Op {
+    Op { k: "NewEnum", n: 0, m: 0, s: name, s2: variant, flag: has_payload, list: [] }
+}
+
+fn cg_compile_ident(g0: G, name: string) -> Result {
+    let mut g = g0
+    let local = cg_find_local(g, name)
+    if local >= 0 {
+        return Result::Ok(cg_emit(g, cg_op_n("PushLocal", local)))
+    }
+    if std::map::contains(g.consts, name) {
+        let value = std::map::get(g.consts, name)
+        let mut start = -1
+        let mut i = 0
+        while i < len(g.cexp) {
+            if g.cexp[i] == name {
+                start = i
+                break
+            }
+            i += 1
+        }
+        if start >= 0 {
+            let mut cycle = std::array::slice(g.cexp, start, len(g.cexp))
+            cycle = std::array::push(cycle, name)
+            return Result::Err("unsupported construct: recursive constant expansion: " + cg_join(cycle, " -> "))
+        }
+        g = gs_cexp(g, std::array::push(g.cexp, name))
+        g = cg_compile_expr(g, value)?
+        return Result::Ok(gs_cexp(g, std::array::slice(g.cexp, 0, len(g.cexp) - 1)))
+    }
+    if std::map::contains(g.variants, name) && std::map::get(g.variants, name) == false {
+        let (enum_name, variant) = cg_split_variant(name)?
+        return Result::Ok(cg_emit(g, cg_new_enum(enum_name, variant, false)))
+    }
+    if std::map::contains(g.fids, name) {
+        let op = Op { k: "MakeClosure", n: std::map::get(g.fids, name), m: 0, s: "", s2: "", flag: false, list: [] }
+        return Result::Ok(cg_emit(g, op))
+    }
+    Result::Err("unknown variable '" + name + "'")
+}
+
+fn cg_compile_expr_inner(g0: G, e) -> Result {
+    let mut g = g0
+    let k = e.kind
+    if k == "int" {
+        return Result::Ok(cg_emit(g, cg_op_n("PushInt", e.a)))
+    }
+    if k == "float" {
+        let v = e.a
+        return Result::Ok(cg_emit(g, cg_op_s("PushFloat", "{v}", 0)))
+    }
+    if k == "bool" {
+        let op = Op { k: "PushBool", n: 0, m: 0, s: "", s2: "", flag: e.flag, list: [] }
+        return Result::Ok(cg_emit(g, op))
+    }
+    if k == "char" {
+        return Result::Ok(cg_emit(g, cg_op_s("PushChar", e.text, 0)))
+    }
+    if k == "nil" {
+        return Result::Ok(cg_emit(g, cg_op("PushNil")))
+    }
+    if k == "string" {
+        let (g2, id) = cg_intern(g, e.text)
+        return Result::Ok(cg_emit(g2, cg_op_n("PushStr", id)))
+    }
+    if k == "template" {
+        return cg_compile_template(g, e.text)
+    }
+    if k == "ident" {
+        return cg_compile_ident(g, e.text)
+    }
+    if k == "array" || k == "tuple" {
+        g = cg_compile_exprs(g, e.list)?
+        let mut name = "NewArray"
+        if k == "tuple" {
+            name = "NewTuple"
+        }
+        return Result::Ok(cg_emit(g, cg_op_n(name, len(e.list))))
+    }
+    if k == "structlit" {
+        g = cg_compile_exprs(g, e.list2)?
+        let op = Op { k: "NewStruct", n: 0, m: 0, s: e.text, s2: "", flag: false, list: e.list }
+        return Result::Ok(cg_emit(g, op))
+    }
+    if k == "binary" {
+        return cg_compile_binary(g, e.a, e.text, e.b)
+    }
+    if k == "range" {
+        g = cg_compile_expr(g, e.a)?
+        g = cg_compile_expr(g, e.b)?
+        let inclusive = Op { k: "PushBool", n: 0, m: 0, s: "", s2: "", flag: e.flag, list: [] }
+        g = cg_emit(g, inclusive)
+        let call = Op { k: "Call", n: 0, m: 3, s: "", s2: "", flag: true, list: [] }
+        return Result::Ok(cg_emit(g, call))
+    }
+    if k == "unary" {
+        g = cg_compile_expr(g, e.a)?
+        if e.text == "Neg" || e.text == "Not" || e.text == "BitNot" {
+            return Result::Ok(cg_emit(g, cg_op(e.text)))
+        }
+        return Result::Err("unsupported construct: references and dereferencing")
+    }
+    if k == "call" {
+        return cg_compile_call(g, e.a, e.list)
+    }
+    if k == "methodcall" {
+        g = cg_compile_expr(g, e.a)?
+        g = cg_compile_exprs(g, e.list)?
+        return Result::Ok(cg_emit(g, cg_op_s("CallMethod", e.text, len(e.list))))
+    }
+    if k == "index" {
+        g = cg_compile_expr(g, e.a)?
+        g = cg_compile_expr(g, e.b)?
+        return Result::Ok(cg_emit(g, cg_op("Index")))
+    }
+    if k == "field" {
+        g = cg_compile_expr(g, e.a)?
+        return Result::Ok(cg_emit(g, cg_op_s("GetField", e.text, 0)))
+    }
+    if k == "if" {
+        g = cg_compile_expr(g, e.a)?
+        let (g2, else_jump) = cg_jump_if_false(g)
+        g = cg_compile_block(g2, e.b, true)?
+        let (g3, end_jump) = cg_jump(g)
+        g = cg_patch(g3, else_jump, cg_position(g3))
+        if e.c != nil {
+            g = cg_compile_block(g, e.c, true)?
+        } else {
+            g = cg_emit(g, cg_op("PushNil"))
+        }
+        return Result::Ok(cg_patch(g, end_jump, cg_position(g)))
+    }
+    if k == "while" {
+        return cg_compile_while(g, e.a, e.b)
+    }
+    if k == "for" {
+        return cg_compile_for(g, e.a, e.b, e.c)
+    }
+    if k == "loop" {
+        return cg_compile_loop(g, e.a)
+    }
+    if k == "break" || k == "continue" {
+        if k == "break" && e.a != nil {
+            return Result::Err("unsupported construct: values carried by break")
+        }
+        let (g2, jump) = cg_jump(g)
+        if len(g2.loops) == 0 {
+            return Result::Err("break or continue outside a loop")
+        }
+        let n = len(g2.loops)
+        let l = g2.loops[n - 1]
+        let mut updated = Loop { breaks: std::array::push(l.breaks, jump), continues: l.continues, target: l.target }
+        if k == "continue" {
+            updated = Loop { breaks: l.breaks, continues: std::array::push(l.continues, jump), target: l.target }
+        }
+        return Result::Ok(gs_loops(g2, std::array::set(g2.loops, n - 1, updated)))
+    }
+    if k == "return" {
+        if e.a != nil {
+            g = cg_compile_expr(g, e.a)?
+        } else {
+            g = cg_emit(g, cg_op("PushNil"))
+        }
+        return Result::Ok(cg_emit(g, cg_op("Ret")))
+    }
+    if k == "assign" {
+        return cg_compile_assignment(g, e.a, e.text, e.b, true)
+    }
+    if k == "block" {
+        return cg_compile_block(g, e, true)
+    }
+    if k == "match" {
+        return cg_compile_match(g, e.a, e.list)
+    }
+    if k == "spawn" || k == "try" {
+        g = cg_compile_expr(g, e.a)?
+        let mut name = "Spawn"
+        if k == "try" {
+            name = "Try"
+        }
+        return Result::Ok(cg_emit(g, cg_op(name)))
+    }
+    if k == "closure" {
+        return cg_compile_closure(g, e.list, e.b)
+    }
+    Result::Err("unsupported construct: " + k)
+}
+
+fn cg_binary_op(op: string) -> string {
+    if op == "And" {
+        return "BitAnd"
+    }
+    if op == "Or" {
+        return "BitOr"
+    }
+    if op == "Xor" {
+        return "BitXor"
+    }
+    op
+}
+
+fn cg_compile_binary(g0: G, left, op: string, right) -> Result {
+    let mut g = g0
+    if op == "LazyAnd" || op == "LazyOr" {
+        g = cg_compile_expr(g, left)?
+        g = cg_emit(g, cg_op("Dup"))
+        let (g2, jump) = cg_jump_if_false(g)
+        g = g2
+        if op == "LazyOr" {
+            let (g3, evaluate) = cg_jump(g)
+            g = cg_patch(g3, jump, cg_position(g3))
+            g = cg_emit(g, cg_op("Pop"))
+            g = cg_compile_expr(g, right)?
+            let (g4, end) = cg_jump(g)
+            g = cg_patch(g4, evaluate, cg_position(g4))
+            return Result::Ok(cg_patch(g, end, cg_position(g)))
+        }
+        g = cg_emit(g, cg_op("Pop"))
+        g = cg_compile_expr(g, right)?
+        return Result::Ok(cg_patch(g, jump, cg_position(g)))
+    }
+    g = cg_compile_expr(g, left)?
+    g = cg_compile_expr(g, right)?
+    Result::Ok(cg_emit(g, cg_op(cg_binary_op(op))))
+}
+
+// ------------------------------------------------------------ llamadas
+
+fn cg_call_value(g0: G, callee_local: int, callee, args: array) -> Result {
+    let mut g = g0
+    if callee_local >= 0 {
+        g = cg_emit(g, cg_op_n("PushLocal", callee_local))
+    } else {
+        g = cg_compile_expr(g, callee)?
+    }
+    g = cg_compile_exprs(g, args)?
+    Result::Ok(cg_emit(g, cg_op_n("CallValue", len(args))))
+}
+
+fn cg_compile_call(g0: G, callee, args: array) -> Result {
+    let mut g = g0
+    if callee.kind != "ident" {
+        return cg_call_value(g, -1, callee, args)
+    }
+    let name = callee.text
+    let local = cg_find_local(g, name)
+    if local >= 0 {
+        return cg_call_value(g, local, callee, args)
+    }
+    if std::map::contains(g.consts, name) {
+        return cg_call_value(g, -1, callee, args)
+    }
+    if name == "std::try::catch" {
+        if len(args) == 0 {
+            return Result::Err("unsupported construct: std::try::catch requires a callable argument")
+        }
+        g = cg_compile_exprs(g, args)?
+        return Result::Ok(cg_emit(g, cg_op_n("TryCall", len(args) - 1)))
+    }
+    g = cg_compile_exprs(g, args)?
+    let argc = len(args)
+    if name == "print" || name == "println" {
+        return Result::Ok(cg_emit(g, cg_op_n("Print", argc)))
+    }
+    let key = name + "#{argc}"
+    if std::map::contains(g.dedicated, key) {
+        return Result::Ok(cg_emit(g, cg_op(std::map::get(g.dedicated, key))))
+    }
+    if std::map::contains(g.natives, name) {
+        return Result::Ok(cg_emit(g, cg_op_s("CallNative", name, argc)))
+    }
+    if std::map::contains(g.variants, name) {
+        let has_payload = std::map::get(g.variants, name)
+        let mut expected = 0
+        if has_payload {
+            expected = 1
+        }
+        if argc != expected {
+            return Result::Err("unsupported construct: wrong payload count for enum variant '" + name + "'")
+        }
+        let (enum_name, variant) = cg_split_variant(name)?
+        return Result::Ok(cg_emit(g, cg_new_enum(enum_name, variant, has_payload)))
+    }
+    if !std::map::contains(g.fids, name) {
+        return Result::Err("unknown function '" + name + "'")
+    }
+    let op = Op { k: "Call", n: std::map::get(g.fids, name), m: argc, s: "", s2: "", flag: false, list: [] }
+    Result::Ok(cg_emit(g, op))
+}
+
+// ------------------------------------------------------------ asignación
+
+// Natives que devuelven su primer argumento actualizado (MOVABLE_UPDATE_NATIVES).
+fn cg_is_movable_native(name: string) -> bool {
+    name == "std::array::push" || name == "std::array::pop" || name == "std::array::set" || name == "std::array::concat" || name == "std::map::insert" || name == "std::map::insert_new" || name == "std::map::remove" || name == "std::bytes::concat"
+}
+
+fn cg_any_mentions(list: array, name: string) -> bool {
+    for x in list {
+        if cg_expr_mentions(x, name) {
+            return true
+        }
+    }
+    false
+}
+
+// ¿Puede la expresión leer la variable? Conservador (ver expr_mentions en Rust).
+fn cg_expr_mentions(e, name: string) -> bool {
+    let k = e.kind
+    if k == "int" || k == "float" || k == "string" || k == "char" || k == "bool" || k == "nil" {
+        return false
+    }
+    if k == "template" {
+        return std::text::contains(e.text, name)
+    }
+    if k == "ident" {
+        return e.text == name
+    }
+    if k == "array" || k == "tuple" {
+        return cg_any_mentions(e.list, name)
+    }
+    if k == "structlit" {
+        return cg_any_mentions(e.list2, name)
+    }
+    if k == "binary" || k == "range" || k == "index" {
+        return cg_expr_mentions(e.a, name) || cg_expr_mentions(e.b, name)
+    }
+    if k == "unary" || k == "try" || k == "field" {
+        return cg_expr_mentions(e.a, name)
+    }
+    if k == "call" || k == "methodcall" {
+        return cg_expr_mentions(e.a, name) || cg_any_mentions(e.list, name)
+    }
+    true
+}
+
+fn cg_movable_update_call(g: G, value, name: string) -> bool {
+    if value.kind != "call" || value.a.kind != "ident" {
+        return false
+    }
+    let native = value.a.text
+    if !cg_is_movable_native(native) || cg_find_local(g, native) >= 0 || !std::map::contains(g.natives, native) {
+        return false
+    }
+    let args = value.list
+    if len(args) == 0 {
+        return false
+    }
+    if args[0].kind != "ident" || args[0].text != name {
+        return false
+    }
+    !cg_any_mentions(std::array::slice(args, 1, len(args)), name)
+}
+
+fn cg_compile_assignment(g0: G, target, op: string, value, keep: bool) -> Result {
+    let mut g = g0
+    if target.kind != "ident" {
+        return Result::Err("unsupported construct: assignment target must currently be a variable")
+    }
+    let name = target.text
+    let local = cg_find_local(g, name)
+    if local < 0 {
+        return Result::Err("unknown variable '" + name + "'")
+    }
+    if !cg_is_local_mutable(g, name) {
+        return Result::Err("unsupported construct: assignment to immutable or captured local '" + name + "'")
+    }
+    if op != "" {
+        if cg_expr_mentions(value, name) {
+            g = cg_emit(g, cg_op_n("PushLocal", local))
+        } else {
+            g = cg_emit(g, cg_op_n("TakeLocal", local))
+        }
+        g = cg_compile_expr(g, value)?
+        if op != "Add" && op != "Sub" && op != "Mul" && op != "Div" && op != "Mod" {
+            return Result::Err("unsupported construct: compound assignment " + op)
+        }
+        g = cg_emit(g, cg_op(op))
+    } else if cg_movable_update_call(g, value, name) {
+        g = cg_emit(g, cg_op_n("TakeLocal", local))
+        g = cg_compile_exprs(g, std::array::slice(value.list, 1, len(value.list)))?
+        g = cg_emit(g, cg_op_s("CallNative", value.a.text, len(value.list)))
+    } else if value.kind == "binary" && value.text == "Add" && value.a.kind == "ident" && value.a.text == name && !cg_expr_mentions(value.b, name) {
+        g = cg_emit(g, cg_op_n("TakeLocal", local))
+        g = cg_compile_expr(g, value.b)?
+        g = cg_emit(g, cg_op("Add"))
+    } else {
+        g = cg_compile_expr(g, value)?
+    }
+    if keep {
+        g = cg_emit(g, cg_op("Dup"))
+    }
+    Result::Ok(cg_emit(g, cg_op_n("StoreLocal", local)))
+}
+
+// ------------------------------------------------------------ bucles
+
+fn cg_push_loop(g: G, target: int) -> G {
+    gs_loops(g, std::array::push(g.loops, Loop { breaks: [], continues: [], target: target }))
+}
+
+fn cg_set_continue_target(g: G, target: int) -> G {
+    let n = len(g.loops)
+    if n == 0 {
+        return g
+    }
+    let l = g.loops[n - 1]
+    gs_loops(g, std::array::set(g.loops, n - 1, Loop { breaks: l.breaks, continues: l.continues, target: target }))
+}
+
+fn cg_finish_loop(g0: G, end: int) -> G {
+    let mut g = g0
+    let n = len(g.loops)
+    if n == 0 {
+        return g
+    }
+    let context = g.loops[n - 1]
+    g = gs_loops(g, std::array::slice(g.loops, 0, n - 1))
+    for jump in context.breaks {
+        g = cg_patch(g, jump, end)
+    }
+    for jump in context.continues {
+        g = cg_patch(g, jump, context.target)
+    }
+    g
+}
+
+fn cg_compile_while(g0: G, condition, body) -> Result {
+    let mut g = g0
+    let start = cg_position(g)
+    g = cg_compile_expr(g, condition)?
+    let (g2, exit) = cg_jump_if_false(g)
+    g = cg_push_loop(g2, start)
+    g = cg_compile_block(g, body, false)?
+    g = cg_emit(g, cg_op_n("Jump", start))
+    let end = cg_position(g)
+    g = cg_patch(g, exit, end)
+    g = cg_finish_loop(g, end)
+    Result::Ok(cg_emit(g, cg_op("PushNil")))
+}
+
+fn cg_compile_loop(g0: G, body) -> Result {
+    let mut g = g0
+    let start = cg_position(g)
+    g = cg_push_loop(g, start)
+    g = cg_compile_block(g, body, false)?
+    g = cg_emit(g, cg_op_n("Jump", start))
+    let end = cg_position(g)
+    g = cg_finish_loop(g, end)
+    Result::Ok(cg_emit(g, cg_op("PushNil")))
+}
+
+fn cg_compile_for(g0: G, pattern, iterator, body) -> Result {
+    let mut g = g0
+    if pattern.kind != "p_ident" && pattern.kind != "p_wild" {
+        return Result::Err("unsupported construct: for currently requires an identifier or wildcard pattern")
+    }
+    g = cg_compile_expr(g, iterator)?
+    let (g1, array) = cg_add_temp(g, "$iter")
+    g = cg_emit(g1, cg_op_n("StoreLocal", array))
+    g = cg_emit(g, cg_op_n("PushInt", 0))
+    let (g2, index) = cg_add_temp(g, "$index")
+    g = cg_emit(g2, cg_op_n("StoreLocal", index))
+    g = cg_push_scope(g)
+    let mut item = -1
+    if pattern.kind == "p_ident" {
+        let (g3, slot) = cg_add_local(g, pattern.text)
+        g = g3
+        item = slot
+    }
+    let start = cg_position(g)
+    g = cg_emit(g, cg_op_n("PushLocal", index))
+    g = cg_emit(g, cg_op_n("PushLocal", array))
+    g = cg_emit(g, cg_op("Len"))
+    g = cg_emit(g, cg_op("Lt"))
+    let (g4, exit) = cg_jump_if_false(g)
+    g = g4
+    if item >= 0 {
+        g = cg_emit(g, cg_op_n("PushLocal", array))
+        g = cg_emit(g, cg_op_n("PushLocal", index))
+        g = cg_emit(g, cg_op("Index"))
+        g = cg_emit(g, cg_op_n("StoreLocal", item))
+    }
+    g = cg_push_loop(g, 0)
+    g = cg_compile_block(g, body, false)?
+    let increment = cg_position(g)
+    g = cg_set_continue_target(g, increment)
+    g = cg_emit(g, cg_op_n("PushLocal", index))
+    g = cg_emit(g, cg_op_n("PushInt", 1))
+    g = cg_emit(g, cg_op("Add"))
+    g = cg_emit(g, cg_op_n("StoreLocal", index))
+    g = cg_emit(g, cg_op_n("Jump", start))
+    let end = cg_position(g)
+    g = cg_patch(g, exit, end)
+    g = cg_finish_loop(g, end)
+    g = cg_pop_scope(g)
+    Result::Ok(cg_emit(g, cg_op("PushNil")))
+}
+
+// ------------------------------------------------------------ match
+
+fn cg_compile_match(g0: G, scrutinee, arms: array) -> Result {
+    let mut g = g0
+    g = cg_compile_expr(g, scrutinee)?
+    let (g1, subject) = cg_add_temp(g, "$match")
+    g = cg_emit(g1, cg_op_n("StoreLocal", subject))
+    let mut ends = []
+    for arm in arms {
+        g = cg_push_scope(g)
+        let p = arm.a
+        let mut failure = -1
+        if p.kind == "p_ident" {
+            g = cg_emit(g, cg_op_n("PushLocal", subject))
+            let (g2, local) = cg_add_local(g, p.text)
+            g = cg_emit(g2, cg_op_n("StoreLocal", local))
+        } else if p.kind == "p_lit" {
+            g = cg_emit(g, cg_op_n("PushLocal", subject))
+            g = cg_compile_expr(g, p.a)?
+            g = cg_emit(g, cg_op("Eq"))
+            let (g2, jump) = cg_jump_if_false(g)
+            g = g2
+            failure = jump
+        } else if p.kind == "p_enum" {
+            g = cg_emit(g, cg_op_n("PushLocal", subject))
+            let test = Op { k: "EnumIs", n: 0, m: 0, s: p.text, s2: p.text2, flag: false, list: [] }
+            g = cg_emit(g, test)
+            let (g2, jump) = cg_jump_if_false(g)
+            g = g2
+            failure = jump
+            if p.a != nil {
+                g = cg_emit(g, cg_op_n("PushLocal", subject))
+                g = cg_emit(g, cg_op("EnumPayload"))
+                if p.a.kind == "p_ident" {
+                    let (g3, local) = cg_add_local(g, p.a.text)
+                    g = cg_emit(g3, cg_op_n("StoreLocal", local))
+                } else if p.a.kind == "p_wild" {
+                    g = cg_emit(g, cg_op("Pop"))
+                } else {
+                    return Result::Err("unsupported construct: nested enum destructuring pattern")
+                }
+            }
+        } else if p.kind == "p_or" {
+            return Result::Err("unsupported construct: or-pattern bytecode")
+        } else if p.kind != "p_wild" {
+            return Result::Err("unsupported construct: destructuring pattern bytecode")
+        }
+        let mut guard_failure = -1
+        if arm.b != nil {
+            g = cg_compile_expr(g, arm.b)?
+            let (g2, jump) = cg_jump_if_false(g)
+            g = g2
+            guard_failure = jump
+        }
+        g = cg_compile_block(g, arm.c, true)?
+        let (g4, end_jump) = cg_jump(g)
+        g = g4
+        ends = std::array::push(ends, end_jump)
+        let next = cg_position(g)
+        if failure >= 0 {
+            g = cg_patch(g, failure, next)
+        }
+        if guard_failure >= 0 {
+            g = cg_patch(g, guard_failure, next)
+        }
+        g = cg_pop_scope(g)
+    }
+    g = cg_emit(g, cg_op("PushNil"))
+    let end = cg_position(g)
+    for jump in ends {
+        g = cg_patch(g, jump, end)
+    }
+    Result::Ok(g)
+}
+
+// ------------------------------------------------------------ plantillas
+
+fn cg_push_piece(g0: G, text: string, has_output: bool) -> (G, bool) {
+    let (g, id) = cg_intern(g0, text)
+    let g2 = cg_emit(g, cg_op_n("PushStr", id))
+    if has_output {
+        return (cg_emit(g2, cg_op("Add")), true)
+    }
+    return (g2, true)
+}
+
+fn cg_compile_template(g0: G, template: string) -> Result {
+    let mut g = g0
+    let chars = std::text::chars(template)
+    let n = len(chars)
+    let mut pos = 0
+    let mut has_output = false
+    while true {
+        let mut open = -1
+        let mut i = pos
+        while i < n {
+            if chars[i] == '{' {
+                open = i
+                break
+            }
+            i += 1
+        }
+        if open < 0 {
+            break
+        }
+        let literal = std::text::substring(template, pos, open)
+        if literal != "" {
+            let (g2, h) = cg_push_piece(g, literal, has_output)
+            g = g2
+            has_output = h
+        }
+        let mut close = -1
+        i = open + 1
+        while i < n {
+            if chars[i] == '}' {
+                close = i
+                break
+            }
+            i += 1
+        }
+        if close < 0 {
+            return Result::Err("invalid interpolation expression '" + template + "'")
+        }
+        g = cg_compile_interpolation(g, std::text::trim(std::text::substring(template, open + 1, close)))?
+        g = cg_emit(g, cg_op("ToString"))
+        if has_output {
+            g = cg_emit(g, cg_op("Add"))
+        } else {
+            has_output = true
+        }
+        pos = close + 1
+    }
+    let rest = std::text::substring(template, pos, n)
+    if rest != "" {
+        let (g2, h) = cg_push_piece(g, rest, has_output)
+        g = g2
+        has_output = h
+    }
+    if !has_output {
+        let (g3, id) = cg_intern(g, "")
+        g = cg_emit(g3, cg_op_n("PushStr", id))
+    }
+    Result::Ok(g)
+}
+
+fn cg_leaf(kind: string, text: string, value) -> Node {
+    Node { kind: kind, text: text, text2: "", flag: false, a: value, b: nil, c: nil, list: [], list2: [], span: cg_zero_span() }
+}
+
+fn cg_compile_interpolation(g0: G, source: string) -> Result {
+    let mut g = g0
+    let open = find_sub(source, "(")
+    if open >= 0 {
+        if !std::text::ends_with(source, ")") {
+            return Result::Err("invalid interpolation expression '" + source + "'")
+        }
+        let name = std::text::trim(std::text::substring(source, 0, open))
+        let args_source = std::text::substring(source, open + 1, len(source) - 1)
+        let mut args = []
+        for raw in split_on(args_source, ',') {
+            let arg = std::text::trim(raw)
+            if arg == "" {
+                continue
+            }
+            let (ok, value) = parse_i64_strict(arg)
+            if ok {
+                args = std::array::push(args, cg_leaf("int", "", value))
+                continue
+            }
+            if cg_find_local(g, arg) < 0 {
+                return Result::Err("unknown variable '" + arg + "'")
+            }
+            args = std::array::push(args, cg_leaf("ident", arg, nil))
+        }
+        return cg_compile_call(g, cg_leaf("ident", name, nil), args)
+    }
+    let local = cg_find_local(g, source)
+    if local >= 0 {
+        return Result::Ok(cg_emit(g, cg_op_n("PushLocal", local)))
+    }
+    if std::map::contains(g.consts, source) {
+        return cg_compile_expr(g, cg_leaf("ident", source, nil))
+    }
+    Result::Err("unknown variable '" + source + "'")
+}
+
+// ------------------------------------------------------------ closures
+
+fn cg_compile_closure(g0: G, params: array, body) -> Result {
+    let mut g = g0
+    // Variables visibles (las de ámbitos interiores tapan a las exteriores),
+    // ordenadas por nombre como el BTreeMap de Rust.
+    let mut visible = std::map::new()
+    for scope in g.locals {
+        for name in std::map::keys(scope) {
+            visible = std::map::insert(visible, name, std::map::get(scope, name))
+        }
+    }
+    let capture_names = std::map::keys(visible)
+    let mut capture_slots = []
+    for name in capture_names {
+        capture_slots = std::array::push(capture_slots, std::map::get(visible, name))
+    }
+    let function = len(g.funcs)
+    g = gs_funcs(g, std::array::push(g.funcs, cg_empty_func()))
+
+    let outer_meta = g.meta
+    let outer_code = g.code
+    let outer_locs = g.locs
+    let outer_locals = g.locals
+    let outer_muts = g.muts
+    let outer_next = g.next
+    let outer_loops = g.loops
+
+    let mut param_types = []
+    for p in params {
+        param_types = std::array::push(param_types, cg_bytecode_type(p.a, g.enums))
+    }
+    g = gs_meta(g, Meta { name: "<closure:{function}>", file: outer_meta.file, arity: len(params), params: param_types, ret: nil, captures: len(capture_names) })
+    g = gs_code(g, [])
+    g = gs_locs(g, [])
+    g = gs_locals(g, [std::map::new()])
+    g = gs_muts(g, [std::map::new()])
+    g = gs_next(g, 0)
+    g = gs_loops(g, [])
+    for name in capture_names {
+        let (g2, slot) = cg_add_local(g, name)
+        g = g2
+    }
+    for p in params {
+        let (g2, slot) = cg_add_mutable_local(g, p.text, p.flag)
+        g = g2
+    }
+    g = cg_compile_expr(g, body)?
+    g = cg_emit(g, cg_op("Ret"))
+    let compiled = cg_finish_func(g, 256)
+    g = gs_funcs(g, std::array::set(g.funcs, function, compiled))
+
+    g = gs_meta(g, outer_meta)
+    g = gs_code(g, outer_code)
+    g = gs_locs(g, outer_locs)
+    g = gs_locals(g, outer_locals)
+    g = gs_muts(g, outer_muts)
+    g = gs_next(g, outer_next)
+    g = gs_loops(g, outer_loops)
+    let op = Op { k: "MakeClosure", n: function, m: 0, s: "", s2: "", flag: false, list: capture_slots }
+    Result::Ok(cg_emit(g, op))
+}
+
+// ------------------------------------------------------------ volcado
+
+fn cg_location(loc) -> string {
+    if loc == nil {
+        return "@-"
+    }
+    let l = loc.line
+    let c = loc.col
+    let a = loc.start
+    let b = loc.end
+    "@{l}:{c}:{a}..{b}"
+}
+
+fn cg_dump_module(g: G) -> string {
+    let mut out = ""
+    let entry = g.entry
+    out += "entry {entry}\n"
+    let mut i = 0
+    for text in g.table {
+        out += "string {i} " + q(text) + "\n"
+        i += 1
+    }
+    for name in std::map::keys(g.structs) {
+        out += "struct " + q(name) + " " + cg_quoted_list(std::map::get(g.structs, name)) + "\n"
+    }
+    for name in std::map::keys(g.enums) {
+        out += "enum " + q(name) + " " + cg_quoted_list(std::map::get(g.enums, name)) + "\n"
+    }
+    for name in std::map::keys(g.methods) {
+        let index = std::map::get(g.methods, name)
+        out += "method " + q(name) + " {index}\n"
+    }
+    i = 0
+    for f in g.funcs {
+        out += "fn {i} " + q(f.name) + "\n"
+        if f.file == nil {
+            out += "  file-\n"
+        } else {
+            out += "  file " + q(f.file) + "\n"
+        }
+        let arity = f.arity
+        let captures = f.captures
+        let locals = f.locals
+        let max_stack = f.max_stack
+        out += "  arity {arity} captures {captures} locals {locals} max_stack {max_stack}\n"
+        for p in f.params {
+            out += "  param " + p + "\n"
+        }
+        if f.ret == nil {
+            out += "  return-\n"
+        } else {
+            out += "  return " + f.ret + "\n"
+        }
+        let mut pc = 0
+        for op in f.code {
+            out += "  {pc} " + cg_op_text(op) + " " + cg_location(f.locs[pc]) + "\n"
+            pc += 1
+        }
+        i += 1
+    }
+    out
+}
