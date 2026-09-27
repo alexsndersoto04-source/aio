@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 292 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 294 / 816 nativas (`selfhost/native/cobertura.sh`) |
 
 ## Cómo verificar
 
