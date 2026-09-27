@@ -988,6 +988,34 @@ index ad590a0..31d1fa5 100644
          let mut info: Vec<u8> = Vec::new();
          info.extend_from_slice(b"INFO");
          info.extend_from_slice(b"INAM");
+diff --git a/crates/titan_stdlib/src/datetime_mod.rs b/crates/titan_stdlib/src/datetime_mod.rs
+index bbc010d..ebdc51e 100644
+--- a/crates/titan_stdlib/src/datetime_mod.rs
++++ b/crates/titan_stdlib/src/datetime_mod.rs
+@@ -40,7 +40,10 @@ fn bad_format(format: &str) -> DateTimeError {
+     let items = [chrono::format::Item::Error];
+     let source = chrono::format::parse(&mut parsed, "", items.iter())
+         .expect_err("Item::Error siempre falla");
+-    DateTimeError::Format { format: format.into(), source }
++    DateTimeError::Format {
++        format: format.into(),
++        source,
++    }
+ }
+ 
+ /// Escribe una fecha ya formateada. `DelayedFormat::to_string()` hace panic
+@@ -230,7 +233,10 @@ mod tests {
+     fn bad_format_strings_are_errors_not_panics() {
+         for fmt in ["%Q", "a%-Dx", "%#z", "%", "%.4f"] {
+             let err = format(0, fmt).unwrap_err().to_string();
+-            assert_eq!(err, format!("invalid format string '{fmt}': bad or unsupported format string"));
++            assert_eq!(
++                err,
++                format!("invalid format string '{fmt}': bad or unsupported format string")
++            );
+             assert!(format_offset(0, fmt, -240).is_err());
+         }
+         assert_eq!(format(0, "%Y %%").unwrap(), "1970 %");
 diff --git a/crates/titan_stdlib/src/lib.rs b/crates/titan_stdlib/src/lib.rs
 index 944be47..8b37e69 100644
 --- a/crates/titan_stdlib/src/lib.rs
