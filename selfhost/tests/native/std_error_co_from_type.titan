@@ -1,0 +1,4 @@
+fn main() {
+    let a: any = ["a", 1]
+    print(std::collections::counter_from(a))
+}

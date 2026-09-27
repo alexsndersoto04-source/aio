@@ -1,0 +1,29 @@
+fn rep(n: int) -> string {
+    let mut out = ""
+    let mut piece = "a"
+    let mut k = n
+    while k > 0 {
+        if k % 2 == 1 {
+            out = out + piece
+        }
+        piece = piece + piece
+        k = k / 2
+    }
+    out
+}
+
+fn main() {
+    let big = rep(65536)
+    let mut k = 0
+    while k < 300 {
+        let q = std::collections::deque_new()
+        std::collections::deque_drop(q)
+        k += 1
+    }
+    let q = std::collections::deque_new()
+    k = 0
+    while k < 300 {
+        std::collections::deque_push_back(q, big)
+        k += 1
+    }
+}

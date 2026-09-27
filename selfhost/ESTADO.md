@@ -199,6 +199,10 @@ y se corregirán en los dos a la vez):
 10. El cargador de Titan todavía no admite proyectos con `Titan.toml`
     (manifiesto y dependencias): los rechaza con un error explícito. En el
     repositorio no hay ninguno.
+11. `std::uuid::nil()` no se puede llamar desde Titan: `nil` es palabra clave
+    y el parser la rechaza después de `::` ("expected an identifier, found
+    Nil"). La nativa existe pero es inalcanzable. Pendiente de decidir si se
+    cambia el parser o el nombre de la función.
 
 ## Fase 4b — compilador nativo (bytecode → ejecutable x86-64)
 
@@ -307,6 +311,8 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::hash (SHA-256/384/512, SHA3-256/512, BLAKE3, HMAC) | `std_hash.titan` | desde las especificaciones; constantes calculadas por `gen_hash_consts.py` (raíces de primos, LFSR de Keccak) |
 | std::random | `std_random.titan` | con semilla: idéntico a rand 0.9 + rand_chacha (PCG32 → ChaCha20, método de Canon); sin semilla: `getrandom` |
 | std::json | `std_json.titan` | el mismo analizador que serde_json 1.0.150 (mensajes y línea/columna; números como serde, que no siempre redondea exacto: `9007199254740993.0` → `…994`); floats de salida como zmij (`1e+21`) |
+| std::csv, std::uuid, std::stats | `std_misc.titan` | csv como el crate `csv` (comillas, CRLF, filas vacías); uuid v4/v7 con `getrandom` y el reloj; mean/median/quantile/variance/stddev con los mismos mensajes |
+| std::collections (57) | `std_collections.titan` | set, deque, cola de prioridad, mapa ordenado, contador y grafo con número identificador; las mismas cuotas que la VM (256 identificadores, 65536 entradas, 16 MiB, 4096 por estructura, 64 KiB por elemento) y los mismos órdenes de salida (Dijkstra con los desempates del `BinaryHeap` de Rust) |
 
 Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
 "index out of bounds" en el runtime nativo; la VM dice "array index out of
@@ -320,7 +326,7 @@ Pendiente en esta fase:
   ~0,11 s en la VM (serde en Rust optimizado). El tiempo se reparte entre el
   asignador de memoria y la conversión de floats; se mejorará junto con el
   asignador.
-- El resto de módulos (collections, datetime, csv, url, uuid, regex, net,
+- El resto de módulos (datetime, url, regex, net,
   http, process…) y las herramientas del CLI.
 
 ## Pendientes conocidos (anotados para no olvidarlos)

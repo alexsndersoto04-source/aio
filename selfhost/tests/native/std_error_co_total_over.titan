@@ -1,0 +1,6 @@
+fn main() {
+    let c = std::collections::counter_from([])
+    std::collections::counter_add(c, "a", 9223372036854775807)
+    std::collections::counter_add(c, "b", 1)
+    print(std::collections::counter_total(c))
+}

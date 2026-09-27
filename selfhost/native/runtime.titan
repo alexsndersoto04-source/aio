@@ -7,6 +7,7 @@ import std_hash
 import std_random
 import std_json
 import std_misc
+import std_collections
 import errno
 import float
 import float_table

@@ -1,0 +1,1729 @@
+// std::collections escrito en Titan, con el comportamiento de la VM
+// (collections_mod.rs): funciones sobre arrays y estructuras con número
+// identificador (set, deque, cola de prioridad, mapa ordenado, contador y
+// grafo), las mismas cuotas y los mismos mensajes de error.
+//
+// Registro global (área de globales):
+//   +2424 tabla (8 bytes por identificador: dirección del objeto o 0)
+//   +2432 capacidad de la tabla   +2440 siguiente identificador
+//   +2448 identificadores en uso  +2456 entradas en uso  +2464 bytes en uso
+// Objeto (112 bytes): +0 tipo (1 set, 2 deque, 3 pq, 4 omap, 5 counter,
+// 6 graph); +8/+24/+40 tres valores Titan (etiqueta, bits); +56.. enteros.
+
+fn co_g() -> int { std::raw::globals() + 2424 }
+
+// ---------------------------------------------------------------- cuotas
+
+fn co_item(item: any, function: string) {
+    if rt_slen(item) > 65536 {
+        rt_native_fail(function, "collection item exceeds byte limit 65536")
+    }
+}
+
+fn co_ensure(current: int, added: int, function: string) {
+    if current + added > 4096 {
+        rt_native_fail(function, "collection handle entry quota exceeded (limit 4096)")
+    }
+}
+
+fn co_reserve(handles: int, entries: int, bytes: int, function: string) {
+    let g = co_g()
+    let h = std::raw::load(g + 24) + handles
+    let e = std::raw::load(g + 32) + entries
+    let b = std::raw::load(g + 40) + bytes
+    if h > 256 {
+        rt_native_fail(function, "collection handle quota exceeded (limit 256)")
+    }
+    if e > 65536 {
+        rt_native_fail(function, "collection entry quota exceeded (limit 65536)")
+    }
+    if b > 16777216 {
+        rt_native_fail(function, "collection byte quota exceeded (limit 16777216)")
+    }
+    std::raw::store(g + 24, h)
+    std::raw::store(g + 32, e)
+    std::raw::store(g + 40, b)
+}
+
+fn co_release(handles: int, entries: int, bytes: int) {
+    let g = co_g()
+    std::raw::store(g + 24, std::raw::load(g + 24) - handles)
+    std::raw::store(g + 32, std::raw::load(g + 32) - entries)
+    std::raw::store(g + 40, std::raw::load(g + 40) - bytes)
+}
+
+// ---------------------------------------------------------------- registro
+
+// Crea un objeto del tipo dado y devuelve su identificador.
+fn co_register(kind: int) -> int {
+    let g = co_g()
+    let mut next = std::raw::load(g + 16)
+    if next == 0 {
+        next = 1
+    }
+    let mut cap = std::raw::load(g + 8)
+    if next >= cap {
+        let mut c = 2 * cap
+        if c < 64 {
+            c = 64
+        }
+        while c <= next {
+            c *= 2
+        }
+        let t = rt_alloc(8 * c)
+        let mut i = 0
+        while i < c {
+            std::raw::store(t + 8 * i, 0)
+            i += 1
+        }
+        if cap > 0 {
+            rt_copy(t, std::raw::load(g), 8 * cap)
+            rt_free_block(std::raw::load(g))
+        }
+        std::raw::store(g, t)
+        std::raw::store(g + 8, c)
+        cap = c
+    }
+    let o = rt_alloc(112)
+    let mut k = 0
+    while k < 14 {
+        std::raw::store(o + 8 * k, 0)
+        k += 1
+    }
+    std::raw::store(o, kind)
+    std::raw::store(std::raw::load(g) + 8 * next, o)
+    std::raw::store(g + 16, next + 1)
+    next
+}
+
+// Objeto del identificador si existe y es del tipo pedido; si no, 0.
+fn co_find(h: int, kind: int) -> int {
+    let g = co_g()
+    if h <= 0 || h >= std::raw::load(g + 8) {
+        return 0
+    }
+    let o = std::raw::load(std::raw::load(g) + 8 * h)
+    if o == 0 || std::raw::load(o) != kind {
+        return 0
+    }
+    o
+}
+
+fn co_kind_name(kind: int) -> string {
+    if kind == 1 {
+        return "set"
+    }
+    if kind == 2 {
+        return "deque"
+    }
+    if kind == 3 {
+        return "pq"
+    }
+    if kind == 4 {
+        return "omap"
+    }
+    if kind == 5 {
+        return "counter"
+    }
+    "graph"
+}
+
+fn co_get_obj(h: int, kind: int, function: string) -> int {
+    let o = co_find(h, kind)
+    if o == 0 {
+        rt_native_fail(function, rt_concat(rt_concat(rt_concat("unknown ", co_kind_name(kind)), " "), rt_int_to_str(h)))
+    }
+    o
+}
+
+fn co_unregister(h: int) {
+    let g = co_g()
+    let o = std::raw::load(std::raw::load(g) + 8 * h)
+    let mut k = 0
+    while k < 3 {
+        let slot = o + 8 + 16 * k
+        std::raw::release(std::raw::load(slot), std::raw::load(slot + 8))
+        k += 1
+    }
+    rt_free_block(o)
+    std::raw::store(std::raw::load(g) + 8 * h, 0)
+}
+
+// Número identificador de un argumento (u64::try_from de la VM).
+fn co_handle(v: any, function: string, message: string) -> int {
+    rt_expect_int(v, function)
+    let h = std::raw::bits(v)
+    if h < 0 {
+        rt_native_fail(function, message)
+    }
+    h
+}
+
+// Valores Titan guardados en el objeto.
+fn co_slot_get(o: int, k: int) -> any {
+    let slot = o + 8 + 16 * k
+    std::raw::value(std::raw::load(slot), std::raw::load(slot + 8))
+}
+
+// Saca el valor (queda nil en el hueco): así se puede modificar sin copia.
+fn co_slot_take(o: int, k: int) -> any {
+    let slot = o + 8 + 16 * k
+    let v = std::raw::adopt(std::raw::load(slot), std::raw::load(slot + 8))
+    std::raw::store(slot, 0)
+    std::raw::store(slot + 8, 0)
+    v
+}
+
+fn co_slot_put(o: int, k: int, v: any) {
+    let slot = o + 8 + 16 * k
+    std::raw::release(std::raw::load(slot), std::raw::load(slot + 8))
+    std::raw::store(slot, std::raw::tag(v))
+    std::raw::store(slot + 8, std::raw::keep(v))
+}
+
+fn co_map_len(m: any) -> int {
+    std::raw::load(std::raw::bits(m) + 8)
+}
+
+fn co_map_key(m: any, i: int) -> any {
+    rt_sref(std::raw::load(std::raw::load(std::raw::bits(m) + 24) + 24 * i))
+}
+
+fn co_has(m: any, key: any) -> bool {
+    rt_map_find(m, key) >= 0
+}
+
+fn co_some(v: any) -> any {
+    Option::Some(v)
+}
+
+fn co_none() -> any {
+    Option::None
+}
+
+// Ordena un array de strings por bytes (devuelve uno nuevo).
+fn co_sort_strings(a: any, descending: bool) -> any {
+    let n = rt_seq_len(a)
+    let buf = rt_alloc(8 * n + 8)
+    let tmp = rt_alloc(8 * n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store(buf + 8 * i, std::raw::load(rt_seq_data(a) + 16 * i + 8))
+        i += 1
+    }
+    let mut width = 1
+    while width < n {
+        let mut lo = 0
+        while lo < n {
+            let mut mid = lo + width
+            if mid > n {
+                mid = n
+            }
+            let mut hi = lo + 2 * width
+            if hi > n {
+                hi = n
+            }
+            let mut x = lo
+            let mut y = mid
+            let mut o = lo
+            while o < hi {
+                let mut take_x = x < mid
+                if take_x && y < hi {
+                    let c = rt_cmp_raw(std::raw::load(buf + 8 * x), std::raw::load(buf + 8 * y))
+                    if descending {
+                        take_x = c >= 0
+                    } else {
+                        take_x = c <= 0
+                    }
+                }
+                if take_x {
+                    std::raw::store(tmp + 8 * o, std::raw::load(buf + 8 * x))
+                    x += 1
+                } else {
+                    std::raw::store(tmp + 8 * o, std::raw::load(buf + 8 * y))
+                    y += 1
+                }
+                o += 1
+            }
+            lo += 2 * width
+        }
+        rt_copy(buf, tmp, 8 * n)
+        width *= 2
+    }
+    let out = rt_array_new(n)
+    i = 0
+    while i < n {
+        rt_seq_put(rt_seq_data(out), i, rt_sref(std::raw::load(buf + 8 * i)))
+        i += 1
+    }
+    rt_free_block(buf)
+    rt_free_block(tmp)
+    out
+}
+
+// Array de strings de un argumento (expect_array + expect_string).
+fn co_strings(v: any, function: string) {
+    rt_expect_array(v, function)
+    let n = rt_seq_len(v)
+    let mut i = 0
+    while i < n {
+        rt_expect_str(rt_seq_get(v, i), function)
+        i += 1
+    }
+}
+
+// ---------------------------------------------------------------- funciones de arrays
+
+fn std__collections__length(v: any) -> any {
+    let t = std::raw::tag(v)
+    if t == 5 {
+        return rt_str_chars(v)
+    }
+    if t == 6 || t == 7 || t == 8 {
+        if t == 6 {
+            return rt_slen(v)
+        }
+        return rt_seq_len(v)
+    }
+    if t == 9 {
+        return co_map_len(v)
+    }
+    rt_native_fail("std::collections::length", "value has no length")
+    0
+}
+
+fn std__collections__contains(a: any, x: any) -> any {
+    rt_expect_array(a, "std::collections::contains")
+    let n = rt_seq_len(a)
+    let mut i = 0
+    while i < n {
+        if rt_eq(rt_seq_get(a, i), x) {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+fn std__collections__reverse(a: any) -> any {
+    rt_expect_array(a, "std::collections::reverse")
+    let n = rt_seq_len(a)
+    let out = rt_array_new(n)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(rt_seq_data(out), i, rt_seq_get(a, n - 1 - i))
+        i += 1
+    }
+    out
+}
+
+fn std__collections__deduplicate(a: any) -> any {
+    rt_expect_array(a, "std::collections::deduplicate")
+    let n = rt_seq_len(a)
+    let mut out: any = rt_array_new(0)
+    let mut i = 0
+    while i < n {
+        let v = rt_seq_get(a, i)
+        let m = rt_seq_len(out)
+        let mut seen = false
+        let mut k = 0
+        while k < m && !seen {
+            if rt_eq(rt_seq_get(out, k), v) {
+                seen = true
+            }
+            k += 1
+        }
+        if !seen {
+            out = std::array::push(out, v)
+        }
+        i += 1
+    }
+    out
+}
+
+fn std__collections__join(a: any, sep: any) -> any {
+    rt_expect_array(a, "std::collections::join")
+    rt_expect_str(sep, "std::collections::join")
+    let n = rt_seq_len(a)
+    let b = sb_new(64)
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            sb_str(b, sep)
+        }
+        sb_str(b, rt_to_string(rt_seq_get(a, i)))
+        i += 1
+    }
+    sb_finish(b)
+}
+
+fn std__collections__chunk(a: any, size: any) -> any {
+    rt_expect_array(a, "std::collections::chunk")
+    let s = rt_nonnegative(size, "std::collections::chunk")
+    if s == 0 {
+        rt_native_fail("std::collections::chunk", "chunk size must be positive")
+    }
+    let n = rt_seq_len(a)
+    let mut out: any = rt_array_new(0)
+    let mut start = 0
+    while start < n {
+        let mut end = start + s
+        if end > n {
+            end = n
+        }
+        let part = rt_array_new(end - start)
+        let mut i = start
+        while i < end {
+            rt_seq_put(rt_seq_data(part), i - start, rt_seq_get(a, i))
+            i += 1
+        }
+        out = std::array::push(out, part)
+        start = end
+    }
+    out
+}
+
+// ---------------------------------------------------------------- set
+
+fn co_map_bytes(m: any) -> int {
+    let n = co_map_len(m)
+    let mut total = 0
+    let mut i = 0
+    while i < n {
+        total += rt_slen(co_map_key(m, i))
+        i += 1
+    }
+    total
+}
+
+fn co_register_set(m: any, function: string) -> any {
+    let n = co_map_len(m)
+    co_ensure(0, n, function)
+    co_reserve(1, n, co_map_bytes(m), function)
+    let h = co_register(1)
+    co_slot_put(co_find(h, 1), 0, m)
+    h
+}
+
+fn co_set_handle(v: any, function: string) -> int {
+    co_handle(v, function, "set handle must be nonneg")
+}
+
+fn std__collections__set_new() -> any {
+    co_register_set(rt_map_alloc(0, 4), "std::collections::set_new")
+}
+
+fn std__collections__set_from(items: any) -> any {
+    let f = "std::collections::set_from"
+    co_strings(items, f)
+    let n = rt_seq_len(items)
+    co_ensure(0, n, f)
+    let mut m: any = rt_map_alloc(0, 4)
+    let mut i = 0
+    while i < n {
+        co_item(rt_seq_get(items, i), f)
+        i += 1
+    }
+    i = 0
+    while i < n {
+        m = std::map::insert(m, rt_seq_get(items, i), nil)
+        i += 1
+    }
+    co_register_set(m, f)
+}
+
+fn std__collections__set_add(hv: any, item: any) -> any {
+    let f = "std::collections::set_add"
+    let h = co_set_handle(hv, f)
+    rt_expect_str(item, f)
+    co_item(item, f)
+    let o = co_get_obj(h, 1, f)
+    let mut m = co_slot_take(o, 0)
+    if co_has(m, item) {
+        co_slot_put(o, 0, m)
+        return false
+    }
+    let n = co_map_len(m)
+    co_slot_put(o, 0, m)
+    co_ensure(n, 1, f)
+    co_reserve(0, 1, rt_slen(item), f)
+    m = co_slot_take(o, 0)
+    m = std::map::insert(m, item, nil)
+    co_slot_put(o, 0, m)
+    true
+}
+
+fn std__collections__set_remove(hv: any, item: any) -> any {
+    let f = "std::collections::set_remove"
+    let h = co_set_handle(hv, f)
+    rt_expect_str(item, f)
+    let o = co_get_obj(h, 1, f)
+    let mut m = co_slot_take(o, 0)
+    if !co_has(m, item) {
+        co_slot_put(o, 0, m)
+        return false
+    }
+    m = std::map::remove(m, item)
+    co_slot_put(o, 0, m)
+    co_release(0, 1, rt_slen(item))
+    true
+}
+
+fn std__collections__set_contains(hv: any, item: any) -> any {
+    let f = "std::collections::set_contains"
+    let h = co_set_handle(hv, f)
+    rt_expect_str(item, f)
+    let o = co_get_obj(h, 1, f)
+    co_has(co_slot_get(o, 0), item)
+}
+
+fn std__collections__set_len(hv: any) -> any {
+    let f = "std::collections::set_len"
+    let o = co_get_obj(co_set_handle(hv, f), 1, f)
+    co_map_len(co_slot_get(o, 0))
+}
+
+fn std__collections__set_to_array(hv: any) -> any {
+    let f = "std::collections::set_to_array"
+    let o = co_get_obj(co_set_handle(hv, f), 1, f)
+    let m = co_slot_get(o, 0)
+    let n = co_map_len(m)
+    let out = rt_array_new(n)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(rt_seq_data(out), i, co_map_key(m, i))
+        i += 1
+    }
+    out
+}
+
+// mode: 0 unión, 1 intersección, 2 diferencia.
+fn co_set_combine(av: any, bv: any, mode: int, function: string) -> any {
+    let a = co_set_handle(av, function)
+    let b = co_set_handle(bv, function)
+    let left = co_slot_get(co_get_obj(a, 1, function), 0)
+    let right = co_slot_get(co_get_obj(b, 1, function), 0)
+    let mut m: any = rt_map_alloc(0, 4)
+    let n = co_map_len(left)
+    let mut i = 0
+    while i < n {
+        let k = co_map_key(left, i)
+        let inside = co_has(right, k)
+        if mode == 0 || (mode == 1 && inside) || (mode == 2 && !inside) {
+            m = std::map::insert(m, k, nil)
+        }
+        i += 1
+    }
+    if mode == 0 {
+        let r = co_map_len(right)
+        i = 0
+        while i < r {
+            m = std::map::insert(m, co_map_key(right, i), nil)
+            i += 1
+        }
+    }
+    co_register_set(m, function)
+}
+
+fn std__collections__set_union(a: any, b: any) -> any {
+    co_set_combine(a, b, 0, "std::collections::set_union")
+}
+
+fn std__collections__set_intersect(a: any, b: any) -> any {
+    co_set_combine(a, b, 1, "std::collections::set_intersect")
+}
+
+fn std__collections__set_difference(a: any, b: any) -> any {
+    co_set_combine(a, b, 2, "std::collections::set_difference")
+}
+
+fn std__collections__set_is_subset(av: any, bv: any) -> any {
+    let f = "std::collections::set_is_subset"
+    let a = co_set_handle(av, f)
+    let b = co_set_handle(bv, f)
+    let left = co_slot_get(co_get_obj(a, 1, f), 0)
+    let right = co_slot_get(co_get_obj(b, 1, f), 0)
+    let n = co_map_len(left)
+    let mut i = 0
+    while i < n {
+        if !co_has(right, co_map_key(left, i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn std__collections__set_drop(hv: any) -> any {
+    let h = co_set_handle(hv, "std::collections::set_drop")
+    let o = co_find(h, 1)
+    if o == 0 {
+        return false
+    }
+    let m = co_slot_get(o, 0)
+    co_release(1, co_map_len(m), co_map_bytes(m))
+    co_unregister(h)
+    true
+}
+
+// ---------------------------------------------------------------- deque
+// Anillo de strings: +56 datos (16 bytes por valor), +64 capacidad,
+// +72 cabeza, +80 cuántos.
+
+fn co_deque_handle(v: any, function: string) -> int {
+    co_handle(v, function, "deque handle")
+}
+
+fn std__collections__deque_new() -> any {
+    co_reserve(1, 0, 0, "std::collections::deque_new")
+    let h = co_register(2)
+    let o = co_find(h, 2)
+    std::raw::store(o + 56, rt_alloc(16 * 8))
+    std::raw::store(o + 64, 8)
+    h
+}
+
+fn co_deque_at(o: int, i: int) -> int {
+    std::raw::load(o + 56) + 16 * ((std::raw::load(o + 72) + i) % std::raw::load(o + 64))
+}
+
+fn co_deque_push(hv: any, item: any, front: bool, function: string) {
+    let h = co_deque_handle(hv, function)
+    rt_expect_str(item, function)
+    co_item(item, function)
+    let o = co_get_obj(h, 2, function)
+    let n = std::raw::load(o + 80)
+    co_ensure(n, 1, function)
+    co_reserve(0, 1, rt_slen(item), function)
+    let cap = std::raw::load(o + 64)
+    if n == cap {
+        let bigger = rt_alloc(32 * cap)
+        let mut i = 0
+        while i < n {
+            let e = co_deque_at(o, i)
+            std::raw::store(bigger + 16 * i, std::raw::load(e))
+            std::raw::store(bigger + 16 * i + 8, std::raw::load(e + 8))
+            i += 1
+        }
+        rt_free_block(std::raw::load(o + 56))
+        std::raw::store(o + 56, bigger)
+        std::raw::store(o + 64, 2 * cap)
+        std::raw::store(o + 72, 0)
+    }
+    if front {
+        let c = std::raw::load(o + 64)
+        std::raw::store(o + 72, (std::raw::load(o + 72) + c - 1) % c)
+        let e = co_deque_at(o, 0)
+        std::raw::store(e, 5)
+        std::raw::store(e + 8, std::raw::keep(item))
+    } else {
+        let e = co_deque_at(o, n)
+        std::raw::store(e, 5)
+        std::raw::store(e + 8, std::raw::keep(item))
+    }
+    std::raw::store(o + 80, n + 1)
+}
+
+fn std__collections__deque_push_front(h: any, item: any) -> any {
+    co_deque_push(h, item, true, "std::collections::deque_push_front")
+    nil
+}
+
+fn std__collections__deque_push_back(h: any, item: any) -> any {
+    co_deque_push(h, item, false, "std::collections::deque_push_back")
+    nil
+}
+
+fn co_deque_pop(hv: any, front: bool, function: string) -> any {
+    let h = co_deque_handle(hv, function)
+    let o = co_get_obj(h, 2, function)
+    let n = std::raw::load(o + 80)
+    if n == 0 {
+        return co_none()
+    }
+    let mut e = co_deque_at(o, n - 1)
+    if front {
+        e = co_deque_at(o, 0)
+        std::raw::store(o + 72, (std::raw::load(o + 72) + 1) % std::raw::load(o + 64))
+    }
+    let item = std::raw::adopt(5, std::raw::load(e + 8))
+    std::raw::store(o + 80, n - 1)
+    co_release(0, 1, rt_slen(item))
+    co_some(item)
+}
+
+fn std__collections__deque_pop_front(h: any) -> any {
+    co_deque_pop(h, true, "std::collections::deque_pop_front")
+}
+
+fn std__collections__deque_pop_back(h: any) -> any {
+    co_deque_pop(h, false, "std::collections::deque_pop_back")
+}
+
+fn std__collections__deque_len(hv: any) -> any {
+    let f = "std::collections::deque_len"
+    let o = co_get_obj(co_deque_handle(hv, f), 2, f)
+    std::raw::load(o + 80)
+}
+
+fn std__collections__deque_to_array(hv: any) -> any {
+    let f = "std::collections::deque_to_array"
+    let o = co_get_obj(co_deque_handle(hv, f), 2, f)
+    let n = std::raw::load(o + 80)
+    let out = rt_array_new(n)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(rt_seq_data(out), i, rt_sref(std::raw::load(co_deque_at(o, i) + 8)))
+        i += 1
+    }
+    out
+}
+
+fn std__collections__deque_drop(hv: any) -> any {
+    let h = co_deque_handle(hv, "std::collections::deque_drop")
+    let o = co_find(h, 2)
+    if o == 0 {
+        return false
+    }
+    let n = std::raw::load(o + 80)
+    let mut bytes = 0
+    let mut i = 0
+    while i < n {
+        let e = co_deque_at(o, i)
+        bytes += std::raw::load(std::raw::load(e + 8) + 8)
+        std::raw::release(5, std::raw::load(e + 8))
+        i += 1
+    }
+    rt_free_block(std::raw::load(o + 56))
+    co_release(1, n, bytes)
+    co_unregister(h)
+    true
+}
+
+// ---------------------------------------------------------------- cola de prioridad
+// Montículo de máximos sobre (prioridad ajustada, -secuencia): +56 datos
+// (24 bytes: prioridad, -secuencia, bits del string), +64 capacidad,
+// +72 cuántos, +80 siguiente secuencia, +88 1 si es de mínimos.
+
+fn co_pq_handle(v: any, function: string) -> int {
+    co_handle(v, function, "pq handle")
+}
+
+fn co_pq_new(is_min: int, function: string) -> any {
+    co_reserve(1, 0, 0, function)
+    let h = co_register(3)
+    let o = co_find(h, 3)
+    std::raw::store(o + 56, rt_alloc(24 * 8))
+    std::raw::store(o + 64, 8)
+    std::raw::store(o + 88, is_min)
+    h
+}
+
+fn std__collections__pq_new_max() -> any {
+    co_pq_new(0, "std::collections::pq_new_max")
+}
+
+fn std__collections__pq_new_min() -> any {
+    co_pq_new(1, "std::collections::pq_new_min")
+}
+
+// ¿La entrada i va antes (es mayor) que la j?
+fn co_pq_above(d: int, i: int, j: int) -> bool {
+    let pi = std::raw::load(d + 24 * i)
+    let pj = std::raw::load(d + 24 * j)
+    if pi != pj {
+        return pi > pj
+    }
+    std::raw::load(d + 24 * i + 8) > std::raw::load(d + 24 * j + 8)
+}
+
+fn co_pq_swap(d: int, i: int, j: int) {
+    let mut k = 0
+    while k < 3 {
+        let a = std::raw::load(d + 24 * i + 8 * k)
+        std::raw::store(d + 24 * i + 8 * k, std::raw::load(d + 24 * j + 8 * k))
+        std::raw::store(d + 24 * j + 8 * k, a)
+        k += 1
+    }
+}
+
+fn std__collections__pq_push(hv: any, item: any, priority: any) -> any {
+    let f = "std::collections::pq_push"
+    let h = co_pq_handle(hv, f)
+    rt_expect_str(item, f)
+    rt_expect_int(priority, f)
+    co_item(item, f)
+    let o = co_get_obj(h, 3, f)
+    let n = std::raw::load(o + 72)
+    co_ensure(n, 1, f)
+    let mut adjusted = std::raw::bits(priority)
+    if std::raw::load(o + 88) == 1 {
+        if adjusted == -9223372036854775807 - 1 {
+            rt_native_fail(f, "minimum priority cannot be i64::MIN")
+        }
+        adjusted = 0 - adjusted
+    }
+    let seq = std::raw::load(o + 80)
+    co_reserve(0, 1, rt_slen(item), f)
+    std::raw::store(o + 80, seq + 1)
+    let cap = std::raw::load(o + 64)
+    if n == cap {
+        let bigger = rt_alloc(48 * cap)
+        rt_copy(bigger, std::raw::load(o + 56), 24 * n)
+        rt_free_block(std::raw::load(o + 56))
+        std::raw::store(o + 56, bigger)
+        std::raw::store(o + 64, 2 * cap)
+    }
+    let d = std::raw::load(o + 56)
+    std::raw::store(d + 24 * n, adjusted)
+    std::raw::store(d + 24 * n + 8, 0 - seq)
+    std::raw::store(d + 24 * n + 16, std::raw::keep(item))
+    std::raw::store(o + 72, n + 1)
+    let mut i = n
+    while i > 0 {
+        let parent = (i - 1) / 2
+        if !co_pq_above(d, i, parent) {
+            break
+        }
+        co_pq_swap(d, i, parent)
+        i = parent
+    }
+    nil
+}
+
+fn std__collections__pq_pop(hv: any) -> any {
+    let f = "std::collections::pq_pop"
+    let o = co_get_obj(co_pq_handle(hv, f), 3, f)
+    let n = std::raw::load(o + 72)
+    if n == 0 {
+        return co_none()
+    }
+    let d = std::raw::load(o + 56)
+    let item = std::raw::adopt(5, std::raw::load(d + 16))
+    co_pq_swap(d, 0, n - 1)
+    let m = n - 1
+    std::raw::store(o + 72, m)
+    let mut i = 0
+    while true {
+        let l = 2 * i + 1
+        let r = l + 1
+        let mut best = i
+        if l < m && co_pq_above(d, l, best) {
+            best = l
+        }
+        if r < m && co_pq_above(d, r, best) {
+            best = r
+        }
+        if best == i {
+            break
+        }
+        co_pq_swap(d, i, best)
+        i = best
+    }
+    co_release(0, 1, rt_slen(item))
+    co_some(item)
+}
+
+fn std__collections__pq_peek(hv: any) -> any {
+    let f = "std::collections::pq_peek"
+    let o = co_get_obj(co_pq_handle(hv, f), 3, f)
+    if std::raw::load(o + 72) == 0 {
+        return co_none()
+    }
+    co_some(rt_sref(std::raw::load(std::raw::load(o + 56) + 16)))
+}
+
+fn std__collections__pq_len(hv: any) -> any {
+    let f = "std::collections::pq_len"
+    let o = co_get_obj(co_pq_handle(hv, f), 3, f)
+    std::raw::load(o + 72)
+}
+
+fn std__collections__pq_drop(hv: any) -> any {
+    let h = co_pq_handle(hv, "std::collections::pq_drop")
+    let o = co_find(h, 3)
+    if o == 0 {
+        return false
+    }
+    let n = std::raw::load(o + 72)
+    let d = std::raw::load(o + 56)
+    let mut bytes = 0
+    let mut i = 0
+    while i < n {
+        let s = std::raw::load(d + 24 * i + 16)
+        bytes += std::raw::load(s + 8)
+        std::raw::release(5, s)
+        i += 1
+    }
+    rt_free_block(d)
+    co_release(1, n, bytes)
+    co_unregister(h)
+    true
+}
+
+// ---------------------------------------------------------------- mapa ordenado
+// Hueco 0: array de claves en orden de inserción; hueco 1: mapa clave → valor
+// (ya convertido a JSON y de vuelta, como guarda la VM).
+
+fn co_omap_handle(v: any, function: string) -> int {
+    co_handle(v, function, "omap handle")
+}
+
+// Bytes del valor escrito como JSON compacto (65537 si pasa de 65536).
+fn co_json_len(v: any) -> int {
+    let b = sb_new(64)
+    js_write(b, v, false, 0, "std::collections::omap_insert")
+    let n = sb_len(b)
+    sb_finish(b)
+    if n > 65536 {
+        return 65537
+    }
+    n
+}
+
+fn std__collections__omap_new() -> any {
+    co_reserve(1, 0, 0, "std::collections::omap_new")
+    let h = co_register(4)
+    let o = co_find(h, 4)
+    co_slot_put(o, 0, rt_array_new(0))
+    co_slot_put(o, 1, rt_map_alloc(0, 4))
+    h
+}
+
+fn std__collections__omap_insert(hv: any, key: any, value: any) -> any {
+    let f = "std::collections::omap_insert"
+    let h = co_omap_handle(hv, f)
+    rt_expect_str(key, f)
+    let v = js_norm(value, f)
+    co_item(key, f)
+    let new_bytes = rt_slen(key) + co_json_len(v)
+    if new_bytes > 65536 {
+        rt_native_fail(f, "ordered-map item exceeds byte limit 65536")
+    }
+    let o = co_get_obj(h, 4, f)
+    let mut m = co_slot_take(o, 1)
+    let pos = rt_map_find(m, key)
+    let mut old = -1
+    if pos >= 0 {
+        old = rt_slen(key) + co_json_len(rt_map_value_at(m, pos))
+    }
+    let n = co_map_len(m)
+    co_slot_put(o, 1, m)
+    let mut added = 0
+    if old < 0 {
+        added = 1
+    }
+    co_ensure(n, added, f)
+    let mut old_bytes = old
+    if old_bytes < 0 {
+        old_bytes = 0
+    }
+    let mut add_bytes = new_bytes - old_bytes
+    if add_bytes < 0 {
+        add_bytes = 0
+    }
+    co_reserve(0, added, add_bytes, f)
+    m = co_slot_take(o, 1)
+    m = std::map::insert(m, key, v)
+    co_slot_put(o, 1, m)
+    if added == 1 {
+        let mut keys = co_slot_take(o, 0)
+        keys = std::array::push(keys, key)
+        co_slot_put(o, 0, keys)
+    }
+    if old_bytes > new_bytes {
+        co_release(0, 0, old_bytes - new_bytes)
+    }
+    nil
+}
+
+fn std__collections__omap_get(hv: any, key: any) -> any {
+    let f = "std::collections::omap_get"
+    let h = co_omap_handle(hv, f)
+    rt_expect_str(key, f)
+    let o = co_get_obj(h, 4, f)
+    let m = co_slot_get(o, 1)
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        return co_none()
+    }
+    co_some(rt_map_value_at(m, pos))
+}
+
+fn std__collections__omap_remove(hv: any, key: any) -> any {
+    let f = "std::collections::omap_remove"
+    let h = co_omap_handle(hv, f)
+    rt_expect_str(key, f)
+    let o = co_get_obj(h, 4, f)
+    let mut m = co_slot_take(o, 1)
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        co_slot_put(o, 1, m)
+        return false
+    }
+    let bytes = rt_slen(key) + co_json_len(rt_map_value_at(m, pos))
+    m = std::map::remove(m, key)
+    co_slot_put(o, 1, m)
+    let keys = co_slot_take(o, 0)
+    let n = rt_seq_len(keys)
+    let mut out: any = rt_array_new(0)
+    let mut i = 0
+    while i < n {
+        let k = rt_seq_get(keys, i)
+        if !rt_str_eq(k, key) {
+            out = std::array::push(out, k)
+        }
+        i += 1
+    }
+    co_slot_put(o, 0, out)
+    co_release(0, 1, bytes)
+    true
+}
+
+fn std__collections__omap_keys(hv: any) -> any {
+    let f = "std::collections::omap_keys"
+    let o = co_get_obj(co_omap_handle(hv, f), 4, f)
+    co_slot_get(o, 0)
+}
+
+fn std__collections__omap_len(hv: any) -> any {
+    let f = "std::collections::omap_len"
+    let o = co_get_obj(co_omap_handle(hv, f), 4, f)
+    co_map_len(co_slot_get(o, 1))
+}
+
+fn std__collections__omap_drop(hv: any) -> any {
+    let h = co_omap_handle(hv, "std::collections::omap_drop")
+    let o = co_find(h, 4)
+    if o == 0 {
+        return false
+    }
+    let m = co_slot_get(o, 1)
+    let n = co_map_len(m)
+    let mut bytes = 0
+    let mut i = 0
+    while i < n {
+        bytes += rt_slen(co_map_key(m, i)) + co_json_len(rt_map_value_at(m, i))
+        i += 1
+    }
+    co_release(1, n, bytes)
+    co_unregister(h)
+    true
+}
+
+// ---------------------------------------------------------------- contador
+
+fn co_counter_handle(v: any, function: string) -> int {
+    co_handle(v, function, "counter handle")
+}
+
+fn std__collections__counter_from(items: any) -> any {
+    let f = "std::collections::counter_from"
+    co_strings(items, f)
+    let n = rt_seq_len(items)
+    co_ensure(0, n, f)
+    let mut m: any = rt_map_alloc(0, 4)
+    let mut i = 0
+    while i < n {
+        let item = rt_seq_get(items, i)
+        co_item(item, f)
+        let pos = rt_map_find(m, item)
+        let mut c = 1
+        if pos >= 0 {
+            c = std::raw::bits(rt_map_value_at(m, pos)) + 1
+        }
+        m = std::map::insert(m, item, c)
+        i += 1
+    }
+    let d = co_map_len(m)
+    co_ensure(0, d, f)
+    co_reserve(1, d, co_map_bytes(m), f)
+    let h = co_register(5)
+    co_slot_put(co_find(h, 5), 0, m)
+    h
+}
+
+fn std__collections__counter_add(hv: any, item: any, delta: any) -> any {
+    let f = "std::collections::counter_add"
+    let h = co_counter_handle(hv, f)
+    rt_expect_str(item, f)
+    rt_expect_int(delta, f)
+    co_item(item, f)
+    let o = co_get_obj(h, 5, f)
+    let mut m = co_slot_take(o, 0)
+    let pos = rt_map_find(m, item)
+    let dv = std::raw::bits(delta)
+    if pos >= 0 {
+        let old = std::raw::bits(rt_map_value_at(m, pos))
+        let sum = std::raw::wadd(old, dv)
+        // Desborde con signo: los dos operandos del mismo signo y el
+        // resultado de signo contrario.
+        if (old >= 0) == (dv >= 0) && (sum >= 0) != (old >= 0) {
+            co_slot_put(o, 0, m)
+            rt_native_fail(f, "counter value overflow")
+        }
+        m = std::map::insert(m, item, sum)
+        co_slot_put(o, 0, m)
+        return nil
+    }
+    let n = co_map_len(m)
+    co_slot_put(o, 0, m)
+    co_ensure(n, 1, f)
+    co_reserve(0, 1, rt_slen(item), f)
+    m = co_slot_take(o, 0)
+    m = std::map::insert(m, item, dv)
+    co_slot_put(o, 0, m)
+    nil
+}
+
+fn std__collections__counter_count(hv: any, item: any) -> any {
+    let f = "std::collections::counter_count"
+    let h = co_counter_handle(hv, f)
+    rt_expect_str(item, f)
+    let m = co_slot_get(co_get_obj(h, 5, f), 0)
+    let pos = rt_map_find(m, item)
+    if pos < 0 {
+        return 0
+    }
+    rt_map_value_at(m, pos)
+}
+
+fn std__collections__counter_most_common(hv: any, nv: any) -> any {
+    let f = "std::collections::counter_most_common"
+    let h = co_counter_handle(hv, f)
+    let limit = rt_nonnegative(nv, f)
+    let m = co_slot_get(co_get_obj(h, 5, f), 0)
+    let n = co_map_len(m)
+    // Orden estable por cuenta descendente; las claves ya van en orden.
+    let idx = rt_alloc(8 * n + 8)
+    let tmp = rt_alloc(8 * n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store(idx + 8 * i, i)
+        i += 1
+    }
+    let mut width = 1
+    while width < n {
+        let mut lo = 0
+        while lo < n {
+            let mut mid = lo + width
+            if mid > n {
+                mid = n
+            }
+            let mut hi = lo + 2 * width
+            if hi > n {
+                hi = n
+            }
+            let mut x = lo
+            let mut y = mid
+            let mut o = lo
+            while o < hi {
+                let mut take_x = x < mid
+                if take_x && y < hi {
+                    let cx = std::raw::bits(rt_map_value_at(m, std::raw::load(idx + 8 * x)))
+                    let cy = std::raw::bits(rt_map_value_at(m, std::raw::load(idx + 8 * y)))
+                    take_x = cx >= cy
+                }
+                if take_x {
+                    std::raw::store(tmp + 8 * o, std::raw::load(idx + 8 * x))
+                    x += 1
+                } else {
+                    std::raw::store(tmp + 8 * o, std::raw::load(idx + 8 * y))
+                    y += 1
+                }
+                o += 1
+            }
+            lo += 2 * width
+        }
+        rt_copy(idx, tmp, 8 * n)
+        width *= 2
+    }
+    let mut count = n
+    if limit < count {
+        count = limit
+    }
+    let out = rt_array_new(count)
+    i = 0
+    while i < count {
+        let k = std::raw::load(idx + 8 * i)
+        let pair = rt_tuple_new(2)
+        rt_seq_put(rt_seq_data(pair), 0, co_map_key(m, k))
+        rt_seq_put(rt_seq_data(pair), 1, rt_map_value_at(m, k))
+        rt_seq_put(rt_seq_data(out), i, pair)
+        i += 1
+    }
+    rt_free_block(idx)
+    rt_free_block(tmp)
+    out
+}
+
+fn std__collections__counter_total(hv: any) -> any {
+    let f = "std::collections::counter_total"
+    let m = co_slot_get(co_get_obj(co_counter_handle(hv, f), 5, f), 0)
+    let n = co_map_len(m)
+    // Suma en 128 bits (alto, bajo) como la VM (i128).
+    let mut lo = 0
+    let mut hi = 0
+    let mut i = 0
+    while i < n {
+        let x = std::raw::bits(rt_map_value_at(m, i))
+        let s = std::raw::wadd(lo, x)
+        if rn_ult(s, lo) {
+            hi += 1
+        }
+        if x < 0 {
+            hi -= 1
+        }
+        lo = s
+        i += 1
+    }
+    if (lo >= 0 && hi != 0) || (lo < 0 && hi != -1) {
+        rt_native_fail(f, "counter total overflow")
+    }
+    lo
+}
+
+fn std__collections__counter_drop(hv: any) -> any {
+    let h = co_counter_handle(hv, "std::collections::counter_drop")
+    let o = co_find(h, 5)
+    if o == 0 {
+        return false
+    }
+    let m = co_slot_get(o, 0)
+    co_release(1, co_map_len(m), co_map_bytes(m))
+    co_unregister(h)
+    true
+}
+
+// ---------------------------------------------------------------- grafo
+// Hueco 0: nodos (mapa ordenado nodo → nil); hueco 1: aristas (nodo → array
+// de tuplas (vecino, peso) en orden de inserción). +56 dirigido (1/0),
+// +64 número de aristas, +72 bytes contados como graph_usage.
+
+fn co_graph_handle(v: any, function: string) -> int {
+    co_handle(v, function, "graph handle")
+}
+
+fn std__collections__graph_new(directed: any) -> any {
+    let f = "std::collections::graph_new"
+    if std::raw::tag(directed) != 3 {
+        rt_native_fail(f, "expected bool")
+    }
+    co_reserve(1, 0, 0, f)
+    let h = co_register(6)
+    let o = co_find(h, 6)
+    co_slot_put(o, 0, rt_map_alloc(0, 4))
+    co_slot_put(o, 1, rt_map_alloc(0, 4))
+    if std::raw::bits(directed) != 0 {
+        std::raw::store(o + 56, 1)
+    }
+    h
+}
+
+fn co_graph_entries(o: int) -> int {
+    co_map_len(co_slot_get(o, 0)) + std::raw::load(o + 64)
+}
+
+fn co_graph_add_node_raw(o: int, node: any) {
+    let mut nodes = co_slot_take(o, 0)
+    nodes = std::map::insert(nodes, node, nil)
+    co_slot_put(o, 0, nodes)
+    let mut edges = co_slot_take(o, 1)
+    if !co_has(edges, node) {
+        edges = std::map::insert(edges, node, rt_array_new(0))
+    }
+    co_slot_put(o, 1, edges)
+}
+
+fn co_graph_push_edge(o: int, from: any, to: any, w: int) {
+    let mut edges = co_slot_take(o, 1)
+    let pos = rt_map_find(edges, from)
+    let mut list: any = rt_array_new(0)
+    if pos >= 0 {
+        list = rt_map_value_at(edges, pos)
+    }
+    // Se quita del mapa antes de modificarla para que tenga un solo dueño.
+    edges = std::map::insert(edges, from, nil)
+    let pair = rt_tuple_new(2)
+    rt_seq_put(rt_seq_data(pair), 0, to)
+    rt_seq_put(rt_seq_data(pair), 1, w)
+    list = std::array::push(list, pair)
+    edges = std::map::insert(edges, from, list)
+    co_slot_put(o, 1, edges)
+}
+
+fn std__collections__graph_add_node(hv: any, node: any) -> any {
+    let f = "std::collections::graph_add_node"
+    let h = co_graph_handle(hv, f)
+    rt_expect_str(node, f)
+    co_item(node, f)
+    let o = co_get_obj(h, 6, f)
+    if co_has(co_slot_get(o, 0), node) {
+        return nil
+    }
+    co_ensure(co_graph_entries(o), 1, f)
+    co_reserve(0, 1, 2 * rt_slen(node), f)
+    co_graph_add_node_raw(o, node)
+    std::raw::store(o + 72, std::raw::load(o + 72) + 2 * rt_slen(node))
+    nil
+}
+
+fn std__collections__graph_add_edge(hv: any, from: any, to: any, weight: any) -> any {
+    let f = "std::collections::graph_add_edge"
+    let h = co_graph_handle(hv, f)
+    rt_expect_str(from, f)
+    rt_expect_str(to, f)
+    rt_expect_int(weight, f)
+    co_item(from, f)
+    co_item(to, f)
+    let w = std::raw::bits(weight)
+    if w < 0 {
+        rt_native_fail(f, "graph edge weight must be nonnegative for Dijkstra")
+    }
+    let o = co_get_obj(h, 6, f)
+    let nodes = co_slot_get(o, 0)
+    let new_from = !co_has(nodes, from)
+    let new_to = !co_has(nodes, to)
+    let same = rt_str_eq(from, to)
+    let mut added_nodes = 0
+    if new_from {
+        added_nodes += 1
+    }
+    if new_to && !same {
+        added_nodes += 1
+    }
+    let directed = std::raw::load(o + 56) == 1
+    let mut added_edges = 2
+    if directed {
+        added_edges = 1
+    }
+    co_ensure(co_graph_entries(o), added_nodes + added_edges, f)
+    let mut bytes = 0
+    if new_from {
+        bytes += 2 * rt_slen(from)
+    }
+    if new_to && !same {
+        bytes += 2 * rt_slen(to)
+    }
+    if directed {
+        bytes += rt_slen(to)
+    } else {
+        bytes += rt_slen(from) + rt_slen(to)
+    }
+    co_reserve(0, added_nodes + added_edges, bytes, f)
+    co_graph_add_node_raw(o, from)
+    co_graph_add_node_raw(o, to)
+    co_graph_push_edge(o, from, to, w)
+    if !directed {
+        co_graph_push_edge(o, to, from, w)
+    }
+    std::raw::store(o + 64, std::raw::load(o + 64) + added_edges)
+    std::raw::store(o + 72, std::raw::load(o + 72) + bytes)
+    nil
+}
+
+// Vecinos de un nodo (array de tuplas), o un array vacío.
+fn co_graph_list(o: int, node: any) -> any {
+    let edges = co_slot_get(o, 1)
+    let pos = rt_map_find(edges, node)
+    if pos < 0 {
+        return rt_array_new(0)
+    }
+    rt_map_value_at(edges, pos)
+}
+
+fn co_graph_names(list: any) -> any {
+    let n = rt_seq_len(list)
+    let out = rt_array_new(n)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(rt_seq_data(out), i, rt_seq_get(rt_seq_get(list, i), 0))
+        i += 1
+    }
+    out
+}
+
+fn std__collections__graph_neighbors(hv: any, node: any) -> any {
+    let f = "std::collections::graph_neighbors"
+    let h = co_graph_handle(hv, f)
+    rt_expect_str(node, f)
+    let o = co_get_obj(h, 6, f)
+    co_graph_names(co_graph_list(o, node))
+}
+
+fn std__collections__graph_bfs(hv: any, start: any) -> any {
+    let f = "std::collections::graph_bfs"
+    let h = co_graph_handle(hv, f)
+    rt_expect_str(start, f)
+    let o = co_get_obj(h, 6, f)
+    if !co_has(co_slot_get(o, 0), start) {
+        return rt_array_new(0)
+    }
+    let mut visited: any = rt_map_alloc(0, 4)
+    let mut queue: any = rt_array_new(0)
+    let mut order: any = rt_array_new(0)
+    queue = std::array::push(queue, start)
+    visited = std::map::insert(visited, start, nil)
+    let mut head = 0
+    while head < rt_seq_len(queue) {
+        let n = rt_seq_get(queue, head)
+        head += 1
+        order = std::array::push(order, n)
+        let nbrs = co_sort_strings(co_graph_names(co_graph_list(o, n)), false)
+        let m = rt_seq_len(nbrs)
+        let mut i = 0
+        while i < m {
+            let v = rt_seq_get(nbrs, i)
+            if !co_has(visited, v) {
+                visited = std::map::insert(visited, v, nil)
+                queue = std::array::push(queue, v)
+            }
+            i += 1
+        }
+    }
+    order
+}
+
+fn std__collections__graph_dfs(hv: any, start: any) -> any {
+    let f = "std::collections::graph_dfs"
+    let h = co_graph_handle(hv, f)
+    rt_expect_str(start, f)
+    let o = co_get_obj(h, 6, f)
+    if !co_has(co_slot_get(o, 0), start) {
+        return rt_array_new(0)
+    }
+    let mut visited: any = rt_map_alloc(0, 4)
+    let mut stack: any = rt_array_new(0)
+    let mut order: any = rt_array_new(0)
+    stack = std::array::push(stack, start)
+    while rt_seq_len(stack) > 0 {
+        let n = rt_seq_get(stack, rt_seq_len(stack) - 1)
+        stack = std::array::pop(stack)
+        if co_has(visited, n) {
+            continue
+        }
+        visited = std::map::insert(visited, n, nil)
+        order = std::array::push(order, n)
+        let nbrs = co_sort_strings(co_graph_names(co_graph_list(o, n)), true)
+        let m = rt_seq_len(nbrs)
+        let mut i = 0
+        while i < m {
+            let v = rt_seq_get(nbrs, i)
+            if !co_has(visited, v) {
+                stack = std::array::push(stack, v)
+            }
+            i += 1
+        }
+    }
+    order
+}
+
+// Montículo de Dijkstra: sale primero la menor distancia y, a igual
+// distancia, el nombre mayor (BinaryHeap<(Reverse(d), String)> de Rust).
+fn co_dj_above(d: int, i: int, j: int) -> bool {
+    let di = std::raw::load(d + 16 * i)
+    let dj = std::raw::load(d + 16 * j)
+    if di != dj {
+        return di < dj
+    }
+    rt_cmp_raw(std::raw::load(d + 16 * i + 8), std::raw::load(d + 16 * j + 8)) > 0
+}
+
+fn co_dj_swap(d: int, i: int, j: int) {
+    let a = std::raw::load(d + 16 * i)
+    let b = std::raw::load(d + 16 * i + 8)
+    std::raw::store(d + 16 * i, std::raw::load(d + 16 * j))
+    std::raw::store(d + 16 * i + 8, std::raw::load(d + 16 * j + 8))
+    std::raw::store(d + 16 * j, a)
+    std::raw::store(d + 16 * j + 8, b)
+}
+
+fn co_dist(dist: any, v: any) -> int {
+    let pos = rt_map_find(dist, v)
+    if pos < 0 {
+        return 9223372036854775807
+    }
+    std::raw::bits(rt_map_value_at(dist, pos))
+}
+
+fn std__collections__graph_shortest_path(hv: any, start: any, end: any) -> any {
+    let f = "std::collections::graph_shortest_path"
+    let h = co_graph_handle(hv, f)
+    rt_expect_str(start, f)
+    rt_expect_str(end, f)
+    let o = co_get_obj(h, 6, f)
+    let nodes = co_slot_get(o, 0)
+    if !co_has(nodes, start) || !co_has(nodes, end) {
+        return rt_array_new(0)
+    }
+    let mut dist: any = rt_map_alloc(0, 4)
+    let mut prev: any = rt_map_alloc(0, 4)
+    // Los strings del montículo están vivos en el grafo o en `keep`.
+    let mut keep: any = rt_array_new(0)
+    let mut cap = 64
+    let mut heap = rt_alloc(16 * cap)
+    let mut size = 0
+    dist = std::map::insert(dist, start, 0)
+    keep = std::array::push(keep, start)
+    std::raw::store(heap, 0)
+    std::raw::store(heap + 8, std::raw::bits(start))
+    size = 1
+    while size > 0 {
+        let d = std::raw::load(heap)
+        let u = rt_sref(std::raw::load(heap + 8))
+        size -= 1
+        co_dj_swap(heap, 0, size)
+        let mut i = 0
+        while true {
+            let l = 2 * i + 1
+            let r = l + 1
+            let mut best = i
+            if l < size && co_dj_above(heap, l, best) {
+                best = l
+            }
+            if r < size && co_dj_above(heap, r, best) {
+                best = r
+            }
+            if best == i {
+                break
+            }
+            co_dj_swap(heap, i, best)
+            i = best
+        }
+        if rt_str_eq(u, end) {
+            break
+        }
+        if d > co_dist(dist, u) {
+            continue
+        }
+        let list = co_graph_list(o, u)
+        let m = rt_seq_len(list)
+        let mut k = 0
+        while k < m {
+            let pair = rt_seq_get(list, k)
+            let v = rt_seq_get(pair, 0)
+            let w = std::raw::bits(rt_seq_get(pair, 1))
+            let mut alt = std::raw::wadd(d, w)
+            if alt < d {
+                alt = 9223372036854775807
+            }
+            if alt < co_dist(dist, v) {
+                dist = std::map::insert(dist, v, alt)
+                prev = std::map::insert(prev, v, u)
+                keep = std::array::push(keep, v)
+                if size == cap {
+                    let bigger = rt_alloc(32 * cap)
+                    rt_copy(bigger, heap, 16 * size)
+                    rt_free_block(heap)
+                    heap = bigger
+                    cap *= 2
+                }
+                std::raw::store(heap + 16 * size, alt)
+                std::raw::store(heap + 16 * size + 8, std::raw::bits(v))
+                let mut c = size
+                size += 1
+                while c > 0 {
+                    let parent = (c - 1) / 2
+                    if !co_dj_above(heap, c, parent) {
+                        break
+                    }
+                    co_dj_swap(heap, c, parent)
+                    c = parent
+                }
+            }
+            k += 1
+        }
+    }
+    rt_free_block(heap)
+    if !co_has(dist, end) {
+        return rt_array_new(0)
+    }
+    let mut path: any = rt_array_new(0)
+    let mut cur = end
+    while true {
+        path = std::array::push(path, cur)
+        if rt_str_eq(cur, start) {
+            break
+        }
+        let pos = rt_map_find(prev, cur)
+        if pos < 0 {
+            return rt_array_new(0)
+        }
+        cur = rt_map_value_at(prev, pos)
+    }
+    std__collections__reverse(path)
+}
+
+fn std__collections__graph_topological_sort(hv: any) -> any {
+    let f = "std::collections::graph_topological_sort"
+    let o = co_get_obj(co_graph_handle(hv, f), 6, f)
+    if std::raw::load(o + 56) != 1 {
+        rt_native_fail(f, "topological_sort requires directed graph")
+    }
+    let nodes = co_slot_get(o, 0)
+    let edges = co_slot_get(o, 1)
+    let mut indeg: any = rt_map_alloc(0, 4)
+    let nn = co_map_len(nodes)
+    let mut i = 0
+    while i < nn {
+        indeg = std::map::insert(indeg, co_map_key(nodes, i), 0)
+        i += 1
+    }
+    let ne = co_map_len(edges)
+    i = 0
+    while i < ne {
+        let list = rt_map_value_at(edges, i)
+        let m = rt_seq_len(list)
+        let mut k = 0
+        while k < m {
+            let v = rt_seq_get(rt_seq_get(list, k), 0)
+            indeg = std::map::insert(indeg, v, co_dist(indeg, v) + 1)
+            k += 1
+        }
+        i += 1
+    }
+    let mut queue: any = rt_array_new(0)
+    i = 0
+    while i < co_map_len(indeg) {
+        if std::raw::bits(rt_map_value_at(indeg, i)) == 0 {
+            queue = std::array::push(queue, co_map_key(indeg, i))
+        }
+        i += 1
+    }
+    let mut order: any = rt_array_new(0)
+    let mut head = 0
+    while head < rt_seq_len(queue) {
+        let n = rt_seq_get(queue, head)
+        head += 1
+        order = std::array::push(order, n)
+        let nbrs = co_sort_strings(co_graph_names(co_graph_list(o, n)), false)
+        let m = rt_seq_len(nbrs)
+        let mut k = 0
+        while k < m {
+            let v = rt_seq_get(nbrs, k)
+            let pos = rt_map_find(indeg, v)
+            let mut d = -1
+            if pos >= 0 {
+                d = std::raw::bits(rt_map_value_at(indeg, pos)) - 1
+            }
+            indeg = std::map::insert(indeg, v, d)
+            if d == 0 {
+                queue = std::array::push(queue, v)
+            }
+            k += 1
+        }
+    }
+    if rt_seq_len(order) != nn {
+        rt_native_fail(f, "cycle detected: topological sort not possible")
+    }
+    order
+}
+
+fn std__collections__graph_has_cycle(hv: any) -> any {
+    let f = "std::collections::graph_has_cycle"
+    let o = co_get_obj(co_graph_handle(hv, f), 6, f)
+    let nodes = co_slot_get(o, 0)
+    let nn = co_map_len(nodes)
+    if std::raw::load(o + 56) == 1 {
+        // DFS iterativo con tres estados (0 sin ver, 1 en curso, 2 hecho).
+        let mut state: any = rt_map_alloc(0, 4)
+        let mut s = 0
+        while s < nn {
+            let start = co_map_key(nodes, s)
+            s += 1
+            if co_dist(state, start) == 1 || co_dist(state, start) == 2 {
+                continue
+            }
+            state = std::map::insert(state, start, 1)
+            let mut stack_nodes: any = rt_array_new(0)
+            let mut stack_idx: any = rt_array_new(0)
+            stack_nodes = std::array::push(stack_nodes, start)
+            stack_idx = std::array::push(stack_idx, 0)
+            while rt_seq_len(stack_nodes) > 0 {
+                let top = rt_seq_len(stack_nodes) - 1
+                let node = rt_seq_get(stack_nodes, top)
+                let index = std::raw::bits(rt_seq_get(stack_idx, top))
+                let list = co_graph_list(o, node)
+                if index < rt_seq_len(list) {
+                    stack_idx = std::array::set(stack_idx, top, index + 1)
+                    let nb = rt_seq_get(rt_seq_get(list, index), 0)
+                    let st = co_dist(state, nb)
+                    if st == 1 {
+                        return true
+                    }
+                    if st != 2 {
+                        state = std::map::insert(state, nb, 1)
+                        stack_nodes = std::array::push(stack_nodes, nb)
+                        stack_idx = std::array::push(stack_idx, 0)
+                    }
+                } else {
+                    stack_nodes = std::array::pop(stack_nodes)
+                    stack_idx = std::array::pop(stack_idx)
+                    state = std::map::insert(state, node, 2)
+                }
+            }
+        }
+        return false
+    }
+    // No dirigido: recorrido en anchura recordando el padre.
+    let mut visited: any = rt_map_alloc(0, 4)
+    let mut s = 0
+    while s < nn {
+        let start = co_map_key(nodes, s)
+        s += 1
+        if co_has(visited, start) {
+            continue
+        }
+        let mut qn: any = rt_array_new(0)
+        let mut qp: any = rt_array_new(0)
+        qn = std::array::push(qn, start)
+        qp = std::array::push(qp, nil)
+        let mut head = 0
+        while head < rt_seq_len(qn) {
+            let node = rt_seq_get(qn, head)
+            let parent = rt_seq_get(qp, head)
+            head += 1
+            if co_has(visited, node) {
+                return true
+            }
+            visited = std::map::insert(visited, node, nil)
+            let list = co_graph_list(o, node)
+            let m = rt_seq_len(list)
+            let mut k = 0
+            while k < m {
+                let nb = rt_seq_get(rt_seq_get(list, k), 0)
+                if std::raw::tag(parent) == 0 || !rt_str_eq(parent, nb) {
+                    qn = std::array::push(qn, nb)
+                    qp = std::array::push(qp, node)
+                }
+                k += 1
+            }
+        }
+    }
+    false
+}
+
+fn std__collections__graph_nodes(hv: any) -> any {
+    let f = "std::collections::graph_nodes"
+    let o = co_get_obj(co_graph_handle(hv, f), 6, f)
+    let m = co_slot_get(o, 0)
+    let n = co_map_len(m)
+    let out = rt_array_new(n)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(rt_seq_data(out), i, co_map_key(m, i))
+        i += 1
+    }
+    out
+}
+
+fn std__collections__graph_drop(hv: any) -> any {
+    let h = co_graph_handle(hv, "std::collections::graph_drop")
+    let o = co_find(h, 6)
+    if o == 0 {
+        return false
+    }
+    co_release(1, co_graph_entries(o), std::raw::load(o + 72))
+    co_unregister(h)
+    true
+}

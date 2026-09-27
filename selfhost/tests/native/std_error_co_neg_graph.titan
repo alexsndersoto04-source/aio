@@ -1,0 +1,3 @@
+fn main() {
+    print(std::collections::graph_nodes(-5))
+}
