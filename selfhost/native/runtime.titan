@@ -21,6 +21,8 @@ import std_libm_tab
 import errno
 import float
 import float_table
+import std_tz_data
+import std_tz
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust

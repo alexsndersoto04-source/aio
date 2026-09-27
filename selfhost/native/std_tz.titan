@@ -1,0 +1,764 @@
+// std::datetime::to_timezone y timezone_offset_seconds: zonas horarias como
+// chrono-tz 0.10.4.
+//
+// chrono-tz lleva tablas generadas por parse-zoneinfo 0.5 a partir de tzdb
+// 2025b. Aquí se guardan las reglas de tzdb (std_tz_data.titan, generado por
+// tz/gen_tz.py) y el runtime calcula las mismas tablas la primera vez que se
+// usa cada zona, con el mismo algoritmo (años 1800 a 2099, fusión de tramos
+// "optimise", primer tramo...). Después de 2099 se queda el último tramo,
+// igual que en chrono-tz.
+//
+// Memoria: el puntero a la base de datos ya leída está en globales +2512.
+// Base de datos (6 palabras): vectores de conjuntos de reglas, reglas, zonas,
+// líneas de zona y enlaces.
+//   conjunto: nombre (string guardado), primera regla, cuántas
+//   regla (10): desde, hasta, mes, tipo_día, día_semana, número, segundos,
+//               tipo (0 pared, 1 estándar, 2 UTC), ahorro, letras (string o 0)
+//   zona (4): nombre, primera línea, cuántas, tabla calculada (0 = aún no)
+//   línea (12): desplazamiento, clase de ahorro (0 nada, 1 fijo, 2 reglas),
+//               valor, formato (string), clase de fin (-1 sin fin, 0 año,
+//               1 mes, 2 día, 3 hora), año, mes, tipo_día, día_semana,
+//               número, segundos, tipo
+//   enlace (2): nombre, zona
+// Tabla calculada: [n, desplazamiento inicial, (instante, desplazamiento) × n].
+
+// ------------------------------------------------------------ vector de enteros
+
+fn tv_new() -> int {
+    let v = rt_alloc(24)
+    std::raw::store(v, 0)
+    std::raw::store(v + 8, 16)
+    std::raw::store(v + 16, rt_alloc(128))
+    v
+}
+
+fn tv_len(v: int) -> int { std::raw::load(v) }
+
+fn tv_get(v: int, i: int) -> int { std::raw::load(std::raw::load(v + 16) + 8 * i) }
+
+fn tv_set(v: int, i: int, x: int) { std::raw::store(std::raw::load(v + 16) + 8 * i, x) }
+
+fn tv_push(v: int, x: int) {
+    let n = std::raw::load(v)
+    let cap = std::raw::load(v + 8)
+    if n == cap {
+        let old = std::raw::load(v + 16)
+        let data = rt_alloc(16 * cap)
+        rt_copy(data, old, 8 * n)
+        rt_free_block(old)
+        std::raw::store(v + 8, 2 * cap)
+        std::raw::store(v + 16, data)
+    }
+    std::raw::store(std::raw::load(v + 16) + 8 * n, x)
+    std::raw::store(v, n + 1)
+}
+
+fn tv_free(v: int) {
+    rt_free_block(std::raw::load(v + 16))
+    rt_free_block(v)
+}
+
+// ------------------------------------------------------------ lectura de datos
+
+fn tz_db_sets(db: int) -> int { std::raw::load(db) }
+fn tz_db_rules(db: int) -> int { std::raw::load(db + 8) }
+fn tz_db_zones(db: int) -> int { std::raw::load(db + 16) }
+fn tz_db_lines(db: int) -> int { std::raw::load(db + 24) }
+fn tz_db_links(db: int) -> int { std::raw::load(db + 32) }
+
+// ¿Los bytes [a, b) de p son iguales al string guardado `bits`?
+fn tz_same(bits: int, p: int, a: int, b: int) -> bool {
+    let n = std::raw::load(bits + 8)
+    if n != b - a {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(bits + 16 + i) != std::raw::load8(p + a + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn tz_int(p: int, a: int, b: int) -> int {
+    let mut i = a
+    let mut neg = false
+    if std::raw::load8(p + i) == 45 {
+        neg = true
+        i += 1
+    }
+    let mut v = 0
+    while i < b {
+        v = v * 10 + std::raw::load8(p + i) - 48
+        i += 1
+    }
+    if neg {
+        return 0 - v
+    }
+    v
+}
+
+fn tz_tt(p: int, a: int) -> int {
+    let c = std::raw::load8(p + a)
+    if c == 115 {
+        return 1
+    }
+    if c == 117 {
+        return 2
+    }
+    0
+}
+
+// String nuevo con los bytes [a, b) de s, guardado (bits con su referencia).
+fn tz_keep_str(s: any, a: int, b: int) -> int {
+    std::raw::keep(rt_substr_bytes(s, a, b))
+}
+
+fn tz_find_set(db: int, p: int, a: int, b: int) -> int {
+    let sets = tz_db_sets(db)
+    let n = tv_len(sets) / 3
+    let mut i = 0
+    while i < n {
+        if tz_same(tv_get(sets, 3 * i), p, a, b) {
+            return i
+        }
+        i += 1
+    }
+    std::raw::fail("tz: regla desconocida")
+}
+
+fn tz_find_zone_bytes(db: int, p: int, a: int, b: int) -> int {
+    let zones = tz_db_zones(db)
+    let n = tv_len(zones) / 4
+    let mut i = 0
+    while i < n {
+        if tz_same(tv_get(zones, 4 * i), p, a, b) {
+            return i
+        }
+        i += 1
+    }
+    std::raw::fail("tz: zona desconocida")
+}
+
+// Una línea del texto: s es el trozo, [a, b) la línea sin el salto.
+fn tz_parse_line(db: int, s: any, a: int, b: int, tok: int) {
+    let p = std::raw::bits(s) + 16
+    // Campos separados por un espacio.
+    std::raw::store(tok, 0)
+    let mut start = a
+    let mut i = a
+    while i <= b {
+        if i == b || std::raw::load8(p + i) == 32 {
+            tv_push(tok, start)
+            tv_push(tok, i)
+            start = i + 1
+        }
+        i += 1
+    }
+    let kind = std::raw::load8(p + a)
+    if kind == 82 {
+        // R nombre desde hasta mes tipo_día día_semana número segundos tipo ahorro letras
+        let sets = tz_db_sets(db)
+        let rules = tz_db_rules(db)
+        let na = tv_get(tok, 2)
+        let nb = tv_get(tok, 3)
+        let ns = tv_len(sets) / 3
+        let mut fresh = ns == 0
+        if !fresh {
+            fresh = !tz_same(tv_get(sets, 3 * (ns - 1)), p, na, nb)
+        }
+        if fresh {
+            tv_push(sets, tz_keep_str(s, na, nb))
+            tv_push(sets, tv_len(rules) / 10)
+            tv_push(sets, 0)
+        }
+        let last = tv_len(sets) - 1
+        tv_set(sets, last, tv_get(sets, last) + 1)
+        let mut k = 2
+        while k <= 8 {
+            tv_push(rules, tz_int(p, tv_get(tok, 2 * k), tv_get(tok, 2 * k + 1)))
+            k += 1
+        }
+        tv_push(rules, tz_tt(p, tv_get(tok, 18)))
+        tv_push(rules, tz_int(p, tv_get(tok, 20), tv_get(tok, 21)))
+        let la = tv_get(tok, 22)
+        let lb = tv_get(tok, 23)
+        if lb - la == 1 && std::raw::load8(p + la) == 45 {
+            tv_push(rules, 0)
+        } else {
+            tv_push(rules, tz_keep_str(s, la, lb))
+        }
+    } else if kind == 90 {
+        // Z nombre
+        let zones = tz_db_zones(db)
+        tv_push(zones, tz_keep_str(s, tv_get(tok, 2), tv_get(tok, 3)))
+        tv_push(zones, tv_len(tz_db_lines(db)) / 12)
+        tv_push(zones, 0)
+        tv_push(zones, 0)
+    } else if kind == 67 {
+        // C desplazamiento clase valor formato [fin...]
+        let zones = tz_db_zones(db)
+        let lines = tz_db_lines(db)
+        let zlast = tv_len(zones) - 2
+        tv_set(zones, zlast, tv_get(zones, zlast) + 1)
+        tv_push(lines, tz_int(p, tv_get(tok, 2), tv_get(tok, 3)))
+        let c = std::raw::load8(p + tv_get(tok, 4))
+        if c == 110 {
+            tv_push(lines, 0)
+            tv_push(lines, 0)
+        } else if c == 102 {
+            tv_push(lines, 1)
+            tv_push(lines, tz_int(p, tv_get(tok, 6), tv_get(tok, 7)))
+        } else {
+            tv_push(lines, 2)
+            tv_push(lines, tz_find_set(db, p, tv_get(tok, 6), tv_get(tok, 7)))
+        }
+        tv_push(lines, tz_keep_str(s, tv_get(tok, 8), tv_get(tok, 9)))
+        if tv_len(tok) > 10 {
+            let mut k = 5
+            while k <= 11 {
+                tv_push(lines, tz_int(p, tv_get(tok, 2 * k), tv_get(tok, 2 * k + 1)))
+                k += 1
+            }
+            tv_push(lines, tz_tt(p, tv_get(tok, 24)))
+        } else {
+            tv_push(lines, -1)
+            let mut k = 0
+            while k < 7 {
+                tv_push(lines, 0)
+                k += 1
+            }
+        }
+    } else if kind == 76 {
+        // L destino nombre
+        let links = tz_db_links(db)
+        tv_push(links, tz_keep_str(s, tv_get(tok, 4), tv_get(tok, 5)))
+        tv_push(links, tz_find_zone_bytes(db, p, tv_get(tok, 2), tv_get(tok, 3)))
+    } else {
+        std::raw::fail("tz: línea desconocida")
+    }
+}
+
+fn tz_db() -> int {
+    let g = std::raw::globals() + 2512
+    let cached = std::raw::load(g)
+    if cached != 0 {
+        return cached
+    }
+    let db = rt_alloc(40)
+    let mut k = 0
+    while k < 5 {
+        std::raw::store(db + 8 * k, tv_new())
+        k += 1
+    }
+    let tok = tv_new()
+    let parts = tz_data_parts()
+    let np = rt_seq_len(parts)
+    let mut i = 0
+    while i < np {
+        let s = rt_seq_get(parts, i)
+        let p = std::raw::bits(s) + 16
+        let n = rt_slen(s)
+        let mut a = 0
+        let mut j = 0
+        while j < n {
+            if std::raw::load8(p + j) == 10 {
+                tz_parse_line(db, s, a, j, tok)
+                a = j + 1
+            }
+            j += 1
+        }
+        i += 1
+    }
+    tv_free(tok)
+    std::raw::store(g, db)
+    db
+}
+
+// Índice de zona para un nombre (enlaces resueltos), o -1.
+fn tz_find(db: int, name: any) -> int {
+    let p = std::raw::bits(name) + 16
+    let n = rt_slen(name)
+    let zones = tz_db_zones(db)
+    let nz = tv_len(zones) / 4
+    let mut i = 0
+    while i < nz {
+        if tz_same(tv_get(zones, 4 * i), p, 0, n) {
+            return i
+        }
+        i += 1
+    }
+    let links = tz_db_links(db)
+    let nl = tv_len(links) / 2
+    i = 0
+    while i < nl {
+        if tz_same(tv_get(links, 2 * i), p, 0, n) {
+            return tv_get(links, 2 * i + 1)
+        }
+        i += 1
+    }
+    -1
+}
+
+// ------------------------------------------------------------ parse-zoneinfo
+
+// Día de la semana contando desde el domingo (0).
+fn tz_wd(y: int, m: int, d: int) -> int {
+    dt_fmod(dt_days(y, m, d) + 4, 7)
+}
+
+// DaySpec::to_concrete_day: (mes, día).
+fn tz_concrete(dk: int, dw: int, dn: int, y: int, m: int) -> (int, int) {
+    if dk == 0 {
+        return (m, dn)
+    }
+    let length = dt_mdays(y, m)
+    if dk == 1 {
+        let mut d = length
+        while d >= 1 {
+            if tz_wd(y, m, d) == dw {
+                return (m, d)
+            }
+            d -= 1
+        }
+        std::raw::fail("tz: día imposible")
+    }
+    if dk == 2 {
+        let mut d = dn
+        while d >= -7 {
+            if d >= 1 {
+                if tz_wd(y, m, d) == dw {
+                    return (m, d)
+                }
+            } else {
+                if m == 1 {
+                    std::raw::fail("tz: día antes de enero")
+                }
+                let pl = dt_mdays(y, m - 1)
+                if tz_wd(y, m - 1, pl + d) == dw {
+                    return (m - 1, pl + d)
+                }
+            }
+            d -= 1
+        }
+        std::raw::fail("tz: día imposible")
+    }
+    let mut d = dn
+    while d <= dn + 7 {
+        if d <= length {
+            if tz_wd(y, m, d) == dw {
+                return (m, d)
+            }
+        } else {
+            if m == 12 {
+                std::raw::fail("tz: día después de diciembre")
+            }
+            if tz_wd(y, m + 1, d - length) == dw {
+                return (m + 1, d - length)
+            }
+        }
+        d += 1
+    }
+    std::raw::fail("tz: día imposible")
+}
+
+fn tz_type_off(tt: int, utc: int, dst: int) -> int {
+    if tt == 2 {
+        return 0
+    }
+    if tt == 1 {
+        return utc
+    }
+    utc + dst
+}
+
+// ChangeTime::to_timestamp del fin de una línea de zona.
+fn tz_until(lines: int, li: int, utc: int, dst: int) -> int {
+    let b = 12 * li
+    let kind = tv_get(lines, b + 4)
+    let y = tv_get(lines, b + 5)
+    if kind == 0 {
+        return dt_days(y, 1, 1) * 86400 - (utc + dst)
+    }
+    let m = tv_get(lines, b + 6)
+    if kind == 1 {
+        return dt_days(y, m, 1) * 86400 - (utc + dst)
+    }
+    let (mm, dd) = tz_concrete(tv_get(lines, b + 7), tv_get(lines, b + 8), tv_get(lines, b + 9), y, m)
+    if kind == 2 {
+        return dt_days(y, mm, dd) * 86400 - (utc + dst)
+    }
+    dt_days(y, mm, dd) * 86400 + tv_get(lines, b + 10) - tz_type_off(tv_get(lines, b + 11), utc, dst)
+}
+
+// RuleInfo::absolute_datetime.
+fn tz_rule_at(rules: int, ri: int, year: int, utc: int, dst: int) -> int {
+    let b = 10 * ri
+    let (mm, dd) = tz_concrete(tv_get(rules, b + 3), tv_get(rules, b + 4), tv_get(rules, b + 5), year, tv_get(rules, b + 2))
+    dt_days(year, mm, dd) * 86400 + tv_get(rules, b + 6) - tz_type_off(tv_get(rules, b + 7), utc, dst)
+}
+
+fn tz_two(b: int, v: int) {
+    sb_byte(b, 48 + v / 10)
+    sb_byte(b, 48 + v % 10)
+}
+
+// Format::format: la abreviatura del tramo.
+fn tz_format(fmtbits: int, utc: int, dst: int, letters: int) -> any {
+    let f = std::raw::value(5, fmtbits)
+    let p = fmtbits + 16
+    let n = std::raw::load(fmtbits + 8)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 47 {
+            if dst == 0 {
+                return rt_substr_bytes(f, 0, i)
+            }
+            return rt_substr_bytes(f, i + 1, n)
+        }
+        i += 1
+    }
+    let mut has_s = false
+    i = 0
+    while i + 1 < n {
+        if std::raw::load8(p + i) == 37 && std::raw::load8(p + i + 1) == 115 {
+            has_s = true
+        }
+        i += 1
+    }
+    if has_s {
+        let b = sb_new(n + 8)
+        i = 0
+        while i < n {
+            if i + 1 < n && std::raw::load8(p + i) == 37 && std::raw::load8(p + i + 1) == 115 {
+                if letters != 0 {
+                    sb_str(b, std::raw::value(5, letters))
+                }
+                i += 2
+            } else {
+                sb_byte(b, std::raw::load8(p + i))
+                i += 1
+            }
+        }
+        return sb_finish(b)
+    }
+    if n == 2 && std::raw::load8(p) == 37 && std::raw::load8(p + 1) == 122 {
+        let mut off = utc + dst
+        let b = sb_new(8)
+        if off < 0 {
+            sb_byte(b, 45)
+            off = 0 - off
+        } else {
+            sb_byte(b, 43)
+        }
+        if off % 60 != 0 {
+            std::raw::fail("numeric names are not used if the offset has fractional minutes")
+        }
+        let minutes = off / 60
+        tz_two(b, minutes / 60)
+        if minutes % 60 != 0 {
+            tz_two(b, minutes % 60)
+        }
+        return sb_finish(b)
+    }
+    f
+}
+
+// Número de la abreviatura en `names` (strings guardados), añadiéndola si falta.
+fn tz_intern(names: int, s: any) -> int {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    let k = tv_len(names)
+    let mut i = 0
+    while i < k {
+        if tz_same(tv_get(names, i), p, 0, n) {
+            return i
+        }
+        i += 1
+    }
+    tv_push(names, std::raw::keep(s))
+    k
+}
+
+fn tz_push_span(rest: int, t: int, utc: int, dst: int, name: int) {
+    tv_push(rest, t)
+    tv_push(rest, utc)
+    tv_push(rest, dst)
+    tv_push(rest, name)
+}
+
+// Table::timespans + FixedTimespanSetBuilder::build + optimise.
+fn tz_compute(db: int, z: int) -> int {
+    let zones = tz_db_zones(db)
+    let lines = tz_db_lines(db)
+    let rules = tz_db_rules(db)
+    let sets = tz_db_sets(db)
+    let first_line = tv_get(zones, 4 * z + 1)
+    let nlines = tv_get(zones, 4 * z + 2)
+    let rest = tv_new()
+    let names = tv_new()
+    let act = tv_new()
+    let mut has_first = false
+    let mut f_utc = 0
+    let mut f_dst = 0
+    let mut f_name = 0
+    let mut start_time = 0
+    let mut i = 0
+    while i < nlines {
+        let li = first_line + i
+        let b = 12 * li
+        let off = tv_get(lines, b)
+        let skind = tv_get(lines, b + 1)
+        let sval = tv_get(lines, b + 2)
+        let fmt = tv_get(lines, b + 3)
+        let mut dst = 0
+        let use_until = i != nlines - 1
+        let utc = off
+        let mut ins = i > 0
+        let mut szid = -1
+        let mut s_utc = off
+        let mut s_dst = 0
+        if skind != 2 {
+            let mut amount = 0
+            if skind == 1 {
+                amount = sval
+            }
+            dst = amount
+            szid = tz_intern(names, tz_format(fmt, utc, dst, 0))
+            if ins {
+                tz_push_span(rest, start_time, off, dst, szid)
+                ins = false
+            } else {
+                has_first = true
+                f_utc = utc
+                f_dst = dst
+                f_name = szid
+            }
+        } else {
+            let r0 = tv_get(sets, 3 * sval + 1)
+            let rn = tv_get(sets, 3 * sval + 2)
+            let uy = tv_get(lines, b + 5)
+            let mut year = 1800
+            while year < 2100 {
+                if use_until && year > uy {
+                    break
+                }
+                std::raw::store(act, 0)
+                let mut k = 0
+                while k < rn {
+                    let ri = r0 + k
+                    if tv_get(rules, 10 * ri) <= year && year <= tv_get(rules, 10 * ri + 1) {
+                        tv_push(act, ri)
+                    }
+                    k += 1
+                }
+                loop {
+                    let mut until = 0
+                    if use_until {
+                        until = tz_until(lines, li, utc, dst)
+                    }
+                    let na = tv_len(act)
+                    if na == 0 {
+                        break
+                    }
+                    let mut best = 0
+                    let mut bt = tz_rule_at(rules, tv_get(act, 0), year, utc, dst)
+                    let mut q = 1
+                    while q < na {
+                        let t = tz_rule_at(rules, tv_get(act, q), year, utc, dst)
+                        if t < bt {
+                            best = q
+                            bt = t
+                        }
+                        q += 1
+                    }
+                    let ri = tv_get(act, best)
+                    q = best
+                    while q + 1 < na {
+                        tv_set(act, q, tv_get(act, q + 1))
+                        q += 1
+                    }
+                    std::raw::store(act, na - 1)
+                    if use_until && bt >= until {
+                        break
+                    }
+                    let save = tv_get(rules, 10 * ri + 8)
+                    let letters = tv_get(rules, 10 * ri + 9)
+                    dst = save
+                    if ins && bt == start_time {
+                        ins = false
+                    }
+                    if ins {
+                        if bt < start_time {
+                            s_utc = off
+                            s_dst = dst
+                            szid = tz_intern(names, tz_format(fmt, utc, dst, letters))
+                            continue
+                        }
+                        if szid < 0 && s_utc + s_dst == off + dst {
+                            szid = tz_intern(names, tz_format(fmt, utc, dst, letters))
+                        }
+                    }
+                    tz_push_span(rest, bt, off, save, tz_intern(names, tz_format(fmt, off, save, letters)))
+                }
+                year += 1
+            }
+        }
+        if ins && szid >= 0 {
+            tz_push_span(rest, start_time, s_utc, s_dst, szid)
+        }
+        if use_until {
+            start_time = tz_until(lines, li, utc, dst)
+        }
+        i += 1
+    }
+    tv_free(act)
+    // Orden estable por instante (inserción: casi siempre ya está ordenado).
+    let n0 = tv_len(rest) / 4
+    let mut a = 1
+    while a < n0 {
+        let t = tv_get(rest, 4 * a)
+        let u = tv_get(rest, 4 * a + 1)
+        let d = tv_get(rest, 4 * a + 2)
+        let nm = tv_get(rest, 4 * a + 3)
+        let mut j = a
+        while j > 0 && tv_get(rest, 4 * (j - 1)) > t {
+            let mut c = 0
+            while c < 4 {
+                tv_set(rest, 4 * j + c, tv_get(rest, 4 * (j - 1) + c))
+                c += 1
+            }
+            j -= 1
+        }
+        tv_set(rest, 4 * j, t)
+        tv_set(rest, 4 * j + 1, u)
+        tv_set(rest, 4 * j + 2, d)
+        tv_set(rest, 4 * j + 3, nm)
+        a += 1
+    }
+    if !has_first {
+        let mut k = 0
+        while k < n0 && !has_first {
+            if tv_get(rest, 4 * k + 2) == 0 {
+                has_first = true
+                f_utc = tv_get(rest, 4 * k + 1)
+                f_dst = 0
+                f_name = tv_get(rest, 4 * k + 3)
+            }
+            k += 1
+        }
+        if !has_first {
+            std::raw::fail("tz: sin tramo inicial")
+        }
+    }
+    // optimise
+    let mut fi = 0
+    let mut ti = 0
+    while fi < n0 {
+        if ti > 1 {
+            let x = tv_get(rest, 4 * fi)
+            let y = tv_get(rest, 4 * (ti - 1))
+            let tot1 = tv_get(rest, 4 * (ti - 1) + 1) + tv_get(rest, 4 * (ti - 1) + 2)
+            let tot2 = tv_get(rest, 4 * (ti - 2) + 1) + tv_get(rest, 4 * (ti - 2) + 2)
+            if x + tot1 <= y + tot2 {
+                tv_set(rest, 4 * (ti - 1) + 1, tv_get(rest, 4 * fi + 1))
+                tv_set(rest, 4 * (ti - 1) + 2, tv_get(rest, 4 * fi + 2))
+                tv_set(rest, 4 * (ti - 1) + 3, tv_get(rest, 4 * fi + 3))
+                fi += 1
+                continue
+            }
+        }
+        let mut differ = ti == 0
+        if !differ {
+            let pb = 4 * (ti - 1)
+            let fb = 4 * fi
+            differ = tv_get(rest, pb + 1) != tv_get(rest, fb + 1) || tv_get(rest, pb + 2) != tv_get(rest, fb + 2) || tv_get(rest, pb + 3) != tv_get(rest, fb + 3)
+        }
+        if differ {
+            let mut c = 0
+            while c < 4 {
+                tv_set(rest, 4 * ti + c, tv_get(rest, 4 * fi + c))
+                c += 1
+            }
+            ti += 1
+        }
+        fi += 1
+    }
+    let mut skip = 0
+    if ti > 0 && tv_get(rest, 1) == f_utc && tv_get(rest, 2) == f_dst && tv_get(rest, 3) == f_name {
+        skip = 1
+    }
+    let n = ti - skip
+    let out = rt_alloc(16 + 16 * n)
+    std::raw::store(out, n)
+    std::raw::store(out + 8, f_utc + f_dst)
+    let mut k = 0
+    while k < n {
+        let e = 4 * (k + skip)
+        std::raw::store(out + 16 + 16 * k, tv_get(rest, e))
+        std::raw::store(out + 24 + 16 * k, tv_get(rest, e + 1) + tv_get(rest, e + 2))
+        k += 1
+    }
+    tv_free(rest)
+    let nn = tv_len(names)
+    k = 0
+    while k < nn {
+        std::raw::release(5, tv_get(names, k))
+        k += 1
+    }
+    tv_free(names)
+    out
+}
+
+// Desplazamiento (segundos) de la zona z en el instante UTC ts.
+fn tz_offset_at(db: int, z: int, ts: int) -> int {
+    let zones = tz_db_zones(db)
+    let mut sp = tv_get(zones, 4 * z + 3)
+    if sp == 0 {
+        sp = tz_compute(db, z)
+        tv_set(zones, 4 * z + 3, sp)
+    }
+    let n = std::raw::load(sp)
+    let mut lo = 0
+    let mut hi = n
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if std::raw::load(sp + 16 + 16 * mid) <= ts {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    if lo == 0 {
+        return std::raw::load(sp + 8)
+    }
+    std::raw::load(sp + 24 + 16 * (lo - 1))
+}
+
+// ------------------------------------------------------------ nativas
+
+fn tz_lookup(tsv: any, name: any, function: string) -> (int, int) {
+    let ts = dt_fallback(dt_expect_ts(tsv, function))
+    rt_expect_str(name, function)
+    let db = tz_db()
+    let z = tz_find(db, name)
+    if z < 0 {
+        rt_native_fail(function, "failed to parse timezone")
+    }
+    return (ts, tz_offset_at(db, z, ts))
+}
+
+fn std__datetime__timezone_offset_seconds(tsv: any, name: any) -> any {
+    let (ts, off) = tz_lookup(tsv, name, "std::datetime::timezone_offset_seconds")
+    off
+}
+
+fn std__datetime__to_timezone(tsv: any, name: any) -> any {
+    let (ts, off) = tz_lookup(tsv, name, "std::datetime::to_timezone")
+    let local = ts + off
+    let b = sb_new(40)
+    dt_rfc3339(b, dt_fdiv(local, 86400), dt_fmod(local, 86400), 0, off)
+    sb_finish(b)
+}

@@ -1,0 +1,12 @@
+// std::datetime::to_timezone y timezone_offset_seconds (tablas de chrono-tz
+// calculadas en el runtime a partir de tzdb 2025b).
+fn main() {
+    let zonas = ["America/Caracas", "Europe/Madrid", "US/Pacific", "Asia/Kolkata", "Australia/Lord_Howe", "America/Tijuana", "Europe/Chisinau", "America/Vancouver", "Pacific/Chatham", "Africa/Casablanca", "UTC", "Etc/GMT+5", "Antarctica/Troll", "Asia/Kathmandu"]
+    let instantes = [0, 1700000000, 1720000000, -3000000000, 4200000000, 9223372036854775807, -9223372036854775807, 1667091599, 1667091600]
+    for z in zonas {
+        for t in instantes {
+            println("{z} {t} " + std::datetime::to_timezone(t, z))
+            println(std::datetime::timezone_offset_seconds(t, z))
+        }
+    }
+}

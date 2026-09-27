@@ -348,7 +348,8 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::json | `std_json.titan` | el mismo analizador que serde_json 1.0.150 (mensajes y línea/columna; números como serde, que no siempre redondea exacto: `9007199254740993.0` → `…994`); floats de salida como zmij (`1e+21`) |
 | std::csv, std::uuid, std::stats | `std_misc.titan` | csv como el crate `csv` (comillas, CRLF, filas vacías); uuid v4/v7 con `getrandom` y el reloj; mean/median/quantile/variance/stddev con los mismos mensajes |
 | std::collections (57) | `std_collections.titan` | set, deque, cola de prioridad, mapa ordenado, contador y grafo con número identificador; las mismas cuotas que la VM (256 identificadores, 65536 entradas, 16 MiB, 4096 por estructura, 64 KiB por elemento) y los mismos órdenes de salida (Dijkstra con los desempates del `BinaryHeap` de Rust) |
-| std::datetime (47 de 49) | `std_datetime.titan` | calendario gregoriano proléptico (−262143 a 262142), formatos `%…` con el mismo tokenizador que `StrftimeItems` de chrono 0.4.45, lectura con el mismo algoritmo de `Parsed` (semanas ISO, `%U`/`%W`, `%s`, segundos intercalares, `%C`/`%y`) y los mismos 7 errores; RFC 3339/2822; aritmética de datetime_ext (con vuelta en el desborde, como Rust en release). Comparado además con 12.000 casos aleatorios y 89 casos límite escritos a mano: 0 diferencias. Faltan `to_timezone` y `timezone_offset_seconds` (necesitan la base de datos de zonas horarias de IANA, sesión propia) |
+| std::datetime (49) | `std_datetime.titan` | calendario gregoriano proléptico (−262143 a 262142), formatos `%…` con el mismo tokenizador que `StrftimeItems` de chrono 0.4.45, lectura con el mismo algoritmo de `Parsed` (semanas ISO, `%U`/`%W`, `%s`, segundos intercalares, `%C`/`%y`) y los mismos 7 errores; RFC 3339/2822; aritmética de datetime_ext (con vuelta en el desborde, como Rust en release). Comparado además con 12.000 casos aleatorios y 89 casos límite escritos a mano: 0 diferencias. |
+| zonas horarias: `to_timezone`, `timezone_offset_seconds` | `std_tz.titan`, `std_tz_data.titan` (generado por `native/tz/gen_tz.py`) | lo mismo que chrono-tz 0.10.4: su base es tzdb 2025b sin backzone. Se parte del `tzdata.zi` 2026b del sistema (guardado en `native/tz/`), se deshacen los 3 cambios de datos de 2025c–2026b (Tijuana, Chisinau, Vancouver) y se añaden los enlaces de `backward` de 2025b: 597 nombres, los mismos que acepta la VM. El runtime guarda solo las reglas (~160 KB, que solo entran en los ejecutables que usan zonas) y calcula la tabla de cada zona la primera vez con el mismo algoritmo que parse-zoneinfo 0.5 (años 1800–2099, mismos desempates, fusión "optimise", primer tramo). `gen_tz.py` contiene también ese algoritmo en Python como referencia. Comparado con la VM: 223.599 consultas desde Python y 131.937 desde un programa nativo (todos los nombres, instantes aleatorios, extremos de i64, horas LMT con segundos como Caracas −4:27:44): 0 diferencias |
 | std::vector (8) | `std_vector.titan` | aritmética en f32 como la VM (suma que empieza en −0,0); comparado con 6 semillas de casos aleatorios |
 | std::metrics (8), std::testing (2) | `std_metrics.titan` | nombres, cuotas (4096) y mensajes iguales; contador u64 con saturación; salida Prometheus e instantánea como la VM |
 | std::dirs (18) | `std_dirs.titan` | reglas de dirs 5.0.1 / dirs-sys 0.4.1 en Linux (variables XDG absolutas, `user-dirs.dirs` con el mismo analizador), `temp_dir` y `current_dir` de Rust, rutas no UTF-8 con U+FFFD como `to_string_lossy`. Sin `HOME` se lee `/etc/passwd` (la fuente "files" de glibc; LDAP/sssd no se consultan). Comparado en 250 entornos aleatorios (sin HOME, HOME vacío o no UTF-8, XDG relativos, varios `user-dirs.dirs`, TMPDIR vacío): 0 diferencias |
@@ -370,9 +371,8 @@ Pendiente en esta fase:
   ~0,11 s en la VM (serde en Rust optimizado). El tiempo se reparte entre el
   asignador de memoria y la conversión de floats; se mejorará junto con el
   asignador.
-- Zonas horarias de `std::datetime` (`to_timezone`,
-  `timezone_offset_seconds`, chrono-tz 0.10.4): hay que llevar a Titan la base
-  de datos de IANA con sus reglas.
+- Zonas horarias: calcular las 597 tablas tarda ~3 s en total (~5 ms la
+  primera consulta de cada zona); la VM las trae ya calculadas.
 - El resto de módulos (url, regex, net,
   http, process…) y las herramientas del CLI.
 

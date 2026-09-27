@@ -1,0 +1,2 @@
+fn main() { let x: any = "0"
+    println(std::datetime::timezone_offset_seconds(x, "UTC")) }
