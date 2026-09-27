@@ -1,4 +1,5 @@
 // Runtime de los ejecutables nativos de Titan, escrito en Titan.
+import unicode
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust
@@ -27,7 +28,8 @@
 //   closure:      +8 dirección del código, +16 capturas, +24 aridad,
 //                 +32 índice de la función, +40 nombre, +48 capturas (16 c/u)
 // Globales: +0 siguiente byte libre, +8 fin del bloque, +16 profundidad de
-// llamadas, +24 (reservado: manejadores de error), +32 pila inicial (argv).
+// llamadas, +24 (reservado: manejadores de error), +32 pila inicial (argv),
+// +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table).
 //
 // Versión 1: la memoria no se libera nunca y modificar un array/mapa lo
 // copia. El conteo de referencias (para liberar y modificar en el sitio)
@@ -1177,6 +1179,638 @@ fn std__array__slice(a: any, start: any, end: any) -> any {
     }
     let out = rt_seq_alloc(7, e - s, e - s)
     rt_copy(rt_seq_data(out), rt_seq_data(a) + 16 * s, 16 * (e - s))
+    out
+}
+
+// ------------------------------------------------------------ nativas: std::text
+
+fn rt_expect_char(v: any, function: string) -> int {
+    if std::raw::tag(v) != 4 {
+        rt_native_fail(function, "expected char")
+    }
+    std::raw::bits(v)
+}
+
+// Rangos "inicio,fin,..." de unicode.titan convertidos (una sola vez) a
+// memoria: +0 número de enteros, +8.. los enteros.
+fn rt_unicode_table(slot: int) -> int {
+    let g = std::raw::globals() + 64 + 8 * slot
+    let cached = std::raw::load(g)
+    if cached != 0 {
+        return cached
+    }
+    let mut text = uni_whitespace()
+    if slot == 0 {
+        text = uni_alphabetic()
+    } else if slot == 1 {
+        text = uni_alphanumeric()
+    } else if slot == 2 {
+        text = uni_uppercase()
+    }
+    let p = std::raw::bits(text)
+    let n = std::raw::load(p + 8)
+    let table = rt_alloc(8 + 8 * n)
+    let mut count = 0
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + 16 + i)
+        if b == 44 {
+            std::raw::store(table + 8 + 8 * count, v)
+            count += 1
+            v = 0
+        } else {
+            v = v * 10 + (b - 48)
+        }
+        i += 1
+    }
+    std::raw::store(table, count)
+    std::raw::store(g, table)
+    table
+}
+
+// ¿Está el código c en alguno de los rangos de la tabla? (búsqueda binaria)
+fn rt_unicode_has(slot: int, c: int) -> bool {
+    let table = rt_unicode_table(slot)
+    let mut lo = 0
+    let mut hi = std::raw::load(table) / 2
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let start = std::raw::load(table + 8 + 16 * mid)
+        let end = std::raw::load(table + 16 + 16 * mid)
+        if c < start {
+            hi = mid
+        } else if c > end {
+            lo = mid + 1
+        } else {
+            return true
+        }
+    }
+    false
+}
+
+fn std__text__is_alphabetic(c: any) -> any {
+    rt_unicode_has(0, rt_expect_char(c, "std::text::is_alphabetic"))
+}
+
+fn std__text__is_alphanumeric(c: any) -> any {
+    rt_unicode_has(1, rt_expect_char(c, "std::text::is_alphanumeric"))
+}
+
+fn std__text__is_uppercase(c: any) -> any {
+    rt_unicode_has(2, rt_expect_char(c, "std::text::is_uppercase"))
+}
+
+fn std__text__is_whitespace(c: any) -> any {
+    rt_unicode_has(3, rt_expect_char(c, "std::text::is_whitespace"))
+}
+
+fn std__text__char_code(c: any) -> any {
+    rt_expect_char(c, "std::text::char_code")
+}
+
+fn std__text__from_char_code(code: any) -> any {
+    rt_expect_int(code, "std::text::from_char_code")
+    let c = std::raw::bits(code)
+    if c < 0 || c > 1114111 || (c >= 55296 && c <= 57343) {
+        rt_native_fail("std::text::from_char_code", rt_concat(rt_int_to_str(c), " is not a valid Unicode scalar value"))
+    }
+    std::raw::value(4, c)
+}
+
+// Bytes que ocupa el carácter UTF-8 cuyo primer byte es b.
+fn rt_utf8_width(b: int) -> int {
+    if b < 128 {
+        return 1
+    }
+    if b < 224 {
+        return 2
+    }
+    if b < 240 {
+        return 3
+    }
+    4
+}
+
+fn std__text__chars(s: any) -> any {
+    rt_expect_str(s, "std::text::chars")
+    let n = rt_slen(s)
+    let out = rt_seq_alloc(7, 0, rt_str_chars(s))
+    let data = rt_seq_data(out)
+    let p = std::raw::bits(s) + 16
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        rt_seq_put(data, count, std::raw::value(4, rt_char_at(s, i)))
+        count += 1
+        i += rt_utf8_width(std::raw::load8(p + i))
+    }
+    std::raw::store(std::raw::bits(out) + 8, count)
+    out
+}
+
+fn rt_substr_bytes(s: any, a: int, b: int) -> any {
+    let out = rt_str_alloc(b - a)
+    rt_copy(out + 16, std::raw::bits(s) + 16 + a, b - a)
+    rt_sval(out)
+}
+
+fn std__text__substring(s: any, start: any, end: any) -> any {
+    rt_expect_str(s, "std::text::substring")
+    rt_expect_int(start, "std::text::substring")
+    rt_expect_int(end, "std::text::substring")
+    let mut a = std::raw::bits(start)
+    let mut b = std::raw::bits(end)
+    if a < 0 || b < 0 {
+        rt_native_fail("std::text::substring", "expected nonnegative integer")
+    }
+    let count = rt_str_chars(s)
+    if a > count {
+        a = count
+    }
+    if b > count {
+        b = count
+    }
+    if b < a {
+        b = a
+    }
+    rt_substr_bytes(s, rt_char_offset(s, a), rt_char_offset(s, b))
+}
+
+// ¿Aparece `needle` en `hay` a partir del byte `at`?
+fn rt_bytes_at(hay: any, at: int, needle: any) -> bool {
+    let ph = std::raw::bits(hay) + 16
+    let pn = std::raw::bits(needle) + 16
+    let n = rt_slen(needle)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(ph + at + i) != std::raw::load8(pn + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn std__text__contains(s: any, needle: any) -> any {
+    rt_expect_str(s, "std::text::contains")
+    rt_expect_str(needle, "std::text::contains")
+    let last = rt_slen(s) - rt_slen(needle)
+    let mut at = 0
+    while at <= last {
+        if rt_bytes_at(s, at, needle) {
+            return true
+        }
+        at += 1
+    }
+    false
+}
+
+fn std__text__starts_with(s: any, prefix: any) -> any {
+    rt_expect_str(s, "std::text::starts_with")
+    rt_expect_str(prefix, "std::text::starts_with")
+    rt_slen(prefix) <= rt_slen(s) && rt_bytes_at(s, 0, prefix)
+}
+
+fn std__text__ends_with(s: any, suffix: any) -> any {
+    rt_expect_str(s, "std::text::ends_with")
+    rt_expect_str(suffix, "std::text::ends_with")
+    let at = rt_slen(s) - rt_slen(suffix)
+    at >= 0 && rt_bytes_at(s, at, suffix)
+}
+
+// trim de Rust: quita espacios Unicode (White_Space) de ambos extremos.
+fn std__text__trim(s: any) -> any {
+    rt_expect_str(s, "std::text::trim")
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut a = 0
+    while a < n && rt_unicode_has(3, rt_char_at(s, a)) {
+        a += rt_utf8_width(std::raw::load8(p + a))
+    }
+    let mut b = n
+    while b > a {
+        let mut start = b - 1
+        while (std::raw::load8(p + start) & 192) == 128 {
+            start -= 1
+        }
+        if !rt_unicode_has(3, rt_char_at(s, start)) {
+            break
+        }
+        b = start
+    }
+    rt_substr_bytes(s, a, b)
+}
+
+// Convertir texto decimal a float exige redondeo exacto (como Rust); aún no
+// está escrito para los ejecutables nativos, así que falla con un mensaje claro.
+fn std__text__parse_float(s: any) -> any {
+    std::raw::fail("native backend: std::text::parse_float is not implemented yet")
+}
+
+// ------------------------------------------------------------ sistema: archivos, rutas, entorno
+
+// Copia terminada en 0 (para las llamadas al sistema); devuelve la dirección.
+fn rt_cstr(s: any) -> int {
+    let n = rt_slen(s)
+    let p = rt_alloc(n + 1)
+    rt_copy(p, std::raw::bits(s) + 16, n)
+    std::raw::store8(p + n, 0)
+    p
+}
+
+fn rt_from_cstr(p: int) -> any {
+    let mut n = 0
+    while std::raw::load8(p + n) != 0 {
+        n += 1
+    }
+    let out = rt_str_alloc(n)
+    rt_copy(out + 16, p, n)
+    rt_sval(out)
+}
+
+// Texto de un error del sistema como lo muestra Rust: "... (os error N)".
+fn rt_os_error(errno: int) -> any {
+    let mut text = rt_concat("Unknown error ", rt_int_to_str(errno))
+    if errno == 1 {
+        text = "Operation not permitted"
+    } else if errno == 2 {
+        text = "No such file or directory"
+    } else if errno == 5 {
+        text = "Input/output error"
+    } else if errno == 12 {
+        text = "Cannot allocate memory"
+    } else if errno == 13 {
+        text = "Permission denied"
+    } else if errno == 20 {
+        text = "Not a directory"
+    } else if errno == 21 {
+        text = "Is a directory"
+    } else if errno == 23 {
+        text = "Too many open files in system"
+    } else if errno == 24 {
+        text = "Too many open files"
+    } else if errno == 36 {
+        text = "File name too long"
+    } else if errno == 40 {
+        text = "Too many levels of symbolic links"
+    }
+    rt_concat(rt_concat(rt_concat(text, " (os error "), rt_int_to_str(errno)), ")")
+}
+
+// Modo del archivo (siguiendo enlaces) o -1 si no se puede consultar.
+fn rt_stat_mode(path: any) -> int {
+    let buf = rt_alloc(144)
+    // newfstatat(AT_FDCWD, path, buf, 0)
+    if std::raw::syscall(262, -100, rt_cstr(path), buf, 0, 0, 0) != 0 {
+        return -1
+    }
+    std::raw::load(buf + 24) & 4294967295
+}
+
+fn std__fs__exists(path: any) -> any {
+    rt_expect_str(path, "std::fs::exists")
+    rt_stat_mode(path) >= 0
+}
+
+fn std__fs__is_file(path: any) -> any {
+    rt_expect_str(path, "std::fs::is_file")
+    let m = rt_stat_mode(path)
+    m >= 0 && (m & 61440) == 32768
+}
+
+fn std__fs__is_dir(path: any) -> any {
+    rt_expect_str(path, "std::fs::is_dir")
+    let m = rt_stat_mode(path)
+    m >= 0 && (m & 61440) == 16384
+}
+
+// ¿Son los bytes UTF-8 válido? (las mismas reglas que Rust: sin sustitutos,
+// sin formas largas, máximo U+10FFFF)
+fn rt_valid_utf8(p: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        if b < 128 {
+            i += 1
+            continue
+        }
+        let mut need = 0
+        let mut lo = 128
+        let mut hi = 191
+        if b >= 194 && b <= 223 {
+            need = 1
+        } else if b == 224 {
+            need = 2
+            lo = 160
+        } else if (b >= 225 && b <= 236) || b == 238 || b == 239 {
+            need = 2
+        } else if b == 237 {
+            need = 2
+            hi = 159
+        } else if b == 240 {
+            need = 3
+            lo = 144
+        } else if b >= 241 && b <= 243 {
+            need = 3
+        } else if b == 244 {
+            need = 3
+            hi = 143
+        } else {
+            return false
+        }
+        if i + need >= n {
+            return false
+        }
+        let second = std::raw::load8(p + i + 1)
+        if second < lo || second > hi {
+            return false
+        }
+        let mut k = 2
+        while k <= need {
+            let c = std::raw::load8(p + i + k)
+            if c < 128 || c > 191 {
+                return false
+            }
+            k += 1
+        }
+        i += need + 1
+    }
+    true
+}
+
+fn std__fs__read_text(path: any) -> any {
+    rt_expect_str(path, "std::fs::read_text")
+    // open(path, O_RDONLY | O_CLOEXEC)
+    let fd = std::raw::syscall(2, rt_cstr(path), 524288, 0, 0, 0, 0)
+    if fd < 0 {
+        rt_native_fail("std::fs::read_text", rt_os_error(-fd))
+    }
+    let mut cap = 65536
+    let mut buf = rt_alloc(cap)
+    let mut n = 0
+    loop {
+        if n == cap {
+            let bigger = rt_alloc(cap * 2)
+            rt_copy(bigger, buf, n)
+            buf = bigger
+            cap = cap * 2
+        }
+        let got = std::raw::syscall(0, fd, buf + n, cap - n, 0, 0, 0)
+        if got < 0 {
+            if got == -4 {
+                continue
+            }
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_native_fail("std::fs::read_text", rt_os_error(-got))
+        }
+        if got == 0 {
+            break
+        }
+        n += got
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if !rt_valid_utf8(buf, n) {
+        rt_native_fail("std::fs::read_text", "stream did not contain valid UTF-8")
+    }
+    let out = rt_str_alloc(n)
+    rt_copy(out + 16, buf, n)
+    rt_sval(out)
+}
+
+fn rt_getcwd() -> any {
+    let mut size = 4096
+    loop {
+        let buf = rt_alloc(size)
+        let r = std::raw::syscall(79, buf, size, 0, 0, 0, 0)
+        if r >= 0 {
+            return rt_from_cstr(buf)
+        }
+        if r != -34 {
+            rt_native_fail("std::env::current_dir", rt_os_error(-r))
+        }
+        size = size * 2
+    }
+}
+
+fn std__env__current_dir() -> any {
+    rt_getcwd()
+}
+
+// argv y el entorno están en la pila inicial del proceso:
+// [argc][argv0]...[NULL][env0]...[NULL]
+fn std__env__args() -> any {
+    let sp = std::raw::load(std::raw::globals() + 32)
+    let argc = std::raw::load(sp)
+    let out = rt_array_new(argc)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < argc {
+        rt_seq_put(data, i, rt_from_cstr(std::raw::load(sp + 8 + 8 * i)))
+        i += 1
+    }
+    out
+}
+
+fn std__env__get(name: any) -> any {
+    rt_expect_str(name, "std::env::get")
+    let sp = std::raw::load(std::raw::globals() + 32)
+    let argc = std::raw::load(sp)
+    let mut e = sp + 16 + 8 * argc
+    let pn = std::raw::bits(name) + 16
+    let n = rt_slen(name)
+    while std::raw::load(e) != 0 {
+        let entry = std::raw::load(e)
+        let mut i = 0
+        while i < n && std::raw::load8(entry + i) == std::raw::load8(pn + i) {
+            i += 1
+        }
+        if i == n && std::raw::load8(entry + n) == 61 {
+            let value = rt_from_cstr(entry + n + 1)
+            let pv = std::raw::bits(value)
+            if rt_valid_utf8(pv + 16, std::raw::load(pv + 8)) {
+                return value
+            }
+            return nil
+        }
+        e += 8
+    }
+    nil
+}
+
+// Path::join de Rust: una ruta absoluta reemplaza a la base.
+fn std__path__join(base: any, child: any) -> any {
+    rt_expect_str(base, "std::path::join")
+    rt_expect_str(child, "std::path::join")
+    let nb = rt_slen(base)
+    if nb == 0 || (rt_slen(child) > 0 && std::raw::load8(std::raw::bits(child) + 16) == 47) {
+        return child
+    }
+    if std::raw::load8(std::raw::bits(base) + 15 + nb) == 47 {
+        return rt_concat(base, child)
+    }
+    rt_concat(rt_concat(base, "/"), child)
+}
+
+// Partes de una ruta como las ve Rust (Path::components): sin "" ni "." (salvo
+// un "." inicial), y si es absoluta la primera parte es "/".
+fn rt_path_parts(path: any) -> any {
+    let p = std::raw::bits(path) + 16
+    let n = rt_slen(path)
+    let mut parts = []
+    let mut i = 0
+    if n > 0 && std::raw::load8(p) == 47 {
+        parts = std::array::push(parts, "/")
+    }
+    while i < n {
+        while i < n && std::raw::load8(p + i) == 47 {
+            i += 1
+        }
+        let start = i
+        while i < n && std::raw::load8(p + i) != 47 {
+            i += 1
+        }
+        if i > start {
+            let part = rt_substr_bytes(path, start, i)
+            if part != "." || (start == 0 && len(parts) == 0) {
+                parts = std::array::push(parts, part)
+            }
+        }
+    }
+    parts
+}
+
+// Path::parent de Rust: la ruta sin su última parte; nil para "/" y "".
+fn std__path__parent(path: any) -> any {
+    rt_expect_str(path, "std::path::parent")
+    let parts = rt_path_parts(path)
+    let n = len(parts)
+    if n == 0 {
+        return nil
+    }
+    let last = parts[n - 1]
+    if last == "/" {
+        return nil
+    }
+    let mut out = ""
+    let mut i = 0
+    while i < n - 1 {
+        let part = parts[i]
+        if part == "/" {
+            out = "/"
+        } else if out == "" || out == "/" {
+            out = out + part
+        } else {
+            out = out + "/" + part
+        }
+        i += 1
+    }
+    out
+}
+
+// fs::canonicalize (realpath): ruta absoluta sin ".", ".." ni enlaces.
+fn std__path__canonical(path: any) -> any {
+    rt_expect_str(path, "std::path::canonical")
+    if rt_slen(path) == 0 {
+        rt_native_fail("std::path::canonical", rt_os_error(2))
+    }
+    let mut pending = rt_path_parts(path)
+    let mut resolved: any = ""
+    if pending[0] == "/" {
+        pending = std::array::slice(pending, 1, len(pending))
+    } else {
+        resolved = rt_getcwd()
+        if resolved == "/" {
+            resolved = ""
+        }
+    }
+    let buf = rt_alloc(4096)
+    let mut links = 0
+    let mut k = 0
+    while k < len(pending) {
+        let part = pending[k]
+        k += 1
+        if part == "." {
+            continue
+        }
+        if part == ".." {
+            let parent = std__path__parent(resolved)
+            if parent == nil || parent == "/" {
+                resolved = ""
+            } else {
+                resolved = parent
+            }
+            continue
+        }
+        let candidate = resolved + "/" + part
+        // readlink(candidate, buf, 4096)
+        let r = std::raw::syscall(89, rt_cstr(candidate), buf, 4096, 0, 0, 0)
+        if r == -22 {
+            resolved = candidate
+        } else if r < 0 {
+            rt_native_fail("std::path::canonical", rt_os_error(-r))
+        } else {
+            links += 1
+            if links > 40 {
+                rt_native_fail("std::path::canonical", rt_os_error(40))
+            }
+            let target = rt_str_alloc(r)
+            rt_copy(target + 16, buf, r)
+            let tparts = rt_path_parts(rt_sval(target))
+            let mut rest = tparts
+            if len(tparts) > 0 && tparts[0] == "/" {
+                resolved = ""
+                rest = std::array::slice(tparts, 1, len(tparts))
+            }
+            pending = std::array::concat(rest, std::array::slice(pending, k, len(pending)))
+            k = 0
+        }
+    }
+    if resolved == "" {
+        return "/"
+    }
+    resolved
+}
+
+// ------------------------------------------------------------ métodos de arrays
+
+// sort_by como en la VM: orden estable que en cada paso saca el primer mínimo;
+// el comparador recibe (candidato, mínimo actual) y "menor" es un número < 0.
+fn rt_sort_by(values0: any, compare: any) -> any {
+    let t = std::raw::tag(values0)
+    if t != 7 && t != 8 {
+        std::raw::fail("type error: operation requires an array")
+    }
+    if std::raw::tag(compare) != 12 {
+        std::raw::fail("type error: sort_by requires a function")
+    }
+    let f: fn(any, any) -> any = compare
+    let mut values = std::array::slice(values0, 0, len(values0))
+    let mut out = []
+    while len(values) > 0 {
+        let mut min = 0
+        let mut j = 1
+        while j < len(values) {
+            let c = f(values[j], values[min])
+            let tc = std::raw::tag(c)
+            if tc == 1 {
+                if std::raw::bits(c) < 0 {
+                    min = j
+                }
+            } else if tc == 2 {
+                let b = std::raw::bits(c)
+                let nan = (b & 9218868437227405312) == 9218868437227405312 && (b & 4503599627370495) != 0
+                if b < 0 && b != (-9223372036854775807 - 1) && !nan {
+                    min = j
+                }
+            } else {
+                std::raw::fail("type error: sort_by comparator must return int or float")
+            }
+            j += 1
+        }
+        out = std::array::push(out, values[min])
+        values = std::array::concat(std::array::slice(values, 0, min), std::array::slice(values, min + 1, len(values)))
+    }
     out
 }
 

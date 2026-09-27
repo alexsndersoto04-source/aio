@@ -1,0 +1,3 @@
+fn main() {
+    print(std::text::from_char_code(55296))
+}

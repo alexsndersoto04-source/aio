@@ -635,6 +635,9 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
     if k == "Len" {
         return bk_call_rt(p, ctx, "rt_len", 1)
     }
+    if k == "ArraySortBy" {
+        return bk_call_rt(p, ctx, "rt_sort_by", 2)
+    }
     if k == "Index" {
         return bk_call_rt(p, ctx, "rt_index", 2)
     }

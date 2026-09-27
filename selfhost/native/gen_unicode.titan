@@ -1,0 +1,67 @@
+// Genera selfhost/native/unicode.titan: los rangos de caracteres para los que
+// std::text::is_alphabetic / is_alphanumeric / is_uppercase / is_whitespace
+// dan verdadero, preguntándoselo al Titan actual carácter por carácter (así
+// el runtime nativo responde exactamente igual). Son datos del estándar
+// Unicode; se regeneran con: zett run selfhost/native/gen_unicode.titan > selfhost/native/unicode.titan
+fn ranges(kind: int) -> array {
+    let mut out = []
+    let mut start = -1
+    let mut c = 0
+    while c <= 1114112 {
+        let mut yes = false
+        if c < 1114112 && (c < 55296 || c > 57343) {
+            let ch = std::text::from_char_code(c)
+            if kind == 0 {
+                yes = std::text::is_alphabetic(ch)
+            } else if kind == 1 {
+                yes = std::text::is_alphanumeric(ch)
+            } else if kind == 2 {
+                yes = std::text::is_uppercase(ch)
+            } else {
+                yes = std::text::is_whitespace(ch)
+            }
+        }
+        if yes && start < 0 {
+            start = c
+        }
+        // Los sustitutos (D800-DFFF) no son caracteres: no cortan un rango.
+        let surrogate = c >= 55296 && c <= 57343
+        if !yes && start >= 0 && !surrogate {
+            out = std::array::push(out, start)
+            out = std::array::push(out, c - 1)
+            start = -1
+        }
+        c += 1
+    }
+    out
+}
+
+fn emit(name: string, kind: int) {
+    let r = ranges(kind)
+    let n = len(r) / 2
+    print("")
+    print("// {n} rangos [inicio, fin] (inclusive).")
+    print("fn " + name + "() -> string {")
+    let mut line = "    return \""
+    let mut i = 0
+    for v in r {
+        line += "{v},"
+        i += 1
+        if i % 16 == 0 {
+            print(line + "\" +")
+            line = "        \""
+        }
+    }
+    print(line + "\"")
+    print("}")
+}
+
+fn main() {
+    print("// GENERADO por selfhost/native/gen_unicode.titan a partir de las funciones")
+    print("// std::text::is_* del Titan actual. No editar a mano.")
+    print("// Cada tabla es una lista \"inicio,fin,inicio,fin,...\" de rangos ordenados.")
+    emit("uni_alphabetic", 0)
+    emit("uni_alphanumeric", 1)
+    emit("uni_uppercase", 2)
+    emit("uni_whitespace", 3)
+}
