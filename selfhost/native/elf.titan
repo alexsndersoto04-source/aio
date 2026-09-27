@@ -1,0 +1,76 @@
+// Escritor de ejecutables ELF64 para Linux x86-64, escrito en Titan.
+//
+// Formato: cabecera ELF (64 bytes) + un único segmento PT_LOAD (56 bytes) que
+// carga TODO el archivo en 0x400000 con permisos lectura/escritura/ejecución
+// y reserva `bss` bytes a cero al final (variables globales del runtime).
+// El código empieza justo después de las cabeceras: dirección 0x400078.
+// Prefijo `el_`.
+
+import native::x64
+
+fn el_base() -> int {
+    4194304
+}
+
+fn el_headers() -> int {
+    120
+}
+
+// Dirección donde se carga el primer byte de código.
+fn el_code_address() -> int {
+    el_base() + el_headers()
+}
+
+fn el_u16(v: int) -> array {
+    x_le(v, 2)
+}
+
+fn el_u32(v: int) -> array {
+    x_le(v, 4)
+}
+
+fn el_u64(v: int) -> array {
+    x_le(v, 8)
+}
+
+// Imagen completa: cabeceras + `body` (código y datos ya enlazados).
+fn el_image(body: array, entry: int, bss: int) -> array {
+    let filesz = el_headers() + len(body)
+    let mut h = [127, 69, 76, 70, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    h = std::array::concat(h, el_u16(2))
+    h = std::array::concat(h, el_u16(62))
+    h = std::array::concat(h, el_u32(1))
+    h = std::array::concat(h, el_u64(entry))
+    h = std::array::concat(h, el_u64(64))
+    h = std::array::concat(h, el_u64(0))
+    h = std::array::concat(h, el_u32(0))
+    h = std::array::concat(h, el_u16(64))
+    h = std::array::concat(h, el_u16(56))
+    h = std::array::concat(h, el_u16(1))
+    h = std::array::concat(h, el_u16(64))
+    h = std::array::concat(h, el_u16(0))
+    h = std::array::concat(h, el_u16(0))
+    // PT_LOAD, flags RWX
+    h = std::array::concat(h, el_u32(1))
+    h = std::array::concat(h, el_u32(7))
+    h = std::array::concat(h, el_u64(0))
+    h = std::array::concat(h, el_u64(el_base()))
+    h = std::array::concat(h, el_u64(el_base()))
+    h = std::array::concat(h, el_u64(filesz))
+    h = std::array::concat(h, el_u64(filesz + bss))
+    h = std::array::concat(h, el_u64(4096))
+    std::array::concat(h, body)
+}
+
+// Escribe `bytes` en `path` como archivo ejecutable. La biblioteca de la VM
+// no tiene chmod: se copia el propio ejecutable en marcha (/proc/self/exe),
+// cuyos permisos incluyen ejecución, y luego se sobrescribe su contenido
+// (sobrescribir conserva los permisos). El compilador nativo usará la
+// llamada al sistema chmod directamente.
+fn el_write_executable(path: string, bytes: array) {
+    if std::fs::exists(path) {
+        std::fs::remove_file(path)
+    }
+    std::fs::copy("/proc/self/exe", path)
+    std::fs::write_bytes(path, std::bytes::from_array(bytes))
+}

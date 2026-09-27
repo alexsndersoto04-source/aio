@@ -1,0 +1,36 @@
+fn aplicar(f: fn(int) -> int, v: int) -> int {
+    f(v)
+}
+
+fn dividir(a: int, b: int) -> Result {
+    if b == 0 {
+        return Result::Err("cero")
+    }
+    Result::Ok(a / b)
+}
+
+fn calcular(a: int, b: int) -> Result {
+    let q = dividir(a, b)?
+    Result::Ok(q + 1)
+}
+
+fn main() {
+    let base = 10
+    let sumar = |n: int| n + base
+    print(aplicar(sumar, 5))
+    print(calcular(10, 2), calcular(1, 0))
+    let mut k = 0
+    loop {
+        k += 1
+        if k > 3 {
+            break
+        }
+    }
+    print(k)
+    let r = match calcular(9, 3) {
+        Result::Ok(v) => v,
+        Result::Err(_) => 0,
+    }
+    print(r)
+    print(sumar)
+}

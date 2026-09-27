@@ -1,0 +1,89 @@
+// Compilador nativo de Titan (fase 4b del self-hosting).
+//
+// Uso: titan run selfhost/build.titan PROGRAMA.titan SALIDA
+//
+// Carga, revisa y traduce PROGRAMA con el cargador, typechecker y generador
+// escritos en Titan; hace lo mismo con el runtime (selfhost/native/runtime.titan),
+// que además puede usar las operaciones `std::raw::`; y convierte ambos en
+// código máquina x86-64 dentro de un ejecutable ELF que no necesita ni Rust
+// ni la VM para funcionar.
+import loader
+import codegen
+import native::backend
+
+// Firmas de las operaciones de bajo nivel, solo para el runtime.
+fn raw_signatures() -> array {
+    return [
+        "std::raw::load Int -> Int",
+        "std::raw::store Int,Int -> Nil",
+        "std::raw::load8 Int -> Int",
+        "std::raw::store8 Int,Int -> Nil",
+        "std::raw::tag Any -> Int",
+        "std::raw::bits Any -> Int",
+        "std::raw::value Int,Int -> Any",
+        "std::raw::syscall Int,Int,Int,Int,Int,Int,Int -> Int",
+        "std::raw::globals  -> Int",
+        "std::raw::fail String -> Never",
+    ]
+}
+
+fn diag_line(d: Diag) -> string {
+    let sp = d.span
+    if sp != nil && sp.line > 0 && sp.col > 0 {
+        let l = sp.line
+        let c = sp.col
+        if d.file != nil {
+            return d.file + ":{l}:{c}: " + d.msg
+        }
+        return "{l}:{c}: " + d.msg
+    }
+    d.msg
+}
+
+// Cargar + revisar + generar bytecode.
+fn front(path: string, natives: array) -> Result {
+    let items = ld_load(path)?
+    let diags = check_program_with(items, natives)
+    if len(diags) > 0 {
+        let mut lines = []
+        for d in diags {
+            lines = std::array::push(lines, diag_line(d))
+        }
+        return Result::Err(ld_join(lines, "\n"))
+    }
+    let mut names = std::map::new()
+    for line in natives {
+        names = std::map::insert(names, split_on(line, ' ')[0], true)
+    }
+    cg_compile_program(cg_new(names), items)
+}
+
+fn build(program: string, runtime: string) -> Result {
+    let gu = front(program, native_table())?
+    let rt_natives = std::array::concat(native_table(), raw_signatures())
+    let gr = match front(runtime, rt_natives) {
+        Result::Ok(g) => g,
+        Result::Err(message) => {
+            return Result::Err("native runtime: " + message)
+        },
+    }
+    bk_build(gu, gr)
+}
+
+fn main() {
+    let args = std::env::args()
+    if len(args) < 5 {
+        print("uso: titan run selfhost/build.titan PROGRAMA.titan SALIDA")
+        return
+    }
+    let here = std::path::parent(std::path::canonical(args[2]))
+    let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
+    match build(args[3], runtime) {
+        Result::Ok(bytes) => {
+            el_write_executable(args[4], bytes)
+        },
+        Result::Err(message) => {
+            print("error: " + message)
+        },
+    }
+}

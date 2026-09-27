@@ -1,0 +1,22 @@
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    print(1 + 2, 10 - 20, 6 * 7, 17 / 5, 17 % 5, -17 / 5, -17 % 5)
+    print(true, false, nil, 'a', 'ñ', "hola")
+    print(fib(20))
+    let mut total = 0
+    let mut i = 0
+    while i < 100 {
+        total += i
+        i += 1
+    }
+    print("total={total}")
+    print(1 < 2, 2 <= 2, 3 > 4, 4 >= 5, 1 == 1, 1 != 1, "a" == "a", "a" < "b")
+    print(!true, !false, 5 & 3, 5 | 3, 5 ^ 3)
+    print(-9223372036854775807 - 1)
+}
