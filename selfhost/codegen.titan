@@ -396,10 +396,6 @@ fn cg_is_local_mutable(g: G, name: string) -> bool {
     false
 }
 
-fn cg_span_of(e) -> any {
-    e.span
-}
-
 fn cg_zero_span() -> Span {
     Span { line: 0, col: 0, start: 0, end: 0 }
 }
