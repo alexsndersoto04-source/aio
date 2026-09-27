@@ -1,0 +1,321 @@
+// Ensamblador x86-64 escrito en Titan: cada función devuelve los bytes de
+// UNA instrucción (array de enteros 0..255). Solo las formas que usa el
+// compilador nativo; todas se comprueban contra `objdump` en
+// selfhost/native/verify_x64.sh.
+//
+// Registros: rax=0 rcx=1 rdx=2 rbx=3 rsp=4 rbp=5 rsi=6 rdi=7 r8..r15=8..15.
+// Los accesos a memoria son siempre [base + disp32].
+// Prefijo `x_` (import junta todos los nombres en un solo espacio).
+
+fn x_rax() -> int { 0 }
+fn x_rcx() -> int { 1 }
+fn x_rdx() -> int { 2 }
+fn x_rbx() -> int { 3 }
+fn x_rsp() -> int { 4 }
+fn x_rbp() -> int { 5 }
+fn x_rsi() -> int { 6 }
+fn x_rdi() -> int { 7 }
+fn x_r8() -> int { 8 }
+fn x_r9() -> int { 9 }
+fn x_r10() -> int { 10 }
+fn x_r11() -> int { 11 }
+fn x_r12() -> int { 12 }
+fn x_r13() -> int { 13 }
+fn x_r14() -> int { 14 }
+fn x_r15() -> int { 15 }
+
+// Condiciones para jcc/setcc.
+fn x_cc_o() -> int { 0 }
+fn x_cc_b() -> int { 2 }
+fn x_cc_ae() -> int { 3 }
+fn x_cc_e() -> int { 4 }
+fn x_cc_ne() -> int { 5 }
+fn x_cc_be() -> int { 6 }
+fn x_cc_a() -> int { 7 }
+fn x_cc_p() -> int { 10 }
+fn x_cc_np() -> int { 11 }
+fn x_cc_l() -> int { 12 }
+fn x_cc_ge() -> int { 13 }
+fn x_cc_le() -> int { 14 }
+fn x_cc_g() -> int { 15 }
+
+// ---------------------------------------------------------------- enteros
+
+// Los `n` bytes bajos de v en little-endian (complemento a dos para negativos:
+// `& 255` toma el byte y la resta deja una división exacta = desplazamiento
+// aritmético).
+fn x_le(v: int, n: int) -> array {
+    let mut out = []
+    let mut x = v
+    let mut i = 0
+    while i < n {
+        let b = x & 255
+        out = std::array::push(out, b)
+        x = (x - b) / 256
+        i += 1
+    }
+    out
+}
+
+fn x_i32(v: int) -> array {
+    x_le(v, 4)
+}
+
+fn x_i64(v: int) -> array {
+    x_le(v, 8)
+}
+
+fn x_fits_i32(v: int) -> bool {
+    v >= -2147483648 && v <= 2147483647
+}
+
+// ---------------------------------------------------------------- codificación
+
+fn x_hi(r: int) -> int {
+    if r >= 8 {
+        return 1
+    }
+    0
+}
+
+// REX: 0100WRXB.
+fn x_rex(w: int, reg: int, base: int) -> int {
+    64 + w * 8 + x_hi(reg) * 4 + x_hi(base)
+}
+
+// ModRM registro-registro (mod=11).
+fn x_modrm_rr(reg: int, rm: int) -> int {
+    192 + (reg & 7) * 8 + (rm & 7)
+}
+
+// ModRM + SIB + disp32 para [base + disp] (mod=10). rsp/r12 necesitan SIB.
+fn x_mem(reg: int, base: int, disp: int) -> array {
+    let mut out = [128 + (reg & 7) * 8 + (base & 7)]
+    if (base & 7) == 4 {
+        out = std::array::push(out, 36)
+    }
+    std::array::concat(out, x_i32(disp))
+}
+
+// Instrucción de 64 bits con operando en memoria: REX.W op.. modrm [base+disp].
+fn x_wmem(opcode: array, reg: int, base: int, disp: int) -> array {
+    let head = std::array::concat([x_rex(1, reg, base)], opcode)
+    std::array::concat(head, x_mem(reg, base, disp))
+}
+
+// Instrucción de 64 bits registro-registro.
+fn x_wrr(opcode: array, reg: int, rm: int) -> array {
+    let head = std::array::concat([x_rex(1, reg, rm)], opcode)
+    std::array::push(head, x_modrm_rr(reg, rm))
+}
+
+// ---------------------------------------------------------------- mov
+
+// mov dst, src
+fn x_mov_rr(dst: int, src: int) -> array {
+    x_wrr([137], src, dst)
+}
+
+// mov dst, imm64 (la forma corta si cabe en 32 bits con signo)
+fn x_mov_ri(dst: int, imm: int) -> array {
+    if x_fits_i32(imm) {
+        // REX.W C7 /0 imm32 (con extensión de signo)
+        return std::array::concat(x_wrr([199], 0, dst), x_i32(imm))
+    }
+    std::array::concat([x_rex(1, 0, dst), 184 + (dst & 7)], x_i64(imm))
+}
+
+// mov dst, imm64 siempre de 10 bytes (para direcciones que se parchean luego;
+// el inmediato empieza en el byte 2).
+fn x_mov_ri64(dst: int, imm: int) -> array {
+    std::array::concat([x_rex(1, 0, dst), 184 + (dst & 7)], x_i64(imm))
+}
+
+// mov dst, [base + disp]
+fn x_load(dst: int, base: int, disp: int) -> array {
+    x_wmem([139], dst, base, disp)
+}
+
+// mov [base + disp], src
+fn x_store(base: int, disp: int, src: int) -> array {
+    x_wmem([137], src, base, disp)
+}
+
+// mov qword [base + disp], imm32 (con extensión de signo)
+fn x_store_i(base: int, disp: int, imm: int) -> array {
+    std::array::concat(x_wmem([199], 0, base, disp), x_i32(imm))
+}
+
+// movzx dst, byte [base + disp]
+fn x_load8(dst: int, base: int, disp: int) -> array {
+    x_wmem([15, 182], dst, base, disp)
+}
+
+// mov byte [base + disp], src8 (REX siempre, para usar sil/dil/r8b..)
+fn x_store8(base: int, disp: int, src: int) -> array {
+    let mut head = [136]
+    if src >= 4 || base >= 8 {
+        head = [x_rex(0, src, base), 136]
+    }
+    std::array::concat(head, x_mem(src, base, disp))
+}
+
+// lea dst, [base + disp]
+fn x_lea(dst: int, base: int, disp: int) -> array {
+    x_wmem([141], dst, base, disp)
+}
+
+// ---------------------------------------------------------------- pila
+
+fn x_push(r: int) -> array {
+    if r >= 8 {
+        return [65, 80 + (r & 7)]
+    }
+    return [80 + r]
+}
+
+fn x_pop(r: int) -> array {
+    if r >= 8 {
+        return [65, 88 + (r & 7)]
+    }
+    return [88 + r]
+}
+
+// push imm32 (con extensión de signo a 64 bits)
+fn x_push_i(imm: int) -> array {
+    std::array::concat([104], x_i32(imm))
+}
+
+// push qword [base + disp]  (FF /6)
+fn x_push_m(base: int, disp: int) -> array {
+    let mut head = []
+    if base >= 8 {
+        head = [65]
+    }
+    head = std::array::push(head, 255)
+    std::array::concat(head, x_mem(6, base, disp))
+}
+
+// pop qword [base + disp]  (8F /0)
+fn x_pop_m(base: int, disp: int) -> array {
+    let mut head = []
+    if base >= 8 {
+        head = [65]
+    }
+    head = std::array::push(head, 143)
+    std::array::concat(head, x_mem(0, base, disp))
+}
+
+// ---------------------------------------------------------------- aritmética
+
+// op dst, src con op = add/or/and/sub/xor/cmp
+fn x_add_rr(dst: int, src: int) -> array { x_wrr([1], src, dst) }
+fn x_or_rr(dst: int, src: int) -> array { x_wrr([9], src, dst) }
+fn x_and_rr(dst: int, src: int) -> array { x_wrr([33], src, dst) }
+fn x_sub_rr(dst: int, src: int) -> array { x_wrr([41], src, dst) }
+fn x_xor_rr(dst: int, src: int) -> array { x_wrr([49], src, dst) }
+fn x_cmp_rr(dst: int, src: int) -> array { x_wrr([57], src, dst) }
+fn x_test_rr(dst: int, src: int) -> array { x_wrr([133], src, dst) }
+
+// op dst, imm32: REX.W 81 /ext imm32
+fn x_alu_ri(ext: int, dst: int, imm: int) -> array {
+    std::array::concat(x_wrr([129], ext, dst), x_i32(imm))
+}
+
+fn x_add_ri(dst: int, imm: int) -> array { x_alu_ri(0, dst, imm) }
+fn x_sub_ri(dst: int, imm: int) -> array { x_alu_ri(5, dst, imm) }
+fn x_and_ri(dst: int, imm: int) -> array { x_alu_ri(4, dst, imm) }
+fn x_cmp_ri(dst: int, imm: int) -> array { x_alu_ri(7, dst, imm) }
+
+// cmp qword [base + disp], imm32
+fn x_cmp_mi(base: int, disp: int, imm: int) -> array {
+    std::array::concat(x_wmem([129], 7, base, disp), x_i32(imm))
+}
+
+// add dst, [base + disp] / sub / imul / cmp con memoria
+fn x_add_rm(dst: int, base: int, disp: int) -> array { x_wmem([3], dst, base, disp) }
+fn x_sub_rm(dst: int, base: int, disp: int) -> array { x_wmem([43], dst, base, disp) }
+fn x_cmp_rm(dst: int, base: int, disp: int) -> array { x_wmem([59], dst, base, disp) }
+fn x_imul_rm(dst: int, base: int, disp: int) -> array { x_wmem([15, 175], dst, base, disp) }
+
+// imul dst, src
+fn x_imul_rr(dst: int, src: int) -> array {
+    x_wrr([15, 175], dst, src)
+}
+
+fn x_cqo() -> array { [72, 153] }
+
+// idiv r (rdx:rax / r)
+fn x_idiv(r: int) -> array { x_wrr([247], 7, r) }
+fn x_neg(r: int) -> array { x_wrr([247], 3, r) }
+fn x_not(r: int) -> array { x_wrr([247], 2, r) }
+
+// setcc al; movzx rax, al
+fn x_setcc_rax(cc: int) -> array {
+    return [15, 144 + cc, 192, 72, 15, 182, 192]
+}
+
+// ---------------------------------------------------------------- saltos
+
+// Todas con desplazamiento de 32 bits; `rel` se cuenta desde el final de la
+// instrucción. Para parchear: el desplazamiento son los 4 últimos bytes.
+fn x_jmp(rel: int) -> array { std::array::concat([233], x_i32(rel)) }
+fn x_call(rel: int) -> array { std::array::concat([232], x_i32(rel)) }
+fn x_jcc(cc: int, rel: int) -> array { std::array::concat([15, 128 + cc], x_i32(rel)) }
+
+// call r / jmp r
+fn x_call_r(r: int) -> array {
+    if r >= 8 {
+        return [65, 255, 208 + (r & 7)]
+    }
+    return [255, 208 + r]
+}
+
+fn x_jmp_r(r: int) -> array {
+    if r >= 8 {
+        return [65, 255, 224 + (r & 7)]
+    }
+    return [255, 224 + r]
+}
+
+fn x_ret() -> array { [195] }
+fn x_syscall() -> array { [15, 5] }
+fn x_ud2() -> array { [15, 11] }
+
+// ---------------------------------------------------------------- coma flotante
+
+// movq xmm, r64 (66 REX.W 0F 6E /r)
+fn x_movq_xr(xmm: int, r: int) -> array {
+    return [102, x_rex(1, xmm, r), 15, 110, x_modrm_rr(xmm, r)]
+}
+
+// movq r64, xmm (66 REX.W 0F 7E /r)
+fn x_movq_rx(r: int, xmm: int) -> array {
+    return [102, x_rex(1, xmm, r), 15, 126, x_modrm_rr(xmm, r)]
+}
+
+// op sd xmm_dst, xmm_src: F2 0F op /r (add 58, mul 59, sub 5C, div 5E, sqrt 51)
+fn x_sse_sd(op: int, dst: int, src: int) -> array {
+    return [242, 15, op, x_modrm_rr(dst, src)]
+}
+
+fn x_addsd(dst: int, src: int) -> array { x_sse_sd(88, dst, src) }
+fn x_mulsd(dst: int, src: int) -> array { x_sse_sd(89, dst, src) }
+fn x_subsd(dst: int, src: int) -> array { x_sse_sd(92, dst, src) }
+fn x_divsd(dst: int, src: int) -> array { x_sse_sd(94, dst, src) }
+fn x_sqrtsd(dst: int, src: int) -> array { x_sse_sd(81, dst, src) }
+
+// ucomisd xmm_a, xmm_b (66 0F 2E /r)
+fn x_ucomisd(a: int, b: int) -> array {
+    return [102, 15, 46, x_modrm_rr(a, b)]
+}
+
+// cvtsi2sd xmm, r64 (F2 REX.W 0F 2A /r)
+fn x_cvtsi2sd(xmm: int, r: int) -> array {
+    return [242, x_rex(1, xmm, r), 15, 42, x_modrm_rr(xmm, r)]
+}
+
+// cvttsd2si r64, xmm (F2 REX.W 0F 2C /r)
+fn x_cvttsd2si(r: int, xmm: int) -> array {
+    return [242, x_rex(1, r, xmm), 15, 44, x_modrm_rr(r, xmm)]
+}

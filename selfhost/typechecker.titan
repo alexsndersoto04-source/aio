@@ -829,8 +829,13 @@ fn split_on(s: string, sep: char) -> array {
 // "nombre P1,P2 -> R" (natives.titan) -> mapa nombre -> Sig. Sin parámetros la
 // lista queda vacía: "nombre  -> R".
 fn load_natives() -> map {
+    load_natives_from(native_table())
+}
+
+// Firmas "nombre P1,P2 -> R" (una por línea) -> mapa nombre -> Sig.
+fn load_natives_from(lines: array) -> map {
     let mut m = std::map::new()
-    for line in native_table() {
+    for line in lines {
         let parts = split_on(line, ' ')
         let name = parts[0]
         let plist = parts[1]
@@ -1756,9 +1761,13 @@ fn signatures_equal(e: Env, expected: Sig, found: Sig) -> bool {
 // --------------------------------------------------- estado inicial / reset
 
 fn new_env() -> Env {
+    new_env_with(native_table())
+}
+
+fn new_env_with(native_lines: array) -> Env {
     let base = builtin_functions()
     let variants = builtin_variants()
-    Env { scopes: [std::map::new()], bindings: [std::map::new()], functions: base, base: base, structs: std::map::new(), variants: variants, base_variants: variants, constants: std::map::new(), ctypes: std::map::new(), cdecls: std::map::new(), cstack: [], checked: std::map::new(), traits: std::map::new(), aliases: std::map::new(), errors: [], ret: mkt("Unknown"), cands: [], loop_depth: 0, breaks: [], fdepth: 0, natives: load_natives(), cur_file: nil }
+    Env { scopes: [std::map::new()], bindings: [std::map::new()], functions: base, base: base, structs: std::map::new(), variants: variants, base_variants: variants, constants: std::map::new(), ctypes: std::map::new(), cdecls: std::map::new(), cstack: [], checked: std::map::new(), traits: std::map::new(), aliases: std::map::new(), errors: [], ret: mkt("Unknown"), cands: [], loop_depth: 0, breaks: [], fdepth: 0, natives: load_natives_from(native_lines), cur_file: nil }
 }
 
 fn reset_analysis_state(e: Env) -> Env {
@@ -2124,7 +2133,13 @@ fn function_results(functions: map) -> map {
 
 // check_program: devuelve la lista de Diag (vacía = ok).
 fn check_program(items: array) -> array {
-    let mut e = new_env()
+    check_program_with(items, native_table())
+}
+
+// Igual que check_program, con otra lista de nativas. El compilador nativo la
+// usa para el runtime, que además tiene las operaciones `std::raw::`.
+fn check_program_with(items: array, native_lines: array) -> array {
+    let mut e = new_env_with(native_lines)
     e = validate_declarations(e, items)
     e = collect_declarations(e, items)
     e = validate_type_aliases(e, items)
