@@ -1,0 +1,657 @@
+// std::hash escrito en Titan: SHA-256, SHA-384, SHA-512 (FIPS 180-4),
+// SHA3-256, SHA3-512 (FIPS 202), BLAKE3 (especificación y reference_impl) y
+// HMAC (RFC 2104). Las constantes salen de hash_consts.titan (generado).
+//
+// Todo trabaja sobre memoria cruda: una "palabra" ocupa 8 bytes en los búferes
+// internos. Las sumas de 64 bits usan std::raw::wadd (con vuelta, como en la
+// especificación); las de 32 bits se enmascaran con 4294967295.
+
+import hash_consts
+
+fn hs_m32() -> int { 4294967295 }
+
+fn hs_rotr32(x: int, n: int) -> int {
+    (std::raw::shr(x, n) | std::raw::shl(x, 32 - n)) & 4294967295
+}
+
+fn hs_rotr64(x: int, n: int) -> int {
+    std::raw::shr(x, n) | std::raw::shl(x, 64 - n)
+}
+
+fn hs_rotl64(x: int, n: int) -> int {
+    if n == 0 {
+        return x
+    }
+    std::raw::shl(x, n) | std::raw::shr(x, 64 - n)
+}
+
+// Copia un arreglo de enteros a memoria cruda (8 bytes por palabra).
+fn hs_table(a: array) -> int {
+    let n = len(a)
+    let p = rt_alloc(8 * n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store(p + 8 * i, a[i])
+        i += 1
+    }
+    p
+}
+
+fn hs_zero(p: int, count: int) {
+    let mut i = 0
+    while i < count {
+        std::raw::store8(p + i, 0)
+        i += 1
+    }
+}
+
+fn hs_copy(dst: int, src: int, count: int) {
+    let mut i = 0
+    while i < count {
+        std::raw::store8(dst + i, std::raw::load8(src + i))
+        i += 1
+    }
+}
+
+// Relleno de Merkle–Damgård: mensaje, 0x80, ceros y la longitud en bits en
+// big-endian al final del último bloque. Devuelve el búfer; su largo es
+// hs_md_len(n, block, lenbytes).
+fn hs_md_len(n: int, block: int, lenbytes: int) -> int {
+    ((n + 1 + lenbytes + block - 1) / block) * block
+}
+
+fn hs_md_pad(src: int, n: int, block: int, lenbytes: int) -> int {
+    let total = hs_md_len(n, block, lenbytes)
+    let p = rt_alloc(total + 8)
+    hs_copy(p, src, n)
+    hs_zero(p + n, total - n)
+    std::raw::store8(p + n, 128)
+    // Longitud en bits (n * 8) en big-endian; los bytes altos quedan en 0.
+    let mut bits = std::raw::shl(n, 3)
+    let mut i = 1
+    while i <= 8 {
+        std::raw::store8(p + total - i, bits & 255)
+        bits = std::raw::shr(bits, 8)
+        i += 1
+    }
+    if lenbytes == 16 {
+        std::raw::store8(p + total - 9, std::raw::shr(n, 61) & 7)
+    }
+    p
+}
+
+fn hs_load_be(p: int, count: int) -> int {
+    let mut v = 0
+    let mut i = 0
+    while i < count {
+        v = std::raw::shl(v, 8) | std::raw::load8(p + i)
+        i += 1
+    }
+    v
+}
+
+fn hs_store_be(p: int, v: int, count: int) {
+    let mut x = v
+    let mut i = count - 1
+    while i >= 0 {
+        std::raw::store8(p + i, x & 255)
+        x = std::raw::shr(x, 8)
+        i -= 1
+    }
+}
+
+// ---------------- SHA-256 ----------------
+
+fn hs_sha256(src: int, n: int) -> int {
+    let buf = hs_md_pad(src, n, 64, 8)
+    let total = hs_md_len(n, 64, 8)
+    let k = hs_table(hc_k256())
+    let h = hs_table(hc_iv256())
+    let w = rt_alloc(64 * 8)
+    let m = 4294967295
+    let mut off = 0
+    while off < total {
+        let mut t = 0
+        while t < 16 {
+            std::raw::store(w + 8 * t, hs_load_be(buf + off + 4 * t, 4))
+            t += 1
+        }
+        while t < 64 {
+            let x15 = std::raw::load(w + 8 * (t - 15))
+            let x2 = std::raw::load(w + 8 * (t - 2))
+            let s0 = hs_rotr32(x15, 7) ^ hs_rotr32(x15, 18) ^ std::raw::shr(x15, 3)
+            let s1 = hs_rotr32(x2, 17) ^ hs_rotr32(x2, 19) ^ std::raw::shr(x2, 10)
+            std::raw::store(w + 8 * t, (std::raw::load(w + 8 * (t - 16)) + s0 + std::raw::load(w + 8 * (t - 7)) + s1) & m)
+            t += 1
+        }
+        let mut a = std::raw::load(h)
+        let mut b = std::raw::load(h + 8)
+        let mut c = std::raw::load(h + 16)
+        let mut d = std::raw::load(h + 24)
+        let mut e = std::raw::load(h + 32)
+        let mut f = std::raw::load(h + 40)
+        let mut g = std::raw::load(h + 48)
+        let mut hh = std::raw::load(h + 56)
+        t = 0
+        while t < 64 {
+            let big1 = hs_rotr32(e, 6) ^ hs_rotr32(e, 11) ^ hs_rotr32(e, 25)
+            let ch = (e & f) ^ ((e ^ m) & g)
+            let t1 = (hh + big1 + ch + std::raw::load(k + 8 * t) + std::raw::load(w + 8 * t)) & m
+            let big0 = hs_rotr32(a, 2) ^ hs_rotr32(a, 13) ^ hs_rotr32(a, 22)
+            let maj = (a & b) ^ (a & c) ^ (b & c)
+            let t2 = (big0 + maj) & m
+            hh = g
+            g = f
+            f = e
+            e = (d + t1) & m
+            d = c
+            c = b
+            b = a
+            a = (t1 + t2) & m
+            t += 1
+        }
+        std::raw::store(h, (std::raw::load(h) + a) & m)
+        std::raw::store(h + 8, (std::raw::load(h + 8) + b) & m)
+        std::raw::store(h + 16, (std::raw::load(h + 16) + c) & m)
+        std::raw::store(h + 24, (std::raw::load(h + 24) + d) & m)
+        std::raw::store(h + 32, (std::raw::load(h + 32) + e) & m)
+        std::raw::store(h + 40, (std::raw::load(h + 40) + f) & m)
+        std::raw::store(h + 48, (std::raw::load(h + 48) + g) & m)
+        std::raw::store(h + 56, (std::raw::load(h + 56) + hh) & m)
+        off += 64
+    }
+    let out = rt_alloc(40)
+    let mut i = 0
+    while i < 8 {
+        hs_store_be(out + 4 * i, std::raw::load(h + 8 * i), 4)
+        i += 1
+    }
+    rt_free_block(buf)
+    rt_free_block(k)
+    rt_free_block(h)
+    rt_free_block(w)
+    out
+}
+
+// ---------------- SHA-512 / SHA-384 ----------------
+
+fn hs_sha512_core(src: int, n: int, iv: array, outlen: int) -> int {
+    let buf = hs_md_pad(src, n, 128, 16)
+    let total = hs_md_len(n, 128, 16)
+    let k = hs_table(hc_k512())
+    let h = hs_table(iv)
+    let w = rt_alloc(80 * 8)
+    let mut off = 0
+    while off < total {
+        let mut t = 0
+        while t < 16 {
+            std::raw::store(w + 8 * t, hs_load_be(buf + off + 8 * t, 8))
+            t += 1
+        }
+        while t < 80 {
+            let x15 = std::raw::load(w + 8 * (t - 15))
+            let x2 = std::raw::load(w + 8 * (t - 2))
+            let s0 = hs_rotr64(x15, 1) ^ hs_rotr64(x15, 8) ^ std::raw::shr(x15, 7)
+            let s1 = hs_rotr64(x2, 19) ^ hs_rotr64(x2, 61) ^ std::raw::shr(x2, 6)
+            let v = std::raw::wadd(std::raw::wadd(std::raw::load(w + 8 * (t - 16)), s0), std::raw::wadd(std::raw::load(w + 8 * (t - 7)), s1))
+            std::raw::store(w + 8 * t, v)
+            t += 1
+        }
+        let mut a = std::raw::load(h)
+        let mut b = std::raw::load(h + 8)
+        let mut c = std::raw::load(h + 16)
+        let mut d = std::raw::load(h + 24)
+        let mut e = std::raw::load(h + 32)
+        let mut f = std::raw::load(h + 40)
+        let mut g = std::raw::load(h + 48)
+        let mut hh = std::raw::load(h + 56)
+        t = 0
+        while t < 80 {
+            let big1 = hs_rotr64(e, 14) ^ hs_rotr64(e, 18) ^ hs_rotr64(e, 41)
+            let ch = (e & f) ^ (~e & g)
+            let t1 = std::raw::wadd(std::raw::wadd(std::raw::wadd(hh, big1), std::raw::wadd(ch, std::raw::load(k + 8 * t))), std::raw::load(w + 8 * t))
+            let big0 = hs_rotr64(a, 28) ^ hs_rotr64(a, 34) ^ hs_rotr64(a, 39)
+            let maj = (a & b) ^ (a & c) ^ (b & c)
+            let t2 = std::raw::wadd(big0, maj)
+            hh = g
+            g = f
+            f = e
+            e = std::raw::wadd(d, t1)
+            d = c
+            c = b
+            b = a
+            a = std::raw::wadd(t1, t2)
+            t += 1
+        }
+        std::raw::store(h, std::raw::wadd(std::raw::load(h), a))
+        std::raw::store(h + 8, std::raw::wadd(std::raw::load(h + 8), b))
+        std::raw::store(h + 16, std::raw::wadd(std::raw::load(h + 16), c))
+        std::raw::store(h + 24, std::raw::wadd(std::raw::load(h + 24), d))
+        std::raw::store(h + 32, std::raw::wadd(std::raw::load(h + 32), e))
+        std::raw::store(h + 40, std::raw::wadd(std::raw::load(h + 40), f))
+        std::raw::store(h + 48, std::raw::wadd(std::raw::load(h + 48), g))
+        std::raw::store(h + 56, std::raw::wadd(std::raw::load(h + 56), hh))
+        off += 128
+    }
+    let out = rt_alloc(72)
+    let mut i = 0
+    while i < 8 {
+        hs_store_be(out + 8 * i, std::raw::load(h + 8 * i), 8)
+        i += 1
+    }
+    rt_free_block(buf)
+    rt_free_block(k)
+    rt_free_block(h)
+    rt_free_block(w)
+    out
+}
+
+// ---------------- SHA-3 (Keccak-f[1600]) ----------------
+
+fn hs_keccak_f(st: int, rc: int, rot: int, c: int, bb: int) {
+    let mut round = 0
+    while round < 24 {
+        // θ
+        let mut x = 0
+        while x < 5 {
+            let v = std::raw::load(st + 8 * x) ^ std::raw::load(st + 8 * (x + 5)) ^ std::raw::load(st + 8 * (x + 10)) ^ std::raw::load(st + 8 * (x + 15)) ^ std::raw::load(st + 8 * (x + 20))
+            std::raw::store(c + 8 * x, v)
+            x += 1
+        }
+        x = 0
+        while x < 5 {
+            let d = std::raw::load(c + 8 * ((x + 4) % 5)) ^ hs_rotl64(std::raw::load(c + 8 * ((x + 1) % 5)), 1)
+            let mut y = 0
+            while y < 25 {
+                std::raw::store(st + 8 * (x + y), std::raw::load(st + 8 * (x + y)) ^ d)
+                y += 5
+            }
+            x += 1
+        }
+        // ρ y π
+        x = 0
+        while x < 5 {
+            let mut y = 0
+            while y < 5 {
+                let src = x + 5 * y
+                let dst = y + 5 * ((2 * x + 3 * y) % 5)
+                std::raw::store(bb + 8 * dst, hs_rotl64(std::raw::load(st + 8 * src), std::raw::load(rot + 8 * src)))
+                y += 1
+            }
+            x += 1
+        }
+        // χ
+        let mut y = 0
+        while y < 25 {
+            x = 0
+            while x < 5 {
+                let v = std::raw::load(bb + 8 * (x + y)) ^ (~std::raw::load(bb + 8 * ((x + 1) % 5 + y)) & std::raw::load(bb + 8 * ((x + 2) % 5 + y)))
+                std::raw::store(st + 8 * (x + y), v)
+                x += 1
+            }
+            y += 5
+        }
+        // ι
+        std::raw::store(st, std::raw::load(st) ^ std::raw::load(rc + 8 * round))
+        round += 1
+    }
+}
+
+fn hs_sha3(src: int, n: int, rate: int, outlen: int) -> int {
+    let total = (n / rate + 1) * rate
+    let buf = rt_alloc(total + 8)
+    hs_copy(buf, src, n)
+    hs_zero(buf + n, total - n)
+    std::raw::store8(buf + n, 6)
+    std::raw::store8(buf + total - 1, std::raw::load8(buf + total - 1) | 128)
+    let st = rt_alloc(25 * 8)
+    hs_zero(st, 25 * 8)
+    let rc = hs_table(hc_keccak_rc())
+    let rot = hs_table(hc_keccak_rot())
+    let c = rt_alloc(5 * 8)
+    let bb = rt_alloc(25 * 8)
+    let lanes = rate / 8
+    let mut off = 0
+    while off < total {
+        let mut i = 0
+        while i < lanes {
+            // Los carriles son little-endian, igual que x86-64.
+            std::raw::store(st + 8 * i, std::raw::load(st + 8 * i) ^ std::raw::load(buf + off + 8 * i))
+            i += 1
+        }
+        hs_keccak_f(st, rc, rot, c, bb)
+        off += rate
+    }
+    let out = rt_alloc(outlen + 8)
+    hs_copy(out, st, outlen)
+    rt_free_block(buf)
+    rt_free_block(st)
+    rt_free_block(rc)
+    rt_free_block(rot)
+    rt_free_block(c)
+    rt_free_block(bb)
+    out
+}
+
+// ---------------- BLAKE3 ----------------
+// Banderas: CHUNK_START 1, CHUNK_END 2, PARENT 4, ROOT 8.
+
+fn hs_b3_g(s: int, a: int, b: int, c: int, d: int, mx: int, my: int) {
+    let m = 4294967295
+    let mut va = std::raw::load(s + 8 * a)
+    let mut vb = std::raw::load(s + 8 * b)
+    let mut vc = std::raw::load(s + 8 * c)
+    let mut vd = std::raw::load(s + 8 * d)
+    va = (va + vb + mx) & m
+    vd = hs_rotr32(vd ^ va, 16)
+    vc = (vc + vd) & m
+    vb = hs_rotr32(vb ^ vc, 12)
+    va = (va + vb + my) & m
+    vd = hs_rotr32(vd ^ va, 8)
+    vc = (vc + vd) & m
+    vb = hs_rotr32(vb ^ vc, 7)
+    std::raw::store(s + 8 * a, va)
+    std::raw::store(s + 8 * b, vb)
+    std::raw::store(s + 8 * c, vc)
+    std::raw::store(s + 8 * d, vd)
+}
+
+// Comprime: cv (8 palabras), bloque (16 palabras), contador, largo, banderas.
+// Deja las 16 palabras del resultado en `s`.
+fn hs_b3_compress(s: int, cv: int, blk: int, counter: int, blen: int, flags: int, iv: int, tmp: int) {
+    let mut i = 0
+    while i < 8 {
+        std::raw::store(s + 8 * i, std::raw::load(cv + 8 * i))
+        i += 1
+    }
+    std::raw::store(s + 64, std::raw::load(iv))
+    std::raw::store(s + 72, std::raw::load(iv + 8))
+    std::raw::store(s + 80, std::raw::load(iv + 16))
+    std::raw::store(s + 88, std::raw::load(iv + 24))
+    std::raw::store(s + 96, counter & 4294967295)
+    std::raw::store(s + 104, std::raw::shr(counter, 32) & 4294967295)
+    std::raw::store(s + 112, blen)
+    std::raw::store(s + 120, flags)
+    // Copia del bloque que se va permutando entre rondas.
+    let mw = tmp
+    let pw = tmp + 128
+    i = 0
+    while i < 16 {
+        std::raw::store(mw + 8 * i, std::raw::load(blk + 8 * i))
+        i += 1
+    }
+    let perm = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
+    let mut r = 0
+    while r < 7 {
+        hs_b3_g(s, 0, 4, 8, 12, std::raw::load(mw), std::raw::load(mw + 8))
+        hs_b3_g(s, 1, 5, 9, 13, std::raw::load(mw + 16), std::raw::load(mw + 24))
+        hs_b3_g(s, 2, 6, 10, 14, std::raw::load(mw + 32), std::raw::load(mw + 40))
+        hs_b3_g(s, 3, 7, 11, 15, std::raw::load(mw + 48), std::raw::load(mw + 56))
+        hs_b3_g(s, 0, 5, 10, 15, std::raw::load(mw + 64), std::raw::load(mw + 72))
+        hs_b3_g(s, 1, 6, 11, 12, std::raw::load(mw + 80), std::raw::load(mw + 88))
+        hs_b3_g(s, 2, 7, 8, 13, std::raw::load(mw + 96), std::raw::load(mw + 104))
+        hs_b3_g(s, 3, 4, 9, 14, std::raw::load(mw + 112), std::raw::load(mw + 120))
+        if r < 6 {
+            i = 0
+            while i < 16 {
+                std::raw::store(pw + 8 * i, std::raw::load(mw + 8 * perm[i]))
+                i += 1
+            }
+            hs_copy(mw, pw, 128)
+        }
+        r += 1
+    }
+    i = 0
+    while i < 8 {
+        std::raw::store(s + 8 * i, std::raw::load(s + 8 * i) ^ std::raw::load(s + 8 * (i + 8)))
+        std::raw::store(s + 8 * (i + 8), std::raw::load(s + 8 * (i + 8)) ^ std::raw::load(cv + 8 * i))
+        i += 1
+    }
+}
+
+// Carga un bloque (hasta 64 bytes, relleno con ceros) como 16 palabras LE.
+fn hs_b3_block(blk: int, src: int, count: int, raw: int) {
+    hs_zero(raw, 72)
+    hs_copy(raw, src, count)
+    let mut i = 0
+    while i < 16 {
+        std::raw::store(blk + 8 * i, std::raw::load(raw + 4 * i) & 4294967295)
+        i += 1
+    }
+}
+
+fn hs_blake3(src: int, n: int) -> int {
+    let iv = hs_table(hc_iv256())
+    let s = rt_alloc(16 * 8)
+    let tmp = rt_alloc(256)
+    let blk = rt_alloc(16 * 8)
+    let raw = rt_alloc(80)
+    let cv = rt_alloc(8 * 8)
+    let stack = rt_alloc(64 * 64)
+    let mut depth = 0
+    // Salida pendiente: cv de entrada, bloque, largo y banderas (contador 0
+    // o el del último trozo; para la raíz siempre se usa 0).
+    let out_cv = rt_alloc(8 * 8)
+    let out_blk = rt_alloc(16 * 8)
+    let mut out_len = 0
+    let mut out_flags = 0
+    let mut out_counter = 0
+    let mut chunks = (n + 1023) / 1024
+    if chunks == 0 {
+        chunks = 1
+    }
+    let mut ci = 0
+    while ci < chunks {
+        let start = ci * 1024
+        let mut clen = n - start
+        if clen > 1024 {
+            clen = 1024
+        }
+        hs_copy(cv, iv, 64)
+        let mut blocks = (clen + 63) / 64
+        if blocks == 0 {
+            blocks = 1
+        }
+        let mut bi = 0
+        while bi < blocks - 1 {
+            hs_b3_block(blk, src + start + 64 * bi, 64, raw)
+            let mut flags = 0
+            if bi == 0 {
+                flags = 1
+            }
+            hs_b3_compress(s, cv, blk, ci, 64, flags, iv, tmp)
+            hs_copy(cv, s, 64)
+            bi += 1
+        }
+        let last = clen - 64 * (blocks - 1)
+        hs_b3_block(blk, src + start + 64 * (blocks - 1), last, raw)
+        let mut flags = 2
+        if blocks == 1 {
+            flags = 3
+        }
+        if ci < chunks - 1 {
+            hs_b3_compress(s, cv, blk, ci, last, flags, iv, tmp)
+            // Agrega el cv del trozo al árbol, fusionando mientras el total
+            // de trozos sea par.
+            let mut total = ci + 1
+            let mut i = 0
+            let newcv = rt_alloc(64)
+            hs_copy(newcv, s, 64)
+            while (total & 1) == 0 {
+                depth -= 1
+                i = 0
+                while i < 8 {
+                    std::raw::store(blk + 8 * i, std::raw::load(stack + 64 * depth + 8 * i))
+                    std::raw::store(blk + 64 + 8 * i, std::raw::load(newcv + 8 * i))
+                    i += 1
+                }
+                hs_b3_compress(s, iv, blk, 0, 64, 4, iv, tmp)
+                hs_copy(newcv, s, 64)
+                total = std::raw::shr(total, 1)
+            }
+            hs_copy(stack + 64 * depth, newcv, 64)
+            depth += 1
+            rt_free_block(newcv)
+        } else {
+            hs_copy(out_cv, cv, 64)
+            hs_copy(out_blk, blk, 128)
+            out_len = last
+            out_flags = flags
+            out_counter = ci
+        }
+        ci += 1
+    }
+    while depth > 0 {
+        // cv de la salida pendiente (no raíz) y nodo padre.
+        hs_b3_compress(s, out_cv, out_blk, out_counter, out_len, out_flags, iv, tmp)
+        depth -= 1
+        let mut i = 0
+        while i < 8 {
+            std::raw::store(out_blk + 8 * i, std::raw::load(stack + 64 * depth + 8 * i))
+            std::raw::store(out_blk + 64 + 8 * i, std::raw::load(s + 8 * i))
+            i += 1
+        }
+        hs_copy(out_cv, iv, 64)
+        out_len = 64
+        out_flags = 4
+        out_counter = 0
+    }
+    hs_b3_compress(s, out_cv, out_blk, 0, out_len, out_flags | 8, iv, tmp)
+    let out = rt_alloc(40)
+    let mut i = 0
+    while i < 8 {
+        let v = std::raw::load(s + 8 * i)
+        std::raw::store8(out + 4 * i, v & 255)
+        std::raw::store8(out + 4 * i + 1, std::raw::shr(v, 8) & 255)
+        std::raw::store8(out + 4 * i + 2, std::raw::shr(v, 16) & 255)
+        std::raw::store8(out + 4 * i + 3, std::raw::shr(v, 24) & 255)
+        i += 1
+    }
+    rt_free_block(iv)
+    rt_free_block(s)
+    rt_free_block(tmp)
+    rt_free_block(blk)
+    rt_free_block(raw)
+    rt_free_block(cv)
+    rt_free_block(stack)
+    rt_free_block(out_cv)
+    rt_free_block(out_blk)
+    out
+}
+
+// ---------------- Despacho común ----------------
+// Tipos: 1 sha256, 2 sha384, 3 sha512, 4 sha3_256, 5 sha3_512, 6 blake3.
+
+fn hs_out_len(kind: int) -> int {
+    if kind == 2 {
+        return 48
+    }
+    if kind == 3 || kind == 5 {
+        return 64
+    }
+    32
+}
+
+fn hs_digest(kind: int, src: int, n: int) -> int {
+    if kind == 1 {
+        return hs_sha256(src, n)
+    }
+    if kind == 2 {
+        return hs_sha512_core(src, n, hc_iv384(), 48)
+    }
+    if kind == 3 {
+        return hs_sha512_core(src, n, hc_iv512(), 64)
+    }
+    if kind == 4 {
+        return hs_sha3(src, n, 136, 32)
+    }
+    if kind == 5 {
+        return hs_sha3(src, n, 72, 64)
+    }
+    hs_blake3(src, n)
+}
+
+fn hs_hex(p: int, count: int) -> any {
+    let s = rt_str_alloc(2 * count)
+    let mut i = 0
+    while i < count {
+        let x = std::raw::load8(p + i)
+        std::raw::store8(s + 16 + 2 * i, rt_hex_digit(x / 16))
+        std::raw::store8(s + 17 + 2 * i, rt_hex_digit(x & 15))
+        i += 1
+    }
+    rt_sval(s)
+}
+
+fn hs_run(v: any, kind: int, as_bytes: bool, function: string) -> any {
+    rt_expect_bytes(v, function)
+    let d = hs_digest(kind, rt_bdata(v), rt_slen(v))
+    let n = hs_out_len(kind)
+    let mut out: any = nil
+    if as_bytes {
+        out = rt_bytes_from(d, n)
+    } else {
+        out = hs_hex(d, n)
+    }
+    rt_free_block(d)
+    out
+}
+
+fn std__hash__sha256(v: any) -> any { hs_run(v, 1, false, "std::hash::sha256") }
+fn std__hash__sha384(v: any) -> any { hs_run(v, 2, false, "std::hash::sha384") }
+fn std__hash__sha512(v: any) -> any { hs_run(v, 3, false, "std::hash::sha512") }
+fn std__hash__sha3_256(v: any) -> any { hs_run(v, 4, false, "std::hash::sha3_256") }
+fn std__hash__sha3_512(v: any) -> any { hs_run(v, 5, false, "std::hash::sha3_512") }
+fn std__hash__blake3(v: any) -> any { hs_run(v, 6, false, "std::hash::blake3") }
+fn std__hash__sha256_bytes(v: any) -> any { hs_run(v, 1, true, "std::hash::sha256_bytes") }
+fn std__hash__sha512_bytes(v: any) -> any { hs_run(v, 3, true, "std::hash::sha512_bytes") }
+fn std__hash__blake3_bytes(v: any) -> any { hs_run(v, 6, true, "std::hash::blake3_bytes") }
+
+// HMAC (RFC 2104): H((K' ^ opad) || H((K' ^ ipad) || datos)).
+fn hs_hmac(kind: int, block: int, key: any, data: any, function: string) -> any {
+    rt_expect_bytes(key, function)
+    rt_expect_bytes(data, function)
+    let outlen = hs_out_len(kind)
+    let k0 = rt_alloc(block + 8)
+    hs_zero(k0, block)
+    let klen = rt_slen(key)
+    if klen > block {
+        let kd = hs_digest(kind, rt_bdata(key), klen)
+        hs_copy(k0, kd, outlen)
+        rt_free_block(kd)
+    } else {
+        hs_copy(k0, rt_bdata(key), klen)
+    }
+    let dlen = rt_slen(data)
+    let inner = rt_alloc(block + dlen + 8)
+    let mut i = 0
+    while i < block {
+        std::raw::store8(inner + i, std::raw::load8(k0 + i) ^ 54)
+        i += 1
+    }
+    hs_copy(inner + block, rt_bdata(data), dlen)
+    let ih = hs_digest(kind, inner, block + dlen)
+    let outer = rt_alloc(block + outlen + 8)
+    i = 0
+    while i < block {
+        std::raw::store8(outer + i, std::raw::load8(k0 + i) ^ 92)
+        i += 1
+    }
+    hs_copy(outer + block, ih, outlen)
+    let oh = hs_digest(kind, outer, block + outlen)
+    let s = hs_hex(oh, outlen)
+    rt_free_block(k0)
+    rt_free_block(inner)
+    rt_free_block(ih)
+    rt_free_block(outer)
+    rt_free_block(oh)
+    s
+}
+
+fn std__hash__hmac_sha256(key: any, data: any) -> any {
+    hs_hmac(1, 64, key, data, "std::hash::hmac_sha256")
+}
+
+fn std__hash__hmac_sha512(key: any, data: any) -> any {
+    hs_hmac(3, 128, key, data, "std::hash::hmac_sha512")
+}

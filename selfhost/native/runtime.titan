@@ -3,6 +3,8 @@ import unicode
 import unicode_case
 import std_text
 import std_core
+import std_hash
+import std_random
 import errno
 import float
 import float_table
