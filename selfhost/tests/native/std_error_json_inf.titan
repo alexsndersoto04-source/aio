@@ -1,0 +1,6 @@
+// Error de la biblioteca estándar: debe dar el mismo mensaje que la VM.
+fn main() {
+    print("antes")
+    let inf = 1e308 * 10.0
+    print(std::json::stringify([1, inf]))
+}

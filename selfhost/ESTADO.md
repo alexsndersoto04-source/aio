@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | pendiente |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 124 / 816 nativas (`selfhost/native/cobertura.sh`) |
 
 ## Cómo verificar
 
@@ -28,6 +28,8 @@ bash selfhost/verify_typechecker.sh      # typechecker Titan vs Rust, byte a byt
 bash selfhost/verify_codegen.sh          # cargador + codegen Titan vs Rust, byte a byte
 bash selfhost/native/verify_x64.sh       # codificador x86-64 en Titan vs el ensamblador GNU
 bash selfhost/native/verify_native.sh    # ejecutables nativos vs `zett run` (salida, errores, código)
+bash selfhost/native/verify_json.sh      # std::json::parse nativo vs VM en 97 casos (errores con línea/columna)
+bash selfhost/native/cobertura.sh [-v]   # cuántas nativas de la biblioteca ya están en Titan
 # El compilador Titan convertido en ejecutable nativo, contra el de Rust:
 zett run selfhost/build.titan selfhost/bytecode.titan /tmp/bytecode_nativo
 SELF=/tmp/bytecode_nativo bash selfhost/verify_codegen.sh
@@ -277,7 +279,7 @@ Resultados (sesión 4 de la fase 4b):
 3. `titanc2` se compila → `titanc3`.
 
 Resultado: las tres etapas son **idénticas byte a byte**
-(sha256 `47ee5b77…` desde la sesión de floats); cada etapa nativa tarda ~24 s. El compilador no usa
+(sha256 `24c022fc…` desde la sesión de std::json); cada etapa nativa tarda ~24 s. El compilador no usa
 `std::process` ni FFI. Esta es la única vez que se usa el Titan de Rust
 (el arranque); a partir de `titanc1`, Titan se compila solo.
 
@@ -288,6 +290,38 @@ etc.) escritas en Titan, y ARM64 para Termux.
 - Limitaciones anotadas: `std::path::parent`/`canonical` siguen las reglas
   de `Path` de Rust para los casos habituales; casos raros (p. ej. rutas
   con bytes no UTF-8) no están probados.
+
+## Fase 6 — biblioteca estándar en Titan (en curso)
+
+Cada módulo se escribe en Titan dentro del runtime (`selfhost/native/`) y se
+compara con la VM de Rust con programas de `selfhost/tests/native/` (salida,
+mensaje de error y código de salida idénticos). El enlazador solo mete en cada
+ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
+
+| Módulo | Archivo | Notas |
+|---|---|---|
+| std::text (28) | `std_text.titan` | mayúsculas/minúsculas Unicode con tablas generadas (`gen_unicode_case.titan`), sigma final |
+| array, map, bytes, encoding, checksum | `std_core.titan` | hex/base64/percent/utf-8 con los mensajes de Rust |
+| math exacto (sqrt, floor, ceil, round, abs, to_int/to_float) | `std_core.titan` | instrucciones SSE `sqrtsd`/`cvttsd2si` |
+| time, path, fs | `std_core.titan` | llamadas al sistema directas; errores con el texto de `strerror` de glibc (`errno.titan`, generado por `gen_errno.py`) |
+| std::hash (SHA-256/384/512, SHA3-256/512, BLAKE3, HMAC) | `std_hash.titan` | desde las especificaciones; constantes calculadas por `gen_hash_consts.py` (raíces de primos, LFSR de Keccak) |
+| std::random | `std_random.titan` | con semilla: idéntico a rand 0.9 + rand_chacha (PCG32 → ChaCha20, método de Canon); sin semilla: `getrandom` |
+| std::json | `std_json.titan` | el mismo analizador que serde_json 1.0.150 (mensajes y línea/columna; números como serde, que no siempre redondea exacto: `9007199254740993.0` → `…994`); floats de salida como zmij (`1e+21`) |
+
+Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
+"index out of bounds" en el runtime nativo; la VM dice "array index out of
+bounds".
+
+Pendiente en esta fase:
+- **Funciones trascendentes** (`sin`, `cos`, `tan`, `exp`, `ln`, `log`,
+  `pow`…): la VM usa la libm de glibc; para dar los mismos bits hay que portar
+  sus algoritmos. Se hará en una sesión dedicada.
+- Rendimiento: `std::json` sobre 1,2 MB tarda ~0,42 s en nativo frente a
+  ~0,11 s en la VM (serde en Rust optimizado). El tiempo se reparte entre el
+  asignador de memoria y la conversión de floats; se mejorará junto con el
+  asignador.
+- El resto de módulos (collections, datetime, csv, url, uuid, regex, net,
+  http, process…) y las herramientas del CLI.
 
 ## Pendientes conocidos (anotados para no olvidarlos)
 

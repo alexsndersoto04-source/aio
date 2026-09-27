@@ -1,0 +1,1166 @@
+// std::json escrito en Titan, con el mismo comportamiento que la VM (que usa
+// serde_json 1.0.150 sin float_roundtrip ni preserve_order):
+//
+// * parse: el mismo analizador paso a paso, con los mismos mensajes de error y
+//   la misma "line L column C" (columna = bytes desde el último salto de
+//   línea; los errores "de mirar" apuntan al byte siguiente). Los números con
+//   parte decimal o exponente se calculan como serde: significando entero de
+//   64 bits y luego una multiplicación o división por 10^e (no siempre es el
+//   redondeo exacto, pero es lo que hace serde_json).
+// * stringify / pretty: claves ordenadas por bytes, escapes de serde_json y
+//   floats con los dígitos más cortos (zmij): decimal si el punto cae entre
+//   10^-5 y 10^16, si no científico "1e+21" / "1.5e-7".
+// * pointer / merge / flatten: sobre el valor convertido a JSON y de vuelta
+//   (char → string, bytes → array de enteros, tupla → array, struct → mapa,
+//   enum → {"payload"?, "type", "variant"}).
+
+// ---------------------------------------------------------------- errores
+
+// Estado del analizador (memoria cruda): +0 datos, +8 largo, +16 índice,
+// +24 profundidad restante.
+fn js_pos_text(st: int, i0: int) -> any {
+    let src = std::raw::load(st)
+    let mut i = i0
+    let n = std::raw::load(st + 8)
+    if i > n {
+        i = n
+    }
+    let mut line = 1
+    let mut start = 0
+    let mut k = 0
+    while k < i {
+        if std::raw::load8(src + k) == 10 {
+            line += 1
+            start = k + 1
+        }
+        k += 1
+    }
+    let col = i - start
+    rt_concat(rt_concat(rt_concat(" at line ", rt_int_to_str(line)), " column "), rt_int_to_str(col))
+}
+
+// error(): posición del índice actual.
+fn js_error(st: int, code: string) {
+    rt_native_fail("std::json::parse", rt_concat(code, js_pos_text(st, std::raw::load(st + 16))))
+}
+
+// peek_error(): posición del byte siguiente (sin pasar del final).
+fn js_peek_error(st: int, code: string) {
+    rt_native_fail("std::json::parse", rt_concat(code, js_pos_text(st, std::raw::load(st + 16) + 1)))
+}
+
+// ---------------------------------------------------------------- lectura
+
+// Byte siguiente sin consumir, o -1 al final.
+fn js_peek(st: int) -> int {
+    let i = std::raw::load(st + 16)
+    if i >= std::raw::load(st + 8) {
+        return -1
+    }
+    std::raw::load8(std::raw::load(st) + i)
+}
+
+fn js_eat(st: int) {
+    std::raw::store(st + 16, std::raw::load(st + 16) + 1)
+}
+
+// Consume y devuelve el byte siguiente, o -1 al final.
+fn js_next(st: int) -> int {
+    let c = js_peek(st)
+    if c >= 0 {
+        js_eat(st)
+    }
+    c
+}
+
+fn js_skip_ws(st: int) -> int {
+    let mut c = js_peek(st)
+    while c == 32 || c == 10 || c == 9 || c == 13 {
+        js_eat(st)
+        c = js_peek(st)
+    }
+    c
+}
+
+fn js_is_digit(c: int) -> bool {
+    c >= 48 && c <= 57
+}
+
+// ---------------------------------------------------------------- números
+
+// 10^i (0 <= i <= 308) como bits de f64 correctamente redondeados (igual que
+// los literales de la tabla POW10 de serde_json); se guardan al usarse.
+fn js_pow10(i: int) -> int {
+    let g = std::raw::globals() + 2400
+    let mut table = std::raw::load(g)
+    if table == 0 {
+        table = rt_alloc(8 * 309)
+        let mut k = 0
+        while k < 309 {
+            std::raw::store(table + 8 * k, 0)
+            k += 1
+        }
+        std::raw::store(g, table)
+    }
+    let mut v = std::raw::load(table + 8 * i)
+    if v == 0 {
+        v = fl_from_decimal(false, [1], i)
+        std::raw::store(table + 8 * i, v)
+    }
+    v
+}
+
+// u64 → f64 con redondeo al par más cercano.
+fn js_u64_to_f(u: int) -> int {
+    if u >= 0 {
+        return std::raw::ffromint(u)
+    }
+    let half = std::raw::shr(u, 1) | (u & 1)
+    let f = std::raw::ffromint(half)
+    std::raw::fadd(f, f)
+}
+
+fn js_inf_bits() -> int { 9218868437227405312 }
+fn js_sign_bit() -> int { -9223372036854775807 - 1 }
+
+// Recorta a los límites de i32 (serde usa saturating_add/sub en i32).
+fn js_sat32(x: int) -> int {
+    if x > 2147483647 {
+        return 2147483647
+    }
+    if x < -2147483648 {
+        return -2147483648
+    }
+    x
+}
+
+fn js_f64_from_parts(st: int, positive: bool, sig: int, exp0: int) -> any {
+    let mut f = js_u64_to_f(sig)
+    let mut exponent = exp0
+    while true {
+        let mut a = exponent
+        if a < 0 {
+            a = 0 - a
+        }
+        if exponent == -2147483648 {
+            // wrapping_abs(i32::MIN) sigue siendo negativo: fuera de tabla.
+            a = 1000
+        }
+        if a <= 308 {
+            let pow = js_pow10(a)
+            if exponent >= 0 {
+                f = std::raw::fmul(f, pow)
+                if (f & 9223372036854775807) == js_inf_bits() {
+                    js_error(st, "number out of range")
+                }
+            } else {
+                f = std::raw::fdiv(f, pow)
+            }
+            break
+        }
+        if f == 0 {
+            break
+        }
+        if exponent >= 0 {
+            js_error(st, "number out of range")
+        }
+        f = std::raw::fdiv(f, js_pow10(308))
+        exponent += 308
+    }
+    if !positive {
+        f = f ^ js_sign_bit()
+    }
+    rt_float(f)
+}
+
+// ¿sig * 10 + d desborda u64? (sig es u64 guardado con signo)
+fn js_u64_overflow(sig: int, d: int) -> bool {
+    let limit = 1844674407370955161
+    if sig < 0 || sig > limit {
+        return true
+    }
+    sig == limit && d > 5
+}
+
+fn js_parse_exponent(st: int, positive: bool, sig: int, starting: int) -> any {
+    js_eat(st)
+    let mut positive_exp = true
+    let c = js_peek(st)
+    if c == 43 {
+        js_eat(st)
+    } else if c == 45 {
+        js_eat(st)
+        positive_exp = false
+    }
+    let next = js_next(st)
+    if next < 0 {
+        js_error(st, "EOF while parsing a value")
+    }
+    if !js_is_digit(next) {
+        js_error(st, "invalid number")
+    }
+    let mut exp = next - 48
+    while js_is_digit(js_peek(st)) {
+        let d = js_peek(st) - 48
+        js_eat(st)
+        if exp > 214748364 || (exp == 214748364 && d > 7) {
+            // parse_exponent_overflow
+            if sig != 0 && positive_exp {
+                js_error(st, "number out of range")
+            }
+            while js_is_digit(js_peek(st)) {
+                js_eat(st)
+            }
+            if positive {
+                return rt_float(0)
+            }
+            return rt_float(js_sign_bit())
+        }
+        exp = exp * 10 + d
+    }
+    let mut final_exp = 0
+    if positive_exp {
+        final_exp = js_sat32(starting + exp)
+    } else {
+        final_exp = js_sat32(starting - exp)
+    }
+    js_f64_from_parts(st, positive, sig, final_exp)
+}
+
+fn js_parse_decimal(st: int, positive: bool, sig0: int, before: int) -> any {
+    js_eat(st)
+    let mut sig = sig0
+    let mut after = 0
+    while js_is_digit(js_peek(st)) {
+        let d = js_peek(st) - 48
+        if js_u64_overflow(sig, d) {
+            // parse_decimal_overflow: el resto de dígitos se ignora.
+            while js_is_digit(js_peek(st)) {
+                js_eat(st)
+            }
+            let c = js_peek(st)
+            if c == 101 || c == 69 {
+                return js_parse_exponent(st, positive, sig, before + after)
+            }
+            return js_f64_from_parts(st, positive, sig, before + after)
+        }
+        js_eat(st)
+        sig = std::raw::wadd(std::raw::wmul(sig, 10), d)
+        after -= 1
+    }
+    if after == 0 {
+        if js_peek(st) >= 0 {
+            js_peek_error(st, "invalid number")
+        }
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    let c = js_peek(st)
+    if c == 101 || c == 69 {
+        return js_parse_exponent(st, positive, sig, before + after)
+    }
+    js_f64_from_parts(st, positive, sig, before + after)
+}
+
+fn js_parse_number(st: int, positive: bool, sig: int) -> any {
+    let c = js_peek(st)
+    if c == 46 {
+        return js_parse_decimal(st, positive, sig, 0)
+    }
+    if c == 101 || c == 69 {
+        return js_parse_exponent(st, positive, sig, 0)
+    }
+    if positive {
+        // U64: entero si cabe en i64; si no, as_f64.
+        if sig >= 0 {
+            return sig
+        }
+        return rt_float(js_u64_to_f(sig))
+    }
+    let neg = std::raw::wsub(0, sig)
+    if neg >= 0 {
+        return rt_float(js_u64_to_f(sig) ^ js_sign_bit())
+    }
+    neg
+}
+
+fn js_parse_long_integer(st: int, positive: bool, sig: int) -> any {
+    let mut exponent = 0
+    while true {
+        let c = js_peek(st)
+        if js_is_digit(c) {
+            js_eat(st)
+            exponent += 1
+        } else if c == 46 {
+            return js_parse_decimal(st, positive, sig, exponent)
+        } else if c == 101 || c == 69 {
+            return js_parse_exponent(st, positive, sig, exponent)
+        } else {
+            return js_f64_from_parts(st, positive, sig, exponent)
+        }
+    }
+    nil
+}
+
+fn js_parse_integer(st: int, positive: bool) -> any {
+    let next = js_next(st)
+    if next < 0 {
+        js_error(st, "EOF while parsing a value")
+    }
+    if next == 48 {
+        if js_is_digit(js_peek(st)) {
+            js_peek_error(st, "invalid number")
+        }
+        return js_parse_number(st, positive, 0)
+    }
+    if next < 49 || next > 57 {
+        js_error(st, "invalid number")
+    }
+    let mut sig = next - 48
+    while true {
+        let c = js_peek(st)
+        if !js_is_digit(c) {
+            return js_parse_number(st, positive, sig)
+        }
+        let d = c - 48
+        if js_u64_overflow(sig, d) {
+            return js_parse_long_integer(st, positive, sig)
+        }
+        js_eat(st)
+        sig = std::raw::wadd(std::raw::wmul(sig, 10), d)
+    }
+    nil
+}
+
+// ---------------------------------------------------------------- strings
+
+fn js_hex_val(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    -1
+}
+
+// decode_hex_escape de serde (lectura de &str).
+fn js_hex4(st: int) -> int {
+    let i = std::raw::load(st + 16)
+    let n = std::raw::load(st + 8)
+    if n - i < 4 {
+        std::raw::store(st + 16, n)
+        js_error(st, "EOF while parsing a string")
+    }
+    let src = std::raw::load(st)
+    std::raw::store(st + 16, i + 4)
+    let mut v = 0
+    let mut k = 0
+    while k < 4 {
+        let h = js_hex_val(std::raw::load8(src + i + k))
+        if h < 0 {
+            js_error(st, "invalid escape")
+        }
+        v = v * 16 + h
+        k += 1
+    }
+    v
+}
+
+fn js_peek_or_eof(st: int) -> int {
+    let c = js_peek(st)
+    if c < 0 {
+        js_error(st, "EOF while parsing a string")
+    }
+    c
+}
+
+fn js_unicode_escape(st: int, b: int) {
+    let n = js_hex4(st)
+    if n >= 56320 && n <= 57343 {
+        js_error(st, "lone leading surrogate in hex escape")
+    }
+    if n < 55296 || n > 56319 {
+        sb_cp(b, n)
+        return
+    }
+    if js_peek_or_eof(st) != 92 {
+        js_eat(st)
+        js_error(st, "unexpected end of hex escape")
+    }
+    js_eat(st)
+    if js_peek_or_eof(st) != 117 {
+        js_eat(st)
+        js_error(st, "unexpected end of hex escape")
+    }
+    js_eat(st)
+    let n2 = js_hex4(st)
+    if n2 < 56320 || n2 > 57343 {
+        js_error(st, "lone leading surrogate in hex escape")
+    }
+    sb_cp(b, std::raw::shl(n - 55296, 10) + (n2 - 56320) + 65536)
+}
+
+fn js_escape(st: int, b: int) {
+    let c = js_next(st)
+    if c < 0 {
+        js_error(st, "EOF while parsing a string")
+    }
+    if c == 34 || c == 92 || c == 47 {
+        sb_byte(b, c)
+    } else if c == 98 {
+        sb_byte(b, 8)
+    } else if c == 102 {
+        sb_byte(b, 12)
+    } else if c == 110 {
+        sb_byte(b, 10)
+    } else if c == 114 {
+        sb_byte(b, 13)
+    } else if c == 116 {
+        sb_byte(b, 9)
+    } else if c == 117 {
+        js_unicode_escape(st, b)
+    } else {
+        js_error(st, "invalid escape")
+    }
+}
+
+// Tras la comilla de apertura (ya consumida).
+fn js_parse_str(st: int) -> any {
+    let src = std::raw::load(st)
+    let n = std::raw::load(st + 8)
+    let b = sb_new(16)
+    while true {
+        let mut i = std::raw::load(st + 16)
+        let start = i
+        while i < n {
+            let c = std::raw::load8(src + i)
+            if c == 34 || c == 92 || c < 32 {
+                break
+            }
+            i += 1
+        }
+        sb_raw(b, src + start, i - start)
+        std::raw::store(st + 16, i)
+        if i == n {
+            js_error(st, "EOF while parsing a string")
+        }
+        let c = std::raw::load8(src + i)
+        std::raw::store(st + 16, i + 1)
+        if c == 34 {
+            return sb_finish(b)
+        }
+        if c == 92 {
+            js_escape(st, b)
+        } else {
+            js_error(st, "control character (\\u0000-\\u001F) found while parsing a string")
+        }
+    }
+    nil
+}
+
+// ---------------------------------------------------------------- valores
+
+fn js_parse_ident(st: int, rest: string) {
+    let p = std::raw::bits(rest)
+    let n = std::raw::load(p + 8)
+    let mut k = 0
+    while k < n {
+        let c = js_next(st)
+        if c < 0 {
+            js_error(st, "EOF while parsing a value")
+        }
+        if c != std::raw::load8(p + 16 + k) {
+            js_error(st, "expected ident")
+        }
+        k += 1
+    }
+}
+
+fn js_enter(st: int) {
+    let d = std::raw::load(st + 24) - 1
+    std::raw::store(st + 24, d)
+    if d == 0 {
+        js_peek_error(st, "recursion limit exceeded")
+    }
+}
+
+fn js_leave(st: int) {
+    std::raw::store(st + 24, std::raw::load(st + 24) + 1)
+}
+
+fn js_parse_array(st: int) -> any {
+    js_enter(st)
+    js_eat(st)
+    let mut out: any = rt_array_new(0)
+    let mut first = true
+    while true {
+        let mut c = js_skip_ws(st)
+        if c == 93 {
+            break
+        }
+        if c == 44 && !first {
+            js_eat(st)
+            c = js_skip_ws(st)
+        } else if c >= 0 {
+            if first {
+                first = false
+            } else {
+                js_peek_error(st, "expected `,` or `]`")
+            }
+        } else {
+            js_peek_error(st, "EOF while parsing a list")
+        }
+        if c == 93 {
+            js_peek_error(st, "trailing comma")
+        }
+        if c < 0 {
+            js_peek_error(st, "EOF while parsing a value")
+        }
+        out = std::array::push(out, js_parse_value(st))
+    }
+    js_leave(st)
+    // end_seq: aquí siempre hay un ']'.
+    js_eat(st)
+    out
+}
+
+fn js_parse_object(st: int) -> any {
+    js_enter(st)
+    js_eat(st)
+    let mut out: any = rt_map_alloc(0, 4)
+    let mut first = true
+    while true {
+        let mut c = js_skip_ws(st)
+        if c == 125 {
+            break
+        }
+        if c == 44 && !first {
+            js_eat(st)
+            c = js_skip_ws(st)
+        } else if c >= 0 {
+            if first {
+                first = false
+            } else {
+                js_peek_error(st, "expected `,` or `}`")
+            }
+        } else {
+            js_peek_error(st, "EOF while parsing an object")
+        }
+        if c == 125 {
+            js_peek_error(st, "trailing comma")
+        }
+        if c < 0 {
+            js_peek_error(st, "EOF while parsing a value")
+        }
+        if c != 34 {
+            js_peek_error(st, "key must be a string")
+        }
+        js_eat(st)
+        let key = js_parse_str(st)
+        let colon = js_skip_ws(st)
+        if colon == 58 {
+            js_eat(st)
+        } else if colon >= 0 {
+            js_peek_error(st, "expected `:`")
+        } else {
+            js_peek_error(st, "EOF while parsing an object")
+        }
+        out = std::map::insert(out, key, js_parse_value(st))
+    }
+    js_leave(st)
+    js_eat(st)
+    out
+}
+
+fn js_parse_value(st: int) -> any {
+    let c = js_skip_ws(st)
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    if c == 110 {
+        js_eat(st)
+        js_parse_ident(st, "ull")
+        return nil
+    }
+    if c == 116 {
+        js_eat(st)
+        js_parse_ident(st, "rue")
+        return true
+    }
+    if c == 102 {
+        js_eat(st)
+        js_parse_ident(st, "alse")
+        return false
+    }
+    if c == 45 {
+        js_eat(st)
+        return js_parse_integer(st, false)
+    }
+    if js_is_digit(c) {
+        return js_parse_integer(st, true)
+    }
+    if c == 34 {
+        js_eat(st)
+        return js_parse_str(st)
+    }
+    if c == 91 {
+        return js_parse_array(st)
+    }
+    if c == 123 {
+        return js_parse_object(st)
+    }
+    js_peek_error(st, "expected value")
+    nil
+}
+
+fn std__json__parse(text: any) -> any {
+    rt_expect_str(text, "std::json::parse")
+    let st = rt_alloc(32)
+    std::raw::store(st, std::raw::bits(text) + 16)
+    std::raw::store(st + 8, rt_slen(text))
+    std::raw::store(st + 16, 0)
+    std::raw::store(st + 24, 128)
+    let v = js_parse_value(st)
+    if js_skip_ws(st) >= 0 {
+        js_peek_error(st, "trailing characters")
+    }
+    rt_free_block(st)
+    v
+}
+
+// ---------------------------------------------------------------- a JSON
+
+fn js_handles_error(function: string) {
+    rt_native_fail(function, "runtime handles cannot be encoded as JSON")
+}
+
+// Campos de un struct como mapa (ordenado por nombre, como el BTreeMap).
+fn js_struct_map(v: any) -> any {
+    let p = std::raw::bits(v)
+    let schema = std::raw::load(p + 16)
+    let n = std::raw::load(p + 24)
+    let mut m: any = rt_map_alloc(0, n)
+    let mut i = 0
+    while i < n {
+        let e = p + 32 + 16 * i
+        m = std::map::insert(m, rt_sref(std::raw::load(schema + 8 + 8 * i)), std::raw::value(std::raw::load(e), std::raw::load(e + 8)))
+        i += 1
+    }
+    m
+}
+
+fn js_enum_map(v: any) -> any {
+    let p = std::raw::bits(v)
+    let mut m: any = rt_map_alloc(0, 3)
+    if std::raw::load(p + 24) != 0 {
+        m = std::map::insert(m, "payload", std::raw::value(std::raw::load(p + 32), std::raw::load(p + 40)))
+    }
+    m = std::map::insert(m, "type", rt_sref(std::raw::load(p + 8)))
+    m = std::map::insert(m, "variant", rt_sref(std::raw::load(p + 16)))
+    m
+}
+
+fn js_finite(bits: int) -> bool {
+    (bits & js_inf_bits()) != js_inf_bits()
+}
+
+// from_json(to_json(v)): el mismo valor visto como JSON.
+fn js_norm(v: any, function: string) -> any {
+    let t = std::raw::tag(v)
+    if t == 0 || t == 1 || t == 3 || t == 5 {
+        return v
+    }
+    if t == 2 {
+        if !js_finite(std::raw::bits(v)) {
+            rt_native_fail(function, "non-finite JSON number")
+        }
+        return v
+    }
+    if t == 4 {
+        let b = sb_new(4)
+        sb_cp(b, std::raw::bits(v))
+        return sb_finish(b)
+    }
+    if t == 6 {
+        let n = rt_slen(v)
+        let src = rt_bdata(v)
+        let mut out: any = rt_array_new(0)
+        let mut i = 0
+        while i < n {
+            out = std::array::push(out, std::raw::load8(src + i))
+            i += 1
+        }
+        return out
+    }
+    if t == 7 || t == 8 {
+        let n = rt_seq_len(v)
+        let mut out: any = rt_array_new(0)
+        let mut i = 0
+        while i < n {
+            out = std::array::push(out, js_norm(rt_seq_get(v, i), function))
+            i += 1
+        }
+        return out
+    }
+    if t == 9 || t == 10 || t == 11 {
+        let mut m = v
+        if t == 10 {
+            m = js_struct_map(v)
+        } else if t == 11 {
+            m = js_enum_map(v)
+        }
+        let p = std::raw::bits(m)
+        let n = std::raw::load(p + 8)
+        let mut out: any = rt_map_alloc(0, n)
+        let mut i = 0
+        while i < n {
+            let e = std::raw::load(p + 24) + 24 * i
+            let key = std::raw::value(5, std::raw::load(e))
+            let val = std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))
+            out = std::map::insert(out, key, js_norm(val, function))
+            i += 1
+        }
+        return out
+    }
+    js_handles_error(function)
+    nil
+}
+
+// ---------------------------------------------------------------- escritura
+
+fn js_hexd(x: int) -> int {
+    if x < 10 {
+        return 48 + x
+    }
+    87 + x
+}
+
+fn js_write_str(b: int, s: any) {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    sb_byte(b, 34)
+    let mut start = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 32 || c == 34 || c == 92 {
+            sb_raw(b, p + start, i - start)
+            sb_byte(b, 92)
+            if c == 34 || c == 92 {
+                sb_byte(b, c)
+            } else if c == 8 {
+                sb_byte(b, 98)
+            } else if c == 9 {
+                sb_byte(b, 116)
+            } else if c == 10 {
+                sb_byte(b, 110)
+            } else if c == 12 {
+                sb_byte(b, 102)
+            } else if c == 13 {
+                sb_byte(b, 114)
+            } else {
+                sb_byte(b, 117)
+                sb_byte(b, 48)
+                sb_byte(b, 48)
+                sb_byte(b, js_hexd(c / 16))
+                sb_byte(b, js_hexd(c & 15))
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    sb_raw(b, p + start, n - start)
+    sb_byte(b, 34)
+}
+
+// Float finito al estilo de zmij/serde_json.
+fn js_float_text(bits: int) -> any {
+    let negative = bits < 0
+    let b = bits & 9223372036854775807
+    let mut sign = ""
+    if negative {
+        sign = "-"
+    }
+    if b == 0 {
+        return rt_concat(sign, "0.0")
+    }
+    let (num, nd, k) = fl_shortest(b)
+    let text = rt_int_to_str(num)
+    let sbuf = sb_new(32)
+    sb_str(sbuf, sign)
+    let tp = std::raw::bits(text) + 16
+    if k > -5 && k <= 16 {
+        if k <= 0 {
+            sb_byte(sbuf, 48)
+            sb_byte(sbuf, 46)
+            let mut z = 0
+            while z < 0 - k {
+                sb_byte(sbuf, 48)
+                z += 1
+            }
+            sb_raw(sbuf, tp, nd)
+        } else if k < nd {
+            sb_raw(sbuf, tp, k)
+            sb_byte(sbuf, 46)
+            sb_raw(sbuf, tp + k, nd - k)
+        } else {
+            sb_raw(sbuf, tp, nd)
+            let mut z = nd
+            while z < k {
+                sb_byte(sbuf, 48)
+                z += 1
+            }
+            sb_byte(sbuf, 46)
+            sb_byte(sbuf, 48)
+        }
+        return sb_finish(sbuf)
+    }
+    sb_raw(sbuf, tp, 1)
+    if nd > 1 {
+        sb_byte(sbuf, 46)
+        sb_raw(sbuf, tp + 1, nd - 1)
+    }
+    sb_byte(sbuf, 101)
+    let e = k - 1
+    if e >= 0 {
+        sb_byte(sbuf, 43)
+    }
+    sb_str(sbuf, rt_int_to_str(e))
+    sb_finish(sbuf)
+}
+
+fn js_newline(b: int, pretty: bool, depth: int) {
+    if pretty {
+        sb_byte(b, 10)
+        let mut i = 0
+        while i < depth {
+            sb_byte(b, 32)
+            sb_byte(b, 32)
+            i += 1
+        }
+    }
+}
+
+// Escribe un valor (con las mismas conversiones y errores que js_norm).
+fn js_write(b: int, v: any, pretty: bool, depth: int, function: string) {
+    let t = std::raw::tag(v)
+    if t == 10 {
+        js_write(b, js_struct_map(v), pretty, depth, function)
+        return
+    }
+    if t == 11 {
+        js_write(b, js_enum_map(v), pretty, depth, function)
+        return
+    }
+    if t == 4 || t == 6 {
+        js_write(b, js_norm(v, function), pretty, depth, function)
+        return
+    }
+    if t > 11 {
+        js_handles_error(function)
+    }
+    if t == 0 {
+        sb_str(b, "null")
+    } else if t == 3 {
+        if std::raw::bits(v) != 0 {
+            sb_str(b, "true")
+        } else {
+            sb_str(b, "false")
+        }
+    } else if t == 1 {
+        sb_str(b, rt_int_to_str(std::raw::bits(v)))
+    } else if t == 2 {
+        if !js_finite(std::raw::bits(v)) {
+            rt_native_fail(function, "non-finite JSON number")
+        }
+        sb_str(b, js_float_text(std::raw::bits(v)))
+    } else if t == 5 {
+        js_write_str(b, v)
+    } else if t == 7 || t == 8 {
+        let n = rt_seq_len(v)
+        sb_byte(b, 91)
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                sb_byte(b, 44)
+            }
+            js_newline(b, pretty, depth + 1)
+            js_write(b, rt_seq_get(v, i), pretty, depth + 1, function)
+            i += 1
+        }
+        if n > 0 {
+            js_newline(b, pretty, depth)
+        }
+        sb_byte(b, 93)
+    } else {
+        let p = std::raw::bits(v)
+        let n = std::raw::load(p + 8)
+        sb_byte(b, 123)
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                sb_byte(b, 44)
+            }
+            js_newline(b, pretty, depth + 1)
+            let e = std::raw::load(p + 24) + 24 * i
+            js_write_str(b, std::raw::value(5, std::raw::load(e)))
+            sb_byte(b, 58)
+            if pretty {
+                sb_byte(b, 32)
+            }
+            js_write(b, std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16)), pretty, depth + 1, function)
+            i += 1
+        }
+        if n > 0 {
+            js_newline(b, pretty, depth)
+        }
+        sb_byte(b, 125)
+    }
+}
+
+fn std__json__stringify(v: any) -> any {
+    let b = sb_new(64)
+    js_write(b, v, false, 0, "std::json::stringify")
+    sb_finish(b)
+}
+
+fn std__json__pretty(v: any) -> any {
+    let b = sb_new(64)
+    js_write(b, v, true, 0, "std::json::pretty")
+    sb_finish(b)
+}
+
+// ---------------------------------------------------------------- pointer
+
+// Índice de array de un puntero JSON (parse_index de serde_json), o -1.
+fn js_parse_index(tok: any) -> int {
+    let p = std::raw::bits(tok) + 16
+    let n = rt_slen(tok)
+    if n == 0 {
+        return -1
+    }
+    let c0 = std::raw::load8(p)
+    if c0 == 43 || (c0 == 48 && n != 1) {
+        return -1
+    }
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 48 || c > 57 {
+            return -1
+        }
+        if v > 922337203685477580 || (v == 922337203685477580 && c > 55) {
+            // No cabe en usize (en la práctica, ningún array es tan largo).
+            return -1
+        }
+        v = v * 10 + (c - 48)
+        i += 1
+    }
+    v
+}
+
+// "~1" → "/" y luego "~0" → "~" (en ese orden, como serde_json).
+fn js_unescape_token(p: int, n: int) -> any {
+    let b = sb_new(n)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 126 && i + 1 < n && std::raw::load8(p + i + 1) == 49 {
+            sb_byte(b, 47)
+            i += 2
+        } else {
+            sb_byte(b, c)
+            i += 1
+        }
+    }
+    let once = sb_finish(b)
+    let q = std::raw::bits(once) + 16
+    let m = rt_slen(once)
+    let b2 = sb_new(m)
+    i = 0
+    while i < m {
+        let c = std::raw::load8(q + i)
+        if c == 126 && i + 1 < m && std::raw::load8(q + i + 1) == 48 {
+            sb_byte(b2, 126)
+            i += 2
+        } else {
+            sb_byte(b2, c)
+            i += 1
+        }
+    }
+    sb_finish(b2)
+}
+
+fn std__json__pointer(v: any, path: any) -> any {
+    let norm = js_norm(v, "std::json::pointer")
+    rt_expect_str(path, "std::json::pointer")
+    let n = rt_slen(path)
+    if n == 0 {
+        return norm
+    }
+    let p = std::raw::bits(path) + 16
+    if std::raw::load8(p) != 47 {
+        return nil
+    }
+    let mut cur = norm
+    let mut start = 1
+    while start <= n {
+        let mut end = start
+        while end < n && std::raw::load8(p + end) != 47 {
+            end += 1
+        }
+        let tok = js_unescape_token(p + start, end - start)
+        let t = std::raw::tag(cur)
+        if t == 9 {
+            let pos = rt_map_find(cur, tok)
+            if pos < 0 {
+                return nil
+            }
+            cur = rt_map_value_at(cur, pos)
+        } else if t == 7 {
+            let idx = js_parse_index(tok)
+            if idx < 0 || idx >= rt_seq_len(cur) {
+                return nil
+            }
+            cur = rt_seq_get(cur, idx)
+        } else {
+            return nil
+        }
+        start = end + 1
+    }
+    cur
+}
+
+// ---------------------------------------------------------------- merge
+
+fn js_merge(target: any, patch: any) -> any {
+    if std::raw::tag(target) != 9 || std::raw::tag(patch) != 9 {
+        return patch
+    }
+    let mut out = target
+    let p = std::raw::bits(patch)
+    let n = std::raw::load(p + 8)
+    let mut i = 0
+    while i < n {
+        let e = std::raw::load(p + 24) + 24 * i
+        let key = std::raw::value(5, std::raw::load(e))
+        let val = std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))
+        if std::raw::tag(val) == 0 {
+            out = std::map::remove(out, key)
+        } else {
+            let pos = rt_map_find(out, key)
+            let mut old: any = nil
+            if pos >= 0 {
+                old = rt_map_value_at(out, pos)
+            }
+            out = std::map::insert(out, key, js_merge(old, val))
+        }
+        i += 1
+    }
+    out
+}
+
+fn std__json__merge(target: any, patch: any) -> any {
+    let t = js_norm(target, "std::json::merge")
+    let p = js_norm(patch, "std::json::merge")
+    js_merge(t, p)
+}
+
+// ---------------------------------------------------------------- flatten
+
+// "~" → "~0" y luego "/" → "~1".
+fn js_escape_key(key: any) -> any {
+    let p = std::raw::bits(key) + 16
+    let n = rt_slen(key)
+    let b = sb_new(n + 4)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 126 {
+            sb_byte(b, 126)
+            sb_byte(b, 48)
+        } else if c == 47 {
+            sb_byte(b, 126)
+            sb_byte(b, 49)
+        } else {
+            sb_byte(b, c)
+        }
+        i += 1
+    }
+    sb_finish(b)
+}
+
+// Búfer crudo de valores (evita copiar un array con dos dueños en la
+// recursión): +0 cuántos, +8 capacidad, +16 datos (16 bytes por valor).
+fn js_vec_new() -> int {
+    let b = rt_alloc(24)
+    std::raw::store(b, 0)
+    std::raw::store(b + 8, 16)
+    std::raw::store(b + 16, rt_alloc(16 * 16))
+    b
+}
+
+fn js_vec_push(b: int, x: any) {
+    let n = std::raw::load(b)
+    let cap = std::raw::load(b + 8)
+    if n == cap {
+        let bigger = rt_alloc(32 * cap)
+        rt_copy(bigger, std::raw::load(b + 16), 16 * n)
+        rt_free_block(std::raw::load(b + 16))
+        std::raw::store(b + 16, bigger)
+        std::raw::store(b + 8, 2 * cap)
+    }
+    rt_seq_put(std::raw::load(b + 16), n, x)
+    std::raw::store(b, n + 1)
+}
+
+fn js_vec_finish(b: int) -> any {
+    let n = std::raw::load(b)
+    let out = rt_array_new(n)
+    rt_copy(rt_seq_data(out), std::raw::load(b + 16), 16 * n)
+    rt_free_block(std::raw::load(b + 16))
+    rt_free_block(b)
+    out
+}
+
+fn js_flatten(v: any, path: any, out: int) {
+    let t = std::raw::tag(v)
+    if t == 9 {
+        let p = std::raw::bits(v)
+        let n = std::raw::load(p + 8)
+        let mut i = 0
+        while i < n {
+            let e = std::raw::load(p + 24) + 24 * i
+            let key = std::raw::value(5, std::raw::load(e))
+            let val = std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))
+            js_flatten(val, rt_concat(rt_concat(path, "/"), js_escape_key(key)), out)
+            i += 1
+        }
+        return
+    }
+    if t == 7 {
+        let n = rt_seq_len(v)
+        let mut i = 0
+        while i < n {
+            js_flatten(rt_seq_get(v, i), rt_concat(rt_concat(path, "/"), rt_int_to_str(i)), out)
+            i += 1
+        }
+        return
+    }
+    let pair = rt_tuple_new(2)
+    let data = rt_seq_data(pair)
+    rt_seq_put(data, 0, path)
+    rt_seq_put(data, 1, v)
+    js_vec_push(out, pair)
+}
+
+fn std__json__flatten(v: any) -> any {
+    let norm = js_norm(v, "std::json::flatten")
+    let out = js_vec_new()
+    js_flatten(norm, "", out)
+    js_vec_finish(out)
+}
