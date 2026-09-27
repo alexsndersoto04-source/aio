@@ -1,0 +1,4 @@
+// assert que falla.
+fn main() {
+    std::testing::assert(1 > 2, "uno no es mayor que dos")
+}

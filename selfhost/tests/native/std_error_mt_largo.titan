@@ -1,0 +1,8 @@
+// Nombre de más de 200 bytes.
+fn main() {
+    let mut s = ""
+    while len(s) < 201 {
+        s = s + "a"
+    }
+    std::metrics::gauge_get(s)
+}

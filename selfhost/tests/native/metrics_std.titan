@@ -1,0 +1,39 @@
+// std::metrics y std::testing escritos en Titan (fase 6).
+
+fn main() {
+    print(std::metrics::snapshot(), std::metrics::prometheus_export() == "")
+    print(std::metrics::counter_add("http.requests", 2), std::metrics::counter_add("http.requests", 3), std::metrics::counter_get("http.requests"), std::metrics::counter_get("missing"))
+    print(std::metrics::counter_add("big-one", 9223372036854775807), std::metrics::counter_add("big-one", 9223372036854775807), std::metrics::counter_add("big-one", 7), std::metrics::counter_add("zero", 0))
+    std::metrics::gauge_set("http.active", 2.5)
+    std::metrics::gauge_set("temp", 3)
+    std::metrics::gauge_set("temp", -0.0)
+    std::metrics::gauge_set("A_b.c-d", 1e300)
+    print(std::metrics::gauge_get("http.active"), std::metrics::gauge_get("temp"), std::metrics::gauge_get("nada"))
+    for v in [10.0, 20.0, -5.5, 0.0, -0.0, 1e308, 1e308] {
+        std::metrics::histogram_record("lat.ms", v)
+    }
+    std::metrics::histogram_record("uno", 7)
+    std::metrics::histogram_record("z", -0.0)
+    std::metrics::histogram_record("z", 0.0)
+    std::metrics::histogram_record("y", 0.0)
+    std::metrics::histogram_record("y", -0.0)
+    print(std::metrics::snapshot())
+    print(std::metrics::prometheus_export())
+    std::metrics::reset()
+    print(std::metrics::snapshot(), std::metrics::counter_get("http.requests"))
+    // Cupo: 4096 métricas entre las tres clases.
+    let mut i = 0
+    while i < 4095 {
+        std::metrics::counter_add("c{i}", 1)
+        i += 1
+    }
+    std::metrics::gauge_set("ultimo", 1.0)
+    std::metrics::gauge_set("ultimo", 2.0)
+    print(std::metrics::counter_add("c7", 1), len(std::metrics::prometheus_export()))
+    std::metrics::reset()
+
+    std::testing::assert(true, "bien")
+    std::testing::assert_eq([1, 2], [1, 2], "arrays")
+    std::testing::assert_eq("a", "a", "texto")
+    print("pruebas ok")
+}

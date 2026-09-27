@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 240 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 276 / 816 nativas (`selfhost/native/cobertura.sh`) |
 
 ## Cómo verificar
 
@@ -218,6 +218,17 @@ y se corregirán en los dos a la vez):
     (`std_datetime.titan`) se dan los mismos mensajes. Los programas que lo
     prueban están en `tests/native_pendiente_vm/`: coincidirán cuando se use
     un `zett` reconstruido con la corrección (el precompilado es anterior).
+13. **`std::dirs` hacía *panic*** al pedir cualquier carpeta de usuario
+    (`desktop`, `documents`, `music`…) si `~/.config/user-dirs.dirs` tenía
+    una línea `XDG_DIR=...` o un valor que era solo `"`: el crate dirs-sys
+    0.4.1 corta la cadena con índices al revés (`xdg_user_dirs.rs:35` y
+    `:54`). Una sola línea así hacía caer el programa.
+
+    **Corregido en los dos lados.** En Rust (`dirs_mod.rs`) la lectura de
+    `user-dirs.dirs` ya no usa el crate en Linux/Android: mismas reglas, pero
+    esas líneas se ignoran como cualquier otra que no se entiende (con tests).
+    En Titan (`std_dirs.titan`) igual. La prueba está en
+    `tests/native_pendiente_vm/dirs_lineas_malas.titan`.
 
 ## Fase 4b — compilador nativo (bytecode → ejecutable x86-64)
 
@@ -328,8 +339,10 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::json | `std_json.titan` | el mismo analizador que serde_json 1.0.150 (mensajes y línea/columna; números como serde, que no siempre redondea exacto: `9007199254740993.0` → `…994`); floats de salida como zmij (`1e+21`) |
 | std::csv, std::uuid, std::stats | `std_misc.titan` | csv como el crate `csv` (comillas, CRLF, filas vacías); uuid v4/v7 con `getrandom` y el reloj; mean/median/quantile/variance/stddev con los mismos mensajes |
 | std::collections (57) | `std_collections.titan` | set, deque, cola de prioridad, mapa ordenado, contador y grafo con número identificador; las mismas cuotas que la VM (256 identificadores, 65536 entradas, 16 MiB, 4096 por estructura, 64 KiB por elemento) y los mismos órdenes de salida (Dijkstra con los desempates del `BinaryHeap` de Rust) |
-
 | std::datetime (47 de 49) | `std_datetime.titan` | calendario gregoriano proléptico (−262143 a 262142), formatos `%…` con el mismo tokenizador que `StrftimeItems` de chrono 0.4.45, lectura con el mismo algoritmo de `Parsed` (semanas ISO, `%U`/`%W`, `%s`, segundos intercalares, `%C`/`%y`) y los mismos 7 errores; RFC 3339/2822; aritmética de datetime_ext (con vuelta en el desborde, como Rust en release). Comparado además con 12.000 casos aleatorios y 89 casos límite escritos a mano: 0 diferencias. Faltan `to_timezone` y `timezone_offset_seconds` (necesitan la base de datos de zonas horarias de IANA, sesión propia) |
+| std::vector (8) | `std_vector.titan` | aritmética en f32 como la VM (suma que empieza en −0,0); comparado con 6 semillas de casos aleatorios |
+| std::metrics (8), std::testing (2) | `std_metrics.titan` | nombres, cuotas (4096) y mensajes iguales; contador u64 con saturación; salida Prometheus e instantánea como la VM |
+| std::dirs (18) | `std_dirs.titan` | reglas de dirs 5.0.1 / dirs-sys 0.4.1 en Linux (variables XDG absolutas, `user-dirs.dirs` con el mismo analizador), `temp_dir` y `current_dir` de Rust, rutas no UTF-8 con U+FFFD como `to_string_lossy`. Sin `HOME` se lee `/etc/passwd` (la fuente "files" de glibc; LDAP/sssd no se consultan). Comparado en 250 entornos aleatorios (sin HOME, HOME vacío o no UTF-8, XDG relativos, varios `user-dirs.dirs`, TMPDIR vacío): 0 diferencias |
 
 Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
 "index out of bounds" en el runtime nativo; la VM dice "array index out of

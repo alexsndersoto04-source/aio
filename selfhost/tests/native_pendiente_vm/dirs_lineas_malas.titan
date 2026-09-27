@@ -1,0 +1,12 @@
+// Bug 13: dirs-sys 0.4.1 hacía panic con una línea "XDG_DIR=..." o con un
+// valor que es solo una comilla en ~/.config/user-dirs.dirs. Este programa
+// crea ese archivo en una carpeta propia y apunta XDG_CONFIG_HOME ahí… pero
+// Titan no puede cambiar variables de entorno: se ejecuta con
+//   XDG_CONFIG_HOME=/tmp/titan_bug13 (ver README.md).
+fn main() {
+    if !std::fs::exists("/tmp/titan_bug13") {
+        std::fs::create_dir("/tmp/titan_bug13")
+    }
+    std::fs::write_text("/tmp/titan_bug13/user-dirs.dirs", "XDG_DIR=\"x\"\nXDG_DESKTOP_DIR=\"\nXDG_DESKTOP_DIR=\"/escritorio\"\n")
+    print(std::dirs::desktop(), std::dirs::music())
+}

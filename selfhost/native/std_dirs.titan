@@ -1,0 +1,358 @@
+// std::dirs escrito en Titan, con las reglas de Linux de los crates
+// dirs 5.0.1 / dirs-sys 0.4.1 y de std::env::temp_dir / current_dir:
+//   home: $HOME si no está vacío; si no, el directorio de la cuenta del
+//         usuario (getpwuid_r). Aquí se lee /etc/passwd, que es la fuente
+//         "files" de glibc; otras fuentes de cuentas (LDAP, sssd) no se
+//         consultan.
+//   config/cache/data/state/executable: la variable XDG si es absoluta; si
+//         no, una carpeta dentro de home. runtime: solo XDG_RUNTIME_DIR.
+//   escritorio, documentos…: la línea XDG_<NOMBRE>_DIR de user-dirs.dirs.
+// Las rutas se devuelven como `to_string_lossy` (bytes no UTF-8 → U+FFFD) y
+// "" cuando no hay.
+
+// Valor crudo de una variable de entorno (bytes tal cual) o nil.
+fn dr_env(name: string) -> any {
+    let sp = std::raw::load(std::raw::globals() + 32)
+    let argc = std::raw::load(sp)
+    let mut e = sp + 16 + 8 * argc
+    let pn = std::raw::bits(name) + 16
+    let n = rt_slen(name)
+    while std::raw::load(e) != 0 {
+        let entry = std::raw::load(e)
+        let mut i = 0
+        while i < n && std::raw::load8(entry + i) == std::raw::load8(pn + i) {
+            i += 1
+        }
+        if i == n && std::raw::load8(entry + n) == 61 {
+            return rt_from_cstr(entry + n + 1)
+        }
+        e += 8
+    }
+    nil
+}
+
+fn dr_starts_slash(s: any) -> bool {
+    rt_slen(s) > 0 && dt_byte(s, 0) == 47
+}
+
+// String::from_utf8_lossy: cada trozo inválido (la parte más larga que
+// empieza bien) pasa a ser un solo U+FFFD.
+fn dr_lossy(s: any) -> any {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    if rt_valid_utf8(p, n) {
+        return s
+    }
+    let b = sb_new(n + 8)
+    let mut i = 0
+    while i < n {
+        let first = std::raw::load8(p + i)
+        if first < 128 {
+            sb_byte(b, first)
+            i += 1
+            continue
+        }
+        let mut need = 0
+        let mut lo = 128
+        let mut hi = 191
+        if first >= 194 && first <= 223 {
+            need = 1
+        } else if first == 224 {
+            need = 2
+            lo = 160
+        } else if (first >= 225 && first <= 236) || first == 238 || first == 239 {
+            need = 2
+        } else if first == 237 {
+            need = 2
+            hi = 159
+        } else if first == 240 {
+            need = 3
+            lo = 144
+        } else if first >= 241 && first <= 243 {
+            need = 3
+        } else if first == 244 {
+            need = 3
+            hi = 143
+        }
+        let mut used = 1
+        let mut ok = need > 0
+        while ok && used <= need {
+            if i + used >= n {
+                ok = false
+                continue
+            }
+            let c = std::raw::load8(p + i + used)
+            let mut a = 128
+            let mut z = 191
+            if used == 1 {
+                a = lo
+                z = hi
+            }
+            let below = c < a
+            let above = c > z
+            if below || above {
+                ok = false
+                continue
+            }
+            used += 1
+        }
+        if ok {
+            sb_raw(b, p + i, need + 1)
+            i += need + 1
+        } else {
+            sb_cp(b, 65533)
+            i += used
+        }
+    }
+    sb_finish(b)
+}
+
+fn dr_out(path: any) -> any {
+    if std::raw::tag(path) == 0 {
+        return ""
+    }
+    dr_lossy(path)
+}
+
+// Contenido de un archivo, o "" si no se puede abrir o leer.
+fn dr_read_all(path: any) -> any {
+    let fd = rt_open(path, 524288, 0)
+    if fd < 0 {
+        return ""
+    }
+    let b = sb_new(1024)
+    let buf = rt_alloc(4096)
+    loop {
+        let got = std::raw::syscall(0, fd, buf, 4096, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            rt_free_block(buf)
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            sb_finish(b)
+            return ""
+        }
+        if got == 0 {
+            break
+        }
+        sb_raw(b, buf, got)
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    sb_finish(b)
+}
+
+// Directorio de la cuenta con el uid actual en /etc/passwd, o nil.
+fn dr_passwd_home() -> any {
+    let uid = std::raw::syscall(102, 0, 0, 0, 0, 0, 0)
+    let text = dr_read_all("/etc/passwd")
+    let n = rt_slen(text)
+    let mut i = 0
+    while i < n {
+        let mut end = i
+        while end < n && dt_byte(text, end) != 10 {
+            end += 1
+        }
+        // Campos: nombre:clave:uid:gid:gecos:dir:shell
+        let mut field = 0
+        let mut start = i
+        let mut k = i
+        let mut uid_ok = false
+        let mut dir: any = nil
+        while k <= end {
+            if k == end || dt_byte(text, k) == 58 {
+                if field == 2 {
+                    let mut v = 0
+                    let mut digits = start < k
+                    let mut j = start
+                    while j < k {
+                        let c = dt_byte(text, j)
+                        if c < 48 || c > 57 || v > 100000000000 {
+                            digits = false
+                        } else {
+                            v = v * 10 + c - 48
+                        }
+                        j += 1
+                    }
+                    uid_ok = digits && v == uid
+                }
+                if field == 5 {
+                    dir = rt_substr_bytes(text, start, k)
+                }
+                field += 1
+                start = k + 1
+            }
+            k += 1
+        }
+        if uid_ok && field >= 6 {
+            if rt_slen(dir) == 0 {
+                return nil
+            }
+            return dir
+        }
+        i = end + 1
+    }
+    nil
+}
+
+fn dr_home() -> any {
+    let h = dr_env("HOME")
+    if std::raw::tag(h) != 0 && rt_slen(h) > 0 {
+        return h
+    }
+    dr_passwd_home()
+}
+
+// Variable XDG absoluta, o home + carpeta.
+fn dr_xdg(var: string, sub: string) -> any {
+    let v = dr_env(var)
+    if std::raw::tag(v) != 0 && dr_starts_slash(v) {
+        return v
+    }
+    let h = dr_home()
+    if std::raw::tag(h) == 0 {
+        return nil
+    }
+    std__path__join(h, sub)
+}
+
+fn dr_blank(c: int) -> bool {
+    c == 32 || c == 9
+}
+
+// Busca XDG_<name>_DIR en user-dirs.dirs (como xdg_user_dirs::single).
+// Las líneas que hacían panic en dirs-sys (clave "XDG_DIR", valor `"`) se
+// ignoran (bug 13).
+fn dr_user_dir(name: string) -> any {
+    let home = dr_home()
+    if std::raw::tag(home) == 0 {
+        return nil
+    }
+    let mut cfg = dr_env("XDG_CONFIG_HOME")
+    if std::raw::tag(cfg) == 0 || !dr_starts_slash(cfg) {
+        cfg = std__path__join(home, ".config")
+    }
+    let text = dr_read_all(std__path__join(cfg, "user-dirs.dirs"))
+    let n = rt_slen(text)
+    let want = rt_concat(rt_concat("XDG_", name), "_DIR")
+    let mut found: any = nil
+    let mut i = 0
+    while i <= n {
+        let mut end = i
+        while end < n && dt_byte(text, end) != 10 {
+            end += 1
+        }
+        let mut eq = i
+        while eq < end && dt_byte(text, eq) != 61 {
+            eq += 1
+        }
+        if eq < end {
+            let mut ka = i
+            let mut kb = eq
+            while ka < kb && dr_blank(dt_byte(text, ka)) {
+                ka += 1
+            }
+            while kb > ka && dr_blank(dt_byte(text, kb - 1)) {
+                kb -= 1
+            }
+            if rt_str_eq(rt_substr_bytes(text, ka, kb), want) {
+                let mut va = eq + 1
+                let mut vb = end
+                while va < vb && dr_blank(dt_byte(text, va)) {
+                    va += 1
+                }
+                while vb > va && dr_blank(dt_byte(text, vb - 1)) {
+                    vb -= 1
+                }
+                if vb - va >= 2 && dt_byte(text, va) == 34 && dt_byte(text, vb - 1) == 34 {
+                    let value = rt_substr_bytes(text, va + 1, vb - 1)
+                    let lv = rt_slen(value)
+                    let pre = lv >= 6 && rt_str_eq(rt_substr_bytes(value, 0, 6), "$HOME/")
+                    if !(lv == 6 && pre) && (pre || dr_starts_slash(value)) {
+                        let mut raw = value
+                        if pre {
+                            raw = rt_substr_bytes(value, 6, lv)
+                        }
+                        // Quita las barras invertidas (comillas dobles del shell).
+                        let u = sb_new(rt_slen(raw))
+                        let mut k = 0
+                        while k < rt_slen(raw) {
+                            let c = dt_byte(raw, k)
+                            if c == 92 {
+                                if k + 1 < rt_slen(raw) {
+                                    sb_byte(u, dt_byte(raw, k + 1))
+                                }
+                                k += 2
+                            } else {
+                                sb_byte(u, c)
+                                k += 1
+                            }
+                        }
+                        let un = sb_finish(u)
+                        if pre {
+                            return std__path__join(home, un)
+                        }
+                        return un
+                    }
+                }
+            }
+        }
+        i = end + 1
+    }
+    found
+}
+
+fn std__dirs__home() -> any { dr_out(dr_home()) }
+fn std__dirs__config() -> any { dr_out(dr_xdg("XDG_CONFIG_HOME", ".config")) }
+fn std__dirs__cache() -> any { dr_out(dr_xdg("XDG_CACHE_HOME", ".cache")) }
+fn std__dirs__data() -> any { dr_out(dr_xdg("XDG_DATA_HOME", ".local/share")) }
+fn std__dirs__data_local() -> any { dr_out(dr_xdg("XDG_DATA_HOME", ".local/share")) }
+fn std__dirs__state() -> any { dr_out(dr_xdg("XDG_STATE_HOME", ".local/state")) }
+fn std__dirs__executable() -> any { dr_out(dr_xdg("XDG_BIN_HOME", ".local/bin")) }
+fn std__dirs__preference() -> any { dr_out(dr_xdg("XDG_CONFIG_HOME", ".config")) }
+
+fn std__dirs__runtime() -> any {
+    let v = dr_env("XDG_RUNTIME_DIR")
+    if std::raw::tag(v) != 0 && dr_starts_slash(v) {
+        return dr_lossy(v)
+    }
+    ""
+}
+
+fn std__dirs__desktop() -> any { dr_out(dr_user_dir("DESKTOP")) }
+fn std__dirs__documents() -> any { dr_out(dr_user_dir("DOCUMENTS")) }
+fn std__dirs__downloads() -> any { dr_out(dr_user_dir("DOWNLOAD")) }
+fn std__dirs__pictures() -> any { dr_out(dr_user_dir("PICTURES")) }
+fn std__dirs__music() -> any { dr_out(dr_user_dir("MUSIC")) }
+fn std__dirs__videos() -> any { dr_out(dr_user_dir("VIDEOS")) }
+fn std__dirs__public() -> any { dr_out(dr_user_dir("PUBLICSHARE")) }
+
+// std::env::temp_dir: $TMPDIR tal cual (aunque esté vacío) o "/tmp".
+fn std__dirs__temp() -> any {
+    let v = dr_env("TMPDIR")
+    if std::raw::tag(v) != 0 {
+        return dr_lossy(v)
+    }
+    "/tmp"
+}
+
+// std::env::current_dir, o "" si falla.
+fn std__dirs__current() -> any {
+    let mut size = 4096
+    loop {
+        let buf = rt_alloc(size)
+        let r = std::raw::syscall(79, buf, size, 0, 0, 0, 0)
+        if r >= 0 {
+            let cwd = rt_from_cstr(buf)
+            rt_free_block(buf)
+            return dr_lossy(cwd)
+        }
+        rt_free_block(buf)
+        if r != -34 {
+            return ""
+        }
+        size = size * 2
+    }
+    ""
+}

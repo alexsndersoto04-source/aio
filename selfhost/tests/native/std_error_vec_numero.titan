@@ -1,0 +1,5 @@
+// Un elemento que no es número (en el segundo vector).
+fn main() {
+    let b: [any] = [1, true]
+    print(std::vector::sub([1, 2], b))
+}

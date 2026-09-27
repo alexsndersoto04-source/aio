@@ -9,6 +9,9 @@ import std_json
 import std_misc
 import std_collections
 import std_datetime
+import std_vector
+import std_metrics
+import std_dirs
 import errno
 import float
 import float_table

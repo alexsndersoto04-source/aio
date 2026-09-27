@@ -1,0 +1,334 @@
+// std::metrics y std::testing escritos en Titan.
+//
+// Métricas: tres mapas ordenados por nombre (como los BTreeMap de Rust)
+// guardados en las ranuras globales +2472 (contadores), +2480 (medidores) y
+// +2488 (histogramas); 0 = todavía vacío. Cada ranura tiene su propia
+// referencia al mapa.
+//   contador: entero con los bits de un u64 (suma con saturación en 2^64-1)
+//   medidor: float
+//   histograma: array [count (u64), sum, min, max]
+
+fn mt_slot(k: int) -> int { std::raw::globals() + 2472 + 8 * k }
+
+// El mapa de la ranura k (una referencia nueva).
+fn mt_get_map(k: int) -> any {
+    let bits = std::raw::load(mt_slot(k))
+    if bits == 0 {
+        return std__map__new()
+    }
+    std::raw::value(9, bits)
+}
+
+// Saca el mapa de la ranura (la ranura queda vacía y el que llama es el dueño).
+fn mt_take_map(k: int) -> any {
+    let bits = std::raw::load(mt_slot(k))
+    if bits == 0 {
+        return std__map__new()
+    }
+    std::raw::store(mt_slot(k), 0)
+    std::raw::adopt(9, bits)
+}
+
+fn mt_put_map(k: int, m: any) {
+    std::raw::store(mt_slot(k), std::raw::keep(m))
+}
+
+fn mt_count(k: int) -> int {
+    let bits = std::raw::load(mt_slot(k))
+    if bits == 0 {
+        return 0
+    }
+    std::raw::load(bits + 8)
+}
+
+fn mt_validate(name: any, function: string) {
+    let n = rt_slen(name)
+    let mut ok = n > 0 && n <= 200
+    let mut i = 0
+    while ok && i < n {
+        let b = dt_byte(name, i)
+        ok = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95 || b == 46 || b == 45
+        i += 1
+    }
+    if !ok {
+        rt_native_fail(function, "invalid metric name")
+    }
+}
+
+// Cupo de 4096 métricas en total, solo al crear una nueva.
+fn mt_require_slot(k: int, name: any, function: string) {
+    let m = mt_get_map(k)
+    let exists = rt_map_find(m, name) >= 0
+    if !exists && mt_count(0) + mt_count(1) + mt_count(2) >= 4096 {
+        rt_native_fail(function, "metric quota exceeded (4096)")
+    }
+}
+
+fn mt_finite(bits: int, function: string) {
+    if (bits & 9218868437227405312) == 9218868437227405312 {
+        rt_native_fail(function, "metric value must be finite")
+    }
+}
+
+// u64 (en bits de i64) → i64 como `i64::try_from(v).unwrap_or(i64::MAX)`.
+fn mt_i64(v: int) -> int {
+    if v < 0 {
+        return 9223372036854775807
+    }
+    v
+}
+
+// u64 (en bits de i64) → texto decimal sin signo.
+fn mt_u64_str(v: int) -> any {
+    if v >= 0 {
+        return rt_int_to_str(v)
+    }
+    let q = std::raw::shr(v, 1) / 5
+    let r = std::raw::wsub(v, std::raw::wmul(q, 10))
+    rt_concat(rt_int_to_str(q), rt_int_to_str(r))
+}
+
+fn std__metrics__counter_add(name: any, amount: any) -> any {
+    let f = "std::metrics::counter_add"
+    rt_expect_str(name, f)
+    rt_expect_int(amount, f)
+    let a = std::raw::bits(amount)
+    if a < 0 {
+        rt_native_fail(f, "counter amount must be nonnegative")
+    }
+    mt_validate(name, f)
+    mt_require_slot(0, name, f)
+    let m = mt_take_map(0)
+    let pos = rt_map_find(m, name)
+    let mut old = 0
+    if pos >= 0 {
+        old = std::raw::bits(rt_map_value_at(m, pos))
+    }
+    // Suma sin signo con saturación.
+    let mut sum = std::raw::wadd(old, a)
+    if old < 0 && sum >= 0 {
+        sum = -1
+    }
+    mt_put_map(0, std__map__insert(m, name, sum))
+    mt_i64(sum)
+}
+
+fn std__metrics__counter_get(name: any) -> any {
+    let f = "std::metrics::counter_get"
+    rt_expect_str(name, f)
+    mt_validate(name, f)
+    let m = mt_get_map(0)
+    let pos = rt_map_find(m, name)
+    if pos < 0 {
+        return 0
+    }
+    mt_i64(std::raw::bits(rt_map_value_at(m, pos)))
+}
+
+fn std__metrics__gauge_set(name: any, value: any) -> any {
+    let f = "std::metrics::gauge_set"
+    rt_expect_str(name, f)
+    let v = rt_expect_number(value, f)
+    mt_validate(name, f)
+    mt_finite(v, f)
+    mt_require_slot(1, name, f)
+    let m = mt_take_map(1)
+    mt_put_map(1, std__map__insert(m, name, rt_float(v)))
+    nil
+}
+
+fn std__metrics__gauge_get(name: any) -> any {
+    let f = "std::metrics::gauge_get"
+    rt_expect_str(name, f)
+    mt_validate(name, f)
+    let m = mt_get_map(1)
+    let pos = rt_map_find(m, name)
+    if pos < 0 {
+        return rt_float(0)
+    }
+    rt_map_value_at(m, pos)
+}
+
+fn std__metrics__histogram_record(name: any, value: any) -> any {
+    let f = "std::metrics::histogram_record"
+    rt_expect_str(name, f)
+    let v = rt_expect_number(value, f)
+    mt_validate(name, f)
+    mt_finite(v, f)
+    mt_require_slot(2, name, f)
+    let m = mt_take_map(2)
+    let pos = rt_map_find(m, name)
+    let mut count = 0
+    let mut sum = 0
+    let mut lo = v
+    let mut hi = v
+    if pos >= 0 {
+        let h = rt_map_value_at(m, pos)
+        count = std::raw::bits(rt_seq_get(h, 0))
+        sum = std::raw::bits(rt_seq_get(h, 1))
+        lo = std::raw::bits(rt_seq_get(h, 2))
+        hi = std::raw::bits(rt_seq_get(h, 3))
+    }
+    if count != -1 {
+        count += 1
+    }
+    sum = std::raw::fadd(sum, v)
+    // f64::min / f64::max de Rust: con valores iguales (0.0 y -0.0) gana el nuevo.
+    if std::raw::fcmp(lo, v) != -1 {
+        lo = v
+    }
+    if std::raw::fcmp(hi, v) != 1 {
+        hi = v
+    }
+    let h = rt_array_new(4)
+    let d = rt_seq_data(h)
+    rt_seq_put(d, 0, count)
+    rt_seq_put(d, 1, rt_float(sum))
+    rt_seq_put(d, 2, rt_float(lo))
+    rt_seq_put(d, 3, rt_float(hi))
+    mt_put_map(2, std__map__insert(m, name, h))
+    nil
+}
+
+fn std__metrics__snapshot() -> any {
+    let counters = mt_get_map(0)
+    let mut c = std__map__new()
+    let nc = std::raw::load(std::raw::bits(counters) + 8)
+    let mut i = 0
+    while i < nc {
+        let key = mt_key_at(counters, i)
+        c = std__map__insert(c, key, mt_i64(std::raw::bits(rt_map_value_at(counters, i))))
+        i += 1
+    }
+    let hists = mt_get_map(2)
+    let mut h = std__map__new()
+    let nh = std::raw::load(std::raw::bits(hists) + 8)
+    i = 0
+    while i < nh {
+        let key = mt_key_at(hists, i)
+        let v = rt_map_value_at(hists, i)
+        let mut one = std__map__insert(std__map__new(), "count", mt_i64(std::raw::bits(rt_seq_get(v, 0))))
+        one = std__map__insert(one, "sum", rt_seq_get(v, 1))
+        one = std__map__insert(one, "min", rt_seq_get(v, 2))
+        one = std__map__insert(one, "max", rt_seq_get(v, 3))
+        h = std__map__insert(h, key, one)
+        i += 1
+    }
+    let mut out = std__map__insert(std__map__new(), "counters", c)
+    out = std__map__insert(out, "gauges", mt_get_map(1))
+    out = std__map__insert(out, "histograms", h)
+    out
+}
+
+// Nombre para Prometheus: '.' y '-' pasan a '_'.
+fn mt_prom_name(name: any) -> any {
+    let n = rt_slen(name)
+    let out = rt_str_alloc(n)
+    let mut i = 0
+    while i < n {
+        let b = dt_byte(name, i)
+        if b == 46 || b == 45 {
+            std::raw::store8(out + 16 + i, 95)
+        } else {
+            std::raw::store8(out + 16 + i, b)
+        }
+        i += 1
+    }
+    rt_sval(out)
+}
+
+// Clave i del mapa (las claves se guardan como puntero a string, sin etiqueta).
+fn mt_key_at(m: any, i: int) -> any {
+    std::raw::value(5, std::raw::load(std::raw::load(std::raw::bits(m) + 24) + 24 * i))
+}
+
+fn std__metrics__prometheus_export() -> any {
+    let b = sb_new(256)
+    let counters = mt_get_map(0)
+    let mut i = 0
+    while i < std::raw::load(std::raw::bits(counters) + 8) {
+        let p = mt_prom_name(mt_key_at(counters, i))
+        sb_str(b, "# TYPE ")
+        sb_str(b, p)
+        sb_str(b, " counter\n")
+        sb_str(b, p)
+        sb_byte(b, 32)
+        sb_str(b, mt_u64_str(std::raw::bits(rt_map_value_at(counters, i))))
+        sb_byte(b, 10)
+        i += 1
+    }
+    let gauges = mt_get_map(1)
+    i = 0
+    while i < std::raw::load(std::raw::bits(gauges) + 8) {
+        let p = mt_prom_name(mt_key_at(gauges, i))
+        sb_str(b, "# TYPE ")
+        sb_str(b, p)
+        sb_str(b, " gauge\n")
+        sb_str(b, p)
+        sb_byte(b, 32)
+        sb_str(b, rt_to_string(rt_map_value_at(gauges, i)))
+        sb_byte(b, 10)
+        i += 1
+    }
+    let hists = mt_get_map(2)
+    i = 0
+    while i < std::raw::load(std::raw::bits(hists) + 8) {
+        let p = mt_prom_name(mt_key_at(hists, i))
+        let v = rt_map_value_at(hists, i)
+        sb_str(b, "# TYPE ")
+        sb_str(b, p)
+        sb_str(b, " summary\n")
+        sb_str(b, p)
+        sb_str(b, "_count ")
+        sb_str(b, mt_u64_str(std::raw::bits(rt_seq_get(v, 0))))
+        sb_byte(b, 10)
+        sb_str(b, p)
+        sb_str(b, "_sum ")
+        sb_str(b, rt_to_string(rt_seq_get(v, 1)))
+        sb_byte(b, 10)
+        sb_str(b, p)
+        sb_str(b, "_min ")
+        sb_str(b, rt_to_string(rt_seq_get(v, 2)))
+        sb_byte(b, 10)
+        sb_str(b, p)
+        sb_str(b, "_max ")
+        sb_str(b, rt_to_string(rt_seq_get(v, 3)))
+        sb_byte(b, 10)
+        i += 1
+    }
+    sb_finish(b)
+}
+
+fn std__metrics__reset() -> any {
+    let mut k = 0
+    while k < 3 {
+        let m = mt_take_map(k)
+        k += 1
+    }
+    nil
+}
+
+// ---------------------------------------------------------------- std::testing
+
+fn std__testing__assert(condition: any, message: any) -> any {
+    let f = "std::testing::assert"
+    if std::raw::tag(condition) != 3 {
+        rt_native_fail(f, "assert condition must be bool")
+    }
+    rt_expect_str(message, f)
+    if std::raw::bits(condition) == 0 {
+        rt_native_fail(f, rt_concat("assertion failed: ", message))
+    }
+    nil
+}
+
+fn std__testing__assert_eq(left: any, right: any, message: any) -> any {
+    let f = "std::testing::assert_eq"
+    rt_expect_str(message, f)
+    if !rt_eq(left, right) {
+        let mut msg = rt_concat(rt_concat("assertion failed: ", message), "; left=")
+        msg = rt_concat(rt_concat(rt_concat(msg, rt_to_string(left)), ", right="), rt_to_string(right))
+        rt_native_fail(f, msg)
+    }
+    nil
+}
