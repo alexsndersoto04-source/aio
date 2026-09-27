@@ -1,0 +1,38 @@
+// std::crypto: ChaCha20-Poly1305 y AES-256-GCM con vectores oficiales y
+// muchas longitudes; seal/open ida y vuelta.
+fn main() {
+    let k = std::encoding::hex_decode("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+    let n = std::encoding::hex_decode("070000004041424344454647")
+    let aad = std::encoding::hex_decode("50515253c0c1c2c3c4c5c6c7")
+    let pt = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."
+    let c = std::crypto::chacha20_encrypt(k, n, pt, aad)
+    println(std::encoding::hex_encode(c))
+    println(std::encoding::utf8_decode(std::crypto::chacha20_decrypt(k, n, c, aad)))
+    let k2 = std::encoding::hex_decode("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+    let n2 = std::encoding::hex_decode("cafebabefacedbaddecaf888")
+    let p2 = std::encoding::hex_decode("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39")
+    let a2 = std::encoding::hex_decode("feedfacedeadbeeffeedfacedeadbeefabaddad2")
+    let c2 = std::crypto::aes_gcm_encrypt(k2, n2, p2, a2)
+    println(std::encoding::hex_encode(c2))
+    println(std::encoding::hex_encode(std::crypto::aes_gcm_decrypt(k2, n2, c2, a2)))
+    let mut msg = ""
+    let mut ad = ""
+    let mut i = 0
+    while i < 70 {
+        println("{i} " + std::encoding::hex_encode(std::crypto::chacha20_encrypt(k, n, msg, ad)) + " " + std::encoding::hex_encode(std::crypto::aes_gcm_encrypt(k2, n2, msg, ad)))
+        msg = msg + std::text::from_char_code(33 + (i * 7) % 90)
+        if i % 3 == 0 {
+            ad = ad + "z"
+        }
+        i += 1
+    }
+    let s1 = std::crypto::chacha20_seal(k, "hola", "m")
+    println(len(s1))
+    println(std::encoding::utf8_decode(std::crypto::chacha20_open(k, s1, "m")))
+    let s2 = std::crypto::aes_gcm_seal(k2, "adios", "")
+    println(len(s2))
+    println(std::encoding::utf8_decode(std::crypto::aes_gcm_open(k2, s2, "")))
+    println(len(std::crypto::generate_key_32()))
+    println(len(std::crypto::generate_nonce()))
+    println(std::crypto::generate_key_32() != std::crypto::generate_key_32())
+}
