@@ -18,6 +18,12 @@
 //     una función del runtime (rt_add, rt_eq, rt_index...).
 //   - Las funciones del usuario cuentan la profundidad de llamadas (límite
 //     4096, como la VM); las del runtime no, igual que las nativas de la VM.
+//   - Conteo de referencias (como el `Rc` de la VM): cada lugar que guarda un
+//     valor (variable local, hueco de la pila, elemento de un contenedor)
+//     tiene una referencia. Leer una variable suma una (g_inc); descartar un
+//     valor, sobrescribir una variable o salir de la función restan (g_dec,
+//     g_drop). Al llegar a 0 el runtime libera el objeto (rt_free). Mover
+//     (TakeLocal, argumentos, resultados) no cambia la cuenta.
 // Prefijo `bk_`.
 
 import native::x64
@@ -59,6 +65,7 @@ struct Ctx {
     table: array,
     rt: map,
     rt_arity: map,
+    epi: int,
 }
 
 fn pc_new() -> Pc {
@@ -137,6 +144,50 @@ fn bk_call_rt(p0: Pc, ctx: Ctx, name: string, argc: int) -> Pc {
     pc_add(p, x_push(x_rax()))
 }
 
+// Suma/resta una referencia al valor guardado en [base+disp] (etiqueta) y
+// [base+disp+8] (contenido).
+// En línea; solo usan r10 y r11 (bk_dec_at, si hay que liberar, llama a
+// g_dec, que conserva los registros que usa el código generado).
+fn bk_inc_at(p0: Pc, base: int, disp: int) -> Pc {
+    let r10 = x_r10()
+    let r11 = x_r11()
+    let at = len(p0.b)
+    let skip = "inc{at}"
+    let mut p = pc_add(p0, x_load(r10, base, disp))
+    p = pc_add(p, x_cmp_ri(r10, 5))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), skip)
+    p = pc_add(p, x_load(r10, base, disp + 8))
+    p = pc_add(p, x_load(r11, r10, 0))
+    p = pc_add(p, x_cmp_ri(r11, 1))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), skip)
+    p = pc_add(p, x_add_ri(r11, 1))
+    p = pc_add(p, x_store(r10, 0, r11))
+    pc_label(p, skip)
+}
+
+fn bk_dec_at(p0: Pc, base: int, disp: int) -> Pc {
+    let r10 = x_r10()
+    let r11 = x_r11()
+    let at = len(p0.b)
+    let id = "{at}"
+    let mut p = pc_add(p0, x_load(r10, base, disp))
+    p = pc_add(p, x_cmp_ri(r10, 5))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), "dskip" + id)
+    p = pc_add(p, x_load(r10, base, disp + 8))
+    p = pc_add(p, x_load(r11, r10, 0))
+    p = pc_add(p, x_cmp_ri(r11, 1))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), "dskip" + id)
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "dfree" + id)
+    p = pc_add(p, x_sub_ri(r11, 1))
+    p = pc_add(p, x_store(r10, 0, r11))
+    p = pc_jl(p, x_jmp(0), "dskip" + id)
+    p = pc_label(p, "dfree" + id)
+    p = pc_add(p, x_load(x_rdi(), base, disp))
+    p = pc_add(p, x_load(x_rsi(), base, disp + 8))
+    p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+    pc_label(p, "dskip" + id)
+}
+
 // Apila el string estático `text`.
 fn bk_push_str(p0: Pc, text: string) -> Pc {
     let p = pc_ref(p0, x_mov_ri64(x_rax(), 0), 2, "str", text, 0)
@@ -175,10 +226,22 @@ fn bk_ret(p0: Pc, ctx: Ctx, tag: string) -> Pc {
     bk_leave(p, ctx)
 }
 
-// Saca el valor de la cima a rax/rdx y sale de la función.
+// Saca el valor de la cima a rax/rdx y salta al epílogo de la función.
 fn bk_leave(p0: Pc, ctx: Ctx) -> Pc {
     let mut p = pc_add(p0, x_pop(x_rax()))
     p = pc_add(p, x_pop(x_rdx()))
+    pc_ref(p, x_jmp(0), 1, "jmp", "", ctx.epi)
+}
+
+// Epílogo (resultado en rax/rdx): suelta las variables locales, descuenta
+// la profundidad y vuelve.
+fn bk_epilogue(ctx: Ctx) -> Pc {
+    let mut p = pc_new()
+    if ctx.locals > 0 {
+        p = pc_add(p, x_lea(x_r8(), x_rbp(), 0 - 16 * ctx.locals))
+        p = pc_add(p, x_mov_ri(x_rcx(), ctx.locals))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_drop", 0)
+    }
     if !ctx.runtime {
         p = pc_add(p, x_load(x_rcx(), x_r15(), 16))
         p = pc_add(p, x_sub_ri(x_rcx(), 1))
@@ -334,10 +397,14 @@ fn bk_eq(p0: Pc, ctx: Ctx, negate: bool) -> Pc {
     p = pc_add(p, x_cmp_ri(x_rax(), 4))
     p = pc_jl(p, x_jcc(x_cc_a(), 0), "slow")
     p = pc_label(p, "false")
+    p = bk_dec_at(p, x_rsp(), 0)
+    p = bk_dec_at(p, x_rsp(), 16)
     p = pc_add(p, x_add_ri(x_rsp(), 32))
     p = pc_add(p, x_mov_ri(x_rcx(), 0))
     p = pc_jl(p, x_jmp(0), "store")
     p = pc_label(p, "true")
+    p = bk_dec_at(p, x_rsp(), 0)
+    p = bk_dec_at(p, x_rsp(), 16)
     p = pc_add(p, x_add_ri(x_rsp(), 32))
     p = pc_add(p, x_mov_ri(x_rcx(), 1))
     p = pc_jl(p, x_jmp(0), "store")
@@ -401,7 +468,8 @@ fn bk_bitop(p0: Pc, ctx: Ctx, k: string) -> Pc {
 // Valor de verdad de la VM: todo es verdadero salvo `false` y `nil`.
 // Deja en rdx 1 si es FALSO (para Not) y salta a `falsy` si se pide.
 fn bk_jump_if_false(p0: Pc, target: int) -> Pc {
-    let mut p = pc_add(p0, x_pop(x_rax()))
+    let mut p = bk_dec_at(p0, x_rsp(), 0)
+    p = pc_add(p, x_pop(x_rax()))
     p = pc_add(p, x_pop(x_rcx()))
     p = pc_add(p, x_test_rr(x_rax(), x_rax()))
     p = pc_ref(p, x_jcc(x_cc_e(), 0), 2, "jmp", "", target)
@@ -413,7 +481,8 @@ fn bk_jump_if_false(p0: Pc, target: int) -> Pc {
 }
 
 fn bk_not(p0: Pc) -> Pc {
-    let mut p = pc_add(p0, x_pop(x_rax()))
+    let mut p = bk_dec_at(p0, x_rsp(), 0)
+    p = pc_add(p, x_pop(x_rax()))
     p = pc_add(p, x_pop(x_rcx()))
     p = pc_add(p, x_mov_ri(x_rdx(), 1))
     p = pc_add(p, x_test_rr(x_rax(), x_rax()))
@@ -427,6 +496,96 @@ fn bk_not(p0: Pc) -> Pc {
     p = pc_label(p, "done")
     p = pc_add(p, x_push(x_rdx()))
     pc_add(p, x_push_i(3))
+}
+
+// Cambia el valor de la cima (el contenedor, cuya dirección está en rcx y
+// su etiqueta en `tag`) por el elemento que hay en [r10] / [r10+8]: el
+// elemento gana una referencia y el contenedor pierde la suya.
+fn bk_replace_top(p0: Pc, tag: int) -> Pc {
+    let mut p = pc_add(p0, x_load(x_rdi(), x_r10(), 0))
+    p = pc_add(p, x_load(x_rsi(), x_r10(), 8))
+    p = pc_ref(p, x_call(0), 1, "rel", "g_inc", 0)
+    p = pc_add(p, x_store(x_rsp(), 0, x_rdi()))
+    p = pc_add(p, x_store(x_rsp(), 8, x_rsi()))
+    if tag >= 0 {
+        p = pc_add(p, x_mov_ri(x_rdi(), tag))
+    } else {
+        p = pc_add(p, x_mov_rr(x_rdi(), x_rax()))
+    }
+    p = pc_add(p, x_mov_rr(x_rsi(), x_rcx()))
+    pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+}
+
+// x.campo: si x es un struct, se busca en línea la dirección del nombre
+// (los nombres son strings estáticos únicos) en su esquema; si no, rt_get_field.
+fn bk_get_field(p0: Pc, ctx: Ctx, field: string) -> Pc {
+    let rsp = x_rsp()
+    let rcx = x_rcx()
+    let rdx = x_rdx()
+    let r8 = x_r8()
+    let r10 = x_r10()
+    let mut p = pc_add(p0, x_cmp_mi(rsp, 0, 10))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+    p = pc_add(p, x_load(rcx, rsp, 8))
+    p = pc_add(p, x_load(rdx, rcx, 16))
+    p = pc_add(p, x_load(r8, rcx, 24))
+    p = pc_add(p, x_test_rr(r8, r8))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "slow")
+    p = pc_ref(p, x_mov_ri64(x_rax(), 0), 2, "str", field, 0)
+    p = pc_add(p, x_lea(r10, rdx, 8))
+    p = pc_label(p, "loop")
+    p = pc_add(p, x_cmp_rm(x_rax(), r10, 0))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "found")
+    p = pc_add(p, x_add_ri(r10, 8))
+    p = pc_add(p, x_sub_ri(r8, 1))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "loop")
+    p = pc_jl(p, x_jmp(0), "slow")
+    p = pc_label(p, "found")
+    // r10 = esquema + 8 + 8i  ->  r10 = struct + 16i (el valor está en +32)
+    p = pc_add(p, x_sub_rr(r10, rdx))
+    p = pc_add(p, x_sub_ri(r10, 8))
+    p = pc_add(p, x_add_rr(r10, r10))
+    p = pc_add(p, x_add_rr(r10, rcx))
+    p = pc_add(p, x_add_ri(r10, 32))
+    p = bk_replace_top(p, 10)
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    p = bk_push_str(p, field)
+    p = bk_call_rt(p, ctx, "rt_get_field", 2)
+    pc_label(p, "done")
+}
+
+// a[i] con a array/tupla e i entero dentro de rango, en línea; si no, rt_index.
+fn bk_index(p0: Pc, ctx: Ctx) -> Pc {
+    let rsp = x_rsp()
+    let rax = x_rax()
+    let rcx = x_rcx()
+    let r8 = x_r8()
+    let r10 = x_r10()
+    let mut p = pc_add(p0, x_cmp_mi(rsp, 0, 1))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+    p = pc_add(p, x_load(rax, rsp, 16))
+    p = pc_add(p, x_cmp_ri(rax, 7))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "seq")
+    p = pc_add(p, x_cmp_ri(rax, 8))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+    p = pc_label(p, "seq")
+    p = pc_add(p, x_load(rcx, rsp, 24))
+    p = pc_add(p, x_load(r8, rsp, 8))
+    p = pc_add(p, x_cmp_rm(r8, rcx, 8))
+    p = pc_jl(p, x_jcc(x_cc_ae(), 0), "slow")
+    p = pc_add(p, x_load(r10, rcx, 24))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r10, r8))
+    p = pc_add(p, x_add_ri(rsp, 16))
+    p = bk_replace_top(p, -1)
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    p = bk_call_rt(p, ctx, "rt_index", 2)
+    pc_label(p, "done")
 }
 
 fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
@@ -456,20 +615,47 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_push_i(0))
         return pc_add(p, x_push_i(0))
     }
+    // tag/bits consumen el valor (restan su referencia; g_dec conserva rax).
     if name == "std::raw::tag" {
         p = pc_add(p, x_load(rax, rsp, 0))
+        p = bk_dec_at(p, rsp, 0)
         p = pc_add(p, x_store(rsp, 8, rax))
         return pc_add(p, x_store_i(rsp, 0, 1))
     }
     if name == "std::raw::bits" {
+        p = bk_dec_at(p, rsp, 0)
         return pc_add(p, x_store_i(rsp, 0, 1))
     }
-    if name == "std::raw::value" {
+    // keep: como bits, pero la referencia pasa a la memoria donde se guarde.
+    if name == "std::raw::keep" {
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    // value: valor nuevo que apunta a algo guardado en memoria (suma una
+    // referencia); adopt: se queda con la referencia que ya existe (objetos
+    // recién creados, o sacados de un contenedor que los suelta).
+    if name == "std::raw::value" || name == "std::raw::adopt" {
         p = pc_add(p, x_load(rax, rsp, 24))
         p = pc_add(p, x_load(rcx, rsp, 8))
         p = pc_add(p, x_add_ri(rsp, 32))
         p = pc_add(p, x_push(rcx))
-        return pc_add(p, x_push(rax))
+        p = pc_add(p, x_push(rax))
+        if name == "std::raw::value" {
+            p = bk_inc_at(p, rsp, 0)
+        }
+        return p
+    }
+    // retain/release (etiqueta, contenido): suma/resta una referencia.
+    if name == "std::raw::retain" || name == "std::raw::release" {
+        p = pc_add(p, x_load(x_rdi(), rsp, 24))
+        p = pc_add(p, x_load(x_rsi(), rsp, 8))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        if name == "std::raw::retain" {
+            p = pc_ref(p, x_call(0), 1, "rel", "g_inc", 0)
+        } else {
+            p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+        }
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(0))
     }
     if name == "std::raw::syscall" {
         p = pc_add(p, x_load(rax, rsp, 104))
@@ -522,20 +708,24 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
         return bk_push_str(p, ctx.table[n])
     }
     if k == "PushLocal" {
-        return pc_add(pc_add(p, x_push_m(rbp, bk_lp(n))), x_push_m(rbp, bk_lt(n)))
+        p = pc_add(pc_add(p, x_push_m(rbp, bk_lp(n))), x_push_m(rbp, bk_lt(n)))
+        return bk_inc_at(p, rbp, bk_lt(n))
     }
     if k == "TakeLocal" {
         p = pc_add(pc_add(p, x_push_m(rbp, bk_lp(n))), x_push_m(rbp, bk_lt(n)))
         return pc_add(pc_add(p, x_store_i(rbp, bk_lt(n), 0)), x_store_i(rbp, bk_lp(n), 0))
     }
     if k == "StoreLocal" {
+        p = bk_dec_at(p, rbp, bk_lt(n))
         return pc_add(pc_add(p, x_pop_m(rbp, bk_lt(n))), x_pop_m(rbp, bk_lp(n)))
     }
     if k == "Pop" {
+        p = bk_dec_at(p, rsp, 0)
         return pc_add(p, x_add_ri(rsp, 16))
     }
     if k == "Dup" {
-        return pc_add(pc_add(p, x_push_m(rsp, 8)), x_push_m(rsp, 8))
+        p = pc_add(pc_add(p, x_push_m(rsp, 8)), x_push_m(rsp, 8))
+        return bk_inc_at(p, rsp, 0)
     }
     if k == "Add" || k == "Sub" || k == "Mul" {
         return bk_arith(p, ctx, k)
@@ -639,11 +829,10 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
         return bk_call_rt(p, ctx, "rt_sort_by", 2)
     }
     if k == "Index" {
-        return bk_call_rt(p, ctx, "rt_index", 2)
+        return bk_index(p, ctx)
     }
     if k == "GetField" {
-        p = bk_push_str(p, op.s)
-        return bk_call_rt(p, ctx, "rt_get_field", 2)
+        return bk_get_field(p, ctx, op.s)
     }
     if k == "NewStruct" {
         let fields = op.list
@@ -690,6 +879,7 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
     }
     if k == "Try" {
         p = pc_add(pc_add(p, x_push_m(rsp, 8)), x_push_m(rsp, 8))
+        p = bk_inc_at(p, rsp, 0)
         p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_try_kind"), 0)
         p = pc_add(p, x_add_ri(rsp, 16))
         p = pc_add(p, x_test_rr(x_rdx(), x_rdx()))
@@ -700,7 +890,14 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
         p = pc_add(p, x_load(x_rax(), x_rcx(), 32))
         p = pc_add(p, x_load(x_rdx(), x_rcx(), 40))
         p = pc_add(p, x_store(rsp, 0, x_rax()))
-        return pc_add(p, x_store(rsp, 8, x_rdx()))
+        p = pc_add(p, x_store(rsp, 8, x_rdx()))
+        // El contenido gana una referencia y el enum pierde la suya.
+        p = pc_add(p, x_mov_rr(x_rdi(), x_rax()))
+        p = pc_add(p, x_mov_rr(x_rsi(), x_rdx()))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_inc", 0)
+        p = pc_add(p, x_mov_ri(x_rdi(), 11))
+        p = pc_add(p, x_mov_rr(x_rsi(), x_rcx()))
+        return pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
     }
     if k == "MakeClosure" {
         let f = ctx.funcs[n]
@@ -719,6 +916,7 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
             p = pc_add(p, x_store(x_rdx(), 48 + 16 * i, x_r8()))
             p = pc_add(p, x_load(x_r8(), rbp, bk_lp(slot)))
             p = pc_add(p, x_store(x_rdx(), 56 + 16 * i, x_r8()))
+            p = bk_inc_at(p, rbp, bk_lt(slot))
             i += 1
         }
         return pc_add(pc_add(p, x_push(x_rdx())), x_push(x_rax()))
@@ -733,8 +931,12 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
         p = pc_jl(p, x_jcc(x_cc_ne(), 0), "err")
         p = pc_add(p, x_load(x_rax(), x_r12(), 8))
         p = pc_add(p, x_call_r(x_rax()))
-        p = pc_add(p, x_add_ri(rsp, 16 * (n + 1)))
+        if n > 0 {
+            p = pc_add(p, x_add_ri(rsp, 16 * n))
+        }
+        p = pc_add(pc_add(p, x_pop(x_rdi())), x_pop(x_rsi()))
         p = pc_add(pc_add(p, x_push(x_rdx())), x_push(x_rax()))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
         p = pc_jl(p, x_jmp(0), "done")
         p = pc_label(p, "err")
         p = pc_add(pc_add(p, x_push_m(rsp, off + 8)), x_push_m(rsp, off + 8))
@@ -776,6 +978,7 @@ fn bk_prologue(ctx: Ctx, f: Func) -> Pc {
         p = pc_add(p, x_store(rbp, bk_lt(i), x_rax()))
         p = pc_add(p, x_load(x_rax(), x_r12(), 56 + 16 * i))
         p = pc_add(p, x_store(rbp, bk_lp(i), x_rax()))
+        p = bk_inc_at(p, rbp, bk_lt(i))
         i += 1
     }
     i = 0
@@ -796,7 +999,7 @@ fn bk_function(ctx0: Ctx, f: Func) -> Pc {
     if f.arity + f.captures > locals {
         locals = f.arity + f.captures
     }
-    let ctx = Ctx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity }
+    let ctx = Ctx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity, epi: len(f.code) + 1 }
     let head = bk_prologue(ctx, f)
     let mut code = head.b
     let mut fx = head.fx
@@ -815,7 +1018,18 @@ fn bk_function(ctx0: Ctx, f: Func) -> Pc {
     // Salir por el final devuelve la cima o nil, como la VM.
     offs = std::array::push(offs, len(code))
     let tail = pc_finish(bk_ret(pc_new(), ctx, ""))
+    let tail_base = len(code)
+    for r in tail.fx {
+        fx = std::array::push(fx, Fx { off: r.off + tail_base, kind: r.kind, target: r.target, n: r.n })
+    }
     code = std::array::concat(code, tail.b)
+    offs = std::array::push(offs, len(code))
+    let epi = pc_finish(bk_epilogue(ctx))
+    let epi_base = len(code)
+    for r in epi.fx {
+        fx = std::array::push(fx, Fx { off: r.off + epi_base, kind: r.kind, target: r.target, n: r.n })
+    }
+    code = std::array::concat(code, epi.b)
     let mut rest = []
     for r in fx {
         if r.kind == "jmp" {
@@ -852,6 +1066,69 @@ fn bk_glue(ctx: Ctx, entry: string) -> array {
         q = pc_ref(q, x_jmp(0), 1, "rel", "g_raise", 0)
         pieces = std::array::push(pieces, q)
     }
+    // g_inc (rdi = etiqueta, rsi = contenido): suma una referencia si es un
+    // objeto contado (etiqueta >= 5 y cuenta > 0; -1 = inmortal). Solo usa r11.
+    let rdi = x_rdi()
+    let rsi = x_rsi()
+    let r11 = x_r11()
+    let mut gi = pc_label(pc_new(), "g_inc")
+    gi = pc_add(gi, x_cmp_ri(rdi, 5))
+    gi = pc_jl(gi, x_jcc(x_cc_l(), 0), "out")
+    gi = pc_add(gi, x_load(r11, rsi, 0))
+    gi = pc_add(gi, x_cmp_ri(r11, 1))
+    gi = pc_jl(gi, x_jcc(x_cc_l(), 0), "out")
+    gi = pc_add(gi, x_add_ri(r11, 1))
+    gi = pc_add(gi, x_store(rsi, 0, r11))
+    gi = pc_label(gi, "out")
+    gi = pc_add(gi, x_ret())
+    pieces = std::array::push(pieces, gi)
+    // g_dec (rdi, rsi): resta una referencia; si llega a 0 llama a
+    // rt_free(etiqueta, dirección). Conserva rax, rcx, rdx, rsi, rdi y r8.
+    let mut gd = pc_label(pc_new(), "g_dec")
+    gd = pc_add(gd, x_cmp_ri(rdi, 5))
+    gd = pc_jl(gd, x_jcc(x_cc_l(), 0), "out")
+    gd = pc_add(gd, x_load(r11, rsi, 0))
+    gd = pc_add(gd, x_cmp_ri(r11, 1))
+    gd = pc_jl(gd, x_jcc(x_cc_l(), 0), "out")
+    gd = pc_jl(gd, x_jcc(x_cc_e(), 0), "free")
+    gd = pc_add(gd, x_sub_ri(r11, 1))
+    gd = pc_add(gd, x_store(rsi, 0, r11))
+    gd = pc_add(gd, x_ret())
+    gd = pc_label(gd, "free")
+    gd = pc_add(gd, x_store_i(rsi, 0, 0))
+    for r in [rax, x_rdx(), x_rcx(), x_r8(), rdi, rsi] {
+        gd = pc_add(gd, x_push(r))
+    }
+    gd = pc_add(gd, x_push(rdi))
+    gd = pc_add(gd, x_push_i(1))
+    gd = pc_add(gd, x_push(rsi))
+    gd = pc_add(gd, x_push_i(1))
+    gd = pc_ref(gd, x_call(0), 1, "rel", bk_rt(ctx, "rt_free"), 0)
+    gd = pc_add(gd, x_add_ri(rsp, 32))
+    for r in [rsi, rdi, x_r8(), x_rcx(), x_rdx(), rax] {
+        gd = pc_add(gd, x_pop(r))
+    }
+    gd = pc_label(gd, "out")
+    gd = pc_add(gd, x_ret())
+    pieces = std::array::push(pieces, gd)
+    // g_drop (r8 = primer hueco, rcx = cuántos): g_dec de cada variable
+    // local al salir de una función. Conserva rax y rdx (el resultado).
+    let mut gp = pc_label(pc_new(), "g_drop")
+    gp = pc_add(gp, x_test_rr(x_rcx(), x_rcx()))
+    gp = pc_jl(gp, x_jcc(x_cc_e(), 0), "out")
+    gp = pc_label(gp, "loop")
+    gp = pc_add(gp, x_load(rdi, x_r8(), 0))
+    gp = pc_add(gp, x_cmp_ri(rdi, 5))
+    gp = pc_jl(gp, x_jcc(x_cc_l(), 0), "next")
+    gp = pc_add(gp, x_load(rsi, x_r8(), 8))
+    gp = pc_ref(gp, x_call(0), 1, "rel", "g_dec", 0)
+    gp = pc_label(gp, "next")
+    gp = pc_add(gp, x_add_ri(x_r8(), 16))
+    gp = pc_add(gp, x_sub_ri(x_rcx(), 1))
+    gp = pc_jl(gp, x_jcc(x_cc_ne(), 0), "loop")
+    gp = pc_label(gp, "out")
+    gp = pc_add(gp, x_ret())
+    pieces = std::array::push(pieces, gp)
     // g_start: globales, pila propia de 1 GiB (reservada, no ocupada) y main.
     let size = 1073741824
     let mut s = pc_label(pc_new(), "g_start")
@@ -914,12 +1191,15 @@ fn bk_rt_tables(gr: G) -> (map, map) {
 // Programa (gu) + runtime (gr) -> Result::Ok(bytes del ELF) o Err(mensajes).
 fn bk_build(gu: G, gr: G) -> Result {
     let (rt, rt_arity) = bk_rt_tables(gr)
-    let uctx = Ctx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity }
-    let rctx = Ctx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity }
+    let uctx = Ctx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, epi: 0 }
+    let rctx = Ctx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity, epi: 0 }
     let mut code = []
     let mut fx = []
     let mut labels = std::map::new()
     let mut units = []
+    // Mapa de símbolos (posición en el código y nombre de cada función),
+    // para perfiles y depuración.
+    let mut syms = []
     let entry_index = gu.entry
     for piece in bk_glue(rctx, "u{entry_index}") {
         let base = len(code)
@@ -935,6 +1215,7 @@ fn bk_build(gu: G, gr: G) -> Result {
     let mut i = 0
     for f in gu.funcs {
         labels = std::map::insert(labels, "u{i}", len(code))
+        syms = std::array::push(syms, (len(code), f.name))
         let piece = bk_function(uctx, f)
         let base = len(code)
         for r in piece.fx {
@@ -946,6 +1227,7 @@ fn bk_build(gu: G, gr: G) -> Result {
     i = 0
     for f in gr.funcs {
         labels = std::map::insert(labels, "r{i}", len(code))
+        syms = std::array::push(syms, (len(code), "runtime:" + f.name))
         let piece = bk_function(rctx, f)
         let base = len(code)
         for r in piece.fx {
@@ -1060,5 +1342,12 @@ fn bk_build(gu: G, gr: G) -> Result {
     }
     body = std::array::concat(body, data)
     let entry = code_base + std::map::get(labels, "g_start")
-    Result::Ok(el_image(body, entry, globals - (code_base + len(body)) + 4096))
+    let mut map_lines = []
+    for sym in syms {
+        let (off, name) = sym
+        let address = code_base + off
+        map_lines = std::array::push(map_lines, "{address} " + name)
+    }
+    let image = el_image(body, entry, globals - (code_base + len(body)) + 4096)
+    Result::Ok((image, bk_join(map_lines, "\n") + "\n"))
 }

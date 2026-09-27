@@ -27,34 +27,128 @@ import unicode
 //   enum:         +8 nombre, +16 variante, +24 tiene contenido, +32/+40 valor
 //   closure:      +8 dirección del código, +16 capturas, +24 aridad,
 //                 +32 índice de la función, +40 nombre, +48 capturas (16 c/u)
+// Cada bloque de memoria lleva delante (en -8) su tamaño útil.
 // Globales: +0 siguiente byte libre, +8 fin del bloque, +16 profundidad de
 // llamadas, +24 (reservado: manejadores de error), +32 pila inicial (argv),
-// +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table).
+// +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table),
+// +128 + 8*c listas de bloques libres de 16*c bytes (c = 1..256).
 //
-// Versión 1: la memoria no se libera nunca y modificar un array/mapa lo
-// copia. El conteo de referencias (para liberar y modificar en el sitio)
-// viene después; el campo +0 ya está reservado para él.
+// Conteo de referencias (como el `Rc` de la VM): el campo +0 cuenta cuántos
+// lugares guardan el objeto. El código generado suma y resta referencias
+// (ver backend.titan); al llegar a 0 se llama a rt_free, que suelta lo que
+// el objeto contiene y devuelve la memoria para reutilizarla. Si un array,
+// mapa o string tiene un solo dueño, push/set/insert/concatenar lo modifican
+// en el sitio (Rc::make_mut); si no, trabajan sobre una copia.
+//
+// Reglas para escribir este archivo (las operaciones `std::raw::`):
+//   tag(v)/bits(v)   leen el valor y sueltan esa referencia temporal;
+//   keep(v)          como bits, pero la referencia pasa a la memoria donde
+//                    se guarde (para meter un valor en un contenedor);
+//   value(t, b)      valor que apunta a algo guardado (suma una referencia);
+//   adopt(t, b)      se queda con la referencia existente (objeto recién
+//                    creado con cuenta 1, o que un contenedor suelta);
+//   retain/release   suman/restan una referencia a (etiqueta, contenido).
+// Un objeto solo se puede modificar en el sitio si `load(bits(v)) == 1`
+// evaluado en la función que recibió `v` (pasarlo a otra función suma una
+// referencia mientras dura la llamada).
 
 // ------------------------------------------------------------ memoria
 
 fn rt_alloc(size: int) -> int {
     let g = std::raw::globals()
-    let n = (size + 15) & -16
-    let mut p = std::raw::load(g)
-    if p == 0 || p + n > std::raw::load(g + 8) {
-        let mut chunk = 67108864
-        if n > chunk {
-            chunk = n
+    let c = (size + 23) / 16
+    if c <= 256 {
+        let head = g + 128 + 8 * c
+        let free = std::raw::load(head)
+        if free != 0 {
+            std::raw::store(head, std::raw::load(free))
+            return free
         }
-        // mmap(NULL, chunk, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
-        p = std::raw::syscall(9, 0, chunk, 3, 34, -1, 0)
-        if p < 0 {
-            rt_die("out of memory")
+        let block = 16 * c
+        let mut b = std::raw::load(g)
+        if b == 0 || b + block > std::raw::load(g + 8) {
+            // mmap(NULL, 64 MiB, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+            b = std::raw::syscall(9, 0, 67108864, 3, 34, -1, 0)
+            if b < 0 {
+                rt_die("out of memory")
+            }
+            std::raw::store(g + 8, b + 67108864)
         }
-        std::raw::store(g + 8, p + chunk)
+        std::raw::store(g, b + block)
+        std::raw::store(b, block - 8)
+        return b + 8
     }
-    std::raw::store(g, p + n)
-    p
+    // Bloques grandes: directamente del sistema, en páginas.
+    let total = (size + 8 + 4095) & -4096
+    let b = std::raw::syscall(9, 0, total, 3, 34, -1, 0)
+    if b < 0 {
+        rt_die("out of memory")
+    }
+    std::raw::store(b, total - 8)
+    b + 8
+}
+
+// Tamaño útil del bloque que empieza en p.
+fn rt_capacity(p: int) -> int {
+    std::raw::load(p - 8)
+}
+
+fn rt_free_block(p: int) {
+    let size = std::raw::load(p - 8)
+    let c = (size + 8) / 16
+    if c <= 256 {
+        let head = std::raw::globals() + 128 + 8 * c
+        std::raw::store(p, std::raw::load(head))
+        std::raw::store(head, p)
+        return
+    }
+    std::raw::syscall(11, p - 8, size + 8, 0, 0, 0, 0)
+}
+
+// La última referencia al objeto desapareció (lo llama g_dec, con la cuenta
+// ya a 0): suelta lo que contiene y libera su memoria. Los nombres de
+// structs/enums/closures y los esquemas son datos estáticos del ejecutable.
+fn rt_free(tag: int, p: int) {
+    if tag == 7 || tag == 8 {
+        let n = std::raw::load(p + 8)
+        let data = std::raw::load(p + 24)
+        let mut i = 0
+        while i < n {
+            std::raw::release(std::raw::load(data + 16 * i), std::raw::load(data + 16 * i + 8))
+            i += 1
+        }
+        rt_free_block(data)
+    } else if tag == 9 {
+        let n = std::raw::load(p + 8)
+        let data = std::raw::load(p + 24)
+        let mut i = 0
+        while i < n {
+            let e = data + 24 * i
+            std::raw::release(5, std::raw::load(e))
+            std::raw::release(std::raw::load(e + 8), std::raw::load(e + 16))
+            i += 1
+        }
+        rt_free_block(data)
+    } else if tag == 10 {
+        let n = std::raw::load(p + 24)
+        let mut i = 0
+        while i < n {
+            std::raw::release(std::raw::load(p + 32 + 16 * i), std::raw::load(p + 40 + 16 * i))
+            i += 1
+        }
+    } else if tag == 11 {
+        if std::raw::load(p + 24) != 0 {
+            std::raw::release(std::raw::load(p + 32), std::raw::load(p + 40))
+        }
+    } else if tag == 12 {
+        let n = std::raw::load(p + 16)
+        let mut i = 0
+        while i < n {
+            std::raw::release(std::raw::load(p + 48 + 16 * i), std::raw::load(p + 56 + 16 * i))
+            i += 1
+        }
+    }
+    rt_free_block(p)
 }
 
 // Error que no pasa por fail (antes de poder construir strings).
@@ -85,7 +179,13 @@ fn rt_str_alloc(nbytes: int) -> int {
     p
 }
 
+// String recién creado (cuenta 1) como valor.
 fn rt_sval(p: int) -> any {
+    std::raw::adopt(5, p)
+}
+
+// String guardado en otro sitio (clave de mapa, nombre...) como valor.
+fn rt_sref(p: int) -> any {
     std::raw::value(5, p)
 }
 
@@ -94,10 +194,34 @@ fn rt_slen(s: any) -> int {
 }
 
 fn rt_concat(a: any, b: any) -> any {
+    let owned = std::raw::load(std::raw::bits(a)) == 1
+    rt_concat_owned(a, b, owned)
+}
+
+// `owned`: quien llamó comprobó que `a` tenía un solo dueño (la comprobación
+// hay que hacerla en la función que recibió `a`: aquí ya tiene una más).
+fn rt_concat_owned(a: any, b: any, owned: bool) -> any {
     let pa = std::raw::bits(a)
     let pb = std::raw::bits(b)
     let la = std::raw::load(pa + 8)
     let lb = std::raw::load(pb + 8)
+    if lb == 0 {
+        return a
+    }
+    if owned {
+        // Un solo dueño: se añade en el sitio si cabe; si no, se crece al doble.
+        if 16 + la + lb <= rt_capacity(pa) {
+            rt_copy(pa + 16 + la, pb + 16, lb)
+            std::raw::store(pa + 8, la + lb)
+            return a
+        }
+        let q = rt_alloc(16 + 2 * (la + lb))
+        std::raw::store(q, 1)
+        std::raw::store(q + 8, la + lb)
+        rt_copy(q + 16, pa + 16, la)
+        rt_copy(q + 16 + la, pb + 16, lb)
+        return rt_sval(q)
+    }
     let p = rt_str_alloc(la + lb)
     rt_copy(p + 16, pa + 16, la)
     rt_copy(p + 16 + la, pb + 16, lb)
@@ -132,8 +256,10 @@ fn rt_str_eq(a: any, b: any) -> bool {
 
 // Orden de bytes (el mismo que `str::cmp` de Rust): -1, 0 o 1.
 fn rt_str_cmp(a: any, b: any) -> int {
-    let pa = std::raw::bits(a)
-    let pb = std::raw::bits(b)
+    rt_cmp_raw(std::raw::bits(a), std::raw::bits(b))
+}
+
+fn rt_cmp_raw(pa: int, pb: int) -> int {
     let la = std::raw::load(pa + 8)
     let lb = std::raw::load(pb + 8)
     let mut n = la
@@ -202,6 +328,7 @@ fn rt_int_to_str(v: int) -> any {
     let n = 24 - pos
     let p = rt_str_alloc(n)
     rt_copy(p + 16, buf + pos, n)
+    rt_free_block(buf)
     rt_sval(p)
 }
 
@@ -251,7 +378,7 @@ fn rt_seq_alloc(tag: int, n: int, cap: int) -> any {
     std::raw::store(p + 8, n)
     std::raw::store(p + 16, c)
     std::raw::store(p + 24, rt_alloc(16 * c))
-    std::raw::value(tag, p)
+    std::raw::adopt(tag, p)
 }
 
 // NewArray/NewTuple/Print: el compilador rellena los elementos.
@@ -276,10 +403,39 @@ fn rt_seq_get(v: any, i: int) -> any {
     std::raw::value(std::raw::load(e), std::raw::load(e + 8))
 }
 
+// Guarda x en el hueco i (el hueco pasa a tener su propia referencia).
 fn rt_seq_put(data: int, i: int, x: any) {
     let e = data + 16 * i
     std::raw::store(e, std::raw::tag(x))
-    std::raw::store(e + 8, std::raw::bits(x))
+    std::raw::store(e + 8, std::raw::keep(x))
+}
+
+// Suma una referencia a cada uno de los n valores (tras copiarlos en crudo).
+fn rt_retain_slots(data: int, n: int) {
+    let mut i = 0
+    while i < n {
+        std::raw::retain(std::raw::load(data + 16 * i), std::raw::load(data + 16 * i + 8))
+        i += 1
+    }
+}
+
+// Asegura sitio para `need` elementos en un array con un solo dueño.
+fn rt_seq_reserve(a: any, need: int) {
+    let p = std::raw::bits(a)
+    let cap = std::raw::load(p + 16)
+    if need <= cap {
+        return
+    }
+    let mut c = 2 * cap
+    if c < need {
+        c = need
+    }
+    let old = std::raw::load(p + 24)
+    let data = rt_alloc(16 * c)
+    rt_copy(data, old, 16 * std::raw::load(p + 8))
+    rt_free_block(old)
+    std::raw::store(p + 24, data)
+    std::raw::store(p + 16, c)
 }
 
 // ------------------------------------------------------------ texto de valores
@@ -340,7 +496,7 @@ fn rt_to_string(v: any) -> any {
                 out = rt_concat(out, ", ")
             }
             let e = data + 24 * i
-            out = rt_concat(out, rt_sval(std::raw::load(e)))
+            out = rt_concat(out, rt_sref(std::raw::load(e)))
             out = rt_concat(out, ": ")
             out = rt_concat(out, rt_to_string(std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))))
             i += 1
@@ -351,13 +507,13 @@ fn rt_to_string(v: any) -> any {
         let p = std::raw::bits(v)
         let schema = std::raw::load(p + 16)
         let n = std::raw::load(p + 24)
-        let mut out = rt_concat(rt_sval(std::raw::load(p + 8)), " { ")
+        let mut out = rt_concat(rt_sref(std::raw::load(p + 8)), " { ")
         let mut i = 0
         while i < n {
             if i > 0 {
                 out = rt_concat(out, ", ")
             }
-            out = rt_concat(out, rt_sval(std::raw::load(schema + 8 + 8 * i)))
+            out = rt_concat(out, rt_sref(std::raw::load(schema + 8 + 8 * i)))
             out = rt_concat(out, ": ")
             let e = p + 32 + 16 * i
             out = rt_concat(out, rt_to_string(std::raw::value(std::raw::load(e), std::raw::load(e + 8))))
@@ -367,7 +523,7 @@ fn rt_to_string(v: any) -> any {
     }
     if t == 11 {
         let p = std::raw::bits(v)
-        let head = rt_concat(rt_concat(rt_sval(std::raw::load(p + 8)), "::"), rt_sval(std::raw::load(p + 16)))
+        let head = rt_concat(rt_concat(rt_sref(std::raw::load(p + 8)), "::"), rt_sref(std::raw::load(p + 16)))
         if std::raw::load(p + 24) == 0 {
             return head
         }
@@ -483,14 +639,16 @@ fn rt_finish(v: any) {
 fn rt_add(a: any, b: any) -> any {
     let ta = std::raw::tag(a)
     let tb = std::raw::tag(b)
+    // Antes de pasar `a` a otra función (eso le suma una referencia).
+    let owned = ta == 5 && std::raw::load(std::raw::bits(a)) == 1
     if ta == 5 && tb == 5 {
-        return rt_concat(a, b)
+        return rt_concat_owned(a, b, owned)
     }
     if ta == 2 && tb == 2 {
         std::raw::fail("native backend: float arithmetic is not implemented yet")
     }
     if ta == 5 {
-        return rt_concat(a, rt_to_string(b))
+        return rt_concat_owned(a, rt_to_string(b), owned)
     }
     if tb == 5 {
         return rt_concat(rt_to_string(a), b)
@@ -595,7 +753,7 @@ fn rt_eq(a: any, b: any) -> bool {
         while i < n {
             let ea = da + 24 * i
             let eb = db + 24 * i
-            if !rt_str_eq(rt_sval(std::raw::load(ea)), rt_sval(std::raw::load(eb))) {
+            if !rt_str_eq(rt_sref(std::raw::load(ea)), rt_sref(std::raw::load(eb))) {
                 return false
             }
             if !rt_eq(std::raw::value(std::raw::load(ea + 8), std::raw::load(ea + 16)), std::raw::value(std::raw::load(eb + 8), std::raw::load(eb + 16))) {
@@ -606,7 +764,7 @@ fn rt_eq(a: any, b: any) -> bool {
         return true
     }
     if t == 10 {
-        if !rt_str_eq(rt_sval(std::raw::load(pa + 8)), rt_sval(std::raw::load(pb + 8))) {
+        if !rt_str_eq(rt_sref(std::raw::load(pa + 8)), rt_sref(std::raw::load(pb + 8))) {
             return false
         }
         let n = std::raw::load(pa + 24)
@@ -617,7 +775,7 @@ fn rt_eq(a: any, b: any) -> bool {
         let sb = std::raw::load(pb + 16)
         let mut i = 0
         while i < n {
-            if !rt_str_eq(rt_sval(std::raw::load(sa + 8 + 8 * i)), rt_sval(std::raw::load(sb + 8 + 8 * i))) {
+            if !rt_str_eq(rt_sref(std::raw::load(sa + 8 + 8 * i)), rt_sref(std::raw::load(sb + 8 + 8 * i))) {
                 return false
             }
             let ea = pa + 32 + 16 * i
@@ -630,10 +788,10 @@ fn rt_eq(a: any, b: any) -> bool {
         return true
     }
     if t == 11 {
-        if !rt_str_eq(rt_sval(std::raw::load(pa + 8)), rt_sval(std::raw::load(pb + 8))) {
+        if !rt_str_eq(rt_sref(std::raw::load(pa + 8)), rt_sref(std::raw::load(pb + 8))) {
             return false
         }
-        if !rt_str_eq(rt_sval(std::raw::load(pa + 16)), rt_sval(std::raw::load(pb + 16))) {
+        if !rt_str_eq(rt_sref(std::raw::load(pa + 16)), rt_sref(std::raw::load(pb + 16))) {
             return false
         }
         let has = std::raw::load(pa + 24)
@@ -816,7 +974,7 @@ fn rt_struct_new(name: any, schema: int, n: int) -> any {
     std::raw::store(p + 8, std::raw::bits(name))
     std::raw::store(p + 16, schema)
     std::raw::store(p + 24, n)
-    std::raw::value(10, p)
+    std::raw::adopt(10, p)
 }
 
 fn rt_get_field(v: any, name: any) -> any {
@@ -838,7 +996,7 @@ fn rt_get_field(v: any, name: any) -> any {
         }
         i = 0
         while i < n {
-            if rt_str_eq(rt_sval(std::raw::load(schema + 8 + 8 * i)), name) {
+            if rt_str_eq(rt_sref(std::raw::load(schema + 8 + 8 * i)), name) {
                 let e = p + 32 + 16 * i
                 return std::raw::value(std::raw::load(e), std::raw::load(e + 8))
             }
@@ -863,8 +1021,8 @@ fn rt_enum_new(payload: any, name: any, variant: any) -> any {
     std::raw::store(p + 16, std::raw::bits(variant))
     std::raw::store(p + 24, 1)
     std::raw::store(p + 32, std::raw::tag(payload))
-    std::raw::store(p + 40, std::raw::bits(payload))
-    std::raw::value(11, p)
+    std::raw::store(p + 40, std::raw::keep(payload))
+    std::raw::adopt(11, p)
 }
 
 fn rt_enum_is(v: any, name: any, variant: any) -> bool {
@@ -872,7 +1030,7 @@ fn rt_enum_is(v: any, name: any, variant: any) -> bool {
         return false
     }
     let p = std::raw::bits(v)
-    rt_str_eq(rt_sval(std::raw::load(p + 16)), variant) && rt_str_eq(rt_sval(std::raw::load(p + 8)), name)
+    rt_str_eq(rt_sref(std::raw::load(p + 16)), variant) && rt_str_eq(rt_sref(std::raw::load(p + 8)), name)
 }
 
 fn rt_enum_payload(v: any) -> any {
@@ -890,8 +1048,8 @@ fn rt_enum_payload(v: any) -> any {
 fn rt_try_kind(v: any) -> int {
     if std::raw::tag(v) == 11 {
         let p = std::raw::bits(v)
-        let name = rt_sval(std::raw::load(p + 8))
-        let variant = rt_sval(std::raw::load(p + 16))
+        let name = rt_sref(std::raw::load(p + 8))
+        let variant = rt_sref(std::raw::load(p + 16))
         let has = std::raw::load(p + 24) != 0
         if has && ((rt_str_eq(name, "Result") && rt_str_eq(variant, "Ok")) || (rt_str_eq(name, "Option") && rt_str_eq(variant, "Some"))) {
             return 0
@@ -914,7 +1072,7 @@ fn rt_closure_new(code: int, ncap: int, arity: int, index: int, name: any) -> an
     std::raw::store(p + 24, arity)
     std::raw::store(p + 32, index)
     std::raw::store(p + 40, std::raw::bits(name))
-    std::raw::value(12, p)
+    std::raw::adopt(12, p)
 }
 
 fn rt_call_error(callee: any, argc: int) {
@@ -922,7 +1080,7 @@ fn rt_call_error(callee: any, argc: int) {
         std::raw::fail("type error: attempted to call a non-function value")
     }
     let p = std::raw::bits(callee)
-    let name = rt_sval(std::raw::load(p + 40))
+    let name = rt_sref(std::raw::load(p + 40))
     let expected = rt_int_to_str(std::raw::load(p + 24))
     let found = rt_int_to_str(argc)
     std::raw::fail(rt_concat(rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("function '", name), "' expected "), expected), " arguments, found "), found), ""))
@@ -972,7 +1130,7 @@ fn rt_map_search(m: any, key: any) -> int {
     let mut hi = std::raw::load(p + 8)
     while lo < hi {
         let mid = (lo + hi) / 2
-        let c = rt_str_cmp(rt_sval(std::raw::load(data + 24 * mid)), key)
+        let c = rt_cmp_raw(std::raw::load(data + 24 * mid), std::raw::bits(key))
         if c == 0 {
             return mid
         }
@@ -1008,7 +1166,7 @@ fn rt_map_alloc(n: int, cap: int) -> any {
     std::raw::store(p + 8, n)
     std::raw::store(p + 16, c)
     std::raw::store(p + 24, rt_alloc(24 * c))
-    std::raw::value(9, p)
+    std::raw::adopt(9, p)
 }
 
 fn rt_expect_map(v: any, function: string) {
@@ -1046,30 +1204,69 @@ fn std__map__new() -> any {
     rt_map_alloc(0, 4)
 }
 
-fn std__map__insert(m: any, key: any, value: any) -> any {
-    rt_expect_map(m, "std::map::insert")
-    rt_expect_str(key, "std::map::insert")
+// Copia de un mapa (con sitio para `extra` claves más); las entradas ganan
+// una referencia cada una.
+fn rt_map_copy(m: any, extra: int) -> any {
     let p = std::raw::bits(m)
     let n = std::raw::load(p + 8)
     let data = std::raw::load(p + 24)
-    let pos = rt_map_search(m, key)
+    let out = rt_map_alloc(n, n + extra)
+    let od = std::raw::load(std::raw::bits(out) + 24)
+    rt_copy(od, data, 24 * n)
+    let mut i = 0
+    while i < n {
+        let e = od + 24 * i
+        std::raw::retain(5, std::raw::load(e))
+        std::raw::retain(std::raw::load(e + 8), std::raw::load(e + 16))
+        i += 1
+    }
+    out
+}
+
+// Inserta en un mapa con un solo dueño (pos: resultado de rt_map_search).
+fn rt_map_put(m: any, pos: int, key: any, value: any) -> any {
+    let p = std::raw::bits(m)
+    let n = std::raw::load(p + 8)
     if pos >= 0 {
-        let out = rt_map_alloc(n, n)
-        let od = std::raw::load(std::raw::bits(out) + 24)
-        rt_copy(od, data, 24 * n)
-        std::raw::store(od + 24 * pos + 8, std::raw::tag(value))
-        std::raw::store(od + 24 * pos + 16, std::raw::bits(value))
-        return out
+        let e = std::raw::load(p + 24) + 24 * pos
+        std::raw::release(std::raw::load(e + 8), std::raw::load(e + 16))
+        std::raw::store(e + 8, std::raw::tag(value))
+        std::raw::store(e + 16, std::raw::keep(value))
+        return m
     }
     let at = 0 - pos - 1
-    let out = rt_map_alloc(n + 1, n + 1)
-    let od = std::raw::load(std::raw::bits(out) + 24)
-    rt_copy(od, data, 24 * at)
-    std::raw::store(od + 24 * at, std::raw::bits(key))
-    std::raw::store(od + 24 * at + 8, std::raw::tag(value))
-    std::raw::store(od + 24 * at + 16, std::raw::bits(value))
-    rt_copy(od + 24 * (at + 1), data + 24 * at, 24 * (n - at))
-    out
+    let cap = std::raw::load(p + 16)
+    if n == cap {
+        let old = std::raw::load(p + 24)
+        let bigger = rt_alloc(48 * cap)
+        rt_copy(bigger, old, 24 * n)
+        rt_free_block(old)
+        std::raw::store(p + 24, bigger)
+        std::raw::store(p + 16, 2 * cap)
+    }
+    let data = std::raw::load(p + 24)
+    // Correr una posición las entradas desde `at` (de atrás hacia delante).
+    let mut w = 3 * n - 1
+    while w >= 3 * at {
+        std::raw::store(data + 8 * w + 24, std::raw::load(data + 8 * w))
+        w -= 1
+    }
+    let e = data + 24 * at
+    std::raw::store(e, std::raw::keep(key))
+    std::raw::store(e + 8, std::raw::tag(value))
+    std::raw::store(e + 16, std::raw::keep(value))
+    std::raw::store(p + 8, n + 1)
+    m
+}
+
+fn std__map__insert(m: any, key: any, value: any) -> any {
+    rt_expect_map(m, "std::map::insert")
+    rt_expect_str(key, "std::map::insert")
+    let pos = rt_map_search(m, key)
+    if std::raw::load(std::raw::bits(m)) == 1 {
+        return rt_map_put(m, pos, key, value)
+    }
+    rt_map_put(rt_map_copy(m, 1), pos, key, value)
 }
 
 fn std__map__get(m: any, key: any) -> any {
@@ -1102,8 +1299,7 @@ fn std__map__keys(m: any) -> any {
     let od = rt_seq_data(out)
     let mut i = 0
     while i < n {
-        std::raw::store(od + 16 * i, 5)
-        std::raw::store(od + 16 * i + 8, std::raw::load(data + 24 * i))
+        rt_seq_put(od, i, rt_sref(std::raw::load(data + 24 * i)))
         i += 1
     }
     out
@@ -1118,8 +1314,7 @@ fn std__map__values(m: any) -> any {
     let od = rt_seq_data(out)
     let mut i = 0
     while i < n {
-        std::raw::store(od + 16 * i, std::raw::load(data + 24 * i + 8))
-        std::raw::store(od + 16 * i + 8, std::raw::load(data + 24 * i + 16))
+        rt_seq_put(od, i, std::raw::value(std::raw::load(data + 24 * i + 8), std::raw::load(data + 24 * i + 16)))
         i += 1
     }
     out
@@ -1131,12 +1326,19 @@ fn rt_seq_copy(v: any, extra: int) -> any {
     let n = rt_seq_len(v)
     let out = rt_seq_alloc(7, n, n + extra)
     rt_copy(rt_seq_data(out), rt_seq_data(v), 16 * n)
+    rt_retain_slots(rt_seq_data(out), n)
     out
 }
 
 fn std__array__push(a: any, x: any) -> any {
     rt_expect_array(a, "std::array::push")
     let n = rt_seq_len(a)
+    if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
+        rt_seq_reserve(a, n + 1)
+        rt_seq_put(rt_seq_data(a), n, x)
+        std::raw::store(std::raw::bits(a) + 8, n + 1)
+        return a
+    }
     let out = rt_seq_copy(a, n + 1)
     std::raw::store(std::raw::bits(out) + 8, n + 1)
     rt_seq_put(rt_seq_data(out), n, x)
@@ -1151,7 +1353,15 @@ fn std__array__set(a: any, index: any, x: any) -> any {
     if i < 0 || i >= n {
         rt_native_fail("std::array::set", "index out of bounds")
     }
+    if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
+        let e = rt_seq_data(a) + 16 * i
+        std::raw::release(std::raw::load(e), std::raw::load(e + 8))
+        rt_seq_put(rt_seq_data(a), i, x)
+        return a
+    }
     let out = rt_seq_copy(a, 0)
+    let e = rt_seq_data(out) + 16 * i
+    std::raw::release(std::raw::load(e), std::raw::load(e + 8))
     rt_seq_put(rt_seq_data(out), i, x)
     out
 }
@@ -1161,9 +1371,17 @@ fn std__array__concat(a: any, b: any) -> any {
     rt_expect_array(b, "std::array::concat")
     let na = rt_seq_len(a)
     let nb = rt_seq_len(b)
+    if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
+        rt_seq_reserve(a, na + nb)
+        rt_copy(rt_seq_data(a) + 16 * na, rt_seq_data(b), 16 * nb)
+        rt_retain_slots(rt_seq_data(a) + 16 * na, nb)
+        std::raw::store(std::raw::bits(a) + 8, na + nb)
+        return a
+    }
     let out = rt_seq_copy(a, nb)
     std::raw::store(std::raw::bits(out) + 8, na + nb)
     rt_copy(rt_seq_data(out) + 16 * na, rt_seq_data(b), 16 * nb)
+    rt_retain_slots(rt_seq_data(out) + 16 * na, nb)
     out
 }
 
@@ -1179,6 +1397,7 @@ fn std__array__slice(a: any, start: any, end: any) -> any {
     }
     let out = rt_seq_alloc(7, e - s, e - s)
     rt_copy(rt_seq_data(out), rt_seq_data(a) + 16 * s, 16 * (e - s))
+    rt_retain_slots(rt_seq_data(out), e - s)
     out
 }
 
@@ -1461,11 +1680,16 @@ fn rt_os_error(errno: int) -> any {
 // Modo del archivo (siguiendo enlaces) o -1 si no se puede consultar.
 fn rt_stat_mode(path: any) -> int {
     let buf = rt_alloc(144)
+    let c = rt_cstr(path)
     // newfstatat(AT_FDCWD, path, buf, 0)
-    if std::raw::syscall(262, -100, rt_cstr(path), buf, 0, 0, 0) != 0 {
+    let r = std::raw::syscall(262, -100, c, buf, 0, 0, 0)
+    let mode = std::raw::load(buf + 24) & 4294967295
+    rt_free_block(c)
+    rt_free_block(buf)
+    if r != 0 {
         return -1
     }
-    std::raw::load(buf + 24) & 4294967295
+    mode
 }
 
 fn std__fs__exists(path: any) -> any {
@@ -1542,7 +1766,9 @@ fn rt_valid_utf8(p: int, n: int) -> bool {
 fn std__fs__read_text(path: any) -> any {
     rt_expect_str(path, "std::fs::read_text")
     // open(path, O_RDONLY | O_CLOEXEC)
-    let fd = std::raw::syscall(2, rt_cstr(path), 524288, 0, 0, 0, 0)
+    let c = rt_cstr(path)
+    let fd = std::raw::syscall(2, c, 524288, 0, 0, 0, 0)
+    rt_free_block(c)
     if fd < 0 {
         rt_native_fail("std::fs::read_text", rt_os_error(-fd))
     }
@@ -1553,6 +1779,7 @@ fn std__fs__read_text(path: any) -> any {
         if n == cap {
             let bigger = rt_alloc(cap * 2)
             rt_copy(bigger, buf, n)
+            rt_free_block(buf)
             buf = bigger
             cap = cap * 2
         }
@@ -1575,6 +1802,7 @@ fn std__fs__read_text(path: any) -> any {
     }
     let out = rt_str_alloc(n)
     rt_copy(out + 16, buf, n)
+    rt_free_block(buf)
     rt_sval(out)
 }
 
@@ -1584,8 +1812,11 @@ fn rt_getcwd() -> any {
         let buf = rt_alloc(size)
         let r = std::raw::syscall(79, buf, size, 0, 0, 0, 0)
         if r >= 0 {
-            return rt_from_cstr(buf)
+            let cwd = rt_from_cstr(buf)
+            rt_free_block(buf)
+            return cwd
         }
+        rt_free_block(buf)
         if r != -34 {
             rt_native_fail("std::env::current_dir", rt_os_error(-r))
         }
@@ -1744,7 +1975,9 @@ fn std__path__canonical(path: any) -> any {
         }
         let candidate = resolved + "/" + part
         // readlink(candidate, buf, 4096)
-        let r = std::raw::syscall(89, rt_cstr(candidate), buf, 4096, 0, 0, 0)
+        let c = rt_cstr(candidate)
+        let r = std::raw::syscall(89, c, buf, 4096, 0, 0, 0)
+        rt_free_block(c)
         if r == -22 {
             resolved = candidate
         } else if r < 0 {
@@ -1766,6 +1999,7 @@ fn std__path__canonical(path: any) -> any {
             k = 0
         }
     }
+    rt_free_block(buf)
     if resolved == "" {
         return "/"
     }

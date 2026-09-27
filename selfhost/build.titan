@@ -22,6 +22,10 @@ fn raw_signatures() -> array {
         "std::raw::tag Any -> Int",
         "std::raw::bits Any -> Int",
         "std::raw::value Int,Int -> Any",
+        "std::raw::adopt Int,Int -> Any",
+        "std::raw::keep Any -> Int",
+        "std::raw::retain Int,Int -> Nil",
+        "std::raw::release Int,Int -> Nil",
         "std::raw::syscall Int,Int,Int,Int,Int,Int,Int -> Int",
         "std::raw::globals  -> Int",
         "std::raw::fail String -> Never",
@@ -74,7 +78,7 @@ fn build(program: string, runtime: string) -> Result {
 fn main() {
     let args = ar_user_args()
     if len(args) < 2 {
-        print("uso: titan run selfhost/build.titan PROGRAMA.titan SALIDA")
+        print("uso: titan run selfhost/build.titan PROGRAMA.titan SALIDA [MAPA]")
         return
     }
     // El runtime está junto a este programa: selfhost/native/runtime.titan
@@ -83,8 +87,13 @@ fn main() {
     let here = std::path::parent(std::path::canonical(ar_program()))
     let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
     match build(args[0], runtime) {
-        Result::Ok(bytes) => {
+        Result::Ok(built) => {
+            let (bytes, symbols) = built
             el_write_executable(args[1], bytes)
+            // Tercer argumento opcional: archivo con el mapa de funciones.
+            if len(args) > 2 {
+                std::fs::write_text(args[2], symbols)
+            }
         },
         Result::Err(message) => {
             print("error: " + message)
