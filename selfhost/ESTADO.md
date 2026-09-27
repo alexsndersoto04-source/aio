@@ -298,7 +298,7 @@ Resultados (sesión 4 de la fase 4b):
 3. `titanc2` se compila → `titanc3`.
 
 Resultado: las tres etapas son **idénticas byte a byte**
-(sha256 `2261f1a6…` desde la sesión de std::json); cada etapa nativa tarda ~24 s. El compilador no usa
+(sha256 `2261f1a6…` desde la sesión de std::datetime); cada etapa nativa tarda ~24 s. El compilador no usa
 `std::process` ni FFI. Esta es la única vez que se usa el Titan de Rust
 (el arranque); a partir de `titanc1`, Titan se compila solo.
 
