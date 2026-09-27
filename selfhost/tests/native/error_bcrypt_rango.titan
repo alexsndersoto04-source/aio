@@ -1,0 +1,5 @@
+fn main() {
+    println("antes")
+    println(std::password::hash_bcrypt("x", 0 - 1))
+    println("nunca")
+}

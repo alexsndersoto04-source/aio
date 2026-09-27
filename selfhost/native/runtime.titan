@@ -24,6 +24,8 @@ import float_table
 import std_tz_data
 import std_tz
 import std_crypto
+import std_blowfish_tab
+import std_password
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust

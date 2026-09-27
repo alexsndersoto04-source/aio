@@ -18,7 +18,27 @@
 
 // ------------------------------------------------------------ base64
 
-fn jr_b64_val(b: int, url: bool) -> int {
+fn jr_b64_val(b: int, mode: int) -> int {
+    if mode == 2 {
+        // alfabeto de bcrypt: ./A-Za-z0-9
+        if b == 46 {
+            return 0
+        }
+        if b == 47 {
+            return 1
+        }
+        if b >= 65 && b <= 90 {
+            return b - 63
+        }
+        if b >= 97 && b <= 122 {
+            return b - 69
+        }
+        if b >= 48 && b <= 57 {
+            return b + 6
+        }
+        return -1
+    }
+    let url = mode == 1
     if b >= 65 && b <= 90 {
         return b - 65
     }
@@ -51,11 +71,12 @@ fn jr_b64_sym(prefix: string, b: int, i: int) -> any {
 }
 
 // Decodifica src[0..n). Devuelve (nil, bytes) o (mensaje de error, nil).
-fn jr_b64_decode(src: int, n: int, url: bool) -> (any, any) {
+// mode: 0 estándar, 1 url, 2 bcrypt (url y bcrypt sin relleno, RequireNone).
+fn jr_b64_decode(src: int, n: int, mode: int) -> (any, any) {
     let rem = n % 4
     if rem == 1 {
         let last = std::raw::load8(src + n - 1)
-        if last != 61 && jr_b64_val(last, url) < 0 {
+        if last != 61 && jr_b64_val(last, mode) < 0 {
             return (jr_b64_sym("Invalid symbol ", last, n - 1), nil)
         }
     }
@@ -74,7 +95,7 @@ fn jr_b64_decode(src: int, n: int, url: bool) -> (any, any) {
         let mut k = 0
         while k < 4 {
             let b = std::raw::load8(src + i + k)
-            let v = jr_b64_val(b, url)
+            let v = jr_b64_val(b, mode)
             if v < 0 {
                 rt_free_block(out)
                 return (jr_b64_sym("Invalid symbol ", b, i + k), nil)
@@ -115,7 +136,7 @@ fn jr_b64_decode(src: int, n: int, url: bool) -> (any, any) {
                 return (jr_b64_sym("Invalid symbol ", 61, pre + first_pad), nil)
             }
             last_sym = b
-            let v = jr_b64_val(b, url)
+            let v = jr_b64_val(b, mode)
             if v < 0 {
                 rt_free_block(out)
                 return (jr_b64_sym("Invalid symbol ", b, pre + li), nil)
@@ -130,7 +151,7 @@ fn jr_b64_decode(src: int, n: int, url: bool) -> (any, any) {
         return (rt_concat("Invalid input length: ", rt_int_to_str(pre + 1)), nil)
     }
     let mut bad_pad = false
-    if url {
+    if mode != 0 {
         bad_pad = pads > 0
     } else {
         bad_pad = (pads + morsels) % 4 != 0
@@ -379,7 +400,7 @@ fn jr_pem(p: int, n: int) -> (any, any) {
         }
         i += len
     }
-    let (err, contents) = jr_b64_decode(tmp, t, false)
+    let (err, contents) = jr_b64_decode(tmp, t, 0)
     rt_free_block(tmp)
     if err != nil {
         return (nil, nil)

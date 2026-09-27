@@ -1292,7 +1292,7 @@ fn jw_last_dot(p: int, n: int) -> int {
 }
 
 fn jw_b64_part(p: int, n: int, function: string) -> any {
-    let (err, bytes) = jr_b64_decode(p, n, true)
+    let (err, bytes) = jr_b64_decode(p, n, 1)
     if err != nil {
         jw_fail(function, rt_concat("Base64 error: ", err))
     }
