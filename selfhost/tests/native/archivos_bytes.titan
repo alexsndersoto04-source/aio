@@ -1,0 +1,18 @@
+fn main() {
+    let dir = "/tmp/titan_prueba_nativa"
+    if !std::fs::exists(dir) {
+        print("sin directorio de prueba; se usa /tmp")
+    }
+    let path = "/tmp/titan_prueba_nativa.txt"
+    std::fs::write_text(path, "hola ñandú\nsegunda línea\n")
+    print(std::fs::read_text(path))
+    let b = std::encoding::utf8_encode("añb")
+    print(b, std::bytes::to_array(b), std::bytes::to_array("xy"))
+    let c = std::bytes::from_array([104, 111, 108, 97, 10])
+    std::fs::write_bytes(path, c)
+    print(std::fs::read_text(path), std::fs::copy(path, path + ".copia"))
+    print(std::fs::read_text(path + ".copia"))
+    std::fs::remove_file(path + ".copia")
+    std::fs::remove_file(path)
+    print(std::fs::exists(path), std::fs::exists(path + ".copia"))
+}

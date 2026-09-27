@@ -1,0 +1,48 @@
+struct Nodo {
+    nombre: string,
+    hijos: array,
+}
+
+fn arbol(n: int) -> Nodo {
+    let mut hijos = []
+    let mut i = 0
+    while i < n {
+        hijos = std::array::push(hijos, Nodo { nombre: "hoja{i}", hijos: [] })
+        i += 1
+    }
+    Nodo { nombre: "raiz", hijos: hijos }
+}
+
+fn main() {
+    // Muchas estructuras que se crean y se descartan: la memoria debe reutilizarse.
+    let mut total = 0
+    let mut k = 0
+    while k < 3000 {
+        let t = arbol(50)
+        total += len(t.hijos)
+        k += 1
+    }
+    print(total)
+    // Copias independientes: modificar una no cambia la otra.
+    let a = [1, 2, 3]
+    let mut b = a
+    b = std::array::set(b, 0, 99)
+    b = std::array::push(b, 4)
+    print(a, b)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "x", 1)
+    let m2 = m
+    m = std::map::insert(m, "y", 2)
+    print(m, m2)
+    let mut s = "ab"
+    let s2 = s
+    s += "cd"
+    print(s, s2)
+    let mut texto = ""
+    let mut i = 0
+    while i < 20000 {
+        texto += "{i},"
+        i += 1
+    }
+    print(len(texto))
+}

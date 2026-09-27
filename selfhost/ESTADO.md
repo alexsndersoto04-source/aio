@@ -13,8 +13,8 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 2 | **Parser** en Titan (`selfhost/parser.titan`) | ✅ idéntico al de Rust |
 | 3 | **Typechecker** en Titan (`selfhost/typechecker.titan`) | ✅ idéntico al de Rust |
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
-| 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | 🔶 funciona; falta memoria (conteo de referencias) y floats |
-| 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | pendiente |
+| 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias); faltan floats |
+| 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | pendiente |
 
 ## Cómo verificar
@@ -31,6 +31,10 @@ bash selfhost/native/verify_native.sh    # ejecutables nativos vs `zett run` (sa
 # El compilador Titan convertido en ejecutable nativo, contra el de Rust:
 zett run selfhost/build.titan selfhost/bytecode.titan /tmp/bytecode_nativo
 SELF=/tmp/bytecode_nativo bash selfhost/verify_codegen.sh
+bash selfhost/verify_fixpoint.sh         # punto fijo: titanc1 == titanc2 == titanc3
+# Perfil de un ejecutable nativo (herramienta de desarrollo):
+zett run selfhost/build.titan PROG.titan /tmp/prog /tmp/prog.map
+python3 selfhost/native/profile.py /tmp/prog.map /tmp/prog ARGS...
 zett run ci-bench/bench.titan            # rendimiento de la VM
 ```
 
@@ -226,20 +230,43 @@ Resultados (sesión 4 de la fase 4b):
 - **El compilador Titan (`bytecode.titan`: cargador + lexer + parser +
   typechecker + generador) compilado a ejecutable nativo** (1,7 MB) produce
   un resultado idéntico al de Rust en **433 de 484** archivos.
-- Los 51 restantes fallan por dos motivos conocidos, que son el siguiente
-  trabajo:
-  1. **Memoria**: la versión 1 del runtime nunca libera memoria y cada
-     `std::array::push`/`std::map::insert` copia el array o mapa entero
-     (O(n²)). En archivos grandes (p. ej. `selfhost/lexer.titan`) se queda
-     sin memoria ("out of memory"). Solución: **conteo de referencias**
-     como la VM (`Rc` + modificar en el sitio si hay un solo dueño; el
-     campo +0 de cada objeto ya está reservado para el contador), con
-     liberación de memoria. `TakeLocal` del bytecode ya indica cuándo el
-     valor viejo se descarta.
-  2. **Floats**: `std::text::parse_float` (texto → float con redondeo
-     exacto) y la aritmética/impresión de floats aún no están escritas en
-     el runtime; los programas con literales decimales fallan con un
-     mensaje claro ("not implemented yet"), nunca con un resultado falso.
+- (Sesión 5) **Conteo de referencias** como el `Rc` de la VM: cada lugar
+  que guarda un valor tiene una referencia; al llegar a 0 la memoria se
+  libera y se reutiliza (listas de bloques libres por tamaño), y con un solo
+  dueño `push`/`set`/`insert`/`+=` modifican en el sitio (`Rc::make_mut`).
+  Reglas de las operaciones `std::raw::` (tag/bits/keep/value/adopt/
+  retain/release) al principio de `native/runtime.titan`.
+- Rutas rápidas en línea para `x.campo` y `a[i]`; perfilador por muestreo
+  (`native/profile.py`, con ptrace) y mapa de símbolos opcional
+  (`build.titan PROG SALIDA MAPA`).
+- Velocidad: el compilador Titan nativo compila `selfhost/bytecode.titan`
+  (todo el compilador) en 6,7 s; el mismo compilador en la VM tarda 14,2 s.
+- `verify_native.sh`: 15/15 idénticos (incluye memoria, archivos, bytes).
+- El compilador nativo produce lo mismo que Rust en **466 de 489** archivos;
+  los 23 restantes tienen literales decimales: falta **floats** (texto →
+  float con redondeo exacto, float → texto, aritmética). Fallan con un
+  mensaje claro, nunca con un resultado falso.
+
+## Fase 5 — punto fijo del bootstrap ✅
+
+`bash selfhost/verify_fixpoint.sh`:
+
+1. La VM de Rust ejecuta `selfhost/build.titan` (el compilador en Titan)
+   sobre sí mismo → `selfhost/titanc1` (ejecutable x86-64 de 5,6 MB).
+2. `titanc1`, **sin Rust ni VM y con el entorno vacío** (sin PATH: no puede
+   llamar a `zett` ni a ningún otro programa), se compila → `titanc2`.
+3. `titanc2` se compila → `titanc3`.
+
+Resultado: las tres etapas son **idénticas byte a byte**
+(sha256 `01ba7b33…`); cada etapa nativa tarda ~24 s. El compilador no usa
+`std::process` ni FFI. Esta es la única vez que se usa el Titan de Rust
+(el arranque); a partir de `titanc1`, Titan se compila solo.
+
+Lo que falta para borrar Rust (fase 6): floats en el runtime nativo, el
+resto de nativas de la biblioteca estándar (~800; hoy el runtime tiene las
+que usa el compilador), las herramientas del CLI (`titan run`, `fmt`,
+etc.) escritas en Titan, y ARM64 para Termux.
+
 - Limitaciones anotadas: `std::path::parent`/`canonical` siguen las reglas
   de `Path` de Rust para los casos habituales; casos raros (p. ej. rutas
   con bytes no UTF-8) no están probados.
