@@ -1016,6 +1016,39 @@ index bbc010d..ebdc51e 100644
              assert!(format_offset(0, fmt, -240).is_err());
          }
          assert_eq!(format(0, "%Y %%").unwrap(), "1970 %");
+diff --git a/crates/titan_stdlib/src/dirs_mod.rs b/crates/titan_stdlib/src/dirs_mod.rs
+index c2d77bf..287cc2a 100644
+--- a/crates/titan_stdlib/src/dirs_mod.rs
++++ b/crates/titan_stdlib/src/dirs_mod.rs
+@@ -207,8 +207,14 @@ mod tests {
+     fn user_dirs_file_is_parsed_like_dirs_sys() {
+         let home = Path::new("/home/ana");
+         let file = b"# comentario\nXDG_DESKTOP_DIR=\"$HOME/Escritorio\"\n  XDG_MUSIC_DIR = \"/m\\\\\\\"x\" \nXDG_VIDEOS_DIR=\"$HOME/\"\nXDG_PICTURES_DIR=relativo\n";
+-        assert_eq!(parse_user_dir(home, "DESKTOP", file), Some(PathBuf::from("/home/ana/Escritorio")));
+-        assert_eq!(parse_user_dir(home, "MUSIC", file), Some(PathBuf::from("/m\\\"x")));
++        assert_eq!(
++            parse_user_dir(home, "DESKTOP", file),
++            Some(PathBuf::from("/home/ana/Escritorio"))
++        );
++        assert_eq!(
++            parse_user_dir(home, "MUSIC", file),
++            Some(PathBuf::from("/m\\\"x"))
++        );
+         assert_eq!(parse_user_dir(home, "VIDEOS", file), None);
+         assert_eq!(parse_user_dir(home, "PICTURES", file), None);
+         assert_eq!(parse_user_dir(home, "DOCUMENTS", file), None);
+@@ -219,7 +225,10 @@ mod tests {
+         // dirs-sys 0.4.1 hacía panic con estas dos líneas.
+         let home = Path::new("/home/ana");
+         let file = b"XDG_DIR=\"x\"\nXDG_DESKTOP_DIR=\"\nXDG_DESKTOP_DIR=\"/escritorio\"\n";
+-        assert_eq!(parse_user_dir(home, "DESKTOP", file), Some(PathBuf::from("/escritorio")));
++        assert_eq!(
++            parse_user_dir(home, "DESKTOP", file),
++            Some(PathBuf::from("/escritorio"))
++        );
+         assert_eq!(parse_user_dir(home, "MUSIC", file), None);
+     }
+ 
 diff --git a/crates/titan_stdlib/src/lib.rs b/crates/titan_stdlib/src/lib.rs
 index 944be47..8b37e69 100644
 --- a/crates/titan_stdlib/src/lib.rs
