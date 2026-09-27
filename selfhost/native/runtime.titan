@@ -16,6 +16,8 @@ import std_dirs
 import std_xml
 import std_rsa
 import std_jwt
+import std_libm
+import std_libm_tab
 import errno
 import float
 import float_table

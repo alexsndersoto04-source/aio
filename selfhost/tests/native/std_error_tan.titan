@@ -1,0 +1,4 @@
+fn main() {
+    let inf = 1e308 * 10.0
+    print(std::math::tan(inf))
+}

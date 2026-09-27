@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 285 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 292 / 816 nativas (`selfhost/native/cobertura.sh`) |
 
 ## Cómo verificar
 
@@ -354,6 +354,7 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::dirs (18) | `std_dirs.titan` | reglas de dirs 5.0.1 / dirs-sys 0.4.1 en Linux (variables XDG absolutas, `user-dirs.dirs` con el mismo analizador), `temp_dir` y `current_dir` de Rust, rutas no UTF-8 con U+FFFD como `to_string_lossy`. Sin `HOME` se lee `/etc/passwd` (la fuente "files" de glibc; LDAP/sssd no se consultan). Comparado en 250 entornos aleatorios (sin HOME, HOME vacío o no UTF-8, XDG relativos, varios `user-dirs.dirs`, TMPDIR vacío): 0 diferencias |
 | std::xml (4) | `std_xml.titan` | el mismo lector que quick-xml 0.36.2 (BOM, texto recortado, comentarios, CDATA, DOCTYPE con balance de `<`/`>`, instrucciones `<?…?>`, `>` dentro de comillas, nombres de cierre literales, atributos con los mismos errores y posiciones, entidades y `&#…;` con los mismos mensajes) y el mismo escritor; comparado con 6.300 documentos aleatorios (válidos, rotos y cortados): 0 diferencias. Un XML de 2,3 MB tarda ~0,95 s frente a ~0,49 s en la VM (casi todo es el asignador de memoria) |
 | std::jwt (5) | `std_jwt.titan`, `std_rsa.titan` | lo mismo que jsonwebtoken 9.3.1: base64url (con los mismos errores y posiciones que base64 0.22), lector JSON al estilo serde (cabecera con `Jwk`, enums, `untagged`, mismos mensajes y columnas), validación de `exp`/`aud`/`iss`; PEM (pem 3.0), ASN.1 (simple_asn1 0.6) y RSA escrito desde cero en Titan: comprobación de claves como ring 0.17 (mismos errores: `InconsistentComponents`, `TooLarge`, `PrivateModulusLenNotMultipleOf512Bits`…), firma PKCS#1 v1.5 + SHA-256 con CRT y verificación. Comparado con ~19.000 tokens HS256 y ~7.000 casos RS256 (claves de openssl de 1024 a 8192 bits, PKCS#1/PKCS#8/certificado/EC/Ed25519, DER alterado): 0 diferencias; openssl confirma que las firmas son válidas |
+| std::math trascendentes (7: exp, ln, log, sin, cos, tan, pow) | `std_libm.titan` (generado desde `libm/std_libm.titan.in` por `libm/gen_libm.py`), `std_libm_tab.titan` | port bit a bit de la libm de glibc 2.36 (`e_exp.c`, `e_log.c`, `e_pow.c`, `s_sin.c`, `s_tan.c`, `branred.c`) tal como la compila glibc para CPUs con FMA (la variante que usa la VM en esta máquina): cada `fma` en el mismo sitio que el compilador de glibc (leído de sus volcados `widening_mul`), `branred` sin fusionar. Las tablas (2.080 valores) las extrae el generador de `libm.so.6` buscándolas por contenido y comprobándolas. FMA por hardware (`vfmadd231sd`, detectada con `cpuid`/`xgetbv`) o, si la CPU no la tiene, FMA por software exacta (enteros de 30 bits) que da los mismos bits. Comparado con la libm del sistema en 3,2 millones de casos (y 2 millones más forzando la FMA por software): 0 diferencias; la FMA por software y la de hardware contra un cálculo exacto con fracciones en 900.000 tríos difíciles: 0 diferencias. Límite honesto: en CPUs sin FMA la glibc de Rust usa otra variante (SSE2/FMA4) y Android usa otra libm (bionic); ahí la VM puede diferir en el último bit y el nativo seguirá dando el resultado de la variante FMA |
 
 Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
 "index out of bounds" en el runtime nativo; la VM dice "array index out of
@@ -365,9 +366,6 @@ CLI de Rust usa `split_whitespace`/`trim`, que reconocen todos los espacios
 Unicode (por ejemplo U+3000). Ahora se usan los mismos.
 
 Pendiente en esta fase:
-- **Funciones trascendentes** (`sin`, `cos`, `tan`, `exp`, `ln`, `log`,
-  `pow`…): la VM usa la libm de glibc; para dar los mismos bits hay que portar
-  sus algoritmos. Se hará en una sesión dedicada.
 - Rendimiento: `std::json` sobre 1,2 MB tarda ~0,42 s en nativo frente a
   ~0,11 s en la VM (serde en Rust optimizado). El tiempo se reparte entre el
   asignador de memoria y la conversión de floats; se mejorará junto con el

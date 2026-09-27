@@ -716,6 +716,46 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_push(rax))
         return pc_add(p, x_push_i(1))
     }
+    // ffma(a, b, c) = a * b + c con un solo redondeo (vfmadd231sd). El
+    // runtime sólo la usa si la CPU y el sistema la permiten (rt_has_fma).
+    if name == "std::raw::ffma" {
+        p = pc_add(p, x_load(rax, rsp, 40))
+        p = pc_add(p, x_movq_xr(1, rax))
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_movq_xr(2, rax))
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        p = pc_add(p, x_vfmadd231sd_012())
+        p = pc_add(p, x_movq_rx(rax, 0))
+        p = pc_add(p, x_add_ri(rsp, 48))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // cpuid(hoja, subhoja) = (ebx << 32) | ecx. rbx se guarda (lo usa el
+    // resto del código).
+    if name == "std::raw::cpuid" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, [83])
+        p = pc_add(p, x_cpuid())
+        p = pc_add(p, [137, 200])
+        p = pc_add(p, [72, 193, 227, 32])
+        p = pc_add(p, [72, 9, 216])
+        p = pc_add(p, [91])
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // xgetbv() = XCR0 (edx:eax con ecx = 0).
+    if name == "std::raw::xgetbv" {
+        p = pc_add(p, x_mov_ri(rcx, 0))
+        p = pc_add(p, x_xgetbv())
+        p = pc_add(p, [72, 193, 226, 32])
+        p = pc_add(p, [137, 192])
+        p = pc_add(p, [72, 9, 208])
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
     // ffromint: el entero convertido a float (cvtsi2sd; exacto si |v| < 2^53).
     if name == "std::raw::ffromint" {
         p = pc_add(p, x_load(rax, rsp, 8))

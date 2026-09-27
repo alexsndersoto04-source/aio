@@ -309,6 +309,16 @@ fn x_subsd(dst: int, src: int) -> array { x_sse_sd(92, dst, src) }
 fn x_divsd(dst: int, src: int) -> array { x_sse_sd(94, dst, src) }
 fn x_sqrtsd(dst: int, src: int) -> array { x_sse_sd(81, dst, src) }
 
+// vfmadd231sd xmm0, xmm1, xmm2 (VEX.LIG.66.0F38.W1 B9 /r): xmm0 = xmm1 * xmm2 + xmm0
+// con un solo redondeo (FMA3; sólo si la CPU la tiene).
+fn x_vfmadd231sd_012() -> array { [196, 226, 241, 185, 194] }
+
+// cpuid (0F A2): entrada eax, ecx; salida eax, ebx, ecx, edx.
+fn x_cpuid() -> array { [15, 162] }
+
+// xgetbv (0F 01 D0): XCR[ecx] en edx:eax.
+fn x_xgetbv() -> array { [15, 1, 208] }
+
 // ucomisd xmm_a, xmm_b (66 0F 2E /r)
 fn x_ucomisd(a: int, b: int) -> array {
     return [102, 15, 46, x_modrm_rr(a, b)]
