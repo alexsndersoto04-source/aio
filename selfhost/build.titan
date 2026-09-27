@@ -7,6 +7,7 @@
 // que además puede usar las operaciones `std::raw::`; y convierte ambos en
 // código máquina x86-64 dentro de un ejecutable ELF que no necesita ni Rust
 // ni la VM para funcionar.
+import args
 import loader
 import codegen
 import native::backend
@@ -71,16 +72,19 @@ fn build(program: string, runtime: string) -> Result {
 }
 
 fn main() {
-    let args = std::env::args()
-    if len(args) < 5 {
+    let args = ar_user_args()
+    if len(args) < 2 {
         print("uso: titan run selfhost/build.titan PROGRAMA.titan SALIDA")
         return
     }
-    let here = std::path::parent(std::path::canonical(args[2]))
+    // El runtime está junto a este programa: selfhost/native/runtime.titan
+    // (con la VM, junto a selfhost/build.titan; nativo, junto al ejecutable,
+    // que debe estar en selfhost/).
+    let here = std::path::parent(std::path::canonical(ar_program()))
     let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
-    match build(args[3], runtime) {
+    match build(args[0], runtime) {
         Result::Ok(bytes) => {
-            el_write_executable(args[4], bytes)
+            el_write_executable(args[1], bytes)
         },
         Result::Err(message) => {
             print("error: " + message)

@@ -10,8 +10,12 @@
 # de tipos y del generador).
 #
 # Uso: bash selfhost/verify_codegen.sh [zett]
+#      SELF=./bytecode_nativo bash selfhost/verify_codegen.sh
+#        (SELF: el compilador Titan a probar; por defecto, con la VM. Sirve
+#        para probar el mismo compilador convertido en ejecutable nativo.)
 set -u
 ZETT="${1:-zett}"
+SELF="${SELF:-$ZETT run selfhost/bytecode.titan}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 tmp="$(mktemp -d)"
@@ -20,12 +24,12 @@ trap 'rm -rf "$tmp"' EXIT
 { git ls-files '*.titan'; find selfhost/tests -name "*.titan"; } | sort -u > "$tmp/files"
 
 # Un archivo por proceso, dos a la vez. Cada uno escribe "OK n ruta" o "DIF ruta".
-export ZETT tmp
+export ZETT SELF tmp
 compare() {
   f="$1"
   key="$(printf '%s' "$f" | tr '/' '_')"
   "$ZETT" bytecode "$f" > "$tmp/$key.rust" 2>&1
-  "$ZETT" run selfhost/bytecode.titan "$f" > "$tmp/$key.out" 2>&1
+  $SELF "$f" > "$tmp/$key.out" 2>&1
   if cmp -s "$tmp/$key.rust" "$tmp/$key.out"; then
     echo "OK $(wc -l < "$tmp/$key.rust") $f"
   else

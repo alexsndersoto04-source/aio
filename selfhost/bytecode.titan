@@ -4,6 +4,7 @@
 // imprime el bytecode. La salida debe ser idéntica, byte a byte, a la de
 // `titan bytecode <archivo.titan>` (la versión de Rust).
 import loader
+import args
 import codegen
 
 // Display de TypeDiagnostic: "archivo:l:c: msg", "l:c: msg" o solo "msg".
@@ -35,13 +36,13 @@ fn compile_to_dump(path: string) -> Result {
 }
 
 fn main() {
-    let args = std::env::args()
-    if len(args) < 4 {
+    let args = ar_user_args()
+    if len(args) < 1 {
         print("uso: titan run selfhost/bytecode.titan <archivo.titan>")
         return
     }
     let mut dump = ""
-    match compile_to_dump(args[3]) {
+    match compile_to_dump(args[0]) {
         Result::Ok(text) => {
             dump = text
         },

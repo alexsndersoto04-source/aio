@@ -13,7 +13,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 2 | **Parser** en Titan (`selfhost/parser.titan`) | ✅ idéntico al de Rust |
 | 3 | **Typechecker** en Titan (`selfhost/typechecker.titan`) | ✅ idéntico al de Rust |
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
-| 4b | Siguiente: bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) | ⏳ siguiente |
+| 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | 🔶 funciona; falta memoria (conteo de referencias) y floats |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | pendiente |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | pendiente |
 
@@ -26,6 +26,11 @@ bash selfhost/verify_lexer.sh            # lexer Titan vs lexer Rust, byte a byt
 bash selfhost/verify_parser.sh           # parser Titan vs parser Rust, byte a byte
 bash selfhost/verify_typechecker.sh      # typechecker Titan vs Rust, byte a byte
 bash selfhost/verify_codegen.sh          # cargador + codegen Titan vs Rust, byte a byte
+bash selfhost/native/verify_x64.sh       # codificador x86-64 en Titan vs el ensamblador GNU
+bash selfhost/native/verify_native.sh    # ejecutables nativos vs `zett run` (salida, errores, código)
+# El compilador Titan convertido en ejecutable nativo, contra el de Rust:
+zett run selfhost/build.titan selfhost/bytecode.titan /tmp/bytecode_nativo
+SELF=/tmp/bytecode_nativo bash selfhost/verify_codegen.sh
 zett run ci-bench/bench.titan            # rendimiento de la VM
 ```
 
@@ -188,6 +193,56 @@ y se corregirán en los dos a la vez):
 10. El cargador de Titan todavía no admite proyectos con `Titan.toml`
     (manifiesto y dependencias): los rechaza con un error explícito. En el
     repositorio no hay ninguno.
+
+## Fase 4b — compilador nativo (bytecode → ejecutable x86-64)
+
+`zett run selfhost/build.titan PROGRAMA.titan SALIDA` genera un ejecutable
+ELF de Linux x86-64 que no usa Rust ni la VM. Piezas, todas en Titan:
+
+- `native/x64.titan`: codificador de instrucciones x86-64 (verificado contra
+  el ensamblador GNU: 1412 instrucciones idénticas).
+- `native/elf.titan`: el formato de archivo ejecutable ELF.
+- `native/backend.titan`: traduce cada instrucción del bytecode a código
+  máquina (pila de valores de 16 bytes: etiqueta + contenido).
+- `native/runtime.titan`: el "motor" que va dentro de cada ejecutable
+  (memoria, strings, arrays, mapas, comparaciones, impresión, errores y las
+  nativas usadas hasta ahora: `std::map`, `std::array`, `std::text`,
+  `std::fs`, `std::path`, `std::env`, `sort_by`), escrito en Titan y
+  compilado por el mismo compilador. Es el único que puede usar las
+  operaciones de bajo nivel `std::raw::` (leer/escribir memoria, llamadas
+  al sistema Linux).
+- `native/unicode.titan`: tablas Unicode (letras, dígitos, mayúsculas,
+  espacios) **generadas** por `native/gen_unicode.titan` preguntando al
+  Titan actual por cada uno de los 1,1 millones de caracteres; así el
+  ejecutable nativo responde exactamente igual. Son datos, no lógica.
+- `args.titan`: las herramientas leen sus argumentos igual con la VM que
+  como ejecutable nativo.
+
+Resultados (sesión 4 de la fase 4b):
+
+- `verify_native.sh`: 11/11 programas de `tests/native/` idénticos a la VM
+  (salida, errores de ejecución —desbordamiento, índice, división por cero,
+  recursión, archivo inexistente, carácter inválido— y código de salida).
+- **El compilador Titan (`bytecode.titan`: cargador + lexer + parser +
+  typechecker + generador) compilado a ejecutable nativo** (1,7 MB) produce
+  un resultado idéntico al de Rust en **433 de 484** archivos.
+- Los 51 restantes fallan por dos motivos conocidos, que son el siguiente
+  trabajo:
+  1. **Memoria**: la versión 1 del runtime nunca libera memoria y cada
+     `std::array::push`/`std::map::insert` copia el array o mapa entero
+     (O(n²)). En archivos grandes (p. ej. `selfhost/lexer.titan`) se queda
+     sin memoria ("out of memory"). Solución: **conteo de referencias**
+     como la VM (`Rc` + modificar en el sitio si hay un solo dueño; el
+     campo +0 de cada objeto ya está reservado para el contador), con
+     liberación de memoria. `TakeLocal` del bytecode ya indica cuándo el
+     valor viejo se descarta.
+  2. **Floats**: `std::text::parse_float` (texto → float con redondeo
+     exacto) y la aritmética/impresión de floats aún no están escritas en
+     el runtime; los programas con literales decimales fallan con un
+     mensaje claro ("not implemented yet"), nunca con un resultado falso.
+- Limitaciones anotadas: `std::path::parent`/`canonical` siguen las reglas
+  de `Path` de Rust para los casos habituales; casos raros (p. ej. rutas
+  con bytes no UTF-8) no están probados.
 
 ## Pendientes conocidos (anotados para no olvidarlos)
 
