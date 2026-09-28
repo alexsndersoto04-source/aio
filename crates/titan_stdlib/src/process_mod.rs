@@ -627,8 +627,13 @@ pub fn env_unset(name: &str) -> Result<(), ProcessError> {
     Ok(())
 }
 
+// `std::env::vars()` hace *panic* si alguna variable no es UTF-8 válido (la VM
+// entera se caía). Esas variables se saltan, igual que `env_get` devuelve
+// None para ellas.
 pub fn env_vars() -> Vec<(String, String)> {
-    std::env::vars().collect()
+    std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
 }
 
 pub fn working_dir() -> Result<String, ProcessError> {
@@ -888,6 +893,21 @@ mod tests {
         assert_eq!(env_get("TITAN_TEST_VAR"), Some("42".into()));
         env_unset("TITAN_TEST_VAR").unwrap();
         assert_eq!(env_get("TITAN_TEST_VAR"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn env_vars_skips_non_utf8_instead_of_panicking() {
+        use std::os::unix::ffi::OsStrExt;
+        let bad = std::ffi::OsStr::from_bytes(b"\xff");
+        std::env::set_var("TITAN_TEST_NOT_UTF8", bad);
+        std::env::set_var("TITAN_TEST_UTF8_OK", "si");
+        let vars = env_vars();
+        assert!(vars.iter().all(|(k, _)| k != "TITAN_TEST_NOT_UTF8"));
+        assert!(vars.iter().any(|(k, v)| k == "TITAN_TEST_UTF8_OK" && v == "si"));
+        assert_eq!(env_get("TITAN_TEST_NOT_UTF8"), None);
+        std::env::remove_var("TITAN_TEST_NOT_UTF8");
+        std::env::remove_var("TITAN_TEST_UTF8_OK");
     }
 
     #[test]
