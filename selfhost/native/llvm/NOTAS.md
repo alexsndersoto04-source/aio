@@ -72,9 +72,18 @@ Operaciones de bajo nivel (`std::raw::`):
 
 - x86-64: funciona. Los 241 programas de `tests/native` dan exactamente la
   misma salida, errores y código de salida que la VM (LLVM 22, -O2).
-- ARM64 (Termux): pendiente. Falta el mapa de números de llamadas al sistema
-  (el runtime usa los de x86-64) y emular las que ARM64 no tiene
-  (open→openat, pipe→pipe2, poll→ppoll, fork→clone, dup2→dup3,
-  access→faccessat…), más el arranque con `mov x0, sp` / `bl`.
-- Punto fijo por LLVM (el compilador compilado por LLVM se compila a sí mismo
-  y da el mismo resultado): pendiente.
+- Punto fijo por LLVM (`punto_fijo.sh`): el compilador en Titan compilado por
+  LLVM compila `build.titan` y da exactamente el mismo ejecutable que el
+  compilador normal (hash dee0c9f…), y el backend LLVM compilado por LLVM
+  escribe exactamente el mismo IR. De paso: el compilador hecho por LLVM tarda
+  8 s en compilarse a sí mismo, frente a 45 s el del backend propio.
+- ARM64 (AArch64, Termux): `sys_arm64.titan` traduce cada llamada al sistema
+  del runtime (escrito con los números y estructuras de x86-64) a la de ARM64:
+  números distintos, llamadas que ARM64 no tiene (open→openat, stat→newfstatat,
+  poll→ppoll, fork→clone, dup2→dup3, mkdir→mkdirat, rename→renameat,
+  rmdir/unlink→unlinkat, readlink→readlinkat), `struct stat` y
+  `struct epoll_event` con otra forma, y banderas de open con otro valor. Lo
+  que no está en la tabla devuelve -ENOSYS. El arranque usa `mov x0, sp` / `bl`.
+  Prueba: `arm64_objetos.sh` (en x86-64: IR para AArch64 → clang → objetos) y
+  `arm64_comparar.sh` (en una máquina ARM64 real: enlazar, ejecutar y comparar
+  con la VM de Rust compilada para ARM64); la CI lo hace en `ubuntu-24.04-arm`.
