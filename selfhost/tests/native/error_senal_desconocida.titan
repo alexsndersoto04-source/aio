@@ -1,0 +1,5 @@
+fn main() {
+    std::signals::install("SIGUSR1")
+    println("antes")
+    std::signals::install("sigkill")
+}

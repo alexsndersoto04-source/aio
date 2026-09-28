@@ -1,0 +1,22 @@
+// std::signals sin señales externas: instalar, consultar, esperar con plazo.
+// (Las señales enviadas desde fuera con kill se compararon a mano; ver ESTADO.)
+fn main() {
+    std::signals::install("usr1")
+    std::signals::install("SIGUSR1")
+    std::signals::install("Term")
+    std::signals::install("sigchld")
+    let a = std::signals::pending("SIGUSR1")
+    println("usr1: {a}")
+    let b = std::signals::pending("hup")
+    println("hup sin instalar: {b}")
+    println(std::signals::wait_any(0))
+    println(std::signals::wait_any(30))
+    println(std::signals::wait_any(-1))
+    let names = ["INT", "sigterm", "HUP", "usr2", "QUIT", "pipe", "CHLD"]
+    let mut i = 0
+    while i < len(names) {
+        let n = std::signals::pending(names[i])
+        println("{n}")
+        i += 1
+    }
+}
