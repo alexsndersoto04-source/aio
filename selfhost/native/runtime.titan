@@ -31,6 +31,7 @@ import std_procfs
 import std_signals
 import std_uwidth_tab
 import std_uwidth
+import std_progress
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust
@@ -690,6 +691,7 @@ fn rt_trim(s: any) -> any {
 
 // Error sin capturar: igual que `fatal("RUNTIME ERROR", ...)` del CLI.
 fn rt_fatal(message: any) {
+    pg_cleanup()
     let flat = rt_flatten(message)
     rt_write(2, rt_concat(rt_concat("RUNTIME ERROR: ", flat), "\n"))
     if !rt_str_eq(rt_trim(message), flat) {
@@ -701,6 +703,7 @@ fn rt_fatal(message: any) {
 // Valor devuelto por la función de entrada: como `titan run`, se imprime
 // "=> valor" si no es nil.
 fn rt_finish(v: any) {
+    pg_cleanup()
     if std::raw::tag(v) != 0 {
         rt_write(1, rt_concat(rt_concat("=> ", rt_to_string(v)), "\n"))
     }

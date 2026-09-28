@@ -1,0 +1,4 @@
+fn main() {
+    print("antes")
+    std::progress::bar_new(-1)
+}

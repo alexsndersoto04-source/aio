@@ -1,0 +1,3 @@
+fn main() {
+    std::progress::increment(77, -1)
+}
