@@ -1,0 +1,42 @@
+// Uso: titan run selfhost/opt_ver.titan <archivo.titan> [--dump]
+//
+// Muestra cuántas instrucciones de bytecode tiene el programa antes y después
+// del optimizador (opt.titan); con --dump imprime además el bytecode optimizado.
+import loader
+import args
+import codegen
+import opt
+
+fn main() {
+    let args = ar_user_args()
+    if len(args) < 1 {
+        print("uso: opt_ver.titan ARCHIVO [--dump]")
+        return
+    }
+    let items = match ld_load(args[0]) {
+        Result::Ok(v) => v,
+        Result::Err(e) => {
+            print("error: " + e)
+            return
+        },
+    }
+    let diags = check_program(items)
+    if len(diags) > 0 {
+        print("error: el programa tiene errores de tipos")
+        return
+    }
+    let g = match cg_compile_program(cg_new(cg_native_names()), items) {
+        Result::Ok(v) => v,
+        Result::Err(e) => {
+            print("error: " + e)
+            return
+        },
+    }
+    let before = ot_count(g)
+    let o = ot_optimize(g)
+    let after = ot_count(o)
+    print("instrucciones: {before} -> {after}")
+    if len(args) > 1 && args[1] == "--dump" {
+        print(cg_dump_module(o))
+    }
+}

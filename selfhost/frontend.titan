@@ -2,6 +2,7 @@
 // build_llvm.titan: backend LLVM): cargar, revisar y generar el bytecode.
 import loader
 import codegen
+import opt
 
 // Firmas de las operaciones de bajo nivel, solo para el runtime.
 fn raw_signatures() -> array {
@@ -70,5 +71,10 @@ fn front(path: string, natives: array) -> Result {
     for line in natives {
         names = std::map::insert(names, split_on(line, ' ')[0], true)
     }
-    cg_compile_program(cg_new(names), items)
+    let g = cg_compile_program(cg_new(names), items)?
+    // Optimizador (opt.titan). TITAN_OPT=0 lo apaga, para comparar.
+    if std::env::get("TITAN_OPT") == "0" {
+        return Result::Ok(g)
+    }
+    Result::Ok(ot_optimize(g))
 }
