@@ -1,0 +1,49 @@
+name: LLVM backend (Titan -> LLVM IR -> clang)
+
+# Backend LLVM del compilador escrito en Titan (selfhost/native/llvm.titan).
+# El sandbox de desarrollo no tiene LLVM; aquí sí (LLVM real de Ubuntu).
+# Cada prueba: el compilador en Titan genera LLVM IR (.ll), clang lo convierte
+# en ejecutable, y la salida se compara byte a byte con la VM de Rust.
+
+on:
+  push:
+    branches: [main, 'arena/**']
+    paths:
+      - 'selfhost/**'
+      - '.github/workflows/llvm.yml'
+
+jobs:
+  llvm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Herramientas LLVM disponibles
+        run: |
+          set +e
+          for t in clang clang-18 clang-17 clang-16 clang-15 clang-14 llc llc-18 opt opt-18 lld ld.lld llvm-config llvm-config-18 qemu-aarch64 qemu-aarch64-static; do
+            p=$(command -v $t)
+            if [ -n "$p" ]; then echo "$t: $p :: $($t --version 2>&1 | head -1)"; else echo "$t: (no)"; fi
+          done
+          ls /usr/lib/llvm-*/bin 2>/dev/null | head -50
+          clang -print-targets 2>/dev/null | grep -Ei "x86-64|aarch64" | head
+
+      - name: Obtener zett (VM de Rust, para comparar)
+        run: |
+          git fetch -q origin +refs/heads/binaries:refs/remotes/origin/binaries
+          mkdir -p "$HOME/bin"
+          git show origin/binaries:zett-linux-x86_64 > "$HOME/bin/zett-real"
+          chmod +x "$HOME/bin/zett-real"
+          sudo apt-get install -y --no-install-recommends libasound2t64 >/dev/null 2>&1 || true
+          printf '#!/bin/sh\nexec "%s/bin/zett-real" "$@"\n' "$HOME" > "$HOME/bin/zett"
+          chmod +x "$HOME/bin/zett"
+          "$HOME/bin/zett" --version || true
+
+      - name: Batería LLVM
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          if [ -f selfhost/native/llvm/verificar.sh ]; then
+            bash selfhost/native/llvm/verificar.sh
+          else
+            echo "todavía no hay selfhost/native/llvm/verificar.sh"
+          fi
