@@ -16,6 +16,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 373 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| L | **Backend LLVM** en Titan: bytecode → LLVM IR → clang/llc (LLVM real) (`selfhost/native/llvm.titan`, `selfhost/build_llvm.titan`) | ✅ x86-64: 241 / 241 programas idénticos a la VM con -O2 · ARM64 y punto fijo por LLVM: pendientes |
 
 ## Cómo verificar
 
@@ -34,6 +35,7 @@ bash selfhost/native/cobertura.sh [-v]   # cuántas nativas de la biblioteca ya 
 zett run selfhost/build.titan selfhost/bytecode.titan /tmp/bytecode_nativo
 SELF=/tmp/bytecode_nativo bash selfhost/verify_codegen.sh
 bash selfhost/verify_fixpoint.sh         # punto fijo: titanc1 == titanc2 == titanc3
+bash selfhost/native/llvm/verificar.sh   # backend LLVM: ejecutables por LLVM vs `zett run` (ver native/llvm/NOTAS.md)
 # Perfil de un ejecutable nativo (herramienta de desarrollo):
 zett run selfhost/build.titan PROG.titan /tmp/prog /tmp/prog.map
 python3 selfhost/native/profile.py /tmp/prog.map /tmp/prog ARGS...

@@ -70,7 +70,8 @@ Operaciones de bajo nivel (`std::raw::`):
 
 ## Estado
 
-- x86-64: en marcha y verificado contra la VM (ver ESTADO.md).
+- x86-64: funciona. Los 241 programas de `tests/native` dan exactamente la
+  misma salida, errores y código de salida que la VM (LLVM 22, -O2).
 - ARM64 (Termux): pendiente. Falta el mapa de números de llamadas al sistema
   (el runtime usa los de x86-64) y emular las que ARM64 no tiene
   (open→openat, pipe→pipe2, poll→ppoll, fork→clone, dup2→dup3,
