@@ -1,6 +1,6 @@
 // Compilador de Titan con el backend LLVM.
 //
-// Uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64]
+// Uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64|aarch64]
 //
 // Igual que build.titan (mismo cargador, typechecker, generador y runtime,
 // todo escrito en Titan), pero en vez de código máquina escribe LLVM IR
@@ -28,6 +28,7 @@ fn main() {
     if len(args) < 2 {
         print("uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64]")
         print("     titan run selfhost/build_llvm.titan --lote DIRECTORIO PROGRAMA.titan...")
+        print("     (--lote-aarch64: lo mismo para ARM64)")
         return
     }
     let here = std::path::parent(std::path::canonical(ar_program()))
@@ -41,13 +42,17 @@ fn main() {
     }
     // Lote: el runtime se revisa una sola vez; cada PROGRAMA.titan da
     // DIRECTORIO/PROGRAMA.ll, o DIRECTORIO/PROGRAMA.err con el error.
-    if args[0] == "--lote" {
+    if args[0] == "--lote" || args[0] == "--lote-aarch64" {
+        let mut lote_target = "x86_64"
+        if args[0] == "--lote-aarch64" {
+            lote_target = "aarch64"
+        }
         let dir = args[1]
         let mut i = 2
         while i < len(args) {
             let program = args[i]
             let base = std::path::stem(program)
-            match build_with(program, gr, "x86_64") {
+            match build_with(program, gr, lote_target) {
                 Result::Ok(text) => {
                     std::fs::write_text(std::path::join(dir, base + ".ll"), text)
                 },

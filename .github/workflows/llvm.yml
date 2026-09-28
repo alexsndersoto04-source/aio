@@ -54,3 +54,66 @@ jobs:
           else
             echo "todavía no hay selfhost/native/llvm/verificar.sh"
           fi
+
+  # ARM64, parte 1 (x86-64): el compilador en Titan escribe el IR para AArch64
+  # y clang lo convierte en objetos ARM64.
+  arm64-objetos:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Obtener zett (para compilar el compilador en Titan)
+        run: |
+          git fetch -q origin +refs/heads/binaries:refs/remotes/origin/binaries
+          mkdir -p "$HOME/bin"
+          git show origin/binaries:zett-linux-x86_64 > "$HOME/bin/zett-real"
+          chmod +x "$HOME/bin/zett-real"
+          sudo apt-get install -y --no-install-recommends libasound2t64 >/dev/null 2>&1 || true
+          printf '#!/bin/sh\nexec "%s/bin/zett-real" "$@"\n' "$HOME" > "$HOME/bin/zett"
+          chmod +x "$HOME/bin/zett"
+
+      - name: Objetos ARM64 (Titan -> LLVM IR -> clang --target=aarch64)
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          bash selfhost/native/llvm/arm64_objetos.sh /tmp/a64 2>&1 | tee /tmp/obj.txt
+          rc=${PIPESTATUS[0]}
+          tail -2 /tmp/obj.txt | while IFS= read -r l; do echo "::notice::[arm64-objetos] $l"; done
+          grep "^LLVM rechazó" /tmp/obj.txt | head -5 | while IFS= read -r l; do echo "::error::[arm64-objetos] $l"; done
+          exit $rc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64-objetos
+          path: /tmp/a64
+          retention-days: 3
+
+  # ARM64, parte 2 (máquina ARM64 real): enlazar, ejecutar y comparar con la
+  # VM de Rust compilada aquí mismo para ARM64.
+  arm64:
+    needs: arm64-objetos
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias
+        run: sudo apt-get install -y --no-install-recommends libasound2-dev >/dev/null
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: VM de Rust para ARM64 (referencia)
+        run: |
+          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+          ./target/release/titan --version || true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: arm64-objetos
+          path: /tmp/a64
+
+      - name: Batería ARM64
+        run: |
+          echo "::notice::máquina: $(uname -m) $(uname -r)"
+          ZETT="$GITHUB_WORKSPACE/target/release/titan" bash selfhost/native/llvm/arm64_comparar.sh /tmp/a64 2>&1 | tee /tmp/arm.txt
+          rc=${PIPESTATUS[0]}
+          python3 selfhost/native/llvm/resumen_ci.py /tmp/arm.txt
+          exit $rc

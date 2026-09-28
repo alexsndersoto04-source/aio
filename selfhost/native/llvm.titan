@@ -649,6 +649,32 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_e(b1, "  " + id + "s2 = select i1 " + id + "e, i64 0, i64 " + id + "s1")
         b1 = lv_e(b1, "  " + id + "v = select i1 " + id + "u, i64 2, i64 " + id + "s2")
         b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::syscall" && ctx.target == "aarch64" {
+        // Números y estructuras de x86-64: los traduce rt_sys_arm64 (sys_arm64.titan).
+        let mut args = []
+        k = 0
+        while k < 7 {
+            args = std::array::push(args, "1")
+            args = std::array::push(args, id + "a{k}b")
+            k += 1
+        }
+        b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_arm64", args)
+        b1 = lv_put(b1, res, "1", id + "sb")
+    } else if name == "std::raw::svc" {
+        if ctx.target != "aarch64" {
+            return lv_e(lv_err(b1, "'std::raw::svc' is only available on aarch64"), "  unreachable")
+        }
+        let mut a = ""
+        k = 0
+        while k < 7 {
+            if k > 0 {
+                a += ", "
+            }
+            a += "i64 " + id + "a{k}b"
+            k += 1
+        }
+        b1 = lv_e(b1, "  " + id + "v = call i64 @lv_svc(" + a + ")")
+        b1 = lv_put(b1, res, "1", id + "v")
     } else if name == "std::raw::syscall" {
         let mut a = ""
         k = 0
@@ -1278,15 +1304,24 @@ fn lv_glue(ctx: LvCtx) -> array {
         // lv_start: globales, pila propia de 1 GiB (reservada) y lv_main en ella.
         l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_syscall(i64 9, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov $0, %rsp\\0A\\09call lv_main\\0A\\09ud2\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
     } else {
-        l = std::array::push(l, "; aarch64: pendiente (mapa de llamadas al sistema)")
+        // AArch64: número en x8, argumentos en x0-x5, resultado en x0.
+        let cons = "\"=" + lv_br("x0") + "," + lv_br("x8") + "," + lv_br("x0") + "," + lv_br("x1") + "," + lv_br("x2") + "," + lv_br("x3") + "," + lv_br("x4") + "," + lv_br("x5") + ",~" + lv_br("memory") + "\""
+        l = std::array::push(l, "define internal i64 @lv_svc(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f) alwaysinline " + lv_br("\n  %r = call i64 asm sideeffect \"svc #0\", " + cons + "(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f)\n  ret i64 %r\n"))
+        l = std::array::push(l, "module asm \".globl _start\"")
+        l = std::array::push(l, "module asm \"_start:\"")
+        l = std::array::push(l, "module asm \"  mov x0, sp\"")
+        l = std::array::push(l, "module asm \"  bl lv_start\"")
+        l = std::array::push(l, "module asm \"  brk #0\"")
+        // mmap de ARM64 = 222; mismas banderas.
+        l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_svc(i64 222, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov sp, $0\\0Abl lv_main\\0Abrk #0\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
     }
     l
 }
 
 // Programa (gu) + runtime (gr) -> Result::Ok(texto .ll) o Err(mensajes).
 fn lv_build(gu: G, gr: G, target: string) -> Result {
-    if target != "x86_64" {
-        return Result::Err("LLVM backend: target '" + target + "' is not supported yet (only x86_64)")
+    if target != "x86_64" && target != "aarch64" {
+        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64 or aarch64)")
     }
     let (rt, rt_arity) = bk_rt_tables(gr)
     let uctx = LvCtx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, target: target, depth: [], maxd: 0 }
@@ -1344,7 +1379,7 @@ fn lv_build(gu: G, gr: G, target: string) -> Result {
     }
     let mut head = []
     head = std::array::push(head, "; Generado por selfhost/native/llvm.titan (compilador de Titan escrito en Titan).")
-    head = std::array::push(head, "target triple = \"x86_64-unknown-linux-gnu\"")
+    head = std::array::push(head, "target triple = \"" + target + "-unknown-linux-gnu\"")
     head = std::array::push(head, "%V = type " + lv_br(" i64, i64 "))
     head = std::array::push(head, "%O = type " + lv_br(" i64, i1 "))
     head = std::array::push(head, "%P = type " + lv_br(" i32, i32 "))

@@ -1,0 +1,243 @@
+// Llamadas al sistema en ARM64 (AArch64: teléfonos, Termux, servidores ARM).
+//
+// El runtime está escrito con los números y estructuras de Linux x86-64
+// (std::raw::syscall). En ARM64, el backend LLVM convierte cada
+// std::raw::syscall en una llamada a rt_sys_arm64, que la traduce a la
+// llamada equivalente de ARM64 (std::raw::svc = instrucción `svc #0`):
+//   - números distintos (read 0 -> 63, write 1 -> 64, ...);
+//   - llamadas que ARM64 no tiene, con su equivalente "at"/moderna
+//     (open -> openat, stat -> newfstatat, poll -> ppoll, fork -> clone,
+//     dup2 -> dup3, mkdir -> mkdirat, rename -> renameat, ...);
+//   - estructuras con otra forma: `struct stat` (144 bytes en x86-64, 128 en
+//     ARM64, con campos en otro orden) y `struct epoll_event` (12 bytes
+//     empaquetados en x86-64, 16 en ARM64);
+//   - banderas de open con otro valor (O_DIRECTORY, O_NOFOLLOW, O_DIRECT,
+//     O_LARGEFILE).
+// Las estructuras que son iguales en las dos (termios, sigaction, pollfd,
+// timespec, dirent64, utsname, statfs, siginfo de signalfd) pasan tal cual.
+// Una llamada que no esté en la tabla devuelve -ENOSYS (-38): nunca se
+// inventa un resultado.
+// Solo se compila para ARM64 (en x86-64 nadie la llama). Prefijo `sa_`.
+
+// Zona de trabajo propia en las globales (512 bytes libres al final).
+fn sa_scratch() -> int {
+    std::raw::globals() + 3584
+}
+
+fn sa_u32(p: int) -> int {
+    std::raw::load(p) & 4294967295
+}
+
+fn sa_put8(p: int, v: int, n: int) {
+    let mut i = 0
+    let mut x = v
+    while i < n {
+        std::raw::store8(p + i, x & 255)
+        x = std::raw::shr(x, 8)
+        i += 1
+    }
+}
+
+fn sa_get8(p: int, n: int) -> int {
+    let mut v = 0
+    let mut i = n - 1
+    while i >= 0 {
+        v = std::raw::shl(v, 8) | std::raw::load8(p + i)
+        i -= 1
+    }
+    v
+}
+
+// Banderas de open: x86-64 -> ARM64.
+fn sa_open_flags(f: int) -> int {
+    let mut out = f
+    let pairs = [(65536, 16384), (131072, 32768), (16384, 65536), (32768, 131072)]
+    for pair in pairs {
+        let (x86, arm) = pair
+        out = out & (-1 - x86)
+    }
+    for pair in pairs {
+        let (x86, arm) = pair
+        if (f & x86) != 0 {
+            out = out | arm
+        }
+    }
+    out
+}
+
+// struct stat de ARM64 (ya escrita en `buf`) -> la de x86-64, en el mismo sitio
+// (el runtime reserva 144 bytes).
+//   ARM64:  dev@0 ino@8 mode:u32@16 nlink:u32@20 uid:u32@24 gid:u32@28 rdev@32
+//           size@48 blksize:i32@56 blocks@64 atime@72 mtime@88 ctime@104
+//   x86-64: dev@0 ino@8 nlink@16 mode:u32@24 uid:u32@28 gid:u32@32 rdev@40
+//           size@48 blksize@56 blocks@64 atime@72 mtime@88 ctime@104
+fn sa_stat_fix(buf: int, r: int) -> int {
+    if r < 0 {
+        return r
+    }
+    let mode = sa_u32(buf + 16)
+    let nlink = sa_u32(buf + 20)
+    let uid = sa_u32(buf + 24)
+    let gid = sa_u32(buf + 28)
+    let rdev = std::raw::load(buf + 32)
+    let blksize = sa_u32(buf + 56)
+    std::raw::store(buf + 16, nlink)
+    std::raw::store(buf + 24, mode | std::raw::shl(uid, 32))
+    std::raw::store(buf + 32, gid)
+    std::raw::store(buf + 40, rdev)
+    std::raw::store(buf + 56, blksize)
+    std::raw::store(buf + 120, 0)
+    std::raw::store(buf + 128, 0)
+    std::raw::store(buf + 136, 0)
+    r
+}
+
+// epoll_event x86-64 (u32 events @0, u64 data @4; 12 bytes) -> ARM64 (16 bytes).
+fn sa_epoll_ctl(ep: int, op: int, fd: int, ev: int) -> int {
+    if ev == 0 {
+        return std::raw::svc(21, ep, op, fd, 0, 0, 0)
+    }
+    let s = sa_scratch()
+    std::raw::store(s, sa_get8(ev, 4))
+    std::raw::store(s + 8, sa_get8(ev + 4, 8))
+    std::raw::svc(21, ep, op, fd, s, 0, 0)
+}
+
+fn sa_epoll_wait(ep: int, evs: int, max: int, ms: int) -> int {
+    let mut buf = sa_scratch()
+    let own = max > 32
+    if own {
+        buf = rt_alloc(16 * max)
+    }
+    let r = std::raw::svc(22, ep, buf, max, ms, 0, 8)
+    let mut i = 0
+    while i < r {
+        sa_put8(evs + 12 * i, sa_u32(buf + 16 * i), 4)
+        sa_put8(evs + 12 * i + 4, std::raw::load(buf + 16 * i + 8), 8)
+        i += 1
+    }
+    if own {
+        rt_free_block(buf)
+    }
+    r
+}
+
+// poll(fds, n, ms) = ppoll(fds, n, ms < 0 ? NULL : {ms/1000, resto en ns}).
+fn sa_poll(fds: int, n: int, ms: int) -> int {
+    if ms < 0 {
+        return std::raw::svc(73, fds, n, 0, 0, 8, 0)
+    }
+    let ts = sa_scratch()
+    std::raw::store(ts, ms / 1000)
+    std::raw::store(ts + 8, (ms % 1000) * 1000000)
+    std::raw::svc(73, fds, n, ts, 0, 8, 0)
+}
+
+// dup2(a, b): dup3 no admite a == b; dup2 entonces solo comprueba a.
+fn sa_dup2(a: int, b: int) -> int {
+    if a == b {
+        let r = std::raw::svc(25, a, 1, 0, 0, 0, 0)
+        if r < 0 {
+            return r
+        }
+        return b
+    }
+    std::raw::svc(24, a, b, 0, 0, 0, 0)
+}
+
+// Números que solo cambian (mismos argumentos), x86-64 -> ARM64; -1 si no.
+fn sa_same_args(n: int) -> int {
+    if n == 0 { return 63 }
+    if n == 1 { return 64 }
+    if n == 3 { return 57 }
+    if n == 9 { return 222 }
+    if n == 11 { return 215 }
+    if n == 13 { return 134 }
+    if n == 14 { return 135 }
+    if n == 16 { return 29 }
+    if n == 35 { return 101 }
+    if n == 39 { return 172 }
+    if n == 44 { return 206 }
+    if n == 53 { return 199 }
+    if n == 59 { return 221 }
+    if n == 60 { return 93 }
+    if n == 61 { return 260 }
+    if n == 62 { return 129 }
+    if n == 63 { return 160 }
+    if n == 72 { return 25 }
+    if n == 74 { return 82 }
+    if n == 79 { return 17 }
+    if n == 80 { return 49 }
+    if n == 91 { return 52 }
+    if n == 102 { return 174 }
+    if n == 110 { return 173 }
+    if n == 137 { return 43 }
+    if n == 157 { return 167 }
+    if n == 204 { return 123 }
+    if n == 217 { return 61 }
+    if n == 228 { return 113 }
+    if n == 231 { return 94 }
+    if n == 271 { return 73 }
+    if n == 289 { return 74 }
+    if n == 291 { return 20 }
+    if n == 293 { return 59 }
+    if n == 318 { return 278 }
+    if n == 436 { return 436 }
+    -1
+}
+
+fn rt_sys_arm64(n: int, a: int, b: int, c: int, d: int, e: int, f: int) -> int {
+    let same = sa_same_args(n)
+    if same >= 0 {
+        return std::raw::svc(same, a, b, c, d, e, f)
+    }
+    let at = -100
+    if n == 2 {
+        return std::raw::svc(56, at, a, sa_open_flags(b), c, 0, 0)
+    }
+    if n == 4 {
+        return sa_stat_fix(b, std::raw::svc(79, at, a, b, 0, 0, 0))
+    }
+    if n == 5 {
+        return sa_stat_fix(b, std::raw::svc(80, a, b, 0, 0, 0, 0))
+    }
+    if n == 6 {
+        return sa_stat_fix(b, std::raw::svc(79, at, a, b, 256, 0, 0))
+    }
+    if n == 262 {
+        return sa_stat_fix(c, std::raw::svc(79, a, b, c, d, 0, 0))
+    }
+    if n == 7 {
+        return sa_poll(a, b, c)
+    }
+    if n == 33 {
+        return sa_dup2(a, b)
+    }
+    if n == 57 {
+        // fork = clone(SIGCHLD, sin pila nueva)
+        return std::raw::svc(220, 17, 0, 0, 0, 0, 0)
+    }
+    if n == 82 {
+        return std::raw::svc(38, at, a, at, b, 0, 0)
+    }
+    if n == 83 {
+        return std::raw::svc(34, at, a, b, 0, 0, 0)
+    }
+    if n == 84 {
+        // rmdir = unlinkat(AT_REMOVEDIR)
+        return std::raw::svc(35, at, a, 512, 0, 0, 0)
+    }
+    if n == 87 {
+        return std::raw::svc(35, at, a, 0, 0, 0, 0)
+    }
+    if n == 89 {
+        return std::raw::svc(78, at, a, b, c, 0, 0)
+    }
+    if n == 232 {
+        return sa_epoll_wait(a, b, c, d)
+    }
+    if n == 233 {
+        return sa_epoll_ctl(a, b, c, d)
+    }
+    -38
+}

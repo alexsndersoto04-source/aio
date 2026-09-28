@@ -35,6 +35,7 @@ fn raw_signatures() -> array {
         "std::raw::shr Int,Int -> Int",
         "std::raw::sar Int,Int -> Int",
         "std::raw::syscall Int,Int,Int,Int,Int,Int,Int -> Int",
+        "std::raw::svc Int,Int,Int,Int,Int,Int,Int -> Int",
         "std::raw::globals  -> Int",
         "std::raw::fail String -> Never",
     ]
