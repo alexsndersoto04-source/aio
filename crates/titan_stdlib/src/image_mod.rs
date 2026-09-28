@@ -510,6 +510,17 @@ mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
 
+    // Cada prueba que usa imágenes corre en su propio runtime: las pruebas van
+    // en paralelo (hilos del mismo proceso) y el presupuesto de memoria
+    // transitoria (MAX_TRANSIENT_IMAGE_BYTES) es por runtime; compartiendo el
+    // runtime 0, tres operaciones a la vez agotaban el presupuesto y la prueba
+    // fallaba al azar.
+    fn isolated<R>(test: impl FnOnce() -> R) -> R {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(9_100_000);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::native::with_runtime_context(id, test)
+    }
+
     fn make_test_image_bytes() -> Vec<u8> {
         // 4x4 red image.
         let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
@@ -531,49 +542,57 @@ mod tests {
 
     #[test]
     fn load_bytes_reads_size_and_color() {
-        let handle = load_bytes(&make_test_image_bytes()).unwrap();
-        assert_eq!(width(handle).unwrap(), 4);
-        assert_eq!(height(handle).unwrap(), 4);
-        assert!(color_type(handle).unwrap().contains("Rgb"));
-        close(handle);
+        isolated(|| {
+            let handle = load_bytes(&make_test_image_bytes()).unwrap();
+            assert_eq!(width(handle).unwrap(), 4);
+            assert_eq!(height(handle).unwrap(), 4);
+            assert!(color_type(handle).unwrap().contains("Rgb"));
+            close(handle);
+        });
     }
 
     #[test]
     fn resize_produces_new_handle_and_size() {
-        let original = load_bytes(&make_test_image_bytes()).unwrap();
-        let resized = resize_exact(original, 8, 8, "nearest").unwrap();
-        assert_ne!(original, resized);
-        assert_eq!(width(resized).unwrap(), 8);
-        assert_eq!(height(resized).unwrap(), 8);
-        close(original);
-        close(resized);
+        isolated(|| {
+            let original = load_bytes(&make_test_image_bytes()).unwrap();
+            let resized = resize_exact(original, 8, 8, "nearest").unwrap();
+            assert_ne!(original, resized);
+            assert_eq!(width(resized).unwrap(), 8);
+            assert_eq!(height(resized).unwrap(), 8);
+            close(original);
+            close(resized);
+        });
     }
 
     #[test]
     fn transform_pipeline_round_trip() {
-        let a = load_bytes(&make_test_image_bytes()).unwrap();
-        let b = grayscale(a).unwrap();
-        let c = brighten(b, 10).unwrap();
-        let d = rotate90(c).unwrap();
-        let e = flip_horizontal(d).unwrap();
-        // Every step yields a distinct handle.
-        for handle in [a, b, c, d, e] {
-            assert!(width(handle).is_ok());
-        }
-        for handle in [a, b, c, d, e] {
-            close(handle);
-        }
+        isolated(|| {
+            let a = load_bytes(&make_test_image_bytes()).unwrap();
+            let b = grayscale(a).unwrap();
+            let c = brighten(b, 10).unwrap();
+            let d = rotate90(c).unwrap();
+            let e = flip_horizontal(d).unwrap();
+            // Every step yields a distinct handle.
+            for handle in [a, b, c, d, e] {
+                assert!(width(handle).is_ok());
+            }
+            for handle in [a, b, c, d, e] {
+                close(handle);
+            }
+        });
     }
 
     #[test]
     fn encode_round_trip_bytes() {
-        let a = load_bytes(&make_test_image_bytes()).unwrap();
-        let png = encode(a, "png").unwrap();
-        assert!(png.len() > 8 && png.starts_with(b"\x89PNG"));
-        let b = load_bytes(&png).unwrap();
-        assert_eq!(width(b).unwrap(), 4);
-        close(a);
-        close(b);
+        isolated(|| {
+            let a = load_bytes(&make_test_image_bytes()).unwrap();
+            let png = encode(a, "png").unwrap();
+            assert!(png.len() > 8 && png.starts_with(b"\x89PNG"));
+            let b = load_bytes(&png).unwrap();
+            assert_eq!(width(b).unwrap(), 4);
+            close(a);
+            close(b);
+        });
     }
 
     #[test]
