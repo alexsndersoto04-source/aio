@@ -8,77 +8,8 @@
 // código máquina x86-64 dentro de un ejecutable ELF que no necesita ni Rust
 // ni la VM para funcionar.
 import args
-import loader
-import codegen
+import frontend
 import native::backend
-
-// Firmas de las operaciones de bajo nivel, solo para el runtime.
-fn raw_signatures() -> array {
-    return [
-        "std::raw::load Int -> Int",
-        "std::raw::store Int,Int -> Nil",
-        "std::raw::load8 Int -> Int",
-        "std::raw::store8 Int,Int -> Nil",
-        "std::raw::tag Any -> Int",
-        "std::raw::bits Any -> Int",
-        "std::raw::value Int,Int -> Any",
-        "std::raw::adopt Int,Int -> Any",
-        "std::raw::keep Any -> Int",
-        "std::raw::retain Int,Int -> Nil",
-        "std::raw::release Int,Int -> Nil",
-        "std::raw::fadd Int,Int -> Int",
-        "std::raw::fsub Int,Int -> Int",
-        "std::raw::fmul Int,Int -> Int",
-        "std::raw::fdiv Int,Int -> Int",
-        "std::raw::fcmp Int,Int -> Int",
-        "std::raw::ffromint Int -> Int",
-        "std::raw::fsqrt Int -> Int",
-        "std::raw::ftoint Int -> Int",
-        "std::raw::ffma Int,Int,Int -> Int",
-        "std::raw::cpuid Int,Int -> Int",
-        "std::raw::xgetbv  -> Int",
-        "std::raw::wadd Int,Int -> Int",
-        "std::raw::wsub Int,Int -> Int",
-        "std::raw::wmul Int,Int -> Int",
-        "std::raw::shl Int,Int -> Int",
-        "std::raw::shr Int,Int -> Int",
-        "std::raw::sar Int,Int -> Int",
-        "std::raw::syscall Int,Int,Int,Int,Int,Int,Int -> Int",
-        "std::raw::globals  -> Int",
-        "std::raw::fail String -> Never",
-    ]
-}
-
-fn diag_line(d: Diag) -> string {
-    let sp = d.span
-    if sp != nil && sp.line > 0 && sp.col > 0 {
-        let l = sp.line
-        let c = sp.col
-        if d.file != nil {
-            return d.file + ":{l}:{c}: " + d.msg
-        }
-        return "{l}:{c}: " + d.msg
-    }
-    d.msg
-}
-
-// Cargar + revisar + generar bytecode.
-fn front(path: string, natives: array) -> Result {
-    let items = ld_load(path)?
-    let diags = check_program_with(items, natives)
-    if len(diags) > 0 {
-        let mut lines = []
-        for d in diags {
-            lines = std::array::push(lines, diag_line(d))
-        }
-        return Result::Err(ld_join(lines, "\n"))
-    }
-    let mut names = std::map::new()
-    for line in natives {
-        names = std::map::insert(names, split_on(line, ' ')[0], true)
-    }
-    cg_compile_program(cg_new(names), items)
-}
 
 fn build(program: string, runtime: string) -> Result {
     let gu = front(program, native_table())?

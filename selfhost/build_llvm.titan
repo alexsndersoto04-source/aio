@@ -1,0 +1,74 @@
+// Compilador de Titan con el backend LLVM.
+//
+// Uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64]
+//
+// Igual que build.titan (mismo cargador, typechecker, generador y runtime,
+// todo escrito en Titan), pero en vez de código máquina escribe LLVM IR
+// (native/llvm.titan). Después LLVM lo compila y optimiza:
+//   clang -O2 -nostdlib -static -fno-pie -no-pie -Wl,-e,_start SALIDA.ll -o prog
+import args
+import frontend
+import native::llvm
+
+fn runtime_graph(runtime: string) -> Result {
+    let rt_natives = std::array::concat(native_table(), raw_signatures())
+    match front(runtime, rt_natives) {
+        Result::Ok(g) => Result::Ok(g),
+        Result::Err(message) => Result::Err("native runtime: " + message),
+    }
+}
+
+fn build_with(program: string, gr: G, target: string) -> Result {
+    let gu = front(program, native_table())?
+    lv_build(gu, gr, target)
+}
+
+fn main() {
+    let args = ar_user_args()
+    if len(args) < 2 {
+        print("uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64]")
+        print("     titan run selfhost/build_llvm.titan --lote DIRECTORIO PROGRAMA.titan...")
+        return
+    }
+    let here = std::path::parent(std::path::canonical(ar_program()))
+    let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
+    let gr = match runtime_graph(runtime) {
+        Result::Ok(g) => g,
+        Result::Err(message) => {
+            print("error: " + message)
+            return
+        },
+    }
+    // Lote: el runtime se revisa una sola vez; cada PROGRAMA.titan da
+    // DIRECTORIO/PROGRAMA.ll, o DIRECTORIO/PROGRAMA.err con el error.
+    if args[0] == "--lote" {
+        let dir = args[1]
+        let mut i = 2
+        while i < len(args) {
+            let program = args[i]
+            let base = std::path::stem(program)
+            match build_with(program, gr, "x86_64") {
+                Result::Ok(text) => {
+                    std::fs::write_text(std::path::join(dir, base + ".ll"), text)
+                },
+                Result::Err(message) => {
+                    std::fs::write_text(std::path::join(dir, base + ".err"), "error: " + message + "\n")
+                },
+            }
+            i += 1
+        }
+        return
+    }
+    let mut target = "x86_64"
+    if len(args) > 2 {
+        target = args[2]
+    }
+    match build_with(args[0], gr, target) {
+        Result::Ok(text) => {
+            std::fs::write_text(args[1], text)
+        },
+        Result::Err(message) => {
+            print("error: " + message)
+        },
+    }
+}
