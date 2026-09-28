@@ -8,6 +8,10 @@
 // Como el Display de io::Error de Rust: "<strerror> (os error N)".
 fn rt_os_error(errno: int) -> any {
     let mut text = rt_concat("Unknown error ", rt_int_to_str(errno))
+    if errno == 0 {
+        // strerror_r(0) de glibc
+        text = "Success"
+    }
     if errno >= 1 && errno <= 133 {
         text = rt_errno_text(errno)
     }

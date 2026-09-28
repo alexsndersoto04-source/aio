@@ -56,13 +56,17 @@ fn parse_color(name: &str) -> Result<Color, TermError> {
                 }
             }
             if let Some(hex) = other.strip_prefix('#') {
+                // `get` instead of slicing: a multi-byte character across a
+                // 2-byte boundary used to panic ("not a char boundary").
                 if hex.len() == 6 {
-                    if let (Ok(r), Ok(g), Ok(b)) = (
-                        u8::from_str_radix(&hex[0..2], 16),
-                        u8::from_str_radix(&hex[2..4], 16),
-                        u8::from_str_radix(&hex[4..6], 16),
-                    ) {
-                        return Ok(Color::Rgb { r, g, b });
+                    if let (Some(rs), Some(gs), Some(bs)) = (hex.get(0..2), hex.get(2..4), hex.get(4..6)) {
+                        if let (Ok(r), Ok(g), Ok(b)) = (
+                            u8::from_str_radix(rs, 16),
+                            u8::from_str_radix(gs, 16),
+                            u8::from_str_radix(bs, 16),
+                        ) {
+                            return Ok(Color::Rgb { r, g, b });
+                        }
                     }
                 }
             }
@@ -267,6 +271,12 @@ mod tests {
             Attribute::Underlined
         ));
         assert!(parse_attr("blink123").is_err());
+    }
+
+    #[test]
+    fn hex_color_with_multibyte_char_is_an_error_not_a_panic() {
+        assert!(matches!(parse_color("#a€bc"), Err(TermError::UnknownColor(_))));
+        assert_eq!(parse_color("#0a0B0c").unwrap(), Color::Rgb { r: 10, g: 11, b: 12 });
     }
 
     #[test]

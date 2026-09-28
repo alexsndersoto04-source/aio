@@ -32,6 +32,8 @@ import std_signals
 import std_uwidth_tab
 import std_uwidth
 import std_progress
+import std_term
+import std_term_keys
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust

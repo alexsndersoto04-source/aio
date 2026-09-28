@@ -1,0 +1,1016 @@
+// std::term::read_key: el lector de eventos de crossterm 0.28.1.
+//
+// - event/source/unix/mio.rs: epoll (mio 1.2.2, disparo por flanco) sobre la
+//   terminal y sobre las señales SIGWINCH; lee de a 1024 bytes y pasa cada
+//   byte al analizador.
+// - event/sys/unix/parse.rs: convierte bytes en eventos (tm_parse*).
+// - event/read.rs y event.rs: poll(timeout) y read() con el filtro de eventos.
+//
+// signal-hook instala un manejador de SIGWINCH que escribe en un socket; el
+// runtime no tiene punteros a funciones, así que SIGWINCH se bloquea y se
+// lee de un signalfd (lo mismo que hace std::signals). SIGWINCH se ignora
+// por defecto, así que el programa no nota la diferencia; los hijos que
+// lanza el runtime empiezan con la máscara vacía, como con Rust.
+//
+// Resultado de un análisis: (tipo, nombre, modificadores)
+//   tipo 0 = faltan bytes, 1 = error (se descarta), 2 = tecla,
+//   3 = otro evento (ratón, pegado, foco, cambio de tamaño),
+//   4 = evento interno (posición del cursor, capacidades del teclado)
+//   modificadores (bits de KeyModifiers): 1 SHIFT, 2 CONTROL, 4 ALT,
+//   8 SUPER, 16 HYPER, 32 META; 256 = la tecla es un carácter (Char).
+
+fn tm_none() -> (int, any, int) {
+    return (0, "", 0)
+}
+
+fn tm_err() -> (int, any, int) {
+    return (1, "", 0)
+}
+
+fn tm_key(name: any, mods: int) -> (int, any, int) {
+    return (2, name, mods)
+}
+
+fn tm_other() -> (int, any, int) {
+    return (3, "", 0)
+}
+
+fn tm_internal() -> (int, any, int) {
+    return (4, "", 0)
+}
+
+fn tm_char(cp: int, mods: int) -> (int, any, int) {
+    let b = sb_new(4)
+    sb_cp(b, cp)
+    return (2, sb_finish(b), mods | 256)
+}
+
+fn tm_fkey(n: int, mods: int) -> (int, any, int) {
+    return (2, "F" + rt_int_to_str(n), mods)
+}
+
+// parse_event(buffer, input_available)
+fn tm_parse(p: int, n: int, more: bool) -> (int, any, int) {
+    if n == 0 {
+        return tm_none()
+    }
+    let b0 = std::raw::load8(p)
+    if b0 == 27 {
+        if n == 1 {
+            if more {
+                return tm_none()
+            }
+            return tm_key("Escape", 0)
+        }
+        let b1 = std::raw::load8(p + 1)
+        if b1 == 79 {
+            if n == 2 {
+                return tm_none()
+            }
+            let b2 = std::raw::load8(p + 2)
+            if b2 == 68 {
+                return tm_key("Left", 0)
+            }
+            if b2 == 67 {
+                return tm_key("Right", 0)
+            }
+            if b2 == 65 {
+                return tm_key("Up", 0)
+            }
+            if b2 == 66 {
+                return tm_key("Down", 0)
+            }
+            if b2 == 72 {
+                return tm_key("Home", 0)
+            }
+            if b2 == 70 {
+                return tm_key("End", 0)
+            }
+            if b2 >= 80 && b2 <= 83 {
+                return tm_fkey(b2 - 79, 0)
+            }
+            return tm_err()
+        }
+        if b1 == 91 {
+            return tm_parse_csi(p, n)
+        }
+        if b1 == 27 {
+            return tm_key("Escape", 0)
+        }
+        // ESC + otra cosa: lo de después, con ALT si es una tecla
+        let (k, name, mods) = tm_parse(p + 1, n - 1, more)
+        if k == 2 {
+            return (2, name, mods | 4)
+        }
+        return (k, name, mods)
+    }
+    if b0 == 13 {
+        return tm_key("Enter", 0)
+    }
+    if b0 == 10 && !tm_is_raw() {
+        return tm_key("Enter", 0)
+    }
+    if b0 == 9 {
+        return tm_key("Tab", 0)
+    }
+    if b0 == 127 {
+        return tm_key("Backspace", 0)
+    }
+    if b0 >= 1 && b0 <= 26 {
+        return tm_char(b0 - 1 + 97, 2)
+    }
+    if b0 >= 28 && b0 <= 31 {
+        return tm_char(b0 - 28 + 52, 2)
+    }
+    if b0 == 0 {
+        return tm_char(32, 2)
+    }
+    tm_parse_utf8(p, n)
+}
+
+// parse_utf8_char: el carácter si el búfer es UTF-8 válido; si no, espera
+// más bytes mientras la secuencia pueda completarse.
+fn tm_parse_utf8(p: int, n: int) -> (int, any, int) {
+    if rt_valid_utf8(p, n) {
+        let b0 = std::raw::load8(p)
+        let mut cp = b0
+        let mut w = 1
+        if b0 >= 192 {
+            cp = b0 & 31
+            w = 2
+        }
+        if b0 >= 224 {
+            cp = b0 & 15
+            w = 3
+        }
+        if b0 >= 240 {
+            cp = b0 & 7
+            w = 4
+        }
+        let mut i = 1
+        while i < w {
+            cp = std::raw::shl(cp, 6) | (std::raw::load8(p + i) & 63)
+            i += 1
+        }
+        // Char en mayúscula lleva SHIFT (no se muestra en caracteres)
+        return tm_char(cp, 0)
+    }
+    let b0 = std::raw::load8(p)
+    let mut need = 1
+    if b0 >= 192 && b0 <= 223 {
+        need = 2
+    }
+    if b0 >= 224 && b0 <= 239 {
+        need = 3
+    }
+    if b0 >= 240 && b0 <= 247 {
+        need = 4
+    }
+    if (b0 >= 128 && b0 <= 191) || b0 >= 248 {
+        return tm_err()
+    }
+    if need > 1 && n > 1 {
+        let mut i = 1
+        while i < n {
+            if (std::raw::load8(p + i) & 192) != 128 {
+                return tm_err()
+            }
+            i += 1
+        }
+    }
+    if n < need {
+        return tm_none()
+    }
+    tm_err()
+}
+
+// Fin del campo que empieza en i (hasta `sep` o b).
+fn tm_fend(p: int, i: int, b: int, sep: int) -> int {
+    let mut e = i
+    while e < b && std::raw::load8(p + e) != sep {
+        e += 1
+    }
+    e
+}
+
+// modifier_and_kind_parsed: el campo [a, e) es "mod[:tipo]"; devuelve la
+// máscara (u8) o -1.
+fn tm_mask(p: int, a: int, e: int) -> int {
+    let c = tm_fend(p, a, e, 58)
+    tm_num(p, a, c, 10, 255)
+}
+
+// parse_modifiers
+fn tm_mods(mask: int) -> int {
+    let mut m = 0
+    if mask > 0 {
+        m = mask - 1
+    }
+    let mut out = 0
+    if (m & 1) != 0 {
+        out = out | 1
+    }
+    if (m & 2) != 0 {
+        out = out | 4
+    }
+    if (m & 4) != 0 {
+        out = out | 2
+    }
+    if (m & 8) != 0 {
+        out = out | 8
+    }
+    if (m & 16) != 0 {
+        out = out | 16
+    }
+    if (m & 32) != 0 {
+        out = out | 32
+    }
+    out
+}
+
+fn tm_starts(p: int, n: int, lit: string) -> bool {
+    let k = rt_slen(lit)
+    if n < k {
+        return false
+    }
+    let q = std::raw::bits(lit) + 16
+    let mut i = 0
+    while i < k {
+        if std::raw::load8(p + i) != std::raw::load8(q + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn tm_ends(p: int, n: int, lit: string) -> bool {
+    let k = rt_slen(lit)
+    if n < k {
+        return false
+    }
+    tm_starts(p + n - k, k, lit)
+}
+
+fn tm_esc_str(rest: string) -> string {
+    rt_from_cstr_byte(27) + rest
+}
+
+// parse_csi (el búfer empieza con ESC [)
+fn tm_parse_csi(p: int, n: int) -> (int, any, int) {
+    if n == 2 {
+        return tm_none()
+    }
+    let b2 = std::raw::load8(p + 2)
+    if b2 == 91 {
+        if n == 3 {
+            return tm_none()
+        }
+        let b3 = std::raw::load8(p + 3)
+        if b3 >= 65 && b3 <= 69 {
+            return tm_fkey(b3 - 64, 0)
+        }
+        return tm_err()
+    }
+    if b2 == 68 {
+        return tm_key("Left", 0)
+    }
+    if b2 == 67 {
+        return tm_key("Right", 0)
+    }
+    if b2 == 65 {
+        return tm_key("Up", 0)
+    }
+    if b2 == 66 {
+        return tm_key("Down", 0)
+    }
+    if b2 == 72 {
+        return tm_key("Home", 0)
+    }
+    if b2 == 70 {
+        return tm_key("End", 0)
+    }
+    if b2 == 90 {
+        // BackTab con SHIFT: format_key da "Shift+Shift+Tab"
+        return tm_key("Shift+Tab", 1)
+    }
+    if b2 == 77 {
+        return tm_normal_mouse(p, n)
+    }
+    if b2 == 60 {
+        return tm_sgr_mouse(p, n)
+    }
+    if b2 == 73 || b2 == 79 {
+        return tm_other()
+    }
+    if b2 == 59 {
+        return tm_modifier_key(p, n)
+    }
+    if b2 == 80 {
+        return tm_fkey(1, 0)
+    }
+    if b2 == 81 {
+        return tm_fkey(2, 0)
+    }
+    if b2 == 83 {
+        return tm_fkey(4, 0)
+    }
+    let last = std::raw::load8(p + n - 1)
+    if b2 == 63 {
+        if last == 117 {
+            // flags del teclado mejorado: "ESC [ ? flags u"
+            if n < 5 {
+                return tm_none()
+            }
+            return tm_internal()
+        }
+        if last == 99 {
+            return tm_internal()
+        }
+        return tm_none()
+    }
+    if b2 >= 48 && b2 <= 57 {
+        if n == 3 {
+            return tm_none()
+        }
+        if last < 64 || last > 126 {
+            return tm_none()
+        }
+        if tm_starts(p, n, tm_esc_str("[200~")) {
+            if tm_ends(p, n, tm_esc_str("[201~")) {
+                return tm_other()
+            }
+            return tm_none()
+        }
+        if last == 77 {
+            return tm_rxvt_mouse(p, n)
+        }
+        if last == 126 {
+            return tm_special_key(p, n)
+        }
+        if last == 117 {
+            return tm_u_key(p, n)
+        }
+        if last == 82 {
+            return tm_cursor_position(p, n)
+        }
+        return tm_modifier_key(p, n)
+    }
+    tm_err()
+}
+
+// parse_csi_cursor_position: "ESC [ fila ; columna R" (u16 cada uno)
+fn tm_cursor_position(p: int, n: int) -> (int, any, int) {
+    let b = n - 1
+    if !rt_valid_utf8(p + 2, b - 2) {
+        return tm_err()
+    }
+    let e1 = tm_fend(p, 2, b, 59)
+    if tm_num(p, 2, e1, 10, 65535) < 0 {
+        return tm_err()
+    }
+    if e1 >= b {
+        return tm_err()
+    }
+    let e2 = tm_fend(p, e1 + 1, b, 59)
+    if tm_num(p, e1 + 1, e2, 10, 65535) < 0 {
+        return tm_err()
+    }
+    tm_internal()
+}
+
+// parse_csi_modifier_key_code
+fn tm_modifier_key(p: int, n: int) -> (int, any, int) {
+    let b = n - 1
+    if !rt_valid_utf8(p + 2, b - 2) {
+        return tm_err()
+    }
+    // el primer campo se salta
+    let e1 = tm_fend(p, 2, b, 59)
+    let mut mask = -1
+    if e1 < b {
+        let e2 = tm_fend(p, e1 + 1, b, 59)
+        mask = tm_mask(p, e1 + 1, e2)
+    }
+    let mut mods = 0
+    if mask >= 0 {
+        mods = tm_mods(mask)
+    }
+    if mask < 0 && n > 3 {
+        let d = std::raw::load8(p + n - 2)
+        if d < 48 || d > 57 {
+            return tm_err()
+        }
+        mods = tm_mods(d - 48)
+    }
+    let key = std::raw::load8(p + n - 1)
+    if key == 65 {
+        return tm_key("Up", mods)
+    }
+    if key == 66 {
+        return tm_key("Down", mods)
+    }
+    if key == 67 {
+        return tm_key("Right", mods)
+    }
+    if key == 68 {
+        return tm_key("Left", mods)
+    }
+    if key == 70 {
+        return tm_key("End", mods)
+    }
+    if key == 72 {
+        return tm_key("Home", mods)
+    }
+    if key >= 80 && key <= 83 {
+        return tm_fkey(key - 79, mods)
+    }
+    tm_err()
+}
+
+// parse_csi_special_key_code: "ESC [ n [; mod[:tipo]] ~"
+fn tm_special_key(p: int, n: int) -> (int, any, int) {
+    let b = n - 1
+    if !rt_valid_utf8(p + 2, b - 2) {
+        return tm_err()
+    }
+    let e1 = tm_fend(p, 2, b, 59)
+    let first = tm_num(p, 2, e1, 10, 255)
+    if first < 0 {
+        return tm_err()
+    }
+    let mut mods = 0
+    if e1 < b {
+        let e2 = tm_fend(p, e1 + 1, b, 59)
+        let mask = tm_mask(p, e1 + 1, e2)
+        if mask >= 0 {
+            mods = tm_mods(mask)
+        }
+    }
+    if first == 1 || first == 7 {
+        return tm_key("Home", mods)
+    }
+    if first == 2 {
+        return tm_key("Insert", mods)
+    }
+    if first == 3 {
+        return tm_key("Delete", mods)
+    }
+    if first == 4 || first == 8 {
+        return tm_key("End", mods)
+    }
+    if first == 5 {
+        return tm_key("PageUp", mods)
+    }
+    if first == 6 {
+        return tm_key("PageDown", mods)
+    }
+    if first >= 11 && first <= 15 {
+        return tm_fkey(first - 10, mods)
+    }
+    if first >= 17 && first <= 21 {
+        return tm_fkey(first - 11, mods)
+    }
+    if first >= 23 && first <= 26 {
+        return tm_fkey(first - 12, mods)
+    }
+    if first >= 28 && first <= 29 {
+        return tm_fkey(first - 15, mods)
+    }
+    if first >= 31 && first <= 34 {
+        return tm_fkey(first - 17, mods)
+    }
+    tm_err()
+}
+
+// Nombre (Debug) de las teclas del protocolo de teclado de kitty que no son
+// caracteres; "" si el código no es una tecla funcional. Las de teclado
+// numérico que son caracteres devuelven "=c".
+fn tm_functional(cp: int) -> string {
+    if cp >= 57399 && cp <= 57408 {
+        return "=" + rt_from_cstr_byte(cp - 57399 + 48)
+    }
+    if cp == 57409 { return "=." }
+    if cp == 57410 { return "=/" }
+    if cp == 57411 { return "=*" }
+    if cp == 57412 { return "=-" }
+    if cp == 57413 { return "=+" }
+    if cp == 57414 { return "Enter" }
+    if cp == 57415 { return "==" }
+    if cp == 57416 { return "=," }
+    if cp == 57417 { return "Left" }
+    if cp == 57418 { return "Right" }
+    if cp == 57419 { return "Up" }
+    if cp == 57420 { return "Down" }
+    if cp == 57421 { return "PageUp" }
+    if cp == 57422 { return "PageDown" }
+    if cp == 57423 { return "Home" }
+    if cp == 57424 { return "End" }
+    if cp == 57425 { return "Insert" }
+    if cp == 57426 { return "Delete" }
+    if cp == 57427 { return "KeypadBegin" }
+    if cp == 57358 { return "CapsLock" }
+    if cp == 57359 { return "ScrollLock" }
+    if cp == 57360 { return "NumLock" }
+    if cp == 57361 { return "PrintScreen" }
+    if cp == 57362 { return "Pause" }
+    if cp == 57363 { return "Menu" }
+    if cp >= 57376 && cp <= 57398 {
+        return "F" + rt_int_to_str(cp - 57376 + 13)
+    }
+    if cp == 57428 { return "Media(Play)" }
+    if cp == 57429 { return "Media(Pause)" }
+    if cp == 57430 { return "Media(PlayPause)" }
+    if cp == 57431 { return "Media(Reverse)" }
+    if cp == 57432 { return "Media(Stop)" }
+    if cp == 57433 { return "Media(FastForward)" }
+    if cp == 57434 { return "Media(Rewind)" }
+    if cp == 57435 { return "Media(TrackNext)" }
+    if cp == 57436 { return "Media(TrackPrevious)" }
+    if cp == 57437 { return "Media(Record)" }
+    if cp == 57438 { return "Media(LowerVolume)" }
+    if cp == 57439 { return "Media(RaiseVolume)" }
+    if cp == 57440 { return "Media(MuteVolume)" }
+    if cp == 57441 { return "Modifier(LeftShift)" }
+    if cp == 57442 { return "Modifier(LeftControl)" }
+    if cp == 57443 { return "Modifier(LeftAlt)" }
+    if cp == 57444 { return "Modifier(LeftSuper)" }
+    if cp == 57445 { return "Modifier(LeftHyper)" }
+    if cp == 57446 { return "Modifier(LeftMeta)" }
+    if cp == 57447 { return "Modifier(RightShift)" }
+    if cp == 57448 { return "Modifier(RightControl)" }
+    if cp == 57449 { return "Modifier(RightAlt)" }
+    if cp == 57450 { return "Modifier(RightSuper)" }
+    if cp == 57451 { return "Modifier(RightHyper)" }
+    if cp == 57452 { return "Modifier(RightMeta)" }
+    if cp == 57453 { return "Modifier(IsoLevel3Shift)" }
+    if cp == 57454 { return "Modifier(IsoLevel5Shift)" }
+    ""
+}
+
+// Modificador que activa una tecla Modifier(...) (0 si ninguno).
+fn tm_modifier_bit(cp: int) -> int {
+    if cp == 57441 || cp == 57447 { return 1 }
+    if cp == 57442 || cp == 57448 { return 2 }
+    if cp == 57443 || cp == 57449 { return 4 }
+    if cp == 57444 || cp == 57450 { return 8 }
+    if cp == 57445 || cp == 57451 { return 16 }
+    if cp == 57446 || cp == 57452 { return 32 }
+    0
+}
+
+fn tm_valid_cp(cp: int) -> bool {
+    cp >= 0 && cp <= 1114111 && (cp < 55296 || cp > 57343)
+}
+
+// parse_csi_u_encoded_key_code: "ESC [ cp[:alt] [; mod[:tipo]] u"
+fn tm_u_key(p: int, n: int) -> (int, any, int) {
+    let b = n - 1
+    if !rt_valid_utf8(p + 2, b - 2) {
+        return tm_err()
+    }
+    let e1 = tm_fend(p, 2, b, 59)
+    let c1 = tm_fend(p, 2, e1, 58)
+    let cp = tm_num(p, 2, c1, 10, 4294967295)
+    if cp < 0 {
+        return tm_err()
+    }
+    let mut mods = 0
+    if e1 < b {
+        let e2 = tm_fend(p, e1 + 1, b, 59)
+        let mask = tm_mask(p, e1 + 1, e2)
+        if mask >= 0 {
+            mods = tm_mods(mask)
+        }
+    }
+    let mut name: any = ""
+    let mut is_char = false
+    let fname = tm_functional(cp)
+    let functional = rt_slen(fname) > 0
+    if functional {
+        name = fname
+        if std::raw::load8(std::raw::bits(fname) + 16) == 61 {
+            name = rt_substr_bytes(fname, 1, 2)
+            is_char = true
+        }
+        mods = mods | tm_modifier_bit(cp)
+    }
+    if !functional {
+        if !tm_valid_cp(cp) {
+            return tm_err()
+        }
+        // lo que no es especial es un carácter
+        let b8 = sb_new(4)
+        sb_cp(b8, cp)
+        name = sb_finish(b8)
+        is_char = true
+        let enter = cp == 13 || (cp == 10 && !tm_is_raw())
+        if cp == 27 || enter || cp == 9 || cp == 127 {
+            is_char = false
+        }
+        if cp == 27 {
+            name = "Escape"
+        }
+        if enter {
+            name = "Enter"
+        }
+        if cp == 9 {
+            name = "Tab"
+            if (mods & 1) != 0 {
+                name = "Shift+Tab"
+            }
+        }
+        if cp == 127 {
+            name = "Backspace"
+        }
+    }
+    // Con SHIFT y un segundo código (la tecla ya con mayúscula): ese carácter
+    if (mods & 1) != 0 && c1 < e1 {
+        let c2 = tm_fend(p, c1 + 1, e1, 58)
+        let alt = tm_num(p, c1 + 1, c2, 10, 4294967295)
+        if alt >= 0 && tm_valid_cp(alt) {
+            let b9 = sb_new(4)
+            sb_cp(b9, alt)
+            name = sb_finish(b9)
+            is_char = true
+            mods = mods & (255 - 1)
+        }
+    }
+    if is_char {
+        return (2, name, mods | 256)
+    }
+    return (2, name, mods)
+}
+
+// parse_cb: ¿es válido el byte de botón del ratón?
+fn tm_cb_ok(cb: int) -> bool {
+    let button = (cb & 3) | std::raw::shr(cb & 192, 4)
+    let drag = (cb & 32) != 0
+    if button <= 5 {
+        return true
+    }
+    if (button == 6 || button == 7) && !drag {
+        return true
+    }
+    false
+}
+
+// parse_csi_normal_mouse: "ESC [ M cb cx cy"
+fn tm_normal_mouse(p: int, n: int) -> (int, any, int) {
+    if n < 6 {
+        return tm_none()
+    }
+    let cb = std::raw::load8(p + 3)
+    if cb < 32 {
+        return tm_err()
+    }
+    if !tm_cb_ok(cb - 32) {
+        return tm_err()
+    }
+    tm_other()
+}
+
+// parse_csi_sgr_mouse: "ESC [ < cb ; cx ; cy (m|M)"
+fn tm_sgr_mouse(p: int, n: int) -> (int, any, int) {
+    let last = std::raw::load8(p + n - 1)
+    if last != 109 && last != 77 {
+        return tm_none()
+    }
+    let b = n - 1
+    if !rt_valid_utf8(p + 3, b - 3) {
+        return tm_err()
+    }
+    tm_mouse_fields(p, 3, b, 0)
+}
+
+// parse_csi_rxvt_mouse: "ESC [ cb ; cx ; cy M" (cb con 32 sumado)
+fn tm_rxvt_mouse(p: int, n: int) -> (int, any, int) {
+    let b = n - 1
+    if !rt_valid_utf8(p + 2, b - 2) {
+        return tm_err()
+    }
+    tm_mouse_fields(p, 2, b, 32)
+}
+
+fn tm_mouse_fields(p: int, a: int, b: int, bias: int) -> (int, any, int) {
+    let e1 = tm_fend(p, a, b, 59)
+    let cb = tm_num(p, a, e1, 10, 255)
+    if cb < bias {
+        return tm_err()
+    }
+    if !tm_cb_ok(cb - bias) {
+        return tm_err()
+    }
+    if e1 >= b {
+        return tm_err()
+    }
+    let e2 = tm_fend(p, e1 + 1, b, 59)
+    if tm_num(p, e1 + 1, e2, 10, 65535) < 0 {
+        return tm_err()
+    }
+    if e2 >= b {
+        return tm_err()
+    }
+    let e3 = tm_fend(p, e2 + 1, b, 59)
+    if tm_num(p, e2 + 1, e3, 10, 65535) < 0 {
+        return tm_err()
+    }
+    tm_other()
+}
+
+// format_key de term_mod.rs
+fn tm_format(name: any, mods: int) -> any {
+    let mut parts: any = ""
+    if (mods & 2) != 0 {
+        parts = "Ctrl+"
+    }
+    if (mods & 4) != 0 {
+        parts = parts + "Alt+"
+    }
+    if (mods & 1) != 0 && (mods & 256) == 0 {
+        parts = parts + "Shift+"
+    }
+    parts + name
+}
+
+// ------------------------------------------------------------ cola de eventos
+// Entradas: bits de un string guardado (tecla ya formateada), -1 = otro
+// evento, 0 = evento interno.
+
+fn tm_qpush(st: int, v: int) {
+    let mut cap = std::raw::load(st + 80)
+    let count = std::raw::load(st + 72)
+    if count == cap {
+        let bigger = cap * 2 + 16
+        let data = rt_alloc(8 * bigger)
+        let old = std::raw::load(st + 56)
+        let head = std::raw::load(st + 64)
+        let mut i = 0
+        while i < count {
+            let j = (head + i) % cap
+            std::raw::store(data + 8 * i, std::raw::load(old + 8 * j))
+            i += 1
+        }
+        if old != 0 {
+            rt_free_block(old)
+        }
+        std::raw::store(st + 56, data)
+        std::raw::store(st + 64, 0)
+        std::raw::store(st + 80, bigger)
+        cap = bigger
+    }
+    let pos = (std::raw::load(st + 64) + count) % cap
+    std::raw::store(std::raw::load(st + 56) + 8 * pos, v)
+    std::raw::store(st + 72, count + 1)
+}
+
+fn tm_qpop(st: int) -> int {
+    let head = std::raw::load(st + 64)
+    let v = std::raw::load(std::raw::load(st + 56) + 8 * head)
+    std::raw::store(st + 64, (head + 1) % std::raw::load(st + 80))
+    std::raw::store(st + 72, std::raw::load(st + 72) - 1)
+    v
+}
+
+// Parser::advance: cada byte se agrega al búfer y se intenta analizar.
+fn tm_advance(st: int, buf: int, n: int, more_all: bool) {
+    let sb = std::raw::load(st + 48)
+    let mut idx = 0
+    while idx < n {
+        let next = idx + 1
+        let more = next < n || more_all
+        sb_byte(sb, std::raw::load8(buf + idx))
+        let (k, name, mods) = tm_parse(std::raw::load(sb + 16), std::raw::load(sb), more)
+        if k == 2 {
+            tm_qpush(st, std::raw::keep(tm_format(name, mods)))
+        }
+        if k == 3 {
+            tm_qpush(st, -1)
+        }
+        if k == 4 {
+            tm_qpush(st, 0)
+        }
+        if k != 0 {
+            std::raw::store(sb, 0)
+        }
+        idx += 1
+    }
+}
+
+// ------------------------------------------------------------ el lector
+
+// InternalEventReader::default(): se crea una sola vez; si falla, queda sin
+// fuente para siempre.
+fn tm_reader(st: int) -> bool {
+    let status = std::raw::load(st + 16)
+    if status != 0 {
+        return status == 1
+    }
+    std::raw::store(st + 16, 2)
+    let fd = tm_tty_fd(st)
+    if fd < 0 {
+        return false
+    }
+    // Poll::new(): epoll_create1(EPOLL_CLOEXEC)
+    let ep = std::raw::syscall(291, 524288, 0, 0, 0, 0, 0)
+    if ep < 0 {
+        tm_close_tty(fd)
+        return false
+    }
+    // Interest::READABLE en mio: EPOLLIN | EPOLLRDHUP | EPOLLET
+    let ev = rt_alloc(16)
+    tm_st32(ev, 2147491841)
+    std::raw::store(ev + 4, 0)
+    let r = std::raw::syscall(233, ep, 1, fd, ev, 0, 0)
+    if r < 0 {
+        rt_free_block(ev)
+        std::raw::syscall(3, ep, 0, 0, 0, 0, 0)
+        tm_close_tty(fd)
+        return false
+    }
+    // SIGWINCH (28): bloqueada y leída desde un signalfd
+    let set = rt_alloc(8)
+    std::raw::store(set, std::raw::shl(1, 27))
+    std::raw::syscall(14, 0, set, 0, 8, 0, 0)
+    let sfd = std::raw::syscall(289, -1, set, 8, 526336, 0, 0)
+    if sfd < 0 {
+        std::raw::syscall(14, 1, set, 0, 8, 0, 0)
+        rt_free_block(set)
+        rt_free_block(ev)
+        std::raw::syscall(3, ep, 0, 0, 0, 0, 0)
+        tm_close_tty(fd)
+        return false
+    }
+    rt_free_block(set)
+    tm_st32(ev, 2147491841)
+    std::raw::store(ev + 4, 1)
+    let r2 = std::raw::syscall(233, ep, 1, sfd, ev, 0, 0)
+    rt_free_block(ev)
+    if r2 < 0 {
+        std::raw::syscall(3, sfd, 0, 0, 0, 0, 0)
+        std::raw::syscall(3, ep, 0, 0, 0, 0, 0)
+        tm_close_tty(fd)
+        return false
+    }
+    std::raw::store(st + 24, fd)
+    std::raw::store(st + 32, ep)
+    std::raw::store(st + 40, sfd)
+    std::raw::store(st + 48, sb_new(256))
+    std::raw::store(st + 88, rt_alloc(1024))
+    std::raw::store(st + 96, rt_alloc(36))
+    std::raw::store(st + 16, 1)
+    true
+}
+
+fn tm_now_ns() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000000000 + ns
+}
+
+// Lo que queda de un plazo (en ns; -1 = sin plazo).
+fn tm_left(start: int, timeout: int) -> int {
+    if timeout < 0 {
+        return -1
+    }
+    let el = tm_now_ns() - start
+    if el >= timeout {
+        return 0
+    }
+    timeout - el
+}
+
+fn tm_elapsed(start: int, timeout: int) -> bool {
+    if timeout < 0 {
+        return false
+    }
+    let el = tm_now_ns() - start
+    el >= timeout
+}
+
+// UnixInternalEventSource::try_read. Devuelve (hay, entrada, errno):
+// hay = false si se acabó el plazo; errno != 0 si falló.
+fn tm_try_read(st: int, timeout: int) -> (bool, int, int) {
+    if std::raw::load(st + 72) > 0 {
+        return (true, tm_qpop(st), 0)
+    }
+    let start = tm_now_ns()
+    let ep = std::raw::load(st + 32)
+    let evs = std::raw::load(st + 96)
+    loop {
+        let left = tm_left(start, timeout)
+        // mio redondea hacia arriba a milisegundos (tope c_int::MAX)
+        // sin plazo representable: c_int::MAX ms, como mio con un Duration enorme
+        let mut ms = 2147483647
+        if left >= 0 {
+            ms = (left + 999999) / 1000000
+            if ms > 2147483647 {
+                ms = 2147483647
+            }
+        }
+        let n = std::raw::syscall(232, ep, evs, 3, ms, 0, 0)
+        if n == -4 {
+            continue
+        }
+        if n < 0 {
+            return (false, 0, 0 - n)
+        }
+        if n == 0 {
+            return (false, 0, 0)
+        }
+        let mut i = 0
+        while i < n {
+            let token = std::raw::load(evs + 12 * i + 4)
+            if token == 0 {
+                let fd = std::raw::load(st + 24)
+                let buf = std::raw::load(st + 88)
+                loop {
+                    let r = std::raw::syscall(0, fd, buf, 1024, 0, 0, 0)
+                    if r == -11 {
+                        break
+                    }
+                    if r == -4 {
+                        continue
+                    }
+                    if r > 0 {
+                        tm_advance(st, buf, r, r == 1024)
+                    }
+                    if std::raw::load(st + 72) > 0 {
+                        return (true, tm_qpop(st), 0)
+                    }
+                }
+            } else {
+                if tm_winch(st) {
+                    let (cols, rows) = tm_size()
+                    if cols < 0 {
+                        return (false, 0, rows)
+                    }
+                    return (true, -1, 0)
+                }
+            }
+            i += 1
+        }
+        if tm_elapsed(start, timeout) {
+            return (false, 0, 0)
+        }
+    }
+    return (false, 0, 0)
+}
+
+// signals.pending(): vacía el signalfd; true si llegó SIGWINCH.
+fn tm_winch(st: int) -> bool {
+    let sfd = std::raw::load(st + 40)
+    let buf = rt_alloc(1024)
+    let mut got = false
+    loop {
+        let r = std::raw::syscall(0, sfd, buf, 1024, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 128 {
+            break
+        }
+        got = true
+    }
+    rt_free_block(buf)
+    got
+}
+
+fn std__term__read_key(timeout: any) -> any {
+    rt_expect_int(timeout, "std::term::read_key")
+    let ms = std::raw::bits(timeout)
+    if ms < 0 {
+        rt_native_fail("std::term::read_key", "timeout must be nonnegative")
+    }
+    // Duration en ns; más de ~292 años no cabe: se trata como sin plazo
+    // (epoll recibe igual c_int::MAX ms, que es lo que haría mio).
+    let mut tns = -1
+    if ms < 9223372036854 {
+        tns = ms * 1000000
+    }
+    let st = tm_state()
+    if !tm_reader(st) {
+        rt_native_fail("std::term::read_key", "terminal I/O error: Failed to initialize input reader")
+    }
+    // InternalEventReader::poll con EventFilter
+    let start = tm_now_ns()
+    loop {
+        let (got, entry, errno) = tm_try_read(st, tm_left(start, tns))
+        if errno != 0 {
+            tm_io_fail("std::term::read_key", errno)
+        }
+        let found = got && entry != 0
+        if found {
+            // event::read(): la tecla formateada, o "" si es otro evento
+            if entry == -1 {
+                return ""
+            }
+            let v = std::raw::value(5, entry)
+            std::raw::release(5, entry)
+            return v
+        }
+        if tm_elapsed(start, tns) {
+            return ""
+        }
+    }
+    ""
+}

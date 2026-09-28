@@ -1,0 +1,5 @@
+// Atributo desconocido: el mensaje lo lleva en minúsculas.
+fn main() {
+    std::term::print_attr("BLINK", "x")
+    print("no llega")
+}

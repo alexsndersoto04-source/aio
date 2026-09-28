@@ -1,0 +1,918 @@
+// std::term: control de la terminal (colores, cursor, pantalla, tamaño,
+// modo crudo y teclas). Reproduce crates/titan_stdlib/src/term_mod.rs, que usa
+// crossterm 0.28.1 (con rustix 0.38.44 y mio 1.2.2 debajo). Las notas de cada
+// detalle están en selfhost/native/term/NOTAS.md.
+//
+// La lectura de teclas (read_key) y su analizador de secuencias están en
+// std_term_keys.titan.
+//
+// Estado (globals + 2568 -> bloque de 14 palabras):
+//   0 termios original guardado por enable_raw (0 = no está en modo crudo)
+//   1 NO_COLOR memorizado (0 sin mirar, 1 colores, 2 sin colores)
+//   2 lector de teclas (0 sin crear, 1 creado, 2 falló al crearse)
+//   3 descriptor de la terminal del lector, 4 epoll, 5 signalfd (SIGWINCH)
+//   6 búfer del analizador (sb_*), 7..10 cola de eventos (datos, inicio,
+//   cantidad, capacidad), 11 búfer de lectura (1024), 12 eventos de epoll
+//   13 último errno fallido (lo que io::Error::last_os_error() vería)
+
+fn tm_state() -> int {
+    let g = std::raw::globals() + 2568
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let st = rt_alloc(112)
+    let mut i = 0
+    while i < 14 {
+        std::raw::store(st + 8 * i, 0)
+        i += 1
+    }
+    std::raw::store(g, st)
+    st
+}
+
+fn tm_io_fail(fname: string, errno: int) {
+    rt_native_fail(fname, "terminal I/O error: " + rt_os_error(errno))
+}
+
+// ------------------------------------------------------------ salida
+
+// execute! escribe en io::stdout() y vacía. El stdout de Rust trata EBADF
+// (descriptor 1 cerrado) como éxito; Ok(0) es WriteZero.
+fn tm_out(fname: string, s: any) {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut done = 0
+    while done < n {
+        let w = std::raw::syscall(1, 1, p + 16 + done, n - done, 0, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w == -9 {
+            return
+        }
+        if w < 0 {
+            tm_io_fail(fname, 0 - w)
+        }
+        if w == 0 {
+            rt_native_fail(fname, "terminal I/O error: failed to write whole buffer")
+        }
+        done += w
+    }
+}
+
+// ------------------------------------------------------------ colores
+
+fn tm_lower(s: any) -> any {
+    let n = rt_slen(s)
+    let b = sb_new(n)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(std::raw::bits(s) + 16 + i)
+        if c >= 65 && c <= 90 {
+            sb_byte(b, c + 32)
+        } else {
+            sb_byte(b, c)
+        }
+        i += 1
+    }
+    sb_finish(b)
+}
+
+// FromStr / from_str_radix de Rust para enteros sin signo: '+' opcional,
+// al menos un dígito, sin pasar de max. Devuelve -1 si no vale.
+fn tm_num(p: int, a: int, b: int, radix: int, max: int) -> int {
+    if a >= b {
+        return -1
+    }
+    let mut i = a
+    if std::raw::load8(p + a) == 43 {
+        if b - a == 1 {
+            return -1
+        }
+        i = a + 1
+    }
+    let mut v = 0
+    while i < b {
+        let c = std::raw::load8(p + i)
+        let mut d = -1
+        if c >= 48 && c <= 57 {
+            d = c - 48
+        }
+        if radix == 16 {
+            if c >= 97 && c <= 102 {
+                d = c - 87
+            }
+            if c >= 65 && c <= 70 {
+                d = c - 55
+            }
+        }
+        if d < 0 {
+            return -1
+        }
+        v = v * radix + d
+        if v > max {
+            return -1
+        }
+        i += 1
+    }
+    v
+}
+
+// Color de crossterm: 0..15 = índice ANSI de la paleta de 256 (lo que
+// escribe Colored), 16 = Reset, 65536 + (r << 16 | g << 8 | b) = Rgb.
+fn tm_color(fname: string, name: any) -> int {
+    let low = tm_lower(name)
+    if low == "black" {
+        return 0
+    }
+    if low == "red" {
+        return 9
+    }
+    if low == "green" {
+        return 10
+    }
+    if low == "yellow" {
+        return 11
+    }
+    if low == "blue" {
+        return 12
+    }
+    if low == "magenta" || low == "purple" {
+        return 13
+    }
+    if low == "cyan" {
+        return 14
+    }
+    if low == "white" {
+        return 15
+    }
+    if low == "grey" || low == "gray" {
+        return 7
+    }
+    if low == "darkgrey" || low == "darkgray" {
+        return 8
+    }
+    if low == "reset" || low == "default" {
+        return 16
+    }
+    let p = std::raw::bits(low) + 16
+    let n = rt_slen(low)
+    // "rgb:R,G,B" (tres partes separadas por comas, cada una un u8)
+    if n >= 4 && rt_substr_bytes(low, 0, 4) == "rgb:" {
+        let mut commas = 0
+        let mut c1 = 0
+        let mut c2 = 0
+        let mut i = 4
+        while i < n {
+            if std::raw::load8(p + i) == 44 {
+                commas += 1
+                if commas == 1 {
+                    c1 = i
+                }
+                if commas == 2 {
+                    c2 = i
+                }
+            }
+            i += 1
+        }
+        if commas == 2 {
+            let r = tm_num(p, 4, c1, 10, 255)
+            let g = tm_num(p, c1 + 1, c2, 10, 255)
+            let b = tm_num(p, c2 + 1, n, 10, 255)
+            if r >= 0 && g >= 0 && b >= 0 {
+                return 65536 + std::raw::shl(r, 16) + std::raw::shl(g, 8) + b
+            }
+        }
+    }
+    // "#RRGGBB": seis bytes; cada par tiene que caer en límites de carácter
+    // (en Rust esto hacía pánico: corregido en term_mod.rs con str::get).
+    if n == 7 && std::raw::load8(p) == 35 {
+        if tm_boundary(p, 3) && tm_boundary(p, 5) {
+            let r = tm_num(p, 1, 3, 16, 255)
+            let g = tm_num(p, 3, 5, 16, 255)
+            let b = tm_num(p, 5, 7, 16, 255)
+            if r >= 0 && g >= 0 && b >= 0 {
+                return 65536 + std::raw::shl(r, 16) + std::raw::shl(g, 8) + b
+            }
+        }
+    }
+    rt_native_fail(fname, "unknown color: '" + name + "'")
+    -1
+}
+
+fn tm_boundary(p: int, i: int) -> bool {
+    (std::raw::load8(p + i) & 192) != 128
+}
+
+// Colored::ansi_color_disabled_memoized(): NO_COLOR no vacío, mirado una vez.
+fn tm_no_color(st: int) -> bool {
+    let m = std::raw::load(st + 8)
+    if m != 0 {
+        return m == 2
+    }
+    let v = std__env__get("NO_COLOR")
+    let mut off = true
+    if std::raw::tag(v) != 0 {
+        if rt_slen(v) > 0 {
+            off = false
+        }
+    }
+    if off {
+        std::raw::store(st + 8, 1)
+        return false
+    }
+    std::raw::store(st + 8, 2)
+    true
+}
+
+// Display de Colored: "38;5;9", "48;2;r;g;b", "39"... o nada con NO_COLOR.
+fn tm_colored(base: int, c: int) -> any {
+    if tm_no_color(tm_state()) {
+        return ""
+    }
+    if c == 16 {
+        return rt_int_to_str(base + 1)
+    }
+    let head = rt_int_to_str(base) + ";"
+    if c < 16 {
+        return head + "5;" + rt_int_to_str(c)
+    }
+    let v = c - 65536
+    let r = std::raw::shr(v, 16) & 255
+    let g = std::raw::shr(v, 8) & 255
+    let b = v & 255
+    head + "2;" + rt_int_to_str(r) + ";" + rt_int_to_str(g) + ";" + rt_int_to_str(b)
+}
+
+fn tm_attr(name: any) -> string {
+    let low = tm_lower(name)
+    if low == "bold" {
+        return "1"
+    }
+    if low == "dim" {
+        return "2"
+    }
+    if low == "italic" {
+        return "3"
+    }
+    if low == "underline" || low == "under" {
+        return "4"
+    }
+    if low == "reverse" || low == "invert" {
+        return "7"
+    }
+    if low == "hidden" {
+        return "8"
+    }
+    if low == "reset" {
+        return "0"
+    }
+    rt_native_fail("std::term::print_attr", "unknown attribute: '" + low + "' (try bold, dim, italic, underline, reverse)")
+    ""
+}
+
+fn std__term__print_colored(color: any, text: any) -> any {
+    rt_expect_str(color, "std::term::print_colored")
+    rt_expect_str(text, "std::term::print_colored")
+    let c = tm_color("std::term::print_colored", color)
+    let esc = rt_from_cstr_byte(27)
+    tm_out("std::term::print_colored", esc + "[" + tm_colored(38, c) + "m" + text + esc + "[0m")
+    nil
+}
+
+fn std__term__print_styled(fg: any, bg: any, text: any) -> any {
+    rt_expect_str(fg, "std::term::print_styled")
+    rt_expect_str(bg, "std::term::print_styled")
+    rt_expect_str(text, "std::term::print_styled")
+    let f = tm_color("std::term::print_styled", fg)
+    let b = tm_color("std::term::print_styled", bg)
+    let esc = rt_from_cstr_byte(27)
+    let head = esc + "[" + tm_colored(38, f) + "m" + esc + "[" + tm_colored(48, b) + "m"
+    tm_out("std::term::print_styled", head + text + esc + "[0m")
+    nil
+}
+
+fn std__term__print_attr(attr: any, text: any) -> any {
+    rt_expect_str(attr, "std::term::print_attr")
+    rt_expect_str(text, "std::term::print_attr")
+    let a = tm_attr(attr)
+    let esc = rt_from_cstr_byte(27)
+    tm_out("std::term::print_attr", esc + "[" + a + "m" + text + esc + "[0m")
+    nil
+}
+
+// Un string de un solo byte.
+fn rt_from_cstr_byte(c: int) -> any {
+    let p = rt_str_alloc(1)
+    std::raw::store8(p + 16, c)
+    rt_sval(p)
+}
+
+fn tm_csi(fname: string, rest: string) {
+    tm_out(fname, rt_from_cstr_byte(27) + "[" + rest)
+}
+
+// ------------------------------------------------------------ pantalla y cursor
+
+fn std__term__clear_screen() -> any {
+    // Clear(All) y MoveTo(0, 0)
+    tm_out("std::term::clear_screen", rt_from_cstr_byte(27) + "[2J" + rt_from_cstr_byte(27) + "[1;1H")
+    nil
+}
+
+fn std__term__clear_line() -> any {
+    tm_csi("std::term::clear_line", "2K")
+    nil
+}
+
+fn std__term__move_to(column: any, row: any) -> any {
+    rt_expect_int(column, "std::term::move_to")
+    rt_expect_int(row, "std::term::move_to")
+    let c = std::raw::bits(column)
+    let r = std::raw::bits(row)
+    if c < 0 || c > 65535 {
+        rt_native_fail("std::term::move_to", "column out of range")
+    }
+    if r < 0 || r > 65535 {
+        rt_native_fail("std::term::move_to", "row out of range")
+    }
+    // MoveTo escribe fila + 1 y columna + 1 como u16 (65535 + 1 da 0).
+    let rr = (r + 1) & 65535
+    let cc = (c + 1) & 65535
+    tm_csi("std::term::move_to", rt_int_to_str(rr) + ";" + rt_int_to_str(cc) + "H")
+    nil
+}
+
+fn std__term__hide_cursor() -> any {
+    tm_csi("std::term::hide_cursor", "?25l")
+    nil
+}
+
+fn std__term__show_cursor() -> any {
+    tm_csi("std::term::show_cursor", "?25h")
+    nil
+}
+
+// io::stdout().flush(): el runtime no guarda nada en un búfer (cada escritura
+// sale entera al momento), así que no queda nada pendiente.
+fn std__term__flush() -> any {
+    nil
+}
+
+fn std__term__enter_alt_screen() -> any {
+    tm_csi("std::term::enter_alt_screen", "?1049h")
+    nil
+}
+
+fn std__term__leave_alt_screen() -> any {
+    tm_csi("std::term::leave_alt_screen", "?1049l")
+    nil
+}
+
+// ------------------------------------------------------------ termios (rustix)
+
+fn tm_ld32(p: int) -> int {
+    std::raw::load(p) & 4294967295
+}
+
+fn tm_st32(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+    std::raw::store8(p + 3, std::raw::shr(v, 24) & 255)
+}
+
+// isatty de rustix: TIOCGWINSZ funciona.
+fn tm_isatty(fd: int) -> bool {
+    let buf = rt_alloc(16)
+    let r = std::raw::syscall(16, fd, 21523, buf, 0, 0, 0)
+    rt_free_block(buf)
+    r == 0
+}
+
+// tty_fd() de crossterm: stdin si es terminal; si no, /dev/tty para leer y
+// escribir (File::open usa O_CLOEXEC). Devuelve fd (>= 0) o -errno.
+fn tm_tty_fd(st: int) -> int {
+    if tm_isatty(0) {
+        return 0
+    }
+    let path = rt_cstr("/dev/tty")
+    let fd = std::raw::syscall(2, path, 524290, 438, 0, 0, 0)
+    rt_free_block(path)
+    if fd < 0 {
+        std::raw::store(st + 104, 0 - fd)
+    }
+    fd
+}
+
+fn tm_close_tty(fd: int) {
+    if fd > 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    }
+}
+
+// Velocidad codificada en c_cflag -> baudios (speed::decode de rustix);
+// -1 si no es una de las conocidas (BOTHER incluido).
+fn tm_speed(code: int) -> int {
+    if code <= 15 {
+        if code == 0 { return 0 }
+        if code == 1 { return 50 }
+        if code == 2 { return 75 }
+        if code == 3 { return 110 }
+        if code == 4 { return 134 }
+        if code == 5 { return 150 }
+        if code == 6 { return 200 }
+        if code == 7 { return 300 }
+        if code == 8 { return 600 }
+        if code == 9 { return 1200 }
+        if code == 10 { return 1800 }
+        if code == 11 { return 2400 }
+        if code == 12 { return 4800 }
+        if code == 13 { return 9600 }
+        if code == 14 { return 19200 }
+        return 38400
+    }
+    if code == 4097 { return 57600 }
+    if code == 4098 { return 115200 }
+    if code == 4099 { return 230400 }
+    if code == 4100 { return 460800 }
+    if code == 4101 { return 500000 }
+    if code == 4102 { return 576000 }
+    if code == 4103 { return 921600 }
+    if code == 4104 { return 1000000 }
+    if code == 4105 { return 1152000 }
+    if code == 4106 { return 1500000 }
+    if code == 4107 { return 2000000 }
+    if code == 4108 { return 2500000 }
+    if code == 4109 { return 3000000 }
+    if code == 4110 { return 3500000 }
+    if code == 4111 { return 4000000 }
+    -1
+}
+
+// tcgetattr de rustix: TCGETS2 (struct termios2, 44 bytes); si da ENOTTY o
+// EACCES, TCGETS y las velocidades se deducen de c_cflag. 0 o -errno.
+fn tm_tcgetattr(fd: int, t: int) -> int {
+    let r = std::raw::syscall(16, fd, 2150388778, t, 0, 0, 0)
+    if r != -25 && r != -13 {
+        return r
+    }
+    let r2 = std::raw::syscall(16, fd, 21505, t, 0, 0, 0)
+    if r2 < 0 {
+        return r2
+    }
+    let cflag = tm_ld32(t + 8)
+    let out = tm_speed(cflag & 4111)
+    if out < 0 {
+        return -34
+    }
+    let enc_in = std::raw::shr(cflag & 269418496, 16)
+    let mut inp = out
+    if enc_in != 0 {
+        inp = tm_speed(enc_in)
+        if inp < 0 {
+            return -34
+        }
+    }
+    tm_st32(t + 36, inp)
+    tm_st32(t + 40, out)
+    0
+}
+
+// tcsetattr(TCSANOW) de rustix: TCSETS2; con ENOTTY o EACCES, TCSETS (que
+// no acepta BOTHER: ERANGE).
+fn tm_tcsetattr(fd: int, t: int) -> int {
+    let r = std::raw::syscall(16, fd, 1076646955, t, 0, 0, 0)
+    if r != -25 && r != -13 {
+        return r
+    }
+    let cflag = tm_ld32(t + 8)
+    let enc_in = std::raw::shr(cflag & 269418496, 16)
+    if (cflag & 4111) == 4096 || enc_in == 4096 {
+        return -34
+    }
+    std::raw::syscall(16, fd, 21506, t, 0, 0, 0)
+}
+
+// cfmakeraw de rustix.
+fn tm_make_raw(t: int) {
+    // IGNBRK BRKINT PARMRK ISTRIP INLCR IGNCR ICRNL IXON
+    tm_st32(t, tm_ld32(t) & (4294967295 - 1515))
+    // OPOST
+    tm_st32(t + 4, tm_ld32(t + 4) & (4294967295 - 1))
+    // CSIZE PARENB fuera, CS8 dentro
+    tm_st32(t + 8, (tm_ld32(t + 8) & (4294967295 - 304)) | 48)
+    // ECHO ECHONL ICANON ISIG IEXTEN
+    tm_st32(t + 12, tm_ld32(t + 12) & (4294967295 - 32843))
+    // VTIME = 0, VMIN = 1 (c_cc empieza en el byte 17)
+    std::raw::store8(t + 22, 0)
+    std::raw::store8(t + 23, 1)
+}
+
+fn std__term__enable_raw() -> any {
+    let st = tm_state()
+    if std::raw::load(st) != 0 {
+        return nil
+    }
+    let fd = tm_tty_fd(st)
+    if fd < 0 {
+        tm_io_fail("std::term::enable_raw", 0 - fd)
+    }
+    let orig = rt_alloc(48)
+    let r = tm_tcgetattr(fd, orig)
+    if r < 0 {
+        rt_free_block(orig)
+        tm_close_tty(fd)
+        tm_io_fail("std::term::enable_raw", 0 - r)
+    }
+    let ios = rt_alloc(48)
+    rt_copy(ios, orig, 44)
+    tm_make_raw(ios)
+    let r2 = tm_tcsetattr(fd, ios)
+    rt_free_block(ios)
+    tm_close_tty(fd)
+    if r2 < 0 {
+        rt_free_block(orig)
+        tm_io_fail("std::term::enable_raw", 0 - r2)
+    }
+    std::raw::store(st, orig)
+    nil
+}
+
+fn std__term__disable_raw() -> any {
+    let st = tm_state()
+    let orig = std::raw::load(st)
+    if orig == 0 {
+        return nil
+    }
+    let fd = tm_tty_fd(st)
+    if fd < 0 {
+        tm_io_fail("std::term::disable_raw", 0 - fd)
+    }
+    let r = tm_tcsetattr(fd, orig)
+    tm_close_tty(fd)
+    if r < 0 {
+        tm_io_fail("std::term::disable_raw", 0 - r)
+    }
+    rt_free_block(orig)
+    std::raw::store(st, 0)
+    nil
+}
+
+fn tm_is_raw() -> bool {
+    std::raw::load(tm_state()) != 0
+}
+
+// ------------------------------------------------------------ tamaño
+
+// terminal::size() de crossterm: TIOCGWINSZ sobre /dev/tty (o stdout si no
+// se puede abrir); si falla, `tput cols` y `tput lines`; si alguno falla,
+// io::Error::last_os_error(). Devuelve (columnas, filas) o (-1, errno).
+fn tm_size() -> (int, int) {
+    let st = tm_state()
+    let path = rt_cstr("/dev/tty")
+    let tty = std::raw::syscall(2, path, 524288, 438, 0, 0, 0)
+    rt_free_block(path)
+    let mut fd = 1
+    if tty >= 0 {
+        fd = tty
+    }
+    if tty < 0 {
+        // File::open pasa por libc: el errno queda puesto
+        std::raw::store(st + 104, 0 - tty)
+    }
+    let ws = rt_alloc(16)
+    let r = std::raw::syscall(16, fd, 21523, ws, 0, 0, 0)
+    if tty >= 0 {
+        std::raw::syscall(3, tty, 0, 0, 0, 0, 0)
+    }
+    if r == 0 {
+        let rows = std::raw::load8(ws) | std::raw::shl(std::raw::load8(ws + 1), 8)
+        let cols = std::raw::load8(ws + 2) | std::raw::shl(std::raw::load8(ws + 3), 8)
+        rt_free_block(ws)
+        return (cols, rows)
+    }
+    rt_free_block(ws)
+    // Las dos llamadas se hacen siempre (es una tupla).
+    let w = tm_tput(st, "cols")
+    let h = tm_tput(st, "lines")
+    if w > 0 && h > 0 {
+        return (w, h)
+    }
+    return (-1, std::raw::load(st + 104))
+}
+
+fn std__term__size() -> any {
+    let (cols, rows) = tm_size()
+    if cols < 0 {
+        tm_io_fail("std::term::size", rows)
+    }
+    let out = rt_array_new(2)
+    let data = rt_seq_data(out)
+    rt_seq_put(data, 0, cols)
+    rt_seq_put(data, 1, rows)
+    out
+}
+
+// Puntero al entorno inicial (envp) en la pila del proceso.
+fn tm_envp() -> int {
+    let sp = std::raw::load(std::raw::globals() + 32)
+    sp + 16 + 8 * std::raw::load(sp)
+}
+
+// getenv("PATH") de glibc (bytes tal cual); CS_PATH si no está.
+fn tm_path_env() -> any {
+    let mut e = tm_envp()
+    while std::raw::load(e) != 0 {
+        let entry = std::raw::load(e)
+        if std::raw::load8(entry) == 80 && std::raw::load8(entry + 1) == 65 && std::raw::load8(entry + 2) == 84 && std::raw::load8(entry + 3) == 72 && std::raw::load8(entry + 4) == 61 {
+            return rt_from_cstr(entry + 5)
+        }
+        e += 8
+    }
+    "/bin:/usr/bin"
+}
+
+// Proceso hijo: redirige, deja la máscara de señales vacía (lo que hace
+// POSIX_SPAWN_SETSIGMASK en Rust) y recorre PATH como __execvpe de glibc.
+// Cada execve fallido se informa al padre por `rep` (8 bytes con el errno):
+// con posix_spawnp de glibc el hijo comparte memoria con el padre y ese errno
+// queda en el padre. El fallo final va con 1000000 sumado.
+fn tm_child(nul: int, ow: int, ew: int, rep: int, arg: string) {
+    std::raw::syscall(33, nul, 0, 0, 0, 0, 0)
+    std::raw::syscall(33, ow, 1, 0, 0, 0, 0)
+    std::raw::syscall(33, ew, 2, 0, 0, 0, 0)
+    let set = rt_alloc(8)
+    std::raw::store(set, 0)
+    std::raw::syscall(14, 2, set, 0, 8, 0, 0)
+    let argv = rt_alloc(24)
+    std::raw::store(argv, rt_cstr("tput"))
+    std::raw::store(argv + 8, rt_cstr(arg))
+    std::raw::store(argv + 16, 0)
+    let envp = tm_envp()
+    let path = tm_path_env()
+    let pp = std::raw::bits(path) + 16
+    let n = rt_slen(path)
+    let msg = rt_alloc(8)
+    let mut eacces = false
+    let mut fail = 0
+    let mut start = 0
+    loop {
+        let mut end = start
+        while end < n && std::raw::load8(pp + end) != 58 {
+            end += 1
+        }
+        // entrada vacía = directorio actual ("tput" a secas)
+        let seg = end - start
+        let full = rt_alloc(seg + 6)
+        rt_copy(full, pp + start, seg)
+        let mut k = seg
+        if seg > 0 {
+            std::raw::store8(full + seg, 47)
+            k = seg + 1
+        }
+        rt_copy(full + k, std::raw::bits("tput") + 16, 4)
+        std::raw::store8(full + k + 4, 0)
+        let r = std::raw::syscall(59, full, argv, envp, 0, 0, 0)
+        let e = 0 - r
+        std::raw::store(msg, e)
+        std::raw::syscall(1, rep, msg, 8, 0, 0, 0)
+        if e == 13 {
+            eacces = true
+        }
+        let skip = e == 13 || e == 2 || e == 116 || e == 20 || e == 19 || e == 110
+        if !skip {
+            fail = e
+            break
+        }
+        if end >= n {
+            break
+        }
+        start = end + 1
+    }
+    if fail == 0 {
+        fail = 2
+        if eacces {
+            fail = 13
+        }
+    }
+    std::raw::store(msg, fail + 1000000)
+    std::raw::syscall(1, rep, msg, 8, 0, 0, 0)
+    std::raw::syscall(60, 127, 0, 0, 0, 0, 0)
+}
+
+// read_to_end de un tubo: true al llegar al final, false si da EAGAIN;
+// -errno (como int negativo en `err`) para otros errores.
+fn tm_drain(st: int, fd: int, out: int, err: int) -> bool {
+    let buf = rt_alloc(4096)
+    loop {
+        let r = std::raw::syscall(0, fd, buf, 4096, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r == -11 {
+            std::raw::store(st + 104, 11)
+            rt_free_block(buf)
+            return false
+        }
+        if r < 0 {
+            std::raw::store(st + 104, 0 - r)
+            std::raw::store(err, 0 - r)
+            rt_free_block(buf)
+            return true
+        }
+        if r == 0 {
+            rt_free_block(buf)
+            return true
+        }
+        if out != 0 {
+            sb_raw(out, buf, r)
+        }
+    }
+    false
+}
+
+fn tm_set_nonblock(fd: int, on: int) {
+    let v = rt_alloc(8)
+    std::raw::store(v, on)
+    std::raw::syscall(16, fd, 21537, v, 0, 0, 0)
+    rt_free_block(v)
+}
+
+fn tm_pipe(st: int) -> int {
+    let fds = rt_alloc(8)
+    let r = std::raw::syscall(293, fds, 524288, 0, 0, 0, 0)
+    if r < 0 {
+        rt_free_block(fds)
+        std::raw::store(st + 104, 0 - r)
+        return -1
+    }
+    fds
+}
+
+// tput_value de crossterm: Command::new("tput").arg(arg).output() con la
+// entrada en /dev/null y las salidas en tubos; se quedan los dígitos de la
+// salida (u16 con desborde) y vale si es > 0. Devuelve el valor o -1.
+fn tm_tput(st: int, arg: string) -> int {
+    let np = rt_cstr("/dev/null")
+    let nul = std::raw::syscall(2, np, 524288, 438, 0, 0, 0)
+    rt_free_block(np)
+    if nul < 0 {
+        std::raw::store(st + 104, 0 - nul)
+        return -1
+    }
+    let po = tm_pipe(st)
+    if po < 0 {
+        std::raw::syscall(3, nul, 0, 0, 0, 0, 0)
+        return -1
+    }
+    let pe = tm_pipe(st)
+    if pe < 0 {
+        std::raw::syscall(3, nul, 0, 0, 0, 0, 0)
+        tm_close_pair(po)
+        return -1
+    }
+    let pr = tm_pipe(st)
+    if pr < 0 {
+        std::raw::syscall(3, nul, 0, 0, 0, 0, 0)
+        tm_close_pair(po)
+        tm_close_pair(pe)
+        return -1
+    }
+    let o_r = tm_ld32(po)
+    let o_w = tm_ld32(po + 4)
+    let e_r = tm_ld32(pe)
+    let e_w = tm_ld32(pe + 4)
+    let r_r = tm_ld32(pr)
+    let r_w = tm_ld32(pr + 4)
+    let pid = std::raw::syscall(57, 0, 0, 0, 0, 0, 0)
+    if pid == 0 {
+        tm_child(nul, o_w, e_w, r_w, arg)
+    }
+    std::raw::syscall(3, nul, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, o_w, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, e_w, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, r_w, 0, 0, 0, 0, 0)
+    if pid < 0 {
+        std::raw::store(st + 104, 0 - pid)
+        std::raw::syscall(3, o_r, 0, 0, 0, 0, 0)
+        std::raw::syscall(3, e_r, 0, 0, 0, 0, 0)
+        std::raw::syscall(3, r_r, 0, 0, 0, 0, 0)
+        return -1
+    }
+    // Informe del hijo: cada execve fallido; el tubo se cierra solo si execve
+    // funcionó (O_CLOEXEC).
+    let msg = rt_alloc(8)
+    let mut failed = false
+    loop {
+        let r = std::raw::syscall(0, r_r, msg, 8, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 8 {
+            break
+        }
+        let mut e = std::raw::load(msg)
+        if e >= 1000000 {
+            failed = true
+            e = e - 1000000
+        }
+        std::raw::store(st + 104, e)
+    }
+    rt_free_block(msg)
+    std::raw::syscall(3, r_r, 0, 0, 0, 0, 0)
+    if failed {
+        tm_reap(pid)
+        std::raw::syscall(3, o_r, 0, 0, 0, 0, 0)
+        std::raw::syscall(3, e_r, 0, 0, 0, 0, 0)
+        return -1
+    }
+    // read2 de Rust: los dos tubos sin bloqueo y poll hasta que uno termina;
+    // luego el otro se lee bloqueando hasta el final.
+    let out = sb_new(32)
+    let err = rt_alloc(8)
+    std::raw::store(err, 0)
+    tm_set_nonblock(o_r, 1)
+    tm_set_nonblock(e_r, 1)
+    let fds = rt_alloc(16)
+    loop {
+        tm_st32(fds, o_r)
+        tm_st32(fds + 4, 1)
+        tm_st32(fds + 8, e_r)
+        tm_st32(fds + 12, 1)
+        let pr2 = std::raw::syscall(7, fds, 2, -1, 0, 0, 0)
+        if pr2 == -4 {
+            continue
+        }
+        if pr2 < 0 {
+            std::raw::store(st + 104, 0 - pr2)
+            std::raw::store(err, 0 - pr2)
+            break
+        }
+        let rev0 = std::raw::shr(tm_ld32(fds + 4), 16)
+        let rev1 = std::raw::shr(tm_ld32(fds + 12), 16)
+        if rev0 != 0 {
+            if tm_drain(st, o_r, out, err) {
+                if std::raw::load(err) == 0 {
+                    tm_set_nonblock(e_r, 0)
+                    tm_drain(st, e_r, 0, err)
+                }
+                break
+            }
+        }
+        if rev1 != 0 {
+            if tm_drain(st, e_r, 0, err) {
+                if std::raw::load(err) == 0 {
+                    tm_set_nonblock(o_r, 0)
+                    tm_drain(st, o_r, out, err)
+                }
+                break
+            }
+        }
+    }
+    rt_free_block(fds)
+    let bad = std::raw::load(err)
+    rt_free_block(err)
+    std::raw::syscall(3, o_r, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, e_r, 0, 0, 0, 0, 0)
+    if bad != 0 {
+        // output() devuelve el error sin esperar al hijo (queda sin recoger
+        // hasta que termine, como el Child que Rust suelta).
+        sb_finish(out)
+        return -1
+    }
+    tm_reap(pid)
+    let text = sb_finish(out)
+    let tp = std::raw::bits(text) + 16
+    let n = rt_slen(text)
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(tp + i)
+        if c >= 48 && c <= 57 {
+            v = (v * 10 + c - 48) & 65535
+        }
+        i += 1
+    }
+    if v > 0 {
+        return v
+    }
+    -1
+}
+
+fn tm_close_pair(fds: int) {
+    std::raw::syscall(3, tm_ld32(fds), 0, 0, 0, 0, 0)
+    std::raw::syscall(3, tm_ld32(fds + 4), 0, 0, 0, 0, 0)
+}
+
+fn tm_reap(pid: int) {
+    let status = rt_alloc(8)
+    loop {
+        let w = std::raw::syscall(61, pid, status, 0, 0, 0, 0)
+        if w != -4 {
+            break
+        }
+    }
+    rt_free_block(status)
+}
