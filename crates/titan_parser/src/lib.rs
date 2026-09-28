@@ -1182,7 +1182,7 @@ impl Parser {
                 let mut qualified = name;
                 while self.eat(TokenKind::ColonColon) {
                     qualified.push_str("::");
-                    qualified.push_str(&self.expect_ident()?);
+                    qualified.push_str(&self.expect_path_segment()?);
                 }
                 if self.at(TokenKind::LBrace)
                     && qualified.chars().next().is_some_and(char::is_uppercase)
@@ -1798,6 +1798,17 @@ impl Parser {
             Err(self.expected("an identifier"))
         }
     }
+    /// A segment after `::` in a qualified name (`std::uuid::nil`,
+    /// `std::process::spawn`). After `::` a keyword cannot start anything
+    /// else, so it is read as a plain name; otherwise those standard-library
+    /// functions could not be called at all.
+    fn expect_path_segment(&mut self) -> Result<String> {
+        if let Some(text) = self.peek_kind().and_then(keyword_text) {
+            self.advance();
+            return Ok(text.into());
+        }
+        self.expect_ident()
+    }
     fn expected(&self, expected: &str) -> ParseError {
         let token = self.tokens.get(self.pos);
         ParseError::Expected {
@@ -1999,6 +2010,44 @@ fn parse_float(value: &str, span: Span) -> Result<f64> {
         })
 }
 
+/// Source text of a keyword token (the inverse of the lexer's keyword table).
+fn keyword_text(kind: &TokenKind) -> Option<&'static str> {
+    Some(match kind {
+        TokenKind::Let => "let",
+        TokenKind::Mut => "mut",
+        TokenKind::Fn => "fn",
+        TokenKind::Return => "return",
+        TokenKind::If => "if",
+        TokenKind::Else => "else",
+        TokenKind::Match => "match",
+        TokenKind::For => "for",
+        TokenKind::While => "while",
+        TokenKind::Loop => "loop",
+        TokenKind::Break => "break",
+        TokenKind::Continue => "continue",
+        TokenKind::In => "in",
+        TokenKind::Struct => "struct",
+        TokenKind::Enum => "enum",
+        TokenKind::Trait => "trait",
+        TokenKind::Impl => "impl",
+        TokenKind::Module => "mod",
+        TokenKind::Import => "import",
+        TokenKind::Pub => "pub",
+        TokenKind::Const => "const",
+        TokenKind::Unsafe => "unsafe",
+        TokenKind::Spawn => "spawn",
+        TokenKind::Go => "go",
+        TokenKind::True => "true",
+        TokenKind::False => "false",
+        TokenKind::Nil => "nil",
+        TokenKind::Self_ => "self",
+        TokenKind::As => "as",
+        TokenKind::Extern => "extern",
+        TokenKind::Type => "type",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2016,6 +2065,22 @@ mod tests {
         let program =
             parse("fn fib(n: int) -> int { if n <= 1 { return n } fib(n-1) + fib(n-2) }").unwrap();
         assert_eq!(program.items.len(), 1);
+    }
+
+    #[test]
+    fn keywords_after_double_colon_are_path_segments() {
+        // `std::uuid::nil` y `std::process::spawn` existen como funciones
+        // nativas, pero `nil` y `spawn` son palabras clave: antes el parser
+        // daba "expected an identifier, found Nil" y no se podían llamar.
+        let program =
+            parse("fn main() { let a = std::uuid::nil() let b = std::process::spawn(\"x\") }")
+                .unwrap();
+        let text = format!("{program:?}");
+        assert!(text.contains("\"std::uuid::nil\""), "{text}");
+        assert!(text.contains("\"std::process::spawn\""), "{text}");
+        // Fuera de una ruta siguen siendo palabras clave.
+        assert!(parse("fn main() { let x = nil }").is_ok());
+        assert!(parse("fn main() { let nil = 1 }").is_err());
     }
 
     #[test]
@@ -2146,3 +2211,4 @@ mod tests {
         );
     }
 }
+

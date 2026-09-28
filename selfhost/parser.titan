@@ -276,6 +276,54 @@ fn expect_ident(tk: array, st: St) -> Result {
     expected(tk, st, "an identifier")
 }
 
+// Texto de una palabra clave (lo inverso de keyword_kind del lexer), o "" si
+// `k` no es palabra clave.
+fn keyword_text(k: string) -> string {
+    if k == "Let" { return "let" }
+    if k == "Mut" { return "mut" }
+    if k == "Fn" { return "fn" }
+    if k == "Return" { return "return" }
+    if k == "If" { return "if" }
+    if k == "Else" { return "else" }
+    if k == "Match" { return "match" }
+    if k == "For" { return "for" }
+    if k == "While" { return "while" }
+    if k == "Loop" { return "loop" }
+    if k == "Break" { return "break" }
+    if k == "Continue" { return "continue" }
+    if k == "In" { return "in" }
+    if k == "Struct" { return "struct" }
+    if k == "Enum" { return "enum" }
+    if k == "Trait" { return "trait" }
+    if k == "Impl" { return "impl" }
+    if k == "Module" { return "mod" }
+    if k == "Import" { return "import" }
+    if k == "Pub" { return "pub" }
+    if k == "Const" { return "const" }
+    if k == "Unsafe" { return "unsafe" }
+    if k == "Spawn" { return "spawn" }
+    if k == "Go" { return "go" }
+    if k == "True" { return "true" }
+    if k == "False" { return "false" }
+    if k == "Nil" { return "nil" }
+    if k == "Self_" { return "self" }
+    if k == "As" { return "as" }
+    if k == "Extern" { return "extern" }
+    if k == "Type" { return "type" }
+    ""
+}
+
+// Un segmento después de `::` en un nombre calificado (`std::uuid::nil`,
+// `std::process::spawn`). Ahí una palabra clave no puede empezar otra cosa,
+// así que se lee como nombre normal (igual que el parser de Rust).
+fn expect_path_segment(tk: array, st: St) -> Result {
+    let text = keyword_text(kind_at(tk, st.pos))
+    if text != "" {
+        return Result::Ok((text, adv(tk, st)))
+    }
+    expect_ident(tk, st)
+}
+
 fn is_item_start(k: string) -> bool {
     k == "Fn" || k == "Extern" || k == "Struct" || k == "Enum" || k == "Trait" || k == "Impl" || k == "Module" || k == "Import" || k == "Const" || k == "Type"
 }
@@ -1352,7 +1400,7 @@ fn parse_ident_or_struct(tk: array, st: St, span: Span) -> Result {
         if !more {
             break
         }
-        let (seg, s2) = expect_ident(tk, s1)?
+        let (seg, s2) = expect_path_segment(tk, s1)?
         qualified = qualified + "::" + seg
         s = s2
     }

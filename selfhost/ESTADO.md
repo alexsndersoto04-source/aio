@@ -199,10 +199,16 @@ y se corregirán en los dos a la vez):
 10. El cargador de Titan todavía no admite proyectos con `Titan.toml`
     (manifiesto y dependencias): los rechaza con un error explícito. En el
     repositorio no hay ninguno.
-11. `std::uuid::nil()` no se puede llamar desde Titan: `nil` es palabra clave
-    y el parser la rechaza después de `::` ("expected an identifier, found
-    Nil"). La nativa existe pero es inalcanzable. Pendiente de decidir si se
-    cambia el parser o el nombre de la función.
+11. `std::uuid::nil()` no se podía llamar desde Titan: `nil` es palabra clave
+    y el parser la rechazaba después de `::` ("expected an identifier, found
+    Nil"). La nativa existía pero era inalcanzable.
+
+    **Corregido en los dos lados** (junto con el 16): después de `::` una
+    palabra clave no puede empezar otra cosa, así que ahora se lee como
+    nombre. Rust: `expect_path_segment` en `titan_parser/src/lib.rs` (con
+    test); Titan: lo mismo en `selfhost/parser.titan`. Fuera de una ruta
+    siguen siendo palabras clave (`let nil = 1` sigue siendo un error).
+    Prueba: `tests/native_pendiente_vm/ruta_palabra_clave.titan`.
 12. **`std::datetime` hacía *panic* (la VM se caía con un mensaje interno de
     Rust)** en dos casos, en vez de dar un error normal:
     - `format` / `format_offset` con un formato no válido (`%Q`, `%-D`,
@@ -216,8 +222,8 @@ y se corregirán en los dos a la vez):
     (el tipo de error ya existía y no se usaba) y `timestamp <ts> cannot be
     represented by RFC 2822 (years 0 to 9999 only)`, con tests. En Titan
     (`std_datetime.titan`) se dan los mismos mensajes. Los programas que lo
-    prueban están en `tests/native_pendiente_vm/`: coincidirán cuando se use
-    un `zett` reconstruido con la corrección (el precompilado es anterior).
+    prueban están en `tests/native/` (comprobados con el `zett`
+    reconstruido, ver abajo).
 13. **`std::dirs` hacía *panic*** al pedir cualquier carpeta de usuario
     (`desktop`, `documents`, `music`…) si `~/.config/user-dirs.dirs` tenía
     una línea `XDG_DIR=...` o un valor que era solo `"`: el crate dirs-sys
@@ -228,7 +234,7 @@ y se corregirán en los dos a la vez):
     `user-dirs.dirs` ya no usa el crate en Linux/Android: mismas reglas, pero
     esas líneas se ignoran como cualquier otra que no se entiende (con tests).
     En Titan (`std_dirs.titan`) igual. La prueba está en
-    `tests/native_pendiente_vm/dirs_lineas_malas.titan`.
+    `tests/native/dirs_lineas_malas.titan`.
 14. **`std::xml::parse` perdía datos sin avisar** si el documento terminaba
     con etiquetas abiertas: quick-xml no da error en ese caso y `xml_mod`
     devolvía solo la última etiqueta abierta (`parse("<a><x/><b>hola")` daba
@@ -237,7 +243,24 @@ y se corregirán en los dos a la vez):
     **Corregido en los dos lados.** Ahora es un error, con el mensaje que
     quick-xml usa para ese caso: `ill-formed document: start tag not closed:
     `</b>` not found before end of input` (con test en `xml_mod.rs`). La
-    prueba está en `tests/native_pendiente_vm/std_error_xml_abierta.titan`.
+    prueba está en `tests/native/std_error_xml_abierta.titan`.
+15. **`std::term::print_colored("#a€bc", …)` hacía *panic*** (corte de
+    string dentro de un carácter). Corregido en `term_mod.rs` y en
+    `std_term.titan` (ver la fila de std::term en la fase 6).
+16. **`std::process::spawn` no se podía llamar desde Titan**: `spawn` es
+    palabra clave (para `spawn f()`), igual que el 11. Sin `spawn`, las
+    funciones `spawn_wait`, `spawn_poll`, `spawn_kill` y `spawn_pid` tampoco
+    servían (no hay forma de conseguir un número de proceso). Corregido con
+    el 11.
+
+**Comprobación con Rust reconstruido (2026-09-28).** El workflow *Publish
+Linux x86_64 binary* recompila `zett` desde el código Rust en cada push, y
+`scripts/sandbox-zett.sh` descarga ese binario (rama `binaries`). Con el
+compilado del commit 9c3b3cb, las pruebas de los bugs 12, 13 y 14 dan
+**idéntico** entre la VM de Rust corregida y el ejecutable nativo (5 de 5;
+la del 13 también con `XDG_CONFIG_HOME` apuntando al archivo malo), y el
+error del 15 sale igual en los dos. Esas pruebas pasaron de
+`tests/native_pendiente_vm/` a `tests/native/`.
 
 ## Fase 4b — compilador nativo (bytecode → ejecutable x86-64)
 
