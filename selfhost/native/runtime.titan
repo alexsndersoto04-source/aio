@@ -69,7 +69,8 @@ import sys_arm64
 // +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table; las de
 // mayúsculas/minúsculas, slots 4..9, en +2336..+2376; la de escapes del
 // Debug de Rust, slot 10, en +2384),
-// +128 + 8*c listas de bloques libres de 16*c bytes (c = 1..256).
+// +128 + 8*c listas de bloques libres de 16*c bytes (c = 1..256),
+// +2688 + 8*(k-13) listas de bloques grandes libres de 2^k bytes (k = 13..28).
 //
 // Conteo de referencias (como el `Rc` de la VM): el campo +0 cuenta cuántos
 // lugares guardan el objeto. El código generado suma y resta referencias
@@ -116,14 +117,36 @@ fn rt_alloc(size: int) -> int {
         std::raw::store(b, block - 8)
         return b + 8
     }
-    // Bloques grandes: directamente del sistema, en páginas.
-    let total = (size + 8 + 4095) & -4096
+    // Bloques grandes: tamaño redondeado a potencia de 2 (desde 8 KiB). Los
+    // liberados se guardan en una lista por tamaño y se reutilizan (pedir y
+    // devolver memoria al sistema en cada copia de un array grande era lo
+    // que más tiempo gastaba el compilador); los de más de 256 MiB van y
+    // vuelven directamente al sistema.
+    let mut total = 8192
+    let mut k = 13
+    while total < size + 8 {
+        total = total * 2
+        k += 1
+    }
+    if k <= 28 {
+        let head = rt_big_head(k)
+        let free = std::raw::load(head)
+        if free != 0 {
+            std::raw::store(head, std::raw::load(free))
+            return free
+        }
+    }
     let b = std::raw::syscall(9, 0, total, 3, 34, -1, 0)
     if b < 0 {
         rt_die("out of memory")
     }
     std::raw::store(b, total - 8)
     b + 8
+}
+
+// Lista de bloques grandes libres de 2^k bytes (k = 13..28): globals + 2688..2808.
+fn rt_big_head(k: int) -> int {
+    std::raw::globals() + 2688 + 8 * (k - 13)
 }
 
 // Tamaño útil del bloque que empieza en p.
@@ -140,7 +163,20 @@ fn rt_free_block(p: int) {
         std::raw::store(head, p)
         return
     }
-    std::raw::syscall(11, p - 8, size + 8, 0, 0, 0, 0)
+    let total = size + 8
+    let mut t = 8192
+    let mut k = 13
+    while t < total {
+        t = t * 2
+        k += 1
+    }
+    if t == total && k <= 28 {
+        let head = rt_big_head(k)
+        std::raw::store(p, std::raw::load(head))
+        std::raw::store(head, p)
+        return
+    }
+    std::raw::syscall(11, p - 8, total, 0, 0, 0, 0)
 }
 
 // La última referencia al objeto desapareció (lo llama g_dec, con la cuenta
