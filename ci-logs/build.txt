@@ -1,7 +1,7 @@
    Compiling titan_tls v1.0.0 (/home/runner/work/aio/aio/crates/titan_tls)
    Compiling titan_lexer v1.0.0 (/home/runner/work/aio/aio/crates/titan_lexer)
-   Compiling titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
    Compiling titan_mysql v1.0.0 (/home/runner/work/aio/aio/crates/titan_mysql)
+   Compiling titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
    Compiling titan_ast v1.0.0 (/home/runner/work/aio/aio/crates/titan_ast)
    Compiling titan_stdlib v1.0.0 (/home/runner/work/aio/aio/crates/titan_stdlib)
    Compiling titan_parser v1.0.0 (/home/runner/work/aio/aio/crates/titan_parser)
@@ -9,7 +9,7 @@
    Compiling titan_typechecker v1.0.0 (/home/runner/work/aio/aio/crates/titan_typechecker)
    Compiling titan_pkg v1.0.0 (/home/runner/work/aio/aio/crates/titan_pkg)
    Compiling titan_codegen v1.0.0 (/home/runner/work/aio/aio/crates/titan_codegen)
-   Compiling titan_vm v1.0.0 (/home/runner/work/aio/aio/crates/titan_vm)
    Compiling titan_wasm v1.0.0 (/home/runner/work/aio/aio/crates/titan_wasm)
+   Compiling titan_vm v1.0.0 (/home/runner/work/aio/aio/crates/titan_vm)
    Compiling titan_cli v1.0.0 (/home/runner/work/aio/aio/crates/titan_cli)
-    Finished `release` profile [optimized] target(s) in 1m 08s
+    Finished `release` profile [optimized] target(s) in 1m 07s
