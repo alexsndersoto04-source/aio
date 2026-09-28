@@ -122,3 +122,16 @@ encode_unicode, libc, once_cell, unicode-width 0.2.2). Sin unicode-segmentation:
   f32; clamp(0, 1).
 - elapsed() = started.elapsed().
 - Drop de BarState: si no terminado -> finish_using_style(on_finish=AndClear).
+
+## Verificado contra el código local (selfhost/fuentes/)
+
+- console: `strip_ansi_codes` (feature ansi-parsing, activada por indicatif),
+  `colors_enabled` para STDOUT (TERM != dumb, NO_COLOR, CLICOLOR,
+  CLICOLOR_FORCE), `Term::size` (TIOCGWINSZ o 24x80), `clear_line`
+  `\r\x1b[2K`, `move_cursor_up/down` solo si n > 0, buffer + un write_all en
+  flush (si falla, el buffer se conserva).
+- FormattedDuration: `{d}d {h:02}:{m:02}:{s:02}` o `{h:02}:{m:02}:{s:02}`.
+- La VM (RuntimeState::drop -> cleanup_runtime) hace finish_and_clear de las
+  barras que quedan antes de imprimir el resultado o el error.
+- Implementación: native/std_progress.titan. Prueba en terminal:
+  `python3 native/progress/pty_run.py 30 100 PROGRAMA` (VM y nativo).
