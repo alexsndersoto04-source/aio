@@ -74,7 +74,7 @@ Operaciones de bajo nivel (`std::raw::`):
   misma salida, errores y código de salida que la VM (LLVM 22, -O2).
 - Punto fijo por LLVM (`punto_fijo.sh`): el compilador en Titan compilado por
   LLVM compila `build.titan` y da exactamente el mismo ejecutable que el
-  compilador normal (hash dee0c9f…), y el backend LLVM compilado por LLVM
+  compilador normal (byte a byte), y el backend LLVM compilado por LLVM
   escribe exactamente el mismo IR. De paso: el compilador hecho por LLVM tarda
   8 s en compilarse a sí mismo, frente a 45 s el del backend propio.
 - ARM64 (AArch64, Termux): `sys_arm64.titan` traduce cada llamada al sistema
