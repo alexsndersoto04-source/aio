@@ -49,8 +49,7 @@ jobs:
           if [ -f selfhost/native/llvm/verificar.sh ]; then
             bash selfhost/native/llvm/verificar.sh 2>&1 | tee /tmp/llvm.txt
             rc=${PIPESTATUS[0]}
-            tail -3 /tmp/llvm.txt | while IFS= read -r l; do echo "::notice::[llvm] $l"; done
-            grep -E "^DIFERENCIA|^no admitido" /tmp/llvm.txt | head -20 | while IFS= read -r l; do echo "::error::[llvm] $l"; done
+            python3 selfhost/native/llvm/resumen_ci.py /tmp/llvm.txt
             exit $rc
           else
             echo "todavía no hay selfhost/native/llvm/verificar.sh"

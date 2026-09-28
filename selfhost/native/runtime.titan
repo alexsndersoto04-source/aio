@@ -701,6 +701,12 @@ fn rt_fatal(message: any) {
     if !rt_str_eq(rt_trim(message), flat) {
         rt_write(2, rt_concat(message, "\n"))
     }
+    // Como el CLI: en GitHub Actions (variable GITHUB_ACTIONS presente, con
+    // cualquier valor) el error se publica además como anotación del job.
+    if rt_getenv("GITHUB_ACTIONS") != 0 {
+        let escaped = std__text__replace(std__text__replace(flat, "%", "%25"), "\r", "%0D")
+        rt_write(2, rt_concat(rt_concat("::error title=RUNTIME ERROR::", escaped), "\n"))
+    }
     std::raw::syscall(60, 1, 0, 0, 0, 0, 0)
 }
 
