@@ -1,0 +1,12 @@
+# Código fuente original (crates.io) de las bibliotecas que el runtime en Titan
+# reproduce. El workflow .github/workflows/fuentes-crates.yml descarga cada
+# una, comprueba su SHA-256 contra Cargo.lock y deja el .crate aquí.
+# Formato: nombre versión
+unicode-width 0.2.2
+unicode-width 0.1.14
+indicatif 0.17.11
+console 0.15.11
+number_prefix 0.4.0
+rustyline 14.0.0
+crossterm 0.28.1
+unicode-segmentation 1.13.3

@@ -1,0 +1,89 @@
+# ============================================================================
+# Fuentes de crates -> selfhost/fuentes/ (en la MISMA rama)
+#
+# El sandbox de Arena no tiene internet desde la terminal. Para portar a Titan
+# el comportamiento exacto de las bibliotecas de Rust hace falta su código
+# original. Este workflow descarga de static.crates.io cada crate listado en
+# selfhost/fuentes/lista.txt, comprueba que su SHA-256 es el mismo que figura
+# en Cargo.lock (o sea, exactamente el código que compila el Titan de Rust) y
+# lo guarda como selfhost/fuentes/<nombre>-<versión>.crate con un commit
+# [skip ci]. Si una suma no coincide, falla y no guarda nada.
+# ============================================================================
+name: Fuentes de crates -> selfhost/fuentes
+
+on:
+  push:
+    branches: ["arena/**"]
+    paths:
+      - "selfhost/fuentes/lista.txt"
+      - ".github/workflows/fuentes-crates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fuentes-crates-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  descargar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descargar y verificar
+        run: |
+          python3 - <<'EOF'
+          import hashlib, re, sys, urllib.request, os
+          lock = open('Cargo.lock').read()
+          sums = {}
+          for block in lock.split('[[package]]'):
+              n = re.search(r'^name = "([^"]+)"', block, re.M)
+              v = re.search(r'^version = "([^"]+)"', block, re.M)
+              c = re.search(r'^checksum = "([0-9a-f]+)"', block, re.M)
+              if n and v and c:
+                  sums[(n.group(1), v.group(1))] = c.group(1)
+          report = []
+          ok = True
+          for line in open('selfhost/fuentes/lista.txt'):
+              line = line.split('#')[0].strip()
+              if not line:
+                  continue
+              name, version = line.split()
+              out = f'selfhost/fuentes/{name}-{version}.crate'
+              want = sums.get((name, version))
+              if want is None:
+                  report.append(f'FALTA EN Cargo.lock {name} {version}')
+                  ok = False
+                  continue
+              url = f'https://static.crates.io/crates/{name}/{name}-{version}.crate'
+              data = urllib.request.urlopen(url, timeout=60).read()
+              got = hashlib.sha256(data).hexdigest()
+              if got != want:
+                  report.append(f'SUMA DISTINTA {name} {version}: {got} != {want}')
+                  ok = False
+                  continue
+              open(out, 'wb').write(data)
+              report.append(f'ok {name} {version} {len(data)} bytes sha256 {got}')
+          open('selfhost/fuentes/VERIFICADO.txt', 'w').write('\n'.join(report) + '\n')
+          print('\n'.join(report))
+          sys.exit(0 if ok else 1)
+          EOF
+
+      - name: Commit en la misma rama
+        run: |
+          git config user.name "fuentes-crates[bot]"
+          git config user.email "fuentes-crates@users.noreply.github.com"
+          git add selfhost/fuentes
+          if git diff --cached --quiet; then
+            echo "sin cambios"
+            exit 0
+          fi
+          git commit -m "fuentes: crates verificados contra Cargo.lock [skip ci]"
+          for i in 1 2 3 4 5; do
+            git pull --rebase -q origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            sleep 5
+          done
+          exit 1
