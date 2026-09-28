@@ -1,0 +1,472 @@
+// GENERADO por native/sysinfo/gen_arm.py: no editar a mano.
+// Tablas de get_arm_implementer / get_arm_part de sysinfo 0.32.1 (copiadas en
+// native/sysinfo/arm_tab.txt; ver gen_arm.py).
+fn pf_arm_impl(x: int) -> any {
+    if x == 65 {
+        return "ARM"
+    }
+    if x == 66 {
+        return "Broadcom"
+    }
+    if x == 67 {
+        return "Cavium"
+    }
+    if x == 68 {
+        return "DEC"
+    }
+    if x == 70 {
+        return "FUJITSU"
+    }
+    if x == 72 {
+        return "HiSilicon"
+    }
+    if x == 73 {
+        return "Infineon"
+    }
+    if x == 77 {
+        return "Motorola/Freescale"
+    }
+    if x == 78 {
+        return "NVIDIA"
+    }
+    if x == 80 {
+        return "APM"
+    }
+    if x == 81 {
+        return "Qualcomm"
+    }
+    if x == 83 {
+        return "Samsung"
+    }
+    if x == 86 {
+        return "Marvell"
+    }
+    if x == 97 {
+        return "Apple"
+    }
+    if x == 102 {
+        return "Faraday"
+    }
+    if x == 105 {
+        return "Intel"
+    }
+    if x == 112 {
+        return "Phytium"
+    }
+    if x == 192 {
+        return "Ampere"
+    }
+    nil
+}
+
+fn pf_arm_part(x: int, p: int) -> any {
+    if x == 65 && p == 2064 {
+        return "ARM810"
+    }
+    if x == 65 && p == 2336 {
+        return "ARM920"
+    }
+    if x == 65 && p == 2338 {
+        return "ARM922"
+    }
+    if x == 65 && p == 2342 {
+        return "ARM926"
+    }
+    if x == 65 && p == 2368 {
+        return "ARM940"
+    }
+    if x == 65 && p == 2374 {
+        return "ARM946"
+    }
+    if x == 65 && p == 2406 {
+        return "ARM966"
+    }
+    if x == 65 && p == 2592 {
+        return "ARM1020"
+    }
+    if x == 65 && p == 2594 {
+        return "ARM1022"
+    }
+    if x == 65 && p == 2598 {
+        return "ARM1026"
+    }
+    if x == 65 && p == 2818 {
+        return "ARM11 MPCore"
+    }
+    if x == 65 && p == 2870 {
+        return "ARM1136"
+    }
+    if x == 65 && p == 2902 {
+        return "ARM1156"
+    }
+    if x == 65 && p == 2934 {
+        return "ARM1176"
+    }
+    if x == 65 && p == 3077 {
+        return "Cortex-A5"
+    }
+    if x == 65 && p == 3079 {
+        return "Cortex-A7"
+    }
+    if x == 65 && p == 3080 {
+        return "Cortex-A8"
+    }
+    if x == 65 && p == 3081 {
+        return "Cortex-A9"
+    }
+    if x == 65 && p == 3085 {
+        return "Cortex-A17"
+    }
+    if x == 65 && p == 3087 {
+        return "Cortex-A15"
+    }
+    if x == 65 && p == 3086 {
+        return "Cortex-A17"
+    }
+    if x == 65 && p == 3092 {
+        return "Cortex-R4"
+    }
+    if x == 65 && p == 3093 {
+        return "Cortex-R5"
+    }
+    if x == 65 && p == 3095 {
+        return "Cortex-R7"
+    }
+    if x == 65 && p == 3096 {
+        return "Cortex-R8"
+    }
+    if x == 65 && p == 3104 {
+        return "Cortex-M0"
+    }
+    if x == 65 && p == 3105 {
+        return "Cortex-M1"
+    }
+    if x == 65 && p == 3107 {
+        return "Cortex-M3"
+    }
+    if x == 65 && p == 3108 {
+        return "Cortex-M4"
+    }
+    if x == 65 && p == 3111 {
+        return "Cortex-M7"
+    }
+    if x == 65 && p == 3168 {
+        return "Cortex-M0+"
+    }
+    if x == 65 && p == 3329 {
+        return "Cortex-A32"
+    }
+    if x == 65 && p == 3330 {
+        return "Cortex-A34"
+    }
+    if x == 65 && p == 3331 {
+        return "Cortex-A53"
+    }
+    if x == 65 && p == 3332 {
+        return "Cortex-A35"
+    }
+    if x == 65 && p == 3333 {
+        return "Cortex-A55"
+    }
+    if x == 65 && p == 3334 {
+        return "Cortex-A65"
+    }
+    if x == 65 && p == 3335 {
+        return "Cortex-A57"
+    }
+    if x == 65 && p == 3336 {
+        return "Cortex-A72"
+    }
+    if x == 65 && p == 3337 {
+        return "Cortex-A73"
+    }
+    if x == 65 && p == 3338 {
+        return "Cortex-A75"
+    }
+    if x == 65 && p == 3339 {
+        return "Cortex-A76"
+    }
+    if x == 65 && p == 3340 {
+        return "Neoverse-N1"
+    }
+    if x == 65 && p == 3341 {
+        return "Cortex-A77"
+    }
+    if x == 65 && p == 3342 {
+        return "Cortex-A76AE"
+    }
+    if x == 65 && p == 3347 {
+        return "Cortex-R52"
+    }
+    if x == 65 && p == 3360 {
+        return "Cortex-M23"
+    }
+    if x == 65 && p == 3361 {
+        return "Cortex-M33"
+    }
+    if x == 65 && p == 3392 {
+        return "Neoverse-V1"
+    }
+    if x == 65 && p == 3393 {
+        return "Cortex-A78"
+    }
+    if x == 65 && p == 3394 {
+        return "Cortex-A78AE"
+    }
+    if x == 65 && p == 3395 {
+        return "Cortex-A65AE"
+    }
+    if x == 65 && p == 3396 {
+        return "Cortex-X1"
+    }
+    if x == 65 && p == 3398 {
+        return "Cortex-A510"
+    }
+    if x == 65 && p == 3399 {
+        return "Cortex-A710"
+    }
+    if x == 65 && p == 3400 {
+        return "Cortex-X2"
+    }
+    if x == 65 && p == 3401 {
+        return "Neoverse-N2"
+    }
+    if x == 65 && p == 3402 {
+        return "Neoverse-E1"
+    }
+    if x == 65 && p == 3403 {
+        return "Cortex-A78C"
+    }
+    if x == 65 && p == 3404 {
+        return "Cortex-X1C"
+    }
+    if x == 65 && p == 3405 {
+        return "Cortex-A715"
+    }
+    if x == 65 && p == 3406 {
+        return "Cortex-X3"
+    }
+    if x == 66 && p == 15 {
+        return "Brahma-B15"
+    }
+    if x == 66 && p == 256 {
+        return "Brahma-B53"
+    }
+    if x == 66 && p == 1302 {
+        return "ThunderX2"
+    }
+    if x == 67 && p == 160 {
+        return "ThunderX"
+    }
+    if x == 67 && p == 161 {
+        return "ThunderX-88XX"
+    }
+    if x == 67 && p == 162 {
+        return "ThunderX-81XX"
+    }
+    if x == 67 && p == 163 {
+        return "ThunderX-83XX"
+    }
+    if x == 67 && p == 175 {
+        return "ThunderX2-99xx"
+    }
+    if x == 68 && p == 2576 {
+        return "SA110"
+    }
+    if x == 68 && p == 2577 {
+        return "SA1100"
+    }
+    if x == 70 && p == 1 {
+        return "A64FX"
+    }
+    if x == 72 && p == 3329 {
+        return "Kunpeng-920"
+    }
+    if x == 78 && p == 0 {
+        return "Denver"
+    }
+    if x == 78 && p == 3 {
+        return "Denver 2"
+    }
+    if x == 78 && p == 4 {
+        return "Carmel"
+    }
+    if x == 80 && p == 0 {
+        return "X-Gene"
+    }
+    if x == 81 && p == 15 {
+        return "Scorpion"
+    }
+    if x == 81 && p == 45 {
+        return "Scorpion"
+    }
+    if x == 81 && p == 77 {
+        return "Krait"
+    }
+    if x == 81 && p == 111 {
+        return "Krait"
+    }
+    if x == 81 && p == 513 {
+        return "Kryo"
+    }
+    if x == 81 && p == 517 {
+        return "Kryo"
+    }
+    if x == 81 && p == 529 {
+        return "Kryo"
+    }
+    if x == 81 && p == 2048 {
+        return "Falkor-V1/Kryo"
+    }
+    if x == 81 && p == 2049 {
+        return "Kryo-V2"
+    }
+    if x == 81 && p == 2050 {
+        return "Kryo-3XX-Gold"
+    }
+    if x == 81 && p == 2051 {
+        return "Kryo-3XX-Silver"
+    }
+    if x == 81 && p == 2052 {
+        return "Kryo-4XX-Gold"
+    }
+    if x == 81 && p == 2053 {
+        return "Kryo-4XX-Silver"
+    }
+    if x == 81 && p == 3072 {
+        return "Falkor"
+    }
+    if x == 81 && p == 3073 {
+        return "Saphira"
+    }
+    if x == 83 && p == 1 {
+        return "exynos-m1"
+    }
+    if x == 86 && p == 305 {
+        return "Feroceon-88FR131"
+    }
+    if x == 86 && p == 1409 {
+        return "PJ4/PJ4b"
+    }
+    if x == 86 && p == 1412 {
+        return "PJ4B-MP"
+    }
+    if x == 97 && p == 32 {
+        return "Icestorm-A14"
+    }
+    if x == 97 && p == 33 {
+        return "Firestorm-A14"
+    }
+    if x == 97 && p == 34 {
+        return "Icestorm-M1"
+    }
+    if x == 97 && p == 35 {
+        return "Firestorm-M1"
+    }
+    if x == 97 && p == 36 {
+        return "Icestorm-M1-Pro"
+    }
+    if x == 97 && p == 37 {
+        return "Firestorm-M1-Pro"
+    }
+    if x == 97 && p == 40 {
+        return "Icestorm-M1-Max"
+    }
+    if x == 97 && p == 41 {
+        return "Firestorm-M1-Max"
+    }
+    if x == 97 && p == 48 {
+        return "Blizzard-A15"
+    }
+    if x == 97 && p == 49 {
+        return "Avalanche-A15"
+    }
+    if x == 97 && p == 50 {
+        return "Blizzard-M2"
+    }
+    if x == 97 && p == 51 {
+        return "Avalanche-M2"
+    }
+    if x == 102 && p == 1318 {
+        return "FA526"
+    }
+    if x == 102 && p == 1574 {
+        return "FA626"
+    }
+    if x == 105 && p == 512 {
+        return "i80200"
+    }
+    if x == 105 && p == 528 {
+        return "PXA250A"
+    }
+    if x == 105 && p == 530 {
+        return "PXA210A"
+    }
+    if x == 105 && p == 578 {
+        return "i80321-400"
+    }
+    if x == 105 && p == 579 {
+        return "i80321-600"
+    }
+    if x == 105 && p == 656 {
+        return "PXA250B/PXA26x"
+    }
+    if x == 105 && p == 658 {
+        return "PXA210B"
+    }
+    if x == 105 && p == 706 {
+        return "i80321-400-B0"
+    }
+    if x == 105 && p == 707 {
+        return "i80321-600-B0"
+    }
+    if x == 105 && p == 720 {
+        return "PXA250C/PXA255/PXA26x"
+    }
+    if x == 105 && p == 722 {
+        return "PXA210C"
+    }
+    if x == 105 && p == 1041 {
+        return "PXA27x"
+    }
+    if x == 105 && p == 1052 {
+        return "IPX425-533"
+    }
+    if x == 105 && p == 1053 {
+        return "IPX425-400"
+    }
+    if x == 105 && p == 1055 {
+        return "IPX425-266"
+    }
+    if x == 105 && p == 1666 {
+        return "PXA32x"
+    }
+    if x == 105 && p == 1667 {
+        return "PXA930/PXA935"
+    }
+    if x == 105 && p == 1672 {
+        return "PXA30x"
+    }
+    if x == 105 && p == 1673 {
+        return "PXA31x"
+    }
+    if x == 105 && p == 2833 {
+        return "SA1110"
+    }
+    if x == 105 && p == 3090 {
+        return "IPX1200"
+    }
+    if x == 112 && p == 1632 {
+        return "FTC660"
+    }
+    if x == 112 && p == 1633 {
+        return "FTC661"
+    }
+    if x == 112 && p == 1634 {
+        return "FTC662"
+    }
+    if x == 112 && p == 1635 {
+        return "FTC663"
+    }
+    nil
+}

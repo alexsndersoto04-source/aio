@@ -1,0 +1,2380 @@
+// std::procfs escrito en Titan: lo mismo que hace el Rust de Titan con
+// sysinfo 0.32.1 en Linux (ver native/sysinfo/NOTAS.md, con las reglas
+// copiadas del código de sysinfo y de la biblioteca estándar de Rust).
+//
+// Como en la VM, hay un "System" global que se crea en la primera consulta
+// (new_all) y en cada consulta se refresca entero (memoria, CPUs y procesos)
+// y después se rehace la lista de CPUs. Eso tiene consecuencias visibles que
+// se reproducen tal cual: los procesos muertos no se quitan nunca de la
+// lista, los hilos cuentan como procesos, el uso de cada CPU recién creada
+// es 0 y el uso global se calcula contra una lectura toda a cero (es decir,
+// el uso medio desde el arranque).
+//
+// Diferencias sin efecto visible: sysinfo guarda abierto el archivo `stat`
+// de cada proceso (y sube el límite blando de descriptores al duro) y lee
+// datos que std::procfs no devuelve (exe, cmdline, environ, cwd, uid, E/S,
+// tipo de disco); aquí no se leen. El orden de `top_processes` entre
+// procesos con el mismo uso de CPU en la VM es el de un HashMap con semilla
+// aleatoria (cambia en cada ejecución); aquí es el orden de llegada.
+//
+// Estado (globales +2528): puntero a un bloque de palabras:
+//   0..8  MemTotal, MemFree, MemAvailable, Buffers, Cached, Shmem,
+//         SReclaimable, SwapTotal, SwapFree (en bytes)
+//   9     CpusWrapper
+//   10    tabla hash pid -> proceso, 11 su capacidad
+//   12    vector de procesos en orden de llegada
+//   13    tamaño de página, 14 ticks de reloj por segundo
+
+// ------------------------------------------------------------ bytes y textos
+
+fn pf_b(s: any, i: int) -> int {
+    std::raw::load8(std::raw::bits(s) + 16 + i)
+}
+
+// ¿s[a..b] es exactamente el literal?
+fn pf_eq(s: any, a: int, b: int, lit: string) -> bool {
+    let n = rt_slen(lit)
+    if b - a != n {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        if pf_b(s, a + i) != pf_b(lit, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// ¿s[a..b] empieza con el literal?
+fn pf_starts(s: any, a: int, b: int, lit: string) -> bool {
+    let n = rt_slen(lit)
+    if b - a < n {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        if pf_b(s, a + i) != pf_b(lit, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Primera posición de `ch` en s[a..b], o -1.
+fn pf_find(s: any, a: int, b: int, ch: int) -> int {
+    let mut i = a
+    while i < b {
+        if pf_b(s, i) == ch {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// Última posición de `ch` en s[a..b], o -1.
+fn pf_rfind(s: any, a: int, b: int, ch: int) -> int {
+    let mut i = b - 1
+    while i >= a {
+        if pf_b(s, i) == ch {
+            return i
+        }
+        i -= 1
+    }
+    -1
+}
+
+// Espacio en blanco de Unicode que reconoce `str::trim` (White_Space),
+// codificado en UTF-8 a partir de s[i]: su longitud en bytes o 0.
+fn pf_ws_len(s: any, i: int, b: int) -> int {
+    let c = pf_b(s, i)
+    if c == 32 || (c >= 9 && c <= 13) {
+        return 1
+    }
+    if c == 194 && i + 1 < b {
+        let d = pf_b(s, i + 1)
+        if d == 133 || d == 160 {
+            return 2
+        }
+        return 0
+    }
+    if c == 225 && i + 2 < b {
+        if pf_b(s, i + 1) == 154 && pf_b(s, i + 2) == 128 {
+            return 3
+        }
+        return 0
+    }
+    if c == 226 && i + 2 < b {
+        let d = pf_b(s, i + 1)
+        let e = pf_b(s, i + 2)
+        if d == 128 {
+            if (e >= 128 && e <= 138) || e == 168 || e == 169 || e == 175 {
+                return 3
+            }
+            return 0
+        }
+        if d == 129 && e == 159 {
+            return 3
+        }
+        return 0
+    }
+    if c == 227 && i + 2 < b {
+        if pf_b(s, i + 1) == 128 && pf_b(s, i + 2) == 128 {
+            return 3
+        }
+    }
+    0
+}
+
+// ¿El carácter que termina en s[j-1] es espacio de Unicode? Longitud o 0.
+fn pf_ws_len_back(s: any, a: int, j: int) -> int {
+    let mut k = j - 1
+    while k > a && (pf_b(s, k) & 192) == 128 {
+        k -= 1
+    }
+    if k < a {
+        return 0
+    }
+    let n = pf_ws_len(s, k, j)
+    if n == j - k {
+        return n
+    }
+    0
+}
+
+// `str::trim` sobre s[a..b]: devuelve (a', b').
+fn pf_trim(s: any, a0: int, b0: int) -> (int, int) {
+    let mut a = a0
+    let mut b = b0
+    loop {
+        if a >= b {
+            break
+        }
+        let n = pf_ws_len(s, a, b)
+        if n == 0 {
+            break
+        }
+        a += n
+    }
+    loop {
+        if b <= a {
+            break
+        }
+        let n = pf_ws_len_back(s, a, b)
+        if n == 0 {
+            break
+        }
+        b -= n
+    }
+    return (a, b)
+}
+
+fn pf_trim_start(s: any, a0: int, b: int) -> int {
+    let mut a = a0
+    loop {
+        if a >= b {
+            return a
+        }
+        let n = pf_ws_len(s, a, b)
+        if n == 0 {
+            return a
+        }
+        a += n
+    }
+    a
+}
+
+// Espacio ASCII de `u8::is_ascii_whitespace`/`split_ascii_whitespace`
+// no hace falta: `split_whitespace` usa el White_Space de Unicode.
+// Siguiente campo de split_whitespace en s[i..b]: (inicio, fin) o (-1, -1).
+fn pf_next_field(s: any, i0: int, b: int) -> (int, int) {
+    let mut i = i0
+    loop {
+        if i >= b {
+            return (-1, -1)
+        }
+        let n = pf_ws_len(s, i, b)
+        if n == 0 {
+            break
+        }
+        i += n
+    }
+    let start = i
+    loop {
+        if i >= b {
+            break
+        }
+        if pf_ws_len(s, i, b) != 0 {
+            break
+        }
+        i += 1
+    }
+    return (start, i)
+}
+
+// Siguiente campo de split(' ') sin vacíos (el de to_u64 en /proc/stat).
+fn pf_next_sp(s: any, i0: int, b: int) -> (int, int) {
+    let mut i = i0
+    while i < b && pf_b(s, i) == 32 {
+        i += 1
+    }
+    if i >= b {
+        return (-1, -1)
+    }
+    let start = i
+    while i < b && pf_b(s, i) != 32 {
+        i += 1
+    }
+    return (start, i)
+}
+
+// ------------------------------------------------------------ números
+
+fn pf_ult(a: int, b: int) -> bool {
+    return (a ^ (-9223372036854775807 - 1)) < (b ^ (-9223372036854775807 - 1))
+}
+
+// `u64::from_str` (y usize): (ok, valor). Admite un '+' delante.
+fn pf_parse_u64(s: any, a: int, b: int) -> (bool, int) {
+    let mut i = a
+    if b <= a {
+        return (false, 0)
+    }
+    if pf_b(s, i) == 43 {
+        if b - a == 1 {
+            return (false, 0)
+        }
+        i += 1
+    }
+    let mut v = 0
+    while i < b {
+        let c = pf_b(s, i) - 48
+        if c < 0 || c > 9 {
+            return (false, 0)
+        }
+        if pf_ult(1844674407370955161, v) {
+            return (false, 0)
+        }
+        if v == 1844674407370955161 && c > 5 {
+            return (false, 0)
+        }
+        v = std::raw::wadd(std::raw::wmul(v, 10), c)
+        i += 1
+    }
+    return (true, v)
+}
+
+// `to_u64` / `slice_to_nb` de sysinfo: sin comprobar nada (en release la
+// resta de u8 y las multiplicaciones dan la vuelta).
+fn pf_to_u64(s: any, a: int, b: int) -> int {
+    let mut v = 0
+    let mut i = a
+    while i < b {
+        v = std::raw::wadd(std::raw::wmul(v, 10), (pf_b(s, i) - 48) & 255)
+        i += 1
+    }
+    v
+}
+
+fn pf_sat_add(a: int, b: int) -> int {
+    let r = std::raw::wadd(a, b)
+    if pf_ult(r, a) {
+        return -1
+    }
+    r
+}
+
+fn pf_sat_sub(a: int, b: int) -> int {
+    if pf_ult(a, b) {
+        return 0
+    }
+    std::raw::wsub(a, b)
+}
+
+// u64 * u64 saturando a u64::MAX.
+fn pf_sat_mul(a: int, b: int) -> int {
+    if a == 0 || b == 0 {
+        return 0
+    }
+    // a * b > MAX  <=>  a > MAX / b (división sin signo)
+    let q = pf_udiv(-1, b)
+    if pf_ult(q, a) {
+        return -1
+    }
+    std::raw::wmul(a, b)
+}
+
+// División sin signo de 64 bits.
+fn pf_udiv(a: int, b: int) -> int {
+    if b < 0 {
+        if pf_ult(a, b) {
+            return 0
+        }
+        return 1
+    }
+    if a >= 0 {
+        return a / b
+    }
+    // a >= 2^63: dividir a/2 y corregir.
+    let h = std::raw::shr(a, 1)
+    let mut q = std::raw::shl(h / b, 1)
+    let r = std::raw::wsub(a, std::raw::wmul(q, b))
+    if !pf_ult(r, b) {
+        q += 1
+    }
+    q
+}
+
+// u64 -> f64 (redondeo al más cercano, como `as f64`).
+fn pf_u2f64(x: int) -> int {
+    if x >= 0 {
+        return std::raw::ffromint(x)
+    }
+    let h = std::raw::shr(x, 1) | (x & 1)
+    std::raw::fmul(std::raw::ffromint(h), 4611686018427387904)
+}
+
+// u64 -> f32 (como `as f32`: redondeo directo desde el entero), devuelto
+// como bits de f64.
+fn pf_u2f32(x: int) -> int {
+    if x >= 0 && x < 9007199254740992 {
+        return vec_f32(std::raw::ffromint(x))
+    }
+    let mut k = 63
+    while std::raw::shr(x, k) == 0 {
+        k -= 1
+    }
+    let mut sh = k - 23
+    let mut q = std::raw::shr(x, sh)
+    let r = x & (std::raw::shl(1, sh) - 1)
+    let half = std::raw::shl(1, sh - 1)
+    if pf_ult(half, r) || (r == half && (q & 1) == 1) {
+        q += 1
+    }
+    if q == 16777216 {
+        q = 8388608
+        sh += 1
+    }
+    std::raw::fmul(std::raw::ffromint(q), std::raw::shl(sh + 1023, 52))
+}
+
+fn pf_is_nan(x: int) -> bool {
+    pf_ult(9218868437227405312, x & 9223372036854775807)
+}
+
+// Un u64 tal como lo deja `from_json` (serde_json): entero si cabe en i64,
+// si no float.
+fn pf_json_u64(x: int) -> any {
+    if x >= 0 {
+        return x
+    }
+    rt_float(pf_u2f64(x))
+}
+
+// `f64 as u64` (satura; NaN -> 0).
+fn pf_f2u64(x: int) -> int {
+    if pf_is_nan(x) {
+        return 0
+    }
+    if std::raw::fcmp(x, 0) != 1 {
+        return 0
+    }
+    // 2^64
+    if std::raw::fcmp(x, 4895412794951729152) != -1 {
+        return -1
+    }
+    // 2^63
+    if std::raw::fcmp(x, 4890909195324358656) != -1 {
+        return std::raw::wadd(std::raw::ftoint(std::raw::fsub(x, 4890909195324358656)), -9223372036854775807 - 1)
+    }
+    std::raw::ftoint(x)
+}
+
+// ------------------------------------------------------------ archivos
+
+// El archivo entero (bytes tal cual) o nil si no se puede abrir o leer.
+fn pf_read(path: any) -> any {
+    let fd = rt_open(path, 524288, 0)
+    if fd < 0 {
+        return nil
+    }
+    let b = sb_new(4096)
+    let buf = rt_alloc(16384)
+    let mut ok = true
+    loop {
+        let got = std::raw::syscall(0, fd, buf, 16384, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            ok = false
+            break
+        }
+        if got == 0 {
+            break
+        }
+        sb_raw(b, buf, got)
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let s = sb_finish(b)
+    if !ok {
+        return nil
+    }
+    s
+}
+
+// Como `read_to_string`: nil también si no es UTF-8 válido.
+fn pf_read_utf8(path: any) -> any {
+    let s = pf_read(path)
+    if s == nil {
+        return nil
+    }
+    if !rt_valid_utf8(std::raw::bits(s) + 16, rt_slen(s)) {
+        return nil
+    }
+    s
+}
+
+// Entradas de un directorio: array de [nombre, d_type] (sin . ni ..), en el
+// orden del sistema; nil si no se puede leer. d_type desconocido (0) se
+// resuelve con lstat, como `DirEntry::file_type`.
+fn pf_read_dir(path: any) -> any {
+    let fd = rt_open(path, 589824, 0)
+    if fd < 0 {
+        return nil
+    }
+    let buf = rt_alloc(32768)
+    let mut out = []
+    let mut ok = true
+    loop {
+        let got = std::raw::syscall(217, fd, buf, 32768, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            ok = false
+            break
+        }
+        if got == 0 {
+            break
+        }
+        let mut off = 0
+        while off < got {
+            let e = buf + off
+            let reclen = std::raw::load8(e + 16) + 256 * std::raw::load8(e + 17)
+            let name = rt_from_cstr(e + 19)
+            let mut ty = std::raw::load8(e + 18)
+            if name != "." && name != ".." {
+                if ty == 0 {
+                    ty = pf_lstat_type(path + "/" + name)
+                }
+                out = std::array::push(out, [name, ty])
+            }
+            off += reclen
+        }
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if !ok {
+        return nil
+    }
+    out
+}
+
+// Tipo DT_* a partir de lstat (0 si falla).
+fn pf_lstat_type(path: any) -> int {
+    let st = rt_alloc(144)
+    let c = rt_cstr(path)
+    let r = std::raw::syscall(6, c, st, 0, 0, 0, 0)
+    rt_free_block(c)
+    let mode = std::raw::load(st + 24) & 4294967295
+    rt_free_block(st)
+    if r < 0 {
+        return 0
+    }
+    std::raw::shr(mode & 61440, 12)
+}
+
+// ------------------------------------------------------------ uname y auxv
+
+// uname(): bloque de 390 bytes (6 campos de 65), o 0.
+fn pf_uname() -> int {
+    let u = rt_alloc(390)
+    let mut i = 0
+    while i < 390 {
+        std::raw::store8(u + i, 0)
+        i += 1
+    }
+    if std::raw::syscall(63, u, 0, 0, 0, 0, 0) != 0 {
+        rt_free_block(u)
+        return 0
+    }
+    u
+}
+
+// Valor del vector auxiliar (está en la pila inicial, tras el entorno).
+fn pf_auxv(kind: int) -> int {
+    let sp = std::raw::load(std::raw::globals() + 32)
+    let argc = std::raw::load(sp)
+    let mut e = sp + 16 + 8 * argc
+    while std::raw::load(e) != 0 {
+        e += 8
+    }
+    e += 8
+    while std::raw::load(e) != 0 {
+        if std::raw::load(e) == kind {
+            return std::raw::load(e + 8)
+        }
+        e += 16
+    }
+    0
+}
+
+// ------------------------------------------------------------ datos simples
+
+fn std__procfs__hostname() -> any {
+    // gethostname(buf, sysconf(_SC_HOST_NAME_MAX) = 64): glibc copia
+    // uname().nodename y falla si no cabe con su NUL.
+    let u = pf_uname()
+    if u == 0 {
+        return ""
+    }
+    let mut n = 0
+    while n < 65 && std::raw::load8(u + 65 + n) != 0 {
+        n += 1
+    }
+    if n + 1 > 64 {
+        rt_free_block(u)
+        return ""
+    }
+    let s = rt_bytes_to_str(u + 65, n)
+    rt_free_block(u)
+    if !rt_valid_utf8(std::raw::bits(s) + 16, n) {
+        return ""
+    }
+    s
+}
+
+fn rt_bytes_to_str(p: int, n: int) -> any {
+    let s = rt_str_alloc(n)
+    rt_copy(s + 16, p, n)
+    rt_sval(s)
+}
+
+fn std__procfs__kernel() -> any {
+    // release sin los bytes 0, cada byte como un carácter (Latin-1).
+    let u = pf_uname()
+    if u == 0 {
+        return ""
+    }
+    let b = sb_new(80)
+    let mut i = 0
+    while i < 65 {
+        let c = std::raw::load8(u + 130 + i)
+        if c != 0 {
+            sb_cp(b, c)
+        }
+        i += 1
+    }
+    rt_free_block(u)
+    sb_finish(b)
+}
+
+// get_system_info_linux: primera línea (lines()) de os-release que empieza
+// con `key`, sin comillas; si no, la de lsb-release con `fallback`.
+fn pf_os_info(key: string, fallback: string) -> any {
+    let s = pf_read_utf8("/etc/os-release")
+    if s != nil {
+        let r = pf_line_value(s, key)
+        if r != nil {
+            return r
+        }
+    }
+    let t = pf_read_utf8("/etc/lsb-release")
+    if t == nil {
+        return ""
+    }
+    let r2 = pf_line_value(t, fallback)
+    if r2 == nil {
+        return ""
+    }
+    r2
+}
+
+fn pf_line_value(s: any, key: string) -> any {
+    let n = rt_slen(s)
+    let mut i = 0
+    while i < n {
+        let mut j = pf_find(s, i, n, 10)
+        let next = j + 1
+        if j < 0 {
+            j = n
+        }
+        let mut e = j
+        if e > i && pf_b(s, e - 1) == 13 {
+            e -= 1
+        }
+        if pf_starts(s, i, e, key) {
+            let b = sb_new(e - i)
+            let mut k = i + rt_slen(key)
+            while k < e {
+                let c = pf_b(s, k)
+                if c != 34 {
+                    sb_byte(b, c)
+                }
+                k += 1
+            }
+            return sb_finish(b)
+        }
+        if j == n {
+            break
+        }
+        i = next
+    }
+    nil
+}
+
+fn std__procfs__os_name() -> any {
+    pf_os_info("NAME=", "DISTRIB_ID=")
+}
+
+fn std__procfs__os_version() -> any {
+    pf_os_info("VERSION_ID=", "DISTRIB_RELEASE=")
+}
+
+fn std__procfs__uptime() -> any {
+    let s = pf_read_utf8("/proc/uptime")
+    if s == nil {
+        return 0
+    }
+    let n = rt_slen(s)
+    let mut d = pf_find(s, 0, n, 46)
+    if d < 0 {
+        d = n
+    }
+    let (ok, v) = pf_parse_u64(s, 0, d)
+    if !ok {
+        return 0
+    }
+    v
+}
+
+fn std__procfs__load_average() -> any {
+    let s = pf_read_utf8("/proc/loadavg")
+    let mut vals = [0, 0, 0]
+    if s != nil {
+        let (a, b) = pf_trim(s, 0, rt_slen(s))
+        let mut i = a
+        let mut k = 0
+        while k < 3 {
+            let mut j = pf_find(s, i, b, 32)
+            if j < 0 {
+                j = b
+            }
+            let v = fl_parse(rt_substr_bytes(s, i, j))
+            if v == nil {
+                pf_panic("std::procfs::load_average", "invalid number in /proc/loadavg")
+            }
+            vals = std::array::set(vals, k, v)
+            k += 1
+            if j >= b {
+                break
+            }
+            i = j + 1
+        }
+        if k < 3 {
+            pf_panic("std::procfs::load_average", "fewer than 3 numbers in /proc/loadavg")
+        }
+    }
+    let mut m: any = rt_map_alloc(0, 3)
+    m = std::map::insert(m, "fifteen", rt_float(vals[2]))
+    m = std::map::insert(m, "five", rt_float(vals[1]))
+    m = std::map::insert(m, "one", rt_float(vals[0]))
+    m
+}
+
+// Los casos en que sysinfo haría `panic!` (archivos de /proc con un formato
+// que ningún núcleo Linux produce) terminan aquí con un error. La VM de Rust
+// en esos casos se cae con un pánico; el texto no puede ser el mismo.
+fn pf_panic(function: string, what: string) {
+    rt_native_fail(function, "sysinfo would panic: " + what)
+}
+
+// ------------------------------------------------------------ memoria
+
+fn pf_mem_refresh(st: int) {
+    let s = pf_read_utf8("/proc/meminfo")
+    let mut found = false
+    if s != nil {
+        let n = rt_slen(s)
+        let mut i = 0
+        while i <= n {
+            let mut j = pf_find(s, i, n, 10)
+            if j < 0 {
+                j = n
+            }
+            // split(':'): clave = 1ª parte, valor = 2ª (tiene que existir)
+            let c1 = pf_find(s, i, j, 58)
+            if c1 >= 0 {
+                let mut c2 = pf_find(s, c1 + 1, j, 58)
+                if c2 < 0 {
+                    c2 = j
+                }
+                let v0 = pf_trim_start(s, c1 + 1, c2)
+                let mut sp = pf_find(s, v0, c2, 32)
+                if sp < 0 {
+                    sp = c2
+                }
+                let (ok, v) = pf_parse_u64(s, v0, sp)
+                if ok {
+                    let slot = pf_mem_slot(s, i, c1)
+                    if slot >= 0 {
+                        if slot == 2 {
+                            found = true
+                        }
+                        std::raw::store(st + 8 * slot, pf_sat_mul(v, 1024))
+                    }
+                }
+            }
+            i = j + 1
+        }
+    }
+    if !found {
+        let mut a = pf_sat_add(std::raw::load(st + 8), std::raw::load(st + 24))
+        a = pf_sat_add(a, std::raw::load(st + 32))
+        a = pf_sat_add(a, std::raw::load(st + 48))
+        std::raw::store(st + 16, pf_sat_sub(a, std::raw::load(st + 40)))
+    }
+}
+
+fn pf_mem_slot(s: any, a: int, b: int) -> int {
+    if pf_eq(s, a, b, "MemTotal") {
+        return 0
+    }
+    if pf_eq(s, a, b, "MemFree") {
+        return 1
+    }
+    if pf_eq(s, a, b, "MemAvailable") {
+        return 2
+    }
+    if pf_eq(s, a, b, "Buffers") {
+        return 3
+    }
+    if pf_eq(s, a, b, "Cached") {
+        return 4
+    }
+    if pf_eq(s, a, b, "Shmem") {
+        return 5
+    }
+    if pf_eq(s, a, b, "SReclaimable") {
+        return 6
+    }
+    if pf_eq(s, a, b, "SwapTotal") {
+        return 7
+    }
+    if pf_eq(s, a, b, "SwapFree") {
+        return 8
+    }
+    -1
+}
+
+// ------------------------------------------------------------ uso de CPU
+
+// CpuUsage: 23 palabras: 0 porcentaje (bits f64 de un f32), 1..10 valores
+// viejos, 11..20 nuevos (user nice system idle iowait irq softirq steal
+// guest guest_nice), 21 total_time, 22 old_total_time.
+fn pf_usage_new() -> int {
+    let u = rt_alloc(184)
+    let mut i = 0
+    while i < 23 {
+        std::raw::store(u + 8 * i, 0)
+        i += 1
+    }
+    u
+}
+
+fn pf_values_set(u: int, base: int, v: array) {
+    let p = u + 8 * base
+    std::raw::store(p, pf_sat_sub(v[0], v[8]))
+    std::raw::store(p + 8, pf_sat_sub(v[1], v[9]))
+    let mut k = 2
+    while k < 10 {
+        std::raw::store(p + 8 * k, v[k])
+        k += 1
+    }
+}
+
+fn pf_work(u: int, base: int) -> int {
+    let p = u + 8 * base
+    let mut w = pf_sat_add(std::raw::load(p), std::raw::load(p + 8))
+    w = pf_sat_add(w, std::raw::load(p + 16))
+    w = pf_sat_add(w, std::raw::load(p + 40))
+    pf_sat_add(w, std::raw::load(p + 48))
+}
+
+fn pf_total(u: int, base: int) -> int {
+    let p = u + 8 * base
+    let mut t = pf_sat_add(pf_work(u, base), std::raw::load(p + 24))
+    t = pf_sat_add(t, std::raw::load(p + 32))
+    t = pf_sat_add(t, std::raw::load(p + 64))
+    t = pf_sat_add(t, std::raw::load(p + 72))
+    pf_sat_add(t, std::raw::load(p + 56))
+}
+
+fn pf_usage_set(u: int, v: array) {
+    let mut k = 0
+    while k < 10 {
+        std::raw::store(u + 8 + 8 * k, std::raw::load(u + 88 + 8 * k))
+        k += 1
+    }
+    pf_values_set(u, 11, v)
+    let t = pf_total(u, 11)
+    let ot = pf_total(u, 1)
+    std::raw::store(u + 168, t)
+    std::raw::store(u + 176, ot)
+    let nw = pf_work(u, 11)
+    let ow = pf_work(u, 1)
+    let mut a = 0
+    if pf_ult(ow, nw) {
+        a = pf_u2f32(std::raw::wsub(nw, ow))
+    }
+    // 1.0
+    let mut d = 4607182418800017408
+    if pf_ult(ot, t) {
+        d = pf_u2f32(std::raw::wsub(t, ot))
+    }
+    // 100.0
+    let mut pct = vec_f32(std::raw::fmul(vec_f32(std::raw::fdiv(a, d)), 4636737291354636288))
+    if std::raw::fcmp(pct, 4636737291354636288) == 1 {
+        pct = 4636737291354636288
+    }
+    std::raw::store(u, pct)
+}
+
+// Los 10 números que siguen en una línea de /proc/stat (split(' ') sin
+// vacíos, to_u64; los que faltan valen 0).
+fn pf_stat_values(s: any, i0: int, b: int) -> array {
+    let mut v = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut i = i0
+    let mut k = 0
+    while k < 10 {
+        let (x, y) = pf_next_sp(s, i, b)
+        if x < 0 {
+            break
+        }
+        v = std::array::set(v, k, pf_to_u64(s, x, y))
+        i = y
+        k += 1
+    }
+    v
+}
+
+// ------------------------------------------------------------ CPUs
+
+// CpusWrapper: 0 uso global, 1 vector de CPUs, 2 need_cpus_update,
+// 3 last_update en ns del reloj monótono (-1: nunca).
+// CPU: 0 uso, 1 nombre, 2 frecuencia, 3 vendor_id, 4 brand (cadenas
+// guardadas con std::raw::keep).
+fn pf_wrapper_new() -> int {
+    let w = rt_alloc(32)
+    std::raw::store(w, pf_usage_new())
+    std::raw::store(w + 8, tv_new())
+    std::raw::store(w + 16, 1)
+    std::raw::store(w + 24, -1)
+    w
+}
+
+fn pf_wrapper_free(w: int) {
+    let cpus = std::raw::load(w + 8)
+    let mut i = 0
+    while i < tv_len(cpus) {
+        let c = tv_get(cpus, i)
+        rt_free_block(std::raw::load(c))
+        std::raw::release(5, std::raw::load(c + 8))
+        std::raw::release(5, std::raw::load(c + 24))
+        std::raw::release(5, std::raw::load(c + 32))
+        rt_free_block(c)
+        i += 1
+    }
+    tv_free(cpus)
+    rt_free_block(std::raw::load(w))
+    rt_free_block(w)
+}
+
+fn pf_now_ns() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000000000 + ns
+}
+
+// CpusWrapper::refresh(only_update_global_cpu, kind).
+fn pf_cpus_refresh(w: int, only_global: bool, usage: bool, frequency: bool) {
+    let last = std::raw::load(w + 24)
+    let need = last < 0 || pf_now_ns() - last > 200000000
+    let cpus = std::raw::load(w + 8)
+    let first = tv_len(cpus) == 0
+    let mut vendors: any = nil
+    if first {
+        vendors = pf_vendor_brand()
+    }
+    if need {
+        std::raw::store(w + 24, pf_now_ns())
+        let s = pf_read("/proc/stat")
+        if s == nil {
+            // No se pudo abrir: sysinfo vuelve sin tocar nada más.
+            return
+        }
+        std::raw::store(w + 16, 0)
+        let n = rt_slen(s)
+        let mut pos = 0
+        let mut i = 0
+        if first || usage {
+            if pos < n {
+                let mut j = pf_find(s, pos, n, 10)
+                if j < 0 {
+                    j = n
+                }
+                if j - pos < 4 {
+                    pf_panic("std::procfs", "short first line in /proc/stat")
+                }
+                if !pf_starts(s, pos, j, "cpu ") {
+                    return
+                }
+                let (x, y) = pf_next_sp(s, pos, j)
+                pf_usage_set(std::raw::load(w), pf_stat_values(s, y, j))
+                pos = j + 1
+            }
+            if first || !only_global {
+                while pos < n {
+                    let mut j = pf_find(s, pos, n, 10)
+                    if j < 0 {
+                        j = n
+                    }
+                    if j - pos < 3 {
+                        pf_panic("std::procfs", "short line in /proc/stat")
+                    }
+                    if !pf_starts(s, pos, j, "cpu") {
+                        break
+                    }
+                    let (x, y) = pf_next_sp(s, pos, j)
+                    let mut name = ""
+                    let mut after = j
+                    if x >= 0 {
+                        name = rt_substr_bytes(s, x, y)
+                        after = y
+                    }
+                    let vals = pf_stat_values(s, after, j)
+                    if first {
+                        let u = pf_usage_new()
+                        pf_values_set(u, 11, vals)
+                        let (vendor, brand) = pf_vendor_of(vendors, i)
+                        let c = rt_alloc(40)
+                        std::raw::store(c, u)
+                        std::raw::store(c + 8, std::raw::keep(name))
+                        std::raw::store(c + 16, 0)
+                        std::raw::store(c + 24, std::raw::keep(vendor))
+                        std::raw::store(c + 32, std::raw::keep(brand))
+                        tv_push(cpus, c)
+                    } else {
+                        if i >= tv_len(cpus) {
+                            pf_panic("std::procfs", "a CPU appeared in /proc/stat")
+                        }
+                        pf_usage_set(std::raw::load(tv_get(cpus, i)), vals)
+                    }
+                    i += 1
+                    pos = j + 1
+                }
+            }
+        }
+    }
+    if frequency {
+        let mut k = 0
+        while k < tv_len(cpus) {
+            std::raw::store(tv_get(cpus, k) + 16, pf_cpu_frequency(k))
+            k += 1
+        }
+    }
+}
+
+fn pf_vendor_of(vendors: any, i: int) -> (any, any) {
+    let mut k = len(vendors) - 1
+    while k >= 0 {
+        let e = vendors[k]
+        if e[0] == i {
+            return (e[1], e[2])
+        }
+        k -= 1
+    }
+    return ("", "")
+}
+
+// get_cpu_frequency(pos) en MHz.
+fn pf_cpu_frequency(pos: int) -> int {
+    let s = pf_read_utf8("/sys/devices/system/cpu/cpu" + "{pos}" + "/cpufreq/scaling_cur_freq")
+    if s != nil {
+        let (a, b) = pf_trim(s, 0, rt_slen(s))
+        let mut e = pf_find(s, a, b, 10)
+        if e < 0 {
+            e = b
+        }
+        let (ok, v) = pf_parse_u64(s, a, e)
+        if ok {
+            return pf_udiv(v, 1000)
+        }
+    }
+    let t = pf_read_utf8("/proc/cpuinfo")
+    if t == nil {
+        return 0
+    }
+    let n = rt_slen(t)
+    let mut i = 0
+    while i <= n {
+        let mut j = pf_find(t, i, n, 10)
+        if j < 0 {
+            j = n
+        }
+        if pf_starts(t, i, j, "cpu MHz\t") || pf_starts(t, i, j, "BogoMIPS") || pf_starts(t, i, j, "clock\t") || pf_starts(t, i, j, "bogomips per cpu") {
+            let c = pf_rfind(t, i, j, 58)
+            let mut v0 = i
+            if c >= 0 {
+                v0 = c + 1
+            }
+            // replace("MHz", "")
+            let b = sb_new(j - v0)
+            let mut k = v0
+            while k < j {
+                if pf_starts(t, k, j, "MHz") {
+                    k += 3
+                } else {
+                    sb_byte(b, pf_b(t, k))
+                    k += 1
+                }
+            }
+            let r = sb_finish(b)
+            let (x, y) = pf_trim(r, 0, rt_slen(r))
+            let f = fl_parse(rt_substr_bytes(r, x, y))
+            if f == nil {
+                return 0
+            }
+            return pf_f2u64(std::raw::bits(f))
+        }
+        i = j + 1
+    }
+    0
+}
+
+// get_vendor_id_and_brand: array de [índice, vendor_id, brand].
+fn pf_vendor_brand() -> any {
+    let s = pf_read_utf8("/proc/cpuinfo")
+    let mut out = []
+    if s == nil {
+        return out
+    }
+    let n = rt_slen(s)
+    let mut i = 0
+    while i <= n {
+        let mut j = pf_find(s, i, n, 10)
+        if j < 0 {
+            j = n
+        }
+        let line_a = i
+        let line_b = j
+        i = j + 1
+        if pf_starts(s, line_a, line_b, "processor\t") {
+            // split(':').nth(1)
+            let c1 = pf_find(s, line_a, line_b, 58)
+            if c1 < 0 {
+                continue
+            }
+            let mut c2 = pf_find(s, c1 + 1, line_b, 58)
+            if c2 < 0 {
+                c2 = line_b
+            }
+            let (ta, tb) = pf_trim(s, c1 + 1, c2)
+            let (ok, index) = pf_parse_u64(s, ta, tb)
+            if !ok {
+                continue
+            }
+            let mut vendor: any = nil
+            let mut brand: any = nil
+            let mut imp = -1
+            let mut part = -1
+            while i <= n {
+                let mut k = pf_find(s, i, n, 10)
+                if k < 0 {
+                    k = n
+                }
+                let a = i
+                let b = k
+                i = k + 1
+                if pf_starts(s, a, b, "vendor_id\t") {
+                    vendor = pf_last_value(s, a, b)
+                } else if pf_starts(s, a, b, "model name\t") {
+                    brand = pf_last_value(s, a, b)
+                } else if pf_starts(s, a, b, "CPU implementer\t") {
+                    imp = pf_hex_value(s, a, b)
+                } else if pf_starts(s, a, b, "CPU part\t") {
+                    part = pf_hex_value(s, a, b)
+                } else {
+                    let all = (brand != nil && vendor != nil) || (imp >= 0 && part >= 0)
+                    if all || pf_starts(s, a, b, "processor\t") {
+                        break
+                    }
+                }
+            }
+            let mut rv: any = vendor
+            let mut rb: any = brand
+            if imp >= 0 && part >= 0 {
+                rv = pf_arm_impl(imp)
+                rb = pf_arm_part(imp, part)
+                if rb == nil {
+                    rb = brand
+                }
+            }
+            if rv == nil {
+                rv = ""
+            }
+            if rb == nil {
+                rb = ""
+            }
+            out = std::array::push(out, [index, rv, rb])
+        }
+    }
+    out
+}
+
+// split(':').last().trim()
+fn pf_last_value(s: any, a: int, b: int) -> any {
+    let c = pf_rfind(s, a, b, 58)
+    let mut v0 = a
+    if c >= 0 {
+        v0 = c + 1
+    }
+    let (x, y) = pf_trim(s, v0, b)
+    rt_substr_bytes(s, x, y)
+}
+
+// get_hex_value: "0x..." -> u32::from_str_radix(.., 16).unwrap(); si no 0.
+fn pf_hex_value(s: any, a: int, b: int) -> int {
+    let c = pf_rfind(s, a, b, 58)
+    let mut v0 = a
+    if c >= 0 {
+        v0 = c + 1
+    }
+    let (x, y) = pf_trim(s, v0, b)
+    if !pf_starts(s, x, y, "0x") {
+        return 0
+    }
+    let mut i = x + 2
+    if i < y && pf_b(s, i) == 43 && y - i > 1 {
+        i += 1
+    }
+    if i >= y {
+        pf_panic("std::procfs", "empty hexadecimal value in /proc/cpuinfo")
+    }
+    let mut v = 0
+    while i < y {
+        let ch = pf_b(s, i)
+        let mut d = -1
+        if ch >= 48 && ch <= 57 {
+            d = ch - 48
+        } else if ch >= 97 && ch <= 102 {
+            d = ch - 87
+        } else if ch >= 65 && ch <= 70 {
+            d = ch - 55
+        }
+        if d < 0 {
+            pf_panic("std::procfs", "invalid hexadecimal value in /proc/cpuinfo")
+        }
+        v = v * 16 + d
+        if v > 4294967295 {
+            pf_panic("std::procfs", "hexadecimal value too large in /proc/cpuinfo")
+        }
+        i += 1
+    }
+    v
+}
+
+// ------------------------------------------------------------ procesos
+
+// Proceso: 0 pid, 1 inicio (sin boot_time), 2 nombre (keep), 3 utime,
+// 4 stime, 5 old_utime, 6 old_stime, 7 memoria, 8 uso de CPU (bits f32).
+fn pf_proc_find(st: int, pid: int) -> int {
+    let tab = std::raw::load(st + 80)
+    let cap = std::raw::load(st + 88)
+    let mut h = pid & (cap - 1)
+    loop {
+        let r = std::raw::load(tab + 8 * h)
+        if r == 0 {
+            return 0
+        }
+        if std::raw::load(r) == pid {
+            return r
+        }
+        h = (h + 1) & (cap - 1)
+    }
+    0
+}
+
+fn pf_proc_insert(st: int, r: int) {
+    let procs = std::raw::load(st + 96)
+    if 2 * (tv_len(procs) + 1) > std::raw::load(st + 88) {
+        let cap = 2 * std::raw::load(st + 88)
+        let tab = rt_alloc(8 * cap)
+        let mut i = 0
+        while i < cap {
+            std::raw::store(tab + 8 * i, 0)
+            i += 1
+        }
+        rt_free_block(std::raw::load(st + 80))
+        std::raw::store(st + 80, tab)
+        std::raw::store(st + 88, cap)
+        let mut k = 0
+        while k < tv_len(procs) {
+            pf_proc_slot(st, tv_get(procs, k))
+            k += 1
+        }
+    }
+    pf_proc_slot(st, r)
+    tv_push(procs, r)
+}
+
+fn pf_proc_slot(st: int, r: int) {
+    let tab = std::raw::load(st + 80)
+    let cap = std::raw::load(st + 88)
+    let mut h = std::raw::load(r) & (cap - 1)
+    while std::raw::load(tab + 8 * h) != 0 {
+        h = (h + 1) & (cap - 1)
+    }
+    std::raw::store(tab + 8 * h, r)
+}
+
+// get_all_pid_entries: agrega a `data` las tareas y después el proceso.
+fn pf_pid_entries(dir: any, name: any, ty: int, parent: any, data: any) -> any {
+    let mut out = data
+    // DT_DIR
+    if ty != 4 {
+        return out
+    }
+    if parent != nil && name == parent {
+        return out
+    }
+    let (ok, pid) = pf_parse_u64(name, 0, rt_slen(name))
+    if !ok {
+        return out
+    }
+    let path = dir + "/" + name
+    let tasks = pf_read_dir(path + "/task")
+    if tasks != nil {
+        let mut k = 0
+        while k < len(tasks) {
+            let t = tasks[k]
+            out = pf_pid_entries(path + "/task", t[0], t[1], name, out)
+            k += 1
+        }
+    }
+    std::array::push(out, [path, pid & 4294967295])
+}
+
+// parse_stat_file: (nombre en bytes, campos) o (nil, nil).
+fn pf_parse_stat(d: any) -> (any, any) {
+    let none: any = nil
+    let n = rt_slen(d)
+    let sp = pf_find(d, 0, n, 32)
+    if sp < 0 {
+        return (none, none)
+    }
+    if !rt_valid_utf8(std::raw::bits(d) + 16, sp) {
+        return (none, none)
+    }
+    let rp = pf_rfind(d, sp + 1, n, 41)
+    if rp < 0 {
+        return (none, none)
+    }
+    if !rt_valid_utf8(std::raw::bits(d) + 16 + rp + 1, n - rp - 1) {
+        return (none, none)
+    }
+    let mut na = sp + 1
+    if na < rp && pf_b(d, na) == 40 {
+        na += 1
+    }
+    let name = rt_substr_bytes(d, na, rp)
+    let mut parts = [rt_substr_bytes(d, 0, sp)]
+    let mut i = rp + 1
+    loop {
+        let (x, y) = pf_next_field(d, i, n)
+        if x < 0 {
+            break
+        }
+        parts = std::array::push(parts, rt_substr_bytes(d, x, y))
+        i = y
+    }
+    return (name, parts)
+}
+
+fn pf_part_u64(parts: any, k: int) -> int {
+    let p = parts[k]
+    let (ok, v) = pf_parse_u64(p, 0, rt_slen(p))
+    if !ok {
+        return 0
+    }
+    v
+}
+
+// Memoria desde statm (o, si no se puede leer, rss de stat).
+fn pf_proc_memory(st: int, r: int, path: any, parts: any) {
+    let page = std::raw::load(st + 104)
+    let s = pf_read(path + "/statm")
+    if s == nil {
+        if len(parts) < 24 {
+            pf_panic("std::procfs", "short stat file")
+        }
+        std::raw::store(r + 56, pf_sat_mul(pf_part_u64(parts, 23), page))
+        return
+    }
+    let n = rt_slen(s)
+    let mut a = pf_find(s, 0, n, 32)
+    if a < 0 {
+        std::raw::store(r + 56, 0)
+        return
+    }
+    let mut b = pf_find(s, a + 1, n, 32)
+    if b < 0 {
+        b = n
+    }
+    std::raw::store(r + 56, pf_sat_mul(pf_to_u64(s, a + 1, b), page))
+}
+
+fn pf_set_time(r: int, parts: any) {
+    std::raw::store(r + 40, std::raw::load(r + 24))
+    std::raw::store(r + 48, std::raw::load(r + 32))
+    std::raw::store(r + 24, pf_part_u64(parts, 13))
+    std::raw::store(r + 32, pf_part_u64(parts, 14))
+}
+
+// retrieve_all_new_process_info sobre el bloque r.
+fn pf_proc_fill_new(st: int, r: int, pid: int, start: int, name: any, path: any, parts: any) {
+    std::raw::store(r, pid)
+    std::raw::store(r + 8, start)
+    std::raw::store(r + 16, std::raw::keep(name))
+    std::raw::store(r + 24, 0)
+    std::raw::store(r + 32, 0)
+    std::raw::store(r + 40, 0)
+    std::raw::store(r + 48, 0)
+    std::raw::store(r + 56, 0)
+    std::raw::store(r + 64, 0)
+    pf_proc_memory(st, r, path, parts)
+    pf_set_time(r, parts)
+}
+
+fn pf_procs_refresh(st: int) {
+    let entries = pf_read_dir("/proc")
+    if entries != nil {
+        let mut data = []
+        let mut k = 0
+        while k < len(entries) {
+            let e = entries[k]
+            data = pf_pid_entries("/proc", e[0], e[1], nil, data)
+            k += 1
+        }
+        let clk = std::raw::load(st + 112)
+        let mut fresh = []
+        let mut q = 0
+        while q < len(data) {
+            let e = data[q]
+            q += 1
+            let path = e[0]
+            let pid = e[1]
+            let d = pf_read(path + "/stat")
+            if d == nil {
+                continue
+            }
+            let (name, parts) = pf_parse_stat(d)
+            if parts == nil {
+                continue
+            }
+            if len(parts) < 22 {
+                pf_panic("std::procfs", "short stat file for pid " + "{pid}")
+            }
+            let start = pf_udiv(pf_part_u64(parts, 21), clk)
+            let r = pf_proc_find(st, pid)
+            if r != 0 {
+                if start == std::raw::load(r + 8) {
+                    pf_proc_memory(st, r, path, parts)
+                    pf_set_time(r, parts)
+                } else {
+                    std::raw::release(5, std::raw::load(r + 16))
+                    pf_proc_fill_new(st, r, pid, start, name, path, parts)
+                }
+            } else {
+                let nr = rt_alloc(72)
+                pf_proc_fill_new(st, nr, pid, start, name, path, parts)
+                fresh = std::array::push(fresh, nr)
+                continue
+            }
+        }
+        let mut f = 0
+        while f < len(fresh) {
+            let nr = fresh[f]
+            let old = pf_proc_find(st, std::raw::load(nr))
+            if old != 0 {
+                // El mismo pid nuevo dos veces: el último gana (HashMap::insert).
+                let mut w = 0
+                while w < 9 {
+                    std::raw::store(old + 8 * w, std::raw::load(nr + 8 * w))
+                    w += 1
+                }
+                rt_free_block(nr)
+            } else {
+                pf_proc_insert(st, nr)
+            }
+            f += 1
+        }
+    }
+    // update_procs_cpu
+    let w = std::raw::load(st + 72)
+    if std::raw::load(w + 16) != 0 {
+        pf_cpus_refresh(w, true, true, false)
+    }
+    let cpus = std::raw::load(w + 8)
+    let ncpu = tv_len(cpus)
+    if ncpu > 0 {
+        let g = std::raw::load(w)
+        let nt = std::raw::load(g + 168)
+        let ot = std::raw::load(g + 176)
+        let mut total = 1
+        if !pf_ult(nt, ot) {
+            total = std::raw::wsub(nt, ot)
+        }
+        let nf = pf_u2f32(ncpu)
+        let tf = vec_f32(std::raw::fdiv(pf_u2f32(total), nf))
+        let maxv = vec_f32(std::raw::fmul(nf, 4636737291354636288))
+        let procs = std::raw::load(st + 96)
+        let mut i = 0
+        while i < tv_len(procs) {
+            let r = tv_get(procs, i)
+            i += 1
+            let ou = std::raw::load(r + 40)
+            let os = std::raw::load(r + 48)
+            if ou == 0 && os == 0 {
+                continue
+            }
+            let dt = pf_sat_add(pf_sat_sub(std::raw::load(r + 24), ou), pf_sat_sub(std::raw::load(r + 32), os))
+            let c = vec_f32(std::raw::fmul(vec_f32(std::raw::fdiv(pf_u2f32(dt), tf)), 4636737291354636288))
+            let mut v = c
+            if pf_is_nan(c) || std::raw::fcmp(c, maxv) == 1 {
+                v = maxv
+            }
+            std::raw::store(r + 64, v)
+        }
+    }
+    std::raw::store(w + 16, 1)
+}
+
+// ------------------------------------------------------------ el System
+
+fn pf_state() -> int {
+    let g = std::raw::globals() + 2528
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let st = rt_alloc(120)
+    let mut i = 0
+    while i < 9 {
+        std::raw::store(st + 8 * i, 0)
+        i += 1
+    }
+    std::raw::store(st + 72, pf_wrapper_new())
+    let tab = rt_alloc(8 * 1024)
+    let mut k = 0
+    while k < 1024 {
+        std::raw::store(tab + 8 * k, 0)
+        k += 1
+    }
+    std::raw::store(st + 80, tab)
+    std::raw::store(st + 88, 1024)
+    std::raw::store(st + 96, tv_new())
+    // sysconf(_SC_PAGESIZE) y sysconf(_SC_CLK_TCK) de glibc salen del vector
+    // auxiliar (AT_PAGESZ = 6, AT_CLKTCK = 17).
+    let mut page = pf_auxv(6)
+    if page == 0 {
+        page = 4096
+    }
+    let mut clk = pf_auxv(17)
+    if clk == 0 {
+        clk = 100
+    }
+    std::raw::store(st + 104, page)
+    std::raw::store(st + 112, clk)
+    std::raw::store(g, st)
+    // System::new_all()
+    pf_refresh_specifics(st)
+    st
+}
+
+fn pf_refresh_specifics(st: int) {
+    pf_mem_refresh(st)
+    pf_cpus_refresh(std::raw::load(st + 72), false, true, true)
+    pf_procs_refresh(st)
+}
+
+// refresh() del Rust de Titan: refresh_all() + refresh_cpu_list(everything).
+fn pf_refresh() -> int {
+    let st = pf_state()
+    pf_refresh_specifics(st)
+    pf_wrapper_free(std::raw::load(st + 72))
+    let w = pf_wrapper_new()
+    std::raw::store(st + 72, w)
+    pf_cpus_refresh(w, false, true, true)
+    st
+}
+
+// ------------------------------------------------------------ CPUs lógicas
+
+// std::thread::available_parallelism() (0 si falla, como unwrap_or(0)).
+fn pf_available_cpus() -> int {
+    let mut quota = pf_cgroup_quota()
+    if quota == 0 {
+        quota = 1
+    }
+    let set = rt_alloc(128)
+    let mut i = 0
+    while i < 128 {
+        std::raw::store8(set + i, 0)
+        i += 1
+    }
+    let r = std::raw::syscall(204, 0, 128, set, 0, 0, 0)
+    if r >= 0 {
+        let mut count = 0
+        let mut k = 0
+        while k < r {
+            let mut x = std::raw::load8(set + k)
+            while x != 0 {
+                count += x & 1
+                x = std::raw::shr(x, 1)
+            }
+            k += 1
+        }
+        rt_free_block(set)
+        if pf_ult(quota, count) {
+            count = quota
+        }
+        if count != 0 {
+            return count
+        }
+    } else {
+        rt_free_block(set)
+    }
+    let mut n = pf_get_nprocs()
+    if pf_ult(quota, n) {
+        n = quota
+    }
+    n
+}
+
+// __get_nprocs de glibc 2.36: /sys/devices/system/cpu/online, si no
+// /proc/stat, si no sched_getaffinity, si no 2.
+fn pf_get_nprocs() -> int {
+    let s = pf_read("/sys/devices/system/cpu/online")
+    if s != nil {
+        let n = rt_slen(s)
+        let mut i = 0
+        let mut result = 0
+        if n > 0 {
+            loop {
+                let (e1, a) = pf_strtoul(s, i, n)
+                if e1 == i {
+                    result = 0
+                    break
+                }
+                let mut m = a
+                let mut e = e1
+                if e < n && pf_b(s, e) == 45 {
+                    let (e2, b) = pf_strtoul(s, e + 1, n)
+                    if e2 == e + 1 {
+                        result = 0
+                        break
+                    }
+                    m = b
+                    e = e2
+                }
+                if !pf_ult(m, a) {
+                    result = result + (m - a) + 1
+                }
+                i = e
+                if i < n && pf_b(s, i) == 44 {
+                    i += 1
+                }
+                if i >= n || pf_b(s, i) == 10 {
+                    break
+                }
+            }
+        }
+        if result != 0 {
+            return result
+        }
+    }
+    let t = pf_read("/proc/stat")
+    if t != nil {
+        let n = rt_slen(t)
+        let mut i = 0
+        let mut result = 0
+        while i < n {
+            let mut j = pf_find(t, i, n, 10)
+            if j < 0 {
+                j = n
+            }
+            if !pf_starts(t, i, j, "cpu") {
+                break
+            }
+            if j - i > 3 {
+                let c = pf_b(t, i + 3)
+                if c >= 48 && c <= 57 {
+                    result += 1
+                }
+            }
+            i = j + 1
+        }
+        if result != 0 {
+            return result
+        }
+    }
+    let set = rt_alloc(4096)
+    let r = std::raw::syscall(204, 0, 4096, set, 0, 0, 0)
+    let mut count = 0
+    if r > 0 {
+        let mut k = 0
+        while k < r {
+            let mut x = std::raw::load8(set + k)
+            while x != 0 {
+                count += x & 1
+                x = std::raw::shr(x, 1)
+            }
+            k += 1
+        }
+    } else if r == -22 {
+        count = 32768
+    }
+    rt_free_block(set)
+    if count != 0 {
+        return count
+    }
+    2
+}
+
+// strtoul(s + i, &end, 10): (fin, valor); fin == i si no hay número.
+fn pf_strtoul(s: any, i0: int, n: int) -> (int, int) {
+    let mut i = i0
+    while i < n && (pf_b(s, i) == 32 || (pf_b(s, i) >= 9 && pf_b(s, i) <= 13)) {
+        i += 1
+    }
+    let mut neg = false
+    if i < n && (pf_b(s, i) == 43 || pf_b(s, i) == 45) {
+        neg = pf_b(s, i) == 45
+        i += 1
+    }
+    let d0 = i
+    let mut v = 0
+    let mut over = false
+    while i < n && pf_b(s, i) >= 48 && pf_b(s, i) <= 57 {
+        let c = pf_b(s, i) - 48
+        if pf_ult(1844674407370955161, v) || (v == 1844674407370955161 && c > 5) {
+            over = true
+        }
+        v = std::raw::wadd(std::raw::wmul(v, 10), c)
+        i += 1
+    }
+    if i == d0 {
+        return (i0, 0)
+    }
+    if over {
+        return (i, -1)
+    }
+    if neg {
+        v = std::raw::wsub(0, v)
+    }
+    return (i, v)
+}
+
+// Componentes de una ruta como las da `Path::components` (sin la raíz; los
+// "." intermedios desaparecen, las barras repetidas también).
+fn pf_components(p: any) -> any {
+    let n = rt_slen(p)
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        let mut j = pf_find(p, i, n, 47)
+        if j < 0 {
+            j = n
+        }
+        if j > i && !pf_eq(p, i, j, ".") {
+            out = std::array::push(out, rt_substr_bytes(p, i, j))
+        }
+        i = j + 1
+    }
+    out
+}
+
+fn pf_join(parts: any) -> any {
+    let b = sb_new(64)
+    let mut i = 0
+    while i < len(parts) {
+        sb_byte(b, 47)
+        sb_str(b, parts[i])
+        i += 1
+    }
+    if len(parts) == 0 {
+        sb_byte(b, 47)
+    }
+    sb_finish(b)
+}
+
+fn pf_starts_with_parts(p: any, prefix: any) -> bool {
+    if len(p) < len(prefix) {
+        return false
+    }
+    let mut i = 0
+    while i < len(prefix) {
+        if p[i] != prefix[i] {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Ruta base + ruta del grupo con las reglas de PathBuf::push (una ruta
+// absoluta reemplaza a la anterior).
+fn pf_push_path(base: any, g: any) -> any {
+    if rt_slen(g) > 0 && pf_b(g, 0) == 47 {
+        return pf_components(g)
+    }
+    std::array::concat(base, pf_components(g))
+}
+
+fn pf_exists(parts: any) -> bool {
+    rt_stat_mode(pf_join(parts)) >= 0
+}
+
+// cgroups::quota(): CPUs permitidas por el cgroup (u64::MAX = sin límite).
+fn pf_cgroup_quota() -> int {
+    let s = pf_read("/proc/self/cgroup")
+    if s == nil {
+        return -1
+    }
+    let n = rt_slen(s)
+    let mut have = false
+    let mut version = 0
+    let mut gpath: any = ""
+    let mut i = 0
+    while i <= n {
+        let mut j = pf_find(s, i, n, 10)
+        if j < 0 {
+            j = n
+        }
+        let a = i
+        i = j + 1
+        // splitn(3, ':'): se necesita el 2º campo
+        let c1 = pf_find(s, a, j, 58)
+        if c1 < 0 {
+            continue
+        }
+        let mut c2 = pf_find(s, c1 + 1, j, 58)
+        let mut v = 0
+        if c2 < 0 {
+            c2 = j
+        }
+        if c2 == c1 + 1 {
+            v = 2
+        } else {
+            if !rt_valid_utf8(std::raw::bits(s) + 16 + c1 + 1, c2 - c1 - 1) {
+                continue
+            }
+            let mut found = false
+            let mut k = c1 + 1
+            while k <= c2 {
+                let mut e = pf_find(s, k, c2, 44)
+                if e < 0 {
+                    e = c2
+                }
+                if pf_eq(s, k, e, "cpu") {
+                    found = true
+                }
+                k = e + 1
+            }
+            if !found {
+                continue
+            }
+            v = 1
+        }
+        if have && v == 2 {
+            continue
+        }
+        // fields.last()?: el 3er campo (si no hay, el acumulador pasa a None)
+        let mut c3 = pf_find(s, c1 + 1, j, 58)
+        if c3 < 0 {
+            have = false
+            continue
+        }
+        if j - (c3 + 1) == 0 {
+            pf_panic("std::procfs", "empty cgroup path in /proc/self/cgroup")
+        }
+        gpath = rt_substr_bytes(s, c3 + 2, j)
+        version = v
+        have = true
+    }
+    if !have {
+        return -1
+    }
+    if version == 2 {
+        return pf_quota_v2(gpath)
+    }
+    pf_quota_v1(gpath)
+}
+
+fn pf_min_u(a: int, b: int) -> int {
+    if pf_ult(b, a) {
+        return b
+    }
+    a
+}
+
+fn pf_quota_v2(g: any) -> int {
+    let mut quota = -1
+    let mount = ["sys", "fs", "cgroup"]
+    let mut path = pf_push_path(mount, g)
+    if !pf_exists(std::array::push(path, "cgroup.controllers")) {
+        return -1
+    }
+    while pf_starts_with_parts(path, mount) {
+        let s = pf_read_utf8(pf_join(std::array::push(path, "cpu.max")))
+        if s != nil {
+            let n = rt_slen(s)
+            if n == 0 {
+                return quota
+            }
+            let mut e = pf_find(s, 0, n, 10)
+            if e < 0 {
+                e = n
+            }
+            if e > 0 && pf_b(s, e - 1) == 13 {
+                e -= 1
+            }
+            let sp = pf_find(s, 0, e, 32)
+            if sp < 0 {
+                return quota
+            }
+            let mut sp2 = pf_find(s, sp + 1, e, 32)
+            if sp2 < 0 {
+                sp2 = e
+            }
+            let (ok1, limit) = pf_parse_u64(s, 0, sp)
+            let (ok2, period) = pf_parse_u64(s, sp + 1, sp2)
+            if ok1 && ok2 && period != 0 {
+                quota = pf_min_u(quota, pf_udiv(limit, period))
+            }
+        }
+        if len(path) == 0 {
+            break
+        }
+        path = std::array::slice(path, 0, len(path) - 1)
+    }
+    quota
+}
+
+fn pf_read_usize_trim(path: any) -> (bool, int) {
+    let s = pf_read_utf8(path)
+    if s == nil {
+        return (false, 0)
+    }
+    let (a, b) = pf_trim(s, 0, rt_slen(s))
+    pf_parse_u64(s, a, b)
+}
+
+fn pf_quota_v1(g: any) -> int {
+    let mut quota = -1
+    let mut m = 0
+    while m < 3 {
+        let mut mount: any = nil
+        let mut group: any = g
+        if m == 0 {
+            mount = ["sys", "fs", "cgroup", "cpu"]
+        } else if m == 1 {
+            mount = ["sys", "fs", "cgroup", "cpu,cpuacct"]
+        } else {
+            let (mp, rest) = pf_find_mountpoint(g)
+            if mp == nil {
+                return quota
+            }
+            mount = pf_components(mp)
+            group = rest
+        }
+        m += 1
+        let mut path = pf_push_path(mount, group)
+        if !pf_exists(path) {
+            continue
+        }
+        while pf_starts_with_parts(path, mount) {
+            let (ok1, limit) = pf_read_usize_trim(pf_join(std::array::push(path, "cpu.cfs_quota_us")))
+            let (ok2, period) = pf_read_usize_trim(pf_join(std::array::push(path, "cpu.cfs_period_us")))
+            if ok1 && ok2 && period != 0 {
+                quota = pf_min_u(quota, pf_udiv(limit, period))
+            }
+            if len(path) == 0 {
+                break
+            }
+            path = std::array::slice(path, 0, len(path) - 1)
+        }
+        return quota
+    }
+    quota
+}
+
+// find_mountpoint: (punto de montaje, resto de la ruta del grupo) o (nil, nil).
+fn pf_find_mountpoint(g: any) -> (any, any) {
+    let none: any = nil
+    let s = pf_read_utf8("/proc/self/mountinfo")
+    if s == nil {
+        return (none, none)
+    }
+    let n = rt_slen(s)
+    let gparts = pf_components(g)
+    let mut i = 0
+    while i < n {
+        let mut j = pf_find(s, i, n, 10)
+        if j < 0 {
+            j = n
+        } else {
+            j += 1
+        }
+        let (a, b) = pf_trim(s, i, j)
+        i = j
+        // items = split(' ')
+        let mut items = []
+        let mut k = a
+        loop {
+            let mut e = pf_find(s, k, b, 32)
+            if e < 0 {
+                e = b
+            }
+            items = std::array::push(items, rt_substr_bytes(s, k, e))
+            if e >= b {
+                break
+            }
+            k = e + 1
+        }
+        let ni = len(items)
+        // nth(3), next, next_back, nth_back(1): hacen falta 8 elementos
+        if ni < 8 {
+            return (none, none)
+        }
+        let sub = items[3]
+        let mountp = items[4]
+        let opts = items[ni - 1]
+        let fstype = items[ni - 3]
+        let mut cpu = false
+        let mut q = 0
+        let no = rt_slen(opts)
+        while q <= no {
+            let mut e = pf_find(opts, q, no, 44)
+            if e < 0 {
+                e = no
+            }
+            if pf_eq(opts, q, e, "cpu") {
+                cpu = true
+            }
+            q = e + 1
+        }
+        if fstype != "cgroup" || !cpu {
+            continue
+        }
+        if rt_slen(sub) == 0 || pf_b(sub, 0) != 47 {
+            return (none, none)
+        }
+        let sparts = pf_components(sub)
+        if !pf_starts_with_parts(gparts, sparts) {
+            continue
+        }
+        let rest = std::array::slice(gparts, len(sparts), len(gparts))
+        let b2 = sb_new(64)
+        let mut r = 0
+        while r < len(rest) {
+            if r > 0 {
+                sb_byte(b2, 47)
+            }
+            sb_str(b2, rest[r])
+            r += 1
+        }
+        return (mountp, sb_finish(b2))
+    }
+    return (none, none)
+}
+
+// ------------------------------------------------------------ nativas
+
+fn std__procfs__cpu_usage() -> any {
+    let st = pf_refresh()
+    rt_float(std::raw::load(std::raw::load(std::raw::load(st + 72))))
+}
+
+fn std__procfs__cpu_count() -> any {
+    let st = pf_refresh()
+    let n = tv_len(std::raw::load(std::raw::load(st + 72) + 8))
+    if n > 0 {
+        return n
+    }
+    pf_available_cpus()
+}
+
+fn std__procfs__cpus() -> any {
+    let st = pf_refresh()
+    let cpus = std::raw::load(std::raw::load(st + 72) + 8)
+    let n = tv_len(cpus)
+    let mut out = []
+    if n > 0 {
+        let mut i = 0
+        while i < n {
+            let c = tv_get(cpus, i)
+            let mut m: any = rt_map_alloc(0, 5)
+            m = std::map::insert(m, "brand", std::raw::value(5, std::raw::load(c + 32)))
+            m = std::map::insert(m, "frequency_mhz", pf_json_u64(std::raw::load(c + 16)))
+            m = std::map::insert(m, "name", std::raw::value(5, std::raw::load(c + 8)))
+            m = std::map::insert(m, "usage_pct", rt_float(std::raw::load(std::raw::load(c))))
+            m = std::map::insert(m, "vendor_id", std::raw::value(5, std::raw::load(c + 24)))
+            out = std::array::push(out, m)
+            i += 1
+        }
+        return out
+    }
+    let count = pf_available_cpus()
+    let mut k = 0
+    while k < count {
+        let mut m: any = rt_map_alloc(0, 5)
+        m = std::map::insert(m, "brand", "")
+        m = std::map::insert(m, "frequency_mhz", 0)
+        m = std::map::insert(m, "name", "cpu" + "{k}")
+        m = std::map::insert(m, "usage_pct", rt_float(0))
+        m = std::map::insert(m, "vendor_id", "")
+        out = std::array::push(out, m)
+        k += 1
+    }
+    out
+}
+
+fn std__procfs__total_memory() -> any {
+    let st = pf_refresh()
+    std::raw::load(st)
+}
+
+fn std__procfs__used_memory() -> any {
+    let st = pf_refresh()
+    std::raw::wsub(std::raw::load(st), std::raw::load(st + 16))
+}
+
+fn std__procfs__available_memory() -> any {
+    let st = pf_refresh()
+    std::raw::load(st + 16)
+}
+
+fn std__procfs__total_swap() -> any {
+    let st = pf_refresh()
+    std::raw::load(st + 56)
+}
+
+fn std__procfs__used_swap() -> any {
+    let st = pf_refresh()
+    std::raw::wsub(std::raw::load(st + 56), std::raw::load(st + 64))
+}
+
+fn std__procfs__process_count() -> any {
+    let st = pf_refresh()
+    tv_len(std::raw::load(st + 96))
+}
+
+fn std__procfs__top_processes(limit0: any) -> any {
+    rt_expect_int(limit0, "std::procfs::top_processes")
+    let mut limit = std::raw::bits(limit0)
+    if limit < 0 {
+        limit = 10
+    }
+    let st = pf_refresh()
+    let procs = std::raw::load(st + 96)
+    let n = tv_len(procs)
+    // Orden estable por uso de CPU descendente (merge sort de índices).
+    let idx = rt_alloc(8 * n + 8)
+    let tmp = rt_alloc(8 * n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store(idx + 8 * i, tv_get(procs, i))
+        i += 1
+    }
+    let mut width = 1
+    while width < n {
+        let mut lo = 0
+        while lo < n {
+            let mut mid = lo + width
+            if mid > n {
+                mid = n
+            }
+            let mut hi = lo + 2 * width
+            if hi > n {
+                hi = n
+            }
+            let mut a = lo
+            let mut b = mid
+            let mut o = lo
+            while o < hi {
+                let mut take_b = false
+                if a >= mid {
+                    take_b = true
+                } else if b < hi {
+                    // b va antes solo si su CPU es estrictamente mayor
+                    let cb = std::raw::load(std::raw::load(idx + 8 * b) + 64)
+                    let ca = std::raw::load(std::raw::load(idx + 8 * a) + 64)
+                    take_b = std::raw::fcmp(cb, ca) == 1
+                }
+                if take_b {
+                    std::raw::store(tmp + 8 * o, std::raw::load(idx + 8 * b))
+                    b += 1
+                } else {
+                    std::raw::store(tmp + 8 * o, std::raw::load(idx + 8 * a))
+                    a += 1
+                }
+                o += 1
+            }
+            lo = hi
+        }
+        let mut c = 0
+        while c < n {
+            std::raw::store(idx + 8 * c, std::raw::load(tmp + 8 * c))
+            c += 1
+        }
+        width = 2 * width
+    }
+    let mut take = limit
+    if take < 1 {
+        take = 1
+    }
+    if take > n {
+        take = n
+    }
+    let mut out = []
+    let mut k = 0
+    while k < take {
+        let r = std::raw::load(idx + 8 * k)
+        let mut m: any = rt_map_alloc(0, 4)
+        m = std::map::insert(m, "cpu_pct", rt_float(std::raw::load(r + 64)))
+        m = std::map::insert(m, "memory", pf_json_u64(std::raw::load(r + 56)))
+        m = std::map::insert(m, "name", dr_lossy(std::raw::value(5, std::raw::load(r + 16))))
+        m = std::map::insert(m, "pid", std::raw::load(r))
+        out = std::array::push(out, m)
+        k += 1
+    }
+    rt_free_block(idx)
+    rt_free_block(tmp)
+    out
+}
+
+// ------------------------------------------------------------ discos
+
+fn std__procfs__disks() -> any {
+    let mut removable = []
+    let dev = pf_read_dir("/dev/disk/by-id/")
+    if dev != nil {
+        let mut k = 0
+        while k < len(dev) {
+            let name = dev[k][0]
+            k += 1
+            if !rt_valid_utf8(std::raw::bits(name) + 16, rt_slen(name)) {
+                continue
+            }
+            if !pf_starts(name, 0, rt_slen(name), "usb-") {
+                continue
+            }
+            let (err, real) = rt_canonical_path("/dev/disk/by-id/" + name)
+            if err == 0 {
+                removable = std::array::push(removable, real)
+            }
+        }
+    }
+    let mut content = pf_read_utf8("/proc/mounts")
+    if content == nil {
+        content = ""
+    }
+    let n = rt_slen(content)
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        let mut j = pf_find(content, i, n, 10)
+        let mut next = j + 1
+        if j < 0 {
+            j = n
+            next = n
+        }
+        let mut e = j
+        if e > i && pf_b(content, e - 1) == 13 {
+            e -= 1
+        }
+        let a = pf_trim_start(content, i, e)
+        i = next
+        let (s1, s2) = pf_next_field(content, a, e)
+        let mut spec: any = ""
+        let mut file0: any = ""
+        let mut vfs: any = ""
+        let mut p = e
+        if s1 >= 0 {
+            spec = rt_substr_bytes(content, s1, s2)
+            p = s2
+        }
+        let (f1, f2) = pf_next_field(content, p, e)
+        if f1 >= 0 {
+            file0 = rt_substr_bytes(content, f1, f2)
+            p = f2
+        }
+        let (v1, v2) = pf_next_field(content, p, e)
+        if v1 >= 0 {
+            vfs = rt_substr_bytes(content, v1, v2)
+        }
+        let file = pf_unescape_mount(file0)
+        if pf_ignored_fs(vfs) {
+            continue
+        }
+        let nf = rt_slen(file)
+        if pf_starts(file, 0, nf, "/sys") || pf_starts(file, 0, nf, "/proc") {
+            continue
+        }
+        if pf_starts(file, 0, nf, "/run") && !pf_starts(file, 0, nf, "/run/media") {
+            continue
+        }
+        if pf_starts(spec, 0, rt_slen(spec), "sunrpc") {
+            continue
+        }
+        // statvfs(file) = statfs de Linux: f_bsize +8, f_blocks +16, f_bavail +32
+        let buf = rt_alloc(128)
+        let c = rt_cstr(file)
+        let mut r = -4
+        while r == -4 {
+            r = std::raw::syscall(137, c, buf, 0, 0, 0, 0)
+        }
+        rt_free_block(c)
+        let mut total = 0
+        let mut avail = 0
+        if r == 0 {
+            let bsize = std::raw::load(buf + 8)
+            total = pf_sat_mul(bsize, std::raw::load(buf + 16))
+            avail = pf_sat_mul(bsize, std::raw::load(buf + 32))
+        }
+        rt_free_block(buf)
+        if total == 0 {
+            continue
+        }
+        let mut rem = false
+        let mut q = 0
+        while q < len(removable) {
+            if removable[q] == spec {
+                rem = true
+            }
+            q += 1
+        }
+        let mut m: any = rt_map_alloc(0, 6)
+        m = std::map::insert(m, "available", pf_json_u64(avail))
+        m = std::map::insert(m, "file_system", vfs)
+        m = std::map::insert(m, "mount_point", file)
+        m = std::map::insert(m, "name", spec)
+        m = std::map::insert(m, "removable", rem)
+        m = std::map::insert(m, "total", pf_json_u64(total))
+        out = std::array::push(out, m)
+    }
+    out
+}
+
+fn pf_ignored_fs(v: any) -> bool {
+    v == "rootfs" || v == "sysfs" || v == "proc" || v == "devtmpfs" || v == "cgroup" || v == "cgroup2" || v == "pstore" || v == "squashfs" || v == "rpc_pipefs" || v == "iso9660" || v == "tmpfs" || v == "cifs" || v == "nfs" || v == "nfs4"
+}
+
+// replace("\\134", "\\"), luego \040 -> " ", \011 -> "\t", \012 -> "\n".
+fn pf_unescape_mount(s: any) -> any {
+    let a = pf_replace(s, "\\134", "\\")
+    let b = pf_replace(a, "\\040", " ")
+    let c = pf_replace(b, "\\011", "\t")
+    pf_replace(c, "\\012", "\n")
+}
+
+fn pf_replace(s: any, from: string, to: string) -> any {
+    let n = rt_slen(s)
+    let m = rt_slen(from)
+    let b = sb_new(n)
+    let mut i = 0
+    while i < n {
+        if pf_starts(s, i, n, from) {
+            sb_str(b, to)
+            i += m
+        } else {
+            sb_byte(b, pf_b(s, i))
+            i += 1
+        }
+    }
+    sb_finish(b)
+}
+
+// ------------------------------------------------------------ redes
+
+// read(): una sola lectura de hasta 30 bytes; los dígitos del principio.
+fn pf_net_read(path: any) -> int {
+    let fd = rt_open(path, 524288, 0)
+    if fd < 0 {
+        return 0
+    }
+    let buf = rt_alloc(32)
+    let mut got = -4
+    while got == -4 {
+        got = std::raw::syscall(0, fd, buf, 30, 0, 0, 0)
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let mut v = 0
+    if got > 0 {
+        let mut i = 0
+        while i < got && std::raw::load8(buf + i) >= 48 && std::raw::load8(buf + i) <= 57 {
+            v = std::raw::wadd(std::raw::wmul(v, 10), std::raw::load8(buf + i) - 48)
+            i += 1
+        }
+    }
+    rt_free_block(buf)
+    v
+}
+
+fn std__procfs__networks() -> any {
+    let mut out: any = rt_map_alloc(0, 4)
+    let entries = pf_read_dir("/sys/class/net/")
+    if entries == nil {
+        return out
+    }
+    let mut k = 0
+    while k < len(entries) {
+        let name = entries[k][0]
+        k += 1
+        if !rt_valid_utf8(std::raw::bits(name) + 16, rt_slen(name)) {
+            continue
+        }
+        let p = "/sys/class/net/" + name + "/statistics/"
+        let rx = pf_net_read(p + "rx_bytes")
+        let tx = pf_net_read(p + "tx_bytes")
+        let rxp = pf_net_read(p + "rx_packets")
+        let txp = pf_net_read(p + "tx_packets")
+        let rxe = pf_net_read(p + "rx_errors")
+        let txe = pf_net_read(p + "tx_errors")
+        let mut m: any = rt_map_alloc(0, 6)
+        m = std::map::insert(m, "errors_in", pf_json_u64(rxe))
+        m = std::map::insert(m, "errors_out", pf_json_u64(txe))
+        m = std::map::insert(m, "packets_received", pf_json_u64(rxp))
+        m = std::map::insert(m, "packets_transmitted", pf_json_u64(txp))
+        m = std::map::insert(m, "received", pf_json_u64(rx))
+        m = std::map::insert(m, "transmitted", pf_json_u64(tx))
+        out = std::map::insert(out, name, m)
+    }
+    out
+}

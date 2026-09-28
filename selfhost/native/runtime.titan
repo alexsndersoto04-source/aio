@@ -26,6 +26,8 @@ import std_tz
 import std_crypto
 import std_blowfish_tab
 import std_password
+import std_procfs_arm
+import std_procfs
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust
@@ -2124,8 +2126,17 @@ fn std__path__parent(path: any) -> any {
 // fs::canonicalize (realpath): ruta absoluta sin ".", ".." ni enlaces.
 fn std__path__canonical(path: any) -> any {
     rt_expect_str(path, "std::path::canonical")
+    let (err, resolved) = rt_canonical_path(path)
+    if err != 0 {
+        rt_native_fail("std::path::canonical", rt_os_error(err))
+    }
+    resolved
+}
+
+// fs::canonicalize (realpath): (0, ruta) o (errno, nil).
+fn rt_canonical_path(path: any) -> (int, any) {
     if rt_slen(path) == 0 {
-        rt_native_fail("std::path::canonical", rt_os_error(2))
+        return (2, nil)
     }
     let mut pending = rt_path_parts(path)
     let mut resolved: any = ""
@@ -2163,11 +2174,13 @@ fn std__path__canonical(path: any) -> any {
         if r == -22 {
             resolved = candidate
         } else if r < 0 {
-            rt_native_fail("std::path::canonical", rt_os_error(-r))
+            rt_free_block(buf)
+            return (0 - r, nil)
         } else {
             links += 1
             if links > 40 {
-                rt_native_fail("std::path::canonical", rt_os_error(40))
+                rt_free_block(buf)
+                return (40, nil)
             }
             let target = rt_str_alloc(r)
             rt_copy(target + 16, buf, r)
@@ -2183,9 +2196,9 @@ fn std__path__canonical(path: any) -> any {
     }
     rt_free_block(buf)
     if resolved == "" {
-        return "/"
+        return (0, "/")
     }
-    resolved
+    return (0, resolved)
 }
 
 // ------------------------------------------------------------ métodos de arrays

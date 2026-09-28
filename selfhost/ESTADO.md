@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 308 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 326 / 816 nativas (`selfhost/native/cobertura.sh`) |
 
 ## Cómo verificar
 
@@ -358,6 +358,7 @@ ejecutable las funciones del runtime que usa (lista de trabajo en `bk_build`).
 | std::math trascendentes (7: exp, ln, log, sin, cos, tan, pow) | `std_libm.titan` (generado desde `libm/std_libm.titan.in` por `libm/gen_libm.py`), `std_libm_tab.titan` | port bit a bit de la libm de glibc 2.36 (`e_exp.c`, `e_log.c`, `e_pow.c`, `s_sin.c`, `s_tan.c`, `branred.c`) tal como la compila glibc para CPUs con FMA (la variante que usa la VM en esta máquina): cada `fma` en el mismo sitio que el compilador de glibc (leído de sus volcados `widening_mul`), `branred` sin fusionar. Las tablas (2.080 valores) las extrae el generador de `libm.so.6` buscándolas por contenido y comprobándolas. FMA por hardware (`vfmadd231sd`, detectada con `cpuid`/`xgetbv`) o, si la CPU no la tiene, FMA por software exacta (enteros de 30 bits) que da los mismos bits. Comparado con la libm del sistema en 3,2 millones de casos (y 2 millones más forzando la FMA por software): 0 diferencias; la FMA por software y la de hardware contra un cálculo exacto con fracciones en 900.000 tríos difíciles: 0 diferencias. Límite honesto: en CPUs sin FMA la glibc de Rust usa otra variante (SSE2/FMA4) y Android usa otra libm (bionic); ahí la VM puede diferir en el último bit y el nativo seguirá dando el resultado de la variante FMA |
 | std::crypto (4: ChaCha20-Poly1305, AES-256-GCM, sellar/abrir) | `std_crypto.titan` | desde RFC 8439 y NIST SP 800-38D; AES con tablas T calculadas al arrancar y GHASH con tablas de 4 bits; nonce aleatorio con `getrandom`; mismos mensajes que la VM. Comparado con los vectores de RFC/NIST y 3.000 casos aleatorios contra la VM |
 | std::password (4: hash/verify de Argon2 y bcrypt) | `std_password.titan`, `std_blowfish_tab.titan` (generado por `native/gen_blowfish.py`, que calcula los dígitos de pi con la fórmula de Machin y los compara con los valores publicados) | lo mismo que password-hash 0.5.0 + argon2 0.5.3 + bcrypt 0.15.1: BLAKE2b y Argon2d/i/id (RFC 9106, versiones 16 y 19, `p` > 1, `data`, `keyid`), el analizador PHC y base64ct con los mismos errores, Eksblowfish y los errores de bcrypt (prefijos 2y/2b/2a/2x, costo como `u32` de Rust, base64 0.22 con alfabeto bcrypt). Comparado: 30 cadenas Argon2 con parámetros variados generadas por una implementación independiente en Python (`native/argon2_ref.py`), aceptadas por la VM y por el nativo; hashes nativos verificados por la VM y al revés; 118 casos de error o borde con mensaje y código de salida idénticos |
+| std::procfs (18: nombre del equipo, núcleo, sistema, CPUs, memoria, procesos, discos, redes) | `std_procfs.titan`, `std_procfs_arm.titan` (generado por `native/sysinfo/gen_arm.py` con las tablas de fabricantes y modelos ARM de sysinfo) | lo mismo que sysinfo 0.32.1 en Linux (notas de su código en `native/sysinfo/NOTAS.md`): lee `/proc/stat`, `/proc/meminfo`, `/proc/cpuinfo`, `/proc/[pid]/stat` y `statm` (con los hilos), `/proc/mounts` + `statfs`, `/dev/disk/by-id/usb-*`, `/sys/class/net/*/statistics`, `/etc/os-release`, `uname`; porcentajes en `f32` con las mismas fórmulas, la regla de 200 ms entre lecturas de `/proc/stat`, detección de PID reutilizado por hora de inicio, y `available_parallelism` de Rust (sched_getaffinity + cuotas de cgroups v1/v2 + `get_nprocs` de glibc) cuando no hay CPUs. Comparado en esta máquina con la VM: mismos nombres, núcleo, sistema, CPUs (marca, fabricante, frecuencia), memoria, discos y redes salvo lo que cambia entre una ejecución y otra; un proceso ocupado (`yes`) aparece arriba con su % de CPU en ambos. Prueba `tests/native/procfs_std.titan` (forma de los datos y relaciones que valen siempre) idéntica. Diferencias honestas: (1) con empates de % de CPU la VM devuelve los procesos en un orden aleatorio (sysinfo los guarda en un `HashMap` con semilla al azar; dos ejecuciones de la VM tampoco coinciden); el nativo usa el orden de `/proc`. (2) Donde sysinfo haría `panic!` por un archivo de `/proc` con un formato que Linux no produce, la VM se cae con un pánico de Rust y el nativo termina con un error "sysinfo would panic: …" |
 
 Defecto real encontrado y corregido: `std::array::set` fuera de rango decía
 "index out of bounds" en el runtime nativo; la VM dice "array index out of
@@ -391,6 +392,12 @@ Pendiente en esta fase:
 
 ## Pendientes conocidos (anotados para no olvidarlos)
 
+- **Asignación al final de una rama `if`** (VM de Rust y compilador en Titan,
+  igual en los dos): si la rama `then` termina en una llamada y la `else` en
+  `x = [..]`, el verificador exige que las dos ramas tengan el mismo tipo y
+  falla con "expected Nil, found Array". Una asignación en posición de
+  sentencia debería valer `()`. Se mantiene igual en los dos mientras la VM
+  de Rust exista; en el código se evita con un `continue`/sentencia al final.
 - **Tupla al inicio de línea tras un bloque** se parsea como llamada:
   `loop { ... }` + salto de línea + `(a, b)` ⇒ `loop{...}(a, b)`. En el
   código Titan se usa `return (a, b)`. El parser en Titan debe reproducir el

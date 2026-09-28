@@ -1,0 +1,144 @@
+// std::procfs: los valores cambian de un instante a otro, así que la prueba
+// imprime solo lo que tiene que coincidir entre la VM y el ejecutable:
+// forma de los datos y relaciones que valen siempre.
+
+fn keys_of(m: any) -> string {
+    let ks = std::map::keys(m)
+    let mut out = ""
+    let mut i = 0
+    while i < len(ks) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + ks[i]
+        i += 1
+    }
+    out
+}
+
+fn main() {
+    let h = std::procfs::hostname()
+    let hn = std::text::trim(std::fs::read_text("/proc/sys/kernel/hostname"))
+    let r1 = h == hn
+    println("hostname ok: {r1}")
+    let k = std::procfs::kernel()
+    let kr = std::text::trim(std::fs::read_text("/proc/sys/kernel/osrelease"))
+    let r2 = k == kr
+    println("kernel ok: {r2}")
+    let osn = std::procfs::os_name()
+    let osv = std::procfs::os_version()
+    let osr = std::fs::read_text("/etc/os-release")
+    let r3 = std::text::contains(osr, osn)
+    println("os_name en os-release: {r3}")
+    let r4 = std::text::contains(osr, osv)
+    println("os_version en os-release: {r4}")
+    let up = std::procfs::uptime()
+    let r5 = up > 0
+    println("uptime > 0: {r5}")
+    let la = std::procfs::load_average()
+    let r6 = keys_of(la)
+    println("load_average: {r6}")
+    let one = la["one"]
+    let r7 = one >= 0.0
+    println("one >= 0: {r7}")
+
+    let cu = std::procfs::cpu_usage()
+    let r8 = cu >= 0.0 && cu <= 100.0
+    println("cpu_usage en [0, 100]: {r8}")
+    let cc = std::procfs::cpu_count()
+    let r9 = cc >= 1
+    println("cpu_count >= 1: {r9}")
+    let cpus = std::procfs::cpus()
+    let r10 = len(cpus) == cc
+    println("cpus == cpu_count: {r10}")
+    let c0 = cpus[0]
+    let r11 = keys_of(c0)
+    println("cpu: {r11}")
+    let n0 = c0["name"]
+    println("cpu0: {n0}")
+    let f0 = c0["frequency_mhz"]
+    let r12 = f0 > 0
+    println("frecuencia > 0: {r12}")
+
+    let tm = std::procfs::total_memory()
+    let um = std::procfs::used_memory()
+    let am = std::procfs::available_memory()
+    let r13 = tm > 0
+    println("memoria > 0: {r13}")
+    let r14 = um <= tm
+    println("usada <= total: {r14}")
+    let r15 = am <= tm
+    println("disponible <= total: {r15}")
+    let ts = std::procfs::total_swap()
+    let us = std::procfs::used_swap()
+    let r16 = us <= ts
+    println("swap usada <= total: {r16}")
+
+    let pc = std::procfs::process_count()
+    let r17 = pc > 0
+    println("procesos > 0: {r17}")
+    let top = std::procfs::top_processes(3)
+    let r18 = len(top)
+    println("top(3): {r18}")
+    let t0 = top[0]
+    let r19 = keys_of(t0)
+    println("proceso: {r19}")
+    let top0 = std::procfs::top_processes(0)
+    let r20 = len(top0)
+    println("top(0): {r20}")
+    let topn = std::procfs::top_processes(-5)
+    let r21 = len(topn)
+    println("top(-5): {r21}")
+    let mut ordered = true
+    let mut i = 1
+    while i < len(topn) {
+        let a = topn[i - 1]
+        let b = topn[i]
+        let ca = a["cpu_pct"]
+        let cb = b["cpu_pct"]
+        if ca < cb {
+            ordered = false
+        }
+        i += 1
+    }
+    println("ordenado: {ordered}")
+    let mut pid1 = false
+    let all = std::procfs::top_processes(100000)
+    let mut j = 0
+    while j < len(all) {
+        let p = all[j]
+        let pid = p["pid"]
+        if pid == 1 {
+            pid1 = true
+        }
+        j += 1
+    }
+    println("pid 1 presente: {pid1}")
+
+    let disks = std::procfs::disks()
+    let mut root = false
+    let mut d = 0
+    while d < len(disks) {
+        let x = disks[d]
+        let mp = x["mount_point"]
+        let tot = x["total"]
+        let av = x["available"]
+        if mp == "/" && tot > 0 && av <= tot {
+            root = true
+        }
+        d += 1
+    }
+    println("disco / presente: {root}")
+    if len(disks) > 0 {
+        let r22 = keys_of(disks[0])
+        println("disco: {r22}")
+    }
+
+    let nets = std::procfs::networks()
+    let lo = nets["lo"]
+    let r23 = keys_of(lo)
+    println("lo: {r23}")
+    let rx = lo["received"]
+    let r24 = rx >= 0
+    println("lo recibido >= 0: {r24}")
+}
