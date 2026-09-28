@@ -687,6 +687,13 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         }
         b1 = lv_e(b1, "  " + id + "v = call i64 @lv_syscall(" + a + ")")
         b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::arch" {
+        // 0 = x86-64, 1 = ARM64 (para lo que Rust hace distinto en cada una).
+        let mut v = "0"
+        if ctx.target == "aarch64" {
+            v = "1"
+        }
+        b1 = lv_put(b1, res, "1", v)
     } else if name == "std::raw::globals" {
         b1 = lv_put(b1, res, "1", "ptrtoint (ptr @G to i64)")
     } else if name == "std::raw::fail" {

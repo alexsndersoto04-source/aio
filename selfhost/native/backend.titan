@@ -797,6 +797,11 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_push(rax))
         return pc_add(p, x_push_i(1))
     }
+    // arch: 0 = x86-64 (este backend solo genera x86-64).
+    if name == "std::raw::arch" {
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(1))
+    }
     if name == "std::raw::globals" {
         p = pc_add(p, x_push(x_r15()))
         return pc_add(p, x_push_i(1))

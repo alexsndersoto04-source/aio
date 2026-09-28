@@ -173,12 +173,30 @@ fn std__metrics__histogram_record(name: any, value: any) -> any {
         count += 1
     }
     sum = std::raw::fadd(sum, v)
-    // f64::min / f64::max de Rust: con valores iguales (0.0 y -0.0) gana el nuevo.
-    if std::raw::fcmp(lo, v) != -1 {
-        lo = v
-    }
-    if std::raw::fcmp(hi, v) != 1 {
-        hi = v
+    // f64::min / f64::max de Rust (sin NaN: record los rechaza). Con 0.0 y
+    // -0.0 dependen de la instrucción de cada CPU:
+    //   x86-64 (minsd/maxsd): con valores iguales gana el nuevo;
+    //   ARM64 (fminnm/fmaxnm): -0 < +0 (min da -0 y max +0 si hay alguno).
+    let clo = std::raw::fcmp(lo, v)
+    let chi = std::raw::fcmp(hi, v)
+    if std::raw::arch() == 1 {
+        if clo == 1 {
+            lo = v
+        } else if clo == 0 {
+            lo = lo | v
+        }
+        if chi == -1 {
+            hi = v
+        } else if chi == 0 {
+            hi = hi & v
+        }
+    } else {
+        if clo != -1 {
+            lo = v
+        }
+        if chi != 1 {
+            hi = v
+        }
     }
     let h = rt_array_new(4)
     let d = rt_seq_data(h)
