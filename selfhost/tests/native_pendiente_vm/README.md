@@ -18,5 +18,5 @@ para probar el caso del defecto; sin esa variable prueba el caso normal.
 
 ## Bugs 11 y 16 (palabras clave después de `::`)
 
-`ruta_palabra_clave.titan`: `std::uuid::nil()` (y `std::process::spawn`) no se
-podían escribir porque `nil` y `spawn` son palabras clave.
+`ruta_palabra_clave.titan` pasó a `tests/native/` con el `zett` del commit
+9a7d45d. Ahora no hay pruebas esperando.
