@@ -17,6 +17,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 373 / 816 nativas (`selfhost/native/cobertura.sh`) |
 | L | **Backend LLVM** en Titan: bytecode → LLVM IR → clang/llc (LLVM real) (`selfhost/native/llvm.titan`, `selfhost/build_llvm.titan`) | ✅ x86-64: 241 / 241 idénticos a la VM con -O2 (LLVM 22 local y clang 18 en la CI) · ✅ punto fijo por LLVM (`native/llvm/punto_fijo.sh`; el compilador hecho por LLVM es ~5× más rápido) · ✅ ARM64 (AArch64): 241 / 241 idénticos en una máquina ARM64 real (CI `ubuntu-24.04-arm`, contra la VM de Rust compilada para ARM64) |
+| O | **Optimizador propio** en Titan, estilo `opt` de LLVM, sobre el bytecode (la representación intermedia de Titan) (`selfhost/opt.titan`): cálculo de constantes, saltos encadenados, valores descartados, código inalcanzable. Lo usan los dos backends | ✅ en marcha: el compilador pasa de 74 550 a 69 358 instrucciones (−7 %); punto fijo propio y por LLVM ✅; `selfhost/opt_ver.titan ARCHIVO [--dump]` muestra el antes/después; `TITAN_OPT=0` lo apaga. Siguiente: inlining |
 
 ## Cómo verificar
 
