@@ -16,7 +16,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
 | 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 373 / 816 nativas (`selfhost/native/cobertura.sh`) |
-| L | **Backend LLVM** en Titan: bytecode → LLVM IR → clang/llc (LLVM real) (`selfhost/native/llvm.titan`, `selfhost/build_llvm.titan`) | ✅ x86-64: 241 / 241 idénticos a la VM con -O2 (LLVM 22 local y clang 18 en la CI) · ✅ punto fijo por LLVM (`native/llvm/punto_fijo.sh`; el compilador hecho por LLVM es ~5× más rápido) · ARM64: en prueba en máquina ARM64 real (CI) |
+| L | **Backend LLVM** en Titan: bytecode → LLVM IR → clang/llc (LLVM real) (`selfhost/native/llvm.titan`, `selfhost/build_llvm.titan`) | ✅ x86-64: 241 / 241 idénticos a la VM con -O2 (LLVM 22 local y clang 18 en la CI) · ✅ punto fijo por LLVM (`native/llvm/punto_fijo.sh`; el compilador hecho por LLVM es ~5× más rápido) · ✅ ARM64 (AArch64): 241 / 241 idénticos en una máquina ARM64 real (CI `ubuntu-24.04-arm`, contra la VM de Rust compilada para ARM64) |
 
 ## Cómo verificar
 

@@ -87,6 +87,7 @@ Operaciones de bajo nivel (`std::raw::`):
   Prueba: `arm64_objetos.sh` (en x86-64: IR para AArch64 → clang → objetos) y
   `arm64_comparar.sh` (en una máquina ARM64 real: enlazar, ejecutar y comparar
   con la VM de Rust compilada para ARM64); la CI lo hace en `ubuntu-24.04-arm`.
+  Resultado: 241 / 241 programas idénticos en una máquina ARM64 real.
 
 ### Lo que Rust hace distinto en cada CPU
 
