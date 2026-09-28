@@ -41,7 +41,7 @@ archivos: 682  idénticos: 682  distintos: 0
 == selfhost: parser Titan vs parser Rust
 archivos: 682  idénticos: 682  distintos: 0  (líneas de AST idénticas: 252036)
 == bench
-push 20000: 7 ms
-index 20000: 6 ms (suma 199990000)
-call(arr) 20000: 7 ms (suma 199990000)
+push 20000: 10 ms
+index 20000: 8 ms (suma 199990000)
+call(arr) 20000: 12 ms (suma 199990000)
 semantica de valor: original[0]=0 copia[0]=99
