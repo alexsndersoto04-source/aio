@@ -10,3 +10,8 @@ number_prefix 0.4.0
 rustyline 14.0.0
 crossterm 0.28.1
 unicode-segmentation 1.13.3
+rustix 0.38.44
+mio 1.2.2
+signal-hook 0.3.18
+signal-hook-mio 0.2.5
+signal-hook-registry 1.4.8
