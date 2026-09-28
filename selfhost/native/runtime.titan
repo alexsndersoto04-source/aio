@@ -29,6 +29,8 @@ import std_password
 import std_procfs_arm
 import std_procfs
 import std_signals
+import std_uwidth_tab
+import std_uwidth
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust

@@ -1,0 +1,46 @@
+// Runtime de PRUEBAS (solo lo usa selfhost/prueba_interna.titan): el runtime
+// real más funciones std::prueba::* que exponen funciones internas.
+import runtime
+
+fn std__prueba__uw_str_width(s: any) -> any {
+    rt_expect_str(s, "std::prueba::uw_str_width")
+    uw_str_width(s)
+}
+
+fn std__prueba__uw_char_width(c: any) -> any {
+    uw_char_width(std::raw::bits(c))
+}
+
+// Ancho de la cadena formada por los puntos de código del arreglo.
+fn std__prueba__uw_cps_width(a: any) -> any {
+    let n = rt_seq_len(a)
+    let buf = rt_alloc(4 * n + 8)
+    let mut k = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::bits(rt_seq_get(a, i))
+        if c < 128 {
+            std::raw::store8(buf + k, c)
+            k += 1
+        } else if c < 2048 {
+            std::raw::store8(buf + k, 192 | std::raw::shr(c, 6))
+            std::raw::store8(buf + k + 1, 128 | (c & 63))
+            k += 2
+        } else if c < 65536 {
+            std::raw::store8(buf + k, 224 | std::raw::shr(c, 12))
+            std::raw::store8(buf + k + 1, 128 | (std::raw::shr(c, 6) & 63))
+            std::raw::store8(buf + k + 2, 128 | (c & 63))
+            k += 3
+        } else {
+            std::raw::store8(buf + k, 240 | std::raw::shr(c, 18))
+            std::raw::store8(buf + k + 1, 128 | (std::raw::shr(c, 12) & 63))
+            std::raw::store8(buf + k + 2, 128 | (std::raw::shr(c, 6) & 63))
+            std::raw::store8(buf + k + 3, 128 | (c & 63))
+            k += 4
+        }
+        i += 1
+    }
+    let w = uw_str_width_bytes(buf, k)
+    rt_free_block(buf)
+    w
+}
