@@ -1576,6 +1576,42 @@ index ead816b..2a04924 100644
                  stream.write_all(&frame).unwrap();
                  let mut response = [0u8; 7];
                  stream.read_exact(&mut response).unwrap();
+diff --git a/crates/titan_stdlib/src/term_mod.rs b/crates/titan_stdlib/src/term_mod.rs
+index b0700fd..ed96da0 100644
+--- a/crates/titan_stdlib/src/term_mod.rs
++++ b/crates/titan_stdlib/src/term_mod.rs
+@@ -59,7 +59,9 @@ fn parse_color(name: &str) -> Result<Color, TermError> {
+                 // `get` instead of slicing: a multi-byte character across a
+                 // 2-byte boundary used to panic ("not a char boundary").
+                 if hex.len() == 6 {
+-                    if let (Some(rs), Some(gs), Some(bs)) = (hex.get(0..2), hex.get(2..4), hex.get(4..6)) {
++                    if let (Some(rs), Some(gs), Some(bs)) =
++                        (hex.get(0..2), hex.get(2..4), hex.get(4..6))
++                    {
+                         if let (Ok(r), Ok(g), Ok(b)) = (
+                             u8::from_str_radix(rs, 16),
+                             u8::from_str_radix(gs, 16),
+@@ -275,8 +277,18 @@ mod tests {
+ 
+     #[test]
+     fn hex_color_with_multibyte_char_is_an_error_not_a_panic() {
+-        assert!(matches!(parse_color("#a€bc"), Err(TermError::UnknownColor(_))));
+-        assert_eq!(parse_color("#0a0B0c").unwrap(), Color::Rgb { r: 10, g: 11, b: 12 });
++        assert!(matches!(
++            parse_color("#a€bc"),
++            Err(TermError::UnknownColor(_))
++        ));
++        assert_eq!(
++            parse_color("#0a0B0c").unwrap(),
++            Color::Rgb {
++                r: 10,
++                g: 11,
++                b: 12
++            }
++        );
+     }
+ 
+     #[test]
 diff --git a/crates/titan_typechecker/src/lib.rs b/crates/titan_typechecker/src/lib.rs
 index a55cf46..8157181 100644
 --- a/crates/titan_typechecker/src/lib.rs
