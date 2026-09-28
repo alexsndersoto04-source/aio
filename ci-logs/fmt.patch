@@ -153,6 +153,15 @@ index 21bcec3..cf59cef 100644
          let diagnostic = lsp
              .diagnostics("file:///x.titan")
              .into_iter()
+diff --git a/crates/titan_parser/src/lib.rs b/crates/titan_parser/src/lib.rs
+index 4f1e6ff..851591e 100644
+--- a/crates/titan_parser/src/lib.rs
++++ b/crates/titan_parser/src/lib.rs
+@@ -2211,4 +2211,3 @@ mod tests {
+         );
+     }
+ }
+-
 diff --git a/crates/titan_pkg/src/install.rs b/crates/titan_pkg/src/install.rs
 index 31e311c..4ac8d5f 100644
 --- a/crates/titan_pkg/src/install.rs
@@ -1322,10 +1331,10 @@ index e2ed389..e11e51b 100644
                  .parent()
                  .unwrap()
 diff --git a/crates/titan_stdlib/src/process_mod.rs b/crates/titan_stdlib/src/process_mod.rs
-index 5c652e5..e48fa03 100644
+index c563452..4783731 100644
 --- a/crates/titan_stdlib/src/process_mod.rs
 +++ b/crates/titan_stdlib/src/process_mod.rs
-@@ -557,9 +557,7 @@ pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
+@@ -559,9 +559,7 @@ pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
  pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
      let entry = background_entry(handle)?;
      let mut entry = crate::native::lock_recover(&entry);
@@ -1336,7 +1345,7 @@ index 5c652e5..e48fa03 100644
      match background
          .child
          .try_wait()
-@@ -574,9 +572,7 @@ pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
+@@ -576,9 +574,7 @@ pub fn spawn_poll(handle: u64) -> Result<Option<i32>, ProcessError> {
  pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
      let entry = background_entry(handle)?;
      let mut entry = crate::native::lock_recover(&entry);
@@ -1347,7 +1356,7 @@ index 5c652e5..e48fa03 100644
      background
          .child
          .kill()
-@@ -587,9 +583,7 @@ pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
+@@ -589,9 +585,7 @@ pub fn spawn_kill(handle: u64) -> Result<(), ProcessError> {
  pub fn spawn_pid(handle: u64) -> Result<u32, ProcessError> {
      let entry = background_entry(handle)?;
      let entry = crate::native::lock_recover(&entry);
@@ -1358,6 +1367,17 @@ index 5c652e5..e48fa03 100644
      Ok(background.child.id())
  }
  
+@@ -904,7 +898,9 @@ mod tests {
+         std::env::set_var("TITAN_TEST_UTF8_OK", "si");
+         let vars = env_vars();
+         assert!(vars.iter().all(|(k, _)| k != "TITAN_TEST_NOT_UTF8"));
+-        assert!(vars.iter().any(|(k, v)| k == "TITAN_TEST_UTF8_OK" && v == "si"));
++        assert!(vars
++            .iter()
++            .any(|(k, v)| k == "TITAN_TEST_UTF8_OK" && v == "si"));
+         assert_eq!(env_get("TITAN_TEST_NOT_UTF8"), None);
+         std::env::remove_var("TITAN_TEST_NOT_UTF8");
+         std::env::remove_var("TITAN_TEST_UTF8_OK");
 diff --git a/crates/titan_stdlib/src/server_mod.rs b/crates/titan_stdlib/src/server_mod.rs
 index ead816b..2a04924 100644
 --- a/crates/titan_stdlib/src/server_mod.rs
@@ -1996,7 +2016,7 @@ index d27ca43..1d508fd 100644
          );
      }
 diff --git a/crates/titan_vm/src/native.rs b/crates/titan_vm/src/native.rs
-index 0528451..3c9d9f2 100644
+index a825e05..beecea0 100644
 --- a/crates/titan_vm/src/native.rs
 +++ b/crates/titan_vm/src/native.rs
 @@ -718,9 +718,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
