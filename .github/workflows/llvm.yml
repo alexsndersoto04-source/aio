@@ -24,7 +24,11 @@ jobs:
           for t in clang clang-18 clang-17 clang-16 clang-15 clang-14 llc llc-18 opt opt-18 lld ld.lld llvm-config llvm-config-18 qemu-aarch64 qemu-aarch64-static; do
             p=$(command -v $t)
             if [ -n "$p" ]; then echo "$t: $p :: $($t --version 2>&1 | head -1)"; else echo "$t: (no)"; fi
-          done
+          done > /tmp/tools.txt
+          cat /tmp/tools.txt
+          # Anotaciones: se leen por la API sin descargar el log.
+          echo "::notice::herramientas: $(grep -v '(no)' /tmp/tools.txt | sed 's/ :: .*//' | tr '\n' ' ')"
+          echo "::notice::clang: $(clang --version 2>&1 | head -1)"
           ls /usr/lib/llvm-*/bin 2>/dev/null | head -50
           clang -print-targets 2>/dev/null | grep -Ei "x86-64|aarch64" | head
 
@@ -43,7 +47,11 @@ jobs:
         run: |
           export PATH="$HOME/bin:$PATH"
           if [ -f selfhost/native/llvm/verificar.sh ]; then
-            bash selfhost/native/llvm/verificar.sh
+            bash selfhost/native/llvm/verificar.sh 2>&1 | tee /tmp/llvm.txt
+            rc=${PIPESTATUS[0]}
+            tail -3 /tmp/llvm.txt | while IFS= read -r l; do echo "::notice::[llvm] $l"; done
+            grep -E "^DIFERENCIA|^no admitido" /tmp/llvm.txt | head -20 | while IFS= read -r l; do echo "::error::[llvm] $l"; done
+            exit $rc
           else
             echo "todavía no hay selfhost/native/llvm/verificar.sh"
           fi
