@@ -919,6 +919,26 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
     if k == "Not" {
         return bk_not(p)
     }
+    // Llamada integrada por el optimizador (opt.titan): cuenta la
+    // profundidad igual que una llamada de verdad (mismo límite, mismo error).
+    if k == "InlEnter" {
+        if ctx.runtime {
+            return p
+        }
+        p = pc_add(p, x_load(x_rax(), x_r15(), 16))
+        p = pc_add(p, x_cmp_ri(x_rax(), 4096))
+        p = pc_ref(p, x_jcc(x_cc_ge(), 0), 2, "rel", "g_depth", 0)
+        p = pc_add(p, x_add_ri(x_rax(), 1))
+        return pc_add(p, x_store(x_r15(), 16, x_rax()))
+    }
+    if k == "InlLeave" {
+        if ctx.runtime {
+            return p
+        }
+        p = pc_add(p, x_load(x_rcx(), x_r15(), 16))
+        p = pc_add(p, x_sub_ri(x_rcx(), 1))
+        return pc_add(p, x_store(x_r15(), 16, x_rcx()))
+    }
     if k == "Jump" {
         return pc_ref(p, x_jmp(0), 1, "jmp", "", n)
     }

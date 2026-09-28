@@ -779,6 +779,31 @@ fn lv_op(b0: Lv, ctx: LvCtx, op: Op, pc: int) -> Lv {
         b = lv_lput(b, n, id + "xt", id + "xb")
         return lv_br_to(b, next)
     }
+    // Llamada integrada por el optimizador (opt.titan): cuenta la
+    // profundidad igual que una llamada de verdad (mismo límite, mismo error).
+    if k == "InlEnter" {
+        if ctx.runtime {
+            return lv_br_to(b, next)
+        }
+        b = lv_e(b, "  " + id + "d = load i64, ptr %dp")
+        b = lv_e(b, "  " + id + "c = icmp sge i64 " + id + "d, 4096")
+        b = lv_cond(b, id + "c", blk + "deep", blk + "ok")
+        b = lv_label(b, blk + "deep")
+        b = lv_raise(b, "g_depth")
+        b = lv_label(b, blk + "ok")
+        b = lv_e(b, "  " + id + "e = add i64 " + id + "d, 1")
+        b = lv_e(b, "  store i64 " + id + "e, ptr %dp")
+        return lv_br_to(b, next)
+    }
+    if k == "InlLeave" {
+        if ctx.runtime {
+            return lv_br_to(b, next)
+        }
+        b = lv_e(b, "  " + id + "d = load i64, ptr %dp")
+        b = lv_e(b, "  " + id + "e = sub i64 " + id + "d, 1")
+        b = lv_e(b, "  store i64 " + id + "e, ptr %dp")
+        return lv_br_to(b, next)
+    }
     if k == "Pop" {
         b = lv_get(b, id + "x", d - 1)
         b = lv_dec(b, id + "xt", id + "xb")
@@ -1054,7 +1079,7 @@ fn lv_effect(op: Op) -> (int, int) {
     if k == "Neg" || k == "BitNot" || k == "Not" || k == "ToString" || k == "Len" || k == "GetField" || k == "EnumIs" || k == "EnumPayload" || k == "Try" {
         return (1, 1)
     }
-    if k == "Jump" {
+    if k == "Jump" || k == "InlEnter" || k == "InlLeave" {
         return (0, 0)
     }
     if k == "Call" {

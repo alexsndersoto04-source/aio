@@ -15,7 +15,11 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"; rm -f titanc_llvm build_llvm_llvm' EXIT
 if command -v clang >/dev/null 2>&1; then CC=(clang); else CC=(python3 -m ziglang cc -target x86_64-linux-none); fi
 echo "LLVM: $("${CC[@]}" --version | head -1) ($OPT)"
-[ -x build_llvm ] || "$ZETT" run build.titan build_llvm.titan build_llvm
+# Se recompila si falta o si alguna fuente es más nueva (si no, se compararía
+# con un build_llvm viejo).
+if [ ! -x build_llvm ] || [ -n "$(find . -name '*.titan' -newer build_llvm | head -1)" ]; then
+  "$ZETT" run build.titan build_llvm.titan build_llvm || exit 1
+fi
 echo "referencia: VM de Rust + build.titan -> titanc_ref"
 "$ZETT" run build.titan build.titan "$tmp/titanc_ref"
 echo "1. build.titan y build_llvm.titan -> LLVM IR -> ejecutables"
