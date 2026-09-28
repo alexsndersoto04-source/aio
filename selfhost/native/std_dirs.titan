@@ -12,23 +12,11 @@
 
 // Valor crudo de una variable de entorno (bytes tal cual) o nil.
 fn dr_env(name: string) -> any {
-    let sp = std::raw::load(std::raw::globals() + 32)
-    let argc = std::raw::load(sp)
-    let mut e = sp + 16 + 8 * argc
-    let pn = std::raw::bits(name) + 16
-    let n = rt_slen(name)
-    while std::raw::load(e) != 0 {
-        let entry = std::raw::load(e)
-        let mut i = 0
-        while i < n && std::raw::load8(entry + i) == std::raw::load8(pn + i) {
-            i += 1
-        }
-        if i == n && std::raw::load8(entry + n) == 61 {
-            return rt_from_cstr(entry + n + 1)
-        }
-        e += 8
+    let v = rt_getenv(name)
+    if v == 0 {
+        return nil
     }
-    nil
+    rt_from_cstr(v)
 }
 
 fn dr_starts_slash(s: any) -> bool {

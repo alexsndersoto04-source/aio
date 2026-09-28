@@ -1,0 +1,9 @@
+fn main() {
+    let mut s = "0123456789abcdef"
+    let mut i = 0
+    while i < 16 {
+        s = s + s
+        i += 1
+    }
+    std::process::run_with_input("true", std::encoding::utf8_encode(s))
+}

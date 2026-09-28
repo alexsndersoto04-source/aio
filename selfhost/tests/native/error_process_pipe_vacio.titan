@@ -1,0 +1,4 @@
+fn main() {
+    let v: array = []
+    std::process::pipe(v)
+}

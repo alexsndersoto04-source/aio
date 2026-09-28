@@ -1,0 +1,63 @@
+// std::process: variables de entorno (las ven también std::env y std::dirs),
+// carpeta de trabajo y datos del proceso.
+fn main() {
+    std::process::env_set("TITAN_P1", "uno")
+    print(std::process::env_get("TITAN_P1"))
+    print(std::env::get("TITAN_P1"))
+    std::process::env_set("TITAN_P1", "dos=tres")
+    print(std::process::env_get("TITAN_P1"))
+    std::process::env_unset("TITAN_P1")
+    print(std::process::env_get("TITAN_P1"))
+    print(std::env::get("TITAN_P1"))
+    std::process::env_unset("TITAN_NO_ESTABA")
+    print(std::process::env_get("NO_EXISTE_XYZ"))
+    print(std::process::env_get(""))
+    print(std::process::env_get("A=B"))
+    std::process::env_set("TITAN_Z", "z")
+    std::process::env_set("TITAN_A", "a ñ €")
+    std::process::env_set("TITAN_VACIA", "")
+    let vars = std::process::env_vars()
+    let n = len(vars)
+    print(vars[n - 3], vars[n - 2], vars[n - 1])
+    std::process::env_set("TITAN_Z", "zeta")
+    let vars2 = std::process::env_vars()
+    print(len(vars2) == n, vars2[n - 3])
+    let mut encontrado = 0
+    for par in vars2 {
+        let (k, v) = par
+        if k == "TITAN_A" {
+            encontrado += 1
+            print(v)
+        }
+    }
+    print(encontrado)
+    std::process::env_set("HOME", "/tmp/casa_titan")
+    print(std::dirs::home())
+    print(std::dirs::config())
+    std::process::env_set("XDG_CONFIG_HOME", "/tmp/conf_titan")
+    print(std::dirs::config())
+    print(std::process::hostname())
+    print(std::process::username())
+    std::process::env_set("USER", "alguien")
+    print(std::process::username())
+    std::process::env_unset("USER")
+    std::process::env_set("USERNAME", "otro")
+    print(std::process::username())
+    std::process::env_unset("USERNAME")
+    print(std::process::username())
+    std::process::env_set("HOSTNAME", "no_se_usa")
+    print(std::process::hostname() == "no_se_usa")
+    print(std::process::self_pid() > 1)
+    let d = std::process::working_dir()
+    std::process::set_working_dir("/tmp")
+    print(std::process::working_dir())
+    print(std::env::current_dir())
+    std::process::set_working_dir("/")
+    print(std::process::working_dir())
+    std::process::set_working_dir(d)
+    print(std::process::working_dir() == d)
+    print(len(std::process::args()) > 0)
+    std::process::send_signal(std::process::self_pid(), 18)
+    std::process::send_signal(std::process::self_pid(), 28)
+    print("fin")
+}

@@ -1,0 +1,14 @@
+// std::process::run_timeout: sin partir el comando, bytes, estado nil si lo
+// mató una señal, timed_out.
+fn main() {
+    let r = std::process::run_timeout("sh", ["-c", "echo x; echo yy >&2; exit 3"], 5000)
+    print(r["status"], r["success"], r["timed_out"], std::encoding::utf8_decode(r["stdout"]), len(r["stderr"]))
+    print(std::process::run_timeout("sleep", ["5"], 100))
+    print(std::process::run_timeout("printf", ["%s|%s", "a b", "é"], 2000)["stdout"])
+    print(std::process::run_timeout("true", [], 2000))
+    print(std::process::run_timeout("sh", ["-c", "kill -9 $$"], 2000))
+    let t = std::process::run_timeout("sh", ["-c", "echo antes; sleep 5"], 200)
+    print(std::encoding::utf8_decode(t["stdout"]), t["timed_out"], t["status"])
+    std::process::env_set("TITAN_T", "desde el padre")
+    print(std::encoding::utf8_decode(std::process::run_timeout("sh", ["-c", "echo $TITAN_T"], 2000)["stdout"]))
+}

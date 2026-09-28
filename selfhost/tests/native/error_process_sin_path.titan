@@ -1,0 +1,5 @@
+fn main() {
+    std::process::env_unset("PATH")
+    print(std::process::run("sh -c \"echo con CS_PATH\"")["stdout"])
+    std::process::run("titanprog")
+}

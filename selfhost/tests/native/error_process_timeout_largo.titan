@@ -1,0 +1,7 @@
+fn main() {
+    let mut s = ""
+    while len(s) <= 65536 {
+        s = s + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+    std::process::run_timeout("echo", [s], 1000)
+}

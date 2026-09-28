@@ -615,10 +615,9 @@ fn std__term__size() -> any {
     out
 }
 
-// Puntero al entorno inicial (envp) en la pila del proceso.
+// El entorno actual (envp), con los cambios de std::process::env_set.
 fn tm_envp() -> int {
-    let sp = std::raw::load(std::raw::globals() + 32)
-    sp + 16 + 8 * std::raw::load(sp)
+    rt_environ()
 }
 
 // getenv("PATH") de glibc (bytes tal cual); CS_PATH si no está.
@@ -657,6 +656,7 @@ fn tm_child(nul: int, ow: int, ew: int, rep: int, arg: string) {
     let msg = rt_alloc(8)
     let mut eacces = false
     let mut fail = 0
+    let mut last = 2
     let mut start = 0
     loop {
         let mut end = start
@@ -676,6 +676,7 @@ fn tm_child(nul: int, ow: int, ew: int, rep: int, arg: string) {
         std::raw::store8(full + k + 4, 0)
         let r = std::raw::syscall(59, full, argv, envp, 0, 0, 0)
         let e = 0 - r
+        last = e
         std::raw::store(msg, e)
         std::raw::syscall(1, rep, msg, 8, 0, 0, 0)
         if e == 13 {
@@ -691,8 +692,10 @@ fn tm_child(nul: int, ow: int, ew: int, rep: int, arg: string) {
         }
         start = end + 1
     }
+    // __execvpe de glibc: el errno del último intento, o EACCES si alguno
+    // lo dio.
     if fail == 0 {
-        fail = 2
+        fail = last
         if eacces {
             fail = 13
         }

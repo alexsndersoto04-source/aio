@@ -1,0 +1,4 @@
+fn main() {
+    std::process::env_set("PATH", "")
+    std::process::run("ls")
+}

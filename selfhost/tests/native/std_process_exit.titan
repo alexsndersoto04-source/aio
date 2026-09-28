@@ -1,0 +1,6 @@
+// exit termina ya (con el código & 255, como el sistema).
+fn main() {
+    print("antes")
+    std::process::exit(259)
+    print("después")
+}

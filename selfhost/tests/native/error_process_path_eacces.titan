@@ -1,0 +1,5 @@
+fn main() {
+    std::process::shell("mkdir -p /tmp/titan_pa; printf x > /tmp/titan_pa/titanprog; chmod -x /tmp/titan_pa/titanprog")
+    std::process::env_set("PATH", "/tmp/titan_pa:/tmp/titan_pb_no")
+    std::process::run("titanprog")
+}

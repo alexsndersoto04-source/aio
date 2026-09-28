@@ -1,0 +1,5 @@
+fn main() {
+    let h = std::process::spawn("true")
+    print(std::process::spawn_wait(h)["exit_code"])
+    std::process::spawn_wait(h)
+}

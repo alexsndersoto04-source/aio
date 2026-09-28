@@ -1,0 +1,15 @@
+// std::process::pipe: etapas encadenadas, los stderr de todas en orden y el
+// código de la última.
+fn mostrar(r: map) {
+    print(r["stdout"], "|", r["stderr"], "|", r["exit_code"])
+}
+
+fn main() {
+    mostrar(std::process::pipe(["printf 'c\\nb\\na\\n'", "sort", "sh -c 'cat; echo e3 >&2; exit 4'"]))
+    mostrar(std::process::pipe(["sh -c 'echo A >&2; echo x; exit 9'", "sh -c 'echo B >&2; cat'"]))
+    mostrar(std::process::pipe(["echo solo"]))
+    mostrar(std::process::pipe(["cat", "wc -c"]))
+    mostrar(std::process::pipe(["seq 1 20000", "sh -c 'sleep 0.2; wc -l'"]))
+    mostrar(std::process::pipe(["yes", "head -n 3"]))
+    mostrar(std::process::pipe(["echo a", "echo b", "echo c", "echo d", "echo e", "echo f", "echo g", "cat"]))
+}

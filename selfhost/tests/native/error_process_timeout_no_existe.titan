@@ -1,0 +1,3 @@
+fn main() {
+    std::process::run_timeout("titan_no_existe", ["a"], 1000)
+}
