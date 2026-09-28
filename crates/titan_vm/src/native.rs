@@ -4339,12 +4339,12 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::process::env_set" => {
             let name = string!();
             let value = string!();
-            stdlib::process_mod::env_set(&name, &value);
+            stdlib::process_mod::env_set(&name, &value).map_err(|e| e.to_string())?;
             Value::Nil
         }
         #[cfg(feature = "process_mod")]
         "std::process::env_unset" => {
-            stdlib::process_mod::env_unset(&string!());
+            stdlib::process_mod::env_unset(&string!()).map_err(|e| e.to_string())?;
             Value::Nil
         }
         #[cfg(feature = "process_mod")]

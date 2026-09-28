@@ -27,6 +27,7 @@ pub enum ProcessError {
     ShellSyntax(String),
     Signal(String),
     HandleSpaceExhausted,
+    InvalidEnv(&'static str),
     ResourceLimit {
         resource: &'static str,
         limit: usize,
@@ -44,6 +45,7 @@ impl std::fmt::Display for ProcessError {
             ProcessError::HandleSpaceExhausted => {
                 write!(f, "background process handle space exhausted")
             }
+            ProcessError::InvalidEnv(e) => write!(f, "invalid environment variable: {e}"),
             ProcessError::ResourceLimit { resource, limit } => {
                 write!(f, "{resource} exceeds limit {limit}")
             }
@@ -598,11 +600,31 @@ pub fn spawn_pid(handle: u64) -> Result<u32, ProcessError> {
 pub fn env_get(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
-pub fn env_set(name: &str, value: &str) {
-    std::env::set_var(name, value);
+// `std::env::set_var` / `remove_var` hacen *panic* (y la VM entera se cae)
+// si el sistema rechaza el nombre (vacío o con '=') o si hay un byte NUL.
+// Se comprueba antes y se devuelve un error normal.
+const INVALID_ENV_NAME: &str = "name must be non-empty and must not contain '=' or NUL";
+const INVALID_ENV_VALUE: &str = "value must not contain NUL";
+
+fn check_env_name(name: &str) -> Result<(), ProcessError> {
+    if name.is_empty() || name.contains('=') || name.contains('\0') {
+        return Err(ProcessError::InvalidEnv(INVALID_ENV_NAME));
+    }
+    Ok(())
 }
-pub fn env_unset(name: &str) {
+
+pub fn env_set(name: &str, value: &str) -> Result<(), ProcessError> {
+    check_env_name(name)?;
+    if value.contains('\0') {
+        return Err(ProcessError::InvalidEnv(INVALID_ENV_VALUE));
+    }
+    std::env::set_var(name, value);
+    Ok(())
+}
+pub fn env_unset(name: &str) -> Result<(), ProcessError> {
+    check_env_name(name)?;
     std::env::remove_var(name);
+    Ok(())
 }
 
 pub fn env_vars() -> Vec<(String, String)> {
@@ -862,9 +884,25 @@ mod tests {
 
     #[test]
     fn env_get_set_roundtrip() {
-        env_set("TITAN_TEST_VAR", "42");
+        env_set("TITAN_TEST_VAR", "42").unwrap();
         assert_eq!(env_get("TITAN_TEST_VAR"), Some("42".into()));
-        env_unset("TITAN_TEST_VAR");
+        env_unset("TITAN_TEST_VAR").unwrap();
         assert_eq!(env_get("TITAN_TEST_VAR"), None);
+    }
+
+    #[test]
+    fn invalid_env_names_and_values_are_errors_not_panics() {
+        for name in ["", "A=B", "A\0B"] {
+            assert_eq!(
+                env_set(name, "x").unwrap_err().to_string(),
+                "invalid environment variable: name must be non-empty and must not contain '=' or NUL"
+            );
+            assert!(env_unset(name).is_err());
+        }
+        assert_eq!(
+            env_set("TITAN_TEST_NUL", "x\0y").unwrap_err().to_string(),
+            "invalid environment variable: value must not contain NUL"
+        );
+        assert_eq!(env_get("TITAN_TEST_NUL"), None);
     }
 }
