@@ -37,7 +37,9 @@ else
   compile() { python3 -m ziglang cc -target aarch64-freestanding-none -O2 -nostdlib -static -ffreestanding -fno-pic -Wno-override-module -Wl,-T,"$tmp/ll/bare.ld" "$1" -o "$2"; }
 fi
 if [ "$CORRER" = qemu ]; then
-  run() { timeout 120 qemu-system-aarch64 -machine virt -cpu cortex-a57 -m 1G -nographic -monitor none -serial stdio -kernel "$1" < /dev/null; }
+  # Sin pantalla ni monitor: el puerto serie (PL011) va a stdio. (Con
+  # -nographic además de -serial stdio, QEMU se niega: stdio dos veces.)
+  run() { timeout 120 qemu-system-aarch64 -machine virt -cpu cortex-a57 -m 1G -display none -monitor none -serial stdio -kernel "$1" < /dev/null; }
 else
   run() { timeout 300 python3 selfhost/native/bare/correr.py "$1"; }
 fi
@@ -71,6 +73,12 @@ for f in "${FILES[@]}"; do
     echo "DIFERENCIA en $f (salida VM=$vm sin-SO=$bare):"
     diff "$tmp/vm.out" "$tmp/bare.out" | head -8
     head -c 300 "$tmp/bare.err"
+    # En GitHub Actions las anotaciones solo guardan una línea: la diferencia
+    # va en una sola (las 5 primeras pruebas distintas).
+    if [ -n "${GITHUB_ACTIONS:-}" ] && [ "$fail" -le 5 ]; then
+      d="$( (diff "$tmp/vm.out" "$tmp/bare.out" | head -6; head -c 200 "$tmp/bare.err") | cut -c1-160 | tr '\n' '|' )"
+      echo "::error title=sin-so $CORRER $base::VM=$vm sin-SO=$bare $d"
+    fi
   fi
 done
 echo "programas: ${#FILES[@]}  idénticos: $pass  distintos: $fail  no admitidos: $unsupported"
