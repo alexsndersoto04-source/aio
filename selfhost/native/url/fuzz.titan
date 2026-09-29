@@ -1,0 +1,42 @@
+// Lee casos de un archivo (tipo en una línea y sus datos en las siguientes:
+// "J" base relativa, "Q" consulta, "U" url) y los pasa por std::url. Lo usa fuzz.py para
+// comparar la VM de Rust con el ejecutable nativo.
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "{v}",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn main() {
+    let args = std::env::args()
+    let path = args[len(args) - 1]
+    let text = std::fs::read_text(path)
+    let ls = std::text::lines(text)
+    let mut i = 0
+    while i < len(ls) {
+        let kind = ls[i]
+        if kind == "J" {
+            let b = ls[i + 1]
+            let r = ls[i + 2]
+            i += 3
+            println("J " + show(std::try::catch(|| { std::url::join(b, r) })))
+        } else if kind == "Q" {
+            let m = std::url::parse_query(ls[i + 1])
+            i += 2
+            println("Q {m}")
+        } else {
+            let u = ls[i + 1]
+            i += 2
+            let v = std::url::is_valid(u)
+            let s = show(std::try::catch(|| { std::url::scheme(u) }))
+            let h = show(std::try::catch(|| { std::url::host(u) }))
+            let p = show(std::try::catch(|| { std::url::port(u) }))
+            let pa = show(std::try::catch(|| { std::url::path(u) }))
+            let q = show(std::try::catch(|| { std::url::query(u) }))
+            let f = show(std::try::catch(|| { std::url::fragment(u) }))
+            println("U {v} " + s + " | " + h + " | " + p + " | " + pa + " | " + q + " | " + f)
+        }
+    }
+}

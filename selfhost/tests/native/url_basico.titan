@@ -1,0 +1,31 @@
+// std::url: lo básico (partes de una URL, join, parse_query y build_query).
+
+fn show(u: string) {
+    if std::url::is_valid(u) {
+        let s = std::url::scheme(u)
+        let p = std::url::port(u)
+        let pa = std::url::path(u)
+        let q = std::url::query(u)
+        let f = std::url::fragment(u)
+        println("{u} -> scheme={s} port={p} path={pa} query={q} frag={f}")
+    } else {
+        println("{u} -> invalid")
+    }
+}
+
+fn main() {
+    show("http://example.com/a/b?x=1#y")
+    show("HTTP://User:Pw@EXAMPLE.com:8080/%7Efoo/./bar/../baz?q=a b#f g")
+    show("https://example.com:443/")
+    show("file:///C:/x/../y")
+    show("mailto:someone@example.com")
+    show("http://[::1]:80/")
+    show("http://0x7f.1/")
+    show("not a url")
+    show("http://exa mple.com/")
+    println(std::url::join("http://a/b/c/d;p?q", "../g"))
+    println(std::url::join("http://a/b/c/d;p?q", "//x/y"))
+    println(std::url::build_query([["a b", "c&d"], ["é", "*-._~"]]))
+    let m = std::url::parse_query("?b=2&a=1&a=3&&x&=y&c=%zz+%41")
+    println("{m}")
+}

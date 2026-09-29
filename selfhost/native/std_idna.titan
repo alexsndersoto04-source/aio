@@ -1,0 +1,880 @@
+// Nombres de dominio internacionales (IDNA) escrito en Titan: traducción de
+// idna 1.1.0 (uts46.rs y punycode.rs; selfhost/fuentes/idna-1.1.0.crate)
+// tal como lo llama url 2.5.8 al leer un host:
+//   idna::domain_to_ascii_from_cow(dominio, AsciiDenyList::URL)
+//   = Uts46::to_ascii con Hyphens::Allow, DnsLength::Ignore y
+//     ErrorPolicy::FailFast (el primer error termina).
+// Los datos Unicode (tabla UTS 46, normalización NFC, clase bidi, tipo de
+// unión, categoría general y virama) los da std_icu.titan (ICU4X 2.2.0, los
+// mismos datos que usa idna_adapter 1.2.2).
+
+// ------------------------------------------------------------ vector de enteros
+
+// Bloque: +0 longitud, +8 capacidad, +16 puntero a los datos.
+fn iv_new(cap0: int) -> int {
+    let mut cap = cap0
+    if cap < 8 {
+        cap = 8
+    }
+    let v = rt_alloc(24)
+    std::raw::store(v, 0)
+    std::raw::store(v + 8, cap)
+    std::raw::store(v + 16, rt_alloc(8 * cap))
+    v
+}
+
+fn iv_len(v: int) -> int {
+    std::raw::load(v)
+}
+
+fn iv_get(v: int, i: int) -> int {
+    std::raw::load(std::raw::load(v + 16) + 8 * i)
+}
+
+fn iv_set(v: int, i: int, x: int) {
+    std::raw::store(std::raw::load(v + 16) + 8 * i, x)
+}
+
+fn iv_push(v: int, x: int) {
+    let n = std::raw::load(v)
+    let cap = std::raw::load(v + 8)
+    if n == cap {
+        let data = rt_alloc(16 * cap)
+        rt_copy(data, std::raw::load(v + 16), 8 * n)
+        rt_free_block(std::raw::load(v + 16))
+        std::raw::store(v + 16, data)
+        std::raw::store(v + 8, 2 * cap)
+    }
+    std::raw::store(std::raw::load(v + 16) + 8 * n, x)
+    std::raw::store(v, n + 1)
+}
+
+fn iv_trunc(v: int, n: int) {
+    std::raw::store(v, n)
+}
+
+fn iv_free(v: int) {
+    rt_free_block(std::raw::load(v + 16))
+    rt_free_block(v)
+}
+
+// Inserta x en la posición i.
+fn iv_insert(v: int, i: int, x: int) {
+    iv_push(v, 0)
+    let mut k = iv_len(v) - 1
+    while k > i {
+        iv_set(v, k, iv_get(v, k - 1))
+        k -= 1
+    }
+    iv_set(v, i, x)
+}
+
+// ------------------------------------------------------------ punycode
+
+fn id_adapt(delta0: int, num_points: int, first_time: bool) -> int {
+    let mut delta = delta0
+    if first_time {
+        delta = delta / 700
+    } else {
+        delta = delta / 2
+    }
+    delta += delta / num_points
+    let mut k = 0
+    while delta > 455 {
+        delta = delta / 35
+        k += 36
+    }
+    k + (36 * delta) / (delta + 38)
+}
+
+// Decoder::decode (InternalCaller) sobre los puntos de código [a, b) de src.
+// `bytes` = true para la versión sobre u8 (acepta A-Z como cifras y baja a
+// minúsculas la parte básica); false para la versión sobre char (solo a-z).
+// Devuelve un vector nuevo o 0 si hay error.
+fn id_puny_decode(src: int, a: int, b: int, bytes: bool) -> int {
+    let mut pos = -1
+    let mut k = b - 1
+    while k >= a {
+        if iv_get(src, k) == 45 {
+            pos = k
+            break
+        }
+        k -= 1
+    }
+    let mut base_end = a
+    let mut input = a
+    if pos >= 0 {
+        base_end = pos
+        if pos > a {
+            input = pos + 1
+        }
+    }
+    let out = iv_new(b - a + 8)
+    k = a
+    while k < base_end {
+        let c = iv_get(src, k)
+        if bytes && c >= 65 && c <= 90 {
+            iv_push(out, c + 32)
+        } else {
+            iv_push(out, c)
+        }
+        k += 1
+    }
+    let mut length = base_end - a
+    let mut code_point = 128
+    let mut bias = 72
+    let mut i = 0
+    let max = 4294967295
+    while input < b {
+        let previous_i = i
+        let mut weight = 1
+        let mut kk = 36
+        while true {
+            if input >= b {
+                iv_free(out)
+                return 0
+            }
+            let c = iv_get(src, input)
+            input += 1
+            let mut digit = -1
+            if c >= 48 && c <= 57 {
+                digit = c - 22
+            } else if c >= 97 && c <= 122 {
+                digit = c - 97
+            } else if bytes && c >= 65 && c <= 90 {
+                digit = c - 65
+            }
+            if digit < 0 {
+                iv_free(out)
+                return 0
+            }
+            let product = digit * weight
+            if product > max {
+                iv_free(out)
+                return 0
+            }
+            i = i + product
+            if i > max {
+                iv_free(out)
+                return 0
+            }
+            let mut t = kk - bias
+            if kk <= bias {
+                t = 1
+            } else if kk >= bias + 26 {
+                t = 26
+            }
+            if digit < t {
+                break
+            }
+            weight = weight * (36 - t)
+            if weight > max {
+                iv_free(out)
+                return 0
+            }
+            kk += 36
+        }
+        bias = id_adapt(i - previous_i, length + 1, previous_i == 0)
+        code_point = code_point + i / (length + 1)
+        if code_point > max {
+            iv_free(out)
+            return 0
+        }
+        i = i % (length + 1)
+        if code_point > 1114111 || (code_point >= 55296 && code_point <= 57343) {
+            iv_free(out)
+            return 0
+        }
+        iv_insert(out, i, code_point)
+        length += 1
+        i += 1
+    }
+    out
+}
+
+fn id_digit_char(v: int) -> int {
+    if v < 26 {
+        return 97 + v
+    }
+    v - 26 + 48
+}
+
+// encode_into (InternalCaller) de los puntos de código [a, b) de src.
+fn id_puny_encode(sb: int, src: int, a: int, b: int) {
+    let input_length = b - a
+    let mut basic = 0
+    let mut k = a
+    while k < b {
+        let c = iv_get(src, k)
+        if c < 128 {
+            sb_cp(sb, c)
+            basic += 1
+        }
+        k += 1
+    }
+    if basic > 0 {
+        sb_byte(sb, 45)
+    }
+    let mut code_point = 128
+    let mut delta = 0
+    let mut bias = 72
+    let mut processed = basic
+    while processed < input_length {
+        let mut min = 1114112
+        k = a
+        while k < b {
+            let c = iv_get(src, k)
+            if c >= code_point && c < min {
+                min = c
+            }
+            k += 1
+        }
+        delta += (min - code_point) * (processed + 1)
+        code_point = min
+        k = a
+        while k < b {
+            let c = iv_get(src, k)
+            if c < code_point {
+                delta += 1
+            }
+            if c == code_point {
+                let mut q = delta
+                let mut kk = 36
+                while true {
+                    let mut t = kk - bias
+                    if kk <= bias {
+                        t = 1
+                    } else if kk >= bias + 26 {
+                        t = 26
+                    }
+                    if q < t {
+                        break
+                    }
+                    sb_byte(sb, id_digit_char(t + (q - t) % (36 - t)))
+                    q = (q - t) / (36 - t)
+                    kk += 36
+                }
+                sb_byte(sb, id_digit_char(q))
+                bias = id_adapt(delta, processed + 1, processed == basic)
+                delta = 0
+                processed += 1
+            }
+            k += 1
+        }
+        delta += 1
+        code_point += 1
+    }
+}
+
+// ------------------------------------------------------------ UTS 46
+
+// AsciiDenyList::URL (mayúsculas, controles, espacio, DEL y "%#/:<>?@[\]^|");
+// con `dot` también el punto.
+fn id_denied(c: int, dot: bool) -> bool {
+    if c >= 128 {
+        return false
+    }
+    if c <= 32 || c == 127 || (c >= 65 && c <= 90) {
+        return true
+    }
+    if c == 37 || c == 35 || c == 47 || c == 58 || c == 60 || c == 62 || c == 63 || c == 64 || c == 91 || c == 92 || c == 93 || c == 94 || c == 124 {
+        return true
+    }
+    dot && c == 46
+}
+
+// apply_ascii_deny_list_to_lower_cased_unicode
+fn id_deny_lower(c: int, dot: bool) -> int {
+    if id_denied(c, dot) {
+        return 65533
+    }
+    c
+}
+
+// apply_ascii_deny_list_to_potentially_upper_case_ascii
+fn id_deny_upper(b: int) -> int {
+    if !id_denied(b, false) {
+        return b
+    }
+    if b >= 65 && b <= 90 {
+        return b + 32
+    }
+    65533
+}
+
+fn id_lower_az(b: int) -> bool {
+    b >= 97 && b <= 122
+}
+
+// is_passthrough_ascii_label sobre los bytes [a, b).
+fn id_passthrough_label(sp: int, a: int, b: int) -> bool {
+    let n = b - a
+    if n >= 4 && std::raw::load8(sp + a + 2) == 45 && std::raw::load8(sp + a + 3) == 45 {
+        return false
+    }
+    if n == 0 {
+        return true
+    }
+    if !id_lower_az(std::raw::load8(sp + a)) {
+        return false
+    }
+    let mut k = a + 1
+    while k < b {
+        let c = std::raw::load8(sp + k)
+        if !id_lower_az(c) && !(c >= 48 && c <= 57) && c != 45 {
+            return false
+        }
+        k += 1
+    }
+    std::raw::load8(sp + b - 1) != 45
+}
+
+// has_punycode_prefix: "xn--" sin distinguir mayúsculas en x y n.
+fn id_puny_prefix(sp: int, a: int, b: int) -> bool {
+    if b - a < 4 {
+        return false
+    }
+    let x = std::raw::load8(sp + a)
+    let n = std::raw::load8(sp + a + 1)
+    return (x == 120 || x == 88) && (n == 110 || n == 78) && std::raw::load8(sp + a + 2) == 45 && std::raw::load8(sp + a + 3) == 45
+}
+
+// Los caracteres de los bytes [a, b) (UTF-8 con U+FFFD en lo inválido,
+// como utf8_iter).
+fn id_chars(s: any, a: int, b: int) -> int {
+    let piece = dr_lossy(rt_substr_bytes(s, a, b))
+    let n = rt_slen(piece)
+    let pp = std::raw::bits(piece) + 16
+    let out = iv_new(n + 8)
+    let mut i = 0
+    while i < n {
+        iv_push(out, tx_decode(pp + i))
+        i += rt_utf8_width(std::raw::load8(pp + i))
+    }
+    out
+}
+
+// Clases bidi (valores ICU4C): L 0, R 1, EN 2, ES 3, ET 4, AN 5, CS 6,
+// ON 10, AL 13, NSM 17, BN 18.
+fn id_bc_mask(bc: int) -> int {
+    let mut m = 1
+    let mut k = 0
+    while k < bc {
+        m = m * 2
+        k += 1
+    }
+    m
+}
+
+fn id_rtl_mask() -> int {
+    id_bc_mask(1) | id_bc_mask(13) | id_bc_mask(5)
+}
+
+fn id_is_bidi(buf: int) -> bool {
+    let n = iv_len(buf)
+    let mut k = 0
+    while k < n {
+        let c = iv_get(buf, k)
+        k += 1
+        if c < 1424 {
+            continue
+        }
+        if c >= 2304 && c <= 64284 {
+            continue
+        }
+        if c >= 126976 && c <= 262143 {
+            continue
+        }
+        if c >= 65280 && c <= 67583 {
+            continue
+        }
+        if c >= 69632 && c <= 124927 {
+            continue
+        }
+        if (id_rtl_mask() & id_bc_mask(icu_bidi_class(c))) != 0 {
+            return true
+        }
+    }
+    false
+}
+
+// Reglas bidi de cada etiqueta. true = error.
+fn id_bidi_rules(buf: int) -> bool {
+    let n = iv_len(buf)
+    let first_mask = id_bc_mask(0) | id_bc_mask(1) | id_bc_mask(13)
+    let last_ltr = id_bc_mask(0) | id_bc_mask(2)
+    let last_rtl = id_bc_mask(1) | id_bc_mask(13) | id_bc_mask(2) | id_bc_mask(5)
+    let middle_ltr = id_bc_mask(0) | id_bc_mask(2) | id_bc_mask(3) | id_bc_mask(6) | id_bc_mask(4) | id_bc_mask(10) | id_bc_mask(18) | id_bc_mask(17)
+    let middle_rtl = id_bc_mask(1) | id_bc_mask(13) | id_bc_mask(5) | (middle_ltr - id_bc_mask(0))
+    let mut a = 0
+    while a <= n {
+        let mut b = a
+        while b < n && iv_get(buf, b) != 46 {
+            b += 1
+        }
+        if b > a {
+            let first_bc = icu_bidi_class(iv_get(buf, a))
+            if (first_mask & id_bc_mask(first_bc)) == 0 {
+                return true
+            }
+            let is_ltr = first_bc == 0
+            // Se quitan del final las marcas sin espacio (NSM).
+            let mut end = b
+            while end > a + 1 && icu_bidi_class(iv_get(buf, end - 1)) == 17 {
+                end -= 1
+            }
+            if end > a + 1 {
+                let last_bc = icu_bidi_class(iv_get(buf, end - 1))
+                let mut lm = last_rtl
+                if is_ltr {
+                    lm = last_ltr
+                }
+                if (lm & id_bc_mask(last_bc)) == 0 {
+                    return true
+                }
+                if is_ltr {
+                    let mut k = a + 1
+                    while k < end - 1 {
+                        if (middle_ltr & id_bc_mask(icu_bidi_class(iv_get(buf, k)))) == 0 {
+                            return true
+                        }
+                        k += 1
+                    }
+                } else {
+                    // 0 sin decidir, 1 europeo, 2 árabe
+                    let mut state = 0
+                    let mut k = a + 1
+                    while k < end - 1 {
+                        let bc = icu_bidi_class(iv_get(buf, k))
+                        if (middle_rtl & id_bc_mask(bc)) == 0 {
+                            return true
+                        }
+                        if state == 0 {
+                            if bc == 2 {
+                                state = 1
+                            } else if bc == 5 {
+                                state = 2
+                            }
+                        } else if state == 1 && bc == 5 {
+                            return true
+                        } else if state == 2 && bc == 2 {
+                            return true
+                        }
+                        k += 1
+                    }
+                    if (state == 1 && last_bc == 5) || (state == 2 && last_bc == 2) {
+                        return true
+                    }
+                }
+            }
+        }
+        a = b + 1
+    }
+    false
+}
+
+// Tipos de unión (ICU4C): U 0, C 1, D 2, L 3, R 4, T 5.
+// has_appropriately_joining_char hacia atrás (desde k-1) o hacia delante.
+fn id_joining(buf: int, k0: int, lo: int, hi: int, step: int, left: bool) -> bool {
+    let mut k = k0
+    while k >= lo && k < hi {
+        let jt = icu_joining_type(iv_get(buf, k))
+        if jt == 2 {
+            return true
+        }
+        if left && jt == 3 {
+            return true
+        }
+        if !left && jt == 4 {
+            return true
+        }
+        if jt != 5 {
+            return false
+        }
+        k += step
+    }
+    false
+}
+
+// check_label (Hyphens::Allow) sobre buf[a..b). true = error.
+fn id_check_label(buf: int, a: int, b: int, first_mark: bool, contextj: bool) -> bool {
+    if first_mark && b > a && icu_is_mark(iv_get(buf, a)) {
+        return true
+    }
+    if contextj {
+        let mut k = a
+        while k < b {
+            let c = iv_get(buf, k)
+            if c == 8204 || c == 8205 {
+                if k == a {
+                    return true
+                }
+                if !icu_is_virama(iv_get(buf, k - 1)) {
+                    if c == 8205 {
+                        return true
+                    }
+                    if !id_joining(buf, k - 1, a, b, -1, true) || !id_joining(buf, k + 1, a, b, 1, false) {
+                        return true
+                    }
+                }
+            }
+            k += 1
+        }
+    }
+    let mut ascii = true
+    let mut k = a
+    while k < b {
+        if iv_get(buf, k) >= 128 {
+            ascii = false
+        }
+        k += 1
+    }
+    !ascii && b - a > 1000
+}
+
+// after_punycode_decode: normaliza y valida lo decodificado. true = error.
+fn id_after_decode(buf: int, start: int, label: int) -> bool {
+    let norm = icu_normalize_validate(label)
+    let n = iv_len(norm)
+    let mut k = 0
+    while k < n {
+        let c = id_deny_lower(iv_get(norm, k), true)
+        if c == 65533 {
+            iv_free(norm)
+            return true
+        }
+        iv_push(buf, c)
+        k += 1
+    }
+    iv_free(norm)
+    // Lo normalizado tiene que ser igual a lo decodificado (zip: hasta el
+    // más corto de los dos).
+    let m = iv_len(buf) - start
+    let ln = iv_len(label)
+    k = 0
+    while k < m && k < ln {
+        if iv_get(buf, start + k) != iv_get(label, k) {
+            return true
+        }
+        k += 1
+    }
+    false
+}
+
+// Tipos de etiqueta ya ASCII (AlreadyAsciiLabel): 0 Other,
+// 1 MixedCaseAscii, 2 MixedCasePunycode (con los bytes [a, b)).
+fn id_ap_push(ap: int, kind: int, a: int, b: int) {
+    iv_push(ap, kind)
+    iv_push(ap, a)
+    iv_push(ap, b)
+}
+
+// process_innermost (FailFast): -1 = error; si no, passthrough_up_to.
+fn id_innermost(s: any, tail: int, buf: int, ap: int) -> int {
+    let n = rt_slen(s)
+    let sp = std::raw::bits(s) + 16
+    let mut pt = tail
+    let mut seen = false
+    let mut in_prefix = true
+    let mut la = tail
+    while la <= n {
+        let mut lb = la
+        while lb < n && std::raw::load8(sp + lb) != 46 {
+            lb += 1
+        }
+        let next = lb + 1
+        if in_prefix && id_passthrough_label(sp, la, lb) {
+            if seen {
+                pt += 1
+            }
+            seen = true
+            pt += lb - la
+            la = next
+            continue
+        }
+        if seen && in_prefix {
+            pt += 1
+        }
+        if seen && !in_prefix {
+            iv_push(buf, 46)
+        }
+        seen = true
+        in_prefix = false
+        let mut cls = iv_len(buf)
+        if lb > la {
+            // split_ascii_fast_path_prefix
+            let mut pos = la
+            while pos < lb && std::raw::load8(sp + pos) < 128 {
+                pos += 1
+            }
+            let mut ascii_end = lb
+            let mut non_start = lb
+            if pos < lb {
+                if pos == la {
+                    ascii_end = la
+                    non_start = la
+                } else {
+                    ascii_end = pos - 1
+                    non_start = pos - 1
+                }
+            }
+            let mut non_punycode_ascii = false
+            if non_start == lb {
+                if id_puny_prefix(sp, la, ascii_end) {
+                    if std::raw::load8(sp + ascii_end - 1) != 45 && ascii_end - la - 4 <= 2000 {
+                        let src = iv_new(ascii_end - la)
+                        let mut k = la + 4
+                        while k < ascii_end {
+                            iv_push(src, std::raw::load8(sp + k))
+                            k += 1
+                        }
+                        let decoded = id_puny_decode(src, 0, iv_len(src), true)
+                        iv_free(src)
+                        if decoded == 0 {
+                            return -1
+                        }
+                        let bad = id_after_decode(buf, cls, decoded) || id_check_label(buf, cls, iv_len(buf), true, true)
+                        iv_free(decoded)
+                        if bad {
+                            return -1
+                        }
+                        id_ap_push(ap, 2, la, lb)
+                        la = next
+                        continue
+                    }
+                    return -1
+                }
+                non_punycode_ascii = true
+            }
+            let mut k = la
+            while k < ascii_end {
+                let c = id_deny_upper(std::raw::load8(sp + k))
+                if c == 65533 {
+                    return -1
+                }
+                iv_push(buf, c)
+                k += 1
+            }
+            if non_punycode_ascii {
+                id_ap_push(ap, 1, la, lb)
+                la = next
+                continue
+            }
+            id_ap_push(ap, 0, 0, 0)
+            let mut first_mark = ascii_end == la
+            let mut contextj = non_start < lb
+            let chars = id_chars(s, non_start, lb)
+            let mapped = icu_map_normalize(chars)
+            iv_free(chars)
+            let mn = iv_len(mapped)
+            let mut m = 0
+            while m <= mn {
+                let mut c = -1
+                if m < mn {
+                    c = id_deny_lower(iv_get(mapped, m), false)
+                }
+                m += 1
+                if c == -1 || c == 46 {
+                    if iv_len(buf) - cls >= 4 && iv_get(buf, cls) == 120 && iv_get(buf, cls + 1) == 110 && iv_get(buf, cls + 2) == 45 && iv_get(buf, cls + 3) == 45 {
+                        let mut q = cls + 4
+                        while q < iv_len(buf) {
+                            if iv_get(buf, q) >= 128 {
+                                iv_free(mapped)
+                                return -1
+                            }
+                            q += 1
+                        }
+                        if iv_get(buf, iv_len(buf) - 1) == 45 {
+                            iv_free(mapped)
+                            return -1
+                        }
+                        if iv_len(buf) - cls - 4 > 2000 {
+                            iv_free(mapped)
+                            return -1
+                        }
+                        let decoded = id_puny_decode(buf, cls + 4, iv_len(buf), false)
+                        if decoded == 0 {
+                            iv_free(mapped)
+                            return -1
+                        }
+                        first_mark = true
+                        contextj = true
+                        iv_trunc(buf, cls)
+                        let bad = id_after_decode(buf, cls, decoded)
+                        iv_free(decoded)
+                        if bad {
+                            iv_free(mapped)
+                            return -1
+                        }
+                    }
+                    if id_check_label(buf, cls, iv_len(buf), first_mark, contextj) {
+                        iv_free(mapped)
+                        return -1
+                    }
+                    if c == -1 {
+                        break
+                    }
+                    iv_push(buf, 46)
+                    cls = iv_len(buf)
+                    first_mark = true
+                    contextj = true
+                    id_ap_push(ap, 0, 0, 0)
+                } else {
+                    if c == 65533 {
+                        iv_free(mapped)
+                        return -1
+                    }
+                    iv_push(buf, c)
+                }
+            }
+            iv_free(mapped)
+        } else {
+            id_ap_push(ap, 1, la, lb)
+        }
+        la = next
+    }
+    if id_is_bidi(buf) && id_bidi_rules(buf) {
+        return -1
+    }
+    pt
+}
+
+// Escribe bytes [a, b) de s; con `lower`, en minúsculas ASCII.
+fn id_write(sb: int, sp: int, a: int, b: int, lower: bool) {
+    let mut k = a
+    while k < b {
+        let c = std::raw::load8(sp + k)
+        if lower && c >= 65 && c <= 90 {
+            sb_byte(sb, c + 32)
+        } else {
+            sb_byte(sb, c)
+        }
+        k += 1
+    }
+}
+
+// idna::domain_to_ascii_from_cow(dominio, AsciiDenyList::URL):
+// (true, dominio ASCII) o (false, "") si no es válido.
+fn id_domain_to_ascii_url(s: any) -> (bool, any) {
+    let n = rt_slen(s)
+    let sp = std::raw::bits(s) + 16
+    // process_inner: solo a-z y '.' → se devuelve tal cual.
+    let mut recent = 0
+    let mut k = 0
+    while k < n {
+        let c = std::raw::load8(sp + k)
+        if id_lower_az(c) {
+            k += 1
+            continue
+        }
+        if c == 46 {
+            k += 1
+            recent = k
+            continue
+        }
+        break
+    }
+    if k == n {
+        return (true, s)
+    }
+    let buf = iv_new(n + 8)
+    let ap = iv_new(24)
+    let pt = id_innermost(s, recent, buf, ap)
+    if pt < 0 {
+        iv_free(buf)
+        iv_free(ap)
+        return (false, "")
+    }
+    if pt == n {
+        iv_free(buf)
+        iv_free(ap)
+        return (true, s)
+    }
+    // process: se escribe el resultado etiqueta por etiqueta.
+    let sb = sb_new(n + 16)
+    let bn = iv_len(buf)
+    let mut seen = false
+    let mut flushed = false
+    let mut pte = pt
+    let mut idx = 0
+    let mut a = 0
+    while a <= bn {
+        let mut b = a
+        while b < bn && iv_get(buf, b) != 46 {
+            b += 1
+        }
+        let kind = iv_get(ap, 3 * idx)
+        let ka = iv_get(ap, 3 * idx + 1)
+        let kb = iv_get(ap, 3 * idx + 2)
+        idx += 1
+        if seen {
+            if flushed {
+                sb_byte(sb, 46)
+            } else {
+                pte += 1
+                if pte == n {
+                    sb_finish(sb)
+                    iv_free(buf)
+                    iv_free(ap)
+                    return (true, s)
+                }
+            }
+        }
+        seen = true
+        let mut ascii = true
+        let mut q = a
+        while q < b {
+            if iv_get(buf, q) >= 128 {
+                ascii = false
+            }
+            q += 1
+        }
+        if kind == 1 || (kind == 2 && !ascii) {
+            let mut fu = ka
+            while fu < kb && !(std::raw::load8(sp + fu) >= 65 && std::raw::load8(sp + fu) <= 90) {
+                fu += 1
+            }
+            if fu < kb {
+                if flushed {
+                    id_write(sb, sp, ka, fu, false)
+                } else {
+                    flushed = true
+                    pte += fu - ka
+                    id_write(sb, sp, 0, pte, false)
+                }
+                id_write(sb, sp, fu, kb, true)
+            } else if flushed {
+                id_write(sb, sp, ka, kb, false)
+            } else {
+                pte += kb - ka
+                if pte == n {
+                    sb_finish(sb)
+                    iv_free(buf)
+                    iv_free(ap)
+                    return (true, s)
+                }
+            }
+        } else if ascii {
+            if !flushed {
+                flushed = true
+                id_write(sb, sp, 0, pte, false)
+            }
+            q = a
+            while q < b {
+                sb_cp(sb, iv_get(buf, q))
+                q += 1
+            }
+        } else {
+            if !flushed {
+                flushed = true
+                id_write(sb, sp, 0, pte, false)
+            }
+            sb_str(sb, "xn--")
+            id_puny_encode(sb, buf, a, b)
+        }
+        a = b + 1
+    }
+    iv_free(buf)
+    iv_free(ap)
+    return (true, sb_finish(sb))
+}
