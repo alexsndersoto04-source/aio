@@ -9,6 +9,13 @@
 # compara también el código de salida (PSCI SYSTEM_OFF lo deja en x1); QEMU
 # no lo da, así que ahí solo cuenta la salida.
 #
+# Las pruebas de hardware (selfhost/tests/bare: tablas de páginas, vectores de
+# excepción, UART) no existen en la VM (tiene sistema operativo debajo): se
+# comparan con PROGRAMA.esperado (salida) y PROGRAMA.codigo (código de salida,
+# 0 si no está). Con PROGRAMA.solo-qemu la prueba necesita fallos de memoria
+# de verdad, que unicorn no entrega al programa: con unicorn se omite (y se
+# cuenta aparte).
+#
 # Uso: bash selfhost/native/bare/probar.sh [PROGRAMA.titan...]
 # Sin argumentos: las pruebas de selfhost/tests/native que no usan archivos,
 # procesos, red, reloj, azar ni entrada (sin sistema operativo no existen y
@@ -24,9 +31,10 @@ if [ $# -gt 0 ]; then
   FILES=("$@")
 else
   mapfile -t FILES < <(grep -L -E "std::(fs|process|net|env|os|path|http|tcp|udp|signal|term|dirs|time|thread|random|io|args|chan|sync|datetime|crypto|gui|window|image|audio|db|sql|compress|zip|tls|dns|mobile|password|uuid|freestanding_)|go |spawn" selfhost/tests/native/*.titan)
+  FILES+=(selfhost/tests/bare/*.titan)
 fi
 
-if [ ! -x selfhost/build_llvm ] || [ -n "$(find selfhost -name '*.titan' -newer selfhost/build_llvm | head -1)" ]; then
+if [ ! -x selfhost/build_llvm ] || [ -n "$(find selfhost -path selfhost/tests -prune -o -name '*.titan' -newer selfhost/build_llvm -print | head -1)" ]; then
   echo "compilando selfhost/build_llvm..."
   (cd selfhost && "$ZETT" run build.titan build_llvm.titan build_llvm) || exit 1
 fi
@@ -47,9 +55,14 @@ fi
 mkdir -p "$tmp/ll"
 ./selfhost/build_llvm --lote-bare "$tmp/ll" "${FILES[@]}"
 
-pass=0; fail=0; unsupported=0
+pass=0; fail=0; unsupported=0; skipped=0
 for f in "${FILES[@]}"; do
   base="$(basename "$f" .titan)"
+  if [ -f "${f%.titan}.solo-qemu" ] && [ "$CORRER" != qemu ]; then
+    skipped=$((skipped + 1))
+    echo "omitido (solo QEMU: fallos de memoria de verdad): $f"
+    continue
+  fi
   if [ ! -f "$tmp/ll/$base.ll" ]; then
     unsupported=$((unsupported + 1))
     echo "no admitido: $f: $(head -c 300 "$tmp/ll/$base.err" 2>/dev/null | tr '\n' ' ')"
@@ -62,7 +75,13 @@ for f in "${FILES[@]}"; do
     continue
   fi
   rm -f "$tmp/ll/$base.ll"
-  timeout 60 "$ZETT" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
+  if [ -f "${f%.titan}.esperado" ]; then
+    cp "${f%.titan}.esperado" "$tmp/vm.out"
+    vm=0
+    if [ -f "${f%.titan}.codigo" ]; then vm="$(tr -d ' \n' < "${f%.titan}.codigo")"; fi
+  else
+    timeout 60 "$ZETT" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
+  fi
   run "$tmp/prog.elf" > "$tmp/bare.out" 2> "$tmp/bare.err"; bare=$?
   same_code=1
   if [ "$CORRER" != qemu ] && [ "$vm" != "$bare" ]; then same_code=0; fi
@@ -81,5 +100,5 @@ for f in "${FILES[@]}"; do
     fi
   fi
 done
-echo "programas: ${#FILES[@]}  idénticos: $pass  distintos: $fail  no admitidos: $unsupported"
+echo "programas: ${#FILES[@]}  idénticos: $pass  distintos: $fail  no admitidos: $unsupported  omitidos: $skipped"
 [ "$fail" -eq 0 ] && [ "$unsupported" -eq 0 ]

@@ -1,19 +1,27 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub const PAGE_SIZE: u64 = 4096; // 0x1000 bytes
+pub const PAGE_SIZE: i64 = 4096; // 0x1000 bytes
 
 const MAX_ALLOCATED_FRAMES: usize = 16_384;
-const MAX_PAGE_MAPPINGS: usize = 16_384;
 
+/// Error for the operations that need the real hardware. They exist for
+/// real in programs built for the bare-metal target (`aarch64-none`), where
+/// the Titan runtime writes the CPU page tables, installs exception vectors
+/// and touches device registers. A hosted program (and this VM) runs on top
+/// of an operating system that owns all of that, so it gets this error
+/// instead of a simulated answer.
+pub const BARE_METAL_ONLY: &str = "requires a bare-metal program (build with target aarch64-none): a hosted program cannot use page tables, exception vectors or hardware registers";
+
+// Physical frame allocator: pure bookkeeping of page-sized address ranges,
+// the same in hosted and bare-metal programs.
 struct MemoryState {
     initialized: bool,
-    base_paddr: u64,
-    total_frames: u64,
-    allocated_frames: HashSet<u64>,
-    recycled_frames: Vec<u64>,
-    next_frame: u64,
-    page_table: HashMap<u64, (u64, u32)>, // vaddr -> (paddr, flags)
+    base_paddr: i64,
+    total_frames: i64,
+    allocated_frames: HashSet<i64>,
+    recycled_frames: Vec<i64>,
+    next_frame: i64,
 }
 
 impl MemoryState {
@@ -25,7 +33,6 @@ impl MemoryState {
             allocated_frames: HashSet::new(),
             recycled_frames: Vec::new(),
             next_frame: 0,
-            page_table: HashMap::new(),
         }
     }
 }
@@ -53,121 +60,104 @@ pub(crate) fn cleanup_runtime(runtime_id: u64) -> usize {
     )
 }
 
-pub fn init_frame_allocator(base_paddr: u64, total_size_bytes: u64) -> bool {
+/// Frames start at `base_paddr` rounded up to a page and every frame
+/// address must be a nonnegative Int.
+pub fn init_frame_allocator(base_paddr: i64, total_size_bytes: i64) -> Result<bool, String> {
+    if base_paddr < 0 {
+        return Err(format!(
+            "base address must be nonnegative, got {}",
+            base_paddr
+        ));
+    }
+    if total_size_bytes < 0 {
+        return Err(format!("size must be nonnegative, got {}", total_size_bytes));
+    }
     let Some(aligned_base) = base_paddr
         .checked_add(PAGE_SIZE - 1)
         .map(|address| address & !(PAGE_SIZE - 1))
     else {
-        return false;
+        return Ok(false);
     };
     let total_frames = total_size_bytes / PAGE_SIZE;
-    let Some(last_offset) = total_frames
-        .checked_sub(1)
-        .and_then(|frames| frames.checked_mul(PAGE_SIZE))
-    else {
-        return false;
+    if total_frames == 0 {
+        return Ok(false);
+    }
+    let Some(last_offset) = (total_frames - 1).checked_mul(PAGE_SIZE) else {
+        return Ok(false);
     };
     if aligned_base.checked_add(last_offset).is_none() {
+        return Ok(false);
+    }
+    let state = get_memory_state();
+    let mut state = crate::native::lock_recover(&state);
+    state.base_paddr = aligned_base;
+    state.total_frames = total_frames;
+    state.allocated_frames.clear();
+    state.recycled_frames.clear();
+    state.next_frame = 0;
+    state.initialized = true;
+    Ok(true)
+}
+
+pub fn allocate_frame() -> i64 {
+    let state = get_memory_state();
+    let mut state = crate::native::lock_recover(&state);
+    if !state.initialized || state.allocated_frames.len() >= MAX_ALLOCATED_FRAMES {
+        return 0;
+    }
+    let frame = if let Some(frame) = state.recycled_frames.pop() {
+        frame
+    } else if state.next_frame < state.total_frames {
+        let frame = state.base_paddr + state.next_frame * PAGE_SIZE;
+        state.next_frame += 1;
+        frame
+    } else {
+        return 0;
+    };
+    state.allocated_frames.insert(frame);
+    frame
+}
+
+pub fn deallocate_frame(paddr: i64) -> bool {
+    let state = get_memory_state();
+    let mut state = crate::native::lock_recover(&state);
+    if !state.initialized || paddr % PAGE_SIZE != 0 {
         return false;
     }
-
-    if let Ok(mut state) = get_memory_state().lock() {
-        state.base_paddr = aligned_base;
-        state.total_frames = total_frames;
-        state.allocated_frames.clear();
-        state.recycled_frames.clear();
-        state.next_frame = 0;
-        state.page_table.clear();
-        state.initialized = true;
-        true
-    } else {
-        false
-    }
-}
-
-pub fn allocate_frame() -> u64 {
-    if let Ok(mut state) = get_memory_state().lock() {
-        if !state.initialized || state.allocated_frames.len() >= MAX_ALLOCATED_FRAMES {
-            return 0;
-        }
-        let frame = if let Some(frame) = state.recycled_frames.pop() {
-            frame
-        } else if state.next_frame < state.total_frames {
-            let frame = state.base_paddr + state.next_frame * PAGE_SIZE;
-            state.next_frame += 1;
-            frame
-        } else {
-            return 0;
-        };
-        state.allocated_frames.insert(frame);
-        return frame;
-    }
-    0
-}
-
-pub fn deallocate_frame(paddr: u64) -> bool {
-    if let Ok(mut state) = get_memory_state().lock() {
-        if !state.initialized || !paddr.is_multiple_of(PAGE_SIZE) {
-            return false;
-        }
-        if state.allocated_frames.remove(&paddr) {
-            state.recycled_frames.push(paddr);
-            return true;
-        }
+    if state.allocated_frames.remove(&paddr) {
+        state.recycled_frames.push(paddr);
+        return true;
     }
     false
 }
 
-pub fn map_page(vaddr: u64, paddr: u64, flags: u32) -> bool {
-    if let Ok(mut state) = get_memory_state().lock() {
-        if !state.initialized
-            || !vaddr.is_multiple_of(PAGE_SIZE)
-            || !paddr.is_multiple_of(PAGE_SIZE)
-            || (!state.page_table.contains_key(&vaddr)
-                && state.page_table.len() >= MAX_PAGE_MAPPINGS)
-        {
-            return false;
-        }
-        state.page_table.insert(vaddr, (paddr, flags));
-        true
-    } else {
-        false
-    }
+/// Writes the CPU page tables: only in bare-metal programs.
+pub fn map_page(_vaddr: i64, _paddr: i64, _flags: i64) -> Result<bool, String> {
+    Err(BARE_METAL_ONLY.into())
 }
 
-pub fn translate_page(vaddr: u64) -> u64 {
-    if let Ok(state) = get_memory_state().lock() {
-        let aligned_vaddr = vaddr & !(PAGE_SIZE - 1);
-        if let Some(&(paddr, _flags)) = state.page_table.get(&aligned_vaddr) {
-            let offset = vaddr & (PAGE_SIZE - 1);
-            return paddr + offset;
-        }
-    }
-    0
+/// Walks the CPU page tables: only in bare-metal programs.
+pub fn translate_page(_vaddr: i64) -> Result<i64, String> {
+    Err(BARE_METAL_ONLY.into())
 }
 
-pub fn free_frames_count() -> u64 {
-    if let Ok(state) = get_memory_state().lock() {
-        if state.initialized {
-            return state
-                .total_frames
-                .saturating_sub(state.allocated_frames.len() as u64);
-        }
+pub fn free_frames_count() -> i64 {
+    let state = get_memory_state();
+    let state = crate::native::lock_recover(&state);
+    if state.initialized {
+        return (state.total_frames - state.allocated_frames.len() as i64).max(0);
     }
     0
 }
 
 pub fn shutdown() -> bool {
-    if let Ok(mut state) = get_memory_state().lock() {
-        state.recycled_frames.clear();
-        state.allocated_frames.clear();
-        state.page_table.clear();
-        state.next_frame = 0;
-        state.initialized = false;
-        true
-    } else {
-        false
-    }
+    let state = get_memory_state();
+    let mut state = crate::native::lock_recover(&state);
+    state.recycled_frames.clear();
+    state.allocated_frames.clear();
+    state.next_frame = 0;
+    state.initialized = false;
+    true
 }
 
 #[cfg(test)]
@@ -175,61 +165,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_bare_metal_paging_and_frame_allocator() {
-        assert!(init_frame_allocator(0x100000, 0x10000)); // 64KB = 16 frames de 4KB
-        assert_eq!(free_frames_count(), 16);
-
-        let frame1 = allocate_frame();
-        assert_eq!(frame1, 0x100000);
-        assert_eq!(free_frames_count(), 15);
-
-        let frame2 = allocate_frame();
-        assert_eq!(frame2, 0x101000);
-        assert_eq!(free_frames_count(), 14);
-
-        assert!(map_page(0x400000, frame1, 3)); // vaddr 0x400000 -> paddr 0x100000 (flags 3 = Present+RW)
-        assert_eq!(translate_page(0x400000), 0x100000);
-        assert_eq!(translate_page(0x400042), 0x100042); // verificar traducción con offset +0x42
-
-        assert!(deallocate_frame(frame1));
-        assert_eq!(free_frames_count(), 15);
-        assert!(shutdown());
-    }
-
-    #[test]
-    fn huge_modeled_regions_do_not_allocate_one_host_entry_per_frame() {
-        let runtime_id = 84_001;
+    fn test_frame_allocator_and_hosted_paging_error() {
+        let runtime_id = 84_000;
         crate::native::with_runtime_context(runtime_id, || {
-            let modeled_size = 1_u64 << 40;
-            assert!(init_frame_allocator(0x1000, modeled_size));
-            assert_eq!(free_frames_count(), modeled_size / PAGE_SIZE);
-            assert_eq!(allocate_frame(), 0x1000);
-            assert_eq!(allocate_frame(), 0x2000);
-            assert_eq!(free_frames_count(), modeled_size / PAGE_SIZE - 2);
-            assert!(!init_frame_allocator(u64::MAX - 100, PAGE_SIZE));
+            assert!(init_frame_allocator(0x100000, 0x10000).unwrap()); // 16 frames de 4 KiB
+            assert_eq!(free_frames_count(), 16);
+            let frame1 = allocate_frame();
+            assert_eq!(frame1, 0x100000);
+            assert_eq!(allocate_frame(), 0x101000);
+            assert_eq!(free_frames_count(), 14);
+            // Las tablas de páginas solo existen de verdad sin sistema operativo.
+            assert_eq!(map_page(0x400000, frame1, 3), Err(BARE_METAL_ONLY.into()));
+            assert_eq!(translate_page(0x400000), Err(BARE_METAL_ONLY.into()));
+            assert!(deallocate_frame(frame1));
+            assert!(!deallocate_frame(frame1));
+            assert!(!deallocate_frame(frame1 + 1));
+            assert_eq!(free_frames_count(), 15);
+            assert_eq!(allocate_frame(), frame1);
+            assert!(shutdown());
+            assert_eq!(free_frames_count(), 0);
+            assert_eq!(allocate_frame(), 0);
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }
+
     #[test]
-    fn active_frame_and_page_mapping_quotas_are_finite() {
-        let runtime_id = 85_008;
+    fn frame_allocator_limits_and_invalid_arguments() {
+        let runtime_id = 84_001;
         crate::native::with_runtime_context(runtime_id, || {
-            let modeled_frames = (MAX_ALLOCATED_FRAMES + 1) as u64;
-            assert!(init_frame_allocator(0x1000, modeled_frames * PAGE_SIZE));
+            let modeled_size = 1_i64 << 40;
+            assert!(init_frame_allocator(0x1000, modeled_size).unwrap());
+            assert_eq!(free_frames_count(), modeled_size / PAGE_SIZE);
+            assert_eq!(allocate_frame(), 0x1000);
+            assert!(!init_frame_allocator(i64::MAX - 100, PAGE_SIZE).unwrap());
+            assert!(!init_frame_allocator(0, PAGE_SIZE - 1).unwrap());
+            assert!(!init_frame_allocator(i64::MAX - 2 * PAGE_SIZE, 4 * PAGE_SIZE).unwrap());
+            assert!(init_frame_allocator(-1, PAGE_SIZE).is_err());
+            assert!(init_frame_allocator(0, -1).is_err());
+
+            let frames = (MAX_ALLOCATED_FRAMES + 1) as i64;
+            assert!(init_frame_allocator(0x1000, frames * PAGE_SIZE).unwrap());
             let first = allocate_frame();
-            assert_eq!(first, 0x1000);
             for _ in 1..MAX_ALLOCATED_FRAMES {
                 assert_ne!(allocate_frame(), 0);
             }
             assert_eq!(allocate_frame(), 0);
             assert!(deallocate_frame(first));
             assert_eq!(allocate_frame(), first);
-
-            for page in 0..MAX_PAGE_MAPPINGS {
-                assert!(map_page(0x1_0000_0000 + page as u64 * PAGE_SIZE, 0x1000, 3));
-            }
-            assert!(!map_page(0x2_0000_0000, 0x1000, 3));
-            assert!(map_page(0x1_0000_0000, 0x2000, 3));
         });
         assert_eq!(cleanup_runtime(runtime_id), 1);
     }

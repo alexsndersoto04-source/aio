@@ -25,6 +25,7 @@ import std_regex_nfa
 import std_regex_run
 import std_router
 import std_freestanding
+import std_freestanding_hw
 import std_rsa
 import std_jwt
 import std_libm
@@ -160,7 +161,9 @@ fn rt_alloc(size: int) -> int {
 // std::regex: globals + 2816 caché de expresiones compiladas (std_regex_run),
 // + 2824 tabla de plegado de mayúsculas, + 2832.. tablas Unicode ya unidas
 // (std_regex_tab, generado por gen_tab.py).
-// std::router: globals + 2960 registro de routers (std_router). Libre hasta + 3584.
+// std::router: globals + 2960 registro de routers (std_router).
+// + 3000..3016 montón y objetivo sin sistema; + 3024..3064 hardware sin
+// sistema (std_freestanding_hw). Libre hasta + 3584.
 fn rt_big_head(k: int) -> int {
     std::raw::globals() + 2688 + 8 * (k - 13)
 }

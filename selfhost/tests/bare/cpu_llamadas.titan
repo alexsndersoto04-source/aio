@@ -1,0 +1,64 @@
+// std::freestanding_cpu sin sistema operativo: la tabla de vectores de verdad
+// (copiada a la dirección pedida y puesta en VBAR_EL1) y llamadas al sistema
+// de verdad (`svc #0`) atendidas por funciones Titan.
+
+fn sumar(a: int, b: int, c: int) -> int {
+    a + b + c
+}
+
+fn main() {
+    // Antes de init_exception_table no hay manejadores.
+    print(std::freestanding_cpu::invoke_syscall(1, 2, 3, 4))
+    print(std::freestanding_cpu::register_syscall_handler(1, sumar))
+    // VBAR_EL1 exige 2 KiB de alineación.
+    print(std::freestanding_cpu::init_exception_table(1024))
+    print(std::freestanding_cpu::init_exception_table(0))
+    print(std::freestanding_cpu::init_exception_table(1074792448 + 1024))
+    print(std::freestanding_cpu::init_exception_table(1074792448))
+    let base = 100
+    print(std::freestanding_cpu::register_syscall_handler(7, |a: int, b: int, c: int| a * b + c + base))
+    print(std::freestanding_cpu::register_syscall_handler(8, sumar))
+    print(std::freestanding_cpu::register_syscall_handler(9, |a: int| a))
+    print(std::freestanding_cpu::register_syscall_handler(-1, sumar))
+    print(std::freestanding_cpu::register_syscall_handler(4294967296, sumar))
+    print(std::freestanding_cpu::register_syscall_handler(10, 5))
+    print(std::freestanding_cpu::invoke_syscall(7, 6, 7, 8))
+    print(std::freestanding_cpu::invoke_syscall(8, 10, 20, 30))
+    print(std::freestanding_cpu::invoke_syscall(8, -5, 0, 1))
+    // Sin manejador: -ENOSYS.
+    print(std::freestanding_cpu::invoke_syscall(99, 1, 1, 1))
+    // Reemplazar un manejador.
+    print(std::freestanding_cpu::register_syscall_handler(8, |a: int, b: int, c: int| a - b - c))
+    print(std::freestanding_cpu::invoke_syscall(8, 10, 20, 30))
+    let mut i = 0
+    let mut total = 0
+    while i < 50 {
+        total += std::freestanding_cpu::invoke_syscall(7, i, 2, 0)
+        i += 1
+    }
+    print(total)
+    // Manejadores de excepción: vectores 0-3 (síncrona, IRQ, FIQ, SError).
+    print(std::freestanding_cpu::register_exception_handler(0, |far: int, esr: int| far + esr))
+    print(std::freestanding_cpu::register_exception_handler(4, |far: int, esr: int| 1))
+    print(std::freestanding_cpu::register_exception_handler(1, |far: int| far))
+    print(std::freestanding_cpu::dispatch_exception(0, 4096, 37))
+    print(std::freestanding_cpu::get_last_fault_addr())
+    print(std::freestanding_cpu::dispatch_exception(3, 77, 1))
+    print(std::freestanding_cpu::get_last_fault_addr())
+    print(std::freestanding_cpu::dispatch_exception(9, 5, 1))
+    // Volver a iniciar borra los manejadores.
+    print(std::freestanding_cpu::init_exception_table(1074794496))
+    print(std::freestanding_cpu::invoke_syscall(7, 1, 1, 1))
+    print(std::freestanding_cpu::dispatch_exception(0, 1, 1))
+    print(std::freestanding_cpu::register_syscall_handler(3, sumar))
+    print(std::freestanding_cpu::invoke_syscall(3, 1, 2, 3))
+    print(std::freestanding_cpu::shutdown())
+    print(std::freestanding_cpu::invoke_syscall(3, 1, 2, 3))
+    print(std::freestanding_cpu::get_last_fault_addr())
+    print(std::freestanding_cpu::register_syscall_handler(3, sumar))
+    // Errores del manejador: el tipo del resultado se comprueba.
+    print(std::freestanding_cpu::init_exception_table(1074792448))
+    print(std::freestanding_cpu::register_syscall_handler(5, |a: int, b: int, c: int| "texto"))
+    print(std::freestanding_cpu::invoke_syscall(5, 0, 0, 0))
+    print("no llega")
+}

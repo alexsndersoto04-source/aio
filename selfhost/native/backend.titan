@@ -671,6 +671,13 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         }
         return pc_add(p, x_push_i(0))
     }
+    if name == "std::raw::svc" {
+        // Solo ARM64 (el runtime la usa con std::raw::bare() == 1): ud2.
+        p = pc_add(p, [15, 11])
+        p = pc_add(p, x_add_ri(rsp, 96))
+        p = pc_add(p, x_store_i(rsp, 8, 0))
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
     if name == "std::raw::bare" {
         p = pc_add(p, x_push_i(0))
         return pc_add(p, x_push_i(1))

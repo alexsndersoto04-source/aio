@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 402 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 423 / 816 nativas (`selfhost/native/cobertura.sh`) |
 | L | **Backend LLVM** en Titan: bytecode → LLVM IR → clang/llc (LLVM real) (`selfhost/native/llvm.titan`, `selfhost/build_llvm.titan`) | ✅ x86-64: 241 / 241 idénticos a la VM con -O2 (LLVM 22 local y clang 18 en la CI) · ✅ punto fijo por LLVM (`native/llvm/punto_fijo.sh`; el compilador hecho por LLVM es ~5× más rápido) · ✅ ARM64 (AArch64): 241 / 241 idénticos en una máquina ARM64 real (CI `ubuntu-24.04-arm`, contra la VM de Rust compilada para ARM64) |
 | O | **Optimizador propio** en Titan, estilo `opt` de LLVM, sobre el bytecode (la representación intermedia de Titan) (`selfhost/opt.titan`): cálculo de constantes, saltos encadenados, valores descartados, código inalcanzable. Lo usan los dos backends | ✅ en marcha: el compilador pasa de 74 550 a 69 358 instrucciones (−7 %); punto fijo propio y por LLVM ✅; `selfhost/opt_ver.titan ARCHIVO [--dump]` muestra el antes/después; `TITAN_OPT=0` lo apaga. Integración de funciones pequeñas (inlining) hecha y probada, cuenta la profundidad de llamadas igual que una llamada real; va apagada salvo con `TITAN_INLINE=1` porque medida sobre el compilador no lo acelera (ni con el backend propio ni con LLVM) y agranda el ejecutable |
 | M | **Memoria del runtime**: medido con un perfilador por muestreo propio (`selfhost/native/perfil.py`, sin perf), el compilador pasaba casi la mitad del tiempo pidiendo y devolviendo bloques grandes al sistema. Ahora esos bloques se reutilizan (listas por tamaño, potencias de 2) | ✅ compilador hecho por LLVM: 6,5 s → 4,3 s (−34 %); con el backend propio: 41,4 s → 31,0 s (−25 %); misma salida byte a byte; puntos fijos ✅; prueba `memoria_grande.titan` |
@@ -432,13 +432,60 @@ Defectos reales de la versión en Rust encontrados al hacer de verdad
   x86-64 (`maxsd`) y en ARM64 (`fmaxnm`), el mismo programa daba otro
   resultado según la máquina. Ahora -0 < +0 (IEEE 754-2019) en todas.
 
-Pendiente (siguiente paso): `std::freestanding_memory` (`map_page`,
-`translate_page`), `std::freestanding_cpu` (`dispatch_exception` devuelve
-`manejador ^ dirección ^ código` e `invoke_syscall` suma los argumentos, con
-el comentario "Simular respuesta" en el propio código) y
-`std::freestanding_mmio` todavía son simulaciones en Rust; se harán de verdad
-sobre el objetivo `aarch64-none` (tablas de páginas reales, vectores de
-excepción que llaman a código Titan, MMIO volátil y el UART real).
+`std::freestanding_memory` (7), `std::freestanding_cpu` (7) y
+`std::freestanding_mmio` (7) — `std_freestanding_hw.titan` — ya son de verdad
+(eran simulaciones en Rust: `dispatch_exception` devolvía
+`manejador ^ dirección ^ código`, `invoke_syscall` sumaba los argumentos con el
+comentario "Simular respuesta", `map_page` guardaba un `HashMap`, los
+registros MMIO eran otro `HashMap`). Ahora, en un programa sin sistema
+operativo (`aarch64-none`):
+- `map_page` escribe las tablas de páginas del procesador (TTBR0_EL1, 4 KiB,
+  39 bits): recorre niveles 1-3, parte bloques de 1 GiB / 2 MiB en tablas
+  nuevas con los mismos atributos, escribe la entrada (AF, SH, AttrIdx normal
+  o dispositivo con el flag 8, AP solo lectura sin el flag 1, EL0 con el 4,
+  PXN/UXN sin el 2) e invalida la TLB. `translate_page` recorre las tablas de
+  verdad (bloques incluidos).
+- La tabla de vectores es real (`lv_vectors` en `llvm.titan`: 16 entradas de
+  128 bytes; guardan x0-x30, ELR, SPSR y q0-q31 en un marco de 800 bytes y
+  vuelven con `eret`). El arranque la pone en VBAR_EL1 desde el principio: un
+  fallo del programa da `unhandled CPU exception (vector N): ESR=… [FAR=…]
+  ELR=…` en vez de colgar la máquina. `init_exception_table` la copia a la
+  dirección pedida (caché de datos a memoria, caché de instrucciones
+  invalidada) y la pone en VBAR_EL1. Las excepciones llaman a las funciones
+  Titan registradas (closures, con capturas): `manejador(far, esr)` distinto
+  de 0 salta la instrucción; `invoke_syscall` ejecuta `svc #0` de verdad (x8 =
+  número) y `manejador(a0, a1, a2)` deja el resultado en x0 (-38 si no hay).
+  Las IRQ siguen enmascaradas.
+- `read/write_mmio_u32`: accesos volátiles de 32 bits (región registrada,
+  alineados a 4; si el acceso falla y un manejador lo salta, dicen que
+  falló). `serial_init` programa un PL011 de verdad (reloj de 24 MHz: IBRD,
+  FBRD, 8 bits con FIFO, TX/RX); `serial_write_str` espera a que haya sitio
+  (FR.TXFF) y escribe en DR; el búfer guarda los bytes exactos.
+Con sistema operativo (Linux y la VM de Rust) lo que toca el hardware da el
+error honesto `requires a bare-metal program (build with target
+aarch64-none): …` (el sistema es el dueño de las tablas, los vectores y los
+registros; la VM no puede llamar a closures desde una nativa); el reparto de
+marcos y la lista de regiones funcionan igual en los dos. Pruebas:
+`tests/bare/cpu_llamadas`, `memoria_paginas` (lo escrito por la dirección
+virtual nueva se lee por la física del marco), `uart`, y `memoria_fallos`
+(solo QEMU: escribir en solo lectura y leer sin mapear dan un *data abort*
+real que atiende un manejador Titan; en unicorn se comprobó que el fallo
+ocurre justo ahí, pero unicorn no lo entrega al programa);
+`tests/native/freestanding_hw_hosted` (idéntico con el backend propio y con
+LLVM). `native/bare/correr.py` hace la entrada a excepción de la arquitectura
+para `svc`/`brk`/instrucción no definida (unicorn no la hace) y guarda los
+registros de control del PL011.
+
+Defectos reales de la versión en Rust encontrados aquí y corregidos:
+- La tabla de vectores se aceptaba alineada a 1 KiB; VBAR_EL1 exige 2 KiB
+  (bits 10:0 a cero). Ahora 2048.
+- El búfer del UART convertía cada byte en un carácter latin-1: "ñ" salía
+  "Ã±". Ahora son los bytes exactos (leídos como UTF-8, U+FFFD si no vale).
+- La VM truncaba en silencio a 32 bits el vector, los flags, el número de
+  llamada, el valor MMIO y los baudios (`as u32`: el vector 4294967296 era el
+  0) y convertía direcciones negativas en enormes (`as u64`). Ahora las
+  direcciones y tamaños negativos son un error y los valores fuera de rango
+  dan `false`.
 
 Defecto real de la versión en Rust encontrado con std::router y corregido en
 las dos versiones: una ruta con 26 o más parámetros hacía `panic!` dentro de

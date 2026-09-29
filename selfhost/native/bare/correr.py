@@ -11,6 +11,13 @@ Máquina (la misma disposición que "virt" de QEMU):
     estándar / lee de --entrada; FR (+0x18) dice TXFF=0 y RXFE según quede
     entrada;
   - PSCI por hvc #0: SYSTEM_OFF (0x84000008) termina con el código de x1.
+Unicorn no hace la entrada a excepción de la arquitectura (se la pasa a este
+programa), así que aquí se hace como el procesador para las excepciones
+síncronas cuyo ESR sale entero de la instrucción: svc, brk e instrucción no
+definida (Arm ARM, D1.10): SPSR_EL1 = PSTATE, ELR_EL1 = dirección de vuelta,
+ESR_EL1 = clase | IL | imm16, PSTATE a EL1h con DAIF enmascarado y salto a
+VBAR_EL1 + 0x000/0x200/0x400. Las demás (accesos que fallan: el FAR y el ESR
+los tiene unicorn por dentro) paran con un mensaje; QEMU las hace de verdad.
 El código de salida del proceso es el que el programa dejó en x1.
 """
 import struct
@@ -19,10 +26,35 @@ import sys
 from unicorn import (Uc, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_INTR,
                      UC_PROT_ALL, UC_TLB_CPU, UcError)
 from unicorn.arm64_const import (UC_ARM64_REG_X0, UC_ARM64_REG_X1,
-                                 UC_ARM64_REG_PC)
+                                 UC_ARM64_REG_PC, UC_ARM64_REG_PSTATE,
+                                 UC_ARM64_REG_ELR_EL1, UC_ARM64_REG_ESR_EL1,
+                                 UC_ARM64_REG_VBAR_EL1)
 
 RAM, RAM_SIZE = 0x40000000, 0x40000000
 UART = 0x09000000
+
+# Números de excepción de unicorn/QEMU (target/arm/cpu.h): EXCP_UDEF = 1,
+# EXCP_SWI = 2, EXCP_BKPT = 7.  Clase de ESR (EC): 0x00 desconocida,
+# 0x15 svc de AArch64, 0x3C brk de AArch64.
+EXCP_UDEF, EXCP_SWI, EXCP_BKPT = 1, 2, 7
+
+
+def entrar_excepcion(uc, ec, iss, vuelta):
+    """Entrada a una excepción síncrona tomada en EL1 (o desde EL0)."""
+    pstate = uc.reg_read(UC_ARM64_REG_PSTATE)
+    vbar = uc.reg_read(UC_ARM64_REG_VBAR_EL1)
+    uc.cpr_write(3, 0, 4, 0, 0, pstate)          # SPSR_EL1
+    uc.reg_write(UC_ARM64_REG_ELR_EL1, vuelta)
+    uc.reg_write(UC_ARM64_REG_ESR_EL1, (ec << 26) | (1 << 25) | iss)
+    el = (pstate >> 2) & 3
+    if el == 0:
+        desplazamiento = 0x400
+    elif pstate & 1:
+        desplazamiento = 0x200
+    else:
+        desplazamiento = 0x000
+    uc.reg_write(UC_ARM64_REG_PSTATE, (pstate & ~0xF) | 0x3C0 | 0x5)
+    uc.reg_write(UC_ARM64_REG_PC, vbar + desplazamiento)
 
 
 def main():
@@ -67,6 +99,10 @@ def main():
 
     salida = sys.stdout.buffer
     estado = {"pos": 0, "codigo": None}
+    # Registros de control del PL011 (IBRD +0x24, FBRD +0x28, LCRH +0x2C,
+    # CR +0x30, IMSC +0x38): se leen como se escribieron (valores de
+    # reinicio del manual del PL011: CR = 0x300, los demás 0).
+    registros = {0x24: 0, 0x28: 0, 0x2C: 0, 0x30: 0x300, 0x38: 0}
 
     def uart_leer(uc, offset, size, user):
         if offset == 0x18:  # FR: TXFF (bit 5) nunca; RXFE (bit 4) si no queda entrada
@@ -77,11 +113,13 @@ def main():
                 estado["pos"] += 1
                 return c
             return 0
-        return 0
+        return registros.get(offset, 0)
 
     def uart_escribir(uc, offset, size, value, user):
         if offset == 0x00:
             salida.write(bytes([value & 0xFF]))
+        elif offset in registros:
+            registros[offset] = value & 0xFFFF
 
     uc.mmio_map(UART, 0x1000, uart_leer, None, uart_escribir, None)
 
@@ -95,6 +133,17 @@ def main():
         if es_hvc and x0 == 0x84000008:  # PSCI SYSTEM_OFF
             estado["codigo"] = uc.reg_read(UC_ARM64_REG_X1) & 0xFF
             uc.emu_stop()
+            return
+        instr = struct.unpack("<I", uc.mem_read(pc - 4, 4))[0]
+        if intno == EXCP_SWI and (instr & 0xFFE0001F) == 0xD4000001:
+            entrar_excepcion(uc, 0x15, (instr >> 5) & 0xFFFF, pc)
+            return
+        instr = struct.unpack("<I", uc.mem_read(pc, 4))[0]
+        if intno == EXCP_BKPT and (instr & 0xFFE0001F) == 0xD4200000:
+            entrar_excepcion(uc, 0x3C, (instr >> 5) & 0xFFFF, pc)
+            return
+        if intno == EXCP_UDEF and not es_hvc:
+            entrar_excepcion(uc, 0x00, 0, pc)
             return
         print("\n[correr.py] excepción %d en pc=%#x (x0=%#x)" % (intno, pc, x0),
               file=sys.stderr)

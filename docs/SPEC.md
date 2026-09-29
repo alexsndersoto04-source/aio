@@ -584,15 +584,21 @@ with `native function 'f' requires capability 'C'` when it is denied.
 text, encoding, JSON, collections, math, statistics — keeps working; anything touching the
 outside world does not.
 
-### 13.4 Modules that are simulations, not OS integration
+### 13.4 Bare-metal modules and simulations
 
-Two families are in-process **emulators** and are documented as such so their names are not
-mistaken for hardware or platform bindings:
+`std::freestanding_cpu`, `std::freestanding_memory` and `std::freestanding_mmio` are real
+only in programs built for the bare-metal target (`aarch64-none`, native compiler): there
+`map_page`/`translate_page` write and walk the CPU page tables, `init_exception_table`
+installs a real AArch64 vector table (VBAR_EL1, 2 KiB aligned) whose exceptions call the
+Titan closures registered as handlers, `invoke_syscall` executes `svc #0`, and MMIO/UART
+functions do volatile 32-bit accesses and program a PL011. In hosted programs (and this VM)
+those operations fail with `requires a bare-metal program (build with target aarch64-none): …`;
+the frame allocator and the MMIO region list are bookkeeping and work everywhere.
+`std::freestanding` generates real linker scripts and startup code.
 
-- `std::freestanding`, `std::freestanding_cpu`, `std::freestanding_memory`,
-  `std::freestanding_mmio` — a bare-metal *model*: frame allocator, page mapping, exception
-  table, and MMIO registers kept in host data structures. They generate linker scripts and
-  startup assembly as text; they do not execute privileged instructions.
+One family is an in-process **emulator** and is documented as such so its name is not
+mistaken for a platform binding:
+
 - `std::mobile` — an application-lifecycle state machine (`Running`, `Paused`, `Stopped`,
   `Destroyed`) with an event history. It is not bound to the Android activity lifecycle.
 
@@ -792,7 +798,7 @@ against a remote works fully offline, and local path dependencies need no regist
 | Entry point | `main` takes no parameters | `entry point 'main' must take no parameters` |
 | Keywords | `as` and `unsafe` are reserved with no grammar | parse error |
 | WebAssembly | See [§16.2](#162-rejected-by-the-webassembly-backend) | `unsupported WebAssembly operation: …` |
-| Stdlib | `std::freestanding` generates real linker scripts and `_start` code (GNU ld / ld.lld formats; unknown targets are errors); `std::freestanding_memory`, `std::freestanding_cpu`, `std::freestanding_mmio` and `std::mobile` are still in-process simulations | `unsupported freestanding target '…'` |
+| Stdlib | `std::freestanding` generates real linker scripts and `_start` code (GNU ld / ld.lld formats; unknown targets are errors); `std::freestanding_memory`, `std::freestanding_cpu`, `std::freestanding_mmio` are real on `aarch64-none` and an error when hosted; `std::mobile` is still an in-process simulation | `unsupported freestanding target '…'` |
 | Packages | The default registry host `registry.titan-lang.org` is a CLI default; local packing, signing, verification and path dependencies work offline | — |
 
 ---

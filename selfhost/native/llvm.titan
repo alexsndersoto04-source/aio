@@ -708,18 +708,22 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_put(b1, res, "1", id + "sb")
     } else if name == "std::raw::svc" {
         if ctx.target != "aarch64" {
-            return lv_e(lv_err(b1, "'std::raw::svc' is only available on aarch64"), "  unreachable")
-        }
-        let mut a = ""
-        k = 0
-        while k < 7 {
-            if k > 0 {
-                a += ", "
+            // Solo existe en ARM64: aquí es una trampa (el runtime la usa
+            // únicamente con std::raw::bare() == 1).
+            b1 = lv_e(b1, "  call void @llvm.trap()")
+            b1 = lv_e(b1, "  " + id + "v = add i64 0, 0")
+        } else {
+            let mut a = ""
+            k = 0
+            while k < 7 {
+                if k > 0 {
+                    a += ", "
+                }
+                a += "i64 " + id + "a{k}b"
+                k += 1
             }
-            a += "i64 " + id + "a{k}b"
-            k += 1
+            b1 = lv_e(b1, "  " + id + "v = call i64 @lv_svc(" + a + ")")
         }
-        b1 = lv_e(b1, "  " + id + "v = call i64 @lv_svc(" + a + ")")
         b1 = lv_put(b1, res, "1", id + "v")
     } else if name == "std::raw::syscall" {
         let mut a = ""
@@ -1486,7 +1490,7 @@ fn lv_glue(ctx: LvCtx) -> array {
         // lv_start: globales, pila propia de 1 GiB (reservada) y lv_main en ella.
         l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_syscall(i64 9, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov $0, %rsp\\0A\\09call lv_main\\0A\\09ud2\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
     } else if ctx.bare {
-        l = std::array::concat(l, lv_bare_prologue())
+        l = std::array::concat(l, lv_bare_prologue(lv_rt(ctx, "rt_bare_exception")))
     } else {
         // AArch64: número en x8, argumentos en x0-x5, resultado en x0.
         let cons = "\"=" + lv_br("x0") + "," + lv_br("x8") + "," + lv_br("x0") + "," + lv_br("x1") + "," + lv_br("x2") + "," + lv_br("x3") + "," + lv_br("x4") + "," + lv_br("x5") + ",~" + lv_br("memory") + "\""
@@ -1510,6 +1514,9 @@ fn lv_glue(ctx: LvCtx) -> array {
 //   9 ttbr0_el1       10 tcr_el1        11 mair_el1 12 cpacr_el1
 //   13 daif           14 currentel (L)
 //   set_sysreg(100, _): invalida la TLB (tras cambiar tablas de páginas).
+//   set_sysreg(101, dirección): lleva a memoria la línea de caché de datos
+//   (dc cvau); set_sysreg(102, _): invalida la caché de instrucciones (tras
+//   escribir código, p. ej. la tabla de vectores copiada).
 fn lv_sysreg_names() -> array {
     ["", "cntvct_el0", "cntfrq_el0", "vbar_el1", "esr_el1", "far_el1", "elr_el1", "spsr_el1", "sctlr_el1", "ttbr0_el1", "tcr_el1", "mair_el1", "cpacr_el1", "daif", "currentel"]
 }
@@ -1537,7 +1544,7 @@ fn lv_sysreg_helpers(arch: string) -> array {
         k += 1
     }
     rd += " ]\n"
-    wr += " i64 100, label %tlb ]\n"
+    wr += " i64 100, label %tlb i64 101, label %dc i64 102, label %ic ]\n"
     k = 1
     while k < len(names) {
         let n = names[k]
@@ -1549,6 +1556,8 @@ fn lv_sysreg_helpers(arch: string) -> array {
     }
     rd += "bad:\n  call void @llvm.trap()\n  unreachable\n"
     wr += "tlb:\n  call void asm sideeffect \"dsb ishst\\0Atlbi vmalle1is\\0Adsb ish\\0Aisb\", \"~" + lv_br("memory") + "\"()\n  ret void\n"
+    wr += "dc:\n  call void asm sideeffect \"dc cvau, $0\", \"r,~" + lv_br("memory") + "\"(i64 %v)\n  ret void\n"
+    wr += "ic:\n  call void asm sideeffect \"dsb ish\\0Aic iallu\\0Adsb ish\\0Aisb\", \"~" + lv_br("memory") + "\"()\n  ret void\n"
     wr += "bad:\n  call void @llvm.trap()\n  unreachable\n"
     l = std::array::push(l, "define internal i64 @lv_sysreg(i64 %k) noinline " + lv_br(rd))
     l = std::array::push(l, "define internal void @lv_set_sysreg(i64 %k, i64 %v) noinline " + lv_br(wr))
@@ -1570,7 +1579,7 @@ fn lv_sysreg_helpers(arch: string) -> array {
 // desconocido) y
 // sigue en lv_bare_init: argumentos vacíos, zona de memoria desde
 // __kernel_end hasta 0x80000000 (globals + 3000 / + 3008) y lv_main.
-fn lv_bare_prologue() -> array {
+fn lv_bare_prologue(exc: string) -> array {
     let mut l = []
     for line in std::text::lines(std::freestanding::generate_startup_asm("aarch64-unknown-none", "lv_bare_start")) {
         if std::text::length(line) > 0 {
@@ -1592,14 +1601,77 @@ fn lv_bare_prologue() -> array {
         "  tlbi vmalle1", "  dsb sy", "  isb",
         "  movz x1, #0x1805", "  movk x1, #0x30d0, lsl #16",
         "  msr sctlr_el1, x1", "  isb",
+        "  adrp x0, lv_vectors", "  add x0, x0, :lo12:lv_vectors", "  msr vbar_el1, x0", "  isb",
         "  b lv_bare_init",
         ".bss", ".balign 4096", "lv_bare_l1:", "  .space 4096", ".text"]
     for line in asm {
         l = std::array::push(l, "module asm \"" + line + "\"")
     }
+    // svc #0 (lo usa std::freestanding_cpu::invoke_syscall: trampa de verdad
+    // hacia la tabla de vectores).
+    let cons = "\"=" + lv_br("x0") + "," + lv_br("x8") + "," + lv_br("x0") + "," + lv_br("x1") + "," + lv_br("x2") + "," + lv_br("x3") + "," + lv_br("x4") + "," + lv_br("x5") + ",~" + lv_br("memory") + "\""
+    l = std::array::push(l, "define internal i64 @lv_svc(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f) noinline " + lv_br("\n  %r = call i64 asm sideeffect \"svc #0\", " + cons + "(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f)\n  ret i64 %r\n"))
+    for line in lv_bare_vectors() {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    // lv_exception: la tabla de vectores llega aquí (convención de C) y pasa
+    // al runtime en Titan, que devuelve la dirección donde seguir.
+    l = std::array::push(l, "define i64 @lv_exception(i64 %k, i64 %esr, i64 %far, i64 %elr, i64 %fr) noinline " + lv_br("\n  %r = call fastcc %V @" + exc + "(i64 0, i64 1, i64 %k, i64 1, i64 %esr, i64 1, i64 %far, i64 1, i64 %elr, i64 1, i64 %fr)\n  %v = extractvalue %V %r, 1\n  ret i64 %v\n"))
     l = std::array::push(l, "@lv_bare_args = internal global [4 x i64] zeroinitializer, align 16")
     l = std::array::push(l, "@__kernel_end = external global i8")
-    l = std::array::push(l, "define void @lv_bare_init() noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 ptrtoint (ptr @lv_bare_args to i64), ptr %g\n  %e = ptrtoint ptr @__kernel_end to i64\n  %e1 = add i64 %e, 4095\n  %e2 = and i64 %e1, -4096\n  %h = getelementptr i8, ptr @G, i64 3000\n  store i64 %e2, ptr %h\n  %he = getelementptr i8, ptr @G, i64 3008\n  store i64 2147483648, ptr %he\n  call void @lv_main()\n  unreachable\n"))
+    l = std::array::push(l, "@lv_vectors = external global i8")
+    l = std::array::push(l, "define void @lv_bare_init() noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 ptrtoint (ptr @lv_bare_args to i64), ptr %g\n  %e = ptrtoint ptr @__kernel_end to i64\n  %e1 = add i64 %e, 4095\n  %e2 = and i64 %e1, -4096\n  %h = getelementptr i8, ptr @G, i64 3000\n  store i64 %e2, ptr %h\n  %he = getelementptr i8, ptr @G, i64 3008\n  store i64 2147483648, ptr %he\n  %vt = getelementptr i8, ptr @G, i64 3024\n  store i64 ptrtoint (ptr @lv_vectors to i64), ptr %vt\n  call void @lv_main()\n  unreachable\n"))
+    l
+}
+
+// Tabla de vectores de excepción (16 entradas de 128 bytes, alineada a 2 KiB,
+// independiente de la posición: std::freestanding_cpu::init_exception_table
+// la copia donde diga el programa y la pone en VBAR_EL1). Cada entrada reserva
+// el marco de 800 bytes, guarda x0/x1, pone su número en x0 y salta a
+// lv_exc_common, que guarda el resto (x2-x30, ELR, SPSR y q0-q31), llama a
+// lv_exception(número, ESR, FAR, ELR, marco) y vuelve con eret a la dirección
+// que devuelve (el marco puede haber cambiado, p. ej. x0 con el resultado de
+// una llamada al sistema).
+fn lv_bare_vectors() -> array {
+    let mut l = [".text", ".balign 2048", ".globl lv_vectors", "lv_vectors:"]
+    let mut k = 0
+    while k < 16 {
+        l = std::array::concat(l, ["  .balign 128", "  sub sp, sp, #800", "  stp x0, x1, [sp, #0]", "  mov x0, #{k}", "  ldr x1, 1f", "  br x1", "  .balign 8", "1:  .quad lv_exc_common"])
+        k += 1
+    }
+    l = std::array::concat(l, [".balign 4", "lv_exc_common:"])
+    let mut r = 2
+    while r < 30 {
+        let o = 8 * r
+        let r1 = r + 1
+        l = std::array::push(l, "  stp x{r}, x{r1}, [sp, #{o}]")
+        r += 2
+    }
+    l = std::array::concat(l, ["  mrs x2, elr_el1", "  mrs x3, spsr_el1", "  stp x30, x2, [sp, #240]", "  str x3, [sp, #256]"])
+    let mut q = 0
+    while q < 32 {
+        let o = 272 + 16 * q
+        let q1 = q + 1
+        l = std::array::push(l, "  stp q{q}, q{q1}, [sp, #{o}]")
+        q += 2
+    }
+    l = std::array::concat(l, ["  mov x4, sp", "  mrs x1, esr_el1", "  mrs x2, far_el1", "  ldr x3, [sp, #248]", "  bl lv_exception", "  str x0, [sp, #248]"])
+    q = 0
+    while q < 32 {
+        let o = 272 + 16 * q
+        let q1 = q + 1
+        l = std::array::push(l, "  ldp q{q}, q{q1}, [sp, #{o}]")
+        q += 2
+    }
+    l = std::array::concat(l, ["  ldr x3, [sp, #256]", "  msr spsr_el1, x3", "  ldr x2, [sp, #248]", "  msr elr_el1, x2", "  ldr x30, [sp, #240]"])
+    r = 2
+    while r < 30 {
+        let o = 8 * r
+        let r1 = r + 1
+        l = std::array::push(l, "  ldp x{r}, x{r1}, [sp, #{o}]")
+        r += 2
+    }
+    l = std::array::concat(l, ["  ldp x0, x1, [sp, #0]", "  add sp, sp, #800", "  eret"])
     l
 }
 
@@ -1625,7 +1697,11 @@ fn lv_build(gu: G, gr: G, target: string) -> Result {
     let mut b = lv_new()
     let mut parts = []
     // Funciones del apoyo que llaman al runtime.
-    for name in ["rt_free", "rt_fatal", "rt_finish"] {
+    let mut seeds = ["rt_free", "rt_fatal", "rt_finish"]
+    if bare {
+        seeds = std::array::push(seeds, "rt_bare_exception")
+    }
+    for name in seeds {
         let label = lv_rt(rctx, name)
         if std::text::starts_with(label, "missing:") {
             b = lv_err(b, "native runtime function '" + name + "' not found")

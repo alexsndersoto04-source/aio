@@ -1,0 +1,46 @@
+// Fallos de memoria de verdad sin sistema operativo (solo en QEMU: unicorn no
+// entrega estas excepciones al programa). Escribir en una página de solo
+// lectura y leer una dirección sin mapear producen un "data abort" real; el
+// procesador salta a la tabla de vectores y el runtime llama al manejador
+// Titan con FAR (dirección) y ESR (motivo). Devolver distinto de 0 salta la
+// instrucción; la operación dice que falló.
+
+fn main() {
+    let mb = 1048576
+    print(std::freestanding_cpu::init_exception_table(1074792448))
+    print(std::freestanding_cpu::register_exception_handler(0, |far: int, esr: int| {
+        // ESR: clase (bits 26-31; 37 = acceso a datos desde EL1) y código
+        // (bits 0-5; 15 = permiso en nivel 3, 5 = traducción en nivel 1).
+        let clase = esr / 67108864 % 64
+        let codigo = esr % 64
+        print("fallo en {far} clase {clase} código {codigo}")
+        1
+    }))
+    print(std::freestanding_memory::init_frame_allocator(1342177280, 65536))
+    let fr = std::freestanding_memory::allocate_frame()
+    let va = 256 * mb
+    // Solo lectura (flags 0).
+    print(std::freestanding_memory::map_page(va, fr, 0))
+    print(std::freestanding_mmio::init_mmio_region(va, 4096))
+    print(std::freestanding_mmio::init_mmio_region(fr, 4096))
+    print(std::freestanding_mmio::write_mmio_u32(fr + 8, 31))
+    print(std::freestanding_mmio::read_mmio_u32(va + 8))
+    print(std::freestanding_mmio::write_mmio_u32(va + 8, 5))
+    print(std::freestanding_cpu::get_last_fault_addr() - va)
+    print(std::freestanding_mmio::read_mmio_u32(fr + 8))
+    // Ahora escribible: la misma escritura funciona.
+    print(std::freestanding_memory::map_page(va, fr, 1))
+    print(std::freestanding_mmio::write_mmio_u32(va + 8, 5))
+    print(std::freestanding_mmio::read_mmio_u32(fr + 8))
+    // 4 GiB: nada mapeado ahí.
+    let lejos = 4096 * mb
+    print(std::freestanding_memory::translate_page(lejos))
+    print(std::freestanding_mmio::init_mmio_region(lejos, 4096))
+    print(std::freestanding_mmio::read_mmio_u32(lejos + 16))
+    print(std::freestanding_cpu::get_last_fault_addr() - lejos)
+    // Llamadas al sistema y fallos a la vez.
+    print(std::freestanding_cpu::register_syscall_handler(1, |a: int, b: int, c: int| std::freestanding_mmio::read_mmio_u32(a) + b + c))
+    print(std::freestanding_cpu::invoke_syscall(1, lejos, 2, 3))
+    print(std::freestanding_cpu::invoke_syscall(1, fr + 8, 2, 3))
+    print("fin")
+}

@@ -84,7 +84,6 @@ pub fn cleanup_runtime_resources(runtime_id: u64) -> usize {
     released += crate::mobile::cleanup_runtime(runtime_id);
     released += crate::metrics::cleanup_runtime(runtime_id);
     released += crate::freestanding::cleanup_runtime(runtime_id);
-    released += crate::freestanding_cpu::cleanup_runtime(runtime_id);
     released += crate::freestanding_memory::cleanup_runtime(runtime_id);
     released += crate::freestanding_mmio::cleanup_runtime(runtime_id);
     #[cfg(all(feature = "signals_mod", unix))]
@@ -681,7 +680,7 @@ pub static NATIVES: &[NativeSignature] = &[
     native!("std::freestanding_cpu::init_exception_table", [Int], Bool),
     native!(
         "std::freestanding_cpu::register_exception_handler",
-        [Int, Int],
+        [Int, Any],
         Bool
     ),
     native!(
@@ -691,7 +690,7 @@ pub static NATIVES: &[NativeSignature] = &[
     ),
     native!(
         "std::freestanding_cpu::register_syscall_handler",
-        [Int, Int],
+        [Int, Any],
         Bool
     ),
     native!(
@@ -1695,47 +1694,25 @@ mod tests {
     }
 
     #[test]
-    fn freestanding_emulator_state_is_isolated_and_selectively_cleaned_per_runtime() {
+    fn freestanding_state_is_isolated_and_selectively_cleaned_per_runtime() {
         let first = 81_001;
         let second = 81_002;
         with_runtime_context(first, || {
             assert!(crate::freestanding::init("aarch64-unknown-none"));
-            assert!(crate::freestanding_memory::init_frame_allocator(
-                0x10_0000, 0x4000
-            ));
-            let frame = crate::freestanding_memory::allocate_frame();
-            assert_eq!(frame, 0x10_0000);
-            assert!(crate::freestanding_memory::map_page(0x40_0000, frame, 3));
-            assert!(crate::freestanding_cpu::init_exception_table(0x8000_0000));
-            assert!(crate::freestanding_cpu::register_exception_handler(
-                0, 0x9000
-            ));
-            assert_ne!(crate::freestanding_cpu::dispatch_exception(0, 0x1234, 5), 0);
-            assert!(crate::freestanding_mmio::init_mmio_region(
-                0x3f00_0000,
-                0x1000
-            ));
-            assert!(crate::freestanding_mmio::write_mmio_u32(
-                0x3f00_0004,
-                0xdead_beef
-            ));
-            assert!(crate::freestanding_mmio::serial_init(0x1000_0000, 115_200));
-            assert_eq!(crate::freestanding_mmio::serial_write_str("private"), 7);
+            assert!(crate::freestanding_memory::init_frame_allocator(0x10_0000, 0x4000).unwrap());
+            assert_eq!(crate::freestanding_memory::allocate_frame(), 0x10_0000);
+            assert!(crate::freestanding_mmio::init_mmio_region(0x3f00_0000, 0x1000).unwrap());
         });
 
         with_runtime_context(second, || {
             assert_eq!(crate::freestanding::get_active_target(), "");
             assert_eq!(crate::freestanding_memory::free_frames_count(), 0);
-            assert_eq!(crate::freestanding_memory::translate_page(0x40_0000), 0);
-            assert_eq!(crate::freestanding_cpu::get_last_fault_addr(), 0);
-            assert_eq!(crate::freestanding_mmio::read_mmio_u32(0x3f00_0004), 0);
-            assert_eq!(crate::freestanding_mmio::serial_get_buffer(), "");
+            assert_eq!(crate::freestanding_memory::allocate_frame(), 0);
             assert!(crate::freestanding::shutdown());
             assert!(crate::freestanding_memory::shutdown());
-            assert!(crate::freestanding_cpu::shutdown());
             assert!(crate::freestanding_mmio::shutdown());
         });
-        assert_eq!(cleanup_runtime_resources(second), 4);
+        assert_eq!(cleanup_runtime_resources(second), 3);
 
         with_runtime_context(first, || {
             assert_eq!(
@@ -1743,17 +1720,8 @@ mod tests {
                 "aarch64-unknown-none"
             );
             assert_eq!(crate::freestanding_memory::free_frames_count(), 3);
-            assert_eq!(
-                crate::freestanding_memory::translate_page(0x40_0042),
-                0x10_0042
-            );
-            assert_eq!(crate::freestanding_cpu::get_last_fault_addr(), 0x1234);
-            assert_eq!(
-                crate::freestanding_mmio::read_mmio_u32(0x3f00_0004),
-                0xdead_beef
-            );
-            assert_eq!(crate::freestanding_mmio::serial_get_buffer(), "private");
+            assert_eq!(crate::freestanding_memory::allocate_frame(), 0x10_1000);
         });
-        assert_eq!(cleanup_runtime_resources(first), 4);
+        assert_eq!(cleanup_runtime_resources(first), 3);
     }
 }

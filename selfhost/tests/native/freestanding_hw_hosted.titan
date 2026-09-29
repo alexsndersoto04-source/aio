@@ -1,0 +1,58 @@
+// Con sistema operativo (Linux / la VM) el reparto de marcos y la lista de
+// regiones MMIO funcionan; lo que toca el hardware (tablas de páginas,
+// vectores de excepción, registros, UART) da un error honesto: solo existe
+// en programas sin sistema operativo (objetivo aarch64-none).
+
+fn sumar(a: int, b: int, c: int) -> int {
+    a + b + c
+}
+
+fn main() {
+    print(std::freestanding_memory::free_frames_count())
+    print(std::freestanding_memory::allocate_frame())
+    print(std::freestanding_memory::init_frame_allocator(8192, 16384))
+    print(std::freestanding_memory::free_frames_count())
+    let a = std::freestanding_memory::allocate_frame()
+    let b = std::freestanding_memory::allocate_frame()
+    print(a)
+    print(b)
+    print(std::freestanding_memory::deallocate_frame(a))
+    print(std::freestanding_memory::deallocate_frame(a))
+    print(std::freestanding_memory::deallocate_frame(b + 1))
+    print(std::freestanding_memory::allocate_frame())
+    print(std::freestanding_memory::allocate_frame())
+    print(std::freestanding_memory::allocate_frame())
+    print(std::freestanding_memory::allocate_frame())
+    print(std::freestanding_memory::free_frames_count())
+    print(std::freestanding_memory::init_frame_allocator(1, 4095))
+    print(std::freestanding_memory::init_frame_allocator(9223372036854775807, 4096))
+    print(std::freestanding_memory::init_frame_allocator(9223372036854767616, 16384))
+    print(std::freestanding_memory::init_frame_allocator(4097, 1099511627776))
+    print(std::freestanding_memory::free_frames_count())
+    print(std::freestanding_memory::allocate_frame())
+    print(std::try::catch(|| std::freestanding_memory::init_frame_allocator(-1, 4096)))
+    print(std::try::catch(|| std::freestanding_memory::init_frame_allocator(0, -4096)))
+    print(std::try::catch(|| std::freestanding_memory::map_page(4096, 8192, 3)))
+    print(std::try::catch(|| std::freestanding_memory::translate_page(4096)))
+    print(std::freestanding_memory::shutdown())
+    print(std::freestanding_memory::free_frames_count())
+    print(std::try::catch(|| std::freestanding_cpu::init_exception_table(2048)))
+    print(std::try::catch(|| std::freestanding_cpu::register_exception_handler(0, |f: int, e: int| 1)))
+    print(std::try::catch(|| std::freestanding_cpu::dispatch_exception(0, 1, 2)))
+    print(std::try::catch(|| std::freestanding_cpu::register_syscall_handler(1, sumar)))
+    print(std::try::catch(|| std::freestanding_cpu::invoke_syscall(1, 2, 3, 4)))
+    print(std::freestanding_cpu::get_last_fault_addr())
+    print(std::freestanding_cpu::shutdown())
+    print(std::freestanding_mmio::init_mmio_region(1073741824, 4096))
+    print(std::freestanding_mmio::init_mmio_region(4096, 0))
+    print(std::freestanding_mmio::init_mmio_region(9223372036854775806, 2))
+    print(std::try::catch(|| std::freestanding_mmio::init_mmio_region(-8, 4096)))
+    print(std::try::catch(|| std::freestanding_mmio::read_mmio_u32(1073741824)))
+    print(std::try::catch(|| std::freestanding_mmio::write_mmio_u32(1073741824, 1)))
+    print(std::try::catch(|| std::freestanding_mmio::serial_init(150994944, 115200)))
+    print(std::try::catch(|| std::freestanding_mmio::serial_write_str("hola")))
+    print(std::freestanding_mmio::serial_get_buffer() == "")
+    print(std::freestanding_mmio::shutdown())
+    std::freestanding_memory::map_page(0, 0, 0)
+    print("no llega")
+}
