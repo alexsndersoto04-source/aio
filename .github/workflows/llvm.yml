@@ -32,15 +32,18 @@ jobs:
           ls /usr/lib/llvm-*/bin 2>/dev/null | head -50
           clang -print-targets 2>/dev/null | grep -Ei "x86-64|aarch64" | head
 
-      - name: Obtener zett (VM de Rust, para comparar)
+      - name: Dependencias
+        run: sudo apt-get install -y --no-install-recommends libasound2-dev >/dev/null
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # La referencia es la VM de Rust de ESTE commit (con sus arreglos), no
+      # el binario publicado, que puede ir por detrás.
+      - name: VM de Rust (referencia, compilada aquí)
         run: |
-          git fetch -q origin +refs/heads/binaries:refs/remotes/origin/binaries
+          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
           mkdir -p "$HOME/bin"
-          git show origin/binaries:zett-linux-x86_64 > "$HOME/bin/zett-real"
-          chmod +x "$HOME/bin/zett-real"
-          sudo apt-get install -y --no-install-recommends libasound2t64 >/dev/null 2>&1 || true
-          printf '#!/bin/sh\nexec "%s/bin/zett-real" "$@"\n' "$HOME" > "$HOME/bin/zett"
-          chmod +x "$HOME/bin/zett"
+          ln -sf "$GITHUB_WORKSPACE/target/release/titan" "$HOME/bin/zett"
           "$HOME/bin/zett" --version || true
 
       - name: Batería LLVM
@@ -116,4 +119,47 @@ jobs:
           ZETT="$GITHUB_WORKSPACE/target/release/titan" bash selfhost/native/llvm/arm64_comparar.sh /tmp/a64 2>&1 | tee /tmp/arm.txt
           rc=${PIPESTATUS[0]}
           python3 selfhost/native/llvm/resumen_ci.py /tmp/arm.txt
+          exit $rc
+
+  # Sin sistema operativo (aarch64-none): cada programa arranca solo en una
+  # máquina ARM64 "virt" de QEMU de verdad (MMU, puerto serie PL011, apagado
+  # por PSCI) y su salida se compara con la VM de Rust. Después, lo mismo en
+  # unicorn (el motor de QEMU), que además da el código de salida.
+  sin-so:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y --no-install-recommends libasound2-dev qemu-system-arm lld >/dev/null
+          pip install --user --break-system-packages unicorn >/dev/null
+          echo "::notice::$(qemu-system-aarch64 --version | head -1); $(clang --version | head -1); $(ld.lld --version)"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: VM de Rust (referencia, compilada aquí)
+        run: |
+          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+          mkdir -p "$HOME/bin"
+          ln -sf "$GITHUB_WORKSPACE/target/release/titan" "$HOME/bin/zett"
+
+      - name: Programas sin sistema operativo en QEMU
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          CORRER=qemu bash selfhost/native/bare/probar.sh 2>&1 | tee /tmp/qemu.txt
+          rc=${PIPESTATUS[0]}
+          tail -1 /tmp/qemu.txt | while IFS= read -r l; do echo "::notice::[qemu] $l"; done
+          grep "^DIFERENCIA\|^no admitido" /tmp/qemu.txt | head -8 | while IFS= read -r l; do echo "::error::[qemu] $l"; done
+          exit $rc
+
+      - name: Programas sin sistema operativo en unicorn (con código de salida)
+        if: always()
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          CORRER=unicorn bash selfhost/native/bare/probar.sh 2>&1 | tee /tmp/uni.txt
+          rc=${PIPESTATUS[0]}
+          tail -1 /tmp/uni.txt | while IFS= read -r l; do echo "::notice::[unicorn] $l"; done
+          grep "^DIFERENCIA\|^no admitido" /tmp/uni.txt | head -8 | while IFS= read -r l; do echo "::error::[unicorn] $l"; done
           exit $rc

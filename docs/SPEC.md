@@ -792,7 +792,7 @@ against a remote works fully offline, and local path dependencies need no regist
 | Entry point | `main` takes no parameters | `entry point 'main' must take no parameters` |
 | Keywords | `as` and `unsafe` are reserved with no grammar | parse error |
 | WebAssembly | See [§16.2](#162-rejected-by-the-webassembly-backend) | `unsupported WebAssembly operation: …` |
-| Stdlib | `std::freestanding*` and `std::mobile` are in-process simulations | — |
+| Stdlib | `std::freestanding` generates real linker scripts and `_start` code (GNU ld / ld.lld formats; unknown targets are errors); `std::freestanding_memory`, `std::freestanding_cpu`, `std::freestanding_mmio` and `std::mobile` are still in-process simulations | `unsupported freestanding target '…'` |
 | Packages | The default registry host `registry.titan-lang.org` is a CLI default; local packing, signing, verification and path dependencies work offline | — |
 
 ---

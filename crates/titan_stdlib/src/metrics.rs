@@ -128,9 +128,38 @@ pub fn histogram_record(name: &str, value: f64) -> Result<(), MetricsError> {
     });
     histogram.count = histogram.count.saturating_add(1);
     histogram.sum += value;
-    histogram.min = histogram.min.min(value);
-    histogram.max = histogram.max.max(value);
+    histogram.min = min_signed_zero(histogram.min, value);
+    histogram.max = max_signed_zero(histogram.max, value);
     Ok(())
+}
+
+// f64::min / f64::max may return either zero for 0.0 and -0.0, and the
+// choice depends on the CPU instruction (x86-64 minsd/maxsd vs ARM64
+// fminnm/fmaxnm), so the same program printed different histograms on each
+// machine. IEEE 754-2019 minimum/maximum order -0.0 below +0.0; values are
+// finite here (histogram_record rejects NaN and infinities).
+fn min_signed_zero(a: f64, b: f64) -> f64 {
+    if a < b {
+        a
+    } else if b < a {
+        b
+    } else if a.is_sign_negative() {
+        a
+    } else {
+        b
+    }
+}
+
+fn max_signed_zero(a: f64, b: f64) -> f64 {
+    if a > b {
+        a
+    } else if b > a {
+        b
+    } else if a.is_sign_positive() {
+        a
+    } else {
+        b
+    }
 }
 pub fn snapshot() -> Result<Snapshot, MetricsError> {
     let registry = registry();
@@ -165,6 +194,16 @@ pub fn reset() -> Result<(), MetricsError> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn signed_zero_min_max_are_the_same_on_every_cpu() {
+        assert!(min_signed_zero(0.0, -0.0).is_sign_negative());
+        assert!(min_signed_zero(-0.0, 0.0).is_sign_negative());
+        assert!(max_signed_zero(0.0, -0.0).is_sign_positive());
+        assert!(max_signed_zero(-0.0, 0.0).is_sign_positive());
+        assert_eq!(min_signed_zero(-1.5, 2.0), -1.5);
+        assert_eq!(max_signed_zero(-1.5, 2.0), 2.0);
+    }
+
     use super::*;
     use std::sync::{Mutex, MutexGuard};
 
