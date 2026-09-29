@@ -1058,6 +1058,41 @@ index c2d77bf..287cc2a 100644
          assert_eq!(parse_user_dir(home, "MUSIC", file), None);
      }
  
+diff --git a/crates/titan_stdlib/src/freestanding.rs b/crates/titan_stdlib/src/freestanding.rs
+index cab7230..233bae1 100644
+--- a/crates/titan_stdlib/src/freestanding.rs
++++ b/crates/titan_stdlib/src/freestanding.rs
+@@ -82,10 +82,16 @@ pub fn generate_linker_script(
+         _ => return Err(unsupported_target(target_arch)),
+     };
+     if base_addr < 0 {
+-        return Err(format!("base address must be nonnegative, got {}", base_addr));
++        return Err(format!(
++            "base address must be nonnegative, got {}",
++            base_addr
++        ));
+     }
+     if stack_size < 0 {
+-        return Err(format!("stack size must be nonnegative, got {}", stack_size));
++        return Err(format!(
++            "stack size must be nonnegative, got {}",
++            stack_size
++        ));
+     }
+ 
+     let mut ld = String::with_capacity(1024);
+@@ -195,7 +201,10 @@ pub fn generate_startup_asm(target_arch: &str, entry_fn: &str) -> Result<String,
+             let _ = writeln!(asm, "    /* Zero-out BSS section */");
+             let _ = writeln!(asm, "    la t0, __bss_start");
+             let _ = writeln!(asm, "    la t1, __bss_end");
+-            let _ = writeln!(asm, "1:  bgeu t0, t1, 2f\n    sd zero, 0(t0)\n    addi t0, t0, 8\n    j 1b");
++            let _ = writeln!(
++                asm,
++                "1:  bgeu t0, t1, 2f\n    sd zero, 0(t0)\n    addi t0, t0, 8\n    j 1b"
++            );
+             let _ = writeln!(asm, "2:  call {}", entry_fn);
+             let _ = writeln!(asm, "3:  wfi\n    j 3b");
+         }
 diff --git a/crates/titan_stdlib/src/lib.rs b/crates/titan_stdlib/src/lib.rs
 index 944be47..8b37e69 100644
 --- a/crates/titan_stdlib/src/lib.rs
@@ -2031,7 +2066,7 @@ index d27ca43..1d508fd 100644
          );
      }
 diff --git a/crates/titan_vm/src/native.rs b/crates/titan_vm/src/native.rs
-index a825e05..beecea0 100644
+index f0c6abd..8ad4b3d 100644
 --- a/crates/titan_vm/src/native.rs
 +++ b/crates/titan_vm/src/native.rs
 @@ -718,9 +718,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
@@ -2045,7 +2080,7 @@ index a825e05..beecea0 100644
          "std::map::contains" => {
              let values = expect_map_shared(take!())?;
              Value::Bool(values.contains_key(&string!()))
-@@ -3029,10 +3027,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
+@@ -3027,10 +3025,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
              map.insert("phone".into(), Value::Str(st.phone));
              map.insert("channel".into(), Value::Str(st.channel));
              map.insert("session_file".into(), Value::Bool(st.session_file));
@@ -2057,7 +2092,7 @@ index a825e05..beecea0 100644
              map.insert("note".into(), Value::Str(st.note));
              Value::map(map)
          }
-@@ -6897,8 +6892,7 @@ mod tests {
+@@ -6898,8 +6893,7 @@ mod tests {
              ],
              capabilities,
          )
@@ -2067,7 +2102,7 @@ index a825e05..beecea0 100644
              panic!("PDF new should return a handle");
          };
          assert_eq!(
-@@ -6981,10 +6975,8 @@ mod tests {
+@@ -6982,10 +6976,8 @@ mod tests {
              Value::Int(1)
          );
  
@@ -2080,7 +2115,7 @@ index a825e05..beecea0 100644
          let path_string = path.to_string_lossy().into_owned();
          assert!(invoke(
              "std::pdf::save",
-@@ -7000,12 +6992,7 @@ mod tests {
+@@ -7001,12 +6993,7 @@ mod tests {
          .unwrap();
          assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
          assert_eq!(
