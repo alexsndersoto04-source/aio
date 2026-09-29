@@ -1378,6 +1378,21 @@ index c563452..4783731 100644
          assert_eq!(env_get("TITAN_TEST_NOT_UTF8"), None);
          std::env::remove_var("TITAN_TEST_NOT_UTF8");
          std::env::remove_var("TITAN_TEST_UTF8_OK");
+diff --git a/crates/titan_stdlib/src/router_mod.rs b/crates/titan_stdlib/src/router_mod.rs
+index ccadd23..30aab6a 100644
+--- a/crates/titan_stdlib/src/router_mod.rs
++++ b/crates/titan_stdlib/src/router_mod.rs
+@@ -171,7 +171,9 @@ pub fn insert(handle: i64, pattern: &str, value: &str) -> Result<(), RouterError
+         .get_mut(&key)
+         .ok_or(RouterError::UnknownHandle(handle))?;
+     if too_many_params(pattern) {
+-        return Err(RouterError::Insert("Too many route parameters.".to_string()));
++        return Err(RouterError::Insert(
++            "Too many route parameters.".to_string(),
++        ));
+     }
+     entry
+         .router
 diff --git a/crates/titan_stdlib/src/server_mod.rs b/crates/titan_stdlib/src/server_mod.rs
 index ead816b..2a04924 100644
 --- a/crates/titan_stdlib/src/server_mod.rs

@@ -16,6 +16,6 @@
     Checking titan_vm v1.0.0 (/home/runner/work/aio/aio/crates/titan_vm)
     Checking titan_wasm v1.0.0 (/home/runner/work/aio/aio/crates/titan_wasm)
     Checking titan_dap v1.0.0 (/home/runner/work/aio/aio/crates/titan_dap)
-    Checking titan_runtime v1.0.0 (/home/runner/work/aio/aio/crates/titan_runtime)
     Checking titan_cli v1.0.0 (/home/runner/work/aio/aio/crates/titan_cli)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.51s
+    Checking titan_runtime v1.0.0 (/home/runner/work/aio/aio/crates/titan_runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.53s
