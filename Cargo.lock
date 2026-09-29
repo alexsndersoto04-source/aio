@@ -5315,6 +5315,7 @@ dependencies = [
  "lettre",
  "matchit",
  "minifb",
+ "miniz_oxide",
  "nix 0.29.0",
  "notify",
  "once_cell",
