@@ -553,26 +553,11 @@ fn std__checksum__fnv1a64(b: any) -> any {
     tx_fnv1a(rt_bdata(b), rt_slen(b))
 }
 
+// Con tabla (cz_crc de std_compress): mismo resultado que bit a bit, ~8x
+// más rápido.
 fn std__checksum__crc32(b: any) -> any {
     rt_expect_bytes(b, "std::checksum::crc32")
-    let p = rt_bdata(b)
-    let n = rt_slen(b)
-    let mut crc = 4294967295
-    let mut i = 0
-    while i < n {
-        crc = crc ^ std::raw::load8(p + i)
-        let mut k = 0
-        while k < 8 {
-            if (crc & 1) == 1 {
-                crc = (crc / 2) ^ 3988292384
-            } else {
-                crc = crc / 2
-            }
-            k += 1
-        }
-        i += 1
-    }
-    crc ^ 4294967295
+    cz_crc(rt_bdata(b), rt_slen(b))
 }
 
 fn std__checksum__constant_time_eq(a: any, b: any) -> any {

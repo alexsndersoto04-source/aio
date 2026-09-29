@@ -1,0 +1,45 @@
+// std::compress: flujos truncados y distancias a antes del principio son errores
+// (la versión de Rust anterior devolvía los datos a medias o ceros inventados;
+// ver "Defecto real" de compress en selfhost/ESTADO.md).
+// Generado por selfhost/native/compress/gen_tests.py.
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => {
+            let b: bytes = v
+            if len(b) <= 40 {
+                "Ok(" + std::encoding::hex_encode(b) + ")"
+            } else {
+                let n = len(b)
+                let c = std::checksum::crc32(b)
+                "Ok(len={n} crc={c})"
+            }
+        }
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn g(h: string) -> string {
+    show(std::try::catch(|| { std::compress::gzip_decode(std::encoding::hex_decode(h)) }))
+}
+
+fn z(h: string) -> string {
+    show(std::try::catch(|| { std::compress::zlib_decode(std::encoding::hex_decode(h)) }))
+}
+
+fn d(h: string) -> string {
+    show(std::try::catch(|| { std::compress::deflate_decode(std::encoding::hex_decode(h)) }))
+}
+
+fn main() {
+    println("deflate vacío: " + d(""))
+    println("deflate xyz: " + d("78797a"))
+    println("deflate truncado: " + d("cbc8cf4954c82dcd4bc9d751c800b14332"))
+    println("deflate sin el último byte: " + d("cbc8cf4954c82dcd4bc9d751c800b143324b12f3f420ec51f151f151f151f141240e"))
+    println("zlib solo cabecera: " + z("789c"))
+    println("zlib sin Adler-32: " + z("789ccbc8cf4954c82dcd4bc9d751c800b143324b12f3f420ec51f151f151f151f141240e00"))
+    println("zlib Adler-32 a medias: " + z("789ccbc8cf4954c82dcd4bc9d751c800b143324b12f3f420ec51f151f151f151f141240e002075"))
+    println("deflate distancia antes del principio: " + d("4b044200"))
+    println("zlib distancia antes del principio: " + z("78014b044200024a00c3"))
+    println("gzip distancia antes del principio: " + g("1f8b08000000000000ff4b0442009c1538de04000000"))
+}

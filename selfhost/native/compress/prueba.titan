@@ -1,0 +1,35 @@
+// Prueba diferencial de la descompresión de std::compress: cada línea del
+// archivo es "MODO HEX" (g = gzip, z = zlib, d = deflate). Escribe "ok HEX"
+// con la salida o "ERR HEX" con el mensaje. Se ejecuta en la VM (zett run) y
+// compilado con el backend nativo; fuzz.py compara las salidas.
+fn hx(s: string) -> string {
+    std::encoding::hex_encode(std::encoding::utf8_encode(s))
+}
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "ok " + std::encoding::hex_encode(v),
+        Result::Err(e) => "ERR " + hx(e),
+    }
+}
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i < len(ls) {
+        let parts = std::text::lines(std::text::replace(ls[i], " ", "\n"))
+        let mode = parts[0]
+        let mut h = ""
+        if len(parts) > 1 {
+            h = parts[1]
+        }
+        let data = std::encoding::hex_decode(h)
+        if mode == "g" {
+            println(show(std::try::catch(|| { std::compress::gzip_decode(data) })))
+        } else if mode == "z" {
+            println(show(std::try::catch(|| { std::compress::zlib_decode(data) })))
+        } else {
+            println(show(std::try::catch(|| { std::compress::deflate_decode(data) })))
+        }
+        i += 1
+    }
+}
