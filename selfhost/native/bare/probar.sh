@@ -45,9 +45,10 @@ else
   compile() { python3 -m ziglang cc -target aarch64-freestanding-none -O2 -nostdlib -static -ffreestanding -fno-pic -Wno-override-module -Wl,-T,"$tmp/ll/bare.ld" "$1" -o "$2"; }
 fi
 if [ "$CORRER" = qemu ]; then
-  # Sin pantalla ni monitor: el puerto serie (PL011) va a stdio. (Con
+  # Sin tarjeta de red (-nic none: la de virt pide efi-virtio.rom, que no
+  # siempre está instalado). Sin pantalla ni monitor: el puerto serie (PL011) va a stdio. (Con
   # -nographic además de -serial stdio, QEMU se niega: stdio dos veces.)
-  run() { timeout 120 qemu-system-aarch64 -machine virt -cpu cortex-a57 -m 1G -display none -monitor none -serial stdio -kernel "$1" < /dev/null; }
+  run() { timeout 120 qemu-system-aarch64 -machine virt -cpu cortex-a57 -m 1G -display none -monitor none -nic none -serial stdio -kernel "$1" < /dev/null; }
 else
   run() { timeout 300 python3 selfhost/native/bare/correr.py "$1"; }
 fi
@@ -80,7 +81,9 @@ for f in "${FILES[@]}"; do
     vm=0
     if [ -f "${f%.titan}.codigo" ]; then vm="$(tr -d ' \n' < "${f%.titan}.codigo")"; fi
   else
-    timeout 60 "$ZETT" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
+    # Sin GITHUB_ACTIONS: si no, la VM añade a su salida la anotación
+    # "::error title=RUNTIME ERROR::…" para GitHub, que no es del programa.
+    timeout 60 env -u GITHUB_ACTIONS "$ZETT" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
   fi
   run "$tmp/prog.elf" > "$tmp/bare.out" 2> "$tmp/bare.err"; bare=$?
   same_code=1
