@@ -639,6 +639,42 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_push_i(0))
         return pc_add(p, x_push_i(0))
     }
+    // Registros de hardware (MMIO): accesos de 32 bits tal cual (este
+    // backend nunca quita ni reordena accesos a memoria).
+    if name == "std::raw::mmio_load32" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, [139, 0])
+        p = pc_add(p, x_store(rsp, 8, rax))
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    if name == "std::raw::mmio_store32" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, [137, 8])
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(0))
+    }
+    // Los registros de sistema son de ARM64: en x86-64 la instrucción es
+    // ud2 (trampa), nunca un valor inventado. El runtime solo las usa si
+    // std::raw::bare() == 1, que aquí siempre es 0 (programa con Linux).
+    if name == "std::raw::sysreg" {
+        p = pc_add(p, [15, 11])
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    if name == "std::raw::set_sysreg" || name == "std::raw::hvc" {
+        p = pc_add(p, [15, 11])
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push_i(0))
+        if name == "std::raw::hvc" {
+            return pc_add(p, x_push_i(1))
+        }
+        return pc_add(p, x_push_i(0))
+    }
+    if name == "std::raw::bare" {
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(1))
+    }
     // tag/bits consumen el valor (restan su referencia; g_dec conserva rax).
     if name == "std::raw::tag" {
         p = pc_add(p, x_load(rax, rsp, 0))

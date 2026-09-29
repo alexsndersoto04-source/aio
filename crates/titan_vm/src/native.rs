@@ -1281,15 +1281,13 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
             let base = int!();
             let stack = int!();
             Value::Str(titan_freestanding_generate_linker_script(
-                &arch,
-                base as u64,
-                stack as u64,
-            ))
+                &arch, base, stack,
+            )?)
         }
         "std::freestanding::generate_startup_asm" => {
             let arch = string!();
             let entry = string!();
-            Value::Str(titan_freestanding_generate_startup_asm(&arch, &entry))
+            Value::Str(titan_freestanding_generate_startup_asm(&arch, &entry)?)
         }
         "std::freestanding::get_active_target" => {
             Value::Str(titan_freestanding_get_active_target())
@@ -5733,12 +5731,15 @@ pub fn titan_freestanding_validate_target_spec(target: &str) -> bool {
 }
 pub fn titan_freestanding_generate_linker_script(
     target_arch: &str,
-    base_addr: u64,
-    stack_size: u64,
-) -> String {
+    base_addr: i64,
+    stack_size: i64,
+) -> Result<String, String> {
     titan_stdlib::freestanding::generate_linker_script(target_arch, base_addr, stack_size)
 }
-pub fn titan_freestanding_generate_startup_asm(target_arch: &str, entry_fn: &str) -> String {
+pub fn titan_freestanding_generate_startup_asm(
+    target_arch: &str,
+    entry_fn: &str,
+) -> Result<String, String> {
     titan_stdlib::freestanding::generate_startup_asm(target_arch, entry_fn)
 }
 pub fn titan_freestanding_get_active_target() -> String {

@@ -1,0 +1,41 @@
+// std::freestanding: guion de enlazado y arranque para los tres objetivos,
+// y los errores honestos (objetivo desconocido, tamaños negativos, símbolo
+// inválido).
+fn probar(t: string) {
+    print(std::freestanding::validate_target_spec(t))
+    match std::try::catch(|| std::freestanding::generate_linker_script(t, 1074266112, 67108864)) {
+        Result::Ok(s) => print(s),
+        Result::Err(e) => print("error: " + e),
+    }
+    match std::try::catch(|| std::freestanding::generate_startup_asm(t, "kernel_main")) {
+        Result::Ok(s) => print(s),
+        Result::Err(e) => print("error: " + e),
+    }
+}
+
+fn main() {
+    for t in ["aarch64-unknown-none", "x86_64-unknown-none", "riscv64gc-unknown-none", "mips-unknown-none", " aarch64-unknown-none "] {
+        probar(t)
+    }
+    for pair in [(-1, 16), (4096, -5), (0, 0), (9223372036854775807, 1)] {
+        let (b, s) = pair
+        match std::try::catch(|| std::freestanding::generate_linker_script("x86_64-unknown-none", b, s)) {
+            Result::Ok(text) => print(std::text::length(text)),
+            Result::Err(e) => print("error: " + e),
+        }
+    }
+    for name in ["", "9abc", "_ok.$1", "mal nombre", "ñ", "a\nret"] {
+        match std::try::catch(|| std::freestanding::generate_startup_asm("aarch64-unknown-none", name)) {
+            Result::Ok(text) => print(std::text::length(text)),
+            Result::Err(e) => print("error: " + e),
+        }
+    }
+    print(std::freestanding::get_active_target() == "")
+    print(std::freestanding::init("mips"))
+    print(std::freestanding::init(" riscv64gc-unknown-none"))
+    print(std::freestanding::get_active_target())
+    print(std::freestanding::init("aarch64-unknown-none"))
+    print(std::freestanding::get_active_target())
+    print(std::freestanding::shutdown())
+    print(std::freestanding::get_active_target() == "")
+}

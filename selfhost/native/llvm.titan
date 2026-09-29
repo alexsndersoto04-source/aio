@@ -43,6 +43,7 @@ struct LvCtx {
     target: string,
     depth: array,
     maxd: int,
+    bare: bool,
 }
 
 fn lv_new() -> Lv {
@@ -524,6 +525,40 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
             b1 = lv_e(b1, "  store i8 " + id + "v8, ptr " + id + "p")
         }
         b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::mmio_load32" {
+        // Registro de hardware: acceso volátil de 32 bits (LLVM no puede
+        // quitarlo, juntarlo ni cambiarlo de orden).
+        b1 = lv_addr(b1, id + "p", a0, 0)
+        b1 = lv_e(b1, "  " + id + "v32 = load volatile i32, ptr " + id + "p, align 4")
+        b1 = lv_e(b1, "  " + id + "v = zext i32 " + id + "v32 to i64")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::mmio_store32" {
+        b1 = lv_addr(b1, id + "p", a0, 0)
+        b1 = lv_e(b1, "  " + id + "v32 = trunc i64 " + a1 + " to i32")
+        b1 = lv_e(b1, "  store volatile i32 " + id + "v32, ptr " + id + "p, align 4")
+        b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::sysreg" {
+        b1 = lv_e(b1, "  " + id + "v = call i64 @lv_sysreg(i64 " + a0 + ")")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::set_sysreg" {
+        b1 = lv_e(b1, "  call void @lv_set_sysreg(i64 " + a0 + ", i64 " + a1 + ")")
+        b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::hvc" {
+        // Llamada al firmware (PSCI): x0, x1 -> x0. Solo ARM64.
+        if ctx.target == "aarch64" {
+            b1 = lv_e(b1, "  " + id + "v = call i64 asm sideeffect \"hvc #0\", \"=" + lv_br("x0") + "," + lv_br("x0") + "," + lv_br("x1") + ",~" + lv_br("memory") + "\"(i64 " + a0 + ", i64 " + a1 + ")")
+        } else {
+            b1 = lv_e(b1, "  call void @llvm.trap()")
+            b1 = lv_e(b1, "  " + id + "v = add i64 0, 0")
+        }
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::bare" {
+        // 1 = programa sin sistema operativo (objetivo aarch64-none).
+        let mut v = "0"
+        if ctx.bare {
+            v = "1"
+        }
+        b1 = lv_put(b1, res, "1", v)
     } else if name == "std::raw::tag" {
         b1 = lv_dec(b1, id + "a0t", a0)
         b1 = lv_put(b1, res, "1", id + "a0t")
@@ -649,6 +684,17 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_e(b1, "  " + id + "s2 = select i1 " + id + "e, i64 0, i64 " + id + "s1")
         b1 = lv_e(b1, "  " + id + "v = select i1 " + id + "u, i64 2, i64 " + id + "s2")
         b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::syscall" && ctx.bare {
+        // Sin sistema operativo: las atiende rt_sys_bare (sys_bare.titan).
+        let mut args = []
+        k = 0
+        while k < 7 {
+            args = std::array::push(args, "1")
+            args = std::array::push(args, id + "a{k}b")
+            k += 1
+        }
+        b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_bare", args)
+        b1 = lv_put(b1, res, "1", id + "sb")
     } else if name == "std::raw::syscall" && ctx.target == "aarch64" {
         // Números y estructuras de x86-64: los traduce rt_sys_arm64 (sys_arm64.titan).
         let mut args = []
@@ -1255,7 +1301,7 @@ fn lv_function(b0: Lv, ctx0: LvCtx, f: Func, label: string) -> Lv {
             return lv_err(b0, message)
         },
     }
-    let ctx = LvCtx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity, target: ctx0.target, depth: depth, maxd: maxd }
+    let ctx = LvCtx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity, target: ctx0.target, depth: depth, maxd: maxd, bare: ctx0.bare }
     let a = f.arity
     let c = f.captures
     let mut params = "i64 %clo"
@@ -1439,6 +1485,8 @@ fn lv_glue(ctx: LvCtx) -> array {
         l = std::array::push(l, "module asm \"  ud2\"")
         // lv_start: globales, pila propia de 1 GiB (reservada) y lv_main en ella.
         l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_syscall(i64 9, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov $0, %rsp\\0A\\09call lv_main\\0A\\09ud2\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
+    } else if ctx.bare {
+        l = std::array::concat(l, lv_bare_prologue())
     } else {
         // AArch64: número en x8, argumentos en x0-x5, resultado en x0.
         let cons = "\"=" + lv_br("x0") + "," + lv_br("x8") + "," + lv_br("x0") + "," + lv_br("x1") + "," + lv_br("x2") + "," + lv_br("x3") + "," + lv_br("x4") + "," + lv_br("x5") + ",~" + lv_br("memory") + "\""
@@ -1454,14 +1502,126 @@ fn lv_glue(ctx: LvCtx) -> array {
     l
 }
 
+// Registros del procesador para std::raw::sysreg / set_sysreg (solo ARM64;
+// en x86-64 no existen y la llamada es una trampa, nunca un valor inventado;
+// el runtime solo las usa con std::raw::bare() == 1).
+//   1 cntvct_el0 (L)  2 cntfrq_el0 (L)  3 vbar_el1  4 esr_el1 (L)
+//   5 far_el1 (L)     6 elr_el1         7 spsr_el1  8 sctlr_el1
+//   9 ttbr0_el1       10 tcr_el1        11 mair_el1 12 cpacr_el1
+//   13 daif           14 currentel (L)
+//   set_sysreg(100, _): invalida la TLB (tras cambiar tablas de páginas).
+fn lv_sysreg_names() -> array {
+    ["", "cntvct_el0", "cntfrq_el0", "vbar_el1", "esr_el1", "far_el1", "elr_el1", "spsr_el1", "sctlr_el1", "ttbr0_el1", "tcr_el1", "mair_el1", "cpacr_el1", "daif", "currentel"]
+}
+
+fn lv_sysreg_writable(k: int) -> bool {
+    k == 3 || (k >= 6 && k <= 13)
+}
+
+fn lv_sysreg_helpers(arch: string) -> array {
+    let mut l = []
+    if arch != "aarch64" {
+        l = std::array::push(l, "define internal i64 @lv_sysreg(i64 %k) noinline " + lv_br("\n  call void @llvm.trap()\n  unreachable\n"))
+        l = std::array::push(l, "define internal void @lv_set_sysreg(i64 %k, i64 %v) noinline " + lv_br("\n  call void @llvm.trap()\n  unreachable\n"))
+        return l
+    }
+    let names = lv_sysreg_names()
+    let mut rd = "\n  switch i64 %k, label %bad ["
+    let mut wr = "\n  switch i64 %k, label %bad ["
+    let mut k = 1
+    while k < len(names) {
+        rd += " i64 {k}, label %r{k}"
+        if lv_sysreg_writable(k) {
+            wr += " i64 {k}, label %w{k}"
+        }
+        k += 1
+    }
+    rd += " ]\n"
+    wr += " i64 100, label %tlb ]\n"
+    k = 1
+    while k < len(names) {
+        let n = names[k]
+        rd += "r{k}:\n  %v{k} = call i64 asm sideeffect \"mrs $0, " + n + "\", \"=r\"()\n  ret i64 %v{k}\n"
+        if lv_sysreg_writable(k) {
+            wr += "w{k}:\n  call void asm sideeffect \"msr " + n + ", $0\\0Aisb\", \"r,~" + lv_br("memory") + "\"(i64 %v)\n  ret void\n"
+        }
+        k += 1
+    }
+    rd += "bad:\n  call void @llvm.trap()\n  unreachable\n"
+    wr += "tlb:\n  call void asm sideeffect \"dsb ishst\\0Atlbi vmalle1is\\0Adsb ish\\0Aisb\", \"~" + lv_br("memory") + "\"()\n  ret void\n"
+    wr += "bad:\n  call void @llvm.trap()\n  unreachable\n"
+    l = std::array::push(l, "define internal i64 @lv_sysreg(i64 %k) noinline " + lv_br(rd))
+    l = std::array::push(l, "define internal void @lv_set_sysreg(i64 %k, i64 %v) noinline " + lv_br(wr))
+    l
+}
+
+// Arranque sin sistema operativo (aarch64-none, máquina "virt" de QEMU o
+// equivalente: RAM desde 0x40000000, UART PL011 en 0x09000000, PSCI por hvc).
+// El _start lo escribe std::freestanding::generate_startup_asm (pila en
+// _stack_top, .bss a cero, salto a lv_bare_start); el enlazado usa el guion
+// de std::freestanding::generate_linker_script (build_llvm lo escribe junto
+// al .ll). lv_bare_start activa la coma flotante (CPACR_EL1) y la MMU con una
+// tabla de páginas de verdad (bloques de 1 GiB con identidad: el primero como
+// dispositivo, sin ejecutar; los otros tres como memoria normal con caché;
+// MAIR 0xFF00, TCR 0x1_8080_3519: T0SZ=25, páginas de 4 KiB en las dos
+// mitades (TG1=0 está reservado y el procesador no traduce nada), la alta
+// desactivada (EPD1), direcciones físicas de 36 bits) y SCTLR_EL1 con un valor completo conocido (bits RES1 0x30D00800 +
+// M, C, I; sin WXN ni comprobación de alineación, cuyo valor al arrancar es
+// desconocido) y
+// sigue en lv_bare_init: argumentos vacíos, zona de memoria desde
+// __kernel_end hasta 0x80000000 (globals + 3000 / + 3008) y lv_main.
+fn lv_bare_prologue() -> array {
+    let mut l = []
+    for line in std::text::lines(std::freestanding::generate_startup_asm("aarch64-unknown-none", "lv_bare_start")) {
+        if std::text::length(line) > 0 {
+            l = std::array::push(l, "module asm \"" + lv_asm_escape(line) + "\"")
+        }
+    }
+    let asm = [".text", ".globl lv_bare_start", "lv_bare_start:",
+        "  mov x0, #0x300000", "  msr cpacr_el1, x0", "  isb",
+        "  adrp x0, lv_bare_l1", "  add x0, x0, :lo12:lv_bare_l1",
+        "  movz x1, #0x401", "  movk x1, #0x60, lsl #48", "  str x1, [x0]",
+        "  movz x1, #0x705", "  movk x1, #0x4000, lsl #16", "  str x1, [x0, #8]",
+        "  movz x1, #0x705", "  movk x1, #0x8000, lsl #16", "  str x1, [x0, #16]",
+        "  movz x1, #0x705", "  movk x1, #0xc000, lsl #16", "  str x1, [x0, #24]",
+        "  dsb sy",
+        "  msr ttbr0_el1, x0",
+        "  movz x1, #0xff00", "  msr mair_el1, x1",
+        "  movz x1, #0x3519", "  movk x1, #0x8080, lsl #16", "  movk x1, #1, lsl #32", "  msr tcr_el1, x1",
+        "  isb",
+        "  tlbi vmalle1", "  dsb sy", "  isb",
+        "  movz x1, #0x1805", "  movk x1, #0x30d0, lsl #16",
+        "  msr sctlr_el1, x1", "  isb",
+        "  b lv_bare_init",
+        ".bss", ".balign 4096", "lv_bare_l1:", "  .space 4096", ".text"]
+    for line in asm {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    l = std::array::push(l, "@lv_bare_args = internal global [4 x i64] zeroinitializer, align 16")
+    l = std::array::push(l, "@__kernel_end = external global i8")
+    l = std::array::push(l, "define void @lv_bare_init() noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 ptrtoint (ptr @lv_bare_args to i64), ptr %g\n  %e = ptrtoint ptr @__kernel_end to i64\n  %e1 = add i64 %e, 4095\n  %e2 = and i64 %e1, -4096\n  %h = getelementptr i8, ptr @G, i64 3000\n  store i64 %e2, ptr %h\n  %he = getelementptr i8, ptr @G, i64 3008\n  store i64 2147483648, ptr %he\n  call void @lv_main()\n  unreachable\n"))
+    l
+}
+
+fn lv_asm_escape(s: string) -> string {
+    std::text::replace(std::text::replace(s, "\\", "\\5C"), "\"", "\\22")
+}
+
 // Programa (gu) + runtime (gr) -> Result::Ok(texto .ll) o Err(mensajes).
 fn lv_build(gu: G, gr: G, target: string) -> Result {
-    if target != "x86_64" && target != "aarch64" {
-        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64 or aarch64)")
+    if target != "x86_64" && target != "aarch64" && target != "aarch64-none" {
+        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64, aarch64 or aarch64-none)")
+    }
+    // aarch64-none: ARM64 sin sistema operativo (arranca sola; ver
+    // lv_bare_prologue y native/sys_bare.titan).
+    let bare = target == "aarch64-none"
+    let mut arch = target
+    if bare {
+        arch = "aarch64"
     }
     let (rt, rt_arity) = bk_rt_tables(gr)
-    let uctx = LvCtx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, target: target, depth: [], maxd: 0 }
-    let rctx = LvCtx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity, target: target, depth: [], maxd: 0 }
+    let uctx = LvCtx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, target: arch, depth: [], maxd: 0, bare: bare }
+    let rctx = LvCtx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity, target: arch, depth: [], maxd: 0, bare: bare }
     let mut b = lv_new()
     let mut parts = []
     // Funciones del apoyo que llaman al runtime.
@@ -1515,7 +1675,11 @@ fn lv_build(gu: G, gr: G, target: string) -> Result {
     }
     let mut head = []
     head = std::array::push(head, "; Generado por selfhost/native/llvm.titan (compilador de Titan escrito en Titan).")
-    head = std::array::push(head, "target triple = \"" + target + "-unknown-linux-gnu\"")
+    if bare {
+        head = std::array::push(head, "target triple = \"aarch64-unknown-none\"")
+    } else {
+        head = std::array::push(head, "target triple = \"" + target + "-unknown-linux-gnu\"")
+    }
     head = std::array::push(head, "%V = type " + lv_br(" i64, i64 "))
     head = std::array::push(head, "%O = type " + lv_br(" i64, i1 "))
     head = std::array::push(head, "%P = type " + lv_br(" i32, i32 "))
@@ -1526,6 +1690,8 @@ fn lv_build(gu: G, gr: G, target: string) -> Result {
     head = std::array::push(head, "declare %O @llvm.smul.with.overflow.i64(i64, i64)")
     head = std::array::push(head, "declare double @llvm.sqrt.f64(double)")
     head = std::array::push(head, "declare double @llvm.fma.f64(double, double, double)")
+    head = std::array::push(head, "declare void @llvm.trap()")
+    head = std::array::concat(head, lv_sysreg_helpers(arch))
     // Strings estáticos: [cuenta -1][longitud][bytes].
     let mut id = 0
     for t in b.stxt {

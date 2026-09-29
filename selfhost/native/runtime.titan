@@ -24,6 +24,7 @@ import std_regex_hir
 import std_regex_nfa
 import std_regex_run
 import std_router
+import std_freestanding
 import std_rsa
 import std_jwt
 import std_libm
@@ -46,6 +47,7 @@ import std_term
 import std_term_keys
 import std_process
 import sys_arm64
+import sys_bare
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
 // cada ejecutable. Reproduce la semántica de la VM de Rust

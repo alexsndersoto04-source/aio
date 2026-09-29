@@ -39,6 +39,12 @@ fn raw_signatures() -> array {
         "std::raw::svc Int,Int,Int,Int,Int,Int,Int -> Int",
         "std::raw::arch  -> Int",
         "std::raw::globals  -> Int",
+        "std::raw::mmio_load32 Int -> Int",
+        "std::raw::mmio_store32 Int,Int -> Nil",
+        "std::raw::sysreg Int -> Int",
+        "std::raw::set_sysreg Int,Int -> Nil",
+        "std::raw::bare  -> Int",
+        "std::raw::hvc Int,Int -> Int",
         "std::raw::fail String -> Never",
         "std::raw::throw Any -> Never",
     ]
