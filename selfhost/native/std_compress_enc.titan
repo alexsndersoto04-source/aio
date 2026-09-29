@@ -1,0 +1,1318 @@
+// std::compress — compresión gzip / zlib / deflate (niveles 0..9), en Titan.
+//
+// Port literal del compresor de miniz_oxide 0.8.9 (src/deflate/core.rs:
+// compress_normal, compress_fast, find_match, flush_block, optimize_table,
+// start_dynamic_block...; stored.rs: compress_stored; zlib.rs: cabecera) tal
+// como lo usa flate2 1.1.9 en la VM de Rust (crates/titan_stdlib/src/
+// compress_mod.rs: *Encoder::new(Vec, Compression::new(nivel)), write_all,
+// finish). La salida es idéntica byte a byte a la de la VM: se comprobó con
+// native/compress/deflate_ref.py (el mismo algoritmo en Python, validado
+// contra la VM con miles de casos) y native/compress/fuzz_enc.py.
+//
+// Detalles que importan para ser idéntico:
+//   * se reproduce también cómo flate2 llama a miniz (zio::Writer con búfer
+//     de salida de 32 KiB: write_all -> write_with_status -> deflate() ->
+//     compress_inner; luego finish). Importa: cuando un bloque no cabe en lo
+//     que queda del búfer, miniz se para y sigue en la llamada siguiente, y
+//     el camino rápido (nivel 1) rellena entonces su ventana de 4096 bytes
+//     antes de acabar la actual, lo que cambia la salida;
+//   * las cuentas y claves de Huffman son u16 con desbordamiento (& 65535);
+//   * find_match y el camino rápido comparan 8 bytes del diccionario aunque
+//     pasen del final de lo leído (bytes viejos o ceros), y luego recortan;
+//   * el nivel 0 hace bloques "stored" de 31745 bytes; si un bloque
+//     comprimido no ahorra, se reescribe como stored.
+//
+// Estado (bloque de rt_alloc), desde e:
+//   + 0        diccionario, 32768 + 258 bytes (los 257 primeros repetidos al
+//              final, como LZ_DICT_FULL_SIZE)
+//   + 33280    hash (32768 palabras)      + 295424  next (32768 palabras)
+//   + 557568   registros LZ del bloque: literal = byte, coincidencia =
+//              256 + (longitud-3)*32768 + (distancia-1)
+//   + 1082368  cuentas [3][288]   + 1089280 códigos [3][288]
+//   + 1096192  tamaños [3][288]   + 1103104 / 1107712 símbolos (clave, índice)
+//   + 1112320  num_codes (33)     + 1112584 next_code (16)
+//   + 1112720  histograma (256)   + 1114768 posiciones (256)
+//   + 1116816  longitudes empaquetadas (320)   + 1119376 a empaquetar (320)
+//   + 1124608  escalares (ce_get / ce_set):
+//       0 flags  8 probes[0]  16 probes[1]  24 greedy  32 code_buf_dict_pos
+//       40 lookahead_size  48 lookahead_pos  56 dict size  64 code_position
+//       72 num_flags_left  80 total_bytes  88 block_index  96 saved_lit
+//       104 saved_match_dist  112 saved_match_len  120 flush (0 None, 2 Finish)
+//       128 salida  136 longitud  144 capacidad  152 bit_buffer  160 bits_in
+//       168 nº de registros  176 adler32  184..200 RLE  208 nº empaquetadas
+//       216 out_len  224 out_buf_ofs  232 flush_remaining  240 finished
+//       248 flujo terminado (Done)  256 src_pos
+// Tablas de longitudes/distancias: globals + 3080 (se crean la primera vez).
+
+fn ce_get(e: int, k: int) -> int {
+    std::raw::load(e + 1124608 + k)
+}
+
+fn ce_set(e: int, k: int, v: int) {
+    std::raw::store(e + 1124608 + k, v)
+}
+
+fn ce_min(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    b
+}
+
+// len_sym (257..285) por longitud-3, bits extra por longitud-3 y símbolo de
+// distancia por distancia-1; con las mismas fórmulas que el descompresor
+// (iguales a LEN_SYM / LEN_EXTRA / SMALL_DIST_SYM / LARGE_DIST_SYM).
+fn ce_tables() -> int {
+    let g = std::raw::globals() + 3080
+    let have = std::raw::load(g)
+    if have != 0 {
+        return have
+    }
+    let t = rt_alloc(266240)
+    let mut i = 0
+    while i < 29 {
+        let b = cz_len_base(i)
+        let x = cz_len_extra(i)
+        let mut l = b
+        while l < b + std::raw::shl(1, x) {
+            if l <= 258 {
+                std::raw::store(t + 8 * (l - 3), 257 + i)
+                std::raw::store(t + 2048 + 8 * (l - 3), x)
+            }
+            l += 1
+        }
+        i += 1
+    }
+    let mut c = 0
+    while c < 30 {
+        let b = cz_dist_base(c) - 1
+        let mut d = b
+        while d < b + std::raw::shl(1, cz_dist_extra(c)) {
+            std::raw::store(t + 4096 + 8 * d, c)
+            d += 1
+        }
+        c += 1
+    }
+    std::raw::store(g, t)
+    t
+}
+
+fn ce_new(level: int, zlib: bool, n: int) -> int {
+    let size = 1125120
+    let e = rt_alloc(size)
+    let mut i = 0
+    while i < size {
+        std::raw::store(e + i, 0)
+        i += 8
+    }
+    let mut probes = 0
+    if level == 1 {
+        probes = 1
+    } else if level == 2 {
+        probes = 6
+    } else if level == 3 {
+        probes = 32
+    } else if level == 4 {
+        probes = 16
+    } else if level == 5 {
+        probes = 32
+    } else if level == 6 {
+        probes = 128
+    } else if level == 7 {
+        probes = 256
+    } else if level == 8 {
+        probes = 512
+    } else if level == 9 {
+        probes = 768
+    }
+    let mut flags = probes
+    if level <= 3 {
+        flags = flags | 16384
+        ce_set(e, 24, 1)
+    }
+    if zlib {
+        flags = flags | 4096
+    }
+    if level == 0 {
+        flags = flags | 524288
+    }
+    ce_set(e, 0, flags)
+    ce_set(e, 8, 1 + (probes + 2) / 3)
+    ce_set(e, 16, 1 + (std::raw::shr(probes, 2) + 2) / 3)
+    ce_set(e, 64, 1)
+    ce_set(e, 72, 8)
+    let cap = n / 2 + 64
+    let p = rt_str_alloc(cap)
+    ce_set(e, 128, p)
+    ce_set(e, 144, cap)
+    e
+}
+
+// ------------------------------------------------------------ salida
+
+fn ce_byte(e: int, byte: int) {
+    let olen = ce_get(e, 136)
+    let cap = ce_get(e, 144)
+    if olen >= cap {
+        let nc = cap * 2
+        let old = ce_get(e, 128)
+        let p = rt_str_alloc(nc)
+        rt_copy(p + 16, old + 16, olen)
+        rt_free_block(old)
+        ce_set(e, 128, p)
+        ce_set(e, 144, nc)
+    }
+    std::raw::store8(ce_get(e, 128) + 16 + olen, byte)
+    ce_set(e, 136, olen + 1)
+}
+
+// put_bits: n bits (LSB primero).
+fn ce_put(e: int, bits: int, n: int) {
+    let mut bi = ce_get(e, 160)
+    let mut bb = ce_get(e, 152) | std::raw::shl(bits, bi)
+    bi += n
+    while bi >= 8 {
+        ce_byte(e, bb & 255)
+        bb = std::raw::shr(bb, 8)
+        bi -= 8
+    }
+    ce_set(e, 152, bb)
+    ce_set(e, 160, bi)
+}
+
+fn ce_pad(e: int) {
+    let bi = ce_get(e, 160)
+    if bi != 0 {
+        ce_put(e, 0, 8 - bi)
+    }
+}
+
+// ------------------------------------------------------------ registros LZ
+
+fn ce_consume(e: int) {
+    let nf = ce_get(e, 72) - 1
+    if nf == 0 {
+        ce_set(e, 72, 8)
+        ce_set(e, 64, ce_get(e, 64) + 1)
+    } else {
+        ce_set(e, 72, nf)
+    }
+}
+
+fn ce_count(e: int, t: int, i: int) {
+    let p = e + 1082368 + 2304 * t + 8 * i
+    std::raw::store(p, (std::raw::load(p) + 1) & 65535)
+}
+
+fn ce_record(e: int, v: int) {
+    let n = ce_get(e, 168)
+    std::raw::store(e + 557568 + 8 * n, v)
+    ce_set(e, 168, n + 1)
+}
+
+// write_code + cuenta de un literal (sin total ni bandera).
+fn ce_rec_lit(e: int, b: int) {
+    ce_set(e, 64, ce_get(e, 64) + 1)
+    ce_record(e, b)
+    ce_count(e, 0, b)
+}
+
+// write_code + cuentas de una coincidencia (l3 = longitud-3, d = distancia-1).
+fn ce_rec_match(e: int, l3: int, d: int) {
+    let t = ce_tables()
+    ce_set(e, 64, ce_get(e, 64) + 3)
+    ce_record(e, 256 + l3 * 32768 + d)
+    ce_count(e, 1, std::raw::load(t + 4096 + 8 * d))
+    ce_count(e, 0, std::raw::load(t + 8 * l3))
+}
+
+fn ce_lit(e: int, b: int) {
+    ce_set(e, 80, ce_get(e, 80) + 1)
+    ce_rec_lit(e, b)
+    ce_consume(e)
+}
+
+fn ce_match(e: int, ln: int, dist: int) {
+    ce_set(e, 80, ce_get(e, 80) + ln)
+    ce_rec_match(e, (ln - 3) & 255, dist - 1)
+    ce_consume(e)
+}
+
+// ------------------------------------------------------------ diccionario
+
+fn ce_dict(e: int, dst: int, c: int) {
+    std::raw::store8(e + dst, c)
+    if dst < 257 {
+        std::raw::store8(e + 32768 + dst, c)
+    }
+}
+
+fn ce_u16(e: int, pos: int) -> int {
+    std::raw::load8(e + pos) + 256 * std::raw::load8(e + pos + 1)
+}
+
+// Cuántos de los 8 bytes en p y q (posiciones ya enmascaradas) coinciden.
+fn ce_same8(e: int, p: int, q: int) -> int {
+    if std::raw::load(e + p) == std::raw::load(e + q) {
+        return 8
+    }
+    let mut k = 0
+    while std::raw::load8(e + p + k) == std::raw::load8(e + q + k) {
+        k += 1
+    }
+    k
+}
+
+// find_match: devuelve distancia * 1024 + longitud.
+fn ce_find(e: int, la_pos: int, max_dist: int, max_len0: int, mdist0: int, mlen0: int) -> int {
+    let max_len = ce_min(258, max_len0)
+    let mut mlen = mlen0
+    if mlen < 1 {
+        mlen = 1
+    }
+    let mut mdist = mdist0
+    if max_len <= mlen {
+        return mdist * 1024 + mlen
+    }
+    let pos = la_pos & 32767
+    let mut probe = pos
+    let mut left = ce_get(e, 16)
+    if mlen < 32 {
+        left = ce_get(e, 8)
+    }
+    let mut c01 = ce_u16(e, pos + mlen - 1)
+    let s01 = ce_u16(e, pos)
+    loop {
+        let mut dist = 0
+        let mut found = false
+        while !found {
+            left -= 1
+            if left == 0 {
+                return mdist * 1024 + mlen
+            }
+            let mut k = 0
+            while k < 3 && !found {
+                let npp = std::raw::load(e + 295424 + 8 * probe)
+                dist = (la_pos - npp) & 65535
+                if npp == 0 || dist > max_dist || mlen - 1 >= 258 {
+                    return mdist * 1024 + mlen
+                }
+                probe = npp & 32767
+                if ce_u16(e, probe + mlen - 1) == c01 {
+                    found = true
+                }
+                k += 1
+            }
+        }
+        if dist == 0 {
+            return mdist * 1024 + mlen
+        }
+        if ce_u16(e, probe) == s01 {
+            let mut p = pos + 2
+            let mut q = probe + 2
+            let mut it = 0
+            let mut differ = false
+            while it < 32 && !differ {
+                let k = ce_same8(e, p & 32767, q & 32767)
+                if k == 8 {
+                    p += 8
+                    q += 8
+                    it += 1
+                } else {
+                    differ = true
+                    let plen = p - pos + k
+                    if plen > mlen {
+                        mdist = dist
+                        mlen = ce_min(max_len, plen)
+                        if mlen >= max_len {
+                            return mdist * 1024 + mlen
+                        }
+                        c01 = ce_u16(e, pos + mlen - 1)
+                    }
+                }
+            }
+            if !differ {
+                return dist * 1024 + max_len
+            }
+        }
+    }
+    0
+}
+
+// Mete n bytes de la entrada en el diccionario y en las cadenas hash (parte
+// común de compress_normal y compress_stored). Devuelve lookahead_size.
+fn ce_insert(e: int, data: int, src: int, n: int, la_size0: int, la_pos: int) -> int {
+    let mut la_size = la_size0
+    if la_size + ce_get(e, 56) >= 2 && n > 0 {
+        let mut dst = (la_pos + la_size) & 32767
+        let mut ins = la_pos + la_size - 2
+        let mut h = (std::raw::shl(std::raw::load8(e + (ins & 32767)), 5) ^ std::raw::load8(e + ((ins + 1) & 32767))) & 32767
+        la_size += n
+        let mut i = 0
+        while i < n {
+            let c = std::raw::load8(data + src + i)
+            ce_dict(e, dst, c)
+            h = (std::raw::shl(h, 5) ^ c) & 32767
+            std::raw::store(e + 295424 + 8 * (ins & 32767), std::raw::load(e + 33280 + 8 * h))
+            std::raw::store(e + 33280 + 8 * h, ins & 65535)
+            dst = (dst + 1) & 32767
+            ins += 1
+            i += 1
+        }
+    } else {
+        let mut i = 0
+        while i < n {
+            let c = std::raw::load8(data + src + i)
+            ce_dict(e, (la_pos + la_size) & 32767, c)
+            la_size += 1
+            if la_size + ce_get(e, 56) >= 3 {
+                let ins = la_pos + la_size - 3
+                let a = std::raw::shl(std::raw::load8(e + (ins & 32767)), 10)
+                let b = std::raw::shl(std::raw::load8(e + ((ins + 1) & 32767)), 5)
+                let h = (a ^ b ^ c) & 32767
+                std::raw::store(e + 295424 + 8 * (ins & 32767), std::raw::load(e + 33280 + 8 * h))
+                std::raw::store(e + 33280 + 8 * h, ins & 65535)
+            }
+            i += 1
+        }
+    }
+    la_size
+}
+
+// ------------------------------------------------------------ compresores
+
+fn ce_normal(e: int, data: int, len: int) {
+    let mut src = 0
+    let mut la_size = ce_get(e, 40)
+    let mut la_pos = ce_get(e, 48)
+    while src < len || (ce_get(e, 120) != 0 && la_size != 0) {
+        let n = ce_min(len - src, 258 - la_size)
+        la_size = ce_insert(e, data, src, n, la_size, la_pos)
+        src += n
+        ce_set(e, 56, ce_min(32768 - la_size, ce_get(e, 56)))
+        if ce_get(e, 120) == 0 && la_size < 258 {
+            break
+        }
+        let mut move = 1
+        let saved_len = ce_get(e, 112)
+        let mut clen = 2
+        if saved_len != 0 {
+            clen = saved_len
+        }
+        let cur = la_pos & 32767
+        let r = ce_find(e, la_pos, ce_get(e, 56), la_size, 0, clen)
+        let mut cdist = r / 1024
+        clen = r % 1024
+        if (clen == 3 && cdist >= 8192) || cur == cdist {
+            cdist = 0
+            clen = 0
+        }
+        if saved_len != 0 {
+            if clen > saved_len {
+                ce_lit(e, ce_get(e, 96))
+                if clen >= 128 {
+                    ce_match(e, clen, cdist)
+                    ce_set(e, 112, 0)
+                    move = clen
+                } else {
+                    ce_set(e, 96, std::raw::load8(e + cur))
+                    ce_set(e, 104, cdist)
+                    ce_set(e, 112, clen)
+                }
+            } else {
+                ce_match(e, saved_len, ce_get(e, 104))
+                move = saved_len - 1
+                ce_set(e, 112, 0)
+            }
+        } else if cdist == 0 {
+            ce_lit(e, std::raw::load8(e + cur))
+        } else if ce_get(e, 24) != 0 || clen >= 128 {
+            ce_match(e, clen, cdist)
+            move = clen
+        } else {
+            ce_set(e, 96, std::raw::load8(e + cur))
+            ce_set(e, 104, cdist)
+            ce_set(e, 112, clen)
+        }
+        la_pos += move
+        la_size -= move
+        ce_set(e, 56, ce_min(ce_get(e, 56) + move, 32768))
+        let cp = ce_get(e, 64)
+        let total = ce_get(e, 80)
+        let fat = std::raw::shr(cp * 115, 7) >= total
+        if cp > 65528 || (total > 31744 && fat) {
+            ce_set(e, 40, la_size)
+            ce_set(e, 48, la_pos)
+            if ce_flush_block(e, 0) != 0 {
+                ce_set(e, 256, src)
+                return
+            }
+        }
+    }
+    ce_set(e, 256, src)
+    ce_set(e, 40, la_size)
+    ce_set(e, 48, la_pos)
+}
+
+fn ce_stored(e: int, data: int, len: int) {
+    ce_set(e, 112, 0)
+    let mut written = ce_get(e, 80)
+    let mut src = 0
+    let mut la_size = ce_get(e, 40)
+    let mut la_pos = ce_get(e, 48)
+    while src < len || (ce_get(e, 120) != 0 && la_size != 0) {
+        let n = ce_min(len - src, 258 - la_size)
+        la_size = ce_insert(e, data, src, n, la_size, la_pos)
+        src += n
+        ce_set(e, 56, ce_min(32768 - la_size, ce_get(e, 56)))
+        if ce_get(e, 120) == 0 && la_size < 258 {
+            break
+        }
+        written += 1
+        la_pos += 1
+        la_size -= 1
+        ce_set(e, 56, ce_min(ce_get(e, 56) + 1, 32768))
+        if written > 31744 {
+            ce_set(e, 80, written)
+            ce_set(e, 40, la_size)
+            ce_set(e, 48, la_pos)
+            if ce_flush_block(e, 0) != 0 {
+                ce_set(e, 256, src)
+                return
+            }
+            written = ce_get(e, 80)
+        }
+    }
+    ce_set(e, 256, src)
+    ce_set(e, 80, written)
+    ce_set(e, 40, la_size)
+    ce_set(e, 48, la_pos)
+}
+
+fn ce_tri(e: int, p: int) -> int {
+    std::raw::load8(e + p) + 256 * std::raw::load8(e + p + 1) + 65536 * std::raw::load8(e + p + 2)
+}
+
+// Tras cada registro del camino rápido: 0 seguir, 1 se vació el bloque
+// (recargar lookahead), 2 el bloque no cupo en la salida (parar).
+fn ce_fast_full(e: int, la_size: int, la_pos: int) -> int {
+    if ce_get(e, 64) > 65528 {
+        ce_set(e, 40, la_size)
+        ce_set(e, 48, la_pos)
+        if ce_flush_block(e, 0) != 0 {
+            return 2
+        }
+        return 1
+    }
+    0
+}
+
+fn ce_fast(e: int, data: int, len: int) {
+    let mut src = 0
+    let mut la_size = ce_get(e, 40)
+    let mut la_pos = ce_get(e, 48)
+    let mut cur = la_pos & 32767
+    while src < len || (ce_get(e, 120) != 0 && la_size > 0) {
+        let mut dst = (la_pos + la_size) & 32767
+        let mut n = ce_min(len - src, 4096 - la_size)
+        la_size += n
+        while n != 0 {
+            let k = ce_min(32768 - dst, n)
+            let mut i = 0
+            while i < k {
+                ce_dict(e, dst + i, std::raw::load8(data + src + i))
+                i += 1
+            }
+            src += k
+            dst = (dst + k) & 32767
+            n -= k
+        }
+        ce_set(e, 56, ce_min(32768 - la_size, ce_get(e, 56)))
+        if ce_get(e, 120) == 0 && la_size < 4096 {
+            break
+        }
+        while la_size >= 4 {
+            let mut clen = 1
+            let first = ce_tri(e, cur)
+            let h = (first ^ std::raw::shr(first, 17)) & 4095
+            let mut probe = std::raw::load(e + 33280 + 8 * h)
+            std::raw::store(e + 33280 + 8 * h, la_pos & 65535)
+            let mut cdist = (la_pos - probe) & 65535
+            if cdist <= ce_get(e, 56) {
+                probe = probe & 32767
+                if first == ce_tri(e, probe) {
+                    let mut p = cur + 3
+                    let mut q = probe + 3
+                    let mut it = 0
+                    clen = -1
+                    while it < 32 && clen < 0 {
+                        let k = ce_same8(e, p & 32767, q & 32767)
+                        if k == 8 {
+                            p += 8
+                            q += 8
+                            it += 1
+                        } else {
+                            clen = p - cur + k
+                        }
+                    }
+                    if clen < 0 {
+                        if cdist == 0 {
+                            clen = 0
+                        } else {
+                            clen = 258
+                        }
+                    }
+                    if clen < 3 || (clen == 3 && cdist >= 8192) {
+                        clen = 1
+                        ce_rec_lit(e, first & 255)
+                    } else {
+                        clen = ce_min(clen, la_size)
+                        ce_rec_match(e, (clen - 3) & 255, cdist - 1)
+                    }
+                } else {
+                    ce_rec_lit(e, first & 255)
+                }
+                ce_consume(e)
+                ce_set(e, 80, ce_get(e, 80) + clen)
+                la_pos += clen
+                ce_set(e, 56, ce_min(ce_get(e, 56) + clen, 32768))
+                cur = (cur + clen) & 32767
+                la_size -= clen
+                let st = ce_fast_full(e, la_size, la_pos)
+                if st == 2 {
+                    ce_set(e, 256, src)
+                    return
+                }
+                if st == 1 {
+                    la_size = ce_get(e, 40)
+                    la_pos = ce_get(e, 48)
+                }
+            }
+        }
+        while la_size != 0 {
+            let b = std::raw::load8(e + cur)
+            ce_set(e, 80, ce_get(e, 80) + 1)
+            ce_rec_lit(e, b)
+            ce_consume(e)
+            la_pos += 1
+            ce_set(e, 56, ce_min(ce_get(e, 56) + 1, 32768))
+            cur = (cur + 1) & 32767
+            la_size -= 1
+            let st = ce_fast_full(e, la_size, la_pos)
+            if st == 2 {
+                ce_set(e, 256, src)
+                return
+            }
+            if st == 1 {
+                la_size = ce_get(e, 40)
+                la_pos = ce_get(e, 48)
+            }
+        }
+    }
+    ce_set(e, 256, src)
+    ce_set(e, 40, la_size)
+    ce_set(e, 48, la_pos)
+}
+
+// ------------------------------------------------------------ Huffman
+
+// radix_sort_symbols sobre n pares (clave, índice) en a; b es el auxiliar.
+// Devuelve dónde quedó el resultado.
+fn ce_radix(e: int, a: int, b: int, n: int) -> int {
+    let hist = e + 1112720
+    let off = e + 1114768
+    let mut zeros_hi = 0
+    let mut i = 0
+    while i < n {
+        if (std::raw::shr(std::raw::load(a + 16 * i), 8) & 255) == 0 {
+            zeros_hi += 1
+        }
+        i += 1
+    }
+    let mut passes = 2
+    if zeros_hi == n {
+        passes = 1
+    }
+    let mut cur = a
+    let mut other = b
+    let mut pass = 0
+    while pass < passes {
+        i = 0
+        while i < 256 {
+            std::raw::store(hist + 8 * i, 0)
+            i += 1
+        }
+        i = 0
+        while i < n {
+            let j = std::raw::shr(std::raw::load(cur + 16 * i), 8 * pass) & 255
+            std::raw::store(hist + 8 * j, std::raw::load(hist + 8 * j) + 1)
+            i += 1
+        }
+        let mut o = 0
+        i = 0
+        while i < 256 {
+            std::raw::store(off + 8 * i, o)
+            o += std::raw::load(hist + 8 * i)
+            i += 1
+        }
+        i = 0
+        while i < n {
+            let key = std::raw::load(cur + 16 * i)
+            let j = std::raw::shr(key, 8 * pass) & 255
+            let at = std::raw::load(off + 8 * j)
+            std::raw::store(other + 16 * at, key)
+            std::raw::store(other + 16 * at + 8, std::raw::load(cur + 16 * i + 8))
+            std::raw::store(off + 8 * j, at + 1)
+            i += 1
+        }
+        let tmp = cur
+        cur = other
+        other = tmp
+        pass += 1
+    }
+    cur
+}
+
+fn ce_key(a: int, i: int) -> int {
+    std::raw::load(a + 16 * i)
+}
+
+fn ce_setkey(a: int, i: int, v: int) {
+    std::raw::store(a + 16 * i, v)
+}
+
+// calculate_minimum_redundancy (claves u16).
+fn ce_minred(a: int, n: int) {
+    if n == 0 {
+        return
+    }
+    if n == 1 {
+        ce_setkey(a, 0, 1)
+        return
+    }
+    ce_setkey(a, 0, (ce_key(a, 0) + ce_key(a, 1)) & 65535)
+    let mut root = 0
+    let mut leaf = 2
+    let mut nx = 1
+    while nx < n - 1 {
+        if leaf >= n || ce_key(a, root) < ce_key(a, leaf) {
+            ce_setkey(a, nx, ce_key(a, root))
+            ce_setkey(a, root, nx)
+            root += 1
+        } else {
+            ce_setkey(a, nx, ce_key(a, leaf))
+            leaf += 1
+        }
+        if leaf >= n || (root < nx && ce_key(a, root) < ce_key(a, leaf)) {
+            ce_setkey(a, nx, (ce_key(a, nx) + ce_key(a, root)) & 65535)
+            ce_setkey(a, root, nx)
+            root += 1
+        } else {
+            ce_setkey(a, nx, (ce_key(a, nx) + ce_key(a, leaf)) & 65535)
+            leaf += 1
+        }
+        nx += 1
+    }
+    ce_setkey(a, n - 2, 0)
+    nx = n - 3
+    while nx >= 0 {
+        ce_setkey(a, nx, (ce_key(a, ce_key(a, nx)) + 1) & 65535)
+        nx -= 1
+    }
+    let mut avbl = 1
+    let mut used = 0
+    let mut dpth = 0
+    let mut rt = n - 2
+    let mut nt = n - 1
+    while avbl > 0 {
+        while rt >= 0 && ce_key(a, rt) == dpth {
+            used += 1
+            rt -= 1
+        }
+        while avbl > used {
+            ce_setkey(a, nt, dpth)
+            nt -= 1
+            avbl -= 1
+        }
+        avbl = 2 * used
+        dpth += 1
+        used = 0
+    }
+}
+
+// enforce_max_code_size sobre num_codes (nc).
+fn ce_enforce(nc: int, ln: int, mx: int) {
+    if ln <= 1 {
+        return
+    }
+    let mut extra = 0
+    let mut i = mx + 1
+    while i <= 32 {
+        extra += std::raw::load(nc + 8 * i)
+        i += 1
+    }
+    std::raw::store(nc + 8 * mx, std::raw::load(nc + 8 * mx) + extra)
+    let mut total = 0
+    i = 1
+    while i <= mx {
+        total += std::raw::shl(std::raw::load(nc + 8 * i), mx - i)
+        i += 1
+    }
+    let mut k = std::raw::shl(1, mx)
+    while k < total {
+        std::raw::store(nc + 8 * mx, std::raw::load(nc + 8 * mx) - 1)
+        i = mx - 1
+        while i > 0 {
+            let v = std::raw::load(nc + 8 * i)
+            if v != 0 {
+                std::raw::store(nc + 8 * i, v - 1)
+                std::raw::store(nc + 8 * (i + 1), std::raw::load(nc + 8 * (i + 1)) + 2)
+                i = 0
+            } else {
+                i -= 1
+            }
+        }
+        k += 1
+    }
+}
+
+fn ce_optimize(e: int, t: int, tlen: int, limit: int, is_static: bool) {
+    let nc = e + 1112320
+    let nxt = e + 1112584
+    let cnt = e + 1082368 + 2304 * t
+    let cod = e + 1089280 + 2304 * t
+    let siz = e + 1096192 + 2304 * t
+    let mut i = 0
+    while i <= 32 {
+        std::raw::store(nc + 8 * i, 0)
+        i += 1
+    }
+    if is_static {
+        i = 0
+        while i < tlen {
+            let cs = std::raw::load(siz + 8 * i)
+            std::raw::store(nc + 8 * cs, std::raw::load(nc + 8 * cs) + 1)
+            i += 1
+        }
+    } else {
+        let s0 = e + 1103104
+        let mut used = 0
+        i = 0
+        while i < tlen {
+            let c = std::raw::load(cnt + 8 * i)
+            if c != 0 {
+                std::raw::store(s0 + 16 * used, c)
+                std::raw::store(s0 + 16 * used + 8, i)
+                used += 1
+            }
+            i += 1
+        }
+        let syms = ce_radix(e, s0, e + 1107712, used)
+        ce_minred(syms, used)
+        i = 0
+        while i < used {
+            let k = ce_key(syms, i)
+            std::raw::store(nc + 8 * k, std::raw::load(nc + 8 * k) + 1)
+            i += 1
+        }
+        ce_enforce(nc, used, limit)
+        i = 0
+        while i < 288 {
+            std::raw::store(siz + 8 * i, 0)
+            std::raw::store(cod + 8 * i, 0)
+            i += 1
+        }
+        let mut last = used
+        i = 1
+        while i <= limit {
+            let first = last - std::raw::load(nc + 8 * i)
+            let mut j = first
+            while j < last {
+                std::raw::store(siz + 8 * std::raw::load(syms + 16 * j + 8), i)
+                j += 1
+            }
+            last = first
+            i += 1
+        }
+    }
+    std::raw::store(nxt + 8, 0)
+    let mut j = 0
+    i = 2
+    while i <= limit {
+        j = std::raw::shl(j + std::raw::load(nc + 8 * (i - 1)), 1)
+        std::raw::store(nxt + 8 * i, j)
+        i += 1
+    }
+    i = 0
+    while i < tlen {
+        let cs = std::raw::load(siz + 8 * i)
+        if cs != 0 {
+            let code = std::raw::load(nxt + 8 * cs)
+            std::raw::store(nxt + 8 * cs, code + 1)
+            std::raw::store(cod + 8 * i, std::raw::shr(cz_rev16(code & 65535), 16 - cs))
+        }
+        i += 1
+    }
+}
+
+fn ce_start_static(e: int) {
+    let s0 = e + 1096192
+    let mut i = 0
+    while i < 288 {
+        let mut v = 8
+        if i >= 144 && i < 256 {
+            v = 9
+        } else if i >= 256 && i < 280 {
+            v = 7
+        }
+        std::raw::store(s0 + 8 * i, v)
+        i += 1
+    }
+    i = 0
+    while i < 32 {
+        std::raw::store(s0 + 2304 + 8 * i, 5)
+        i += 1
+    }
+    ce_optimize(e, 0, 288, 15, true)
+    ce_optimize(e, 1, 32, 15, true)
+    ce_put(e, 1, 2)
+}
+
+fn ce_packed(e: int, v: int) {
+    let n = ce_get(e, 208)
+    std::raw::store(e + 1116816 + 8 * n, v)
+    ce_set(e, 208, n + 1)
+}
+
+// Rle::prev_code_size
+fn ce_rle_prev(e: int) {
+    let r = ce_get(e, 192)
+    if r != 0 {
+        let p = ce_get(e, 200)
+        let c2 = e + 1082368 + 4608
+        if r < 3 {
+            std::raw::store(c2 + 8 * p, (std::raw::load(c2 + 8 * p) + r) & 65535)
+            let mut i = 0
+            while i < r {
+                ce_packed(e, p)
+                i += 1
+            }
+        } else {
+            std::raw::store(c2 + 128, (std::raw::load(c2 + 128) + 1) & 65535)
+            ce_packed(e, 16)
+            ce_packed(e, r - 3)
+        }
+        ce_set(e, 192, 0)
+    }
+}
+
+// Rle::zero_code_size
+fn ce_rle_zero(e: int) {
+    let z = ce_get(e, 184)
+    if z != 0 {
+        let c2 = e + 1082368 + 4608
+        if z < 3 {
+            std::raw::store(c2, (std::raw::load(c2) + z) & 65535)
+            let mut i = 0
+            while i < z {
+                ce_packed(e, 0)
+                i += 1
+            }
+        } else if z <= 10 {
+            std::raw::store(c2 + 136, (std::raw::load(c2 + 136) + 1) & 65535)
+            ce_packed(e, 17)
+            ce_packed(e, z - 3)
+        } else {
+            std::raw::store(c2 + 144, (std::raw::load(c2 + 144) + 1) & 65535)
+            ce_packed(e, 18)
+            ce_packed(e, z - 11)
+        }
+        ce_set(e, 184, 0)
+    }
+}
+
+fn ce_start_dynamic(e: int) {
+    let c0 = e + 1082368
+    std::raw::store(c0 + 8 * 256, 1)
+    ce_optimize(e, 0, 288, 15, false)
+    ce_optimize(e, 1, 32, 15, false)
+    let s0 = e + 1096192
+    let s1 = s0 + 2304
+    let s2 = s0 + 4608
+    let mut nl = 286
+    while nl > 257 && std::raw::load(s0 + 8 * (nl - 1)) == 0 {
+        nl -= 1
+    }
+    let mut nd = 30
+    while nd > 1 && std::raw::load(s1 + 8 * (nd - 1)) == 0 {
+        nd -= 1
+    }
+    let pack = e + 1119376
+    let mut i = 0
+    while i < nl {
+        std::raw::store(pack + 8 * i, std::raw::load(s0 + 8 * i))
+        i += 1
+    }
+    i = 0
+    while i < nd {
+        std::raw::store(pack + 8 * (nl + i), std::raw::load(s1 + 8 * i))
+        i += 1
+    }
+    ce_set(e, 184, 0)
+    ce_set(e, 192, 0)
+    ce_set(e, 200, 255)
+    ce_set(e, 208, 0)
+    let c2 = c0 + 4608
+    i = 0
+    while i < 19 {
+        std::raw::store(c2 + 8 * i, 0)
+        i += 1
+    }
+    i = 0
+    while i < nl + nd {
+        let cs = std::raw::load(pack + 8 * i)
+        if cs == 0 {
+            ce_rle_prev(e)
+            ce_set(e, 184, ce_get(e, 184) + 1)
+            if ce_get(e, 184) == 138 {
+                ce_rle_zero(e)
+            }
+        } else {
+            ce_rle_zero(e)
+            if cs != ce_get(e, 200) {
+                ce_rle_prev(e)
+                std::raw::store(c2 + 8 * cs, (std::raw::load(c2 + 8 * cs) + 1) & 65535)
+                ce_packed(e, cs)
+            } else {
+                ce_set(e, 192, ce_get(e, 192) + 1)
+                if ce_get(e, 192) == 6 {
+                    ce_rle_prev(e)
+                }
+            }
+        }
+        ce_set(e, 200, cs)
+        i += 1
+    }
+    if ce_get(e, 192) != 0 {
+        ce_rle_prev(e)
+    } else {
+        ce_rle_zero(e)
+    }
+    ce_optimize(e, 2, 19, 7, false)
+    ce_put(e, 2, 2)
+    ce_put(e, nl - 257, 5)
+    ce_put(e, nd - 1, 5)
+    let mut nb = 19
+    while nb > 0 && std::raw::load(s2 + 8 * cz_order(nb - 1)) == 0 {
+        nb -= 1
+    }
+    if nb < 4 {
+        nb = 4
+    }
+    ce_put(e, nb - 4, 4)
+    i = 0
+    while i < nb {
+        ce_put(e, std::raw::load(s2 + 8 * cz_order(i)), 3)
+        i += 1
+    }
+    let packed = e + 1116816
+    let np = ce_get(e, 208)
+    let cd2 = e + 1089280 + 4608
+    i = 0
+    while i < np {
+        let c = std::raw::load(packed + 8 * i)
+        i += 1
+        ce_put(e, std::raw::load(cd2 + 8 * c), std::raw::load(s2 + 8 * c))
+        if c >= 16 {
+            let mut nbits = 2
+            if c == 17 {
+                nbits = 3
+            } else if c == 18 {
+                nbits = 7
+            }
+            ce_put(e, std::raw::load(packed + 8 * i), nbits)
+            i += 1
+        }
+    }
+}
+
+// compress_lz_codes
+fn ce_lz_codes(e: int) {
+    let t = ce_tables()
+    let cd0 = e + 1089280
+    let cd1 = cd0 + 2304
+    let s0 = e + 1096192
+    let s1 = s0 + 2304
+    let recs = e + 557568
+    let n = ce_get(e, 168)
+    let mut i = 0
+    while i < n {
+        let v = std::raw::load(recs + 8 * i)
+        if v < 256 {
+            ce_put(e, std::raw::load(cd0 + 8 * v), std::raw::load(s0 + 8 * v))
+        } else {
+            let l3 = (v - 256) / 32768
+            let d = (v - 256) % 32768
+            let ls = std::raw::load(t + 8 * l3)
+            ce_put(e, std::raw::load(cd0 + 8 * ls), std::raw::load(s0 + 8 * ls))
+            let ne = std::raw::load(t + 2048 + 8 * l3)
+            ce_put(e, l3 & (std::raw::shl(1, ne) - 1), ne)
+            let ds = std::raw::load(t + 4096 + 8 * d)
+            ce_put(e, std::raw::load(cd1 + 8 * ds), std::raw::load(s1 + 8 * ds))
+            let de = cz_dist_extra(ds)
+            ce_put(e, d & (std::raw::shl(1, de) - 1), de)
+        }
+        i += 1
+    }
+    ce_put(e, std::raw::load(cd0 + 8 * 256), std::raw::load(s0 + 8 * 256))
+}
+
+// flush_block (flush: 0 None, 2 Finish). Devuelve flush_remaining.
+fn ce_flush_block(e: int, flush: int) -> int {
+    let start = ce_get(e, 136)
+    let flags = ce_get(e, 0)
+    let total = ce_get(e, 80)
+    let cbdp = ce_get(e, 32)
+    let fits = ce_get(e, 48) - cbdp <= ce_get(e, 56)
+    let raw = (flags & 524288) != 0 && fits
+    if (flags & 4096) != 0 && ce_get(e, 88) == 0 {
+        let mut cmf = 120
+        if (flags & 524288) != 0 {
+            cmf = 8
+        }
+        let probes = flags & 4095
+        let mut lv = 2
+        if (flags & 16384) != 0 {
+            if probes <= 1 {
+                lv = 0
+            } else {
+                lv = 1
+            }
+        } else if probes >= 768 {
+            lv = 3
+        }
+        let flg = lv * 64
+        let rem = (cmf * 256 + flg) % 31
+        ce_put(e, cmf, 8)
+        ce_put(e, (flg & 224) + (31 - rem), 8)
+    }
+    if flush == 2 {
+        ce_put(e, 1, 1)
+    } else {
+        ce_put(e, 0, 1)
+    }
+    let saved_len = ce_get(e, 136)
+    let saved_bb = ce_get(e, 152)
+    let saved_bi = ce_get(e, 160)
+    if !raw {
+        if total < 48 {
+            ce_start_static(e)
+        } else {
+            ce_start_dynamic(e)
+        }
+        ce_lz_codes(e)
+    }
+    let expanded = total > 32 && ce_get(e, 136) - saved_len + 1 >= total && fits
+    if raw || expanded {
+        ce_set(e, 136, saved_len)
+        ce_set(e, 152, saved_bb)
+        ce_set(e, 160, saved_bi)
+        ce_put(e, 0, 2)
+        ce_pad(e)
+        ce_put(e, total & 65535, 16)
+        ce_put(e, (65535 - total) & 65535, 16)
+        let mut i = 0
+        while i < total {
+            ce_byte(e, std::raw::load8(e + ((cbdp + i) & 32767)))
+            i += 1
+        }
+    }
+    if flush == 2 {
+        ce_pad(e)
+        if (flags & 4096) != 0 {
+            let a = ce_get(e, 176)
+            ce_byte(e, std::raw::shr(a, 24) & 255)
+            ce_byte(e, std::raw::shr(a, 16) & 255)
+            ce_byte(e, std::raw::shr(a, 8) & 255)
+            ce_byte(e, a & 255)
+        }
+    }
+    let mut i = 0
+    while i < 288 {
+        std::raw::store(e + 1082368 + 8 * i, 0)
+        std::raw::store(e + 1082368 + 2304 + 8 * i, 0)
+        i += 1
+    }
+    ce_set(e, 168, 0)
+    ce_set(e, 64, 1)
+    ce_set(e, 72, 8)
+    ce_set(e, 32, cbdp + total)
+    ce_set(e, 80, 0)
+    ce_set(e, 88, ce_get(e, 88) + 1)
+    // CallbackBuf::flush_output: lo que no cabe en la salida queda pendiente.
+    let pos = ce_get(e, 136) - start
+    if pos != 0 {
+        let n = ce_min(pos, ce_get(e, 216) - ce_get(e, 224))
+        ce_set(e, 224, ce_get(e, 224) + n)
+        if pos != n {
+            ce_set(e, 232, pos - n)
+        }
+    }
+    ce_get(e, 232)
+}
+
+// flush_output_buffer: devuelve 1 si el flujo terminó (Done).
+fn ce_flush_output(e: int) -> int {
+    let n = ce_min(ce_get(e, 216) - ce_get(e, 224), ce_get(e, 232))
+    ce_set(e, 232, ce_get(e, 232) - n)
+    ce_set(e, 224, ce_get(e, 224) + n)
+    if ce_get(e, 240) != 0 && ce_get(e, 232) == 0 {
+        return 1
+    }
+    0
+}
+
+// compress_inner sobre los len bytes en data con out_len de salida.
+fn ce_compress_inner(e: int, data: int, len: int, out_len: int, flush: int) -> int {
+    ce_set(e, 216, out_len)
+    ce_set(e, 224, 0)
+    ce_set(e, 256, 0)
+    ce_set(e, 120, flush)
+    if ce_get(e, 232) != 0 || ce_get(e, 240) != 0 {
+        return ce_flush_output(e)
+    }
+    let flags = ce_get(e, 0)
+    if (flags & 524288) != 0 {
+        ce_stored(e, data, len)
+    } else if (flags & 4095) == 1 && (flags & 16384) != 0 {
+        ce_fast(e, data, len)
+    } else {
+        ce_normal(e, data, len)
+    }
+    let remaining = len - ce_get(e, 256) != 0 || ce_get(e, 232) != 0
+    if flush != 0 && ce_get(e, 40) == 0 && !remaining {
+        ce_flush_block(e, flush)
+        if flush == 2 {
+            ce_set(e, 240, 1)
+        }
+    }
+    ce_flush_output(e)
+}
+
+// stream::deflate con el búfer de 32 KiB de flate2: devuelve los bytes de
+// entrada consumidos; *written en e + 1124608 + 264.
+fn ce_deflate(e: int, data: int, len: int, flush: int) -> int {
+    ce_set(e, 264, 0)
+    if ce_get(e, 248) != 0 {
+        return 0
+    }
+    let mut consumed = 0
+    let mut space = 32768
+    let mut p = data
+    let mut left = len
+    loop {
+        let fin = ce_compress_inner(e, p, left, space, flush)
+        let inb = ce_get(e, 256)
+        let outb = ce_get(e, 224)
+        p += inb
+        left -= inb
+        space -= outb
+        consumed += inb
+        ce_set(e, 264, ce_get(e, 264) + outb)
+        if fin != 0 {
+            ce_set(e, 248, 1)
+            return consumed
+        }
+        if space == 0 {
+            return consumed
+        }
+        if left == 0 && flush != 2 {
+            return consumed
+        }
+    }
+    consumed
+}
+
+// Comprime n bytes en p; fmt: 0 deflate, 1 zlib, 2 gzip. Devuelve bytes.
+fn ce_encode(p: int, n: int, level: int, fmt: int) -> any {
+    let e = ce_new(level, fmt == 1, n)
+    if fmt == 2 {
+        let mut xfl = 0
+        if level >= 9 {
+            xfl = 2
+        } else if level <= 1 {
+            xfl = 4
+        }
+        ce_byte(e, 31)
+        ce_byte(e, 139)
+        ce_byte(e, 8)
+        let mut i = 0
+        while i < 5 {
+            ce_byte(e, 0)
+            i += 1
+        }
+        ce_byte(e, xfl)
+        ce_byte(e, 255)
+    }
+    if fmt == 1 {
+        ce_set(e, 176, cz_adler(p, n))
+    }
+    // write_all -> Writer::write -> write_with_status
+    let mut pos = 0
+    while pos < n {
+        let mut c = ce_deflate(e, p + pos, n - pos, 0)
+        while c == 0 && ce_get(e, 248) == 0 {
+            c = ce_deflate(e, p + pos, n - pos, 0)
+        }
+        pos += c
+    }
+    // finish
+    ce_deflate(e, p + n, 0, 2)
+    while ce_get(e, 264) != 0 {
+        ce_deflate(e, p + n, 0, 2)
+    }
+    if fmt == 2 {
+        let crc = cz_crc(p, n)
+        let mut k = 0
+        while k < 4 {
+            ce_byte(e, std::raw::shr(crc, 8 * k) & 255)
+            k += 1
+        }
+        k = 0
+        while k < 4 {
+            ce_byte(e, std::raw::shr(n, 8 * k) & 255)
+            k += 1
+        }
+    }
+    let out = ce_get(e, 128)
+    std::raw::store(out + 8, ce_get(e, 136))
+    rt_free_block(e)
+    std::raw::adopt(6, out)
+}
+
+// ------------------------------------------------------------ nativas
+
+fn ce_native(b: any, lv: any, function: string, fmt: int) -> any {
+    rt_expect_bytes(b, function)
+    rt_expect_int(lv, function)
+    let mut level = std::raw::bits(lv)
+    if level < -2147483648 || level > 2147483647 {
+        level = -1
+    }
+    if level < 0 || level > 9 {
+        rt_native_fail(function, "compression level must be between 0 and 9 (or 1..=22 for zstd), got " + rt_int_to_str(level))
+    }
+    ce_encode(rt_bdata(b), rt_slen(b), level, fmt)
+}
+
+fn std__compress__deflate_encode(b: any, lv: any) -> any {
+    ce_native(b, lv, "std::compress::deflate_encode", 0)
+}
+
+fn std__compress__zlib_encode(b: any, lv: any) -> any {
+    ce_native(b, lv, "std::compress::zlib_encode", 1)
+}
+
+fn std__compress__gzip_encode(b: any, lv: any) -> any {
+    ce_native(b, lv, "std::compress::gzip_encode", 2)
+}

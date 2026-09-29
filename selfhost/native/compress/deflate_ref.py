@@ -323,6 +323,13 @@ class Comp:
         s.saved_len = 0
         s.flush = 0         # 0 None, 2 Finish
         s.o = Out()
+        # llamada actual de compress(): tamaño del búfer de salida y cuánto lleva
+        s.out_len = 0
+        s.out_ofs = 0
+        s.flush_remaining = 0
+        s.finished = False
+        s.done = False
+        s.src_pos = 0
 
     # --- LZ ---
     def consume(s):
@@ -444,13 +451,14 @@ class Comp:
                     s.hash[h] = ins & M16
         return la_size
 
-    def compress_normal(s, data):
+    def compress_normal(s, data, base, end):
+        ln = end - base
         src = 0
         la_size = s.la_size
         la_pos = s.la_pos
-        while src < len(data) or (s.flush != 0 and la_size != 0):
-            n = min(len(data) - src, MAXM - la_size)
-            la_size = s.insert(data, src, n, la_size, la_pos)
+        while src < ln or (s.flush != 0 and la_size != 0):
+            n = min(ln - src, MAXM - la_size)
+            la_size = s.insert(data, base + src, n, la_size, la_pos)
             src += n
             s.size = min(DICT - la_size, s.size)
             if s.flush == 0 and la_size < MAXM:
@@ -496,19 +504,23 @@ class Comp:
             if tight or (s.total > 31 * 1024 and fat):
                 s.la_size = la_size
                 s.la_pos = la_pos
-                s.flush_block(0)
+                if s.flush_block(0) != 0:
+                    s.src_pos = src
+                    return
+        s.src_pos = src
         s.la_size = la_size
         s.la_pos = la_pos
 
-    def compress_stored(s, data):
+    def compress_stored(s, data, base, end):
+        ln = end - base
         s.saved_len = 0
         written = s.total
         src = 0
         la_size = s.la_size
         la_pos = s.la_pos
-        while src < len(data) or (s.flush != 0 and la_size != 0):
-            n = min(len(data) - src, MAXM - la_size)
-            la_size = s.insert(data, src, n, la_size, la_pos)
+        while src < ln or (s.flush != 0 and la_size != 0):
+            n = min(ln - src, MAXM - la_size)
+            la_size = s.insert(data, base + src, n, la_size, la_pos)
             src += n
             s.size = min(DICT - la_size, s.size)
             if s.flush == 0 and la_size < MAXM:
@@ -521,25 +533,29 @@ class Comp:
                 s.total = written
                 s.la_size = la_size
                 s.la_pos = la_pos
-                s.flush_block(0)
+                if s.flush_block(0) != 0:
+                    s.src_pos = src
+                    return
                 written = s.total
+        s.src_pos = src
         s.total = written
         s.la_size = la_size
         s.la_pos = la_pos
 
-    def compress_fast(s, data):
+    def compress_fast(s, data, base, end):
+        ln = end - base
         src = 0
         la_size = s.la_size
         la_pos = s.la_pos
         cur = la_pos & MASK
-        while src < len(data) or (s.flush != 0 and la_size > 0):
+        while src < ln or (s.flush != 0 and la_size > 0):
             dst = (la_pos + la_size) & MASK
-            n = min(len(data) - src, 4096 - la_size)
+            n = min(ln - src, 4096 - la_size)
             la_size += n
             while n != 0:
                 k = min(DICT - dst, n)
                 for i in range(k):
-                    s.put_dict(dst + i, data[src + i])
+                    s.put_dict(dst + i, data[base + src + i])
                 src += k
                 dst = (dst + k) & MASK
                 n -= k
@@ -607,7 +623,9 @@ class Comp:
                     if s.code_pos > 65536 - 8:
                         s.la_size = la_size
                         s.la_pos = la_pos
-                        s.flush_block(0)
+                        if s.flush_block(0) != 0:
+                            s.src_pos = src
+                            return
                         la_size = s.la_size
                         la_pos = s.la_pos
             while la_size != 0:
@@ -624,9 +642,12 @@ class Comp:
                 if s.code_pos > 65536 - 8:
                     s.la_size = la_size
                     s.la_pos = la_pos
-                    s.flush_block(0)
+                    if s.flush_block(0) != 0:
+                        s.src_pos = src
+                        return
                     la_size = s.la_size
                     la_pos = s.la_pos
+        s.src_pos = src
         s.la_size = la_size
         s.la_pos = la_pos
 
@@ -662,6 +683,7 @@ class Comp:
 
     def flush_block(s, flush):
         o = s.o
+        antes = len(o.b)
         raw = (s.flags & RAW != 0) and (s.la_pos - s.cbdp) <= s.size
         if s.flags & ZHDR and s.block_index == 0:
             cmf = 0x78 if not (s.flags & RAW) else 0x08
@@ -702,17 +724,78 @@ class Comp:
         s.cbdp += s.total
         s.total = 0
         s.block_index += 1
+        # CallbackBuf::flush_output: lo que no cabe queda pendiente
+        pos = len(o.b) - antes
+        if pos == 0:
+            return s.flush_remaining
+        n = min(pos, s.out_len - s.out_ofs)
+        s.out_ofs += n
+        if pos != n:
+            s.flush_remaining = pos - n
+        return s.flush_remaining
+
+    def compress_inner(s, data, base, end, out_len, flush):
+        """compress_inner: (terminado, consumidos, escritos)."""
+        s.out_len = out_len
+        s.out_ofs = 0
+        s.src_pos = 0
+        s.flush = flush
+        if s.flush_remaining != 0 or s.finished:
+            return s.flush_output_buffer()
+        fast = (s.flags & 0xFFF) == 1 and s.greedy and not (s.flags & RAW)
+        f = s.compress_stored if s.flags & RAW else (s.compress_fast if fast else s.compress_normal)
+        f(data, base, end)
+        remaining = (end - base - s.src_pos) != 0 or s.flush_remaining != 0
+        if flush != 0 and s.la_size == 0 and not remaining:
+            s.flush_block(flush)
+            s.finished = flush == 2
+        return s.flush_output_buffer()
+
+    def flush_output_buffer(s):
+        n = min(s.out_len - s.out_ofs, s.flush_remaining)
+        s.flush_remaining -= n
+        s.out_ofs += n
+        return (s.finished and s.flush_remaining == 0, s.src_pos, s.out_ofs)
+
+    def deflate(s, data, base, end, flush):
+        """stream::deflate con el búfer de 32 KiB de flate2: (consumidos, escritos)."""
+        if s.done:
+            return 0, 0
+        consumed = written = 0
+        space = 32 * 1024
+        while True:
+            fin, inb, outb = s.compress_inner(data, base, end, space, flush)
+            base += inb
+            space -= outb
+            consumed += inb
+            written += outb
+            if fin:
+                s.done = True
+                break
+            if space == 0:
+                break
+            if base == end and flush != 2:
+                break
+        return consumed, written
 
     def run(s, data):
         s.adler = _zlib.adler32(data) & 0xFFFFFFFF
-        fast = (s.flags & 0xFFF) == 1 and s.greedy and not (s.flags & RAW)
-        f = s.compress_stored if s.flags & RAW else (s.compress_fast if fast else s.compress_normal)
-        s.flush = 0
-        f(data)
-        s.flush = 2
-        f(b"")
-        assert s.la_size == 0
-        s.flush_block(2)
+        n = len(data)
+        pos = 0
+        # write_all -> Writer::write -> write_with_status
+        while pos < n:
+            while True:
+                c, _ = s.deflate(data, pos, n, 0)
+                if c == 0 and not s.done:
+                    continue
+                break
+            assert c > 0
+            pos += c
+        # finish
+        while True:
+            _, w = s.deflate(data, n, n, 2)
+            if w == 0:
+                break
         return bytes(s.o.b)
 
 

@@ -19,11 +19,20 @@ import deflate_ref as R  # noqa: E402
 R.tablas(os.environ.get("CORE_RS", "/tmp/cr/miniz_oxide-0.8.9/src/deflate/core.rs"))
 
 
-def datos(rng):
+def datos(rng, grande=False):
+    if grande:
+        # nivel 1 con salida > 32 KiB: miniz se para a mitad de bloque cuando
+        # el búfer de flate2 se llena y el camino rápido cambia sus ventanas.
+        tam = rng.randrange(80000, 300000)
+        tipo = rng.choice([3, 4, 5, 6])
+        return datos_tipo(rng, tam, tipo)
     tam = rng.choice([0, 1, 2, 3, 4, 5, 8, 20, 47, 48, 49, 100, 257, 258, 259, 1000, 4095,
                       4096, 4097, rng.randrange(0, 3000), rng.randrange(0, 20000),
                       rng.randrange(30000, 70000), rng.randrange(60000, 140000)])
-    tipo = rng.randrange(7)
+    return datos_tipo(rng, tam, rng.randrange(7))
+
+
+def datos_tipo(rng, tam, tipo):
     if tipo == 0:
         return bytes(rng.randrange(256) for _ in range(tam))
     if tipo == 1:
@@ -72,8 +81,11 @@ def main():
     casos = []
     for _ in range(n):
         modo = rng.choice("GZD")
-        nivel = rng.randrange(10)
-        casos.append((modo, nivel, datos(rng)))
+        if rng.random() < 0.1:
+            casos.append((modo, 1, datos(rng, True)))
+        else:
+            nivel = rng.randrange(10)
+            casos.append((modo, nivel, datos(rng)))
     ruta = os.path.join(d, "casos_enc_%d.txt" % semilla)
     with open(ruta, "w") as f:
         for m, lv, b in casos:
