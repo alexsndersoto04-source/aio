@@ -1,7 +1,7 @@
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.24s
-test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.54s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
@@ -15,9 +15,77 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-test result: ok. 387 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.34s
+test result: FAILED. 386 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.39s
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
-test result: ok. 131 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+test result: ok. 131 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
 test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 === FALLOS ===
+failures:
+
+---- kv_mod::tests::survives_close_and_reopen stdout ----
+
+thread 'kv_mod::tests::survives_close_and_reopen' (4393) panicked at crates/titan_stdlib/src/kv_mod.rs:1025:31:
+called `Result::unwrap()` on an `Err` value: Sled(Io(Custom { kind: Other, error: "could not acquire lock on \"/tmp/titan-kv-persist-4166/db\": Os { code: 11, kind: WouldBlock, message: \"Resource temporarily unavailable\" }" }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    kv_mod::tests::survives_close_and_reopen
+
+test result: FAILED. 386 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.39s
+
+error: test failed, to rerun pass `-p titan_stdlib --lib`
+     Running unittests src/lib.rs (target/debug/deps/titan_tls-33e6b82d963ced00)
+
+running 3 tests
+test tests::builds_webpki_client_config_and_rejects_bad_names ... ok
+test tests::rejects_empty_server_credentials ... ok
+test tests::performs_verified_local_tls_handshake ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_typechecker-69b0c6e3aa0cb3b6)
+
+running 69 tests
+test tests::a_dash_on_its_own_line_is_not_a_subtraction ... ok
+failures:
+
+---- kv_mod::tests::survives_close_and_reopen stdout ----
+
+thread 'kv_mod::tests::survives_close_and_reopen' (4393) panicked at crates/titan_stdlib/src/kv_mod.rs:1025:31:
+called `Result::unwrap()` on an `Err` value: Sled(Io(Custom { kind: Other, error: "could not acquire lock on \"/tmp/titan-kv-persist-4166/db\": Os { code: 11, kind: WouldBlock, message: \"Resource temporarily unavailable\" }" }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    kv_mod::tests::survives_close_and_reopen
+
+test result: FAILED. 386 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.39s
+
+error: test failed, to rerun pass `-p titan_stdlib --lib`
+     Running unittests src/lib.rs (target/debug/deps/titan_tls-33e6b82d963ced00)
+
+running 3 tests
+test tests::builds_webpki_client_config_and_rejects_bad_names ... ok
+test tests::rejects_empty_server_credentials ... ok
+test tests::performs_verified_local_tls_handshake ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/titan_typechecker-69b0c6e3aa0cb3b6)
+
+running 69 tests
+test tests::a_dash_on_its_own_line_is_not_a_subtraction ... ok
+test tests::accepts_recursive_typed_function ... ok
+test tests::a_function_that_only_sometimes_returns_a_value_has_no_result_type ... ok
+test tests::accepts_wildcard_for_loops ... ok
+test tests::checks_registered_native_signatures ... ok
+test tests::checks_function_parameter_and_result_variance ... ok
+test tests::annotated_constants_keep_the_declared_type ... ok
+test tests::checks_tasks_and_channels ... ok
+test tests::diagnostics_name_the_source_file_when_the_program_has_one ... ok
+test tests::dynamic_branches_need_no_common_type ... ok
+test tests::checks_tcp_handle_and_byte_signatures ... ok
+test tests::dynamic_matches_require_a_real_catchall ... ok
+test tests::entry_point_absence_is_not_a_typechecker_error ... ok
