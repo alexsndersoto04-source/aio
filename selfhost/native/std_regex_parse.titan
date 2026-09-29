@@ -13,7 +13,9 @@
 //   +48 pila de clases, +56 nombres de captura (ordenados), +64 bloques
 //   reservados, +72 error (0 = ninguno), +80/+88 su span, +96 hay span
 //   auxiliar, +104/+112 span auxiliar, +120 vectores reservados,
-//   +128 texto de trabajo (scratch, vector de códigos).
+//   +128 texto de trabajo (scratch, vector de códigos), +136 tabla de
+//   plegado de mayúsculas (std_regex_hir.titan), +144 flags de la
+//   traducción, +152 el patrón (valor string, prestado).
 //
 // Nodos (bloques): +0 tipo, +8 inicio del span, +16 fin del span y:
 //   1 Empty
@@ -211,13 +213,14 @@ fn rp_vec(p: int) -> int {
 }
 
 fn rp_new(pat: any) -> int {
-    let p = rt_alloc(160)
+    let p = rt_alloc(256)
     let mut i = 0
-    while i < 20 {
+    while i < 32 {
         std::raw::store(p + 8 * i, 0)
         i += 1
     }
     std::raw::store(p, std::raw::bits(pat) + 16)
+    std::raw::store(p + 152, std::raw::bits(pat))
     std::raw::store(p + 8, rt_slen(pat))
     std::raw::store(p + 64, iv_new(32))
     std::raw::store(p + 120, iv_new(8))

@@ -1,0 +1,2309 @@
+// Traducción del AST de una expresión regular a HIR, escrita en Titan:
+// regex-syntax 0.8.11 (hir/translate.rs, hir/mod.rs, hir/interval.rs y
+// unicode.rs) con la configuración de regex 1.13.0 (utf8 activado, fin de
+// línea '\n', todas las funciones Unicode disponibles). Las tablas están en
+// std_regex_tab.titan (generado por native/regex/gen_tab.py).
+//
+// Todo lo que se reserva va al registro del analizador (rp_node / rp_vec) y
+// se libera con rp_free.
+
+// ------------------------------------------------------------ clases
+
+// Clase (IntervalSet): +0 vector de pares (inicio, fin) aplanado, +8 folded,
+// +16 1 = Unicode (char), 0 = bytes (u8).
+fn rc_new(p: int, uni: int) -> int {
+    let c = rp_node(p, 0, 3)
+    std::raw::store(c, rp_vec(p))
+    std::raw::store(c + 8, 1)
+    std::raw::store(c + 16, uni)
+    c
+}
+
+fn rc_v(c: int) -> int {
+    std::raw::load(c)
+}
+
+fn rc_n(c: int) -> int {
+    iv_len(std::raw::load(c)) / 2
+}
+
+fn rc_lo(c: int, i: int) -> int {
+    iv_get(std::raw::load(c), 2 * i)
+}
+
+fn rc_hi(c: int, i: int) -> int {
+    iv_get(std::raw::load(c), 2 * i + 1)
+}
+
+fn rc_max(c: int) -> int {
+    if std::raw::load(c + 16) == 1 {
+        return 1114111
+    }
+    255
+}
+
+fn rc_inc(c: int, x: int) -> int {
+    if std::raw::load(c + 16) == 1 && x == 55295 {
+        return 57344
+    }
+    x + 1
+}
+
+fn rc_dec(c: int, x: int) -> int {
+    if std::raw::load(c + 16) == 1 && x == 57344 {
+        return 55295
+    }
+    x - 1
+}
+
+// Clase nueva con los rangos del vector v (pares), canónica.
+fn rc_from(p: int, uni: int, v: int) -> int {
+    let c = rc_new(p, uni)
+    std::raw::store(c, v)
+    if iv_len(v) > 0 {
+        std::raw::store(c + 8, 0)
+    }
+    rc_canon(p, c)
+    c
+}
+
+fn rc_add(v: int, lo: int, hi: int) {
+    if lo <= hi {
+        iv_push(v, lo)
+        iv_push(v, hi)
+    } else {
+        iv_push(v, hi)
+        iv_push(v, lo)
+    }
+}
+
+fn rc_contig(a0: int, a1: int, b0: int, b1: int) -> bool {
+    let mut lo = a0
+    if b0 > lo {
+        lo = b0
+    }
+    let mut hi = a1
+    if b1 < hi {
+        hi = b1
+    }
+    lo <= hi + 1
+}
+
+fn rc_less(a0: int, a1: int, b0: int, b1: int) -> bool {
+    a0 < b0 || (a0 == b0 && a1 < b1)
+}
+
+fn rc_is_canonical(c: int) -> bool {
+    let n = rc_n(c)
+    let mut i = 1
+    while i < n {
+        if !rc_less(rc_lo(c, i - 1), rc_hi(c, i - 1), rc_lo(c, i), rc_hi(c, i)) {
+            return false
+        }
+        if rc_contig(rc_lo(c, i - 1), rc_hi(c, i - 1), rc_lo(c, i), rc_hi(c, i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Ordena los pares de v (orden por (inicio, fin)); mezcla ascendente.
+fn rc_sort(v: int) {
+    let n = iv_len(v) / 2
+    if n < 2 {
+        return
+    }
+    let tmp = iv_new(2 * n)
+    let mut w = 1
+    while w < n {
+        iv_trunc(tmp, 0)
+        let mut a = 0
+        while a < n {
+            let mut m = a + w
+            if m > n {
+                m = n
+            }
+            let mut b = a + 2 * w
+            if b > n {
+                b = n
+            }
+            let mut i = a
+            let mut j = m
+            while i < m || j < b {
+                let mut take_i = j >= b
+                if i < m && j < b {
+                    take_i = !rc_less(iv_get(v, 2 * j), iv_get(v, 2 * j + 1), iv_get(v, 2 * i), iv_get(v, 2 * i + 1))
+                }
+                if take_i {
+                    iv_push(tmp, iv_get(v, 2 * i))
+                    iv_push(tmp, iv_get(v, 2 * i + 1))
+                    i += 1
+                } else {
+                    iv_push(tmp, iv_get(v, 2 * j))
+                    iv_push(tmp, iv_get(v, 2 * j + 1))
+                    j += 1
+                }
+            }
+            a = b
+        }
+        let mut k = 0
+        while k < 2 * n {
+            iv_set(v, k, iv_get(tmp, k))
+            k += 1
+        }
+        w = 2 * w
+    }
+    iv_free(tmp)
+}
+
+fn rc_canon(p: int, c: int) {
+    if rc_is_canonical(c) {
+        return
+    }
+    let v = rc_v(c)
+    rc_sort(v)
+    let out = rp_vec(p)
+    let n = iv_len(v) / 2
+    let mut i = 0
+    while i < n {
+        let lo = iv_get(v, 2 * i)
+        let hi = iv_get(v, 2 * i + 1)
+        let k = iv_len(out)
+        if k > 0 && rc_contig(iv_get(out, k - 2), iv_get(out, k - 1), lo, hi) {
+            if lo < iv_get(out, k - 2) {
+                iv_set(out, k - 2, lo)
+            }
+            if hi > iv_get(out, k - 1) {
+                iv_set(out, k - 1, hi)
+            }
+        } else {
+            iv_push(out, lo)
+            iv_push(out, hi)
+        }
+        i += 1
+    }
+    std::raw::store(c, out)
+}
+
+// IntervalSet::push.
+fn rc_push(p: int, c: int, lo0: int, hi0: int) {
+    let mut lo = lo0
+    let mut hi = hi0
+    let n = rc_n(c)
+    // Búsqueda binaria del par exacto (o de dónde iría).
+    let mut a = 0
+    let mut b = n
+    while a < b {
+        let mid = (a + b) / 2
+        if rc_less(rc_lo(c, mid), rc_hi(c, mid), lo, hi) {
+            a = mid + 1
+        } else {
+            b = mid
+        }
+    }
+    let i = a
+    if i < n && rc_lo(c, i) == lo && rc_hi(c, i) == hi {
+        return
+    }
+    let mut start = i
+    if i > 0 && rc_contig(rc_lo(c, i - 1), rc_hi(c, i - 1), lo, hi) {
+        if rc_lo(c, i - 1) < lo {
+            lo = rc_lo(c, i - 1)
+        }
+        if rc_hi(c, i - 1) > hi {
+            hi = rc_hi(c, i - 1)
+        }
+        start = i - 1
+    }
+    let mut end = i
+    let mut j = i
+    while j < n {
+        if !rc_contig(lo, hi, rc_lo(c, j), rc_hi(c, j)) {
+            break
+        }
+        if rc_lo(c, j) < lo {
+            lo = rc_lo(c, j)
+        }
+        if rc_hi(c, j) > hi {
+            hi = rc_hi(c, j)
+        }
+        end = j + 1
+        j += 1
+    }
+    let out = rp_vec(p)
+    let mut k = 0
+    while k < start {
+        iv_push(out, rc_lo(c, k))
+        iv_push(out, rc_hi(c, k))
+        k += 1
+    }
+    iv_push(out, lo)
+    iv_push(out, hi)
+    k = end
+    while k < n {
+        iv_push(out, rc_lo(c, k))
+        iv_push(out, rc_hi(c, k))
+        k += 1
+    }
+    std::raw::store(c, out)
+    std::raw::store(c + 8, 0)
+}
+
+fn rc_same(a: int, b: int) -> bool {
+    let va = rc_v(a)
+    let vb = rc_v(b)
+    if iv_len(va) != iv_len(vb) {
+        return false
+    }
+    let mut i = 0
+    while i < iv_len(va) {
+        if iv_get(va, i) != iv_get(vb, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn rc_folded(c: int) -> bool {
+    std::raw::load(c + 8) != 0
+}
+
+fn rc_set_folded(c: int, f: bool) {
+    if f {
+        std::raw::store(c + 8, 1)
+    } else {
+        std::raw::store(c + 8, 0)
+    }
+}
+
+fn rc_union(p: int, a: int, b: int) {
+    if rc_n(b) == 0 || rc_same(a, b) {
+        return
+    }
+    let v = rp_vec(p)
+    let mut i = 0
+    while i < iv_len(rc_v(a)) {
+        iv_push(v, iv_get(rc_v(a), i))
+        i += 1
+    }
+    i = 0
+    while i < iv_len(rc_v(b)) {
+        iv_push(v, iv_get(rc_v(b), i))
+        i += 1
+    }
+    std::raw::store(a, v)
+    rc_canon(p, a)
+    rc_set_folded(a, rc_folded(a) && rc_folded(b))
+}
+
+fn rc_intersect(p: int, a: int, b: int) {
+    if rc_n(a) == 0 {
+        return
+    }
+    if rc_n(b) == 0 {
+        std::raw::store(a, rp_vec(p))
+        rc_set_folded(a, true)
+        return
+    }
+    let out = rp_vec(p)
+    let na = rc_n(a)
+    let nb = rc_n(b)
+    let mut i = 0
+    let mut j = 0
+    while true {
+        let mut lo = rc_lo(a, i)
+        if rc_lo(b, j) > lo {
+            lo = rc_lo(b, j)
+        }
+        let mut hi = rc_hi(a, i)
+        if rc_hi(b, j) < hi {
+            hi = rc_hi(b, j)
+        }
+        if lo <= hi {
+            iv_push(out, lo)
+            iv_push(out, hi)
+        }
+        if rc_hi(a, i) < rc_hi(b, j) {
+            i += 1
+            if i >= na {
+                break
+            }
+        } else {
+            j += 1
+            if j >= nb {
+                break
+            }
+        }
+    }
+    std::raw::store(a, out)
+    rc_set_folded(a, rc_folded(a) && rc_folded(b))
+}
+
+fn rc_difference(p: int, a: int, b: int) {
+    if rc_n(a) == 0 || rc_n(b) == 0 {
+        return
+    }
+    let out = rp_vec(p)
+    let na = rc_n(a)
+    let nb = rc_n(b)
+    let mut i = 0
+    let mut j = 0
+    while i < na && j < nb {
+        if rc_hi(b, j) < rc_lo(a, i) {
+            j += 1
+        } else if rc_hi(a, i) < rc_lo(b, j) {
+            iv_push(out, rc_lo(a, i))
+            iv_push(out, rc_hi(a, i))
+            i += 1
+        } else {
+            let mut lo = rc_lo(a, i)
+            let mut hi = rc_hi(a, i)
+            let mut gone = false
+            while j < nb && !(rc_max2(lo, rc_lo(b, j)) > rc_min2(hi, rc_hi(b, j))) {
+                let old_hi = hi
+                let b0 = rc_lo(b, j)
+                let b1 = rc_hi(b, j)
+                if b0 <= lo && hi <= b1 {
+                    gone = true
+                    break
+                }
+                let add_lower = b0 > lo
+                let add_upper = b1 < hi
+                if add_lower && add_upper {
+                    iv_push(out, lo)
+                    iv_push(out, rc_dec(a, b0))
+                    lo = rc_inc(a, b1)
+                } else if add_lower {
+                    hi = rc_dec(a, b0)
+                } else {
+                    lo = rc_inc(a, b1)
+                }
+                if b1 > old_hi {
+                    break
+                }
+                j += 1
+            }
+            if !gone {
+                iv_push(out, lo)
+                iv_push(out, hi)
+            }
+            i += 1
+        }
+    }
+    while i < na {
+        iv_push(out, rc_lo(a, i))
+        iv_push(out, rc_hi(a, i))
+        i += 1
+    }
+    std::raw::store(a, out)
+    rc_set_folded(a, rc_folded(a) && rc_folded(b))
+}
+
+fn rc_max2(x: int, y: int) -> int {
+    if x > y {
+        return x
+    }
+    y
+}
+
+fn rc_min2(x: int, y: int) -> int {
+    if x < y {
+        return x
+    }
+    y
+}
+
+fn rc_clone(p: int, a: int) -> int {
+    let c = rc_new(p, std::raw::load(a + 16))
+    let v = rp_vec(p)
+    let mut i = 0
+    while i < iv_len(rc_v(a)) {
+        iv_push(v, iv_get(rc_v(a), i))
+        i += 1
+    }
+    std::raw::store(c, v)
+    std::raw::store(c + 8, std::raw::load(a + 8))
+    c
+}
+
+fn rc_symdiff(p: int, a: int, b: int) {
+    let inter = rc_clone(p, a)
+    rc_intersect(p, inter, b)
+    rc_union(p, a, b)
+    rc_difference(p, a, inter)
+}
+
+fn rc_negate(p: int, c: int) {
+    let n = rc_n(c)
+    let out = rp_vec(p)
+    if n == 0 {
+        iv_push(out, 0)
+        iv_push(out, rc_max(c))
+        std::raw::store(c, out)
+        rc_set_folded(c, true)
+        return
+    }
+    if rc_lo(c, 0) > 0 {
+        iv_push(out, 0)
+        iv_push(out, rc_dec(c, rc_lo(c, 0)))
+    }
+    let mut i = 1
+    while i < n {
+        rc_add(out, rc_inc(c, rc_hi(c, i - 1)), rc_dec(c, rc_lo(c, i)))
+        i += 1
+    }
+    if rc_hi(c, n - 1) < rc_max(c) {
+        iv_push(out, rc_inc(c, rc_hi(c, n - 1)))
+        iv_push(out, rc_max(c))
+    }
+    std::raw::store(c, out)
+}
+
+fn rc_is_ascii(c: int) -> bool {
+    let n = rc_n(c)
+    n == 0 || rc_hi(c, n - 1) <= 127
+}
+
+// ------------------------------------------------------------ plegado
+
+fn ru_digit(s: int, i: int) -> int {
+    std::raw::load8(s + i)
+}
+
+// Tabla de plegado simple decodificada (una vez por análisis): bloque
+// +0 claves, +8 inicio de sus destinos, +16 destinos.
+fn rc_fold_table(p: int) -> int {
+    let cached = std::raw::load(p + 136)
+    if cached != 0 {
+        return cached
+    }
+    let t = rp_node(p, 0, 3)
+    let keys = rp_vec(p)
+    let starts = rp_vec(p)
+    let targets = rp_vec(p)
+    std::raw::store(t, keys)
+    std::raw::store(t + 8, starts)
+    std::raw::store(t + 16, targets)
+    let text = rxt_fold()
+    let s = std::raw::bits(text) + 16
+    let n = rt_slen(text)
+    let mut i = 0
+    let mut prev = 0
+    while i < n {
+        let r1 = ru_num(s, i)
+        i = std::raw::load(r1 + 8)
+        let c = prev + std::raw::load(r1)
+        rt_free_block(r1)
+        let r2 = ru_num(s, i)
+        i = std::raw::load(r2 + 8)
+        let cnt = std::raw::load(r2)
+        rt_free_block(r2)
+        iv_push(keys, c)
+        iv_push(starts, iv_len(targets))
+        let mut k = 0
+        while k < cnt {
+            let r3 = ru_num(s, i)
+            i = std::raw::load(r3 + 8)
+            let z = std::raw::load(r3)
+            rt_free_block(r3)
+            if z % 2 == 0 {
+                iv_push(targets, c + z / 2)
+            } else {
+                iv_push(targets, c - (z + 1) / 2)
+            }
+            k += 1
+        }
+        prev = c
+    }
+    iv_push(starts, iv_len(targets))
+    std::raw::store(p + 136, t)
+    t
+}
+
+// Número en base 16 (cifras 'a'..'p' de continuación, 'A'..'P' final) en
+// s + i: bloque (valor, posición siguiente) que libera quien llama.
+fn ru_num(s: int, i0: int) -> int {
+    let mut v = 0
+    let mut i = i0
+    while true {
+        let d = std::raw::load8(s + i)
+        i += 1
+        if d >= 97 {
+            v = v * 16 + (d - 97)
+        } else {
+            v = v * 16 + (d - 65)
+            break
+        }
+    }
+    let r = rt_alloc(16)
+    std::raw::store(r, v)
+    std::raw::store(r + 8, i)
+    r
+}
+
+// Primera clave >= x.
+fn rc_fold_find(t: int, x: int) -> int {
+    let keys = std::raw::load(t)
+    let mut a = 0
+    let mut b = iv_len(keys)
+    while a < b {
+        let m = (a + b) / 2
+        if iv_get(keys, m) < x {
+            a = m + 1
+        } else {
+            b = m
+        }
+    }
+    a
+}
+
+// IntervalSet::case_fold_simple.
+fn rc_fold(p: int, c: int) {
+    if rc_folded(c) {
+        return
+    }
+    let v = rc_v(c)
+    let n = iv_len(v) / 2
+    let mut i = 0
+    if std::raw::load(c + 16) == 1 {
+        let t = rc_fold_table(p)
+        let keys = std::raw::load(t)
+        let starts = std::raw::load(t + 8)
+        let targets = std::raw::load(t + 16)
+        while i < n {
+            let lo = iv_get(v, 2 * i)
+            let hi = iv_get(v, 2 * i + 1)
+            let mut k = rc_fold_find(t, lo)
+            while k < iv_len(keys) && iv_get(keys, k) <= hi {
+                let mut q = iv_get(starts, k)
+                while q < iv_get(starts, k + 1) {
+                    iv_push(v, iv_get(targets, q))
+                    iv_push(v, iv_get(targets, q))
+                    q += 1
+                }
+                k += 1
+            }
+            i += 1
+        }
+    } else {
+        while i < n {
+            let lo = iv_get(v, 2 * i)
+            let hi = iv_get(v, 2 * i + 1)
+            if !(rc_max2(lo, 97) > rc_min2(hi, 122)) {
+                iv_push(v, rc_max2(lo, 97) - 32)
+                iv_push(v, rc_min2(hi, 122) - 32)
+            }
+            if !(rc_max2(lo, 65) > rc_min2(hi, 90)) {
+                iv_push(v, rc_max2(lo, 65) + 32)
+                iv_push(v, rc_min2(hi, 90) + 32)
+            }
+            i += 1
+        }
+    }
+    rc_canon(p, c)
+    rc_set_folded(c, true)
+}
+
+// SimpleCaseFolder::overlaps(c, c).
+fn rc_fold_has(p: int, c: int) -> bool {
+    let t = rc_fold_table(p)
+    let k = rc_fold_find(t, c)
+    k < iv_len(std::raw::load(t)) && iv_get(std::raw::load(t), k) == c
+}
+
+// ------------------------------------------------------------ Unicode
+
+// Rangos de datos codificados (empieza en s + i, acaba en fin) a una clase.
+fn ru_decode(p: int, s: int, i0: int, fin: int) -> int {
+    let v = rp_vec(p)
+    let mut i = i0
+    let mut prev = 0
+    while i < fin {
+        let r1 = ru_num(s, i)
+        let lo = prev + std::raw::load(r1)
+        let r2 = ru_num(s, std::raw::load(r1 + 8))
+        let hi = lo + std::raw::load(r2)
+        i = std::raw::load(r2 + 8)
+        rt_free_block(r1)
+        rt_free_block(r2)
+        iv_push(v, lo)
+        iv_push(v, hi)
+        prev = hi
+    }
+    rc_from(p, 1, v)
+}
+
+fn ru_single(p: int, text: string) -> int {
+    ru_decode(p, std::raw::bits(text) + 16, 0, rt_slen(text))
+}
+
+// ¿Los bytes s[a..b) son iguales al string k?
+fn ru_tok_is(s: int, a: int, b: int, k: any) -> bool {
+    let n = rt_slen(k)
+    if b - a != n {
+        return false
+    }
+    let kb = std::raw::bits(k) + 16
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(s + a + i) != std::raw::load8(kb + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Busca el nombre en un grupo "Nombre datos Nombre datos ...": la clase, o
+// 0 si no está.
+fn ru_group(p: int, text: string, name: any) -> int {
+    let s = std::raw::bits(text) + 16
+    let n = rt_slen(text)
+    let mut i = 0
+    while i < n {
+        let mut j = i
+        while j < n && std::raw::load8(s + j) != 32 {
+            j += 1
+        }
+        let mut k = j + 1
+        while k < n && std::raw::load8(s + k) != 32 {
+            k += 1
+        }
+        if ru_tok_is(s, i, j, name) {
+            return ru_decode(p, s, j + 1, k)
+        }
+        i = k + 1
+    }
+    0
+}
+
+// En "clave valor clave valor ..." entre [a, fin): el valor de la clave, o "".
+fn ru_pairs(s: int, a: int, fin: int, key: any) -> any {
+    let mut i = a
+    while i < fin {
+        let mut j = i
+        while j < fin && std::raw::load8(s + j) != 32 {
+            j += 1
+        }
+        let mut k = j + 1
+        while k < fin && std::raw::load8(s + k) != 32 {
+            k += 1
+        }
+        if ru_tok_is(s, i, j, key) {
+            return rt_bytes_to_str(s + j + 1, k - j - 1)
+        }
+        i = k + 1
+    }
+    ""
+}
+
+fn ru_canonical_prop(norm: any) -> any {
+    let t = rxt_names()
+    ru_pairs(std::raw::bits(t) + 16, 0, rt_slen(t), norm)
+}
+
+// Valores de la propiedad (nombre canónico) en rxt_values: el valor
+// canónico de norm, "" si no está; "\t" si la propiedad no tiene valores.
+fn ru_canonical_value(prop: string, norm: any) -> any {
+    let t = rxt_values()
+    let s = std::raw::bits(t) + 16
+    let n = rt_slen(t)
+    let mut i = 0
+    while i < n {
+        let mut c = i
+        while std::raw::load8(s + c) != 58 {
+            c += 1
+        }
+        let mut e = c + 1
+        while e < n && std::raw::load8(s + e) != 124 {
+            e += 1
+        }
+        if ru_tok_is(s, i, c, prop) {
+            return ru_pairs(s, c + 1, e, norm)
+        }
+        i = e + 1
+    }
+    "\t"
+}
+
+// symbolic_name_normalize sobre un vector de códigos.
+fn ru_normalize(v: int) -> any {
+    let n = iv_len(v)
+    let mut start = 0
+    let mut starts_with_is = false
+    if n >= 2 {
+        let a = iv_get(v, 0)
+        let b = iv_get(v, 1)
+        starts_with_is = (a == 105 || a == 73) && (b == 115 || b == 83)
+        if starts_with_is {
+            start = 2
+        }
+    }
+    let sb = sb_new(16)
+    let mut count = 0
+    let mut last = 0
+    let mut i = start
+    while i < n {
+        let c = iv_get(v, i)
+        if c == 32 || c == 95 || c == 45 {
+        } else if c >= 65 && c <= 90 {
+            sb_byte(sb, c + 32)
+            count += 1
+            last = c + 32
+        } else if c <= 127 {
+            sb_byte(sb, c)
+            count += 1
+            last = c
+        }
+        i += 1
+    }
+    let out = sb_finish(sb)
+    if starts_with_is && count == 1 && last == 99 {
+        return "isc"
+    }
+    out
+}
+
+fn ru_str_eq(a: any, b: string) -> bool {
+    rt_str_eq(a, b)
+}
+
+fn ru_canonical_gencat(norm: any) -> any {
+    if ru_str_eq(norm, "any") {
+        return "Any"
+    }
+    if ru_str_eq(norm, "assigned") {
+        return "Assigned"
+    }
+    if ru_str_eq(norm, "ascii") {
+        return "ASCII"
+    }
+    ru_canonical_value("General_Category", norm)
+}
+
+// Resultado de una consulta: la clase, o el error (valor negativo):
+// -1 PropertyNotFound, -2 PropertyValueNotFound.
+fn ru_gencat(p: int, name: any) -> int {
+    if ru_str_eq(name, "Decimal_Number") {
+        return ru_single(p, rxt_perl_digit())
+    }
+    if ru_str_eq(name, "ASCII") {
+        let v = rp_vec(p)
+        rc_add(v, 0, 127)
+        return rc_from(p, 1, v)
+    }
+    if ru_str_eq(name, "Any") {
+        let v = rp_vec(p)
+        rc_add(v, 0, 1114111)
+        return rc_from(p, 1, v)
+    }
+    if ru_str_eq(name, "Assigned") {
+        let c = ru_gencat(p, "Unassigned")
+        rc_negate(p, c)
+        return c
+    }
+    let c = ru_group(p, rxt_gencat(), name)
+    if c == 0 {
+        return -2
+    }
+    c
+}
+
+fn ru_by_group(p: int, text: string, name: any, missing: int) -> int {
+    let c = ru_group(p, text, name)
+    if c == 0 {
+        return missing
+    }
+    c
+}
+
+fn ru_bool(p: int, name: any) -> int {
+    if ru_str_eq(name, "Decimal_Number") {
+        return ru_single(p, rxt_perl_digit())
+    }
+    if ru_str_eq(name, "White_Space") {
+        return ru_single(p, rxt_perl_space())
+    }
+    ru_by_group(p, rxt_bool(), name, -1)
+}
+
+// canonical_binary + class para una propiedad sin valor.
+fn ru_binary(p: int, v: int) -> int {
+    let norm = ru_normalize(v)
+    if !ru_str_eq(norm, "cf") && !ru_str_eq(norm, "sc") && !ru_str_eq(norm, "lc") {
+        let canon = ru_canonical_prop(norm)
+        if rt_slen(canon) > 0 {
+            return ru_bool(p, canon)
+        }
+    }
+    let g = ru_canonical_gencat(norm)
+    if rt_slen(g) > 0 {
+        return ru_gencat(p, g)
+    }
+    let sc = ru_canonical_value("Script", norm)
+    if rt_slen(sc) > 0 {
+        return ru_by_group(p, rxt_script(), sc, -2)
+    }
+    -1
+}
+
+// Edades: unión de V1_1 hasta la pedida.
+fn ru_ages(p: int, canon: any) -> int {
+    let text = rxt_age()
+    let s = std::raw::bits(text) + 16
+    let n = rt_slen(text)
+    let acc = rc_new(p, 1)
+    let mut i = 0
+    while i < n {
+        let mut j = i
+        while j < n && std::raw::load8(s + j) != 32 {
+            j += 1
+        }
+        let mut k = j + 1
+        while k < n && std::raw::load8(s + k) != 32 {
+            k += 1
+        }
+        rc_union(p, acc, ru_decode(p, s, j + 1, k))
+        if ru_tok_is(s, i, j, canon) {
+            return acc
+        }
+        i = k + 1
+    }
+    -2
+}
+
+fn ru_by_value(p: int, name: int, value: int) -> int {
+    let pn = ru_normalize(name)
+    let pv = ru_normalize(value)
+    let canon = ru_canonical_prop(pn)
+    if rt_slen(canon) == 0 {
+        return -1
+    }
+    if ru_str_eq(canon, "General_Category") {
+        let g = ru_canonical_gencat(pv)
+        if rt_slen(g) == 0 {
+            return -2
+        }
+        return ru_gencat(p, g)
+    }
+    if ru_str_eq(canon, "Script") {
+        let sc = ru_canonical_value("Script", pv)
+        if rt_slen(sc) == 0 {
+            return -2
+        }
+        return ru_by_group(p, rxt_script(), sc, -2)
+    }
+    let val = ru_canonical_value(canon, pv)
+    if ru_str_eq(val, "\t") || rt_slen(val) == 0 {
+        return -2
+    }
+    if ru_str_eq(canon, "Age") {
+        return ru_ages(p, val)
+    }
+    if ru_str_eq(canon, "Script_Extensions") {
+        return ru_by_group(p, rxt_scx(), val, -2)
+    }
+    if ru_str_eq(canon, "Grapheme_Cluster_Break") {
+        return ru_by_group(p, rxt_gcb(), val, -2)
+    }
+    if ru_str_eq(canon, "Sentence_Break") {
+        return ru_by_group(p, rxt_sb(), val, -2)
+    }
+    if ru_str_eq(canon, "Word_Break") {
+        return ru_by_group(p, rxt_wb(), val, -2)
+    }
+    -1
+}
+
+// unicode::class para un nodo ClassUnicode del AST.
+fn ru_class(p: int, x: int) -> int {
+    let k = std::raw::load(x + 32)
+    if k == 0 {
+        let v = rp_vec(p)
+        iv_push(v, std::raw::load(x + 40))
+        return ru_binary(p, v)
+    }
+    if k == 1 {
+        return ru_binary(p, std::raw::load(x + 40))
+    }
+    ru_by_value(p, std::raw::load(x + 40), std::raw::load(x + 48))
+}
+
+// ------------------------------------------------------------ HIR
+
+// Nodo HIR: +0 tipo (1 Empty, 2 Literal, 3 Class, 4 Look, 5 Repetition,
+// 6 Capture, 7 Concat, 8 Alternation) y sus propiedades:
+//   +8 minimum_len, +16 maximum_len (-1 = None), +24 look_set,
+//   +32 look_set_prefix, +40 look_set_suffix, +48 look_set_prefix_any,
+//   +56 look_set_suffix_any, +64 utf8, +72 explicit_captures_len,
+//   +80 static_explicit_captures_len (-1 = None), +88 literal,
+//   +96 alternation_literal.
+// Datos: Literal +104 vector de bytes; Class +104 clase (rc_*);
+// Look +104 bit; Repetition +104 min, +112 max (-1 = None), +120 greedy,
+// +128 sub; Capture +104 índice, +112/+120 nombre (bytes del patrón, -1 si
+// no tiene), +128 sub; Concat/Alternation +104 vector de nodos.
+
+fn rh_node(p: int, kind: int) -> int {
+    let h = rp_node(p, kind, 17)
+    std::raw::store(h + 64, 1)
+    std::raw::store(h + 80, 0)
+    h
+}
+
+fn rh_kind(h: int) -> int {
+    std::raw::load(h)
+}
+
+fn rh_min(h: int) -> int {
+    std::raw::load(h + 8)
+}
+
+fn rh_max(h: int) -> int {
+    std::raw::load(h + 16)
+}
+
+fn rh_subs(h: int) -> int {
+    std::raw::load(h + 104)
+}
+
+fn rh_sub(h: int) -> int {
+    std::raw::load(h + 128)
+}
+
+fn rh_empty(p: int) -> int {
+    rh_node(p, 1)
+}
+
+// Suma con saturación (usize) y multiplicación comprobada: el máximo
+// representable es 2^63-1.
+fn rh_sat_add(a: int, b: int) -> int {
+    if a > 9223372036854775807 - b {
+        return 9223372036854775807
+    }
+    a + b
+}
+
+fn rh_sat_mul(a: int, b: int) -> int {
+    if a != 0 && b > 9223372036854775807 / a {
+        return 9223372036854775807
+    }
+    a * b
+}
+
+fn rh_chk_add(a: int, b: int) -> int {
+    if a > 9223372036854775807 - b {
+        return -1
+    }
+    a + b
+}
+
+fn rh_chk_mul(a: int, b: int) -> int {
+    if a != 0 && b > 9223372036854775807 / a {
+        return -1
+    }
+    a * b
+}
+
+fn rh_utf8_ok(v: int) -> bool {
+    let n = iv_len(v)
+    let mut i = 0
+    while i < n {
+        let b0 = iv_get(v, i)
+        let mut len = 1
+        let mut min = 0
+        if b0 < 128 {
+            len = 1
+        } else if b0 >= 194 && b0 <= 223 {
+            len = 2
+            min = 128
+        } else if b0 >= 224 && b0 <= 239 {
+            len = 3
+            min = 2048
+        } else if b0 >= 240 && b0 <= 244 {
+            len = 4
+            min = 65536
+        } else {
+            return false
+        }
+        if i + len > n {
+            return false
+        }
+        let mut cp = b0
+        if len == 2 {
+            cp = b0 & 31
+        } else if len == 3 {
+            cp = b0 & 15
+        } else if len == 4 {
+            cp = b0 & 7
+        }
+        let mut k = 1
+        while k < len {
+            let b = iv_get(v, i + k)
+            if (b & 192) != 128 {
+                return false
+            }
+            cp = cp * 64 + (b & 63)
+            k += 1
+        }
+        if cp < min || cp > 1114111 || (cp >= 55296 && cp <= 57343) {
+            return false
+        }
+        i += len
+    }
+    true
+}
+
+fn rh_literal(p: int, bytes: int) -> int {
+    if iv_len(bytes) == 0 {
+        return rh_empty(p)
+    }
+    let h = rh_node(p, 2)
+    std::raw::store(h + 8, iv_len(bytes))
+    std::raw::store(h + 16, iv_len(bytes))
+    if !rh_utf8_ok(bytes) {
+        std::raw::store(h + 64, 0)
+    }
+    std::raw::store(h + 88, 1)
+    std::raw::store(h + 96, 1)
+    std::raw::store(h + 104, bytes)
+    h
+}
+
+fn rh_utf8_push(v: int, c: int) {
+    if c < 128 {
+        iv_push(v, c)
+    } else if c < 2048 {
+        iv_push(v, 192 + c / 64)
+        iv_push(v, 128 + (c & 63))
+    } else if c < 65536 {
+        iv_push(v, 224 + c / 4096)
+        iv_push(v, 128 + ((c / 64) & 63))
+        iv_push(v, 128 + (c & 63))
+    } else {
+        iv_push(v, 240 + c / 262144)
+        iv_push(v, 128 + ((c / 4096) & 63))
+        iv_push(v, 128 + ((c / 64) & 63))
+        iv_push(v, 128 + (c & 63))
+    }
+}
+
+fn rh_literal_char(p: int, c: int) -> int {
+    let v = rp_vec(p)
+    rh_utf8_push(v, c)
+    rh_literal(p, v)
+}
+
+fn rh_fail(p: int) -> int {
+    rh_class_raw(p, rc_new(p, 0))
+}
+
+fn rh_class_raw(p: int, c: int) -> int {
+    let h = rh_node(p, 3)
+    let n = rc_n(c)
+    if n == 0 {
+        std::raw::store(h + 8, -1)
+        std::raw::store(h + 16, -1)
+    } else if std::raw::load(c + 16) == 1 {
+        std::raw::store(h + 8, rp_clen(rc_lo(c, 0)))
+        std::raw::store(h + 16, rp_clen(rc_hi(c, n - 1)))
+    } else {
+        std::raw::store(h + 8, 1)
+        std::raw::store(h + 16, 1)
+    }
+    if std::raw::load(c + 16) == 0 && !rc_is_ascii(c) {
+        std::raw::store(h + 64, 0)
+    }
+    std::raw::store(h + 104, c)
+    h
+}
+
+// Hir::class: vacía -> fail; un solo carácter -> literal.
+fn rh_class(p: int, c: int) -> int {
+    let n = rc_n(c)
+    if n == 0 {
+        return rh_fail(p)
+    }
+    if n == 1 && rc_lo(c, 0) == rc_hi(c, 0) {
+        let v = rp_vec(p)
+        if std::raw::load(c + 16) == 1 {
+            rh_utf8_push(v, rc_lo(c, 0))
+        } else {
+            iv_push(v, rc_lo(c, 0))
+        }
+        return rh_literal(p, v)
+    }
+    rh_class_raw(p, c)
+}
+
+fn rh_look(p: int, bit: int) -> int {
+    let h = rh_node(p, 4)
+    std::raw::store(h + 24, bit)
+    std::raw::store(h + 32, bit)
+    std::raw::store(h + 40, bit)
+    std::raw::store(h + 48, bit)
+    std::raw::store(h + 56, bit)
+    std::raw::store(h + 104, bit)
+    h
+}
+
+fn rh_repetition(p: int, mn0: int, mx0: int, greedy: bool, sub: int) -> int {
+    let mut mn = mn0
+    let mut mx = mx0
+    if rh_max(sub) == 0 {
+        if mn > 1 {
+            mn = 1
+        }
+        if mx < 0 || mx > 1 {
+            mx = 1
+        }
+    }
+    if mn == 0 && mx == 0 {
+        return rh_empty(p)
+    }
+    if mn == 1 && mx == 1 {
+        return sub
+    }
+    let h = rh_node(p, 5)
+    std::raw::store(h + 104, mn)
+    std::raw::store(h + 112, mx)
+    if greedy {
+        std::raw::store(h + 120, 1)
+    }
+    std::raw::store(h + 128, sub)
+    let cmin = rh_min(sub)
+    if cmin < 0 {
+        std::raw::store(h + 8, -1)
+    } else {
+        std::raw::store(h + 8, rh_sat_mul(cmin, mn))
+    }
+    let cmax = rh_max(sub)
+    if mx < 0 || cmax < 0 {
+        std::raw::store(h + 16, -1)
+    } else {
+        std::raw::store(h + 16, rh_chk_mul(cmax, mx))
+    }
+    std::raw::store(h + 24, std::raw::load(sub + 24))
+    std::raw::store(h + 48, std::raw::load(sub + 48))
+    std::raw::store(h + 56, std::raw::load(sub + 56))
+    std::raw::store(h + 64, std::raw::load(sub + 64))
+    std::raw::store(h + 72, std::raw::load(sub + 72))
+    std::raw::store(h + 80, std::raw::load(sub + 80))
+    if mn > 0 {
+        std::raw::store(h + 32, std::raw::load(sub + 32))
+        std::raw::store(h + 40, std::raw::load(sub + 40))
+    }
+    if mn == 0 && std::raw::load(h + 80) > 0 {
+        if mx == 0 {
+            std::raw::store(h + 80, 0)
+        } else {
+            std::raw::store(h + 80, -1)
+        }
+    }
+    h
+}
+
+fn rh_capture(p: int, index: int, n0: int, n1: int, sub: int) -> int {
+    let h = rh_node(p, 6)
+    let mut i = 8
+    while i < 104 {
+        std::raw::store(h + i, std::raw::load(sub + i))
+        i += 8
+    }
+    std::raw::store(h + 72, rh_sat_add(std::raw::load(sub + 72), 1))
+    if std::raw::load(sub + 80) >= 0 {
+        std::raw::store(h + 80, rh_sat_add(std::raw::load(sub + 80), 1))
+    }
+    std::raw::store(h + 88, 0)
+    std::raw::store(h + 96, 0)
+    std::raw::store(h + 104, index)
+    std::raw::store(h + 112, n0)
+    std::raw::store(h + 120, n1)
+    std::raw::store(h + 128, sub)
+    h
+}
+
+fn rh_is_literal(h: int) -> bool {
+    std::raw::load(h + 88) != 0
+}
+
+fn rh_concat_props(h: int) {
+    let v = rh_subs(h)
+    let n = iv_len(v)
+    let mut mn = 0
+    let mut mx = 0
+    let mut ls = 0
+    let mut utf8 = true
+    let mut caps = 0
+    let mut scaps = 0
+    let mut lit = true
+    let mut alit = true
+    let mut i = 0
+    while i < n {
+        let x = iv_get(v, i)
+        ls = ls | std::raw::load(x + 24)
+        utf8 = utf8 && std::raw::load(x + 64) != 0
+        caps = rh_sat_add(caps, std::raw::load(x + 72))
+        if std::raw::load(x + 80) < 0 || scaps < 0 {
+            scaps = -1
+        } else {
+            scaps = rh_sat_add(std::raw::load(x + 80), scaps)
+        }
+        lit = lit && rh_is_literal(x)
+        alit = alit && std::raw::load(x + 96) != 0
+        if mn >= 0 {
+            if rh_min(x) < 0 {
+                mn = -1
+            } else {
+                mn = rh_sat_add(mn, rh_min(x))
+            }
+        }
+        if mx >= 0 {
+            if rh_max(x) < 0 {
+                mx = -1
+            } else {
+                mx = rh_chk_add(mx, rh_max(x))
+            }
+        }
+        i += 1
+    }
+    let mut pre = 0
+    let mut pre_any = 0
+    i = 0
+    while i < n {
+        let x = iv_get(v, i)
+        pre = pre | std::raw::load(x + 32)
+        pre_any = pre_any | std::raw::load(x + 48)
+        if rh_max(x) != 0 {
+            break
+        }
+        i += 1
+    }
+    let mut suf = 0
+    let mut suf_any = 0
+    i = n - 1
+    while i >= 0 {
+        let x = iv_get(v, i)
+        suf = suf | std::raw::load(x + 40)
+        suf_any = suf_any | std::raw::load(x + 56)
+        if rh_max(x) != 0 {
+            break
+        }
+        i -= 1
+    }
+    std::raw::store(h + 8, mn)
+    std::raw::store(h + 16, mx)
+    std::raw::store(h + 24, ls)
+    std::raw::store(h + 32, pre)
+    std::raw::store(h + 40, suf)
+    std::raw::store(h + 48, pre_any)
+    std::raw::store(h + 56, suf_any)
+    std::raw::store(h + 64, rh_bool(utf8))
+    std::raw::store(h + 72, caps)
+    std::raw::store(h + 80, scaps)
+    std::raw::store(h + 88, rh_bool(lit))
+    std::raw::store(h + 96, rh_bool(alit))
+}
+
+fn rh_bool(b: bool) -> int {
+    if b {
+        return 1
+    }
+    0
+}
+
+fn rh_alt_props(h: int) {
+    let v = rh_subs(h)
+    let n = iv_len(v)
+    let mut fix = 0
+    let mut scaps = -1
+    if n > 0 {
+        fix = 262143
+        scaps = std::raw::load(iv_get(v, 0) + 80)
+    }
+    let mut mn = -1
+    let mut mx = -1
+    let mut ls = 0
+    let mut pre = fix
+    let mut suf = fix
+    let mut pre_any = 0
+    let mut suf_any = 0
+    let mut utf8 = true
+    let mut caps = 0
+    let mut alit = true
+    let mut min_poisoned = false
+    let mut max_poisoned = false
+    let mut i = 0
+    while i < n {
+        let x = iv_get(v, i)
+        ls = ls | std::raw::load(x + 24)
+        pre = pre & std::raw::load(x + 32)
+        suf = suf & std::raw::load(x + 40)
+        pre_any = pre_any | std::raw::load(x + 48)
+        suf_any = suf_any | std::raw::load(x + 56)
+        utf8 = utf8 && std::raw::load(x + 64) != 0
+        caps = rh_sat_add(caps, std::raw::load(x + 72))
+        if scaps != std::raw::load(x + 80) {
+            scaps = -1
+        }
+        alit = alit && rh_is_literal(x)
+        if !min_poisoned {
+            if rh_min(x) >= 0 {
+                if mn < 0 || rh_min(x) < mn {
+                    mn = rh_min(x)
+                }
+            } else {
+                mn = -1
+                min_poisoned = true
+            }
+        }
+        if !max_poisoned {
+            if rh_max(x) >= 0 {
+                if mx < 0 || rh_max(x) > mx {
+                    mx = rh_max(x)
+                }
+            } else {
+                mx = -1
+                max_poisoned = true
+            }
+        }
+        i += 1
+    }
+    std::raw::store(h + 8, mn)
+    std::raw::store(h + 16, mx)
+    std::raw::store(h + 24, ls)
+    std::raw::store(h + 32, pre)
+    std::raw::store(h + 40, suf)
+    std::raw::store(h + 48, pre_any)
+    std::raw::store(h + 56, suf_any)
+    std::raw::store(h + 64, rh_bool(utf8))
+    std::raw::store(h + 72, caps)
+    std::raw::store(h + 80, scaps)
+    std::raw::store(h + 88, 0)
+    std::raw::store(h + 96, rh_bool(alit))
+}
+
+fn rh_vec_extend(dst: int, src: int) {
+    let mut i = 0
+    while i < iv_len(src) {
+        iv_push(dst, iv_get(src, i))
+        i += 1
+    }
+}
+
+// Hir::concat (subs: vector de nodos).
+fn rh_concat(p: int, subs: int) -> int {
+    let out = rp_vec(p)
+    let mut prior = 0
+    let mut i = 0
+    while i < iv_len(subs) {
+        let x = iv_get(subs, i)
+        let k = rh_kind(x)
+        if k == 2 {
+            if prior == 0 {
+                prior = rp_vec(p)
+            }
+            rh_vec_extend(prior, rh_subs(x))
+        } else if k == 7 {
+            let v2 = rh_subs(x)
+            let mut j = 0
+            while j < iv_len(v2) {
+                let y = iv_get(v2, j)
+                if rh_kind(y) == 2 {
+                    if prior == 0 {
+                        prior = rp_vec(p)
+                    }
+                    rh_vec_extend(prior, rh_subs(y))
+                } else {
+                    if prior != 0 {
+                        iv_push(out, rh_literal(p, prior))
+                        prior = 0
+                    }
+                    iv_push(out, y)
+                }
+                j += 1
+            }
+        } else if k != 1 {
+            if prior != 0 {
+                iv_push(out, rh_literal(p, prior))
+                prior = 0
+            }
+            iv_push(out, x)
+        }
+        i += 1
+    }
+    if prior != 0 {
+        iv_push(out, rh_literal(p, prior))
+    }
+    if iv_len(out) == 0 {
+        return rh_empty(p)
+    }
+    if iv_len(out) == 1 {
+        return iv_get(out, 0)
+    }
+    let h = rh_node(p, 7)
+    std::raw::store(h + 104, out)
+    rh_concat_props(h)
+    h
+}
+
+// Decodifica el literal (bytes) si es exactamente un carácter; -1 si no.
+fn rh_single_char(v: int) -> int {
+    let n = iv_len(v)
+    if n == 0 || !rh_utf8_ok(v) {
+        return -1
+    }
+    let b0 = iv_get(v, 0)
+    let mut len = 1
+    if b0 >= 240 {
+        len = 4
+    } else if b0 >= 224 {
+        len = 3
+    } else if b0 >= 192 {
+        len = 2
+    }
+    if len != n {
+        return -1
+    }
+    if len == 1 {
+        return b0
+    }
+    let mut cp = b0 & 31
+    if len == 3 {
+        cp = b0 & 15
+    } else if len == 4 {
+        cp = b0 & 7
+    }
+    let mut k = 1
+    while k < len {
+        cp = cp * 64 + (iv_get(v, k) & 63)
+        k += 1
+    }
+    cp
+}
+
+// Hir::alternation.
+fn rh_alternation(p: int, subs: int) -> int {
+    let new = rp_vec(p)
+    let mut i = 0
+    while i < iv_len(subs) {
+        let x = iv_get(subs, i)
+        if rh_kind(x) == 8 {
+            rh_vec_extend(new, rh_subs(x))
+        } else {
+            iv_push(new, x)
+        }
+        i += 1
+    }
+    let n = iv_len(new)
+    if n == 0 {
+        return rh_fail(p)
+    }
+    if n == 1 {
+        return iv_get(new, 0)
+    }
+    // singleton_chars
+    let chars = rp_vec(p)
+    i = 0
+    while i < n {
+        let x = iv_get(new, i)
+        if rh_kind(x) != 2 {
+            break
+        }
+        let c = rh_single_char(rh_subs(x))
+        if c < 0 {
+            break
+        }
+        rc_add(chars, c, c)
+        i += 1
+    }
+    if i == n {
+        return rh_class(p, rc_from(p, 1, chars))
+    }
+    // singleton_bytes
+    let bytes = rp_vec(p)
+    i = 0
+    while i < n {
+        let x = iv_get(new, i)
+        if rh_kind(x) != 2 || iv_len(rh_subs(x)) != 1 {
+            break
+        }
+        let b = iv_get(rh_subs(x), 0)
+        rc_add(bytes, b, b)
+        i += 1
+    }
+    if i == n {
+        return rh_class(p, rc_from(p, 0, bytes))
+    }
+    // class_chars
+    let cu = rc_new(p, 1)
+    i = 0
+    while i < n {
+        let x = iv_get(new, i)
+        if rh_kind(x) != 3 {
+            break
+        }
+        let c = std::raw::load(x + 104)
+        if std::raw::load(c + 16) == 1 {
+            rc_union(p, cu, c)
+        } else {
+            if !rc_is_ascii(c) {
+                break
+            }
+            rc_union(p, cu, rc_convert(p, c, 1))
+        }
+        i += 1
+    }
+    if i == n {
+        return rh_class(p, cu)
+    }
+    // class_bytes
+    let cb = rc_new(p, 0)
+    i = 0
+    while i < n {
+        let x = iv_get(new, i)
+        if rh_kind(x) != 3 {
+            break
+        }
+        let c = std::raw::load(x + 104)
+        if std::raw::load(c + 16) == 0 {
+            rc_union(p, cb, c)
+        } else {
+            if !rc_is_ascii(c) {
+                break
+            }
+            rc_union(p, cb, rc_convert(p, c, 0))
+        }
+        i += 1
+    }
+    if i == n {
+        return rh_class(p, cb)
+    }
+    let lifted = rh_lift_common_prefix(p, new)
+    if lifted != 0 {
+        return lifted
+    }
+    let h = rh_node(p, 8)
+    std::raw::store(h + 104, new)
+    rh_alt_props(h)
+    h
+}
+
+// to_unicode_class / to_byte_class (la clase ya es ASCII).
+fn rc_convert(p: int, c: int, uni: int) -> int {
+    let v = rp_vec(p)
+    rh_vec_extend(v, rc_v(c))
+    rc_from(p, uni, v)
+}
+
+// Igualdad estructural de dos HIR (PartialEq derivado).
+fn rh_eq(p: int, a: int, b: int) -> bool {
+    let k = rh_kind(a)
+    if k != rh_kind(b) {
+        return false
+    }
+    if k == 1 {
+        return true
+    }
+    if k == 2 {
+        let va = rh_subs(a)
+        let vb = rh_subs(b)
+        if iv_len(va) != iv_len(vb) {
+            return false
+        }
+        let mut i = 0
+        while i < iv_len(va) {
+            if iv_get(va, i) != iv_get(vb, i) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    if k == 3 {
+        let ca = std::raw::load(a + 104)
+        let cb = std::raw::load(b + 104)
+        return std::raw::load(ca + 16) == std::raw::load(cb + 16) && rc_same(ca, cb)
+    }
+    if k == 4 {
+        return std::raw::load(a + 104) == std::raw::load(b + 104)
+    }
+    if k == 5 {
+        if std::raw::load(a + 104) != std::raw::load(b + 104) || std::raw::load(a + 112) != std::raw::load(b + 112) || std::raw::load(a + 120) != std::raw::load(b + 120) {
+            return false
+        }
+        return rh_eq(p, rh_sub(a), rh_sub(b))
+    }
+    if k == 6 {
+        if std::raw::load(a + 104) != std::raw::load(b + 104) {
+            return false
+        }
+        let a0 = std::raw::load(a + 112)
+        let b0 = std::raw::load(b + 112)
+        if (a0 < 0) != (b0 < 0) {
+            return false
+        }
+        if a0 >= 0 && rp_cmp_slice(p, a0, std::raw::load(a + 120), b0, std::raw::load(b + 120)) != 0 {
+            return false
+        }
+        return rh_eq(p, rh_sub(a), rh_sub(b))
+    }
+    let va = rh_subs(a)
+    let vb = rh_subs(b)
+    if iv_len(va) != iv_len(vb) {
+        return false
+    }
+    let mut i = 0
+    while i < iv_len(va) {
+        if !rh_eq(p, iv_get(va, i), iv_get(vb, i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// lift_common_prefix: el HIR nuevo, o 0 si no cambia.
+fn rh_lift_common_prefix(p: int, hirs: int) -> int {
+    let n = iv_len(hirs)
+    if n <= 1 {
+        return 0
+    }
+    let first = iv_get(hirs, 0)
+    if rh_kind(first) != 7 {
+        return 0
+    }
+    let pv = rh_subs(first)
+    let mut len = iv_len(pv)
+    if len == 0 {
+        return 0
+    }
+    let mut i = 1
+    while i < n {
+        let h = iv_get(hirs, i)
+        if rh_kind(h) != 7 {
+            return 0
+        }
+        let cv = rh_subs(h)
+        let mut common = 0
+        while common < len && common < iv_len(cv) && rh_eq(p, iv_get(pv, common), iv_get(cv, common)) {
+            common += 1
+        }
+        len = common
+        if len == 0 {
+            return 0
+        }
+        i += 1
+    }
+    let suffix_alts = rp_vec(p)
+    i = 0
+    while i < n {
+        let cv = rh_subs(iv_get(hirs, i))
+        let rest = rp_vec(p)
+        let mut j = len
+        while j < iv_len(cv) {
+            iv_push(rest, iv_get(cv, j))
+            j += 1
+        }
+        iv_push(suffix_alts, rh_concat(p, rest))
+        i += 1
+    }
+    let concat = rp_vec(p)
+    i = 0
+    while i < len {
+        iv_push(concat, iv_get(pv, i))
+        i += 1
+    }
+    iv_push(concat, rh_alternation(p, suffix_alts))
+    rh_concat(p, concat)
+}
+
+// ------------------------------------------------------------ traducción
+
+fn rt_error_text2(k: int) -> string {
+    if k == 51 {
+        return "Unicode not allowed here"
+    }
+    if k == 52 {
+        return "pattern can match invalid UTF-8"
+    }
+    if k == 53 {
+        return "invalid line terminator, must be ASCII"
+    }
+    if k == 54 {
+        return "Unicode property not found"
+    }
+    if k == 55 {
+        return "Unicode property value not found"
+    }
+    if k == 56 {
+        return "Unicode-aware Perl class not found (make sure the unicode-perl feature is enabled)"
+    }
+    return "Unicode-aware case insensitivity matching is not available (make sure the unicode-case feature is enabled)"
+}
+
+// Flags: 6 campos de 2 bits (0 None, 1 false, 2 true) en P+144:
+// 0 case_insensitive, 1 multi_line, 2 dot_matches_new_line, 3 swap_greed,
+// 4 unicode, 5 crlf.
+fn tr_flag_raw(p: int, i: int) -> int {
+    let mut f = std::raw::load(p + 144)
+    let mut k = 0
+    while k < i {
+        f = f / 4
+        k += 1
+    }
+    f % 4
+}
+
+fn tr_flag(p: int, i: int) -> bool {
+    let v = tr_flag_raw(p, i)
+    if i == 4 {
+        return v != 1
+    }
+    v == 2
+}
+
+fn tr_unicode(p: int) -> bool {
+    tr_flag(p, 4)
+}
+
+fn tr_ci(p: int) -> bool {
+    tr_flag(p, 0)
+}
+
+// set_flags: aplica los flags del AST (vector de elementos) y devuelve los
+// anteriores.
+fn tr_set_flags(p: int, items: int) -> int {
+    let old = std::raw::load(p + 144)
+    // Flags del AST (from_ast) en 6 campos de 2 bits.
+    let mut nf = 0
+    let mut enable = 2
+    let mut i = 0
+    while i < iv_len(items) {
+        let k = iv_get(items, i)
+        if k == 0 {
+            enable = 1
+        } else if k <= 6 {
+            let mut mul = 1
+            let mut j = 1
+            while j < k {
+                mul = mul * 4
+                j += 1
+            }
+            nf = nf - ((nf / mul) % 4) * mul + enable * mul
+        }
+        i += 3
+    }
+    // merge con los anteriores.
+    let mut f = 0
+    let mut mul = 1
+    let mut o = old
+    let mut n2 = nf
+    i = 0
+    while i < 6 {
+        let mut v = n2 % 4
+        if v == 0 {
+            v = o % 4
+        }
+        f = f + v * mul
+        mul = mul * 4
+        o = o / 4
+        n2 = n2 / 4
+        i += 1
+    }
+    std::raw::store(p + 144, f)
+    old
+}
+
+fn tr_err(p: int, k: int, x: int) -> int {
+    rp_err(p, k, rp_s(x), rp_e(x))
+}
+
+// Clase de una tabla ASCII (ascii_class): tipo 0..13.
+fn tr_ascii_ranges(p: int, kind: int) -> int {
+    let v = rp_vec(p)
+    if kind == 0 {
+        rc_add(v, 48, 57)
+        rc_add(v, 65, 90)
+        rc_add(v, 97, 122)
+    } else if kind == 1 {
+        rc_add(v, 65, 90)
+        rc_add(v, 97, 122)
+    } else if kind == 2 {
+        rc_add(v, 0, 127)
+    } else if kind == 3 {
+        rc_add(v, 9, 9)
+        rc_add(v, 32, 32)
+    } else if kind == 4 {
+        rc_add(v, 0, 31)
+        rc_add(v, 127, 127)
+    } else if kind == 5 {
+        rc_add(v, 48, 57)
+    } else if kind == 6 {
+        rc_add(v, 33, 126)
+    } else if kind == 7 {
+        rc_add(v, 97, 122)
+    } else if kind == 8 {
+        rc_add(v, 32, 126)
+    } else if kind == 9 {
+        rc_add(v, 33, 47)
+        rc_add(v, 58, 64)
+        rc_add(v, 91, 96)
+        rc_add(v, 123, 126)
+    } else if kind == 10 {
+        rc_add(v, 9, 9)
+        rc_add(v, 10, 10)
+        rc_add(v, 11, 11)
+        rc_add(v, 12, 12)
+        rc_add(v, 13, 13)
+        rc_add(v, 32, 32)
+    } else if kind == 11 {
+        rc_add(v, 65, 90)
+    } else if kind == 12 {
+        rc_add(v, 48, 57)
+        rc_add(v, 65, 90)
+        rc_add(v, 95, 95)
+        rc_add(v, 97, 122)
+    } else {
+        rc_add(v, 48, 57)
+        rc_add(v, 65, 70)
+        rc_add(v, 97, 102)
+    }
+    v
+}
+
+// unicode_fold_and_negate / bytes_fold_and_negate: 1 si bien, 0 si error.
+fn tr_fold_negate(p: int, c: int, negated: bool, x: int) -> int {
+    if tr_ci(p) {
+        rc_fold(p, c)
+    }
+    if negated {
+        rc_negate(p, c)
+    }
+    if std::raw::load(c + 16) == 0 && !rc_is_ascii(c) {
+        return tr_err(p, 52, x)
+    }
+    1
+}
+
+// Clase Perl (\d \s \w) según el modo: la clase o 0.
+fn tr_perl(p: int, x: int) -> int {
+    let k = std::raw::load(x + 24)
+    let negated = std::raw::load(x + 32) != 0
+    if tr_unicode(p) {
+        let mut c = 0
+        if k == 0 {
+            c = ru_single(p, rxt_perl_digit())
+        } else if k == 1 {
+            c = ru_single(p, rxt_perl_space())
+        } else {
+            c = ru_single(p, rxt_perl_word())
+        }
+        if negated {
+            rc_negate(p, c)
+        }
+        return c
+    }
+    let mut kind = 5
+    if k == 1 {
+        kind = 10
+    } else if k == 2 {
+        kind = 12
+    }
+    let c = rc_from(p, 0, tr_ascii_ranges(p, kind))
+    if negated {
+        rc_negate(p, c)
+    }
+    if !rc_is_ascii(c) {
+        return tr_err(p, 52, x)
+    }
+    c
+}
+
+// hir_unicode_class: la clase o 0.
+fn tr_unicode_class(p: int, x: int) -> int {
+    if !tr_unicode(p) {
+        return tr_err(p, 51, x)
+    }
+    let c = ru_class(p, x)
+    if c == -1 {
+        return tr_err(p, 54, x)
+    }
+    if c == -2 {
+        return tr_err(p, 55, x)
+    }
+    let mut negated = std::raw::load(x + 24) != 0
+    if std::raw::load(x + 32) == 2 && std::raw::load(x + 56) == 2 {
+        negated = !negated
+    }
+    if tr_fold_negate(p, c, negated, x) == 0 {
+        return 0
+    }
+    c
+}
+
+// ast_literal_to_scalar: el carácter (>= 0), o -1 con error.
+fn tr_literal_scalar(p: int, x: int) -> int {
+    let c = std::raw::load(x + 24)
+    if tr_unicode(p) {
+        return c
+    }
+    if std::raw::load(x + 32) != 4 || c > 255 {
+        return c
+    }
+    if c <= 127 {
+        return c
+    }
+    tr_err(p, 52, x)
+    -1
+}
+
+// class_literal_byte: el byte, o -1 con error.
+fn tr_class_byte(p: int, x: int) -> int {
+    let c = tr_literal_scalar(p, x)
+    if c < 0 {
+        return -1
+    }
+    if c <= 127 {
+        return c
+    }
+    tr_err(p, 51, x)
+    -1
+}
+
+// Traduce un elemento de clase y lo añade a la clase c. 1 bien, 0 error.
+fn tr_set(p: int, item: int, c: int) -> int {
+    let k = rp_kind(item)
+    let uni = tr_unicode(p)
+    if k == 20 {
+        return 1
+    }
+    if k == 3 {
+        if uni {
+            rc_push(p, c, std::raw::load(item + 24), std::raw::load(item + 24))
+            return 1
+        }
+        let b = tr_class_byte(p, item)
+        if b < 0 {
+            return 0
+        }
+        rc_push(p, c, b, b)
+        return 1
+    }
+    if k == 22 {
+        let l1 = std::raw::load(item + 24)
+        let l2 = std::raw::load(item + 32)
+        if uni {
+            rc_push(p, c, std::raw::load(l1 + 24), std::raw::load(l2 + 24))
+            return 1
+        }
+        let b1 = tr_class_byte(p, l1)
+        if b1 < 0 {
+            return 0
+        }
+        let b2 = tr_class_byte(p, l2)
+        if b2 < 0 {
+            return 0
+        }
+        let mut lo = b1
+        let mut hi = b2
+        if lo > hi {
+            lo = b2
+            hi = b1
+        }
+        rc_push(p, c, lo, hi)
+        return 1
+    }
+    if k == 23 {
+        let mut u = 0
+        if uni {
+            u = 1
+        }
+        let x = rc_from(p, u, tr_ascii_ranges(p, std::raw::load(item + 24)))
+        if tr_fold_negate(p, x, std::raw::load(item + 32) != 0, item) == 0 {
+            return 0
+        }
+        rc_union(p, c, x)
+        return 1
+    }
+    if k == 6 {
+        let x = tr_unicode_class(p, item)
+        if x == 0 {
+            return 0
+        }
+        rc_union(p, c, x)
+        return 1
+    }
+    if k == 7 {
+        let x = tr_perl(p, item)
+        if x == 0 {
+            return 0
+        }
+        rc_union(p, c, x)
+        return 1
+    }
+    if k == 8 {
+        let x = rc_new(p, std::raw::load(c + 16))
+        if tr_set(p, std::raw::load(item + 32), x) == 0 {
+            return 0
+        }
+        if tr_fold_negate(p, x, std::raw::load(item + 24) != 0, item) == 0 {
+            return 0
+        }
+        rc_union(p, c, x)
+        return 1
+    }
+    if k == 27 {
+        let v = rp_items(item)
+        let mut i = 0
+        while i < iv_len(v) {
+            if tr_set(p, iv_get(v, i), c) == 0 {
+                return 0
+            }
+            i += 1
+        }
+        return 1
+    }
+    // BinaryOp
+    let lhs = rc_new(p, std::raw::load(c + 16))
+    let rhs = rc_new(p, std::raw::load(c + 16))
+    if tr_set(p, std::raw::load(item + 32), lhs) == 0 {
+        return 0
+    }
+    if tr_set(p, std::raw::load(item + 40), rhs) == 0 {
+        return 0
+    }
+    if tr_ci(p) {
+        rc_fold(p, rhs)
+        rc_fold(p, lhs)
+    }
+    let op = std::raw::load(item + 24)
+    if op == 0 {
+        rc_intersect(p, lhs, rhs)
+    } else if op == 1 {
+        rc_difference(p, lhs, rhs)
+    } else {
+        rc_symdiff(p, lhs, rhs)
+    }
+    rc_union(p, c, lhs)
+    1
+}
+
+fn tr_look(p: int, k: int) -> int {
+    let uni = tr_unicode(p)
+    let ml = tr_flag(p, 1)
+    let crlf = tr_flag(p, 5)
+    if k == 0 {
+        if ml {
+            if crlf {
+                return 16
+            }
+            return 4
+        }
+        return 1
+    }
+    if k == 1 {
+        if ml {
+            if crlf {
+                return 32
+            }
+            return 8
+        }
+        return 2
+    }
+    if k == 2 {
+        return 1
+    }
+    if k == 3 {
+        return 2
+    }
+    let mut base = 0
+    if k == 4 {
+        base = 64
+    } else if k == 5 {
+        base = 128
+    } else if k == 6 || k == 10 {
+        base = 1024
+    } else if k == 7 || k == 11 {
+        base = 2048
+    } else if k == 8 {
+        base = 16384
+    } else {
+        base = 32768
+    }
+    if uni {
+        return base * 4
+    }
+    base
+}
+
+// Traduce un nodo del AST: el HIR, o 0 si hay error (en P).
+fn tr_ast(p: int, x: int) -> int {
+    let k = rp_kind(x)
+    if k == 1 {
+        return rh_empty(p)
+    }
+    if k == 2 {
+        tr_set_flags(p, rp_items(x))
+        return rh_empty(p)
+    }
+    if k == 3 {
+        let c = tr_literal_scalar(p, x)
+        if c < 0 {
+            return 0
+        }
+        if tr_ci(p) {
+            if tr_unicode(p) {
+                if rc_fold_has(p, c) {
+                    let cls = rc_new(p, 1)
+                    rc_push(p, cls, c, c)
+                    rc_fold(p, cls)
+                    return rh_class(p, cls)
+                }
+            } else if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+                let cls = rc_new(p, 0)
+                rc_push(p, cls, c, c)
+                rc_fold(p, cls)
+                return rh_class(p, cls)
+            }
+        }
+        return rh_literal_char(p, c)
+    }
+    if k == 4 {
+        if !tr_unicode(p) {
+            return tr_err(p, 52, x)
+        }
+        let v = rp_vec(p)
+        if tr_flag(p, 2) {
+            rc_add(v, 0, 1114111)
+        } else if tr_flag(p, 5) {
+            rc_add(v, 0, 9)
+            rc_add(v, 11, 12)
+            rc_add(v, 14, 1114111)
+        } else {
+            rc_add(v, 0, 9)
+            rc_add(v, 11, 1114111)
+        }
+        return rh_class(p, rc_from(p, 1, v))
+    }
+    if k == 5 {
+        return rh_look(p, tr_look(p, std::raw::load(x + 24)))
+    }
+    if k == 7 {
+        let c = tr_perl(p, x)
+        if c == 0 {
+            return 0
+        }
+        return rh_class(p, c)
+    }
+    if k == 6 {
+        let c = tr_unicode_class(p, x)
+        if c == 0 {
+            return 0
+        }
+        return rh_class(p, c)
+    }
+    if k == 8 {
+        let mut u = 0
+        if tr_unicode(p) {
+            u = 1
+        }
+        let c = rc_new(p, u)
+        if tr_set(p, std::raw::load(x + 32), c) == 0 {
+            return 0
+        }
+        if tr_fold_negate(p, c, std::raw::load(x + 24) != 0, x) == 0 {
+            return 0
+        }
+        return rh_class(p, c)
+    }
+    if k == 9 {
+        let sub = tr_ast(p, std::raw::load(x + 72))
+        if sub == 0 {
+            return 0
+        }
+        let rk = std::raw::load(x + 40)
+        let mut mn = std::raw::load(x + 48)
+        let mut mx = std::raw::load(x + 56)
+        if rk == 0 {
+            mn = 0
+            mx = 1
+        } else if rk == 1 {
+            mn = 0
+            mx = -1
+        } else if rk == 2 {
+            mn = 1
+            mx = -1
+        } else if rk == 3 {
+            mx = mn
+        } else if rk == 4 {
+            mx = -1
+        }
+        let mut greedy = std::raw::load(x + 64) != 0
+        if tr_flag(p, 3) {
+            greedy = !greedy
+        }
+        return rh_repetition(p, mn, mx, greedy, sub)
+    }
+    if k == 10 {
+        let old = std::raw::load(p + 144)
+        let gk = std::raw::load(x + 24)
+        if gk == 2 {
+            tr_set_flags(p, std::raw::load(x + 56))
+        }
+        let sub = tr_ast(p, std::raw::load(x + 64))
+        if sub == 0 {
+            return 0
+        }
+        std::raw::store(p + 144, old)
+        if gk == 2 {
+            return sub
+        }
+        if gk == 1 {
+            return rh_capture(p, std::raw::load(x + 32), std::raw::load(x + 40), std::raw::load(x + 48), sub)
+        }
+        return rh_capture(p, std::raw::load(x + 32), -1, -1, sub)
+    }
+    let v = rp_items(x)
+    let out = rp_vec(p)
+    let mut i = 0
+    while i < iv_len(v) {
+        let h = tr_ast(p, iv_get(v, i))
+        if h == 0 {
+            return 0
+        }
+        if k == 11 || rh_kind(h) != 1 {
+            iv_push(out, h)
+        }
+        i += 1
+    }
+    if k == 11 {
+        return rh_alternation(p, out)
+    }
+    rh_concat(p, out)
+}
+
+fn tr_error_text(k: int) -> string {
+    if k >= 51 {
+        return rt_error_text2(k)
+    }
+    rp_error_text(k)
+}
+
+// Analiza y traduce: devuelve "" si el patrón es válido o el texto del
+// error de regex-syntax.
+fn rx_check_hir(pat: any) -> any {
+    let p = rp_new(pat)
+    let ast = rp_parse(p)
+    let mut out = ""
+    let mut h = 0
+    if ast != 0 {
+        h = tr_ast(p, ast)
+    }
+    if h == 0 {
+        out = rx_format_error(pat, tr_error_text(std::raw::load(p + 72)), std::raw::load(p + 80), std::raw::load(p + 88), std::raw::load(p + 96) != 0, std::raw::load(p + 104), std::raw::load(p + 112))
+    }
+    rp_free(p)
+    out
+}

@@ -6,13 +6,16 @@
 #     texto del nativo debe ser idéntico.
 #   - Si la VM acepta el patrón o da otro error (traducción, tamaño), el
 #     analizador nativo debe aceptarlo.
-# Uso: python3 fuzz_parse.py NATIVO SEMILLA CANTIDAD
+# Uso: python3 fuzz_parse.py NATIVO SEMILLA CANTIDAD [hir]
+# Con 'hir' el nativo es nat_hir (análisis + traducción): todos los errores
+# deben coincidir salvo el de tamaño ("Compiled regex exceeds size limit").
 import os
 import random
 import subprocess
 import sys
 
 nat, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+hir = len(sys.argv) > 4 and sys.argv[4] == 'hir'
 rnd = random.Random(seed)
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -57,7 +60,22 @@ TOK = ['a', 'b', 'z', '0', '9', '_', ' ', '\n', '\r', '\t', '#', '.', '^', '$', 
        '{x}', '{4294967296}', '{4294967295}', '{99999999999}', '[:alpha:]', '[[:alpha:]]', '[[:^digit:]]',
        '[[:foo:]]', '[[:alpha:', '[^', '[]', '[]]', '[^]]', '[-]', '[--]', '[a-]', '[a-z]', '[z-a]',
        '[\\d-z]', '[a-\\d]', '[\\A]', '[\\b]', '[a&&b]', '[a--b]', '[a~~b]', '[[a]&&[b]]', 'é', '☃', '𝒜',
-       '\u0085', '\u00a0', '\u2028', '\u3000', 'Ω', 'ﬁ']
+       '\u0085', '\u00a0', '\u2028', '\u3000', 'Ω', 'ﬁ',
+       '(?-u)', '(?u)', '(?i)', '(?-i)', '(?s)', '(?m)', '(?R)', '(?U)', '(?-u:', '(?i-u:', '(?-u)\\xff',
+       '(?-u)\\x7f', '(?-u)[\\xff]', '(?-u)[é]', '(?-u)é', '(?-u).', '(?-u)\\W', '(?-u)\\w', '(?-u)\\pL',
+       '(?-u)[^a]', '(?-u)[[:^alpha:]]', '(?-u)[\\x00-\\x7f]', '(?-u)\\S', '(?-u)\\D', '(?s-u).',
+       '\\p{Greek}', '\\p{greek}', '\\p{Is_Greek}', '\\p{isgreek}', '\\p{sc=grek}', '\\p{scx=Grek}',
+       '\\p{Script_Extensions=Greek}', '\\p{gc=L}', '\\p{General_Category=Lu}', '\\p{Lu}', '\\p{L&}',
+       '\\p{LC}', '\\p{lc}', '\\p{Cf}', '\\p{cf}', '\\p{sc}', '\\p{Sc}', '\\p{isc}', '\\p{Is c}',
+       '\\p{Any}', '\\p{Assigned}', '\\p{ASCII}', '\\p{age=6.0}', '\\p{Age=V1_1}', '\\p{age:3.2}',
+       '\\p{age=99}', '\\p{Alphabetic}', '\\p{alpha}', '\\p{White_Space}', '\\p{wspace}',
+       '\\p{Decimal_Number}', '\\p{nd}', '\\p{gcb=Extend}', '\\p{wb=ALetter}', '\\p{sb=Upper}',
+       '\\p{Grapheme_Cluster_Break=LV}', '\\p{bc=L}', '\\p{Bidi_Class=AL}', '\\p{Block=Basic_Latin}',
+       '\\p{foo}', '\\p{sc=foo}', '\\p{foo=bar}', '\\p{gc=foo}', '\\p{Emoji}', '\\p{Extended_Pictographic}',
+       '\\p{Changes_When_Casefolded}', '\\p{cwcf}', '\\p{Age}', '\\p{Script}', '\\p{L-}', '\\p{ L }',
+       '\\p{é}', '\\pé', '\\p{Grek}', '\\p{Latin}', '\\p{Han}', '\\P{Han}', '\\p{sc!=Han}', '\\P{sc!=Han}',
+       '\\pZ', '\\pC', '\\pX', '\\pz', '[\\pL&&\\p{Greek}]', '[\\w--\\p{Latin}]', '(?i)[a-z&&k]',
+       '(?i)k', '(?i)ß', '(?i)σ', '(?i)Σ', '(?i)[^k]', '(?i)\\p{Lu}', '(?i)[[:upper:]]']
 
 
 ATOM = ['a', 'b', 'xy', '.', '\\d', '\\W', '\\pL', '\\p{Greek}', '\\x{263a}', '\\u00e9', '[a-z]', '[^0-9_]',
@@ -150,7 +168,10 @@ for i, p in enumerate(pats):
         assert e.startswith(pre), e
         msg = e[len(pre):]
         last = msg.rsplit('error: ', 1)[-1] if 'error: ' in msg else ''
-        if last not in AST:
+        if hir:
+            if msg.startswith('Compiled regex exceeds size limit'):
+                msg = None
+        elif last not in AST:
             msg = None
     got = None if n == 'OK' else bytes.fromhex(n).decode('utf-8')
     if msg is not None:

@@ -16,6 +16,7 @@ fn prueba_signatures() -> array {
         "std::prueba::uw_char_width Int -> Int",
         "std::prueba::uw_cps_width Array -> Int",
         "std::prueba::rx_check String -> String",
+        "std::prueba::rx_check_hir String -> String",
     ]
 }
 

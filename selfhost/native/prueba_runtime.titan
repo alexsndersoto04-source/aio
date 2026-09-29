@@ -50,3 +50,9 @@ fn std__prueba__rx_check(s: any) -> any {
     rt_expect_str(s, "std::prueba::rx_check")
     rp_check(s)
 }
+
+// Como rx_check, con la traducción a HIR (errores de regex-syntax completos).
+fn std__prueba__rx_check_hir(s: any) -> any {
+    rt_expect_str(s, "std::prueba::rx_check_hir")
+    rx_check_hir(s)
+}
