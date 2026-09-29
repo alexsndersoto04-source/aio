@@ -58,7 +58,7 @@ jobs:
                   report.append(f'FALTA EN Cargo.lock {name} {version}')
                   ok = False
                   continue
-              url = f'https://static.crates.io/crates/{name}/{name}-{version}.crate'
+              url = f'https://static.crates.io/crates/{name}/{name}-{version}.crate'.replace('+', '%2B')
               data = urllib.request.urlopen(url, timeout=60).read()
               got = hashlib.sha256(data).hexdigest()
               if got != want:
