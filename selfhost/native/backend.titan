@@ -74,18 +74,31 @@ fn pc_new() -> Pc {
     Pc { b: [], fx: [], lab: std::map::new() }
 }
 
+// En estas funciones el array que crece se lee el último: así, con la pasada
+// de última lectura del optimizador (opt.titan), queda con un solo dueño y
+// se amplía en el sitio en vez de copiarse entero cada vez.
 fn pc_add(p: Pc, bytes: array) -> Pc {
-    Pc { b: std::array::concat(p.b, bytes), fx: p.fx, lab: p.lab }
+    let fx = p.fx
+    let lab = p.lab
+    let b = p.b
+    Pc { b: std::array::concat(b, bytes), fx: fx, lab: lab }
 }
 
 // Añade `bytes` con una referencia en bytes[at..].
 fn pc_ref(p: Pc, bytes: array, at: int, kind: string, target: string, n: int) -> Pc {
     let f = Fx { off: len(p.b) + at, kind: kind, target: target, n: n }
-    Pc { b: std::array::concat(p.b, bytes), fx: std::array::push(p.fx, f), lab: p.lab }
+    let lab = p.lab
+    let fx = p.fx
+    let b = p.b
+    Pc { b: std::array::concat(b, bytes), fx: std::array::push(fx, f), lab: lab }
 }
 
 fn pc_label(p: Pc, name: string) -> Pc {
-    Pc { b: p.b, fx: p.fx, lab: std::map::insert(p.lab, name, len(p.b)) }
+    let at = len(p.b)
+    let b = p.b
+    let fx = p.fx
+    let lab = p.lab
+    Pc { b: b, fx: fx, lab: std::map::insert(lab, name, at) }
 }
 
 // Salto (jmp o jcc) a una etiqueta local; el rel32 son los 4 últimos bytes.
@@ -396,6 +409,15 @@ fn bk_eq(p0: Pc, ctx: Ctx, negate: bool) -> Pc {
     p = pc_add(p, x_load(x_rcx(), x_rsp(), 8))
     p = pc_add(p, x_cmp_rm(x_rcx(), x_rsp(), 24))
     p = pc_jl(p, x_jcc(x_cc_e(), 0), "true")
+    // Dos strings de distinta longitud son distintos: sin llamar al runtime.
+    p = pc_add(p, x_cmp_ri(x_rax(), 5))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "notstr")
+    p = pc_add(p, x_load(x_r8(), x_rcx(), 8))
+    p = pc_add(p, x_load(x_rdx(), x_rsp(), 24))
+    p = pc_add(p, x_cmp_rm(x_r8(), x_rdx(), 8))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "false")
+    p = pc_jl(p, x_jmp(0), "slow")
+    p = pc_label(p, "notstr")
     p = pc_add(p, x_cmp_ri(x_rax(), 4))
     p = pc_jl(p, x_jcc(x_cc_a(), 0), "slow")
     p = pc_label(p, "false")
@@ -1391,6 +1413,9 @@ fn bk_build(gu: G, gr: G) -> Result {
         let base = len(code)
         for name in std::map::keys(piece.lab) {
             labels = std::map::insert(labels, name, base + std::map::get(piece.lab, name))
+            if std::text::starts_with(name, "g_") {
+                syms = std::array::push(syms, (base + std::map::get(piece.lab, name), "glue:" + name))
+            }
         }
         let done = pc_finish(piece)
         for r in done.fx {

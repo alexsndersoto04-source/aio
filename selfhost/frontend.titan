@@ -76,5 +76,12 @@ fn front(path: string, natives: array) -> Result {
     if std::env::get("TITAN_OPT") == "0" {
         return Result::Ok(g)
     }
-    Result::Ok(ot_optimize(g))
+    // El runtime nativo es el único que usa `std::raw::`.
+    let mut runtime = false
+    for line in natives {
+        if std::text::starts_with(line, "std::raw::") {
+            runtime = true
+        }
+    }
+    Result::Ok(ot_optimize(g, !runtime))
 }

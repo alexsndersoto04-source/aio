@@ -33,7 +33,7 @@ fn main() {
         },
     }
     let before = ot_count(g)
-    let o = ot_optimize(g)
+    let o = ot_optimize(g, true)
     let after = ot_count(o)
     print("instrucciones: {before} -> {after}")
     if len(args) > 1 && args[1] == "--dump" {

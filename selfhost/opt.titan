@@ -181,7 +181,13 @@ fn ot_is_binary(k: string) -> bool {
 }
 
 fn ot_pop_last(items: array, n: int) -> array {
-    std::array::slice(items, 0, len(items) - n)
+    let mut out = items
+    let mut i = 0
+    while i < n {
+        out = std::array::pop(out)
+        i += 1
+    }
+    out
 }
 
 // Destino final de un salto (sigue los `Jump` encadenados; sin bucles infinitos).
@@ -320,7 +326,7 @@ fn ot_prune(code: array, locs: array) -> (array, array) {
     let mut work = [0]
     while len(work) > 0 {
         let pc = work[len(work) - 1]
-        work = std::array::slice(work, 0, len(work) - 1)
+        work = std::array::pop(work)
         if pc > total || reach[pc] {
             continue
         }
@@ -393,7 +399,158 @@ fn ot_prune(code: array, locs: array) -> (array, array) {
     return (out, olocs)
 }
 
-fn ot_function(g0: G, f: Func) -> (G, Func) {
+// ------------------------------------------------------------ última lectura (moves)
+//
+// Análisis de vida de las variables (hacia atrás, hasta punto fijo): si un
+// `PushLocal x` es la última lectura de x (ningún camino la vuelve a leer
+// antes de escribirla), se cambia por `TakeLocal x`, que entrega el valor sin
+// sumar una referencia y deja nil en la variable. El resultado es el mismo,
+// pero el valor queda con un solo dueño y el runtime puede modificarlo en el
+// sitio en vez de copiarlo (push/set/concat/insert sobre arrays, mapas y
+// textos). Leen variables: PushLocal, TakeLocal y MakeClosure (sus capturas);
+// las escriben: StoreLocal y TakeLocal.
+
+// Conjuntos de variables: arrays de palabras de 62 bits.
+fn ot_bits() -> array {
+    let mut out = []
+    let mut v = 1
+    let mut i = 0
+    while i < 62 {
+        out = std::array::push(out, v)
+        if i < 61 {
+            v = v * 2
+        }
+        i += 1
+    }
+    out
+}
+
+fn ot_set_new(words: int) -> array {
+    let mut s = []
+    let mut i = 0
+    while i < words {
+        s = std::array::push(s, 0)
+        i += 1
+    }
+    s
+}
+
+fn ot_set_has(s: array, bits: array, i: int) -> bool {
+    (s[i / 62] & bits[i % 62]) != 0
+}
+
+fn ot_set_add(s: array, bits: array, i: int) -> array {
+    let w = i / 62
+    std::array::set(s, w, s[w] | bits[i % 62])
+}
+
+fn ot_set_del(s: array, bits: array, i: int) -> array {
+    let w = i / 62
+    let b = bits[i % 62]
+    std::array::set(s, w, s[w] & (-1 - b))
+}
+
+fn ot_set_union(a: array, b: array) -> array {
+    let mut out = a
+    let mut i = 0
+    while i < len(a) {
+        out = std::array::set(out, i, a[i] | b[i])
+        i += 1
+    }
+    out
+}
+
+fn ot_set_eq(a: array, b: array) -> bool {
+    let mut i = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Variables vivas justo después de cada instrucción.
+fn ot_live_out(code: array, locals: int) -> array {
+    let total = len(code)
+    let bits = ot_bits()
+    let words = (locals + 61) / 62 + 1
+    let empty = ot_set_new(words)
+    let mut live_in = []
+    let mut live_out = []
+    let mut i = 0
+    while i <= total {
+        live_in = std::array::push(live_in, empty)
+        live_out = std::array::push(live_out, empty)
+        i += 1
+    }
+    let mut changed = true
+    while changed {
+        changed = false
+        let mut pc = total - 1
+        while pc >= 0 {
+            let op = code[pc]
+            let k = op.k
+            let mut out = empty
+            if k == "Jump" {
+                out = live_in[op.n]
+            } else if k == "JumpIfFalse" {
+                out = ot_set_union(live_in[op.n], live_in[pc + 1])
+            } else if k != "Ret" {
+                out = live_in[pc + 1]
+            }
+            let mut inn = out
+            if k == "StoreLocal" {
+                inn = ot_set_del(inn, bits, op.n)
+            } else if k == "PushLocal" || k == "TakeLocal" {
+                inn = ot_set_add(inn, bits, op.n)
+            } else if k == "MakeClosure" {
+                for c in op.list {
+                    inn = ot_set_add(inn, bits, c)
+                }
+            }
+            if !ot_set_eq(out, live_out[pc]) {
+                live_out = std::array::set(live_out, pc, out)
+            }
+            if !ot_set_eq(inn, live_in[pc]) {
+                live_in = std::array::set(live_in, pc, inn)
+                changed = true
+            }
+            pc -= 1
+        }
+    }
+    live_out
+}
+
+fn ot_moves(f: Func) -> Func {
+    let code = f.code
+    let mut any_read = false
+    for op in code {
+        if op.k == "PushLocal" {
+            any_read = true
+        }
+    }
+    if !any_read {
+        return f
+    }
+    let live = ot_live_out(code, f.locals)
+    let bits = ot_bits()
+    let mut out = []
+    let mut pc = 0
+    while pc < len(code) {
+        let op = code[pc]
+        if op.k == "PushLocal" && !ot_set_has(live[pc], bits, op.n) {
+            out = std::array::push(out, ot_with_n(ot_op("TakeLocal", 0), op.n))
+        } else {
+            out = std::array::push(out, op)
+        }
+        pc += 1
+    }
+    Func { name: f.name, file: f.file, arity: f.arity, params: f.params, ret: f.ret, captures: f.captures, locals: f.locals, max_stack: f.max_stack, code: out, locs: f.locs }
+}
+
+fn ot_function(g0: G, f: Func, moves: bool) -> (G, Func) {
     let mut g = g0
     let mut code = f.code
     let mut locs = f.locs
@@ -411,7 +568,10 @@ fn ot_function(g0: G, f: Func) -> (G, Func) {
         }
     }
     let nf = Func { name: f.name, file: f.file, arity: f.arity, params: f.params, ret: f.ret, captures: f.captures, locals: f.locals, max_stack: f.max_stack, code: code, locs: locs }
-    return (g, nf)
+    if !moves || std::env::get("TITAN_MOVES") == "0" {
+        return (g, nf)
+    }
+    return (g, ot_moves(nf))
 }
 
 // ------------------------------------------------------------ integración (inlining)
@@ -494,7 +654,7 @@ fn ot_depths(code: array) -> any {
     let mut work = [0]
     while len(work) > 0 {
         let pc = work[len(work) - 1]
-        work = std::array::slice(work, 0, len(work) - 1)
+        work = std::array::pop(work)
         if pc >= total {
             continue
         }
@@ -658,7 +818,10 @@ fn ot_inline_into(f: Func, me: int, funcs: array, ok: array) -> any {
     Func { name: f.name, file: f.file, arity: f.arity, params: f.params, ret: f.ret, captures: f.captures, locals: base + extra, max_stack: f.max_stack, code: code, locs: olocs }
 }
 
-// Optimiza todas las funciones del programa: primero cada una por separado,
+// Optimiza todas las funciones del programa (`moves`: aplicar la pasada de
+// última lectura; no al runtime nativo, cuyo código guarda direcciones de
+// memoria en enteros y necesita que las variables mantengan vivos los
+// objetos hasta el final de la función). Primero cada una por separado,
 // luego integra las llamadas a funciones pequeñas y vuelve a optimizar las
 // que cambiaron. La integración va apagada salvo con TITAN_INLINE=1: medido
 // sobre el propio compilador (build.titan), no lo hace más rápido ni con el
@@ -666,11 +829,11 @@ fn ot_inline_into(f: Func, me: int, funcs: array, ok: array) -> any {
 // ya integra por su cuenta) y agranda el ejecutable. Queda probada (243
 // programas) para cuando haya pasadas que se aprovechen de ella
 // (propagación de constantes a través de variables).
-fn ot_optimize(g0: G) -> G {
+fn ot_optimize(g0: G, moves: bool) -> G {
     let mut g = g0
     let mut funcs = []
     for f in g0.funcs {
-        let (g2, nf) = ot_function(g, f)
+        let (g2, nf) = ot_function(g, f, moves)
         g = g2
         funcs = std::array::push(funcs, nf)
     }
@@ -689,7 +852,7 @@ fn ot_optimize(g0: G) -> G {
         if inl == nil {
             result = std::array::push(result, f)
         } else {
-            let (g2, nf) = ot_function(g, inl)
+            let (g2, nf) = ot_function(g, inl, moves)
             g = g2
             result = std::array::push(result, nf)
         }

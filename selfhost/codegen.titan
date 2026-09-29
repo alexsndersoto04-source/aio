@@ -310,8 +310,15 @@ fn cg_native_names() -> map {
     m
 }
 
+// Los arrays que crecen se sacan de `g` antes de ampliarlos: así tienen un
+// solo dueño y (con la pasada de última lectura de opt.titan) se amplían en
+// el sitio en vez de copiarse enteros en cada instrucción.
 fn cg_emit(g: G, op: Op) -> G {
-    gs_locs(gs_code(g, std::array::push(g.code, op)), std::array::push(g.locs, g.loc))
+    let loc = g.loc
+    let code = g.code
+    let locs = g.locs
+    let g1 = gs_locs(gs_code(g, []), [])
+    gs_locs(gs_code(g1, std::array::push(code, op)), std::array::push(locs, loc))
 }
 
 fn cg_position(g: G) -> int {
@@ -336,7 +343,9 @@ fn cg_patch(g: G, at: int, target: int) -> G {
         return g
     }
     let fixed = Op { k: op.k, n: target, m: 0, s: "", s2: "", flag: false, list: [] }
-    gs_code(g, std::array::set(g.code, at, fixed))
+    let code = g.code
+    let g1 = gs_code(g, [])
+    gs_code(g1, std::array::set(code, at, fixed))
 }
 
 fn cg_intern(g: G, value: string) -> (G, int) {
@@ -344,7 +353,11 @@ fn cg_intern(g: G, value: string) -> (G, int) {
         return (g, std::map::get(g.strings, value))
     }
     let id = len(g.table)
-    let g2 = gs_strings(gs_table(g, std::array::push(g.table, value)), std::map::insert(g.strings, value, id))
+    // Como en cg_emit: se sacan de `g` para ampliarlos en el sitio.
+    let table = g.table
+    let strings = g.strings
+    let g1 = gs_strings(gs_table(g, []), std::map::new())
+    let g2 = gs_strings(gs_table(g1, std::array::push(table, value)), std::map::insert(strings, value, id))
     return (g2, id)
 }
 
