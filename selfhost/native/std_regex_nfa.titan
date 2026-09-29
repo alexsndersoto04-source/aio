@@ -24,15 +24,21 @@
 // +40 transiciones de los estados dispersos (tríos inicio, fin, siguiente),
 // +48 Utf8BoundedMap, +56 Utf8SuffixMap, +64 fin del último fragmento,
 // +72 registro (analizador), +80 nodos sin compilar de Utf8Compiler,
-// +88 destino de Utf8Compiler, +96 inicio anclado, +104 inicio no anclado.
+// +88 destino de Utf8Compiler, +96 inicio anclado, +104 inicio no anclado,
+// +112 1 = con límite de tamaño, +120 nombres de grupos (tríos índice,
+// inicio y fin del nombre en el patrón), +128 cantidad de grupos.
 //
 // Estados: 1 Empty (x siguiente), 2 ByteRange (x inicio, y fin, z
 // siguiente), 3 Sparse (x posición en +40, y cantidad), 4 Look (x bit, y
 // siguiente), 5 CaptureStart / 6 CaptureEnd (x grupo, y siguiente),
 // 7 Union / 8 UnionReverse (x vector de alternativas), 9 Fail, 10 Match.
 
-fn rn_new(p: int, reverse: bool) -> int {
-    let n = rp_node(p, 0, 14)
+fn rn_new(p: int, reverse: bool, limit: bool) -> int {
+    let n = rp_node(p, 0, 17)
+    if limit {
+        std::raw::store(n + 112, 1)
+    }
+    std::raw::store(n + 120, rp_vec(p))
     std::raw::store(n + 8, rp_vec(p))
     if reverse {
         std::raw::store(n + 32, 1)
@@ -82,7 +88,7 @@ fn rn_set_field(n: int, s: int, k: int, v: int) {
 }
 
 fn rn_check(n: int) {
-    if rn_count(n) * 32 + std::raw::load(n + 16) > 10485760 {
+    if std::raw::load(n + 112) == 1 && rn_count(n) * 32 + std::raw::load(n + 16) > 10485760 {
         std::raw::store(n + 24, 1)
     }
 }
@@ -162,19 +168,27 @@ fn rn_map_new(p: int, cap: int, words: int) -> int {
 fn rn_map_reset(m: int) {
     let v = std::raw::load(m + 8)
     let words = std::raw::load(m + 24)
-    iv_trunc(v, 0)
+    let total = std::raw::load(m + 16) * words
+    // Reserva de una vez y rellena directamente.
+    if std::raw::load(v + 8) < total {
+        rt_free_block(std::raw::load(v + 16))
+        std::raw::store(v + 16, rt_alloc(8 * total))
+        std::raw::store(v + 8, total)
+    }
+    std::raw::store(v, total)
+    let d = std::raw::load(v + 16)
     let mut i = 0
-    while i < std::raw::load(m + 16) {
-        iv_push(v, 0)
-        if words == 2 {
-            iv_push(v, -1)
-        } else {
-            iv_push(v, 0)
-            iv_push(v, 0)
-            iv_push(v, 0)
-            iv_push(v, 0)
+    if words == 2 {
+        while i < total {
+            std::raw::store(d + 8 * i, 0)
+            std::raw::store(d + 8 * i + 8, -1)
+            i += 2
         }
-        i += 1
+    } else {
+        while i < total {
+            std::raw::store(d + 8 * i, 0)
+            i += 1
+        }
     }
 }
 
@@ -312,7 +326,7 @@ fn nc_c(n: int, h: int) -> int {
         return nc_repetition(n, h)
     }
     if k == 6 {
-        return nc_cap(n, std::raw::load(h + 104), std::raw::load(h + 128))
+        return nc_cap(n, std::raw::load(h + 104), std::raw::load(h + 112), std::raw::load(h + 120), std::raw::load(h + 128))
     }
     if k == 7 {
         return nc_concat(n, rh_subs(h))
@@ -436,9 +450,18 @@ fn nc_alt_slice(n: int, v: int) -> int {
     nc_trie(n, v)
 }
 
-fn nc_cap(n: int, index: int, sub: int) -> int {
+fn nc_cap(n: int, index: int, n0: int, n1: int, sub: int) -> int {
     if rn_rev(n) {
         return nc_c(n, sub)
+    }
+    if index + 1 > std::raw::load(n + 128) {
+        std::raw::store(n + 128, index + 1)
+    }
+    if n0 >= 0 {
+        let names = std::raw::load(n + 120)
+        iv_push(names, index)
+        iv_push(names, n0)
+        iv_push(names, n1)
     }
     let start = rn_add(n, 5, index, 0, 0, 0)
     let s = nc_c(n, sub)
@@ -565,20 +588,13 @@ fn nc_unicode_class(n: int, c: int) -> int {
         return nc_class_reverse(n, c)
     }
     nc_u8c_new(n)
-    let seqs = iv_new(16)
-    let mut i = 0
-    while i < cnt && !rn_bad(n) {
-        iv_trunc(seqs, 0)
-        nc_utf8_seqs(rc_lo(c, i), rc_hi(c, i), seqs)
-        let mut j = 0
-        while j < iv_len(seqs) && !rn_bad(n) {
-            let len = iv_get(seqs, j)
-            nc_u8c_add(n, seqs, j + 1, len)
-            j += 1 + 2 * len
-        }
-        i += 1
+    let seqs = nc_class_seqs(n, c)
+    let mut j = 0
+    while j < iv_len(seqs) && !rn_bad(n) {
+        let len = iv_get(seqs, j)
+        nc_u8c_add(n, seqs, j + 1, len)
+        j += 1 + 2 * len
     }
-    iv_free(seqs)
     nc_u8c_finish(n)
 }
 
@@ -588,13 +604,9 @@ fn nc_class_reverse(n: int, c: int) -> int {
     rn_map_clear(m)
     let u = rn_add_union(n, true)
     let alt_end = rn_add_empty(n)
-    let seqs = iv_new(16)
-    let mut i = 0
-    while i < rc_n(c) && !rn_bad(n) {
-        iv_trunc(seqs, 0)
-        nc_utf8_seqs(rc_lo(c, i), rc_hi(c, i), seqs)
-        let mut j = 0
-        while j < iv_len(seqs) && !rn_bad(n) {
+    let seqs = nc_class_seqs(n, c)
+    let mut j = 0
+    while j < iv_len(seqs) && !rn_bad(n) {
             let len = iv_get(seqs, j)
             let mut end = alt_end
             let mut k = 0
@@ -620,11 +632,25 @@ fn nc_class_reverse(n: int, c: int) -> int {
             }
             rn_patch(n, u, end)
             j += 1 + 2 * len
-        }
+    }
+    nc_ref(n, u, alt_end)
+}
+
+// Secuencias UTF-8 de todos los rangos de la clase c, calculadas una sola
+// vez (se guardan en c+24; dependen sólo de los rangos).
+fn nc_class_seqs(n: int, c: int) -> int {
+    let cached = std::raw::load(c + 24)
+    if cached != 0 {
+        return cached
+    }
+    let seqs = rp_vec(std::raw::load(n + 72))
+    let mut i = 0
+    while i < rc_n(c) {
+        nc_utf8_seqs(rc_lo(c, i), rc_hi(c, i), seqs)
         i += 1
     }
-    iv_free(seqs)
-    nc_ref(n, u, alt_end)
+    std::raw::store(c + 24, seqs)
+    seqs
 }
 
 // ------------------------------------------------------------ Utf8Sequences
@@ -1045,8 +1071,8 @@ fn nc_trie(n: int, v: int) -> int {
 
 // Compila h (un patrón). Devuelve N; rn_bad(N) indica que se pasó del
 // límite.
-fn nc_compile(p: int, h: int, reverse: bool) -> int {
-    let n = rn_new(p, reverse)
+fn nc_compile(p: int, h: int, reverse: bool, limit: bool) -> int {
+    let n = rn_new(p, reverse, limit)
     let mut anchored = false
     if reverse {
         anchored = (std::raw::load(h + 40) & 2) != 0
@@ -1065,7 +1091,7 @@ fn nc_compile(p: int, h: int, reverse: bool) -> int {
         ups = nc_at_least(n, rh_class_raw(p, c), false, 0)
         upe = nc_end(n)
     }
-    let s = nc_cap(n, 0, h)
+    let s = nc_cap(n, 0, -1, -1, h)
     let e = nc_end(n)
     let m = rn_add(n, 10, 0, 0, 0, 0)
     rn_patch(n, e, m)
@@ -1683,22 +1709,34 @@ fn rl_bypass(p: int, h: int) -> bool {
 
 // ------------------------------------------------------------ entrada
 
-// 0 si el NFA cabe en el límite (o no hace falta), 1 si lo supera.
-fn rx_nfa_too_big(p: int, h: int) -> int {
+// Como Core::new: NFA directo listo para buscar, o 0 si el directo o el
+// inverso superan el límite. Si meta::Regex usaría sólo literales (Pre) no
+// hay límite, pero igual se construye el NFA para buscar con él.
+fn rx_prepare(p: int, h: int) -> int {
     if rl_bypass(p, h) {
+        return nc_compile(p, h, false, false)
+    }
+    let f = nc_compile(p, h, false, true)
+    if rn_bad(f) {
+        rn_free(f)
         return 0
     }
-    let f = nc_compile(p, h, false)
-    let bad = rn_bad(f)
-    rn_free(f)
-    if bad {
-        return 1
-    }
-    let r = nc_compile(p, h, true)
-    let bad2 = rn_bad(r)
+    let r = nc_compile(p, h, true, true)
+    let bad = rn_bad(r)
     rn_free(r)
-    if bad2 {
+    if bad {
+        rn_free(f)
+        return 0
+    }
+    f
+}
+
+// 0 si el NFA cabe en el límite (o no hace falta), 1 si lo supera.
+fn rx_nfa_too_big(p: int, h: int) -> int {
+    let f = rx_prepare(p, h)
+    if f == 0 {
         return 1
     }
+    rn_free(f)
     0
 }

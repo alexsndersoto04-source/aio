@@ -1,0 +1,29 @@
+// std::regex: la misma expresión muchas veces y más de 8 distintas (la
+// versión nativa guarda las últimas 8 compiladas), también inválidas.
+
+fn main() {
+    let pats = ["a+", "(\\w+)@(\\w+)", "[0-9]{2,}", "(?i)hola", "x|y|z", "\\bde\\b", "(?P<n>[a-z])\\d", "^\\s*$", "é+", "[[:alpha:]]+", "(", "a{99999999}"]
+    let texto = "Hola hola HOLA a1 b2 de 12345 xyz éé ana@correo y aaa"
+    let mut r = 0
+    while r < 3 {
+        for p in pats {
+            println("{p} -> valid={std::regex::is_valid(p)}")
+        }
+        let mut i = 0
+        while i < 10 {
+            let p = pats[i]
+            println(std::regex::replace_all(p, texto, "[$0]"))
+            println("{std::regex::find_all(p, texto)}")
+            println("{std::regex::captures(p, texto)}")
+            i += 1
+        }
+        r += 1
+    }
+    let mut n = 0
+    let mut k = 0
+    while k < 2000 {
+        n += len(std::regex::find_all("\\b\\w+\\b", texto))
+        k += 1
+    }
+    println("{n}")
+}

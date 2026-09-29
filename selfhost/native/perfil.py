@@ -13,6 +13,8 @@ runtime subiendo por la cadena de marcos (rbp); sirve con el backend propio,
 que siempre guarda rbp. Así se ve qué parte del programa causa el trabajo.
 --solo NOMBRE: (con --llamador) cuenta solo las muestras que caen en NOMBRE,
 p. ej. `--solo runtime:rt_copy` para ver quién provoca las copias.
+--pila: tiempo inclusivo: cada muestra cuenta una vez para cada función que
+está en la pila de llamadas (ella misma o algo que llamó).
 
 Solo Linux x86-64. Sirve para ejecutables estáticos de Titan (backend propio
 o LLVM), que conservan los nombres de sus funciones.
@@ -61,7 +63,7 @@ def mapfile(path):
 
 def main():
     args = sys.argv[1:]
-    every, top, mapa, caller, only = 2.0, 30, None, False, None
+    every, top, mapa, caller, only, stack = 2.0, 30, None, False, None, False
     while args and args[0].startswith("--"):
         if args[0] == "--cada":
             every = float(args[1])
@@ -69,6 +71,10 @@ def main():
             top = int(args[1])
         elif args[0] == "--llamador":
             caller = True
+            args = args[1:]
+            continue
+        elif args[0] == "--pila":
+            stack = True
             args = args[1:]
             continue
         elif args[0] == "--solo":
@@ -103,6 +109,22 @@ def main():
                 return names[i] if i >= 0 else "?"
             name = name_of(regs.rip)
             if only is not None and name != only:
+                libc.ptrace(PTRACE_CONT, pid, None, None if sig == signal.SIGSTOP else ctypes.c_void_p(sig))
+                continue
+            if stack:
+                seen = set()
+                pc, bp = regs.rip, regs.rbp
+                for _ in range(256):
+                    seen.add(name_of(pc))
+                    ctypes.set_errno(0)
+                    ret = libc.ptrace(PTRACE_PEEKDATA, pid, ctypes.c_void_p(bp + 8), None)
+                    nbp = libc.ptrace(PTRACE_PEEKDATA, pid, ctypes.c_void_p(bp), None)
+                    if ctypes.get_errno() != 0 or nbp == 0:
+                        break
+                    pc, bp = ret & 0xFFFFFFFFFFFFFFFF, nbp & 0xFFFFFFFFFFFFFFFF
+                for n in seen:
+                    counts[n] = counts.get(n, 0) + 1
+                total += 1
                 libc.ptrace(PTRACE_CONT, pid, None, None if sig == signal.SIGSTOP else ctypes.c_void_p(sig))
                 continue
             if caller:

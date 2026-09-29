@@ -10,9 +10,10 @@
 // ------------------------------------------------------------ clases
 
 // Clase (IntervalSet): +0 vector de pares (inicio, fin) aplanado, +8 folded,
-// +16 1 = Unicode (char), 0 = bytes (u8).
+// +16 1 = Unicode (char), 0 = bytes (u8), +24 secuencias UTF-8 ya calculadas
+// para el NFA (0 = todavía no; ver nc_class_seqs).
 fn rc_new(p: int, uni: int) -> int {
-    let c = rp_node(p, 0, 3)
+    let c = rp_node(p, 0, 4)
     std::raw::store(c, rp_vec(p))
     std::raw::store(c + 8, 1)
     std::raw::store(c + 16, uni)
@@ -112,6 +113,14 @@ fn rc_is_canonical(c: int) -> bool {
 fn rc_sort(v: int) {
     let n = iv_len(v) / 2
     if n < 2 {
+        return
+    }
+    // Ya ordenado (lo normal): nada que hacer.
+    let mut k = 1
+    while k < n && !rc_less(iv_get(v, 2 * k), iv_get(v, 2 * k + 1), iv_get(v, 2 * k - 2), iv_get(v, 2 * k - 1)) {
+        k += 1
+    }
+    if k == n {
         return
     }
     let tmp = iv_new(2 * n)
@@ -475,14 +484,17 @@ fn ru_digit(s: int, i: int) -> int {
 // Tabla de plegado simple decodificada (una vez por análisis): bloque
 // +0 claves, +8 inicio de sus destinos, +16 destinos.
 fn rc_fold_table(p: int) -> int {
-    let cached = std::raw::load(p + 136)
+    // Datos constantes: se decodifican una vez y se guardan para siempre en
+    // globals + 2824 (no pertenecen a ninguna expresión).
+    let g = std::raw::globals() + 2824
+    let cached = std::raw::load(g)
     if cached != 0 {
         return cached
     }
-    let t = rp_node(p, 0, 3)
-    let keys = rp_vec(p)
-    let starts = rp_vec(p)
-    let targets = rp_vec(p)
+    let t = rt_alloc(24)
+    let keys = iv_new(4096)
+    let starts = iv_new(4096)
+    let targets = iv_new(4096)
     std::raw::store(t, keys)
     std::raw::store(t + 8, starts)
     std::raw::store(t + 16, targets)
@@ -518,7 +530,7 @@ fn rc_fold_table(p: int) -> int {
         prev = c
     }
     iv_push(starts, iv_len(targets))
-    std::raw::store(p + 136, t)
+    std::raw::store(g, t)
     t
 }
 

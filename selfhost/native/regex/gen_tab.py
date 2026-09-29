@@ -152,9 +152,29 @@ lines = [
 ]
 
 
+slots = [0]
+
+
+# Las tablas de más de un trozo se unen con '+' en tiempo de ejecución: se
+# unen una sola vez y el string se guarda (retenido, para siempre) en
+# globals + 2832 + 8k (ver el mapa de globals en runtime.titan).
 def fn(name, s):
     lines.append('fn ' + name + '() -> string {')
-    lines.append(titan_str(s).rstrip('\n'))
+    if len(s) > 8000:
+        g = 2832 + 8 * slots[0]
+        slots[0] += 1
+        assert g < 3584
+        lines.append('    let g = std::raw::globals() + ' + str(g))
+        lines.append('    let c = std::raw::load(g)')
+        lines.append('    if c != 0 {')
+        lines.append('        return rt_sref(c)')
+        lines.append('    }')
+        lines.append('    let t = ' + titan_str(s).strip()[len('return '):])
+        lines.append('    std::raw::retain(5, std::raw::bits(t))')
+        lines.append('    std::raw::store(g, std::raw::bits(t))')
+        lines.append('    t')
+    else:
+        lines.append(titan_str(s).rstrip('\n'))
     lines.append('}')
     lines.append('')
 

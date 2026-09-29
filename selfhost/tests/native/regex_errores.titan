@@ -1,0 +1,24 @@
+// std::regex: errores (expresión inválida o demasiado grande) y uno sin
+// atrapar al final.
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "Ok({v})",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn main() {
+    println(show(std::try::catch(|| { std::regex::is_match("a(b", "ab") })))
+    println(show(std::try::catch(|| { std::regex::find("[z-a]", "x") })))
+    println(show(std::try::catch(|| { std::regex::find_all("\\p" + std::text::from_char_code(123) + "Nope}", "x") })))
+    println(show(std::try::catch(|| { std::regex::captures("(?P<a>x)(?P<a>y)", "xy") })))
+    println(show(std::try::catch(|| { std::regex::replace_all("a{2,1}", "aa", "b") })))
+    println(show(std::try::catch(|| { std::regex::split("\\w{1000}{1000}", "x") })))
+    println(show(std::try::catch(|| { std::regex::is_match("*", "x") })))
+    println(show(std::try::catch(|| { std::regex::is_match("(?z)a", "x") })))
+    println(show(std::try::catch(|| { std::regex::is_match("\\xZZ", "x") })))
+    let v = std::regex::is_valid("\\w{1000}{1000}")
+    println("{v}")
+    println(std::regex::find("[", "x"))
+}
