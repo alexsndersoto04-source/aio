@@ -997,6 +997,41 @@ index ad590a0..31d1fa5 100644
          let mut info: Vec<u8> = Vec::new();
          info.extend_from_slice(b"INFO");
          info.extend_from_slice(b"INAM");
+diff --git a/crates/titan_stdlib/src/compress_mod.rs b/crates/titan_stdlib/src/compress_mod.rs
+index f328cfc..46105d4 100644
+--- a/crates/titan_stdlib/src/compress_mod.rs
++++ b/crates/titan_stdlib/src/compress_mod.rs
+@@ -32,7 +32,6 @@ fn level(value: i32, max: i32) -> Result<Compression, CompressError> {
+     Ok(Compression::new(value as u32))
+ }
+ 
+-
+ // ---------------- Decoding core ----------------
+ //
+ // Decoding used to go through flate2's `read::*Decoder` + `read_to_end`.
+@@ -64,8 +63,8 @@ fn unexpected_eof() -> CompressError {
+ fn inflate_stream(input: &[u8], zlib: bool) -> Result<(Vec<u8>, usize), CompressError> {
+     let mut flags = inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+     if zlib {
+-        flags |= inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
+-            | inflate_flags::TINFL_FLAG_COMPUTE_ADLER32;
++        flags |=
++            inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER | inflate_flags::TINFL_FLAG_COMPUTE_ADLER32;
+     }
+     let mut out: Vec<u8> = vec![0; input.len().saturating_mul(2).max(64)];
+     let mut decomp = Box::<DecompressorOxide>::default();
+@@ -274,7 +273,10 @@ mod tests {
+         let zlib = zlib_encode(SAMPLE, 6).unwrap();
+         let gzip = gzip_encode(SAMPLE, 6).unwrap();
+         for cut in 0..deflate.len() {
+-            assert!(deflate_decode(&deflate[..cut]).is_err(), "deflate cut {cut}");
++            assert!(
++                deflate_decode(&deflate[..cut]).is_err(),
++                "deflate cut {cut}"
++            );
+         }
+         for cut in 0..zlib.len() {
+             assert!(zlib_decode(&zlib[..cut]).is_err(), "zlib cut {cut}");
 diff --git a/crates/titan_stdlib/src/datetime_mod.rs b/crates/titan_stdlib/src/datetime_mod.rs
 index bbc010d..ebdc51e 100644
 --- a/crates/titan_stdlib/src/datetime_mod.rs
