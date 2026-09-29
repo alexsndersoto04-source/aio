@@ -18,6 +18,7 @@ import std_icu_tab
 import std_icu
 import std_idna
 import std_url
+import std_regex_parse
 import std_rsa
 import std_jwt
 import std_libm

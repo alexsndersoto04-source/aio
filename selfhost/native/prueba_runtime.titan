@@ -44,3 +44,9 @@ fn std__prueba__uw_cps_width(a: any) -> any {
     rt_free_block(buf)
     w
 }
+
+// Texto del error del analizador de regex ("" si el patrón es válido).
+fn std__prueba__rx_check(s: any) -> any {
+    rt_expect_str(s, "std::prueba::rx_check")
+    rp_check(s)
+}
