@@ -39,7 +39,7 @@ rc=0
 == selfhost: lexer Titan vs lexer Rust
 archivos: 812  idénticos: 812  distintos: 0
 == selfhost: parser Titan vs parser Rust
-archivos: 812  idénticos: 812  distintos: 0  (líneas de AST idénticas: 355820)
+archivos: 812  idénticos: 812  distintos: 0  (líneas de AST idénticas: 355922)
 == bench
 push 20000: 10 ms
 index 20000: 8 ms (suma 199990000)
