@@ -1,6 +1,6 @@
 // Prueba diferencial de la descompresión de std::compress: cada línea del
 // archivo es "MODO HEX" (g = gzip, z = zlib, d = deflate) para descomprimir o
-// "MODO NIVEL HEX" (G, Z, D) para comprimir. Escribe "ok HEX"
+// "MODO NIVEL HEX" (G, Z, D) para comprimir; s / S NIVEL = zstd. Escribe "ok HEX"
 // con la salida o "ERR HEX" con el mensaje. Se ejecuta en la VM (zett run) y
 // compilado con el backend nativo; fuzz.py compara las salidas.
 fn hx(s: string) -> string {
@@ -22,7 +22,7 @@ fn main() {
         let mut h = ""
         let mut nivel = 0
         let mut k = 1
-        if mode == "G" || mode == "Z" || mode == "D" {
+        if mode == "G" || mode == "Z" || mode == "D" || mode == "S" {
             nivel = match std::text::parse_int(parts[1]) {
                 Option::Some(v) => v,
                 Option::None => 0 - 1,
@@ -39,6 +39,10 @@ fn main() {
             println(show(std::try::catch(|| { std::compress::zlib_encode(data, nivel) })))
         } else if mode == "D" {
             println(show(std::try::catch(|| { std::compress::deflate_encode(data, nivel) })))
+        } else if mode == "S" {
+            println(show(std::try::catch(|| { std::compress::zstd_encode(data, nivel) })))
+        } else if mode == "s" {
+            println(show(std::try::catch(|| { std::compress::zstd_decode(data) })))
         } else if mode == "g" {
             println(show(std::try::catch(|| { std::compress::gzip_decode(data) })))
         } else if mode == "z" {
