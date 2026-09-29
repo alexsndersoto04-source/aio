@@ -21,6 +21,7 @@ import std_url
 import std_regex_parse
 import std_regex_tab
 import std_regex_hir
+import std_regex_nfa
 import std_rsa
 import std_jwt
 import std_libm

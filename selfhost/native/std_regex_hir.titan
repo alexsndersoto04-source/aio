@@ -2291,8 +2291,8 @@ fn tr_error_text(k: int) -> string {
     rp_error_text(k)
 }
 
-// Analiza y traduce: devuelve "" si el patrón es válido o el texto del
-// error de regex-syntax.
+// Analiza, traduce y comprueba el tamaño del NFA (std_regex_nfa.titan):
+// devuelve "" si el patrón es válido o el texto del error, como Regex::new.
 fn rx_check_hir(pat: any) -> any {
     let p = rp_new(pat)
     let ast = rp_parse(p)
@@ -2300,6 +2300,9 @@ fn rx_check_hir(pat: any) -> any {
     let mut h = 0
     if ast != 0 {
         h = tr_ast(p, ast)
+    }
+    if h != 0 && rx_nfa_too_big(p, h) == 1 {
+        out = "Compiled regex exceeds size limit of 10485760 bytes."
     }
     if h == 0 {
         out = rx_format_error(pat, tr_error_text(std::raw::load(p + 72)), std::raw::load(p + 80), std::raw::load(p + 88), std::raw::load(p + 96) != 0, std::raw::load(p + 104), std::raw::load(p + 112))

@@ -6,7 +6,8 @@
 #     texto del nativo debe ser idéntico.
 #   - Si la VM acepta el patrón o da otro error (traducción, tamaño), el
 #     analizador nativo debe aceptarlo.
-# Uso: python3 fuzz_parse.py NATIVO SEMILLA CANTIDAD [hir]
+# Uso: python3 fuzz_parse.py NATIVO SEMILLA CANTIDAD [hir|todo]
+# Con 'todo' también se compara el error de tamaño del NFA.
 # Con 'hir' el nativo es nat_hir (análisis + traducción): todos los errores
 # deben coincidir salvo el de tamaño ("Compiled regex exceeds size limit").
 import os
@@ -15,7 +16,8 @@ import subprocess
 import sys
 
 nat, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-hir = len(sys.argv) > 4 and sys.argv[4] == 'hir'
+hir = len(sys.argv) > 4 and sys.argv[4] in ('hir', 'todo')
+todo = len(sys.argv) > 4 and sys.argv[4] == 'todo'
 rnd = random.Random(seed)
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -169,7 +171,7 @@ for i, p in enumerate(pats):
         msg = e[len(pre):]
         last = msg.rsplit('error: ', 1)[-1] if 'error: ' in msg else ''
         if hir:
-            if msg.startswith('Compiled regex exceeds size limit'):
+            if not todo and msg.startswith('Compiled regex exceeds size limit'):
                 msg = None
         elif last not in AST:
             msg = None
