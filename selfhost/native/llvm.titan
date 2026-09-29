@@ -699,6 +699,17 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
     } else if name == "std::raw::fail" {
         b1 = lv_e(b1, "  call fastcc void @g_raise(i64 " + a0 + ")")
         return lv_e(b1, "  unreachable")
+    } else if name == "std::raw::throw" {
+        // Vuelve al std::try::catch activo (registro en G+24, ver TryCall).
+        b1 = lv_e(b1, "  " + id + "mtp = getelementptr i8, ptr @G, i64 2632")
+        b1 = lv_e(b1, "  store i64 " + id + "a0t, ptr " + id + "mtp")
+        b1 = lv_e(b1, "  " + id + "mbp = getelementptr i8, ptr @G, i64 2640")
+        b1 = lv_e(b1, "  store i64 " + a0 + ", ptr " + id + "mbp")
+        b1 = lv_e(b1, "  " + id + "hp = getelementptr i8, ptr @G, i64 24")
+        b1 = lv_e(b1, "  " + id + "h = load i64, ptr " + id + "hp")
+        b1 = lv_e(b1, "  " + id + "hq = inttoptr i64 " + id + "h to ptr")
+        b1 = lv_e(b1, "  call void @t_longjmp(ptr " + id + "hq)")
+        return lv_e(b1, "  unreachable")
     } else {
         return lv_e(lv_err(b1, "unknown intrinsic " + name), "  unreachable")
     }
@@ -1055,6 +1066,76 @@ fn lv_op(b0: Lv, ctx: LvCtx, op: Op, pc: int) -> Lv {
         b = lv_call_rt(b, ctx, id + "e", "rt_call_error", [id + "ft", id + "fb", "1", "{n}"])
         return lv_e(b, "  unreachable")
     }
+    if k == "TryCall" {
+        // std::try::catch(f, args...): como la VM, un error dentro de la
+        // llamada da Result::Err(mensaje) y el éxito Result::Ok(valor).
+        // El registro %tj{pc} guarda los registros de la CPU (t_setjmp,
+        // palabras 0-21), el manejador anterior (22) y la profundidad (23);
+        // G+24 apunta a él mientras dura la llamada. rt_fatal salta aquí
+        // (std::raw::throw -> t_longjmp) con el mensaje en G+2632/G+2640.
+        if ctx.runtime {
+            return lv_e(lv_err(b, "std::try::catch is not available in the runtime"), "  unreachable")
+        }
+        let at = d - 1 - n
+        let rec = "%tj{pc}"
+        b = lv_get(b, id + "f", at)
+        b = lv_e(b, "  " + id + "ic = icmp eq i64 " + id + "ft, 12")
+        b = lv_cond(b, id + "ic", blk + "clo", blk + "noclo")
+        b = lv_label(b, blk + "clo")
+        b = lv_e(b, "  " + id + "ri = ptrtoint ptr " + rec + " to i64")
+        b = lv_e(b, "  " + id + "gh = getelementptr i8, ptr @G, i64 24")
+        b = lv_e(b, "  " + id + "pv = load i64, ptr " + id + "gh")
+        b = lv_store(b, id + "s1", id + "ri", 176, id + "pv")
+        b = lv_e(b, "  " + id + "dv = load i64, ptr %dp")
+        b = lv_store(b, id + "s2", id + "ri", 184, id + "dv")
+        b = lv_e(b, "  store i64 " + id + "ri, ptr " + id + "gh")
+        b = lv_e(b, "  " + id + "sj = call i64 @t_setjmp(ptr " + rec + ")")
+        b = lv_e(b, "  " + id + "z = icmp eq i64 " + id + "sj, 0")
+        b = lv_cond(b, id + "z", blk + "go", blk + "caught")
+        b = lv_label(b, blk + "go")
+        b = lv_load(b, id + "ar", id + "fb", 24)
+        b = lv_e(b, "  " + id + "ok = icmp eq i64 " + id + "ar, {n}")
+        b = lv_cond(b, id + "ok", blk + "call", blk + "err")
+        b = lv_label(b, blk + "call")
+        b = lv_load(b, id + "fp", id + "fb", 8)
+        b = lv_e(b, "  " + id + "fq = inttoptr i64 " + id + "fp to ptr")
+        let (b1, args) = lv_args(b, id, d, n)
+        b = lv_call(b1, id + "r", id + "fq", id + "fb", args)
+        b = lv_load(b, id + "p1", id + "ri", 176)
+        b = lv_e(b, "  store i64 " + id + "p1, ptr " + id + "gh")
+        b = lv_dec(b, id + "ft", id + "fb")
+        b = lv_call_rt(b, ctx, id + "y", "rt_try_ok", [id + "rt", id + "rb"])
+        b = lv_put(b, at, id + "yt", id + "yb")
+        b = lv_br_to(b, next)
+        b = lv_label(b, blk + "err")
+        b = lv_call_rt(b, ctx, id + "e", "rt_call_error", [id + "ft", id + "fb", "1", "{n}"])
+        b = lv_e(b, "  unreachable")
+        b = lv_label(b, blk + "caught")
+        b = lv_e(b, "  " + id + "ci = ptrtoint ptr " + rec + " to i64")
+        b = lv_load(b, id + "p2", id + "ci", 176)
+        b = lv_e(b, "  " + id + "gh2 = getelementptr i8, ptr @G, i64 24")
+        b = lv_e(b, "  store i64 " + id + "p2, ptr " + id + "gh2")
+        b = lv_load(b, id + "d2", id + "ci", 184)
+        b = lv_e(b, "  store i64 " + id + "d2, ptr %dp")
+        b = lv_e(b, "  " + id + "mtp = getelementptr i8, ptr @G, i64 2632")
+        b = lv_e(b, "  " + id + "mt = load i64, ptr " + id + "mtp")
+        b = lv_e(b, "  " + id + "mbp = getelementptr i8, ptr @G, i64 2640")
+        b = lv_e(b, "  " + id + "mb = load i64, ptr " + id + "mbp")
+        b = lv_call_rt(b, ctx, id + "x", "rt_try_err", [id + "mt", id + "mb"])
+        b = lv_put(b, at, id + "xt", id + "xb")
+        b = lv_br_to(b, next)
+        b = lv_label(b, blk + "noclo")
+        let mut w = 0
+        while w <= n {
+            b = lv_get(b, id + "v{w}", at + w)
+            b = lv_dec(b, id + "v{w}t", id + "v{w}b")
+            w += 1
+        }
+        let (b2, msg) = lv_str(b, "std::try::catch expected a closure")
+        b = lv_call_rt(b2, ctx, id + "n", "rt_try_err", ["5", msg])
+        b = lv_put(b, at, id + "nt", id + "nb")
+        return lv_br_to(b, next)
+    }
     lv_e(lv_err(b, "instruction " + k + " is not supported by the native backend yet"), "  unreachable")
 }
 
@@ -1097,7 +1178,7 @@ fn lv_effect(op: Op) -> (int, int) {
         }
         return (0, 1)
     }
-    if k == "CallValue" {
+    if k == "CallValue" || k == "TryCall" {
         return (n + 1, 1)
     }
     // Ret y las desconocidas (que dan error al traducirse).
@@ -1201,6 +1282,14 @@ fn lv_function(b0: Lv, ctx0: LvCtx, f: Func, label: string) -> Lv {
     while i < locals {
         b = lv_e(b, "  %lT{i} = alloca i64")
         b = lv_e(b, "  %lB{i} = alloca i64")
+        i += 1
+    }
+    // Un registro de std::try::catch por cada TryCall (ver lv_op).
+    i = 0
+    for op in f.code {
+        if op.k == "TryCall" {
+            b = lv_e(b, "  %tj{i} = alloca [24 x i64], align 16")
+        }
         i += 1
     }
     if !ctx.runtime {
@@ -1323,6 +1412,21 @@ fn lv_glue(ctx: LvCtx) -> array {
         let ty = lv_br("i64, i64, [{nb} x i8]")
         l = std::array::push(l, "@" + label + ".msg = internal global " + ty + " " + lv_br("i64 -1, i64 {nb}, [{nb} x i8] " + lv_cbytes(bytes)) + ", align 16")
         l = std::array::push(l, "define internal fastcc void @" + label + "() noreturn noinline cold " + lv_br("\n  call fastcc void @g_raise(i64 ptrtoint (ptr @" + label + ".msg to i64))\n  unreachable\n"))
+    }
+    // t_setjmp / t_longjmp propios (para std::try::catch): guardan y
+    // restauran los registros que conserva una llamada (callee-saved), la
+    // pila y la dirección de vuelta. Se escriben a mano porque
+    // llvm.eh.sjlj.setjmp no hace nada en AArch64 (devuelve siempre 0).
+    l = std::array::push(l, "declare i64 @t_setjmp(ptr) returns_twice nounwind")
+    l = std::array::push(l, "declare void @t_longjmp(ptr) noreturn nounwind")
+    let mut sj = []
+    if ctx.target == "x86_64" {
+        sj = [".text", ".globl t_setjmp", "t_setjmp:", "  movq %rbx, 0(%rdi)", "  movq %rbp, 8(%rdi)", "  movq %r12, 16(%rdi)", "  movq %r13, 24(%rdi)", "  movq %r14, 32(%rdi)", "  movq %r15, 40(%rdi)", "  leaq 8(%rsp), %rdx", "  movq %rdx, 48(%rdi)", "  movq (%rsp), %rdx", "  movq %rdx, 56(%rdi)", "  xorl %eax, %eax", "  ret", ".globl t_longjmp", "t_longjmp:", "  movq 0(%rdi), %rbx", "  movq 8(%rdi), %rbp", "  movq 16(%rdi), %r12", "  movq 24(%rdi), %r13", "  movq 32(%rdi), %r14", "  movq 40(%rdi), %r15", "  movq 48(%rdi), %rsp", "  movl $1, %eax", "  jmpq *56(%rdi)"]
+    } else {
+        sj = [".text", ".globl t_setjmp", "t_setjmp:", "  stp x19, x20, [x0]", "  stp x21, x22, [x0, #16]", "  stp x23, x24, [x0, #32]", "  stp x25, x26, [x0, #48]", "  stp x27, x28, [x0, #64]", "  stp x29, x30, [x0, #80]", "  mov x2, sp", "  str x2, [x0, #96]", "  stp d8, d9, [x0, #104]", "  stp d10, d11, [x0, #120]", "  stp d12, d13, [x0, #136]", "  stp d14, d15, [x0, #152]", "  mov x0, #0", "  ret", ".globl t_longjmp", "t_longjmp:", "  ldp x19, x20, [x0]", "  ldp x21, x22, [x0, #16]", "  ldp x23, x24, [x0, #32]", "  ldp x25, x26, [x0, #48]", "  ldp x27, x28, [x0, #64]", "  ldp x29, x30, [x0, #80]", "  ldr x2, [x0, #96]", "  mov sp, x2", "  ldp d8, d9, [x0, #104]", "  ldp d10, d11, [x0, #120]", "  ldp d12, d13, [x0, #136]", "  ldp d14, d15, [x0, #152]", "  mov x0, #1", "  ret"]
+    }
+    for line in sj {
+        l = std::array::push(l, "module asm \"" + line + "\"")
     }
     if ctx.target == "x86_64" {
         let cons = "\"=" + lv_br("rax") + "," + lv_br("rax") + "," + lv_br("rdi") + "," + lv_br("rsi") + "," + lv_br("rdx") + "," + lv_br("r10") + "," + lv_br("r8") + "," + lv_br("r9") + ",~" + lv_br("rcx") + ",~" + lv_br("r11") + ",~" + lv_br("memory") + "\""

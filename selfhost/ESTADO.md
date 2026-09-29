@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ idéntico al de Rust |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats) |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 byte a byte) | ✅ **logrado** (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 373 / 816 nativas (`selfhost/native/cobertura.sh`) |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: 374 / 816 nativas (`selfhost/native/cobertura.sh`) |
 | L | **Backend LLVM** en Titan: bytecode → LLVM IR → clang/llc (LLVM real) (`selfhost/native/llvm.titan`, `selfhost/build_llvm.titan`) | ✅ x86-64: 241 / 241 idénticos a la VM con -O2 (LLVM 22 local y clang 18 en la CI) · ✅ punto fijo por LLVM (`native/llvm/punto_fijo.sh`; el compilador hecho por LLVM es ~5× más rápido) · ✅ ARM64 (AArch64): 241 / 241 idénticos en una máquina ARM64 real (CI `ubuntu-24.04-arm`, contra la VM de Rust compilada para ARM64) |
 | O | **Optimizador propio** en Titan, estilo `opt` de LLVM, sobre el bytecode (la representación intermedia de Titan) (`selfhost/opt.titan`): cálculo de constantes, saltos encadenados, valores descartados, código inalcanzable. Lo usan los dos backends | ✅ en marcha: el compilador pasa de 74 550 a 69 358 instrucciones (−7 %); punto fijo propio y por LLVM ✅; `selfhost/opt_ver.titan ARCHIVO [--dump]` muestra el antes/después; `TITAN_OPT=0` lo apaga. Integración de funciones pequeñas (inlining) hecha y probada, cuenta la profundidad de llamadas igual que una llamada real; va apagada salvo con `TITAN_INLINE=1` porque medida sobre el compilador no lo acelera (ni con el backend propio ni con LLVM) y agranda el ejecutable |
 | M | **Memoria del runtime**: medido con un perfilador por muestreo propio (`selfhost/native/perfil.py`, sin perf), el compilador pasaba casi la mitad del tiempo pidiendo y devolviendo bloques grandes al sistema. Ahora esos bloques se reutilizan (listas por tamaño, potencias de 2) | ✅ compilador hecho por LLVM: 6,5 s → 4,3 s (−34 %); con el backend propio: 41,4 s → 31,0 s (−25 %); misma salida byte a byte; puntos fijos ✅; prueba `memoria_grande.titan` |
@@ -464,3 +464,15 @@ Pendiente en esta fase:
 - No existe `print` sin salto de línea (útil para herramientas).
 - Fase 2 necesita un oráculo del AST: un volcado canónico (`titan ast`) en
   Rust, como `titan_lexer::dump_tokens`, para comparar byte a byte.
+
+## std::try::catch en ejecutables nativos
+
+- Instrucción `TryCall` en los dos backends (propio x86-64 y LLVM x86-64/ARM64),
+  con la misma semántica que la VM: `Result::Ok(valor)` o
+  `Result::Err(mensaje)` sin imprimir nada; los catch se pueden anidar.
+- Todo error pasa por `rt_fatal`; si hay un catch activo (`G+24`), salta a él
+  con `std::raw::throw` en vez de terminar.
+- LLVM: `t_setjmp`/`t_longjmp` escritos a mano para cada arquitectura.
+  `llvm.eh.sjlj.setjmp` NO sirve en AArch64: allí devuelve siempre 0 y el
+  longjmp no hace nada (comprobado con clang).
+- Prueba: `selfhost/tests/native/try_catch.titan`.

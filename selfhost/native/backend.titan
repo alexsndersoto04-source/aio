@@ -832,6 +832,20 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_load(rax, rsp, 8))
         return pc_ref(p, x_jmp(0), 1, "rel", "g_raise", 0)
     }
+    if name == "std::raw::throw" {
+        // Salta al std::try::catch activo (registro en [r15+24], ver TryCall)
+        // con el mensaje en rax (etiqueta) y rdx (contenido).
+        let r15 = x_r15()
+        let r11 = x_r11()
+        p = pc_add(p, x_load(x_rdx(), rsp, 8))
+        p = pc_add(p, x_load(rax, rsp, 0))
+        p = pc_add(p, x_load(rsp, r15, 24))
+        p = pc_add(p, x_load(x_rbp(), rsp, 8))
+        p = pc_add(p, x_load(r11, rsp, 16))
+        p = pc_add(p, x_store(r15, 16, r11))
+        p = pc_add(p, x_load(r11, rsp, 24))
+        return pc_add(p, x_jmp_r(r11))
+    }
     pc_error(p, "unknown intrinsic " + name)
 }
 
@@ -1130,6 +1144,78 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
         p = pc_add(pc_add(p, x_push_m(rsp, off + 8)), x_push_m(rsp, off + 8))
         p = bk_push_int(p, n)
         p = bk_call_rt(p, ctx, "rt_call_error", 2)
+        return pc_label(p, "done")
+    }
+    if k == "TryCall" {
+        // std::try::catch(f, args...): como la VM, un error dentro de la
+        // llamada se devuelve como Result::Err(mensaje) y el éxito como
+        // Result::Ok(valor). Antes de llamar se deja un registro de 32 bytes
+        // justo encima del cierre: [manejador anterior][rbp][profundidad]
+        // [dirección de reanudación], y [r15+24] apunta a él; rt_fatal salta
+        // ahí (std::raw::throw) con el mensaje en rax/rdx.
+        let off = 16 * n
+        let rax = x_rax()
+        let rcx = x_rcx()
+        let r15 = x_r15()
+        p = pc_add(p, x_load(rax, rsp, off))
+        p = pc_add(p, x_cmp_ri(rax, 12))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "noclo")
+        p = pc_add(p, x_sub_ri(rsp, 32))
+        let mut w = 0
+        while w < 2 * (n + 1) {
+            p = pc_add(p, x_load(rax, rsp, 32 + 8 * w))
+            p = pc_add(p, x_store(rsp, 8 * w, rax))
+            w += 1
+        }
+        p = pc_add(p, x_lea(rcx, rsp, off + 16))
+        p = pc_add(p, x_load(rax, r15, 24))
+        p = pc_add(p, x_store(rcx, 0, rax))
+        p = pc_add(p, x_store(rcx, 8, x_rbp()))
+        p = pc_add(p, x_load(rax, r15, 16))
+        p = pc_add(p, x_store(rcx, 16, rax))
+        p = pc_jl(p, [72, 141, 5, 0, 0, 0, 0], "resume")
+        p = pc_add(p, x_store(rcx, 24, rax))
+        p = pc_add(p, x_store(r15, 24, rcx))
+        p = pc_add(p, x_load(x_r12(), rsp, off + 8))
+        p = pc_add(p, x_cmp_mi(x_r12(), 24, n))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "err")
+        p = pc_add(p, x_load(rax, x_r12(), 8))
+        p = pc_add(p, x_call_r(rax))
+        if n > 0 {
+            p = pc_add(p, x_add_ri(rsp, off))
+        }
+        p = pc_add(pc_add(p, x_pop(x_rdi())), x_pop(x_rsi()))
+        p = pc_add(p, x_load(rcx, rsp, 0))
+        p = pc_add(p, x_store(r15, 24, rcx))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(pc_add(p, x_push(x_rdx())), x_push(rax))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+        p = bk_call_rt(p, ctx, "rt_try_ok", 1)
+        p = pc_jl(p, x_jmp(0), "done")
+        // Aridad distinta: el error pasa por rt_fatal con el registro puesto,
+        // así que termina en "resume" como cualquier otro.
+        p = pc_label(p, "err")
+        p = pc_add(pc_add(p, x_push_m(rsp, off + 8)), x_push_m(rsp, off + 8))
+        p = bk_push_int(p, n)
+        p = bk_call_rt(p, ctx, "rt_call_error", 2)
+        p = pc_add(p, x_ud2())
+        // Reanudación: rsp = registro, rbp y profundidad ya restaurados.
+        p = pc_label(p, "resume")
+        p = pc_add(p, x_load(rcx, rsp, 0))
+        p = pc_add(p, x_store(r15, 24, rcx))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(pc_add(p, x_push(x_rdx())), x_push(rax))
+        p = bk_call_rt(p, ctx, "rt_try_err", 1)
+        p = pc_jl(p, x_jmp(0), "done")
+        p = pc_label(p, "noclo")
+        w = 0
+        while w <= n {
+            p = bk_dec_at(p, rsp, 0)
+            p = pc_add(p, x_add_ri(rsp, 16))
+            w += 1
+        }
+        p = bk_push_str(p, "std::try::catch expected a closure")
+        p = bk_call_rt(p, ctx, "rt_try_err", 1)
         return pc_label(p, "done")
     }
     pc_error(p, "instruction " + k + " is not supported by the native backend yet")

@@ -731,6 +731,11 @@ fn rt_trim(s: any) -> any {
 
 // Error sin capturar: igual que `fatal("RUNTIME ERROR", ...)` del CLI.
 fn rt_fatal(message: any) {
+    // Dentro de std::try::catch el error no termina el programa: vuelve al
+    // catch activo como Result::Err(mensaje) (sin imprimir nada, como la VM).
+    if std::raw::load(std::raw::globals() + 24) != 0 {
+        std::raw::throw(message)
+    }
     pg_cleanup()
     ps_cleanup()
     let flat = rt_flatten(message)
@@ -745,6 +750,15 @@ fn rt_fatal(message: any) {
         rt_write(2, rt_concat(rt_concat("::error title=RUNTIME ERROR::", escaped), "\n"))
     }
     std::raw::syscall(60, 1, 0, 0, 0, 0, 0)
+}
+
+// Resultados de std::try::catch.
+fn rt_try_ok(v: any) -> any {
+    rt_enum_new(v, "Result", "Ok")
+}
+
+fn rt_try_err(message: any) -> any {
+    rt_enum_new(message, "Result", "Err")
 }
 
 // Valor devuelto por la función de entrada: como `titan run`, se imprime

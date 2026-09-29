@@ -40,6 +40,7 @@ fn raw_signatures() -> array {
         "std::raw::arch  -> Int",
         "std::raw::globals  -> Int",
         "std::raw::fail String -> Never",
+        "std::raw::throw Any -> Never",
     ]
 }
 
