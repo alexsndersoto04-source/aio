@@ -170,6 +170,9 @@ pub fn insert(handle: i64, pattern: &str, value: &str) -> Result<(), RouterError
         .routers
         .get_mut(&key)
         .ok_or(RouterError::UnknownHandle(handle))?;
+    if too_many_params(pattern) {
+        return Err(RouterError::Insert("Too many route parameters.".to_string()));
+    }
     entry
         .router
         .insert(pattern.to_string(), value.to_string())
@@ -182,6 +185,92 @@ pub fn insert(handle: i64, pattern: &str, value: &str) -> Result<(), RouterError
 /// Look up `path` in the router. Returns `Some((tag, params))` if a
 /// route matched, `None` otherwise. `params` is an ordered map of
 /// extracted names to values (percent-decoded by matchit).
+/// matchit 0.8.6 hace `panic!("Too many route parameters.")` cuando una ruta
+/// llega a 26 parámetros con nombre (en `normalize_params`), y eso termina el
+/// programa entero. Se repite aquí el mismo recorrido (mismas reglas de
+/// escape y de `find_wildcard`, mismo `splice`) antes de insertar, para
+/// devolver un error normal. Nada del árbol se toca antes de ese punto en
+/// matchit, así que el resultado es el mismo salvo que no hay panic.
+fn too_many_params(pattern: &str) -> bool {
+    let mut inner = pattern.as_bytes().to_vec();
+    let mut escaped: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while let Some(&c) = inner.get(i) {
+        if (c == b'{' && inner.get(i + 1) == Some(&b'{'))
+            || (c == b'}' && inner.get(i + 1) == Some(&b'}'))
+        {
+            inner.remove(i);
+            escaped.push(i);
+        }
+        i += 1;
+    }
+    let mut start = 0;
+    let mut next = b'a';
+    loop {
+        let (ws, we) = match matchit_find_wildcard(&inner[start..], &escaped, start) {
+            Some(Some((a, b))) => (a + start, b + start),
+            _ => return false,
+        };
+        if inner[ws + 1] == b'*' {
+            start = we;
+            continue;
+        }
+        // UnescapedRoute::splice(ws..we, [b'{', next, b'}'])
+        escaped.retain(|x| !(ws..we).contains(x));
+        let offset = 3isize - ((we - ws) as isize);
+        for x in &mut escaped {
+            if *x > we {
+                *x = x.checked_add_signed(offset).unwrap_or(*x);
+            }
+        }
+        let _ = inner.splice(ws..we, [b'{', next, b'}']);
+        next += 1;
+        if next > b'z' {
+            return true;
+        }
+        start = ws + 3;
+    }
+}
+
+/// `find_wildcard` de matchit sobre `path` (que empieza en la posición
+/// `base` de la ruta, para mirar las marcas de escape). `None` = error
+/// (InvalidParam), `Some(None)` = no hay más comodines.
+fn matchit_find_wildcard(
+    path: &[u8],
+    escaped: &[usize],
+    base: usize,
+) -> Option<Option<(usize, usize)>> {
+    let is_escaped = |i: usize| escaped.contains(&(i + base));
+    for (start, &c) in path.iter().enumerate() {
+        if c == b'}' && !is_escaped(start) {
+            return None;
+        }
+        if c != b'{' || is_escaped(start) {
+            continue;
+        }
+        if path.get(start + 1) == Some(&b'}') {
+            return None;
+        }
+        for (i, &c) in path.iter().enumerate().skip(start + 2) {
+            match c {
+                b'}' => {
+                    if is_escaped(i) {
+                        continue;
+                    }
+                    if path.get(i - 1) == Some(&b'*') {
+                        return None;
+                    }
+                    return Some(Some((start, i + 1)));
+                }
+                b'*' | b'/' => return None,
+                _ => {}
+            }
+        }
+        return None;
+    }
+    Some(None)
+}
+
 pub fn at(
     handle: i64,
     path: &str,
@@ -257,6 +346,23 @@ mod tests {
         assert_eq!(p.get("rest").map(String::as_str), Some("a/b/c.txt"));
 
         assert!(at(r, "/nope").unwrap().is_none());
+        drop_router(r);
+    }
+
+    #[test]
+    fn too_many_params_is_an_error_not_a_panic() {
+        let route = |n: usize| (0..n).map(|i| format!("/{{p{i}}}")).collect::<String>();
+        let r = new().unwrap();
+        insert(r, &route(25), "ok").unwrap();
+        match insert(r, &format!("/x{}", route(26)), "no") {
+            Err(RouterError::Insert(msg)) => assert_eq!(msg, "Too many route parameters."),
+            other => panic!("unexpected {other:?}"),
+        }
+        // Los comodines finales no cuentan.
+        insert(r, &format!("/y{}/{{*rest}}", route(25)), "tail").unwrap();
+        // Rutas inválidas siguen dando el error de matchit.
+        assert!(!too_many_params("/{}"));
+        assert!(!too_many_params("/{{a}}"));
         drop_router(r);
     }
 

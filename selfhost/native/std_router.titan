@@ -1,0 +1,1268 @@
+// std::router en Titan: lo mismo que router_mod.rs sobre matchit 0.8.6,
+// traducido de su código original (selfhost/fuentes/matchit-0.8.6.crate:
+// src/tree.rs, src/escape.rs, src/params.rs, src/error.rs).
+//
+// Rutas (UnescapedRoute): bloque +0 bytes (vector de enteros), +8 posiciones
+// escapadas ("{{" y "}}" se guardan como un solo byte marcado).
+// Vistas (UnescapedRef): bloque (ruta, base, largo); la posición i de la vista
+// es la base + i de la ruta. Se apuntan en el contexto y se liberan al final.
+// Nodos: bloque de 64 B: +0 prefijo (ruta), +8 prioridad, +16 wild_child,
+// +24 índices, +32 tipo, +40 hijos, +48 valor (string retenido, 0 = ninguno),
+// +56 remapping (vector de vectores de bytes).
+// Tipos: 0 Root, 1 Param sin sufijo, 2 Param con sufijo, 3 CatchAll, 4 Static.
+// Contexto de una inserción: +0 vistas y rutas temporales, +8 error (1
+// conflicto, 2 InvalidParamSegment, 3 InvalidParam, 4 InvalidCatchAll, 5
+// demasiados parámetros), +16 texto del conflicto (string retenido), +24/+32
+// comodín encontrado (inicio, fin), +40 ruta normalizada, +48 valor.
+
+// ------------------------------------------------------------ vectores
+
+fn mr_iv_clone(v: int) -> int {
+    let out = iv_new(iv_len(v))
+    let mut i = 0
+    while i < iv_len(v) {
+        iv_push(out, iv_get(v, i))
+        i += 1
+    }
+    out
+}
+
+fn mr_iv_remove(v: int, i: int) {
+    let mut k = i
+    while k + 1 < iv_len(v) {
+        iv_set(v, k, iv_get(v, k + 1))
+        k += 1
+    }
+    iv_trunc(v, iv_len(v) - 1)
+}
+
+fn mr_iv_contains(v: int, x: int) -> bool {
+    let mut i = 0
+    while i < iv_len(v) {
+        if iv_get(v, i) == x {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+fn mr_iv_eq(a: int, b: int) -> bool {
+    if iv_len(a) != iv_len(b) {
+        return false
+    }
+    let mut i = 0
+    while i < iv_len(a) {
+        if iv_get(a, i) != iv_get(b, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// ------------------------------------------------------------ rutas
+
+fn mr_route(inner: int, esc: int) -> int {
+    let r = rt_alloc(16)
+    std::raw::store(r, inner)
+    std::raw::store(r + 8, esc)
+    r
+}
+
+fn mr_route_free(r: int) {
+    iv_free(std::raw::load(r))
+    iv_free(std::raw::load(r + 8))
+    rt_free_block(r)
+}
+
+fn mr_len(r: int) -> int {
+    iv_len(std::raw::load(r))
+}
+
+fn mr_byte(r: int, i: int) -> int {
+    iv_get(std::raw::load(r), i)
+}
+
+fn mr_esc(r: int, i: int) -> bool {
+    mr_iv_contains(std::raw::load(r + 8), i)
+}
+
+// UnescapedRoute::new
+fn mr_route_from_str(s: any) -> int {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let inner = iv_new(n)
+    let mut i = 0
+    while i < n {
+        iv_push(inner, std::raw::load8(p + i))
+        i += 1
+    }
+    let esc = iv_new(2)
+    i = 0
+    while i < iv_len(inner) {
+        let c = iv_get(inner, i)
+        let mut nx = -1
+        if i + 1 < iv_len(inner) {
+            nx = iv_get(inner, i + 1)
+        }
+        if (c == 123 && nx == 123) || (c == 125 && nx == 125) {
+            mr_iv_remove(inner, i)
+            iv_push(esc, i)
+        }
+        i += 1
+    }
+    mr_route(inner, esc)
+}
+
+fn mr_route_clone(r: int) -> int {
+    mr_route(mr_iv_clone(std::raw::load(r)), mr_iv_clone(std::raw::load(r + 8)))
+}
+
+// splice(a..b, rep): devuelve los bytes quitados (vector nuevo).
+fn mr_splice(r: int, a: int, b: int, rep: int) -> int {
+    let esc = std::raw::load(r + 8)
+    let kept = iv_new(iv_len(esc))
+    let mut i = 0
+    while i < iv_len(esc) {
+        let x = iv_get(esc, i)
+        if x < a || x >= b {
+            iv_push(kept, x)
+        }
+        i += 1
+    }
+    let offset = iv_len(rep) - (b - a)
+    i = 0
+    while i < iv_len(kept) {
+        if iv_get(kept, i) > b {
+            iv_set(kept, i, iv_get(kept, i) + offset)
+        }
+        i += 1
+    }
+    iv_free(esc)
+    std::raw::store(r + 8, kept)
+    let old = std::raw::load(r)
+    let removed = iv_new(b - a)
+    let inner = iv_new(iv_len(old) + iv_len(rep))
+    i = 0
+    while i < a {
+        iv_push(inner, iv_get(old, i))
+        i += 1
+    }
+    let mut k = 0
+    while k < iv_len(rep) {
+        iv_push(inner, iv_get(rep, k))
+        k += 1
+    }
+    while i < b {
+        iv_push(removed, iv_get(old, i))
+        i += 1
+    }
+    while i < iv_len(old) {
+        iv_push(inner, iv_get(old, i))
+        i += 1
+    }
+    iv_free(old)
+    std::raw::store(r, inner)
+    removed
+}
+
+fn mr_append(r: int, o: int) {
+    let n = mr_len(r)
+    let oe = std::raw::load(o + 8)
+    let mut i = 0
+    while i < iv_len(oe) {
+        iv_push(std::raw::load(r + 8), n + iv_get(oe, i))
+        i += 1
+    }
+    i = 0
+    while i < mr_len(o) {
+        iv_push(std::raw::load(r), mr_byte(o, i))
+        i += 1
+    }
+}
+
+fn mr_truncate(r: int, to: int) {
+    let esc = std::raw::load(r + 8)
+    let kept = iv_new(iv_len(esc))
+    let mut i = 0
+    while i < iv_len(esc) {
+        if iv_get(esc, i) < to {
+            iv_push(kept, iv_get(esc, i))
+        }
+        i += 1
+    }
+    iv_free(esc)
+    std::raw::store(r + 8, kept)
+    if to < mr_len(r) {
+        iv_trunc(std::raw::load(r), to)
+    }
+}
+
+fn mr_ends_with(r: int, o: int) -> bool {
+    let n = mr_len(r)
+    let m = mr_len(o)
+    if m > n {
+        return false
+    }
+    let mut i = 0
+    while i < m {
+        if mr_byte(r, n - m + i) != mr_byte(o, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn mr_bytes_str(v: int, a: int, b: int) -> any {
+    let sb = sb_new(b - a)
+    let mut i = a
+    while i < b {
+        sb_byte(sb, iv_get(v, i))
+        i += 1
+    }
+    sb_finish(sb)
+}
+
+// ------------------------------------------------------------ vistas
+
+fn mr_ref(c: int, r: int, base: int, len: int) -> int {
+    let f = rt_alloc(24)
+    std::raw::store(f, r)
+    std::raw::store(f + 8, base)
+    std::raw::store(f + 16, len)
+    iv_push(std::raw::load(c), f)
+    f
+}
+
+fn mr_as_ref(c: int, r: int) -> int {
+    mr_ref(c, r, 0, mr_len(r))
+}
+
+fn mf_len(f: int) -> int {
+    std::raw::load(f + 16)
+}
+
+fn mf_byte(f: int, i: int) -> int {
+    mr_byte(std::raw::load(f), std::raw::load(f + 8) + i)
+}
+
+fn mf_esc(f: int, i: int) -> bool {
+    mr_esc(std::raw::load(f), std::raw::load(f + 8) + i)
+}
+
+fn mf_off(c: int, f: int, s: int) -> int {
+    mr_ref(c, std::raw::load(f), std::raw::load(f + 8) + s, mf_len(f) - s)
+}
+
+fn mf_until(c: int, f: int, e: int) -> int {
+    mr_ref(c, std::raw::load(f), std::raw::load(f + 8), e)
+}
+
+// UnescapedRef::to_owned
+fn mf_owned(f: int) -> int {
+    let r = std::raw::load(f)
+    let base = std::raw::load(f + 8)
+    let n = mf_len(f)
+    let inner = iv_new(n)
+    let mut i = 0
+    while i < n {
+        iv_push(inner, mr_byte(r, base + i))
+        i += 1
+    }
+    let esc = iv_new(2)
+    let re = std::raw::load(r + 8)
+    i = 0
+    while i < iv_len(re) {
+        let x = iv_get(re, i) - base
+        if x >= 0 && x < n {
+            iv_push(esc, x)
+        }
+        i += 1
+    }
+    mr_route(inner, esc)
+}
+
+fn mf_eq_route(f: int, r: int) -> bool {
+    if mf_len(f) != mr_len(r) {
+        return false
+    }
+    let mut i = 0
+    while i < mf_len(f) {
+        if mf_byte(f, i) != mr_byte(r, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Posición del primer '/' + 1, o el largo.
+fn mf_terminator(f: int) -> int {
+    let mut i = 0
+    while i < mf_len(f) {
+        if mf_byte(f, i) == 47 {
+            return i + 1
+        }
+        i += 1
+    }
+    mf_len(f)
+}
+
+// find_wildcard: 0 = ninguno, 1 = encontrado (en c+24..c+32), -1 = error
+// InvalidParam.
+fn mr_find_wildcard(c: int, f: int) -> int {
+    let n = mf_len(f)
+    let mut start = 0
+    while start < n {
+        let ch = mf_byte(f, start)
+        if ch == 125 && !mf_esc(f, start) {
+            return -1
+        }
+        if ch == 123 && !mf_esc(f, start) {
+            if start + 1 < n && mf_byte(f, start + 1) == 125 {
+                return -1
+            }
+            let mut i = start + 2
+            while i < n {
+                let d = mf_byte(f, i)
+                if d == 125 {
+                    if !mf_esc(f, i) {
+                        if mf_byte(f, i - 1) == 42 {
+                            return -1
+                        }
+                        std::raw::store(c + 24, start)
+                        std::raw::store(c + 32, i + 1)
+                        return 1
+                    }
+                } else if d == 42 || d == 47 {
+                    return -1
+                }
+                i += 1
+            }
+            return -1
+        }
+        start += 1
+    }
+    0
+}
+
+// ------------------------------------------------------------ nodos
+
+fn mn_new(prefix: int, kind: int, priority: int) -> int {
+    let n = rt_alloc(64)
+    std::raw::store(n, prefix)
+    std::raw::store(n + 8, priority)
+    std::raw::store(n + 16, 0)
+    std::raw::store(n + 24, iv_new(2))
+    std::raw::store(n + 32, kind)
+    std::raw::store(n + 40, iv_new(2))
+    std::raw::store(n + 48, 0)
+    std::raw::store(n + 56, iv_new(0))
+    n
+}
+
+fn mn_default() -> int {
+    mn_new(mr_route(iv_new(4), iv_new(0)), 4, 0)
+}
+
+fn mn_free_remap(m: int) {
+    let mut i = 0
+    while i < iv_len(m) {
+        iv_free(iv_get(m, i))
+        i += 1
+    }
+    iv_free(m)
+}
+
+fn mn_free(n: int) {
+    let ch = std::raw::load(n + 40)
+    let mut i = 0
+    while i < iv_len(ch) {
+        mn_free(iv_get(ch, i))
+        i += 1
+    }
+    iv_free(ch)
+    mr_route_free(std::raw::load(n))
+    iv_free(std::raw::load(n + 24))
+    let v = std::raw::load(n + 48)
+    if v != 0 {
+        std::raw::release(5, v)
+    }
+    mn_free_remap(std::raw::load(n + 56))
+    rt_free_block(n)
+}
+
+fn mn_prefix(n: int) -> int {
+    std::raw::load(n)
+}
+
+fn mn_set_prefix(n: int, r: int) {
+    mr_route_free(std::raw::load(n))
+    std::raw::store(n, r)
+}
+
+fn mn_kind(n: int) -> int {
+    std::raw::load(n + 32)
+}
+
+fn mn_is_param(n: int) -> bool {
+    mn_kind(n) == 1 || mn_kind(n) == 2
+}
+
+fn mn_children(n: int) -> int {
+    std::raw::load(n + 40)
+}
+
+fn mn_child(n: int, i: int) -> int {
+    iv_get(mn_children(n), i)
+}
+
+fn mn_wild(n: int) -> bool {
+    std::raw::load(n + 16) == 1
+}
+
+fn mn_set_value(n: int, val: any) {
+    let old = std::raw::load(n + 48)
+    if old != 0 {
+        std::raw::release(5, old)
+    }
+    std::raw::retain(5, std::raw::bits(val))
+    std::raw::store(n + 48, std::raw::bits(val))
+}
+
+fn mn_set_remap(n: int, m: int) {
+    mn_free_remap(std::raw::load(n + 56))
+    std::raw::store(n + 56, m)
+}
+
+fn mn_add_child(n: int, child: int) -> int {
+    let ch = mn_children(n)
+    let len = iv_len(ch)
+    if mn_wild(n) && len > 0 {
+        iv_insert(ch, len - 1, child)
+        return len - 1
+    }
+    iv_push(ch, child)
+    len
+}
+
+// partition_point(|x| x.prefix.len() >= child.prefix.len()) con la misma
+// búsqueda binaria que la biblioteca de Rust.
+fn mn_add_suffix_child(n: int, child: int) -> int {
+    let ch = mn_children(n)
+    let want = mr_len(mn_prefix(child))
+    let mut size = iv_len(ch)
+    let mut i = 0
+    if size > 0 {
+        let mut base = 0
+        while size > 1 {
+            let half = size / 2
+            let mid = base + half
+            if mr_len(mn_prefix(iv_get(ch, mid))) >= want {
+                base = mid
+            }
+            size -= half
+        }
+        i = base
+        if mr_len(mn_prefix(iv_get(ch, base))) >= want {
+            i = base + 1
+        }
+    }
+    iv_insert(ch, i, child)
+    i
+}
+
+fn mn_update_child_priority(n: int, i: int) -> int {
+    let ch = mn_children(n)
+    let c = iv_get(ch, i)
+    let priority = std::raw::load(c + 8) + 1
+    std::raw::store(c + 8, priority)
+    let mut updated = i
+    while updated > 0 && std::raw::load(iv_get(ch, updated - 1) + 8) < priority {
+        let t = iv_get(ch, updated - 1)
+        iv_set(ch, updated - 1, iv_get(ch, updated))
+        iv_set(ch, updated, t)
+        updated -= 1
+    }
+    if updated != i {
+        let ix = std::raw::load(n + 24)
+        let last = iv_get(ix, i)
+        let mut k = i
+        while k > updated {
+            iv_set(ix, k, iv_get(ix, k - 1))
+            k -= 1
+        }
+        iv_set(ix, updated, last)
+    }
+    updated
+}
+
+// ------------------------------------------------------------ parámetros
+
+// normalize_params: cambia los nombres por {a}, {b}... y devuelve los
+// originales (o 0 si hay error, anotado en el contexto).
+fn mr_normalize(c: int, r: int) -> int {
+    let mut start = 0
+    let original = iv_new(2)
+    let mut next = 97
+    while true {
+        let found = mr_find_wildcard(c, mr_ref(c, r, start, mr_len(r) - start))
+        if found == -1 {
+            std::raw::store(c + 8, 3)
+            mn_free_remap(original)
+            return 0
+        }
+        if found == 0 {
+            return original
+        }
+        let ws = std::raw::load(c + 24) + start
+        let we = std::raw::load(c + 32) + start
+        if we - ws < 2 {
+            std::raw::store(c + 8, 3)
+            mn_free_remap(original)
+            return 0
+        }
+        if mr_byte(r, ws + 1) == 42 {
+            start = we
+            continue
+        }
+        let rep = iv_new(3)
+        iv_push(rep, 123)
+        iv_push(rep, next)
+        iv_push(rep, 125)
+        let removed = mr_splice(r, ws, we, rep)
+        iv_free(rep)
+        let name = iv_new(iv_len(removed))
+        let mut k = 1
+        while k + 1 < iv_len(removed) {
+            iv_push(name, iv_get(removed, k))
+            k += 1
+        }
+        iv_free(removed)
+        iv_push(original, name)
+        next += 1
+        if next > 122 {
+            // matchit hace panic!("Too many route parameters.") aquí, lo que
+            // en la VM de Rust termina el programa entero; aquí es un error
+            // normal de la inserción.
+            std::raw::store(c + 8, 5)
+            mn_free_remap(original)
+            return 0
+        }
+        start = ws + 3
+    }
+    original
+}
+
+fn mr_denormalize(c: int, r: int, params: int) {
+    let mut start = 0
+    let mut i = 0
+    while true {
+        let found = mr_find_wildcard(c, mr_ref(c, r, start, mr_len(r) - start))
+        if found != 1 {
+            return
+        }
+        let ws = std::raw::load(c + 24) + start
+        let we = std::raw::load(c + 32) + start
+        if i >= iv_len(params) {
+            return
+        }
+        let p = iv_get(params, i)
+        let next = iv_new(iv_len(p) + 2)
+        iv_push(next, 123)
+        let mut k = 0
+        while k < iv_len(p) {
+            iv_push(next, iv_get(p, k))
+            k += 1
+        }
+        iv_push(next, 125)
+        iv_free(mr_splice(r, ws, we, next))
+        i += 1
+        start = ws + iv_len(next)
+        iv_free(next)
+    }
+}
+
+// InsertError::conflict
+fn mr_conflict(c: int, prefix: int, current: int) {
+    let route = mr_route_clone(std::raw::load(c + 40))
+    if mf_eq_route(prefix, mn_prefix(current)) {
+        mr_denormalize(c, route, std::raw::load(current + 56))
+    } else {
+        mr_truncate(route, mr_len(route) - mf_len(prefix))
+        if !mr_ends_with(route, mn_prefix(current)) {
+            mr_append(route, mn_prefix(current))
+        }
+        let mut child = current
+        while iv_len(mn_children(child)) > 0 {
+            child = mn_child(child, 0)
+            mr_append(route, mn_prefix(child))
+        }
+        mr_denormalize(c, route, std::raw::load(child + 56))
+    }
+    let s = mr_bytes_str(std::raw::load(route), 0, mr_len(route))
+    std::raw::store(c + 16, std::raw::keep(s))
+    std::raw::store(c + 8, 1)
+    mr_route_free(route)
+}
+
+// ------------------------------------------------------------ inserción
+
+// Node::insert_route: devuelve el nodo final o 0 si hay error.
+fn mn_insert_route(c: int, node0: int, prefix0: int, val: any) -> int {
+    let mut node = node0
+    let mut prefix = prefix0
+    while true {
+        let found = mr_find_wildcard(c, prefix)
+        if found == -1 {
+            std::raw::store(c + 8, 3)
+            return 0
+        }
+        if found == 0 {
+            mn_set_value(node, val)
+            mn_set_prefix(node, mf_owned(prefix))
+            return node
+        }
+        let ws = std::raw::load(c + 24)
+        let we = std::raw::load(c + 32)
+        if mf_byte(prefix, ws + 1) == 42 {
+            if we != mf_len(prefix) {
+                std::raw::store(c + 8, 4)
+                return 0
+            }
+            if ws > 0 {
+                mn_set_prefix(node, mf_owned(mf_until(c, prefix, ws)))
+                prefix = mf_off(c, prefix, ws)
+            }
+            let ca = mn_new(mf_owned(prefix), 3, 1)
+            mn_set_value(ca, val)
+            let child = mn_add_child(node, ca)
+            std::raw::store(node + 16, 1)
+            return mn_child(node, child)
+        }
+        if ws > 0 {
+            mn_set_prefix(node, mf_owned(mf_until(c, prefix, ws)))
+            prefix = mf_off(c, prefix, ws)
+        }
+        let wlen = we - ws
+        let terminator = mf_terminator(prefix)
+        let wildcard = mf_until(c, prefix, wlen)
+        let suffix = mf_off(c, mf_until(c, prefix, terminator), wlen)
+        prefix = mf_off(c, prefix, terminator)
+        if mr_find_wildcard(c, suffix) == 1 {
+            std::raw::store(c + 8, 2)
+            return 0
+        }
+        let mut kind = 2
+        if mf_len(suffix) == 0 || (mf_len(suffix) == 1 && mf_byte(suffix, 0) == 47) {
+            kind = 1
+        }
+        let child = mn_add_child(node, mn_new(mf_owned(wildcard), kind, 1))
+        std::raw::store(node + 16, 1)
+        node = mn_child(node, child)
+        if mf_len(suffix) > 0 {
+            let sc = mn_add_suffix_child(node, mn_new(mf_owned(suffix), 4, 1))
+            node = mn_child(node, sc)
+        }
+        if mf_len(prefix) == 0 {
+            mn_set_value(node, val)
+            return node
+        }
+        if mf_byte(prefix, 0) != 123 || mf_esc(prefix, 0) {
+            iv_push(std::raw::load(node + 24), mf_byte(prefix, 0))
+            let nc = mn_add_child(node, mn_new(mr_route(iv_new(4), iv_new(0)), 4, 1))
+            node = mn_child(node, nc)
+        }
+    }
+    0
+}
+
+// Termina una inserción que acaba en insert_route.
+fn mn_finish_route(c: int, node: int, rem: int, val: any, remap: int) -> bool {
+    let last = mn_insert_route(c, node, rem, val)
+    if last == 0 {
+        mn_free_remap(remap)
+        return false
+    }
+    mn_set_remap(last, remap)
+    true
+}
+
+// Node::insert. Devuelve false si hay error (anotado en el contexto). Como
+// en matchit, lo que ya se cambió antes del error se queda cambiado.
+fn mn_insert(c: int, root: int, pattern: any, val: any) -> bool {
+    let route = mr_route_from_str(pattern)
+    std::raw::store(c + 40, route)
+    let remap = mr_normalize(c, route)
+    if remap == 0 {
+        return false
+    }
+    let mut rem = mr_as_ref(c, route)
+    std::raw::store(root + 8, std::raw::load(root + 8) + 1)
+    if mr_len(mn_prefix(root)) == 0 && iv_len(mn_children(root)) == 0 {
+        let last = mn_insert_route(c, root, rem, val)
+        if last == 0 {
+            mn_free_remap(remap)
+            return false
+        }
+        mn_set_remap(last, remap)
+        std::raw::store(root + 32, 0)
+        return true
+    }
+    let mut node = root
+    while true {
+        let np = mn_prefix(node)
+        let mut len = mr_len(np)
+        if mf_len(rem) < len {
+            len = mf_len(rem)
+        }
+        let mut cp = 0
+        while cp < len && mf_byte(rem, cp) == mr_byte(np, cp) && mf_esc(rem, cp) == mr_esc(np, cp) {
+            cp += 1
+        }
+        if mr_len(np) > cp {
+            let npr = mr_as_ref(c, np)
+            let child = mn_new(mf_owned(mf_off(c, npr, cp)), 4, std::raw::load(node + 8) - 1)
+            std::raw::store(child + 48, std::raw::load(node + 48))
+            std::raw::store(node + 48, 0)
+            iv_free(std::raw::load(child + 24))
+            std::raw::store(child + 24, mr_iv_clone(std::raw::load(node + 24)))
+            std::raw::store(child + 16, std::raw::load(node + 16))
+            iv_free(std::raw::load(child + 40))
+            std::raw::store(child + 40, std::raw::load(node + 40))
+            std::raw::store(node + 40, iv_new(2))
+            iv_free(std::raw::load(child + 56))
+            std::raw::store(child + 56, std::raw::load(node + 56))
+            std::raw::store(node + 56, iv_new(0))
+            iv_push(mn_children(node), child)
+            let ix = std::raw::load(node + 24)
+            iv_trunc(ix, 0)
+            iv_push(ix, mr_byte(np, cp))
+            mn_set_prefix(node, mf_owned(mf_until(c, npr, cp)))
+            std::raw::store(node + 16, 0)
+            continue
+        }
+        if mf_len(rem) == cp {
+            if std::raw::load(node + 48) != 0 {
+                mr_conflict(c, rem, node)
+                mn_free_remap(remap)
+                return false
+            }
+            mn_set_value(node, val)
+            mn_set_remap(node, remap)
+            return true
+        }
+        rem = mf_off(c, rem, cp)
+        let next = mf_byte(rem, 0)
+        if mn_is_param(node) {
+            let terminator = mf_terminator(rem)
+            let suffix = mf_until(c, rem, terminator)
+            let mut hit = -1
+            let mut i = 0
+            while hit < 0 && i < iv_len(mn_children(node)) {
+                if mf_eq_route(suffix, mn_prefix(mn_child(node, i))) {
+                    hit = i
+                }
+                i += 1
+            }
+            if hit >= 0 {
+                node = mn_child(node, hit)
+                std::raw::store(node + 8, std::raw::load(node + 8) + 1)
+                continue
+            }
+            if mr_find_wildcard(c, suffix) == 1 {
+                std::raw::store(c + 8, 2)
+                mn_free_remap(remap)
+                return false
+            }
+            let sc = mn_add_suffix_child(node, mn_new(mf_owned(suffix), 4, 1))
+            std::raw::store(node + 32, 2)
+            node = mn_child(node, sc)
+            if terminator == mf_len(rem) {
+                mn_set_value(node, val)
+                mn_set_remap(node, remap)
+                return true
+            }
+            rem = mf_off(c, rem, terminator)
+            if mf_byte(rem, 0) != 123 || mf_esc(rem, 0) {
+                let nc = mn_add_child(node, mn_new(mr_route(iv_new(4), iv_new(0)), 4, 1))
+                iv_push(std::raw::load(node + 24), mf_byte(rem, 0))
+                node = mn_child(node, nc)
+            }
+            return mn_finish_route(c, node, rem, val, remap)
+        }
+        let ix = std::raw::load(node + 24)
+        let mut went = -1
+        let mut i = 0
+        while went < 0 && i < iv_len(ix) {
+            if next == iv_get(ix, i) {
+                if !((next == 123 || next == 125) && !mf_esc(rem, 0)) {
+                    went = mn_update_child_priority(node, i)
+                }
+            }
+            i += 1
+        }
+        if went >= 0 {
+            node = mn_child(node, went)
+            continue
+        }
+        if (next != 123 || mf_esc(rem, 0)) && mn_kind(node) != 3 {
+            iv_push(ix, next)
+            let nc = mn_add_child(node, mn_default())
+            let nc2 = mn_update_child_priority(node, nc)
+            return mn_finish_route(c, mn_child(node, nc2), rem, val, remap)
+        }
+        if mn_wild(node) {
+            node = mn_child(node, iv_len(mn_children(node)) - 1)
+            std::raw::store(node + 8, std::raw::load(node + 8) + 1)
+            let pl = mr_len(mn_prefix(node))
+            if mf_len(rem) >= pl && !mf_eq_route(mf_until(c, rem, pl), mn_prefix(node)) {
+                mr_conflict(c, rem, node)
+                mn_free_remap(remap)
+                return false
+            }
+            if mn_kind(node) == 3 {
+                mr_conflict(c, rem, node)
+                mn_free_remap(remap)
+                return false
+            }
+            continue
+        }
+        return mn_finish_route(c, node, rem, val, remap)
+    }
+    false
+}
+
+// ------------------------------------------------------------ búsqueda
+
+// Parámetros: vector de quíntuplas (vector de la clave, desde, hasta, inicio
+// del valor, fin del valor).
+fn mt_push(params: int, kv: int, ka: int, kb: int, va: int, vb: int) {
+    iv_push(params, kv)
+    iv_push(params, ka)
+    iv_push(params, kb)
+    iv_push(params, va)
+    iv_push(params, vb)
+}
+
+// params.for_each_key_mut(|(i, param)| param.key = &node.remapping[i])
+fn mt_keys(params: int, node: int) -> bool {
+    let m = std::raw::load(node + 56)
+    let n = iv_len(params) / 5
+    let mut i = 0
+    while i < n {
+        if i >= iv_len(m) {
+            return false
+        }
+        let k = iv_get(m, i)
+        iv_set(params, 5 * i, k)
+        iv_set(params, 5 * i + 1, 0)
+        iv_set(params, 5 * i + 2, iv_len(k))
+        i += 1
+    }
+    true
+}
+
+fn mt_eq(p: int, s: int, r: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + s + i) != mr_byte(r, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Node::at sobre los bytes p[0..plen]. Devuelve el nodo con el valor o 0.
+fn mt_at(root: int, p: int, plen: int, params: int) -> int {
+    let mut node = root
+    let mut s = 0
+    let mut backtracking = false
+    let skipped = iv_new(8)
+    while true {
+        let mut walking = true
+        while walking {
+            let np = mn_prefix(node)
+            let nl = mr_len(np)
+            if plen - s <= nl {
+                if plen - s == nl && mt_eq(p, s, np, nl) && std::raw::load(node + 48) != 0 {
+                    iv_free(skipped)
+                    if !mt_keys(params, node) {
+                        return -1
+                    }
+                    return node
+                }
+                walking = false
+                continue
+            }
+            if !mt_eq(p, s, np, nl) {
+                walking = false
+                continue
+            }
+            let previous = s
+            s += nl
+            if !backtracking {
+                let next = std::raw::load8(p + s)
+                let ix = std::raw::load(node + 24)
+                let mut i = 0
+                while i < iv_len(ix) && iv_get(ix, i) != next {
+                    i += 1
+                }
+                if i < iv_len(ix) {
+                    if mn_wild(node) {
+                        iv_push(skipped, node)
+                        iv_push(skipped, previous)
+                        iv_push(skipped, iv_len(params) / 5)
+                    }
+                    node = mn_child(node, i)
+                    continue
+                }
+            }
+            if !mn_wild(node) {
+                walking = false
+                continue
+            }
+            node = mn_child(node, iv_len(mn_children(node)) - 1)
+            let kind = mn_kind(node)
+            let mut slash = -1
+            let mut k = s
+            while slash < 0 && k < plen {
+                if std::raw::load8(p + k) == 47 {
+                    slash = k - s
+                }
+                k += 1
+            }
+            if kind == 1 {
+                if slash == 0 {
+                    walking = false
+                    continue
+                }
+                if slash < 0 {
+                    if std::raw::load(node + 48) == 0 {
+                        walking = false
+                        continue
+                    }
+                    mt_push(params, 0, 0, 0, s, plen)
+                    iv_free(skipped)
+                    if !mt_keys(params, node) {
+                        return -1
+                    }
+                    return node
+                }
+                if iv_len(mn_children(node)) != 1 {
+                    walking = false
+                    continue
+                }
+                mt_push(params, 0, 0, 0, s, s + slash)
+                s += slash
+                node = mn_child(node, 0)
+                backtracking = false
+                continue
+            }
+            if kind == 2 {
+                if slash == 0 {
+                    walking = false
+                    continue
+                }
+                let mut terminator = plen - s
+                if slash > 0 {
+                    terminator = slash + 1
+                }
+                let ch = mn_children(node)
+                let mut moved = false
+                let mut j = 0
+                while !moved && j < iv_len(ch) {
+                    let child = iv_get(ch, j)
+                    let cl = mr_len(mn_prefix(child))
+                    if cl < terminator {
+                        let ss = terminator - cl
+                        if mt_eq(p, s + ss, mn_prefix(child), cl) {
+                            mt_push(params, 0, 0, 0, s, s + ss)
+                            node = child
+                            s += ss
+                            backtracking = false
+                            moved = true
+                        }
+                    }
+                    j += 1
+                }
+                if moved {
+                    continue
+                }
+                if std::raw::load(node + 48) != 0 && slash < 0 {
+                    mt_push(params, 0, 0, 0, s, plen)
+                    iv_free(skipped)
+                    if !mt_keys(params, node) {
+                        return -1
+                    }
+                    return node
+                }
+                walking = false
+                continue
+            }
+            // CatchAll
+            iv_free(skipped)
+            if std::raw::load(node + 48) == 0 {
+                return 0
+            }
+            if !mt_keys(params, node) {
+                return -1
+            }
+            let pr = mn_prefix(node)
+            mt_push(params, std::raw::load(pr), 2, mr_len(pr) - 1, s, plen)
+            return node
+        }
+        let mut again = false
+        while !again && iv_len(skipped) > 0 {
+            let n = iv_len(skipped)
+            let sn = iv_get(skipped, n - 3)
+            let sp = iv_get(skipped, n - 2)
+            let sparams = iv_get(skipped, n - 1)
+            iv_trunc(skipped, n - 3)
+            // skipped.path.ends_with(path)
+            let a = plen - sp
+            let b = plen - s
+            let mut ends = b <= a
+            if ends {
+                let mut q = 0
+                while ends && q < b {
+                    if std::raw::load8(p + sp + a - b + q) != std::raw::load8(p + s + q) {
+                        ends = false
+                    }
+                    q += 1
+                }
+            }
+            if ends {
+                s = sp
+                node = sn
+                backtracking = true
+                iv_trunc(params, 5 * sparams)
+                again = true
+            }
+        }
+        if !again {
+            iv_free(skipped)
+            return 0
+        }
+    }
+    0
+}
+
+// ------------------------------------------------------------ registro
+//
+// globals + 2960: bloque +0 próximo id, +8 cuántos, +16.. 64 entradas de
+// (id, raíz, rutas, bytes).
+
+fn ro_reg() -> int {
+    let g = std::raw::globals() + 2960
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let r = rt_alloc(16 + 32 * 64)
+    std::raw::store(r, 1)
+    std::raw::store(r + 8, 0)
+    std::raw::store(g, r)
+    r
+}
+
+fn ro_find(h: int) -> int {
+    let r = ro_reg()
+    let n = std::raw::load(r + 8)
+    let mut i = 0
+    while i < n {
+        let e = r + 16 + 32 * i
+        if std::raw::load(e) == h {
+            return e
+        }
+        i += 1
+    }
+    0
+}
+
+fn ro_limit(fname: string, resource: string, limit: int) {
+    let l = rt_int_to_str(limit)
+    rt_native_fail(fname, resource + " exceeds limit " + l)
+}
+
+fn ro_get(fname: string, h: any) -> int {
+    let e = ro_find(std::raw::bits(h))
+    if e == 0 {
+        let hs = rt_int_to_str(std::raw::bits(h))
+        rt_native_fail(fname, "unknown router handle " + hs)
+    }
+    e
+}
+
+fn std__router__new() -> any {
+    let r = ro_reg()
+    let n = std::raw::load(r + 8)
+    if n >= 64 {
+        ro_limit("std::router::new", "router handles", 64)
+    }
+    let id = std::raw::load(r)
+    if id == 9223372036854775807 {
+        rt_native_fail("std::router::new", "router handle space exhausted")
+    }
+    std::raw::store(r, id + 1)
+    let e = r + 16 + 32 * n
+    std::raw::store(e, id)
+    std::raw::store(e + 8, mn_default())
+    std::raw::store(e + 16, 0)
+    std::raw::store(e + 24, 0)
+    std::raw::store(r + 8, n + 1)
+    id
+}
+
+fn std__router__drop(h: any) -> any {
+    rt_expect_int(h, "std::router::drop")
+    let e = ro_find(std::raw::bits(h))
+    if e != 0 {
+        mn_free(std::raw::load(e + 8))
+        let r = ro_reg()
+        let n = std::raw::load(r + 8)
+        let last = r + 16 + 32 * (n - 1)
+        let mut k = 0
+        while k < 32 {
+            std::raw::store(e + k, std::raw::load(last + k))
+            k += 8
+        }
+        std::raw::store(r + 8, n - 1)
+    }
+    nil
+}
+
+fn ro_error_text(c: int) -> string {
+    let k = std::raw::load(c + 8)
+    if k == 1 {
+        let s: string = rt_sref(std::raw::load(c + 16))
+        return "Insertion failed due to conflict with previously registered route: " + s
+    }
+    if k == 2 {
+        return "Only one parameter is allowed per path segment"
+    }
+    if k == 3 {
+        return "Parameters must be registered with a valid name"
+    }
+    if k == 4 {
+        return "Catch-all parameters are only allowed at the end of a route"
+    }
+    "Too many route parameters."
+}
+
+fn ro_ctx_free(c: int) {
+    let a = std::raw::load(c)
+    let mut i = 0
+    while i < iv_len(a) {
+        rt_free_block(iv_get(a, i))
+        i += 1
+    }
+    iv_free(a)
+    let r = std::raw::load(c + 40)
+    if r != 0 {
+        mr_route_free(r)
+    }
+    let s = std::raw::load(c + 16)
+    if s != 0 {
+        std::raw::release(5, s)
+    }
+    rt_free_block(c)
+}
+
+fn std__router__insert(h: any, pattern: any, value: any) -> any {
+    let f = "std::router::insert"
+    rt_expect_int(h, f)
+    rt_expect_str(pattern, f)
+    rt_expect_str(value, f)
+    if rt_slen(pattern) > 8192 {
+        ro_limit(f, "route pattern bytes", 8192)
+    }
+    if rt_slen(value) > 65536 {
+        ro_limit(f, "route value bytes", 65536)
+    }
+    let added = rt_slen(pattern) + rt_slen(value)
+    let e = ro_get(f, h)
+    if std::raw::load(e + 16) >= 4096 {
+        ro_limit(f, "routes per router", 4096)
+    }
+    if std::raw::load(e + 24) + added > 1048576 {
+        ro_limit(f, "router bytes", 1048576)
+    }
+    let r = ro_reg()
+    let mut total = 0
+    let mut i = 0
+    while i < std::raw::load(r + 8) {
+        total += std::raw::load(r + 16 + 32 * i + 24)
+        i += 1
+    }
+    if total + added > 8388608 {
+        ro_limit(f, "runtime router bytes", 8388608)
+    }
+    let c = rt_alloc(56)
+    let mut k = 0
+    while k < 56 {
+        std::raw::store(c + k, 0)
+        k += 8
+    }
+    std::raw::store(c, iv_new(16))
+    let ok = mn_insert(c, std::raw::load(e + 8), pattern, value)
+    if !ok {
+        let msg = ro_error_text(c)
+        ro_ctx_free(c)
+        rt_native_fail(f, "router error: " + msg)
+    }
+    ro_ctx_free(c)
+    std::raw::store(e + 16, std::raw::load(e + 16) + 1)
+    std::raw::store(e + 24, std::raw::load(e + 24) + added)
+    nil
+}
+
+// Búsqueda común: devuelve el nodo (0 = no hay) y deja los parámetros.
+fn ro_lookup(f: string, h: any, path: any, params: int) -> int {
+    rt_expect_int(h, f)
+    rt_expect_str(path, f)
+    if rt_slen(path) > 65536 {
+        ro_limit(f, "route lookup path bytes", 65536)
+    }
+    let e = ro_get(f, h)
+    let node = mt_at(std::raw::load(e + 8), std::raw::bits(path) + 16, rt_slen(path), params)
+    if node == -1 {
+        // matchit indexaría fuera del remapping (panic en Rust); no ocurre
+        // con árboles construidos por insert.
+        rt_native_fail(f, "internal router error")
+    }
+    node
+}
+
+fn std__router__at(h: any, path: any) -> any {
+    let params = iv_new(10)
+    let node = ro_lookup("std::router::at", h, path, params)
+    if node == 0 {
+        iv_free(params)
+        return nil
+    }
+    let mut pm = std__map__new()
+    let n = iv_len(params) / 5
+    let mut i = 0
+    while i < n {
+        let key = mr_bytes_str(iv_get(params, 5 * i), iv_get(params, 5 * i + 1), iv_get(params, 5 * i + 2))
+        let v = rt_substr_bytes(path, iv_get(params, 5 * i + 3), iv_get(params, 5 * i + 4))
+        pm = std__map__insert(pm, key, v)
+        i += 1
+    }
+    iv_free(params)
+    let mut out = std__map__new()
+    out = std__map__insert(out, "params", pm)
+    out = std__map__insert(out, "pattern", rt_sref(std::raw::load(node + 48)))
+    out
+}
+
+fn std__router__matches(h: any, path: any) -> any {
+    let params = iv_new(10)
+    let node = ro_lookup("std::router::matches", h, path, params)
+    iv_free(params)
+    node != 0
+}

@@ -23,6 +23,7 @@ import std_regex_tab
 import std_regex_hir
 import std_regex_nfa
 import std_regex_run
+import std_router
 import std_rsa
 import std_jwt
 import std_libm
@@ -156,7 +157,8 @@ fn rt_alloc(size: int) -> int {
 // Lista de bloques grandes libres de 2^k bytes (k = 13..28): globals + 2688..2808.
 // std::regex: globals + 2816 caché de expresiones compiladas (std_regex_run),
 // + 2824 tabla de plegado de mayúsculas, + 2832.. tablas Unicode ya unidas
-// (std_regex_tab, generado por gen_tab.py). Libre hasta + 3584.
+// (std_regex_tab, generado por gen_tab.py).
+// std::router: globals + 2960 registro de routers (std_router). Libre hasta + 3584.
 fn rt_big_head(k: int) -> int {
     std::raw::globals() + 2688 + 8 * (k - 13)
 }

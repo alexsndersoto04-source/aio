@@ -1,0 +1,71 @@
+// std::router: rutas fijas, parámetros, sufijos, comodín final, escapes,
+// prioridades y errores de inserción.
+
+fn lb() -> string {
+    let c: string = std::text::from_char_code(123)
+    c
+}
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "Ok({v})",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn look(r: int, p: string) {
+    let a = std::router::at(r, p)
+    let m = std::router::matches(r, p)
+    println("{p} -> {a} {m}")
+}
+
+fn ins(r: int, p: string, v: string) {
+    println(p + " : " + show(std::try::catch(|| { std::router::insert(r, p, v) })))
+}
+
+fn main() {
+    let a = lb()
+    let r = std::router::new()
+    ins(r, "/", "root")
+    ins(r, "/users/" + a + "id}", "show_user")
+    ins(r, "/users/" + a + "id}/posts/" + a + "post}", "post")
+    ins(r, "/users/new", "new_user")
+    ins(r, "/files/" + a + "*rest}", "files")
+    ins(r, "/img/" + a + "name}.png", "png")
+    ins(r, "/img/" + a + "name}.jpg", "jpg")
+    ins(r, "/img/" + a + "name}", "img")
+    ins(r, "/lit/" + a + a + "x}}", "literal")
+    ins(r, "/é/" + a + "ciudad}", "acento")
+    look(r, "/")
+    look(r, "/users/42")
+    look(r, "/users/new")
+    look(r, "/users/42/posts/7")
+    look(r, "/users/")
+    look(r, "/files/a/b/c.txt")
+    look(r, "/files/")
+    look(r, "/img/gato.png")
+    look(r, "/img/gato.jpg")
+    look(r, "/img/gato")
+    look(r, "/img/.png")
+    look(r, "/lit/" + a + "x}")
+    look(r, "/é/Maracaibo")
+    look(r, "/nada")
+    // Errores de inserción.
+    ins(r, "/", "otra")
+    ins(r, "/users/" + a + "name}", "x")
+    ins(r, "/files/" + a + "*otro}", "x")
+    ins(r, "/x/" + a + "a}" + a + "b}", "x")
+    ins(r, "/x/" + a + "}", "x")
+    ins(r, "/x/" + a + "*r}/y", "x")
+    ins(r, "/x/}", "x")
+    ins(r, "/x/" + a + "a", "x")
+    std::router::drop(r)
+    // Retroceso: la ruta fija no sirve y se prueba el parámetro.
+    let r2 = std::router::new()
+    ins(r2, "/a/c/b", "fija")
+    ins(r2, "/a/" + a + "x}/d", "param")
+    look(r2, "/a/c/b")
+    look(r2, "/a/c/d")
+    look(r2, "/a/q/d")
+    std::router::drop(r2)
+}
