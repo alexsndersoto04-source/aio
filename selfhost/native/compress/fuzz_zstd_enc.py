@@ -20,6 +20,15 @@ import zstandard
 
 
 def ref(data, level):
+    # ZE_REF=binario: referencia C externa ("binario NIVEL ARCHIVO"), p. ej.
+    # la de /tmp/zc con NOSPLIT=1 para aislar el divisor de bloques.
+    exe = os.environ.get("ZE_REF")
+    if exe:
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(data)
+        out = subprocess.run([exe, str(level), f.name], capture_output=True).stdout
+        os.unlink(f.name)
+        return out
     co = zstandard.ZstdCompressor(level=level).compressobj()
     return co.compress(data) + co.flush()
 
