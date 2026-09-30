@@ -1,0 +1,161 @@
+// std::compress::zstd_encode en los niveles 1..22. La salida tiene que ser
+// idéntica byte a byte a la de la VM de Rust (crate zstd 0.13.3 sobre libzstd
+// 1.5.7, zstd::stream::encode_all); se imprime entera si es corta y si no su
+// longitud y CRC-32. Cada salida se vuelve a descomprimir. Los casos grandes
+// pasan por varios bloques, el divisor previo (bloques de 128 KiB partidos),
+// el divisor posterior (niveles 16-22) y el LDM del nivel 22.
+
+fn lcg(x: int) -> int {
+    (x * 1103515245 + 12345) % 2147483648
+}
+
+fn desc(b: bytes) -> string {
+    let n = len(b)
+    if n <= 40 {
+        return std::encoding::hex_encode(b)
+    }
+    let c = std::checksum::crc32(b)
+    "len={n} crc={c}"
+}
+
+// Bytes pseudoaleatorios con alfabeto de `k` símbolos.
+fn aleatorio(n: int, k: int, semilla: int) -> bytes {
+    let mut a = []
+    let mut x = semilla
+    let mut i = 0
+    while i < n {
+        x = lcg(x)
+        a = std::array::push(a, (x / 65536) % k)
+        i += 1
+    }
+    std::bytes::from_array(a)
+}
+
+// Texto de palabras sacadas de un vocabulario inventado (se comprime ~3x).
+fn palabras(n: int, semilla: int) -> bytes {
+    let mut voc = []
+    let mut x = semilla
+    let mut i = 0
+    while i < 400 {
+        let mut w = []
+        x = lcg(x)
+        let largo = 2 + (x / 65536) % 7
+        let mut j = 0
+        while j < largo {
+            x = lcg(x)
+            w = std::array::push(w, 97 + (x / 65536) % 26)
+            j += 1
+        }
+        voc = std::array::push(voc, w)
+        i += 1
+    }
+    let mut a = []
+    while len(a) < n {
+        x = lcg(x)
+        let w = voc[(x / 65536) % 400]
+        let mut j = 0
+        while j < len(w) && len(a) < n {
+            a = std::array::push(a, w[j])
+            j += 1
+        }
+        if len(a) < n {
+            a = std::array::push(a, 32)
+        }
+    }
+    std::bytes::from_array(a)
+}
+
+fn periodico(n: int, periodo: int) -> bytes {
+    let base = aleatorio(periodo, 256, 99)
+    let mut a = []
+    let mut i = 0
+    while i < n {
+        a = std::array::push(a, std::bytes::to_array(base)[i % periodo])
+        i += 1
+    }
+    std::bytes::from_array(a)
+}
+
+fn repetido(n: int, semilla: int) -> bytes {
+    // Trozos de texto que reaparecen lejos, separados por ruido.
+    let base = std::bytes::to_array(palabras(30000, semilla))
+    let ruido = std::bytes::to_array(aleatorio(9000, 256, semilla + 1))
+    let mut a = []
+    let mut x = semilla
+    while len(a) < n {
+        x = lcg(x)
+        let desde = (x / 65536) % 20000
+        let mut j = desde
+        while j < desde + 8000 && len(a) < n {
+            a = std::array::push(a, base[j])
+            j += 1
+        }
+        x = lcg(x)
+        let r = (x / 65536) % 3000
+        let mut k = 0
+        while k < r && len(a) < n {
+            a = std::array::push(a, ruido[(k + r) % 9000])
+            k += 1
+        }
+    }
+    std::bytes::from_array(a)
+}
+
+fn probar(nombre: string, datos: bytes) {
+    let mut nivel = 1
+    while nivel <= 22 {
+        let z = std::compress::zstd_encode(datos, nivel)
+        let ok = std::compress::zstd_decode(z) == datos
+        let dz = desc(z)
+        println("{nombre} nivel {nivel}: {dz} | ida y vuelta {ok}")
+        nivel += 1
+    }
+}
+
+fn error(r: Result) -> string {
+    match r {
+        Result::Ok(v) => {
+            let b: bytes = v
+            "Ok(" + desc(b) + ")"
+        }
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn main() {
+    probar("vacío", std::encoding::utf8_encode(""))
+    probar("un byte", std::encoding::utf8_encode("a"))
+    probar("6 bytes", aleatorio(6, 256, 5))
+    probar("7 bytes", aleatorio(7, 256, 5))
+    probar("texto", std::encoding::utf8_encode("hola hola hola hola mundo, hola Titan. hola hola mundo"))
+    probar("corrida", aleatorio(5000, 1, 1))
+    probar("alfabeto 3", aleatorio(6000, 3, 7))
+    probar("aleatorio", aleatorio(3000, 256, 11))
+    probar("periodo 300", periodico(20000, 300))
+    probar("palabras", palabras(40000, 3))
+    probar("repetido", repetido(60000, 21))
+    let grande = repetido(300000, 17)
+    let niveles = [1, 3, 5, 9, 13, 16, 18, 19, 21, 22]
+    let mut i = 0
+    while i < len(niveles) {
+        let nivel = niveles[i]
+        let z = std::compress::zstd_encode(grande, nivel)
+        let dz = desc(z)
+        let ok = std::compress::zstd_decode(z) == grande
+        println("grande nivel {nivel}: {dz} | ida y vuelta {ok}")
+        i += 1
+    }
+    // Texto (string) también vale como entrada.
+    let s = error(std::try::catch(|| { std::compress::zstd_encode("hola hola hola hola mundo", 19) }))
+    println("string: {s}")
+    let e0 = error(std::try::catch(|| { std::compress::zstd_encode("x", 0) }))
+    println("nivel 0: {e0}")
+    let e1 = error(std::try::catch(|| { std::compress::zstd_encode("x", 23) }))
+    println("nivel 23: {e1}")
+    let e2 = error(std::try::catch(|| { std::compress::zstd_encode("x", 0 - 1) }))
+    println("nivel -1: {e2}")
+    let e3 = error(std::try::catch(|| { std::compress::zstd_encode("x", 1099511627776) }))
+    println("nivel 2^40: {e3}")
+    let e4 = error(std::try::catch(|| { std::compress::zstd_encode("x", 4294967299) }))
+    println("nivel 2^32+3: {e4}")
+}

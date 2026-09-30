@@ -120,13 +120,7 @@ fn ze_p32(t: int, i: int, v: int) {
 
 // Memoria a cero con margen de 128 bytes.
 fn ze_alloc(n: int) -> int {
-    let p = rt_alloc(n + 128)
-    let mut i = 0
-    while i < n + 128 {
-        std::raw::store(p + i, 0)
-        i += 8
-    }
-    p
+    rt_alloc_zero(n + 128)
 }
 
 fn ze_zero(p: int, n: int) {

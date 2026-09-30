@@ -163,6 +163,44 @@ fn rt_alloc(size: int) -> int {
     b + 8
 }
 
+// Como rt_alloc, pero con los `size` primeros bytes a cero. En un bloque
+// grande (empieza en una página, viene de mmap) las páginas enteras se
+// devuelven al sistema con madvise(MADV_DONTNEED): en memoria anónima
+// privada vuelven a leerse como ceros sin recorrerlas. Si madvise no está
+// (sin sistema operativo) o falla, se ponen a cero una a una.
+fn rt_alloc_zero(size: int) -> int {
+    let p = rt_alloc(size)
+    let mut from = p
+    if size >= 65536 {
+        let b = p - 8
+        let end = b + std::raw::load(b) + 8
+        let top = b + ((size + 8) & (-4096))
+        if std::raw::syscall(28, b + 4096, top - b - 4096, 4, 0, 0, 0) == 0 {
+            let mut q = p
+            while q < b + 4096 {
+                std::raw::store(q, 0)
+                q += 8
+            }
+            from = top
+            if from > end {
+                from = end
+            }
+        }
+    }
+    let mut q = from
+    while q < p + size {
+        std::raw::store8(q, 0)
+        q += 1
+        if (q & 7) == 0 {
+            while q + 8 <= p + size {
+                std::raw::store(q, 0)
+                q += 8
+            }
+        }
+    }
+    p
+}
+
 // Lista de bloques grandes libres de 2^k bytes (k = 13..28): globals + 2688..2808.
 // std::regex: globals + 2816 caché de expresiones compiladas (std_regex_run),
 // + 2824 tabla de plegado de mayúsculas, + 2832.. tablas Unicode ya unidas

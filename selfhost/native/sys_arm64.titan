@@ -155,6 +155,7 @@ fn sa_same_args(n: int) -> int {
     if n == 13 { return 134 }
     if n == 14 { return 135 }
     if n == 16 { return 29 }
+    if n == 28 { return 233 }
     if n == 35 { return 101 }
     if n == 39 { return 172 }
     if n == 44 { return 206 }
