@@ -1,0 +1,51 @@
+// std::net::http_get: URLs inválidas, resolución de nombres (glibc:
+// /etc/hosts, DNS, nombres no válidos), conexiones rechazadas y una
+// descarga real por HTTP.
+fn show(label: string, url: string) {
+    let r = std::try::catch(|| { std::net::http_get(url) })
+    match r {
+        Result::Ok(v) => {
+            let m = v
+            let body = std::map::get(m, "body")
+            println(label + " status " + std::json::stringify(std::map::get(m, "status")) + " body " + std::json::stringify(len(body) > 0))
+        }
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn long_name(n: int) -> string {
+    let mut s = ""
+    let mut i = 0
+    while i < n {
+        s = s + "a"
+        i += 1
+    }
+    s
+}
+
+fn main() {
+    show("https", "https://example.com/")
+    show("ftp", "ftp://example.com/")
+    show("sin host", "http:///x")
+    show("puerto malo", "http://example.com:99999/")
+    show("puerto texto", "http://example.com:abc/")
+    show("v4 rechazada", "http://127.0.0.1:1/")
+    show("v6 rechazada", "http://[::1]:1/")
+    show("localhost", "http://localhost:1/")
+    show("localhost mayus", "http://LocalHost:1/")
+    show("localhost punto", "http://localhost.:1/")
+    show("numerico raro", "http://0x7f.1:1/")
+    show("numerico corto", "http://127.1:1/")
+    show("v6 alcance", "http://fe80::1%lo:1/")
+    show("v6 alcance malo", "http://fe80::1%nada:1/")
+    show("espacio", "http://ho st/")
+    show("puntos", "http://a..b/")
+    show("guion", "http://-a.example/")
+    show("corchetes", "http://[::1]/")
+    show("etiqueta larga", "http://" + long_name(64) + ".com/")
+    show("nombre largo", "http://" + long_name(60) + "." + long_name(60) + "." + long_name(60) + "." + long_name(60) + "." + long_name(60) + "/")
+    show("asterisco", "http://*/")
+    show("invalid", "http://nohost.invalid/")
+    show("sin punto", "http://nohostxyz/")
+    show("real", "http://example.com/")
+}

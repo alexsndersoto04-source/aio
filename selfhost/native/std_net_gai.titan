@@ -1,0 +1,2598 @@
+// getaddrinfo de glibc 2.39 (nss/getaddrinfo.c) para std::net: la parte que
+// usa TcpStream::connect de Rust: getaddrinfo(host, NULL, {SOCK_STREAM}).
+//   - direcciones numéricas: inet_aton_exact, inet_pton6 con %scope;
+//   - /etc/nsswitch.conf (base "hosts", acciones [STATUS=accion]);
+//   - módulo "files" (/etc/hosts, /etc/host.conf "multi") y módulo "dns"
+//     (std_net_dns.titan);
+//   - orden RFC 3484 con /etc/gai.conf, check_pf (netlink) y check_native.
+// Límite conocido: el binario es estático y no puede cargar módulos NSS de
+// terceros (mdns, myhostname, systemd, ...); un módulo así se comporta como
+// en glibc cuando no se puede cargar: UNAVAIL con errno EBUSY. Tampoco se
+// consulta nscd (si nscd no corre, glibc hace lo mismo que aquí).
+// Prefijo `gi_`.
+
+// ------------------------------------------------------------ estado
+
+// h_errno y errno de glibc (se conservan entre llamadas, como las variables
+// globales de C).
+fn gi_herrno() -> int {
+    std::raw::load(nt_state())
+}
+
+fn gi_set_herrno(v: int) {
+    std::raw::store(nt_state(), v)
+}
+
+fn gi_errno() -> int {
+    std::raw::load(nt_state() + 8)
+}
+
+fn gi_set_errno(v: int) {
+    std::raw::store(nt_state() + 8, v)
+}
+
+// ------------------------------------------------------------ lista de tuplas
+
+// Lista de gaih_addrtuple: [datos][cantidad][capacidad]; cada tupla ocupa
+// 40 bytes: familia, dirección (16 bytes), scope_id.
+fn gi_tl_new() -> int {
+    let tl = rt_alloc_zero(24)
+    std::raw::store(tl, rt_alloc_zero(40 * 8))
+    std::raw::store(tl + 16, 8)
+    tl
+}
+
+fn gi_tl_add(tl: int, fam: int, addr: int, len: int, scope: int) {
+    let n = std::raw::load(tl + 8)
+    let cap = std::raw::load(tl + 16)
+    if n == cap {
+        let nd = rt_alloc_zero(40 * cap * 2)
+        rt_copy(nd, std::raw::load(tl), 40 * n)
+        rt_free_block(std::raw::load(tl))
+        std::raw::store(tl, nd)
+        std::raw::store(tl + 16, cap * 2)
+    }
+    let e = std::raw::load(tl) + 40 * n
+    std::raw::store(e, fam)
+    std::raw::store(e + 8, 0)
+    std::raw::store(e + 16, 0)
+    rt_copy(e + 8, addr, len)
+    std::raw::store(e + 24, scope)
+    std::raw::store(tl + 8, n + 1)
+}
+
+fn gi_tl_free(tl: int) {
+    rt_free_block(std::raw::load(tl))
+    rt_free_block(tl)
+}
+
+// ------------------------------------------------------------ direcciones numéricas
+
+// inet_pton4 de glibc sobre [s, e).
+fn gi_pton4(s: int, e: int, dst: int) -> bool {
+    let tmp = rt_alloc_zero(8)
+    let mut saw = false
+    let mut octets = 0
+    let mut tp = 0
+    let mut p = s
+    while p < e {
+        let ch = std::raw::load8(p)
+        p += 1
+        if nt_isdigit(ch) {
+            let cur = std::raw::load8(tmp + tp)
+            let nv = cur * 10 + (ch - 48)
+            if saw && cur == 0 {
+                rt_free_block(tmp)
+                return false
+            }
+            if nv > 255 {
+                rt_free_block(tmp)
+                return false
+            }
+            std::raw::store8(tmp + tp, nv)
+            if !saw {
+                octets += 1
+                if octets > 4 {
+                    rt_free_block(tmp)
+                    return false
+                }
+                saw = true
+            }
+        } else if ch == 46 && saw {
+            if octets == 4 {
+                rt_free_block(tmp)
+                return false
+            }
+            tp += 1
+            std::raw::store8(tmp + tp, 0)
+            saw = false
+        } else {
+            rt_free_block(tmp)
+            return false
+        }
+    }
+    if octets < 4 {
+        rt_free_block(tmp)
+        return false
+    }
+    rt_copy(dst, tmp, 4)
+    rt_free_block(tmp)
+    true
+}
+
+// inet_pton6 de glibc sobre [s, e).
+fn gi_pton6(s0: int, e: int, dst: int) -> bool {
+    let tmp = rt_alloc_zero(16)
+    let endp = 16
+    let mut tp = 0
+    let mut colonp = -1
+    let mut s = s0
+    if s == e {
+        rt_free_block(tmp)
+        return false
+    }
+    if std::raw::load8(s) == 58 {
+        s += 1
+        if s == e || std::raw::load8(s) != 58 {
+            rt_free_block(tmp)
+            return false
+        }
+    }
+    let mut curtok = s
+    let mut seen = 0
+    let mut val = 0
+    let mut ok = true
+    while s < e {
+        let ch = std::raw::load8(s)
+        s += 1
+        let d = nt_hexval(ch)
+        if d >= 0 {
+            if seen == 4 {
+                ok = false
+                break
+            }
+            val = val * 16 + d
+            if val > 65535 {
+                ok = false
+                break
+            }
+            seen += 1
+            continue
+        }
+        if ch == 58 {
+            curtok = s
+            if seen == 0 {
+                if colonp >= 0 {
+                    ok = false
+                    break
+                }
+                colonp = tp
+                continue
+            } else if s == e {
+                ok = false
+                break
+            }
+            if tp + 2 > endp {
+                ok = false
+                break
+            }
+            std::raw::store8(tmp + tp, std::raw::shr(val, 8) & 255)
+            std::raw::store8(tmp + tp + 1, val & 255)
+            tp += 2
+            seen = 0
+            val = 0
+            continue
+        }
+        if ch == 46 && tp + 4 <= endp && gi_pton4(curtok, e, tmp + tp) {
+            tp += 4
+            seen = 0
+            break
+        }
+        ok = false
+        break
+    }
+    if ok && seen > 0 && tp + 2 > endp {
+        ok = false
+    } else if ok && seen > 0 {
+        std::raw::store8(tmp + tp, std::raw::shr(val, 8) & 255)
+        std::raw::store8(tmp + tp + 1, val & 255)
+        tp += 2
+    }
+    if ok && colonp >= 0 && tp == endp {
+        ok = false
+    } else if ok && colonp >= 0 {
+        {
+            let n = tp - colonp
+            let mut i = n - 1
+            while i >= 0 {
+                std::raw::store8(tmp + endp - n + i, std::raw::load8(tmp + colonp + i))
+                i -= 1
+            }
+            let mut k = colonp
+            while k < endp - n {
+                std::raw::store8(tmp + k, 0)
+                k += 1
+            }
+            tp = endp
+        }
+    }
+    if ok && tp != endp {
+        ok = false
+    }
+    if ok {
+        rt_copy(dst, tmp, 16)
+    }
+    rt_free_block(tmp)
+    ok
+}
+
+// inet_aton_exact: a.b.c.d, a.b.c, a.b, a (cada parte en C: 0x.., 0.., decimal).
+fn gi_aton_exact(cp0: int, dst: int) -> bool {
+    let bytes = rt_alloc_zero(8)
+    let out = rt_alloc(24)
+    let mut pp = 0
+    let mut cp = cp0
+    let mut c = std::raw::load8(cp)
+    let mut val = 0
+    let mut digit = false
+    let mut ok = true
+    loop {
+        if !nt_isdigit(c) {
+            ok = false
+            break
+        }
+        nt_strtoul(cp, 0, out)
+        let ul = std::raw::load(out)
+        let endp = std::raw::load(out + 8)
+        if std::raw::load(out + 16) == 1 {
+            ok = false
+            break
+        }
+        if nt_ult(4294967295, ul) {
+            ok = false
+            break
+        }
+        val = ul
+        digit = cp != endp
+        cp = endp
+        c = std::raw::load8(cp)
+        if c == 46 {
+            if pp > 2 || val > 255 {
+                ok = false
+                break
+            }
+            std::raw::store8(bytes + pp, val)
+            pp += 1
+            cp += 1
+            c = std::raw::load8(cp)
+        } else {
+            break
+        }
+    }
+    if ok && c != 0 && !(c < 128 && nt_isspace(c)) {
+        ok = false
+    }
+    if ok && !digit {
+        ok = false
+    }
+    if ok {
+        let mut maxv = 4294967295
+        if pp == 1 { maxv = 16777215 }
+        if pp == 2 { maxv = 65535 }
+        if pp == 3 { maxv = 255 }
+        if val > maxv {
+            ok = false
+        }
+    }
+    // inet_aton_exact exige además que no quede nada (ni espacios).
+    if ok && c != 0 {
+        ok = false
+    }
+    if ok {
+        // res.word | htonl(val): los bytes altos de val van al final.
+        let w = rt_alloc_zero(8)
+        std::raw::store8(w, std::raw::shr(val, 24) & 255)
+        std::raw::store8(w + 1, std::raw::shr(val, 16) & 255)
+        std::raw::store8(w + 2, std::raw::shr(val, 8) & 255)
+        std::raw::store8(w + 3, val & 255)
+        let mut i = 0
+        while i < 4 {
+            std::raw::store8(dst + i, std::raw::load8(bytes + i) | std::raw::load8(w + i))
+            i += 1
+        }
+        rt_free_block(w)
+    }
+    rt_free_block(bytes)
+    rt_free_block(out)
+    ok
+}
+
+// if_nametoindex: ioctl SIOCGIFINDEX sobre el socket de __opensock. 0 si no.
+fn gi_if_nametoindex(name: int) -> int {
+    let n = nt_strlen(name)
+    if n >= 16 {
+        gi_set_errno(19)
+        return 0
+    }
+    let ifr = rt_alloc_zero(40)
+    rt_copy(ifr, name, n)
+    let mut fd = std::raw::syscall(41, 1, 524290, 0, 0, 0, 0)
+    if fd < 0 {
+        fd = std::raw::syscall(41, 2, 524290, 0, 0, 0, 0)
+    }
+    if fd < 0 {
+        fd = std::raw::syscall(41, 10, 524290, 0, 0, 0, 0)
+    }
+    if fd < 0 {
+        gi_set_errno(2)
+        rt_free_block(ifr)
+        return 0
+    }
+    let r = std::raw::syscall(16, fd, 35123, ifr, 0, 0, 0)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if r < 0 {
+        let mut e = 0 - r
+        if e == 22 {
+            e = 38
+        }
+        gi_set_errno(e)
+        rt_free_block(ifr)
+        return 0
+    }
+    let idx = sa_u32(ifr + 16)
+    rt_free_block(ifr)
+    idx
+}
+
+// __inet6_scopeid_pton. Devuelve el scope o -1 (EINVAL).
+fn gi_scopeid(a16: int, scope: int) -> int {
+    let b0 = std::raw::load8(a16)
+    let b1 = std::raw::load8(a16 + 1)
+    let linklocal = b0 == 254 && (b1 & 192) == 128
+    let mc_node = b0 == 255 && (b1 & 15) == 1
+    let mc_link = b0 == 255 && (b1 & 15) == 2
+    if linklocal || mc_node || mc_link {
+        let num = gi_if_nametoindex(scope)
+        if num != 0 {
+            return num
+        }
+    }
+    if nt_isdigit(std::raw::load8(scope)) {
+        let out = rt_alloc(24)
+        nt_strtoul(scope, 10, out)
+        let v = std::raw::load(out)
+        let endp = std::raw::load(out + 8)
+        let over = std::raw::load(out + 16)
+        rt_free_block(out)
+        if std::raw::load8(endp) == 0 && over == 0 && !nt_ult(4294967295, v) {
+            return v
+        }
+    }
+    gi_set_errno(22)
+    -1
+}
+
+// ------------------------------------------------------------ /etc/host.conf
+
+fn gi_hconf_msg(b: int) {
+    let s = sb_finish(b)
+    nt_stderr(std::raw::bits(s) + 16, rt_slen(s))
+}
+
+fn gi_hconf_prefix(fname: int, line: int) -> int {
+    let b = sb_new(128)
+    sb_raw(b, fname, nt_strlen(fname))
+    sb_str(b, ": line ")
+    sb_str(b, rt_int_to_str(line))
+    sb_str(b, ": ")
+    b
+}
+
+fn gi_skip_ws(p: int) -> int {
+    let mut q = p
+    while nt_isspace(std::raw::load8(q)) {
+        q += 1
+    }
+    q
+}
+
+fn gi_skip_string(p: int) -> int {
+    let mut q = p
+    loop {
+        let c = std::raw::load8(q)
+        if c == 0 || nt_isspace(c) || c == 35 || c == 44 {
+            break
+        }
+        q += 1
+    }
+    q
+}
+
+// arg_trimdomain_list: solo cuenta dominios y escribe los avisos.
+fn gi_hconf_trim(fname: int, line: int, args0: int) -> int {
+    let st = nt_state()
+    let mut args = args0
+    loop {
+        args = gi_skip_string(args)
+        if std::raw::load(st + 32) >= 4 {
+            let b = gi_hconf_prefix(fname, line)
+            sb_str(b, "cannot specify more than 4 trim domains")
+            gi_hconf_msg(b)
+            return 0
+        }
+        std::raw::store(st + 32, std::raw::load(st + 32) + 1)
+        args = gi_skip_ws(args)
+        let c = std::raw::load8(args)
+        if c == 44 || c == 59 || c == 58 {
+            args = gi_skip_ws(args + 1)
+            let d = std::raw::load8(args)
+            if d == 0 || d == 35 {
+                let b = gi_hconf_prefix(fname, line)
+                sb_str(b, "list delimiter not followed by domain")
+                gi_hconf_msg(b)
+                return 0
+            }
+        }
+        let e = std::raw::load8(args)
+        if e == 0 || e == 35 {
+            break
+        }
+    }
+    args
+}
+
+// arg_bool para "multi" (flag 1) y "reorder" (flag 2).
+fn gi_hconf_bool(fname: int, line: int, args: int, flag: int) -> int {
+    let st = nt_state()
+    if nt_starts_case(args, "on") {
+        std::raw::store(st + 24, std::raw::load(st + 24) | flag)
+        return args + 2
+    }
+    if nt_starts_case(args, "off") {
+        std::raw::store(st + 24, std::raw::load(st + 24) & (7 - flag))
+        return args + 3
+    }
+    let b = gi_hconf_prefix(fname, line)
+    sb_str(b, "expected `on' or `off', found `")
+    sb_raw(b, args, nt_strlen(args))
+    sb_str(b, "'\n")
+    gi_hconf_msg(b)
+    0
+}
+
+fn gi_hconf_line(fname: int, line: int, s0: int) {
+    let s = gi_skip_ws(s0)
+    let c0 = std::raw::load8(s)
+    if c0 == 0 || c0 == 35 {
+        return
+    }
+    let e = gi_skip_string(s)
+    let len = e - s
+    // cmd[]: order, trim, multi, reorder (strncasecmp + misma longitud)
+    let mut cmd = 0
+    if len == 5 && nt_starts_case(s, "order") { cmd = 1 }
+    if len == 4 && nt_starts_case(s, "trim") { cmd = 2 }
+    if len == 5 && nt_starts_case(s, "multi") { cmd = 3 }
+    if len == 7 && nt_starts_case(s, "reorder") { cmd = 4 }
+    if cmd == 0 {
+        let b = gi_hconf_prefix(fname, line)
+        sb_str(b, "bad command `")
+        sb_raw(b, s, nt_strlen(s))
+        sb_str(b, "'\n")
+        gi_hconf_msg(b)
+        return
+    }
+    let args = gi_skip_ws(e)
+    let mut r = 0
+    if cmd == 1 {
+        return
+    }
+    if cmd == 2 {
+        r = gi_hconf_trim(fname, line, args)
+    } else if cmd == 3 {
+        r = gi_hconf_bool(fname, line, args, 1)
+    } else {
+        r = gi_hconf_bool(fname, line, args, 2)
+    }
+    if r == 0 {
+        return
+    }
+    while std::raw::load8(r) != 0 {
+        let c = std::raw::load8(r)
+        if !nt_isspace(c) {
+            if c != 35 {
+                let b = gi_hconf_prefix(fname, line)
+                sb_str(b, "ignoring trailing garbage `")
+                sb_raw(b, r, nt_strlen(r))
+                sb_str(b, "'\n")
+                gi_hconf_msg(b)
+            }
+            break
+        }
+        r += 1
+    }
+}
+
+// _res_hconf_init (una sola vez por proceso).
+fn gi_hconf_init() {
+    let st = nt_state()
+    if std::raw::load(st + 16) != 0 {
+        return
+    }
+    std::raw::store(st + 16, 1)
+    std::raw::store(st + 24, 0)
+    std::raw::store(st + 32, 0)
+    let mut fname = rt_getenv("RESOLV_HOST_CONF")
+    if fname == 0 {
+        fname = nt_lit("/etc/host.conf")
+    }
+    let fd = std::raw::syscall(2, fname, 524288, 0, 0, 0, 0)
+    if fd >= 0 {
+        let file = nt_read_fd(fd)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        let pos = rt_alloc_zero(8)
+        let mut ln = 0
+        loop {
+            let l = nt_fgets(file, pos, 256)
+            if l == 0 {
+                break
+            }
+            ln += 1
+            let mut k = 0
+            while std::raw::load8(l + k) != 0 && std::raw::load8(l + k) != 10 {
+                k += 1
+            }
+            std::raw::store8(l + k, 0)
+            gi_hconf_line(fname, ln, l)
+            rt_free_block(l)
+        }
+        rt_free_block(pos)
+        rt_free_block(file)
+    }
+    let m = rt_getenv("RESOLV_MULTI")
+    if m != 0 {
+        gi_hconf_bool(nt_lit("RESOLV_MULTI"), 1, m, 1)
+    }
+    let r = rt_getenv("RESOLV_REORDER")
+    if r != 0 {
+        gi_hconf_bool(nt_lit("RESOLV_REORDER"), 1, r, 2)
+    }
+    let ta = rt_getenv("RESOLV_ADD_TRIM_DOMAINS")
+    if ta != 0 {
+        gi_hconf_trim(nt_lit("RESOLV_ADD_TRIM_DOMAINS"), 1, ta)
+    }
+    let to = rt_getenv("RESOLV_OVERRIDE_TRIM_DOMAINS")
+    if to != 0 {
+        std::raw::store(st + 32, 0)
+        gi_hconf_trim(nt_lit("RESOLV_OVERRIDE_TRIM_DOMAINS"), 1, to)
+    }
+}
+
+// ------------------------------------------------------------ /etc/nsswitch.conf
+
+// Lista de acciones de "hosts": [cantidad][entradas de 16 bytes: tipo de
+// módulo (1 files, 2 dns, 0 otro), bits de acción]. El terminador no se
+// guarda. Devuelve 0 si __nss_database_get falla.
+fn gi_nss_hosts() -> int {
+    let path = nt_lit("/etc/nsswitch.conf")
+    let st = rt_alloc(160)
+    let sr = nt_stat(path, st)
+    rt_free_block(st)
+    if sr < 0 {
+        let e = 0 - sr
+        if !(e == 13 || e == 21 || e == 40 || e == 2 || e == 20 || e == 1) {
+            gi_set_errno(e)
+            rt_free_block(path)
+            return 0
+        }
+    }
+    let mut hosts = 0
+    let mut found = false
+    let fd = std::raw::syscall(2, path, 524288, 0, 0, 0, 0)
+    rt_free_block(path)
+    if fd < 0 {
+        let e = 0 - fd
+        if !(e == 13 || e == 21 || e == 40 || e == 2 || e == 20 || e == 1) {
+            gi_set_errno(e)
+            return 0
+        }
+    } else {
+        let file = nt_read_fd(fd)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        let pos = rt_alloc_zero(8)
+        let mut ok = true
+        loop {
+            let l = nt_getline(file, pos)
+            if l == 0 {
+                // sin más datos: ferror si hubo error de lectura, si no feof
+                if std::raw::load(file + 8) != 0 {
+                    gi_set_errno(std::raw::load(file + 8))
+                    ok = false
+                }
+                break
+            }
+            // getline llegó al final sin '\n': feof (o ferror) está activo y
+            // glibc sale del bucle sin procesar esa línea.
+            if std::raw::load8(file + 16 + std::raw::load(pos) - 1) != 10 {
+                rt_free_block(l)
+                if std::raw::load(file + 8) != 0 {
+                    gi_set_errno(std::raw::load(file + 8))
+                    ok = false
+                }
+                break
+            }
+            let r = gi_nss_line(l)
+            rt_free_block(l)
+            if r == -1 {
+                gi_set_errno(22)
+                ok = false
+                break
+            }
+            if r != 0 {
+                if found {
+                    rt_free_block(hosts)
+                }
+                hosts = r
+                found = true
+            }
+        }
+        rt_free_block(pos)
+        rt_free_block(file)
+        if !ok {
+            if found {
+                rt_free_block(hosts)
+            }
+            return 0
+        }
+    }
+    if !found {
+        hosts = gi_nss_parse(nt_lit("files dns"))
+    }
+    hosts
+}
+
+// process_line: 0 si la línea no es de "hosts" (o no cuenta), -1 si hay
+// error de sintaxis en una base conocida, o la lista de "hosts".
+fn gi_nss_line(l0: int) -> int {
+    let mut l = l0
+    while nt_isspace(std::raw::load8(l)) {
+        l += 1
+    }
+    let name = l
+    while std::raw::load8(l) != 0 && !nt_isspace(std::raw::load8(l)) && std::raw::load8(l) != 58 {
+        l += 1
+    }
+    if std::raw::load8(l) == 0 || name == l {
+        return 0
+    }
+    while std::raw::load8(l) != 0 && (nt_isspace(std::raw::load8(l)) || std::raw::load8(l) == 58) {
+        std::raw::store8(l, 0)
+        l += 1
+    }
+    if !gi_nss_known_db(name) {
+        return 0
+    }
+    let r = gi_nss_parse(l)
+    if r == 0 {
+        return -1
+    }
+    if nt_streq(name, nt_lit("hosts")) {
+        return r
+    }
+    rt_free_block(r)
+    0
+}
+
+fn gi_nss_known_db(n: int) -> bool {
+    let names = "aliases ethers group group_compat gshadow hosts initgroups netgroup networks passwd passwd_compat protocols publickey rpc services shadow shadow_compat "
+    let p = std::raw::bits(names) + 16
+    let total = rt_slen(names)
+    let mut i = 0
+    while i < total {
+        let mut j = i
+        while std::raw::load8(p + j) != 32 {
+            j += 1
+        }
+        let mut k = 0
+        let mut same = true
+        while i + k < j {
+            if std::raw::load8(n + k) != std::raw::load8(p + i + k) {
+                same = false
+                break
+            }
+            k += 1
+        }
+        if same && std::raw::load8(n + (j - i)) == 0 {
+            return true
+        }
+        i = j + 1
+    }
+    false
+}
+
+fn gi_skipws_p(p: int) -> int {
+    gi_skip_ws(p)
+}
+
+// __nss_action_parse: lista o 0 si hay error de sintaxis.
+fn gi_nss_parse(line0: int) -> int {
+    let mut cap = 8
+    let mut list = rt_alloc_zero(8 + 16 * cap)
+    let mut line = line0
+    loop {
+        line = gi_skip_ws(line)
+        if std::raw::load8(line) == 0 {
+            return list
+        }
+        let name = line
+        while std::raw::load8(line) != 0 && !nt_isspace(std::raw::load8(line)) && std::raw::load8(line) != 91 {
+            line += 1
+        }
+        if name == line {
+            return list
+        }
+        let nlen = line - name
+        let mut kind = 0
+        if nlen == 5 && nt_starts(name, "files") { kind = 1 }
+        if nlen == 3 && nt_starts(name, "dns") { kind = 2 }
+        // CONTINUE para todo, RETURN para SUCCESS y RETURN.
+        let mut bits = gi_act_set(0, 1, 1)
+        bits = gi_act_set(bits, 2, 1)
+        line = gi_skip_ws(line)
+        if std::raw::load8(line) == 91 {
+            line += 1
+            line = gi_skip_ws(line)
+            loop {
+                let not = std::raw::load8(line) == 33
+                if not {
+                    line += 1
+                }
+                let sn = line
+                while std::raw::load8(line) != 0 && !nt_isspace(std::raw::load8(line)) && std::raw::load8(line) != 61 && std::raw::load8(line) != 93 {
+                    line += 1
+                }
+                let sl = line - sn
+                let mut status = 9
+                if sl == 7 {
+                    if nt_starts_case(sn, "SUCCESS") {
+                        status = 1
+                    } else if nt_starts_case(sn, "UNAVAIL") {
+                        status = -1
+                    }
+                } else if sl == 8 {
+                    if nt_starts_case(sn, "NOTFOUND") {
+                        status = 0
+                    } else if nt_starts_case(sn, "TRYAGAIN") {
+                        status = -2
+                    }
+                }
+                if status == 9 {
+                    rt_free_block(list)
+                    return 0
+                }
+                line = gi_skip_ws(line)
+                if std::raw::load8(line) != 61 {
+                    rt_free_block(list)
+                    return 0
+                }
+                line += 1
+                line = gi_skip_ws(line)
+                let an = line
+                while std::raw::load8(line) != 0 && !nt_isspace(std::raw::load8(line)) && std::raw::load8(line) != 61 && std::raw::load8(line) != 93 {
+                    line += 1
+                }
+                let al = line - an
+                let mut action = 9
+                if al == 6 && nt_starts_case(an, "RETURN") { action = 1 }
+                if al == 8 && nt_starts_case(an, "CONTINUE") { action = 0 }
+                if al == 5 && nt_starts_case(an, "MERGE") { action = 2 }
+                if action == 9 {
+                    rt_free_block(list)
+                    return 0
+                }
+                if not {
+                    let save = gi_act_get(bits, status)
+                    bits = action * 341
+                    bits = gi_act_set(bits, status, save)
+                } else {
+                    bits = gi_act_set(bits, status, action)
+                }
+                line = gi_skip_ws(line)
+                if std::raw::load8(line) == 93 {
+                    break
+                }
+            }
+            line += 1
+        }
+        let n = std::raw::load(list)
+        if n == cap {
+            let nl = rt_alloc_zero(8 + 16 * cap * 2)
+            rt_copy(nl, list, 8 + 16 * n)
+            rt_free_block(list)
+            list = nl
+            cap = cap * 2
+        }
+        std::raw::store(list + 8 + 16 * n, kind)
+        std::raw::store(list + 16 + 16 * n, bits)
+        std::raw::store(list, n + 1)
+    }
+    list
+}
+
+// Bits de acción: 2 bits por estado, índice estado + 2.
+fn gi_act_get(bits: int, status: int) -> int {
+    std::raw::shr(bits, 2 * (status + 2)) & 3
+}
+
+fn gi_act_set(bits: int, status: int, action: int) -> int {
+    let off = 2 * (status + 2)
+    let mask = std::raw::shl(3, off)
+    let r = (bits & (1023 - mask)) | std::raw::shl(action, off)
+    r
+}
+
+// ------------------------------------------------------------ módulo files
+
+// Lectura de /etc/hosts con los límites del búfer de glibc (para repetir con
+// un búfer más grande exactamente cuando glibc lo hace).
+// Devuelve el estado NSS; las tuplas van a tl.
+fn gi_files4(name: int, tl: int, buflen: int) -> int {
+    let path = nt_lit("/etc/hosts")
+    let fd = std::raw::syscall(2, path, 524288, 0, 0, 0, 0)
+    rt_free_block(path)
+    if fd < 0 {
+        let e = 0 - fd
+        gi_set_errno(e)
+        if e == 11 {
+            gi_set_herrno(2)
+            return -2
+        }
+        gi_set_herrno(4)
+        return -1
+    }
+    let file = nt_read_fd(fd)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let pos = rt_alloc_zero(8)
+    let multi = (std::raw::load(nt_state() + 24) & 1) != 0
+    let ent = rt_alloc_zero(64)
+    let mut b = 0
+    let mut left = buflen
+    let mut any = false
+    let mut status = 0
+    loop {
+        let pad = (8 - b % 8) % 8
+        b += pad
+        if left > pad {
+            left -= pad
+        } else {
+            left = 0
+        }
+        status = gi_files_getent(file, pos, left, ent)
+        if status != 1 {
+            break
+        }
+        let line = std::raw::load(ent)
+        let hname = std::raw::load(ent + 8)
+        let nal = std::raw::load(ent + 16)
+        let al = std::raw::load(ent + 24)
+        let mut hit = nt_casecmp_eq(name, hname)
+        if !hit {
+            let mut k = 0
+            while k < nal {
+                if nt_casecmp_eq(name, std::raw::load(al + 8 * k)) {
+                    hit = true
+                    break
+                }
+                k += 1
+            }
+        }
+        if !hit {
+            rt_free_block(al)
+            rt_free_block(line)
+            continue
+        }
+        // bufferend = &h_aliases[naliases + 1]
+        let used = std::raw::load(ent + 32) + 8 * (nal + 1)
+        left -= used
+        b += used
+        let pad2 = (8 - b % 8) % 8
+        b += pad2
+        if left > pad2 {
+            left -= pad2
+        } else {
+            left = 0
+        }
+        if left < 40 {
+            gi_set_errno(34)
+            gi_set_herrno(-1)
+            status = -2
+            rt_free_block(al)
+            rt_free_block(line)
+            break
+        }
+        b += 40
+        left -= 40
+        any = true
+        let fam = std::raw::load(ent + 40)
+        let mut alen = 4
+        if fam == 10 {
+            alen = 16
+        }
+        gi_tl_add(tl, fam, ent + 48, alen, 0)
+        rt_free_block(al)
+        rt_free_block(line)
+        if !multi {
+            break
+        }
+    }
+    if status == 0 && any {
+        status = 1
+    }
+    rt_free_block(ent)
+    rt_free_block(pos)
+    rt_free_block(file)
+    status
+}
+
+// internal_getent (files-XXX.c) + parse_line (files-hosts.c) con AF_UNSPEC.
+// left: bytes libres del búfer desde el registro actual. ent recibe: línea
+// (bloque a liberar), h_name, número de alias, lista de alias (bloque a
+// liberar), desplazamiento de la lista dentro del registro, familia y la
+// dirección (16 bytes en ent + 48).
+fn gi_files_getent(file: int, pos: int, left: int, ent: int) -> int {
+    if left < 34 {
+        gi_set_errno(34)
+        gi_set_herrno(-1)
+        return -2
+    }
+    let lbl = left - 32
+    loop {
+        // __nss_readline
+        if lbl < 3 {
+            gi_set_errno(34)
+            gi_set_herrno(-1)
+            return -2
+        }
+        let offset = std::raw::load(pos)
+        let n = std::raw::load(file)
+        if offset >= n {
+            let rerr = std::raw::load(file + 8)
+            if rerr != 0 {
+                // fgets falló por un error de lectura
+                gi_set_errno(rerr)
+                gi_set_herrno(-1)
+                return -1
+            }
+            gi_set_herrno(1)
+            return 0
+        }
+        let l = nt_fgets(file, pos, lbl)
+        let got = std::raw::load(pos) - offset
+        if got >= lbl - 1 {
+            // el marcador del final fue sobrescrito: línea demasiado larga
+            rt_free_block(l)
+            std::raw::store(pos, offset)
+            gi_set_errno(34)
+            gi_set_herrno(-1)
+            return -2
+        }
+        let mut p = l
+        while nt_isspace(std::raw::load8(p)) {
+            p += 1
+        }
+        let c = std::raw::load8(p)
+        if c == 0 || c == 35 {
+            rt_free_block(l)
+            continue
+        }
+        if p != l {
+            // memmove(buf, p, strlen(p)) sin copiar el 0 final
+            let m = nt_strlen(p)
+            let mut i = 0
+            while i < m {
+                std::raw::store8(l + i, std::raw::load8(p + i))
+                i += 1
+            }
+        }
+        let r = gi_hosts_parse(l, left, ent)
+        if r == 1 {
+            std::raw::store(ent, l)
+            return 1
+        }
+        rt_free_block(l)
+        if r == -1 {
+            std::raw::store(pos, offset)
+            gi_set_errno(34)
+            gi_set_herrno(-1)
+            return -2
+        }
+    }
+    0
+}
+
+// parse_line de files-hosts.c. 1 bien, 0 línea inválida, -1 sin espacio.
+fn gi_hosts_parse(line0: int, datalen: int, ent: int) -> int {
+    // BUFFER_PREPARE: buf_start = strchr(line, 0) + 1 (relativo al registro)
+    let bufstart = 32 + nt_strlen(line0) + 1
+    let mut line = line0
+    let mut k = 0
+    loop {
+        let c = std::raw::load8(line0 + k)
+        if c == 0 {
+            break
+        }
+        if c == 35 || c == 10 {
+            std::raw::store8(line0 + k, 0)
+            break
+        }
+        k += 1
+    }
+    let addr = line
+    while std::raw::load8(line) != 0 && !nt_isspace(std::raw::load8(line)) {
+        line += 1
+    }
+    if std::raw::load8(line) != 0 {
+        std::raw::store8(line, 0)
+        line += 1
+        while nt_isspace(std::raw::load8(line)) {
+            line += 1
+        }
+    }
+    let alen = nt_strlen(addr)
+    if gi_pton4(addr, addr + alen, ent + 48) {
+        std::raw::store(ent + 40, 2)
+    } else if gi_pton6(addr, addr + alen, ent + 48) {
+        std::raw::store(ent + 40, 10)
+    } else {
+        return 0
+    }
+    let hname = line
+    while std::raw::load8(line) != 0 && !nt_isspace(std::raw::load8(line)) {
+        line += 1
+    }
+    if std::raw::load8(line) != 0 {
+        std::raw::store8(line, 0)
+        line += 1
+        while nt_isspace(std::raw::load8(line)) {
+            line += 1
+        }
+    }
+    // parse_list: vector de punteros alineado a 8 tras el final de la línea
+    let listoff = (bufstart + 7) / 8 * 8
+    let mut cap = 8
+    let mut al = rt_alloc_zero(8 * cap)
+    let mut np = 0
+    loop {
+        if listoff + 8 * (np + 2) > datalen {
+            rt_free_block(al)
+            return -1
+        }
+        if std::raw::load8(line) == 0 {
+            break
+        }
+        while nt_isspace(std::raw::load8(line)) {
+            line += 1
+        }
+        let elt = line
+        loop {
+            let c = std::raw::load8(line)
+            if c == 0 || nt_isspace(c) {
+                if line > elt {
+                    if np == cap {
+                        let na = rt_alloc_zero(8 * cap * 2)
+                        rt_copy(na, al, 8 * np)
+                        rt_free_block(al)
+                        al = na
+                        cap = cap * 2
+                    }
+                    std::raw::store(al + 8 * np, elt)
+                    np += 1
+                }
+                if c != 0 {
+                    std::raw::store8(line, 0)
+                    line += 1
+                }
+                break
+            }
+            line += 1
+        }
+    }
+    std::raw::store(ent + 8, hname)
+    std::raw::store(ent + 16, np)
+    std::raw::store(ent + 24, al)
+    std::raw::store(ent + 32, listoff)
+    1
+}
+
+// ------------------------------------------------------------ get_nss_addresses
+
+// Devuelve 0 o el código EAI negativo. Las tuplas quedan en tl.
+fn gi_nss_addresses(name: int, tl: int, bufcell: int) -> int {
+    let mut no_data = 0
+    let mut no_inet6 = 0
+    let mut status = -1
+    let mut do_merge = false
+    let list = gi_nss_hosts()
+    let mut no_more = list == 0
+    if !ns_context_get() {
+        if gi_errno() == 12 {
+            if list != 0 {
+                rt_free_block(list)
+            }
+            std::raw::store(tl + 8, 0)
+            return -10
+        }
+        no_more = true
+    }
+    let mut idx = 0
+    let mut count = 0
+    if list != 0 {
+        count = std::raw::load(list)
+    }
+    while !no_more {
+        std::raw::store(tl + 8, 0)
+        if do_merge {
+            gi_set_herrno(-1)
+            gi_set_errno(16)
+            break
+        }
+        no_data = 0
+        let mut kind = 0
+        let mut bits = 0
+        if idx < count {
+            kind = std::raw::load(list + 8 + 16 * idx)
+            bits = std::raw::load(list + 16 + 16 * idx)
+        }
+        if kind != 0 {
+            loop {
+                if kind == 1 {
+                    status = gi_files4(name, tl, std::raw::load(bufcell))
+                } else {
+                    status = ns_gethostbyname4(name, tl, std::raw::load(bufcell))
+                }
+                if status == 1 {
+                    break
+                }
+                std::raw::store(tl + 8, 0)
+                if status != -2 || gi_errno() != 34 || gi_herrno() != -1 {
+                    if gi_herrno() == 2 {
+                        no_data = -3
+                    } else if gi_herrno() == 4 {
+                        no_data = 1
+                    } else {
+                        no_data = 0
+                    }
+                    break
+                }
+                // scratch_buffer_grow: el doble
+                std::raw::store(bufcell, std::raw::load(bufcell) * 2)
+            }
+            if status == 1 {
+                no_data = 1
+                if std::raw::load(tl + 8) > 0 {
+                    no_data = 0
+                }
+            }
+            no_inet6 = no_data
+        } else {
+            status = -1
+            gi_set_herrno(-1)
+            gi_set_errno(16)
+        }
+        if idx >= count {
+            // "hosts:" vacío: glibc tendría un comportamiento indefinido;
+            // aquí se trata como un módulo no disponible y se termina.
+            break
+        }
+        let act = gi_act_get(bits, status)
+        if act == 1 {
+            break
+        }
+        if act == 2 {
+            do_merge = true
+        }
+        idx += 1
+        if idx >= count {
+            no_more = true
+        }
+    }
+    if list != 0 {
+        rt_free_block(list)
+    }
+    let mut result = 0
+    if (status == -2 || status == -1) && gi_herrno() == -1 {
+        result = -11
+    } else if no_data != 0 && no_inet6 != 0 {
+        if no_data == -3 && no_inet6 == -3 {
+            result = -3
+        } else {
+            result = -5
+        }
+    }
+    if result != 0 {
+        std::raw::store(tl + 8, 0)
+    }
+    result
+}
+
+// ------------------------------------------------------------ gai.conf
+
+// Tablas: entradas de 32 bytes: prefijo (16), bits, valor.
+fn gi_prefix_table(spec: string) -> int {
+    // spec: "hex32 bits val;..." (generada a mano a partir de gai39.c)
+    let p = std::raw::bits(spec) + 16
+    let n = rt_slen(spec)
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 59 {
+            count += 1
+        }
+        i += 1
+    }
+    let t = rt_alloc_zero(32 * count)
+    let mut e = 0
+    i = 0
+    while e < count {
+        let mut k = 0
+        while k < 16 {
+            std::raw::store8(t + 32 * e + k, nt_hexval(std::raw::load8(p + i)) * 16 + nt_hexval(std::raw::load8(p + i + 1)))
+            i += 2
+            k += 1
+        }
+        i += 1
+        let mut v = 0
+        while std::raw::load8(p + i) != 32 {
+            v = v * 10 + std::raw::load8(p + i) - 48
+            i += 1
+        }
+        std::raw::store(t + 32 * e + 16, v)
+        i += 1
+        v = 0
+        while std::raw::load8(p + i) != 59 {
+            v = v * 10 + std::raw::load8(p + i) - 48
+            i += 1
+        }
+        std::raw::store(t + 32 * e + 24, v)
+        i += 1
+        e += 1
+    }
+    t
+}
+
+fn gi_default_labels() -> int {
+    let st = nt_state()
+    let mut t = std::raw::load(st + 1088)
+    if t == 0 {
+        t = gi_prefix_table("00000000000000000000000000000001 128 0;20020000000000000000000000000000 16 2;00000000000000000000000000000000 96 3;00000000000000000000ffff00000000 96 4;fec00000000000000000000000000000 10 5;fc000000000000000000000000000000 7 6;20010000000000000000000000000000 32 7;00000000000000000000000000000000 0 1;")
+        std::raw::store(st + 1088, t)
+    }
+    t
+}
+
+fn gi_default_precedence() -> int {
+    let st = nt_state()
+    let mut t = std::raw::load(st + 1096)
+    if t == 0 {
+        t = gi_prefix_table("00000000000000000000000000000001 128 50;20020000000000000000000000000000 16 30;00000000000000000000000000000000 96 20;00000000000000000000ffff00000000 96 10;00000000000000000000000000000000 0 40;")
+        std::raw::store(st + 1096, t)
+    }
+    t
+}
+
+// Ámbitos IPv4: entradas de 24 bytes: addr32 (4 bytes en orden de red),
+// máscara (4 bytes en orden de red), ámbito.
+fn gi_default_scopes() -> int {
+    let st = nt_state()
+    let mut t = std::raw::load(st + 1104)
+    if t == 0 {
+        t = rt_alloc_zero(72)
+        std::raw::store8(t, 169)
+        std::raw::store8(t + 1, 254)
+        std::raw::store8(t + 8, 255)
+        std::raw::store8(t + 9, 255)
+        std::raw::store(t + 16, 2)
+        std::raw::store8(t + 24, 127)
+        std::raw::store8(t + 32, 255)
+        std::raw::store(t + 40, 2)
+        std::raw::store(t + 64, 14)
+        std::raw::store(st + 1104, t)
+    }
+    t
+}
+
+fn gi_labels() -> int {
+    let t = std::raw::load(nt_state() + 1040)
+    if t == 0 {
+        return gi_default_labels()
+    }
+    t
+}
+
+fn gi_precedence() -> int {
+    let t = std::raw::load(nt_state() + 1056)
+    if t == 0 {
+        return gi_default_precedence()
+    }
+    t
+}
+
+fn gi_scopes() -> int {
+    let t = std::raw::load(nt_state() + 1072)
+    if t == 0 {
+        return gi_default_scopes()
+    }
+    t
+}
+
+// Condición de add_prefixlist / scopev4 para el número tras '/':
+// (cp == NULL || strtoul no desborda) && *endp == 0. Devuelve bits o -1.
+fn gi_conf_bits(cp: int, dflt: int) -> int {
+    if cp == 0 {
+        // glibc lee endp sin inicializar en este caso; se toma como válido.
+        return dflt
+    }
+    let out = rt_alloc(24)
+    nt_strtoul(cp, 10, out)
+    let v = std::raw::load(out)
+    let endp = std::raw::load(out + 8)
+    let over = std::raw::load(out + 16)
+    rt_free_block(out)
+    if over == 1 || std::raw::load8(endp) != 0 {
+        return -1
+    }
+    if v < 0 {
+        return 1000000
+    }
+    v
+}
+
+// strtoul(val2) completo y <= INT_MAX; -1 si no.
+fn gi_conf_val(p: int) -> int {
+    let out = rt_alloc(24)
+    nt_strtoul(p, 10, out)
+    let v = std::raw::load(out)
+    let endp = std::raw::load(out + 8)
+    let over = std::raw::load(out + 16)
+    rt_free_block(out)
+    if over == 1 || std::raw::load8(endp) != 0 || v < 0 || v > 2147483647 {
+        return -1
+    }
+    v
+}
+
+// Lista temporal: [cantidad][capacidad][datos] con entradas de `size`.
+fn gi_list_add(cell: int, size: int, e: int) {
+    let mut l = std::raw::load(cell)
+    if l == 0 {
+        l = rt_alloc_zero(16 + size * 8)
+        std::raw::store(l + 8, 8)
+        std::raw::store(cell, l)
+    }
+    let n = std::raw::load(l)
+    let cap = std::raw::load(l + 8)
+    if n == cap {
+        let nl = rt_alloc_zero(16 + size * cap * 2)
+        rt_copy(nl, l, 16 + size * n)
+        std::raw::store(nl + 8, cap * 2)
+        rt_free_block(l)
+        l = nl
+        std::raw::store(cell, l)
+    }
+    rt_copy(l + 16 + size * n, e, size)
+    std::raw::store(l, n + 1)
+}
+
+fn gi_add_prefix(cell: int, nullcell: int, val1: int, val2: int) {
+    let mut cp = 0
+    let mut k = 0
+    while std::raw::load8(val1 + k) != 0 {
+        if std::raw::load8(val1 + k) == 47 {
+            std::raw::store8(val1 + k, 0)
+            cp = val1 + k + 1
+            break
+        }
+        k += 1
+    }
+    let e = rt_alloc_zero(32)
+    if gi_pton6(val1, val1 + nt_strlen(val1), e) {
+        let bits = gi_conf_bits(cp, 128)
+        if bits >= 0 && bits <= 128 {
+            let v = gi_conf_val(val2)
+            if v >= 0 {
+                std::raw::store(e + 16, bits)
+                std::raw::store(e + 24, v)
+                gi_list_add(cell, 32, e)
+                if bits == 0 {
+                    std::raw::store(nullcell, 1)
+                }
+            }
+        }
+    }
+    rt_free_block(e)
+}
+
+// add_scopelist: máscara = htonl(bits != 96 ? 0xffffffff << (128 - bits) : 0)
+// (el desplazamiento de 32 bits usa solo los 5 bits bajos, como la CPU).
+fn gi_add_scope(cell: int, nullcell: int, a4: int, bits: int, val: int) {
+    let e = rt_alloc_zero(24)
+    let mut mask = 0
+    if bits != 96 {
+        mask = std::raw::shl(4294967295, (128 - bits) & 31) & 4294967295
+    }
+    std::raw::store8(e + 8, std::raw::shr(mask, 24) & 255)
+    std::raw::store8(e + 9, std::raw::shr(mask, 16) & 255)
+    std::raw::store8(e + 10, std::raw::shr(mask, 8) & 255)
+    std::raw::store8(e + 11, mask & 255)
+    let mut i = 0
+    while i < 4 {
+        std::raw::store8(e + i, std::raw::load8(a4 + i) & std::raw::load8(e + 8 + i))
+        i += 1
+    }
+    std::raw::store(e + 16, val)
+    gi_list_add(cell, 24, e)
+    if bits == 96 {
+        std::raw::store(nullcell, 1)
+    }
+    rt_free_block(e)
+}
+
+// qsort de glibc 2.39: ordenación por mezcla estable (mitad izquierda n/2).
+// cmp: 1 prefixcmp, 2 scopecmp.
+fn gi_msort(t: int, n: int, size: int, cmp: int) {
+    if n <= 1 {
+        return
+    }
+    let tmp = rt_alloc(size * n)
+    gi_msort_rec(t, n, size, cmp, tmp)
+    rt_free_block(tmp)
+}
+
+fn gi_msort_rec(b: int, n: int, size: int, cmp: int, tmp: int) {
+    if n <= 1 {
+        return
+    }
+    let n1 = n / 2
+    let n2 = n - n1
+    let b2 = b + n1 * size
+    gi_msort_rec(b, n1, size, cmp, tmp)
+    gi_msort_rec(b2, n2, size, cmp, tmp)
+    let mut i = 0
+    let mut j = 0
+    let mut o = 0
+    while i < n1 && j < n2 {
+        if gi_tcmp(b + i * size, b2 + j * size, cmp) <= 0 {
+            rt_copy(tmp + o * size, b + i * size, size)
+            i += 1
+        } else {
+            rt_copy(tmp + o * size, b2 + j * size, size)
+            j += 1
+        }
+        o += 1
+    }
+    while i < n1 {
+        rt_copy(tmp + o * size, b + i * size, size)
+        i += 1
+        o += 1
+    }
+    while j < n2 {
+        rt_copy(tmp + o * size, b2 + j * size, size)
+        j += 1
+        o += 1
+    }
+    rt_copy(b, tmp, n * size)
+}
+
+fn gi_tcmp(a: int, b: int, cmp: int) -> int {
+    if cmp == 1 {
+        let x = std::raw::load(a + 16)
+        let y = std::raw::load(b + 16)
+        if x < y { return 1 }
+        if x == y { return 0 }
+        return -1
+    }
+    // scopecmp: máscara como uint32 de la máquina (little endian)
+    let x = sa_u32(a + 8)
+    let y = sa_u32(b + 8)
+    if x > y { return -1 }
+    if x == y { return 0 }
+    1
+}
+
+// Convierte la lista temporal en la tabla final (orden del archivo, con la
+// entrada /0 por defecto al final si falta) y la ordena.
+fn gi_list_table(l: int, size: int, nullbits: bool, kind: int) -> int {
+    let n0 = std::raw::load(l)
+    let mut n = n0
+    if !nullbits {
+        n += 1
+    }
+    let t = rt_alloc_zero(size * n)
+    rt_copy(t, l + 16, size * n0)
+    if !nullbits {
+        let d = t + size * n0
+        if kind == 1 {
+            std::raw::store(d + 24, 1)
+        } else if kind == 2 {
+            std::raw::store(d + 24, 40)
+        } else {
+            std::raw::store(d + 16, 14)
+        }
+    }
+    let mut cmp = 1
+    if kind == 3 {
+        cmp = 2
+    }
+    gi_msort(t, n, size, cmp)
+    std::raw::store(nt_state() + 1112 + 8 * kind, n)
+    t
+}
+
+// gaiconf_init.
+fn gi_gaiconf_init() {
+    let st = nt_state()
+    let path = nt_lit("/etc/gai.conf")
+    let fd = std::raw::syscall(2, path, 524288, 0, 0, 0, 0)
+    rt_free_block(path)
+    if fd < 0 {
+        gi_gaiconf_nofile()
+        return
+    }
+    let sb = rt_alloc(160)
+    if std::raw::syscall(5, fd, sb, 0, 0, 0, 0) < 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        rt_free_block(sb)
+        gi_gaiconf_nofile()
+        return
+    }
+    let file = nt_read_fd(fd)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let cells = rt_alloc_zero(48)
+    let pos = rt_alloc_zero(8)
+    loop {
+        let line = nt_getline(file, pos)
+        if line == 0 {
+            break
+        }
+        let mut k = 0
+        while std::raw::load8(line + k) != 0 {
+            if std::raw::load8(line + k) == 35 {
+                std::raw::store8(line + k, 0)
+                break
+            }
+            k += 1
+        }
+        let mut cp = gi_skip_ws(line)
+        let cmd = cp
+        while std::raw::load8(cp) != 0 && !nt_isspace(std::raw::load8(cp)) {
+            cp += 1
+        }
+        let cmdlen = cp - cmd
+        if std::raw::load8(cp) != 0 {
+            std::raw::store8(cp, 0)
+            cp += 1
+        }
+        cp = gi_skip_ws(cp)
+        let val1 = cp
+        while std::raw::load8(cp) != 0 && !nt_isspace(std::raw::load8(cp)) {
+            cp += 1
+        }
+        // val1len = cp - cmd (así está en glibc)
+        if cp - cmd == 0 {
+            rt_free_block(line)
+            continue
+        }
+        if std::raw::load8(cp) != 0 {
+            std::raw::store8(cp, 0)
+            cp += 1
+        }
+        cp = gi_skip_ws(cp)
+        let val2 = cp
+        while std::raw::load8(cp) != 0 && !nt_isspace(std::raw::load8(cp)) {
+            cp += 1
+        }
+        std::raw::store8(cp, 0)
+        if cmdlen == 5 && nt_streq(cmd, nt_lit("label")) {
+            gi_add_prefix(cells, cells + 8, val1, val2)
+        } else if cmdlen == 6 && nt_streq(cmd, nt_lit("reload")) {
+            let yes = nt_streq(val1, nt_lit("yes"))
+            if yes {
+                std::raw::store(st + 1008, 1)
+                std::raw::store(st + 1016, 1)
+            } else {
+                std::raw::store(st + 1008, 0)
+            }
+        } else if cmdlen == 7 && nt_streq(cmd, nt_lit("scopev4")) {
+            gi_scopev4(cells + 32, cells + 40, val1, val2)
+        } else if cmdlen == 10 && nt_streq(cmd, nt_lit("precedence")) {
+            gi_add_prefix(cells + 16, cells + 24, val1, val2)
+        }
+        rt_free_block(line)
+    }
+    rt_free_block(pos)
+    rt_free_block(file)
+    let mut nl = 0
+    let mut np = 0
+    let mut ns = 0
+    let mut tl = 0
+    let mut tp = 0
+    let mut ts = 0
+    if std::raw::load(cells) != 0 {
+        tl = gi_list_table(std::raw::load(cells), 32, std::raw::load(cells + 8) != 0, 1)
+        nl = std::raw::load(st + 1120)
+        rt_free_block(std::raw::load(cells))
+    }
+    if std::raw::load(cells + 16) != 0 {
+        tp = gi_list_table(std::raw::load(cells + 16), 32, std::raw::load(cells + 24) != 0, 2)
+        np = std::raw::load(st + 1128)
+        rt_free_block(std::raw::load(cells + 16))
+    }
+    if std::raw::load(cells + 32) != 0 {
+        ts = gi_list_table(std::raw::load(cells + 32), 24, std::raw::load(cells + 40) != 0, 3)
+        ns = std::raw::load(st + 1136)
+        rt_free_block(std::raw::load(cells + 32))
+    }
+    rt_free_block(cells)
+    gi_gaiconf_free()
+    std::raw::store(st + 1040, tl)
+    std::raw::store(st + 1048, nl)
+    std::raw::store(st + 1056, tp)
+    std::raw::store(st + 1064, np)
+    std::raw::store(st + 1072, ts)
+    std::raw::store(st + 1080, ns)
+    // save_gaiconf_mtime (st_mtim)
+    std::raw::store(st + 1024, std::raw::load(sb + 88))
+    std::raw::store(st + 1032, std::raw::load(sb + 96))
+    rt_free_block(sb)
+}
+
+fn gi_scopev4(cell: int, nullcell: int, val1: int, val2: int) {
+    let mut cp = 0
+    let mut k = 0
+    while std::raw::load8(val1 + k) != 0 {
+        if std::raw::load8(val1 + k) == 47 {
+            std::raw::store8(val1 + k, 0)
+            cp = val1 + k + 1
+            break
+        }
+        k += 1
+    }
+    let prefix = rt_alloc_zero(16)
+    let vl = nt_strlen(val1)
+    if gi_pton6(val1, val1 + vl, prefix) {
+        let mapped = std::raw::load(prefix) == 0 && std::raw::load8(prefix + 8) == 0 && std::raw::load8(prefix + 9) == 0 && std::raw::load8(prefix + 10) == 255 && std::raw::load8(prefix + 11) == 255
+        if mapped {
+            let bits = gi_conf_bits(cp, 128)
+            if bits >= 96 && bits <= 128 {
+                let v = gi_conf_val(val2)
+                if v >= 0 {
+                    gi_add_scope(cell, nullcell, prefix + 12, bits, v)
+                }
+            }
+        }
+    } else if gi_pton4(val1, val1 + vl, prefix + 12) {
+        let bits = gi_conf_bits(cp, 32)
+        if bits >= 0 && bits <= 32 {
+            let v = gi_conf_val(val2)
+            if v >= 0 {
+                gi_add_scope(cell, nullcell, prefix + 12, bits + 96, v)
+            }
+        }
+    }
+    rt_free_block(prefix)
+}
+
+fn gi_gaiconf_free() {
+    let st = nt_state()
+    let mut k = 0
+    while k < 3 {
+        let t = std::raw::load(st + 1040 + 16 * k)
+        if t != 0 {
+            rt_free_block(t)
+        }
+        std::raw::store(st + 1040 + 16 * k, 0)
+        k += 1
+    }
+}
+
+// no_file: vuelve a las tablas internas (la marca de recarga no cambia).
+fn gi_gaiconf_nofile() {
+    gi_gaiconf_free()
+}
+
+// gaiconf_reload: stat falla o la hora de modificación cambió.
+fn gi_gaiconf_reload() {
+    let st = nt_state()
+    let path = nt_lit("/etc/gai.conf")
+    let sb = rt_alloc(160)
+    let r = nt_stat(path, sb)
+    rt_free_block(path)
+    if r != 0 || std::raw::load(sb + 88) != std::raw::load(st + 1024) || std::raw::load(sb + 96) != std::raw::load(st + 1032) {
+        rt_free_block(sb)
+        gi_gaiconf_init()
+        return
+    }
+    rt_free_block(sb)
+}
+
+// ------------------------------------------------------------ check_pf / check_native
+
+// Petición RTM_GETADDR/RTM_GETLINK por netlink. Devuelve el descriptor o -1
+// (y deja en seq y pid los valores de la petición).
+fn gi_nl_open(kind: int, seqcell: int) -> int {
+    let fd = std::raw::syscall(41, 16, 524291, 0, 0, 0, 0)
+    if fd < 0 {
+        return -1
+    }
+    let nl = rt_alloc_zero(16)
+    std::raw::store8(nl, 16)
+    let len = rt_alloc_zero(8)
+    std::raw::store(len, 12)
+    if std::raw::syscall(49, fd, nl, 12, 0, 0, 0) != 0 || std::raw::syscall(51, fd, nl, len, 0, 0, 0) != 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        rt_free_block(nl)
+        rt_free_block(len)
+        return -1
+    }
+    let pid = sa_u32(nl + 4)
+    std::raw::store(seqcell + 8, pid)
+    rt_free_block(len)
+    // time_now(): segundos de CLOCK_REALTIME
+    let ts = rt_alloc_zero(16)
+    std::raw::syscall(228, 0, ts, 0, 0, 0, 0)
+    let seq = std::raw::load(ts) & 4294967295
+    rt_free_block(ts)
+    std::raw::store(seqcell, seq)
+    let req = rt_alloc_zero(24)
+    sa_put8(req, 20, 4)
+    sa_put8(req + 4, kind, 2)
+    sa_put8(req + 6, 769, 2)
+    sa_put8(req + 8, seq, 4)
+    let i = 0
+    let mut j = 0
+    while j < 12 {
+        std::raw::store8(nl + j, 0)
+        j += 1
+    }
+    std::raw::store8(nl, 16)
+    loop {
+        let r = std::raw::syscall(44, fd, req, 20, 0, nl, 12)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_free_block(req)
+            rt_free_block(nl)
+            return -1
+        }
+        break
+    }
+    rt_free_block(req)
+    rt_free_block(nl)
+    fd
+}
+
+// recvmsg con msg_name de 12 bytes. Devuelve la longitud o -1 si falla o
+// si viene truncado; nl_pid queda en pidcell.
+fn gi_nl_recv(fd: int, buf: int, size: int, pidcell: int) -> int {
+    let nl = rt_alloc_zero(16)
+    std::raw::store8(nl, 16)
+    let iov = rt_alloc_zero(16)
+    std::raw::store(iov, buf)
+    std::raw::store(iov + 8, size)
+    let msg = rt_alloc_zero(56)
+    std::raw::store(msg, nl)
+    std::raw::store(msg + 8, 12)
+    std::raw::store(msg + 16, iov)
+    std::raw::store(msg + 24, 1)
+    let mut r = 0
+    loop {
+        r = std::raw::syscall(47, fd, msg, 0, 0, 0, 0)
+        if r != -4 {
+            break
+        }
+    }
+    let flags = sa_u32(msg + 48)
+    std::raw::store(pidcell, sa_u32(nl + 4))
+    rt_free_block(nl)
+    rt_free_block(iov)
+    rt_free_block(msg)
+    if r < 0 {
+        return -1
+    }
+    if (flags & 32) != 0 {
+        return -1
+    }
+    r
+}
+
+// __check_pf: lista in6addrinfo (24 bytes: flags, prefixlen, índice,
+// dirección) en out[0], cantidad en out[8]. Solo hace falta la lista.
+fn gi_check_pf(out: int) {
+    std::raw::store(out, 0)
+    std::raw::store(out + 8, 0)
+    let sq = rt_alloc_zero(16)
+    let fd = gi_nl_open(22, sq)
+    if fd < 0 {
+        rt_free_block(sq)
+        return
+    }
+    let seq = std::raw::load(sq)
+    let pid = std::raw::load(sq + 8)
+    rt_free_block(sq)
+    let buf = rt_alloc(4096)
+    let pc = rt_alloc_zero(8)
+    let mut cap = 32
+    let mut res = rt_alloc_zero(24 * cap)
+    let mut n = 0
+    let mut seen6 = false
+    let mut fail = false
+    let mut done = false
+    while !done {
+        let len0 = gi_nl_recv(fd, buf, 4096, pc)
+        if len0 < 0 {
+            fail = true
+            break
+        }
+        let mut len = len0
+        let mut h = buf
+        while len >= 16 && sa_u32(h) >= 16 && sa_u32(h) <= len {
+            let mlen = sa_u32(h)
+            let mtype = std::raw::load8(h + 4) + 256 * std::raw::load8(h + 5)
+            let ok = std::raw::load(pc) == 0 && sa_u32(h + 12) == pid && sa_u32(h + 8) == seq
+            if ok && mtype == 20 {
+                let ifa = h + 16
+                let fam = std::raw::load8(ifa)
+                if fam == 2 || fam == 10 {
+                    let mut rta = ifa + 8
+                    let mut rl = mlen - 24
+                    let mut local = 0
+                    let mut address = 0
+                    while rl >= 4 {
+                        let alen = std::raw::load8(rta) + 256 * std::raw::load8(rta + 1)
+                        if alen < 4 || alen > rl {
+                            break
+                        }
+                        let at = std::raw::load8(rta + 2) + 256 * std::raw::load8(rta + 3)
+                        if at == 2 {
+                            local = rta + 4
+                        }
+                        if at == 1 {
+                            address = rta + 4
+                            break
+                        }
+                        let step = (alen + 3) / 4 * 4
+                        rl -= step
+                        rta += step
+                    }
+                    if address == 0 {
+                        address = local
+                    }
+                    if address != 0 && fam == 10 {
+                        let lo = std::raw::load(address) == 0 && std::raw::load(address + 8) == 72057594037927936
+                        if !lo {
+                            seen6 = true
+                        }
+                    }
+                    if n == cap {
+                        let nr = rt_alloc_zero(24 * cap * 2)
+                        rt_copy(nr, res, 24 * n)
+                        rt_free_block(res)
+                        res = nr
+                        cap = cap * 2
+                    }
+                    let e = res + 24 * n
+                    let fl = std::raw::load8(ifa + 2)
+                    let mut f = 0
+                    if (fl & 36) != 0 {
+                        f = 1
+                    }
+                    if (fl & 16) != 0 {
+                        f = f | 2
+                    }
+                    std::raw::store8(e, f)
+                    std::raw::store8(e + 1, std::raw::load8(ifa + 1))
+                    sa_put8(e + 4, sa_u32(ifa + 4), 4)
+                    if address != 0 {
+                        if fam == 2 {
+                            std::raw::store(e + 8, 0)
+                            std::raw::store8(e + 18, 255)
+                            std::raw::store8(e + 19, 255)
+                            rt_copy(e + 20, address, 4)
+                        } else {
+                            rt_copy(e + 8, address, 16)
+                        }
+                    }
+                    n += 1
+                }
+            } else if ok && mtype == 3 {
+                done = true
+            }
+            let step = (mlen + 3) / 4 * 4
+            len -= step
+            h += step
+        }
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    rt_free_block(buf)
+    rt_free_block(pc)
+    if fail || !seen6 {
+        rt_free_block(res)
+        return
+    }
+    std::raw::store(out, res)
+    std::raw::store(out + 8, n)
+}
+
+// __check_native: natives[0], natives[1] (0/1) según ifi_type.
+fn gi_check_native(i1: int, i2: int, nat: int) {
+    let sq = rt_alloc_zero(16)
+    let fd = gi_nl_open(18, sq)
+    if fd < 0 {
+        rt_free_block(sq)
+        return
+    }
+    let seq = std::raw::load(sq)
+    let pid = std::raw::load(sq + 8)
+    rt_free_block(sq)
+    let buf = rt_alloc(8192)
+    let pc = rt_alloc_zero(8)
+    let mut a1 = i1
+    let mut a2 = i2
+    let mut done = false
+    let mut out = false
+    while !done && !out {
+        let len0 = gi_nl_recv(fd, buf, 8192, pc)
+        if len0 < 0 {
+            break
+        }
+        let mut len = len0
+        let mut h = buf
+        while len >= 16 && sa_u32(h) >= 16 && sa_u32(h) <= len {
+            let mlen = sa_u32(h)
+            let mtype = std::raw::load8(h + 4) + 256 * std::raw::load8(h + 5)
+            let ok = std::raw::load(pc) == 0 && sa_u32(h + 12) == pid && sa_u32(h + 8) == seq
+            if ok && mtype == 16 {
+                let ifi = h + 16
+                let t = std::raw::load8(ifi + 2) + 256 * std::raw::load8(ifi + 3)
+                let mut native = 1
+                if t == 769 || t == 768 || t == 776 {
+                    native = 0
+                }
+                let idx = sa_u32(ifi + 4)
+                if a1 == idx {
+                    std::raw::store(nat, native)
+                    a1 = 4294967295
+                }
+                if a2 == idx {
+                    std::raw::store(nat + 8, native)
+                    a2 = 4294967295
+                }
+                if a1 == 4294967295 && a2 == 4294967295 {
+                    out = true
+                    break
+                }
+            } else if ok && mtype == 3 {
+                done = true
+            }
+            let step = (mlen + 3) / 4 * 4
+            len -= step
+            h += step
+        }
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    rt_free_block(buf)
+    rt_free_block(pc)
+}
+
+// ------------------------------------------------------------ orden RFC 3484
+
+// Resultado de orden (64 bytes): dirección destino (puntero a la entrada),
+// origen (sockaddr_in6, 28 bytes en +8), got (+40), flags (+44), prefixlen
+// (+48), índice (+52, u32), native (+56).
+fn gi_sr(r: int, i: int) -> int {
+    r + 64 * i
+}
+
+fn gi_get_scope(sa: int) -> int {
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    if fam == 10 {
+        let a = sa + 8
+        let b0 = std::raw::load8(a)
+        let b1 = std::raw::load8(a + 1)
+        if b0 != 255 {
+            let lo = std::raw::load(a) == 0 && std::raw::load(a + 8) == 72057594037927936
+            if (b0 == 254 && (b1 & 192) == 128) || lo {
+                return 2
+            }
+            if b0 == 254 && (b1 & 192) == 192 {
+                return 5
+            }
+            return 14
+        }
+        return b1 & 15
+    }
+    if fam == 2 {
+        let t = gi_scopes()
+        let addr = sa_u32(sa + 4)
+        let mut cnt = 0
+        loop {
+            let e = t + 24 * cnt
+            if (addr & sa_u32(e + 8)) == sa_u32(e) {
+                return std::raw::load(e + 16)
+            }
+            cnt += 1
+        }
+    }
+    15
+}
+
+fn gi_match_prefix(sa: int, list: int, dflt: int) -> int {
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    let a = rt_alloc_zero(16)
+    if fam == 2 {
+        std::raw::store8(a + 10, 255)
+        std::raw::store8(a + 11, 255)
+        rt_copy(a + 12, sa + 4, 4)
+    } else if fam == 10 {
+        rt_copy(a, sa + 8, 16)
+    } else {
+        rt_free_block(a)
+        return dflt
+    }
+    let mut idx = 0
+    loop {
+        let e = list + 32 * idx
+        let mut bits = std::raw::load(e + 16)
+        let mut k = 0
+        while bits >= 8 {
+            if std::raw::load8(e + k) != std::raw::load8(a + k) {
+                break
+            }
+            k += 1
+            bits -= 8
+        }
+        if bits < 8 {
+            let m = std::raw::shr(65280, bits) & 255
+            if (std::raw::load8(e + k) & m) == (std::raw::load8(a + k) & m) {
+                break
+            }
+        }
+        idx += 1
+    }
+    rt_free_block(a)
+    std::raw::load(list + 32 * idx + 24)
+}
+
+fn gi_fls(a: int) -> int {
+    let mut n = 0
+    let mut mask = 2147483648
+    while n < 32 {
+        if (a & mask) != 0 {
+            break
+        }
+        mask = std::raw::shr(mask, 1)
+        n += 1
+    }
+    n
+}
+
+fn gi_be32(p: int) -> int {
+    std::raw::load8(p) * 16777216 + std::raw::load8(p + 1) * 65536 + std::raw::load8(p + 2) * 256 + std::raw::load8(p + 3)
+}
+
+// rfc3484_sort (con el efecto de rellenar `native` en todos los resultados).
+fn gi_rfc3484(r: int, nres: int, idx1: int, idx2: int) -> int {
+    let a1 = gi_sr(r, idx1)
+    let a2 = gi_sr(r, idx2)
+    let g1 = std::raw::load(a1 + 40) != 0
+    let g2 = std::raw::load(a2 + 40) != 0
+    if g1 && !g2 { return -1 }
+    if !g1 && g2 { return 1 }
+    let d1 = std::raw::load(a1)
+    let d2 = std::raw::load(a2)
+    let ds1 = gi_get_scope(d1)
+    let ds2 = gi_get_scope(d2)
+    if g1 {
+        let ss1 = gi_get_scope(a1 + 8)
+        let ss2 = gi_get_scope(a2 + 8)
+        if ds1 == ss1 && ds2 != ss2 { return -1 }
+        if ds1 != ss1 && ds2 == ss2 { return 1 }
+    }
+    let f1 = std::raw::load(a1 + 44)
+    let f2 = std::raw::load(a2 + 44)
+    if g1 {
+        if (f1 & 1) == 0 && (f2 & 1) != 0 { return -1 }
+        if (f1 & 1) != 0 && (f2 & 1) == 0 { return 1 }
+    }
+    if g1 {
+        if (f1 & 2) == 0 && (f2 & 2) != 0 { return 1 }
+        if (f1 & 2) != 0 && (f2 & 2) == 0 { return -1 }
+    }
+    if g1 {
+        let lab = gi_labels()
+        let dl1 = gi_match_prefix(d1, lab, 2147483647)
+        let sl1 = gi_match_prefix(a1 + 8, lab, 2147483647)
+        let dl2 = gi_match_prefix(d2, lab, 2147483647)
+        let sl2 = gi_match_prefix(a2 + 8, lab, 2147483647)
+        if dl1 == sl1 && dl2 != sl2 { return -1 }
+        if dl1 != sl1 && dl2 == sl2 { return 1 }
+    }
+    let prec = gi_precedence()
+    let p1 = gi_match_prefix(d1, prec, 0)
+    let p2 = gi_match_prefix(d2, prec, 0)
+    if p1 > p2 { return -1 }
+    if p1 < p2 { return 1 }
+    if g1 {
+        let x1 = std::raw::load(a1 + 52)
+        let x2 = std::raw::load(a2 + 52)
+        if x1 != x2 {
+            let mut n1 = std::raw::load(a1 + 56)
+            let mut n2 = std::raw::load(a2 + 56)
+            if n1 == -1 || n2 == -1 {
+                let nat = rt_alloc_zero(16)
+                let mut i1 = 4294967295
+                let mut i2 = 4294967295
+                if n1 == -1 {
+                    std::raw::store(nat, 0)
+                    i1 = x1
+                } else {
+                    std::raw::store(nat, n1)
+                }
+                if n2 == -1 {
+                    std::raw::store(nat + 8, 0)
+                    i2 = x2
+                } else {
+                    std::raw::store(nat + 8, n2)
+                }
+                gi_check_native(i1, i2, nat)
+                n1 = std::raw::load(nat)
+                n2 = std::raw::load(nat + 8)
+                rt_free_block(nat)
+                let mut i = 0
+                while i < nres {
+                    let s = gi_sr(r, i)
+                    if i1 != 4294967295 && std::raw::load(s + 52) == i1 {
+                        std::raw::store(s + 56, n1)
+                    } else if i2 != 4294967295 && std::raw::load(s + 52) == i2 {
+                        std::raw::store(s + 56, n2)
+                    }
+                    i += 1
+                }
+            }
+            if n1 != 0 && n2 == 0 { return -1 }
+            if n1 == 0 && n2 != 0 { return 1 }
+        }
+    }
+    if ds1 < ds2 { return -1 }
+    if ds1 > ds2 { return 1 }
+    let fam1 = std::raw::load8(d1)
+    let fam2 = std::raw::load8(d2)
+    if g1 && fam1 == fam2 {
+        let mut bit1 = 0
+        let mut bit2 = 0
+        if fam1 == 2 {
+            let dst1 = gi_be32(d1 + 4)
+            let src1 = gi_be32(a1 + 8 + 4)
+            let m1 = std::raw::shl(4294967295, (32 - std::raw::load(a1 + 48)) & 31) & 4294967295
+            if (src1 & m1) == (dst1 & m1) {
+                bit1 = gi_fls(dst1 ^ src1)
+            }
+            let dst2 = gi_be32(d2 + 4)
+            let src2 = gi_be32(a2 + 8 + 4)
+            let m2 = std::raw::shl(4294967295, (32 - std::raw::load(a2 + 48)) & 31) & 4294967295
+            if (src2 & m2) == (dst2 & m2) {
+                bit2 = gi_fls(dst2 ^ src2)
+            }
+        } else if fam1 == 10 {
+            let mut i = 0
+            while i < 4 {
+                if sa_u32(d1 + 8 + 4 * i) != sa_u32(a1 + 16 + 4 * i) || sa_u32(d2 + 8 + 4 * i) != sa_u32(a2 + 16 + 4 * i) {
+                    break
+                }
+                i += 1
+            }
+            if i < 4 {
+                bit1 = gi_fls(gi_be32(d1 + 8 + 4 * i) ^ gi_be32(a1 + 16 + 4 * i))
+                bit2 = gi_fls(gi_be32(d2 + 8 + 4 * i) ^ gi_be32(a2 + 16 + 4 * i))
+            }
+        }
+        if bit1 > bit2 { return -1 }
+        if bit1 < bit2 { return 1 }
+    }
+    if idx1 < idx2 {
+        return -1
+    }
+    1
+}
+
+// qsort_r(order, n, rfc3484_sort): la misma mezcla estable.
+fn gi_sort_order(order: int, n: int, r: int) {
+    if n <= 1 {
+        return
+    }
+    let tmp = rt_alloc(8 * n)
+    gi_sort_rec(order, n, r, tmp, n)
+    rt_free_block(tmp)
+}
+
+fn gi_sort_rec(b: int, n: int, r: int, tmp: int, nres: int) {
+    if n <= 1 {
+        return
+    }
+    let n1 = n / 2
+    let n2 = n - n1
+    let b2 = b + 8 * n1
+    gi_sort_rec(b, n1, r, tmp, nres)
+    gi_sort_rec(b2, n2, r, tmp, nres)
+    let mut i = 0
+    let mut j = 0
+    let mut o = 0
+    while i < n1 && j < n2 {
+        if gi_rfc3484(r, nres, std::raw::load(b + 8 * i), std::raw::load(b2 + 8 * j)) <= 0 {
+            std::raw::store(tmp + 8 * o, std::raw::load(b + 8 * i))
+            i += 1
+        } else {
+            std::raw::store(tmp + 8 * o, std::raw::load(b2 + 8 * j))
+            j += 1
+        }
+        o += 1
+    }
+    while i < n1 {
+        std::raw::store(tmp + 8 * o, std::raw::load(b + 8 * i))
+        i += 1
+        o += 1
+    }
+    while j < n2 {
+        std::raw::store(tmp + 8 * o, std::raw::load(b2 + 8 * j))
+        j += 1
+        o += 1
+    }
+    let mut k = 0
+    while k < n {
+        std::raw::store(b + 8 * k, std::raw::load(tmp + 8 * k))
+        k += 1
+    }
+}
+
+// bsearch con in6aicmp (memcmp de las direcciones).
+fn gi_in6ai_find(list: int, n: int, key: int) -> int {
+    let mut l = 0
+    let mut u = n
+    while l < u {
+        let idx = (l + u) / 2
+        let e = list + 24 * idx
+        let c = gi_memcmp16(key, e + 8)
+        if c < 0 {
+            u = idx
+        } else if c > 0 {
+            l = idx + 1
+        } else {
+            return e
+        }
+    }
+    0
+}
+
+fn gi_memcmp16(a: int, b: int) -> int {
+    let mut i = 0
+    while i < 16 {
+        let x = std::raw::load8(a + i)
+        let y = std::raw::load8(b + i)
+        if x != y {
+            return x - y
+        }
+        i += 1
+    }
+    0
+}
+
+fn gi_in6cmp_sort(list: int, n: int) {
+    if n <= 1 {
+        return
+    }
+    let tmp = rt_alloc(24 * n)
+    gi_in6_rec(list, n, tmp)
+    rt_free_block(tmp)
+}
+
+fn gi_in6_rec(b: int, n: int, tmp: int) {
+    if n <= 1 {
+        return
+    }
+    let n1 = n / 2
+    let n2 = n - n1
+    let b2 = b + 24 * n1
+    gi_in6_rec(b, n1, tmp)
+    gi_in6_rec(b2, n2, tmp)
+    let mut i = 0
+    let mut j = 0
+    let mut o = 0
+    while i < n1 && j < n2 {
+        if gi_memcmp16(b + 24 * i + 8, b2 + 24 * j + 8) <= 0 {
+            rt_copy(tmp + 24 * o, b + 24 * i, 24)
+            i += 1
+        } else {
+            rt_copy(tmp + 24 * o, b2 + 24 * j, 24)
+            j += 1
+        }
+        o += 1
+    }
+    while i < n1 {
+        rt_copy(tmp + 24 * o, b + 24 * i, 24)
+        i += 1
+        o += 1
+    }
+    while j < n2 {
+        rt_copy(tmp + 24 * o, b2 + 24 * j, 24)
+        j += 1
+        o += 1
+    }
+    rt_copy(b, tmp, 24 * n)
+}
+
+// try_connect: connect UDP + getsockname. fdcell = [fd][af].
+fn gi_try_connect(fdcell: int, src: int, addr: int, alen: int, fam: int) -> bool {
+    loop {
+        let fd = std::raw::load(fdcell)
+        let mut err = 0
+        if fd != -1 {
+            let r = std::raw::syscall(42, fd, addr, alen, 0, 0, 0)
+            if r == 0 {
+                let sl = rt_alloc_zero(8)
+                std::raw::store(sl, 28)
+                let g = std::raw::syscall(51, fd, src, sl, 0, 0, 0)
+                rt_free_block(sl)
+                if g == 0 {
+                    return true
+                }
+                err = 0 - g
+            } else {
+                err = 0 - r
+            }
+        } else {
+            err = std::raw::load(fdcell + 16)
+        }
+        if err == 97 && std::raw::load(fdcell + 8) == 10 && fam == 2 {
+            if fd != -1 {
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            }
+            std::raw::store(fdcell + 8, 2)
+            let nfd = std::raw::syscall(41, 2, 524290, 0, 0, 0, 0)
+            if nfd < 0 {
+                std::raw::store(fdcell, -1)
+                std::raw::store(fdcell + 16, 0 - nfd)
+            } else {
+                std::raw::store(fdcell, nfd)
+            }
+            continue
+        }
+        return false
+    }
+    false
+}
+
+// Ordena el resultado de getaddrinfo (res: bloque de salida, n entradas).
+fn gi_sort(res: int, n: int) {
+    let st = nt_state()
+    let old_once = std::raw::load(st + 1000) != 0
+    if !old_once {
+        std::raw::store(st + 1000, 1)
+        gi_gaiconf_init()
+    }
+    let r = rt_alloc_zero(64 * n)
+    let order = rt_alloc_zero(8 * n)
+    let pf = rt_alloc_zero(16)
+    gi_check_pf(pf)
+    let in6 = std::raw::load(pf)
+    let in6n = std::raw::load(pf + 8)
+    if in6 != 0 {
+        gi_in6cmp_sort(in6, in6n)
+    }
+    // [fd][af][errno del último socket()]
+    let fdc = rt_alloc_zero(24)
+    std::raw::store(fdc, -1)
+    std::raw::store(fdc + 8, 0)
+    let mut i = 0
+    while i < n {
+        let q = res + 24 + 40 * i
+        let qlen = std::raw::load(q)
+        let qa = q + 8
+        let qfam = std::raw::load8(qa)
+        let s = gi_sr(r, i)
+        std::raw::store(s, qa)
+        std::raw::store(s + 56, -1)
+        std::raw::store(order + 8 * i, i)
+        let mut same = false
+        if i > 0 {
+            let p = res + 24 + 40 * (i - 1)
+            if std::raw::load(p) == qlen {
+                same = true
+                let mut k = 0
+                while k < qlen {
+                    if std::raw::load8(p + 8 + k) != std::raw::load8(qa + k) {
+                        same = false
+                        break
+                    }
+                    k += 1
+                }
+            }
+        }
+        if same {
+            let pv = gi_sr(r, i - 1)
+            rt_copy(s + 8, pv + 8, 48)
+        } else {
+            std::raw::store(s + 40, 0)
+            std::raw::store(s + 44, 0)
+            std::raw::store(s + 48, 0)
+            std::raw::store(s + 52, 4294967295)
+            let fd = std::raw::load(fdc)
+            if fd == -1 || (std::raw::load(fdc + 8) == 2 && qfam == 10) {
+                if fd != -1 {
+                    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                }
+                std::raw::store(fdc + 8, qfam)
+                let nfd = std::raw::syscall(41, qfam, 524290, 0, 0, 0, 0)
+                if nfd < 0 {
+                    std::raw::store(fdc, -1)
+                    std::raw::store(fdc + 16, 0 - nfd)
+                } else {
+                    std::raw::store(fdc, nfd)
+                }
+            } else {
+                let un = rt_alloc_zero(16)
+                std::raw::syscall(42, fd, un, 16, 0, 0, 0)
+                rt_free_block(un)
+            }
+            let src = rt_alloc_zero(32)
+            if gi_try_connect(fdc, src, qa, qlen, qfam) {
+                rt_copy(s + 8, src, 28)
+                std::raw::store(s + 40, 1)
+                let af = std::raw::load(fdc + 8)
+                if in6 != 0 {
+                    let key = rt_alloc_zero(16)
+                    if qfam == 2 && af == 2 {
+                        std::raw::store8(key + 10, 255)
+                        std::raw::store8(key + 11, 255)
+                        if std::raw::load8(src + 4) == 127 {
+                            std::raw::store8(key + 12, 127)
+                            std::raw::store8(key + 15, 1)
+                        } else {
+                            rt_copy(key + 12, src + 4, 4)
+                        }
+                    } else {
+                        rt_copy(key, src + 8, 16)
+                    }
+                    let found = gi_in6ai_find(in6, in6n, key)
+                    if found != 0 {
+                        std::raw::store(s + 44, std::raw::load8(found))
+                        std::raw::store(s + 48, std::raw::load8(found + 1))
+                        std::raw::store(s + 52, sa_u32(found + 4))
+                    }
+                    rt_free_block(key)
+                }
+                if qfam == 2 && af == 10 {
+                    // origen IPv6 (mapeado) para una IPv4: pasarlo a sockaddr_in
+                    std::raw::store8(s + 8, 2)
+                    std::raw::store8(s + 9, 0)
+                    rt_copy(s + 12, src + 20, 4)
+                }
+            }
+            rt_free_block(src)
+        }
+        i += 1
+    }
+    let fd = std::raw::load(fdc)
+    if fd != -1 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    }
+    rt_free_block(fdc)
+    if std::raw::load(st + 1016) != 0 {
+        if old_once && std::raw::load(st + 1008) != 0 {
+            gi_gaiconf_reload()
+        }
+    }
+    gi_sort_order(order, n, r)
+    // reordenar las entradas
+    let copy = rt_alloc(40 * n)
+    rt_copy(copy, res + 24, 40 * n)
+    let mut k = 0
+    while k < n {
+        rt_copy(res + 24 + 40 * k, copy + 40 * std::raw::load(order + 8 * k), 40)
+        k += 1
+    }
+    rt_free_block(copy)
+    rt_free_block(r)
+    rt_free_block(order)
+    if in6 != 0 {
+        rt_free_block(in6)
+    }
+    rt_free_block(pf)
+}
+
+// ------------------------------------------------------------ getaddrinfo
+
+// getaddrinfo(name, NULL, {ai_socktype = SOCK_STREAM}). Bloque de salida:
+// [código][errno][cantidad] y entradas de 40 bytes: [longitud][sockaddr].
+fn gi_getaddrinfo(name0: int) -> int {
+    let mut name = name0
+    if std::raw::load8(name) == 42 && std::raw::load8(name + 1) == 0 {
+        name = 0
+    }
+    if name == 0 {
+        return gi_result_err(-2)
+    }
+    let tl = gi_tl_new()
+    let a = rt_alloc_zero(16)
+    let mut rc = 0
+    let mut done = false
+    if gi_aton_exact(name, a) {
+        gi_tl_add(tl, 2, a, 4, 0)
+        done = true
+    } else {
+        let nl = nt_strlen(name)
+        let mut sc = 0
+        while sc < nl && std::raw::load8(name + sc) != 37 {
+            sc += 1
+        }
+        if gi_pton6(name, name + sc, a) {
+            let mut scope = 0
+            if sc < nl {
+                scope = gi_scopeid(a, name + sc + 1)
+                if scope < 0 {
+                    rc = -2
+                }
+            }
+            if rc == 0 {
+                gi_tl_add(tl, 10, a, 16, scope)
+            }
+            done = true
+        }
+    }
+    rt_free_block(a)
+    if !done {
+        let bufcell = rt_alloc_zero(8)
+        std::raw::store(bufcell, 1024)
+        rc = gi_nss_addresses(name, tl, bufcell)
+        rt_free_block(bufcell)
+        if rc == 0 && std::raw::load(tl + 8) == 0 {
+            rc = -2
+        }
+    }
+    if rc != 0 {
+        gi_tl_free(tl)
+        return gi_result_err(rc)
+    }
+    let n = std::raw::load(tl + 8)
+    let res = rt_alloc_zero(24 + 40 * n)
+    std::raw::store(res + 16, n)
+    let mut i = 0
+    while i < n {
+        let t = std::raw::load(tl) + 40 * i
+        let e = res + 24 + 40 * i
+        if std::raw::load(t) == 2 {
+            std::raw::store(e, 16)
+            std::raw::store8(e + 8, 2)
+            rt_copy(e + 12, t + 8, 4)
+        } else {
+            std::raw::store(e, 28)
+            std::raw::store8(e + 8, 10)
+            rt_copy(e + 16, t + 8, 16)
+            sa_put8(e + 32, std::raw::load(t + 24), 4)
+        }
+        i += 1
+    }
+    gi_tl_free(tl)
+    if n > 1 {
+        gi_sort(res, n)
+    }
+    res
+}
+
+fn gi_result_err(code: int) -> int {
+    let r = rt_alloc_zero(24)
+    std::raw::store(r, code)
+    std::raw::store(r + 8, gi_errno())
+    r
+}

@@ -1,0 +1,844 @@
+// std::net (1 nativa: http_get). Reproduce crates/titan_stdlib/src/net.rs y la
+// entrada de la VM (native.rs): un cliente HTTP/1.1 mínimo sobre sockets
+// TCP reales (llamadas al sistema socket/connect/sendto/recvfrom).
+//
+// Para conectar a (host, puerto) hace lo mismo que TcpStream::connect de Rust:
+//   1. host como Ipv4Addr de Rust (estricto: 4 partes decimales, sin ceros a
+//      la izquierda) y luego como Ipv6Addr de Rust;
+//   2. si no, getaddrinfo de glibc (std_net_gai.titan + std_net_dns.titan: una
+//      traducción de glibc 2.39: /etc/hosts, DNS, nsswitch.conf, host.conf,
+//      resolv.conf, gai.conf, orden RFC 3484);
+//   3. prueba cada dirección en orden (socket + connect bloqueante) y devuelve
+//      el último error si ninguna funciona.
+// Los mensajes de error son los de io::Error de Rust ("... (os error N)",
+// "failed to lookup address information: ...", etc.).
+// Prefijo `nt_`. Estado del resolvedor: bloque en globals + 3096 (nt_state).
+
+// ------------------------------------------------------------ estado y ayudas C
+
+// Bloque de 8 KiB (a cero) con el estado que glibc guarda entre llamadas
+// (h_errno, la configuración cargada del resolvedor, gai.conf, ...).
+fn nt_state() -> int {
+    let g = std::raw::globals() + 3096
+    let mut s = std::raw::load(g)
+    if s == 0 {
+        s = rt_alloc_zero(8192)
+        std::raw::store(g, s)
+    }
+    s
+}
+
+// isspace de C (locale "C"): espacio, \t \n \v \f \r.
+fn nt_isspace(c: int) -> bool {
+    c == 32 || (c >= 9 && c <= 13)
+}
+
+fn nt_isdigit(c: int) -> bool {
+    c >= 48 && c <= 57
+}
+
+fn nt_strlen(p: int) -> int {
+    let mut n = 0
+    while std::raw::load8(p + n) != 0 {
+        n += 1
+    }
+    n
+}
+
+fn nt_toupper(c: int) -> int {
+    if c >= 97 && c <= 122 {
+        return c - 32
+    }
+    c
+}
+
+// strcasecmp(a, b) == 0 (ASCII, como en el locale "C").
+fn nt_casecmp_eq(a: int, b: int) -> bool {
+    let mut i = 0
+    loop {
+        let x = std::raw::load8(a + i)
+        let y = std::raw::load8(b + i)
+        if nt_toupper(x) != nt_toupper(y) {
+            return false
+        }
+        if x == 0 {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+// strcmp(a, b) == 0
+fn nt_streq(a: int, b: int) -> bool {
+    let mut i = 0
+    loop {
+        let x = std::raw::load8(a + i)
+        if x != std::raw::load8(b + i) {
+            return false
+        }
+        if x == 0 {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+// strncmp(p, lit, len(lit)) == 0 con un literal de Titan.
+fn nt_starts(p: int, lit: string) -> bool {
+    let q = std::raw::bits(lit) + 16
+    let n = rt_slen(lit)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) != std::raw::load8(q + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// strncasecmp(p, lit, len(lit)) == 0
+fn nt_starts_case(p: int, lit: string) -> bool {
+    let q = std::raw::bits(lit) + 16
+    let n = rt_slen(lit)
+    let mut i = 0
+    while i < n {
+        if nt_toupper(std::raw::load8(p + i)) != nt_toupper(std::raw::load8(q + i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Copia terminada en 0 de un literal de Titan (para rutas y nombres).
+fn nt_lit(s: string) -> int {
+    rt_cstr(s)
+}
+
+// Copia terminada en 0 de n bytes.
+fn nt_cdup(p: int, n: int) -> int {
+    let q = rt_alloc(n + 1)
+    rt_copy(q, p, n)
+    std::raw::store8(q + n, 0)
+    q
+}
+
+// strtoul / strtoull de glibc (locale "C"). Deja en out[0] el valor, en
+// out[1] el final y en out[2] 1 si hubo desbordamiento (ERANGE).
+// base 0: 0x.. hexadecimal, 0.. octal, si no decimal.
+fn nt_strtoul(s: int, base0: int, out: int) {
+    let mut p = s
+    while nt_isspace(std::raw::load8(p)) {
+        p += 1
+    }
+    let mut neg = false
+    if std::raw::load8(p) == 45 {
+        neg = true
+        p += 1
+    } else if std::raw::load8(p) == 43 {
+        p += 1
+    }
+    let mut base = base0
+    if std::raw::load8(p) == 48 && (base == 0 || base == 16) && (std::raw::load8(p + 1) == 120 || std::raw::load8(p + 1) == 88) && nt_hexval(std::raw::load8(p + 2)) >= 0 {
+        p += 2
+        base = 16
+    } else if base == 0 {
+        if std::raw::load8(p) == 48 {
+            base = 8
+        } else {
+            base = 10
+        }
+    }
+    let start = p
+    let mut v = 0
+    let mut over = false
+    loop {
+        let c = std::raw::load8(p)
+        let mut d = -1
+        if nt_isdigit(c) {
+            d = c - 48
+        } else if c >= 97 && c <= 122 {
+            d = c - 87
+        } else if c >= 65 && c <= 90 {
+            d = c - 55
+        }
+        if d < 0 || d >= base {
+            break
+        }
+        // v * base + d > 2^64 - 1 ?
+        if !over {
+            let hi = std::raw::shr(v, 32)
+            let lo = v & 4294967295
+            let lo2 = lo * base + d
+            let hi2 = hi * base + std::raw::shr(lo2, 32)
+            if hi2 > 4294967295 {
+                over = true
+            }
+            if hi2 <= 4294967295 {
+                v = std::raw::shl(hi2, 32) | (lo2 & 4294967295)
+            }
+        }
+        p += 1
+    }
+    if p == start {
+        std::raw::store(out, 0)
+        std::raw::store(out + 8, s)
+        std::raw::store(out + 16, 0)
+        return
+    }
+    if over {
+        std::raw::store(out, -1)
+        std::raw::store(out + 16, 1)
+    } else {
+        if neg {
+            v = 0 - v
+        }
+        std::raw::store(out, v)
+        std::raw::store(out + 16, 0)
+    }
+    std::raw::store(out + 8, p)
+}
+
+fn nt_hexval(c: int) -> int {
+    if nt_isdigit(c) {
+        return c - 48
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    -1
+}
+
+// Menor sin signo de 64 bits: a < b.
+fn nt_ult(a: int, b: int) -> bool {
+    if (a < 0) == (b < 0) {
+        return a < b
+    }
+    b < 0
+}
+
+// Lee todo lo que queda en un descriptor (como las lecturas de stdio).
+// Devuelve un bloque [longitud][errno de lectura o 0][bytes...][0]: si read
+// falla, se guarda lo leído hasta ahí y el error (ferror de stdio).
+fn nt_read_fd(fd: int) -> int {
+    let mut cap = 4096
+    let mut buf = rt_alloc(cap + 24)
+    let mut n = 0
+    let mut err = 0
+    loop {
+        if n == cap {
+            let nb = rt_alloc(cap * 2 + 24)
+            rt_copy(nb, buf, n + 16)
+            rt_free_block(buf)
+            buf = nb
+            cap = cap * 2
+        }
+        let got = std::raw::syscall(0, fd, buf + 16 + n, cap - n, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            err = 0 - got
+            break
+        }
+        if got == 0 {
+            break
+        }
+        n += got
+    }
+    std::raw::store(buf, n)
+    std::raw::store(buf + 8, err)
+    std::raw::store8(buf + 16 + n, 0)
+    buf
+}
+
+// getline de glibc sobre un archivo leído con nt_read_fd: la línea que
+// empieza en *pos (incluido el '\n'), copiada y terminada en 0 (si tiene
+// bytes 0 dentro, el código C la ve cortada ahí, igual que aquí). Devuelve 0
+// al final de los datos. Avanza *pos.
+fn nt_getline(file: int, pos: int) -> int {
+    let n = std::raw::load(file)
+    let start = std::raw::load(pos)
+    if start >= n {
+        return 0
+    }
+    let mut e = start
+    while e < n && std::raw::load8(file + 16 + e) != 10 {
+        e += 1
+    }
+    if e < n {
+        e += 1
+    }
+    std::raw::store(pos, e)
+    nt_cdup(file + 16 + start, e - start)
+}
+
+// fgets(buf, size, fp): como nt_getline pero con como mucho size - 1 bytes.
+fn nt_fgets(file: int, pos: int, size: int) -> int {
+    let n = std::raw::load(file)
+    let start = std::raw::load(pos)
+    if start >= n {
+        return 0
+    }
+    let mut e = start
+    while e < n && e - start < size - 1 && std::raw::load8(file + 16 + e) != 10 {
+        e += 1
+    }
+    if e < n && e - start < size - 1 {
+        e += 1
+    }
+    std::raw::store(pos, e)
+    nt_cdup(file + 16 + start, e - start)
+}
+
+// stat(2) (struct stat de x86-64; en ARM64 la traduce sys_arm64). 0 o -errno.
+fn nt_stat(path: int, st: int) -> int {
+    std::raw::syscall(4, path, st, 0, 0, 0, 0)
+}
+
+// Texto a stderr (avisos que glibc escribe con __fxprintf).
+fn nt_stderr(p: int, n: int) {
+    rt_write_all(2, p, n)
+}
+
+// ------------------------------------------------------------ números como Rust
+
+// u16::from_str de Rust (acepta un '+' delante). -1 si no es válido.
+fn nt_parse_u16(p: int, n: int) -> int {
+    if n == 0 {
+        return -1
+    }
+    let mut i = 0
+    if std::raw::load8(p) == 43 {
+        if n == 1 {
+            return -1
+        }
+        i = 1
+    }
+    let mut v = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if !nt_isdigit(c) {
+            return -1
+        }
+        v = v * 10 + (c - 48)
+        if v > 65535 {
+            return -1
+        }
+        i += 1
+    }
+    v
+}
+
+// Lector de direcciones de core::net::parser (Rust). Cursor en st[0]
+// (posición), texto en p, longitud n.
+// read_number(radix, max_digits, allow_zero_prefix) para u8 (max 255) o
+// u16 (max 65535); -1 si falla (el cursor vuelve a donde estaba).
+fn nt_rn(p: int, n: int, st: int, radix: int, maxd: int, zero_ok: bool, maxv: int) -> int {
+    let start = std::raw::load(st)
+    let mut i = start
+    let lead0 = i < n && std::raw::load8(p + i) == 48
+    let mut v = 0
+    let mut count = 0
+    loop {
+        if i >= n {
+            break
+        }
+        let c = std::raw::load8(p + i)
+        let mut d = -1
+        if radix == 16 {
+            d = nt_hexval(c)
+        } else if nt_isdigit(c) {
+            d = c - 48
+        }
+        if d < 0 {
+            break
+        }
+        v = v * radix + d
+        if v > maxv {
+            return -1
+        }
+        count += 1
+        if count > maxd {
+            return -1
+        }
+        i += 1
+    }
+    if count == 0 {
+        return -1
+    }
+    if !zero_ok && lead0 && count > 1 {
+        return -1
+    }
+    std::raw::store(st, i)
+    v
+}
+
+// read_ipv4_addr: 4 números decimales separados por '.'. Escribe los 4
+// bytes en out; false si no (cursor intacto).
+fn nt_rv4(p: int, n: int, st: int, out: int) -> bool {
+    let save = std::raw::load(st)
+    let mut i = 0
+    while i < 4 {
+        if i > 0 {
+            let at = std::raw::load(st)
+            if at >= n || std::raw::load8(p + at) != 46 {
+                std::raw::store(st, save)
+                return false
+            }
+            std::raw::store(st, at + 1)
+        }
+        let v = nt_rn(p, n, st, 10, 3, false, 255)
+        if v < 0 {
+            std::raw::store(st, save)
+            return false
+        }
+        std::raw::store8(out + i, v)
+        i += 1
+    }
+    true
+}
+
+// read_separator(':', i, read_ipv4_addr) atómico.
+fn nt_sep_v4(p: int, n: int, st: int, i: int, out: int) -> bool {
+    let save = std::raw::load(st)
+    if i > 0 {
+        if save >= n || std::raw::load8(p + save) != 58 {
+            return false
+        }
+        std::raw::store(st, save + 1)
+    }
+    if nt_rv4(p, n, st, out) {
+        return true
+    }
+    std::raw::store(st, save)
+    false
+}
+
+// read_separator(':', i, read_number(16, 4, true)) atómico; -1 si falla.
+fn nt_sep_hex(p: int, n: int, st: int, i: int) -> int {
+    let save = std::raw::load(st)
+    if i > 0 {
+        if save >= n || std::raw::load8(p + save) != 58 {
+            return -1
+        }
+        std::raw::store(st, save + 1)
+    }
+    let v = nt_rn(p, n, st, 16, 4, true, 65535)
+    if v < 0 {
+        std::raw::store(st, save)
+    }
+    v
+}
+
+// read_groups: hasta `limit` grupos de 16 bits en g (palabras de 8 bytes).
+// Devuelve cantidad + 100 si terminó con una IPv4 incrustada.
+fn nt_groups(p: int, n: int, st: int, g: int, limit: int) -> int {
+    let four = rt_alloc(8)
+    let mut i = 0
+    while i < limit {
+        if i < limit - 1 {
+            if nt_sep_v4(p, n, st, i, four) {
+                std::raw::store(g + 8 * i, std::raw::load8(four) * 256 + std::raw::load8(four + 1))
+                std::raw::store(g + 8 * (i + 1), std::raw::load8(four + 2) * 256 + std::raw::load8(four + 3))
+                rt_free_block(four)
+                return i + 2 + 100
+            }
+        }
+        let v = nt_sep_hex(p, n, st, i)
+        if v < 0 {
+            rt_free_block(four)
+            return i
+        }
+        std::raw::store(g + 8 * i, v)
+        i += 1
+    }
+    rt_free_block(four)
+    limit
+}
+
+// Ipv4Addr::from_str: todo el texto. Escribe 4 bytes en out.
+fn nt_rust_v4(p: int, n: int, out: int) -> bool {
+    let st = rt_alloc_zero(8)
+    let ok = nt_rv4(p, n, st, out) && std::raw::load(st) == n
+    rt_free_block(st)
+    ok
+}
+
+// Ipv6Addr::from_str: todo el texto. Escribe 16 bytes en out.
+fn nt_rust_v6(p: int, n: int, out: int) -> bool {
+    let st = rt_alloc_zero(8)
+    let head = rt_alloc_zero(64)
+    let tail = rt_alloc_zero(64)
+    let mut ok = false
+    let r = nt_groups(p, n, st, head, 8)
+    let hs = r % 100
+    if hs == 8 {
+        ok = true
+    } else if r < 100 {
+        let at = std::raw::load(st)
+        if at + 1 < n && std::raw::load8(p + at) == 58 && std::raw::load8(p + at + 1) == 58 {
+            std::raw::store(st, at + 2)
+            let limit = 8 - (hs + 1)
+            let ts = nt_groups(p, n, st, tail, limit) % 100
+            let mut k = 0
+            while k < ts {
+                std::raw::store(head + 8 * (8 - ts + k), std::raw::load(tail + 8 * k))
+                k += 1
+            }
+            ok = true
+        }
+    }
+    if ok && std::raw::load(st) != n {
+        ok = false
+    }
+    if ok {
+        let mut k = 0
+        while k < 8 {
+            let v = std::raw::load(head + 8 * k)
+            std::raw::store8(out + 2 * k, std::raw::shr(v, 8))
+            std::raw::store8(out + 2 * k + 1, v & 255)
+            k += 1
+        }
+    }
+    rt_free_block(st)
+    rt_free_block(head)
+    rt_free_block(tail)
+    ok
+}
+
+// ------------------------------------------------------------ sockets
+
+// sockaddr_in (16 bytes) en d: familia 2, puerto (big endian), dirección.
+fn nt_sin(d: int, port: int, a4: int) {
+    let mut i = 0
+    while i < 16 {
+        std::raw::store8(d + i, 0)
+        i += 1
+    }
+    std::raw::store8(d, 2)
+    std::raw::store8(d + 2, std::raw::shr(port, 8))
+    std::raw::store8(d + 3, port & 255)
+    rt_copy(d + 4, a4, 4)
+}
+
+// sockaddr_in6 (28 bytes): familia 10, puerto, flowinfo, dirección, scope.
+fn nt_sin6(d: int, port: int, a16: int, flow: int, scope: int) {
+    let mut i = 0
+    while i < 28 {
+        std::raw::store8(d + i, 0)
+        i += 1
+    }
+    std::raw::store8(d, 10)
+    std::raw::store8(d + 2, std::raw::shr(port, 8))
+    std::raw::store8(d + 3, port & 255)
+    sa_put8(d + 4, flow, 4)
+    rt_copy(d + 8, a16, 16)
+    sa_put8(d + 24, scope, 4)
+}
+
+// TcpStream::connect para una dirección: socket(fam, SOCK_STREAM |
+// SOCK_CLOEXEC) + connect (repite con EINTR; EISCONN cuenta como hecho).
+// Devuelve el descriptor o -errno.
+fn nt_connect_one(sa: int, len: int) -> int {
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    let fd = std::raw::syscall(41, fam, 524289, 0, 0, 0, 0)
+    if fd < 0 {
+        return fd
+    }
+    loop {
+        let r = std::raw::syscall(42, fd, sa, len, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 && r != -106 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            return r
+        }
+        break
+    }
+    fd
+}
+
+// Mensaje de getaddrinfo como cvt_gai de Rust (gai_strerror de glibc).
+fn nt_gai_message(code: int, err: int) -> any {
+    if code == -11 {
+        // EAI_SYSTEM: io::Error::last_os_error()
+        return rt_os_error(err)
+    }
+    let mut t = "Unknown error"
+    if code == -9 { t = "Address family for hostname not supported" }
+    if code == -3 { t = "Temporary failure in name resolution" }
+    if code == -1 { t = "Bad value for ai_flags" }
+    if code == -4 { t = "Non-recoverable failure in name resolution" }
+    if code == -6 { t = "ai_family not supported" }
+    if code == -10 { t = "Memory allocation failure" }
+    if code == -5 { t = "No address associated with hostname" }
+    if code == -2 { t = "Name or service not known" }
+    if code == -8 { t = "Servname not supported for ai_socktype" }
+    if code == -7 { t = "ai_socktype not supported" }
+    if code == -12 { t = "Argument buffer overflow" }
+    rt_concat("failed to lookup address information: ", t)
+}
+
+// TcpStream::connect((host, port)). Devuelve el descriptor; si falla,
+// termina con el mensaje de Rust.
+fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
+    let sa = rt_alloc_zero(32)
+    let a = rt_alloc_zero(16)
+    if nt_rust_v4(hp, hn, a) {
+        nt_sin(sa, port, a)
+        let fd = nt_connect_one(sa, 16)
+        rt_free_block(sa)
+        rt_free_block(a)
+        if fd < 0 {
+            rt_native_fail(f, rt_os_error(0 - fd))
+        }
+        return fd
+    }
+    if nt_rust_v6(hp, hn, a) {
+        nt_sin6(sa, port, a, 0, 0)
+        let fd = nt_connect_one(sa, 28)
+        rt_free_block(sa)
+        rt_free_block(a)
+        if fd < 0 {
+            rt_native_fail(f, rt_os_error(0 - fd))
+        }
+        return fd
+    }
+    rt_free_block(a)
+    let mut i = 0
+    while i < hn {
+        if std::raw::load8(hp + i) == 0 {
+            rt_free_block(sa)
+            rt_native_fail(f, "file name contained an unexpected NUL byte")
+        }
+        i += 1
+    }
+    let name = nt_cdup(hp, hn)
+    let res = gi_getaddrinfo(name)
+    rt_free_block(name)
+    let code = std::raw::load(res)
+    if code != 0 {
+        let msg = nt_gai_message(code, std::raw::load(res + 8))
+        rt_free_block(res)
+        rt_free_block(sa)
+        rt_native_fail(f, msg)
+    }
+    let count = std::raw::load(res + 16)
+    let mut last = 0
+    let mut k = 0
+    while k < count {
+        let e = res + 24 + 40 * k
+        let len = std::raw::load(e)
+        let s = e + 8
+        // LookupHost: el puerto de Rust en cada dirección (IPv6 conserva
+        // flowinfo y scope_id de getaddrinfo).
+        if std::raw::load8(s) == 2 {
+            nt_sin(sa, port, s + 4)
+        } else {
+            nt_sin6(sa, port, s + 8, sa_u32(s + 4) & 4294967295, std::raw::load(s + 24) & 4294967295)
+        }
+        let fd = nt_connect_one(sa, len)
+        if fd >= 0 {
+            rt_free_block(res)
+            rt_free_block(sa)
+            return fd
+        }
+        last = fd
+        k += 1
+    }
+    rt_free_block(res)
+    rt_free_block(sa)
+    if count == 0 {
+        rt_native_fail(f, "could not resolve to any addresses")
+    }
+    rt_native_fail(f, rt_os_error(0 - last))
+    -1
+}
+
+// ------------------------------------------------------------ HTTP
+
+// split_whitespace().nth(1) de Rust sobre p[0..n] (espacios Unicode):
+// escribe inicio y longitud en out; false si no hay segunda palabra.
+fn nt_second_word(p: int, n: int, out: int) -> bool {
+    let base = p - 16
+    let mut i = 0
+    let mut word = 0
+    while i < n {
+        let w = rt_space_width(base, i)
+        if w > 0 {
+            i += w
+            continue
+        }
+        let s = i
+        while i < n && rt_space_width(base, i) == 0 {
+            i += rt_utf8_width(std::raw::load8(p + i))
+        }
+        if word == 1 {
+            std::raw::store(out, s)
+            std::raw::store(out + 8, i - s)
+            return true
+        }
+        word += 1
+    }
+    false
+}
+
+fn nt_str(p: int, n: int) -> any {
+    let s = rt_str_alloc(n)
+    rt_copy(s + 16, p, n)
+    rt_sval(s)
+}
+
+fn std__net__http_get(url: any) -> any {
+    let f = "std::net::http_get"
+    rt_expect_str(url, f)
+    let p = std::raw::bits(url) + 16
+    let n = rt_slen(url)
+    if n >= 8 && nt_starts(p, "https://") {
+        rt_native_fail(f, "HTTPS requires a TLS-enabled client")
+    }
+    if n < 7 || !nt_starts(p, "http://") {
+        rt_native_fail(f, "URL must start with http://")
+    }
+    let r = p + 7
+    let rn = n - 7
+    let mut alen = 0
+    while alen < rn && std::raw::load8(r + alen) != 47 {
+        alen += 1
+    }
+    let mut colon = alen - 1
+    while colon >= 0 && std::raw::load8(r + colon) != 58 {
+        colon -= 1
+    }
+    let mut hn = alen
+    let mut port = 80
+    if colon >= 0 {
+        hn = colon
+    }
+    if hn == 0 {
+        rt_native_fail(f, "URL has no host")
+    }
+    if colon >= 0 {
+        port = nt_parse_u16(r + colon + 1, alen - colon - 1)
+        if port < 0 {
+            rt_native_fail(f, "invalid port")
+        }
+    }
+    let fd = nt_connect(f, r, hn, port)
+
+    // GET {path} HTTP/1.1\r\nHost: {authority}\r\n...
+    let b = sb_new(128 + rn)
+    sb_str(b, "GET ")
+    if alen < rn {
+        sb_raw(b, r + alen, rn - alen)
+    } else {
+        sb_byte(b, 47)
+    }
+    sb_str(b, " HTTP/1.1\r\nHost: ")
+    sb_raw(b, r, alen)
+    sb_str(b, "\r\nUser-Agent: Titan/0.2\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+    let req = sb_finish_bytes(b)
+    let qp = std::raw::bits(req) + 16
+    let qn = rt_slen(req)
+    let mut done = 0
+    while done < qn {
+        // write de TcpStream: send(..., MSG_NOSIGNAL)
+        let w = std::raw::syscall(44, fd, qp + done, qn - done, 16384, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w < 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_native_fail(f, rt_os_error(0 - w))
+        }
+        if w == 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_native_fail(f, "failed to write whole buffer")
+        }
+        done += w
+    }
+
+    // read_to_end
+    let body = sb_new(65536)
+    let buf = rt_alloc(65536)
+    loop {
+        let got = std::raw::syscall(45, fd, buf, 65536, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            rt_free_block(buf)
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_native_fail(f, rt_os_error(0 - got))
+        }
+        if got == 0 {
+            break
+        }
+        sb_raw(body, buf, got)
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let all = sb_finish_bytes(body)
+    let ap = std::raw::bits(all) + 16
+    let an = rt_slen(all)
+    let mut sep = 0
+    while sep + 4 <= an && !(std::raw::load8(ap + sep) == 13 && std::raw::load8(ap + sep + 1) == 10 && std::raw::load8(ap + sep + 2) == 13 && std::raw::load8(ap + sep + 3) == 10) {
+        sep += 1
+    }
+    if sep + 4 > an {
+        rt_native_fail(f, "malformed HTTP response")
+    }
+    let head = dr_lossy(nt_str(ap, sep))
+    let hp = std::raw::bits(head) + 16
+    let hlen = rt_slen(head)
+    // primera línea (hasta "\r\n")
+    let mut e = 0
+    while e < hlen && !(std::raw::load8(hp + e) == 13 && e + 1 < hlen && std::raw::load8(hp + e + 1) == 10) {
+        e += 1
+    }
+    let w2 = rt_alloc(16)
+    if !nt_second_word(hp, e, w2) {
+        rt_native_fail(f, "invalid HTTP status")
+    }
+    let status = nt_parse_u16(hp + std::raw::load(w2), std::raw::load(w2 + 8))
+    rt_free_block(w2)
+    if status < 0 {
+        rt_native_fail(f, "invalid HTTP status")
+    }
+    let mut headers: any = rt_array_new(0)
+    let mut s = e + 2
+    while s <= hlen && e < hlen {
+        let mut t = s
+        while t < hlen && !(std::raw::load8(hp + t) == 13 && t + 1 < hlen && std::raw::load8(hp + t + 1) == 10) {
+            t += 1
+        }
+        let mut c = s
+        while c < t && std::raw::load8(hp + c) != 58 {
+            c += 1
+        }
+        if c < t {
+            let tu = rt_tuple_new(2)
+            let td = rt_seq_data(tu)
+            rt_seq_put(td, 0, rt_trim(nt_str(hp + s, c - s)))
+            rt_seq_put(td, 1, rt_trim(nt_str(hp + c + 1, t - c - 1)))
+            headers = std__array__push(headers, tu)
+        }
+        if t >= hlen {
+            break
+        }
+        s = t + 2
+    }
+    let mut m: any = std__map__new()
+    m = std__map__insert(m, "status", status)
+    m = std__map__insert(m, "body", rt_bytes_from(ap + sep + 4, an - sep - 4))
+    m = std__map__insert(m, "headers", headers)
+    m
+}

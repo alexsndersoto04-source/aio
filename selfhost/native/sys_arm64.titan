@@ -155,10 +155,26 @@ fn sa_same_args(n: int) -> int {
     if n == 13 { return 134 }
     if n == 14 { return 135 }
     if n == 16 { return 29 }
+    if n == 20 { return 66 }
+    if n == 307 { return 269 }
     if n == 28 { return 233 }
     if n == 35 { return 101 }
     if n == 39 { return 172 }
     if n == 44 { return 206 }
+    if n == 41 { return 198 }
+    if n == 43 { return 202 }
+    if n == 42 { return 203 }
+    if n == 45 { return 207 }
+    if n == 46 { return 211 }
+    if n == 47 { return 212 }
+    if n == 48 { return 210 }
+    if n == 49 { return 200 }
+    if n == 50 { return 201 }
+    if n == 51 { return 204 }
+    if n == 52 { return 205 }
+    if n == 54 { return 208 }
+    if n == 55 { return 209 }
+    if n == 288 { return 242 }
     if n == 53 { return 199 }
     if n == 59 { return 221 }
     if n == 60 { return 93 }
