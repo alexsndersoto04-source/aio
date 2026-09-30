@@ -1,0 +1,887 @@
+// Buscadores de coincidencias del compresor zstd (std_compress_zstd_enc.titan):
+// fast (zstd_fast.c), dfast (zstd_double_fast.c), lazy con filas / cadenas /
+// árbol (zstd_lazy.c) y óptimo (zstd_opt.c), cada uno con sus variantes sin
+// diccionario y con diccionario externo (la parte vieja del búfer circular).
+// Índices: posición = base + índice; tablas de índices de 32 bits (ze_t32 /
+// ze_p32).
+
+fn ze_mf_uses_row(z: int) -> bool {
+    let s = std::raw::load(z + 56)
+    s >= 3 && s <= 5 && std::raw::load(z + 8) > 14
+}
+
+fn ze_mf_init(z: int) {
+    let strat = std::raw::load(z + 56)
+    std::raw::store(z + 272, ze_alloc(4 * std::raw::shl(1, std::raw::load(z + 24))))
+    std::raw::store(z + 280, 0)
+    if strat != 1 && !ze_mf_uses_row(z) {
+        std::raw::store(z + 280, ze_alloc(4 * std::raw::shl(1, std::raw::load(z + 16))))
+    }
+    std::raw::store(z + 288, 0)
+    std::raw::store(z + 296, 0)
+    std::raw::store(z + 304, 0)
+}
+
+fn ze_mf_free(z: int) {
+    let ks = [272, 280, 288, 304]
+    let mut i = 0
+    while i < len(ks) {
+        let p = std::raw::load(z + ks[i])
+        if p != 0 {
+            rt_free_block(p)
+        }
+        i += 1
+    }
+}
+
+fn ze_reduce_table(t: int, size: int, red: int, preserveMark: bool) {
+    let thr = red + 2
+    let mut i = 0
+    while i < size {
+        let v = ze_t32(t, i)
+        if preserveMark && v == 1 {
+            ze_p32(t, i, 1)
+        } else if v < thr {
+            ze_p32(t, i, 0)
+        } else {
+            ze_p32(t, i, v - red)
+        }
+        i += 1
+    }
+}
+
+// ZSTD_overflowCorrectIfNeeded.
+fn ze_overflow_correct(z: int, ip: int, iend: int) {
+    let base = std::raw::load(z + 208)
+    if iend - base <= 3670016000 {
+        return
+    }
+    let strat = std::raw::load(z + 56)
+    let mut cycleLog = std::raw::load(z + 16)
+    if strat >= 6 {
+        cycleLog -= 1
+    }
+    let maxDist = std::raw::shl(1, std::raw::load(z + 8))
+    let cycleSize = std::raw::shl(1, cycleLog)
+    let curr = ip - base
+    let currentCycle = curr & (cycleSize - 1)
+    let mut corr = 0
+    if currentCycle < 2 {
+        corr = ze_max(cycleSize, 2)
+    }
+    let newCurrent = currentCycle + corr + ze_max(maxDist, cycleSize)
+    let correction = curr - newCurrent
+    std::raw::store(z + 208, base + correction)
+    std::raw::store(z + 216, std::raw::load(z + 216) + correction)
+    let ll = std::raw::load(z + 232)
+    if ll < correction + 2 {
+        std::raw::store(z + 232, 2)
+    } else {
+        std::raw::store(z + 232, ll - correction)
+    }
+    let dl = std::raw::load(z + 224)
+    if dl < correction + 2 {
+        std::raw::store(z + 224, 2)
+    } else {
+        std::raw::store(z + 224, dl - correction)
+    }
+    ze_reduce_table(std::raw::load(z + 272), std::raw::shl(1, std::raw::load(z + 24)), correction, false)
+    if std::raw::load(z + 280) != 0 {
+        ze_reduce_table(std::raw::load(z + 280), std::raw::shl(1, std::raw::load(z + 16)), correction, strat == 6)
+    }
+    if std::raw::load(z + 296) != 0 {
+        ze_reduce_table(std::raw::load(z + 288), std::raw::shl(1, std::raw::load(z + 296)), correction, false)
+    }
+    let ntu = std::raw::load(z + 256)
+    if ntu < correction {
+        std::raw::store(z + 256, 0)
+    } else {
+        std::raw::store(z + 256, ntu - correction)
+    }
+    std::raw::store(z + 264, 0)
+}
+
+// ZSTD_getLowestPrefixIndex / ZSTD_getLowestMatchIndex (sin diccionario
+// cargado).
+fn ze_lowest_prefix(z: int, curr: int) -> int {
+    let maxDist = std::raw::shl(1, std::raw::load(z + 8))
+    let low = std::raw::load(z + 224)
+    if curr - low > maxDist {
+        return curr - maxDist
+    }
+    low
+}
+
+fn ze_lowest_match(z: int, curr: int) -> int {
+    let maxDist = std::raw::shl(1, std::raw::load(z + 8))
+    let low = std::raw::load(z + 232)
+    if curr - low > maxDist {
+        return curr - maxDist
+    }
+    low
+}
+
+// Elige el compresor de bloque (ZSTD_selectBlockCompressor); rep: las tres
+// repeticiones (se actualizan). Devuelve los literales finales.
+fn ze_blockc(z: int, rep: int, src: int, n: int, ext: bool) -> int {
+    let strat = std::raw::load(z + 56)
+    if strat == 1 {
+        if ext {
+            return ze_fast_ext(z, rep, src, n)
+        }
+        return ze_fast(z, rep, src, n)
+    }
+    if strat == 2 {
+        if ext {
+            return ze_dfast_ext(z, rep, src, n)
+        }
+        return ze_dfast(z, rep, src, n)
+    }
+    rt_die("zstd_encode: estrategia sin implementar")
+    0
+}
+
+fn ze_mls(z: int) -> int {
+    let m = std::raw::load(z + 40)
+    if m < 4 {
+        return 4
+    }
+    if m > 7 {
+        return 7
+    }
+    m
+}
+
+// ------------------------------------------------------------ fast
+
+fn ze_fast(z: int, rep: int, src: int, n: int) -> int {
+    let ht = std::raw::load(z + 272)
+    let hlog = std::raw::load(z + 24)
+    let mls = ze_mls(z)
+    let tlen = std::raw::load(z + 48)
+    let mut stepSize = tlen + 1
+    if tlen == 0 {
+        stepSize += 1
+    }
+    let base = std::raw::load(z + 208)
+    let istart = src
+    let endIndex = istart - base + n
+    let prefixStartIndex = ze_lowest_prefix(z, endIndex)
+    let prefixStart = base + prefixStartIndex
+    let iend = istart + n
+    let ilimit = iend - 8
+    let mut anchor = istart
+    let mut ip0 = istart
+    let mut ip1 = 0
+    let mut ip2 = 0
+    let mut ip3 = 0
+    let mut current0 = 0
+    let mut rep1 = std::raw::load(rep)
+    let mut rep2 = std::raw::load(rep + 8)
+    let mut saved1 = 0
+    let mut saved2 = 0
+    let mut hash0 = 0
+    let mut hash1 = 0
+    let mut matchIdx = 0
+    let mut offcode = 0
+    let mut match0 = 0
+    let mut mLength = 0
+    let mut step = 0
+    let mut nextStep = 0
+    if ip0 == prefixStart {
+        ip0 += 1
+    }
+    let curr0 = ip0 - base
+    let maxRep = curr0 - ze_lowest_prefix(z, curr0)
+    if rep2 > maxRep {
+        saved2 = rep2
+        rep2 = 0
+    }
+    if rep1 > maxRep {
+        saved1 = rep1
+        rep1 = 0
+    }
+    loop {
+        step = stepSize
+        nextStep = ip0 + 128
+        ip1 = ip0 + 1
+        ip2 = ip0 + step
+        ip3 = ip2 + 1
+        if ip3 >= ilimit {
+            break
+        }
+        hash0 = ze_hash(ip0, hlog, mls)
+        hash1 = ze_hash(ip1, hlog, mls)
+        matchIdx = ze_t32(ht, hash0)
+        let mut found = 0
+        loop {
+            let rval = ze_r32(ip2 - rep1)
+            current0 = ip0 - base
+            ze_p32(ht, hash0, current0)
+            if ze_r32(ip2) == rval && rep1 > 0 {
+                ip0 = ip2
+                match0 = ip0 - rep1
+                mLength = 0
+                if std::raw::load8(ip0 - 1) == std::raw::load8(match0 - 1) {
+                    mLength = 1
+                }
+                ip0 -= mLength
+                match0 -= mLength
+                offcode = 1
+                mLength += 4
+                ze_p32(ht, hash1, ip1 - base)
+                found = 1
+                break
+            }
+            if matchIdx >= prefixStartIndex && ze_r32(ip0) == ze_r32(base + matchIdx) {
+                ze_p32(ht, hash1, ip1 - base)
+                found = 2
+                break
+            }
+            matchIdx = ze_t32(ht, hash1)
+            hash0 = hash1
+            hash1 = ze_hash(ip2, hlog, mls)
+            ip0 = ip1
+            ip1 = ip2
+            ip2 = ip3
+            current0 = ip0 - base
+            ze_p32(ht, hash0, current0)
+            if matchIdx >= prefixStartIndex && ze_r32(ip0) == ze_r32(base + matchIdx) {
+                if step <= 4 {
+                    ze_p32(ht, hash1, ip1 - base)
+                }
+                found = 2
+                break
+            }
+            matchIdx = ze_t32(ht, hash1)
+            hash0 = hash1
+            hash1 = ze_hash(ip2, hlog, mls)
+            ip0 = ip1
+            ip1 = ip2
+            ip2 = ip0 + step
+            ip3 = ip1 + step
+            if ip2 >= nextStep {
+                step += 1
+                nextStep += 128
+            }
+            if ip3 >= ilimit {
+                break
+            }
+        }
+        if found == 0 {
+            break
+        }
+        if found == 2 {
+            match0 = base + matchIdx
+            rep2 = rep1
+            rep1 = ip0 - match0
+            offcode = rep1 + 3
+            mLength = 4
+            while ip0 > anchor && match0 > prefixStart && std::raw::load8(ip0 - 1) == std::raw::load8(match0 - 1) {
+                ip0 -= 1
+                match0 -= 1
+                mLength += 1
+            }
+        }
+        mLength += ze_count(ip0 + mLength, match0 + mLength, iend)
+        ze_store_seq(z, ip0 - anchor, anchor, offcode, mLength)
+        ip0 += mLength
+        anchor = ip0
+        if ip0 <= ilimit {
+            ze_p32(ht, ze_hash(base + current0 + 2, hlog, mls), current0 + 2)
+            ze_p32(ht, ze_hash(ip0 - 2, hlog, mls), ip0 - 2 - base)
+            if rep2 > 0 {
+                while ip0 <= ilimit && ze_r32(ip0) == ze_r32(ip0 - rep2) {
+                    let rLength = ze_count(ip0 + 4, ip0 + 4 - rep2, iend) + 4
+                    let tmp = rep2
+                    rep2 = rep1
+                    rep1 = tmp
+                    ze_p32(ht, ze_hash(ip0, hlog, mls), ip0 - base)
+                    ip0 += rLength
+                    ze_store_seq(z, 0, anchor, 1, rLength)
+                    anchor = ip0
+                }
+            }
+        }
+    }
+    if saved1 != 0 && rep1 != 0 {
+        saved2 = saved1
+    }
+    if rep1 != 0 {
+        std::raw::store(rep, rep1)
+    } else {
+        std::raw::store(rep, saved1)
+    }
+    if rep2 != 0 {
+        std::raw::store(rep + 8, rep2)
+    } else {
+        std::raw::store(rep + 8, saved2)
+    }
+    iend - anchor
+}
+
+fn ze_fast_ext(z: int, rep: int, src: int, n: int) -> int {
+    let ht = std::raw::load(z + 272)
+    let hlog = std::raw::load(z + 24)
+    let mls = ze_mls(z)
+    let tlen = std::raw::load(z + 48)
+    let mut stepSize = tlen + 1
+    if tlen == 0 {
+        stepSize += 1
+    }
+    let base = std::raw::load(z + 208)
+    let dictBase = std::raw::load(z + 216)
+    let istart = src
+    let mut anchor = istart
+    let endIndex = istart - base + n
+    let lowLimit = ze_lowest_match(z, endIndex)
+    let dictStartIndex = lowLimit
+    let dictStart = dictBase + dictStartIndex
+    let dictLimit = std::raw::load(z + 224)
+    let mut prefixStartIndex = dictLimit
+    if dictLimit < lowLimit {
+        prefixStartIndex = lowLimit
+    }
+    let prefixStart = base + prefixStartIndex
+    let dictEnd = dictBase + prefixStartIndex
+    let iend = istart + n
+    let ilimit = iend - 8
+    let mut off1 = std::raw::load(rep)
+    let mut off2 = std::raw::load(rep + 8)
+    let mut saved1 = 0
+    let mut saved2 = 0
+    let mut ip0 = istart
+    let mut ip1 = 0
+    let mut ip2 = 0
+    let mut ip3 = 0
+    let mut current0 = 0
+    let mut hash0 = 0
+    let mut hash1 = 0
+    let mut idx = 0
+    let mut idxBase = 0
+    let mut offcode = 0
+    let mut match0 = 0
+    let mut mLength = 0
+    let mut matchEnd = 0
+    let mut step = 0
+    let mut nextStep = 0
+    if prefixStartIndex == dictStartIndex {
+        return ze_fast(z, rep, src, n)
+    }
+    let curr0 = ip0 - base
+    let maxRep = curr0 - dictStartIndex
+    if off2 >= maxRep {
+        saved2 = off2
+        off2 = 0
+    }
+    if off1 >= maxRep {
+        saved1 = off1
+        off1 = 0
+    }
+    loop {
+        step = stepSize
+        nextStep = ip0 + 128
+        ip1 = ip0 + 1
+        ip2 = ip0 + step
+        ip3 = ip2 + 1
+        if ip3 >= ilimit {
+            break
+        }
+        hash0 = ze_hash(ip0, hlog, mls)
+        hash1 = ze_hash(ip1, hlog, mls)
+        idx = ze_t32(ht, hash0)
+        idxBase = base
+        if idx < prefixStartIndex {
+            idxBase = dictBase
+        }
+        let mut found = 0
+        loop {
+            let current2 = ip2 - base
+            let repIndex = (current2 - off1) & 4294967295
+            let mut repBase = base
+            if repIndex < prefixStartIndex {
+                repBase = dictBase
+            }
+            let mut rval = 0
+            if ((prefixStartIndex - repIndex) & 4294967295) >= 4 && off1 > 0 {
+                rval = ze_r32(repBase + repIndex)
+            } else {
+                rval = ze_r32(ip2) ^ 1
+            }
+            current0 = ip0 - base
+            ze_p32(ht, hash0, current0)
+            if ze_r32(ip2) == rval {
+                ip0 = ip2
+                match0 = repBase + repIndex
+                matchEnd = iend
+                if repIndex < prefixStartIndex {
+                    matchEnd = dictEnd
+                }
+                mLength = 0
+                if std::raw::load8(ip0 - 1) == std::raw::load8(match0 - 1) {
+                    mLength = 1
+                }
+                ip0 -= mLength
+                match0 -= mLength
+                offcode = 1
+                mLength += 4
+                found = 1
+                break
+            }
+            let mut mval = 0
+            if idx >= dictStartIndex {
+                mval = ze_r32(idxBase + idx)
+            } else {
+                mval = ze_r32(ip0) ^ 1
+            }
+            if ze_r32(ip0) == mval {
+                found = 2
+                break
+            }
+            idx = ze_t32(ht, hash1)
+            idxBase = base
+            if idx < prefixStartIndex {
+                idxBase = dictBase
+            }
+            hash0 = hash1
+            hash1 = ze_hash(ip2, hlog, mls)
+            ip0 = ip1
+            ip1 = ip2
+            ip2 = ip3
+            current0 = ip0 - base
+            ze_p32(ht, hash0, current0)
+            if idx >= dictStartIndex {
+                mval = ze_r32(idxBase + idx)
+            } else {
+                mval = ze_r32(ip0) ^ 1
+            }
+            if ze_r32(ip0) == mval {
+                found = 2
+                break
+            }
+            idx = ze_t32(ht, hash1)
+            idxBase = base
+            if idx < prefixStartIndex {
+                idxBase = dictBase
+            }
+            hash0 = hash1
+            hash1 = ze_hash(ip2, hlog, mls)
+            ip0 = ip1
+            ip1 = ip2
+            ip2 = ip0 + step
+            ip3 = ip1 + step
+            if ip2 >= nextStep {
+                step += 1
+                nextStep += 128
+            }
+            if ip3 >= ilimit {
+                break
+            }
+        }
+        if found == 0 {
+            break
+        }
+        if found == 2 {
+            let offset = current0 - idx
+            let mut lowMatchPtr = prefixStart
+            matchEnd = iend
+            if idx < prefixStartIndex {
+                lowMatchPtr = dictStart
+                matchEnd = dictEnd
+            }
+            match0 = idxBase + idx
+            off2 = off1
+            off1 = offset
+            offcode = offset + 3
+            mLength = 4
+            while ip0 > anchor && match0 > lowMatchPtr && std::raw::load8(ip0 - 1) == std::raw::load8(match0 - 1) {
+                ip0 -= 1
+                match0 -= 1
+                mLength += 1
+            }
+        }
+        mLength += ze_count2(ip0 + mLength, match0 + mLength, iend, matchEnd, prefixStart)
+        ze_store_seq(z, ip0 - anchor, anchor, offcode, mLength)
+        ip0 += mLength
+        anchor = ip0
+        if ip1 < ip0 {
+            ze_p32(ht, hash1, ip1 - base)
+        }
+        if ip0 <= ilimit {
+            ze_p32(ht, ze_hash(base + current0 + 2, hlog, mls), current0 + 2)
+            ze_p32(ht, ze_hash(ip0 - 2, hlog, mls), ip0 - 2 - base)
+            while ip0 <= ilimit {
+                let repIndex2 = (ip0 - base - off2) & 4294967295
+                let mut repMatch2 = base + repIndex2
+                if repIndex2 < prefixStartIndex {
+                    repMatch2 = dictBase + repIndex2
+                }
+                if ((prefixStartIndex - 1 - repIndex2) & 4294967295) >= 3 && off2 > 0 && ze_r32(repMatch2) == ze_r32(ip0) {
+                    let mut repEnd2 = iend
+                    if repIndex2 < prefixStartIndex {
+                        repEnd2 = dictEnd
+                    }
+                    let repLength2 = ze_count2(ip0 + 4, repMatch2 + 4, iend, repEnd2, prefixStart) + 4
+                    let tmp = off2
+                    off2 = off1
+                    off1 = tmp
+                    ze_store_seq(z, 0, anchor, 1, repLength2)
+                    ze_p32(ht, ze_hash(ip0, hlog, mls), ip0 - base)
+                    ip0 += repLength2
+                    anchor = ip0
+                } else {
+                    break
+                }
+            }
+        }
+    }
+    if saved1 != 0 && off1 != 0 {
+        saved2 = saved1
+    }
+    if off1 != 0 {
+        std::raw::store(rep, off1)
+    } else {
+        std::raw::store(rep, saved1)
+    }
+    if off2 != 0 {
+        std::raw::store(rep + 8, off2)
+    } else {
+        std::raw::store(rep + 8, saved2)
+    }
+    iend - anchor
+}
+
+// ------------------------------------------------------------ dfast
+// Tabla larga = tabla hash (hashLog, 8 bytes); corta = tabla de cadenas
+// (chainLog, mls bytes).
+
+fn ze_dfast(z: int, rep: int, src: int, n: int) -> int {
+    let hashLong = std::raw::load(z + 272)
+    let hBitsL = std::raw::load(z + 24)
+    let hashSmall = std::raw::load(z + 280)
+    let hBitsS = std::raw::load(z + 16)
+    let mls = ze_mls(z)
+    let base = std::raw::load(z + 208)
+    let istart = src
+    let mut anchor = istart
+    let endIndex = istart - base + n
+    let prefixLowestIndex = ze_lowest_prefix(z, endIndex)
+    let prefixLowest = base + prefixLowestIndex
+    let iend = istart + n
+    let ilimit = iend - 8
+    let mut off1 = std::raw::load(rep)
+    let mut off2 = std::raw::load(rep + 8)
+    let mut saved1 = 0
+    let mut saved2 = 0
+    let mut mLength = 0
+    let mut offset = 0
+    let mut curr = 0
+    let mut nextStep = 0
+    let mut step = 0
+    let mut hl0 = 0
+    let mut hl1 = 0
+    let mut idxl0 = 0
+    let mut idxl1 = 0
+    let mut matchl0 = 0
+    let mut matchs0 = 0
+    let mut matchl1 = 0
+    let mut ip = istart
+    let mut ip1 = 0
+    if ip == prefixLowest {
+        ip += 1
+    }
+    let c0 = ip - base
+    let maxRep = c0 - ze_lowest_prefix(z, c0)
+    if off2 > maxRep {
+        saved2 = off2
+        off2 = 0
+    }
+    if off1 > maxRep {
+        saved1 = off1
+        off1 = 0
+    }
+    loop {
+        step = 1
+        nextStep = ip + 256
+        ip1 = ip + step
+        if ip1 > ilimit {
+            break
+        }
+        hl0 = ze_hash(ip, hBitsL, 8)
+        idxl0 = ze_t32(hashLong, hl0)
+        matchl0 = base + idxl0
+        // 0 nada, 1 repetición guardada, 2 coincidencia encontrada, 3 corta
+        let mut found = 0
+        loop {
+            let hs0 = ze_hash(ip, hBitsS, mls)
+            let idxs0 = ze_t32(hashSmall, hs0)
+            curr = ip - base
+            matchs0 = base + idxs0
+            ze_p32(hashSmall, hs0, curr)
+            ze_p32(hashLong, hl0, curr)
+            if off1 > 0 && ze_r32(ip + 1 - off1) == ze_r32(ip + 1) {
+                mLength = ze_count(ip + 5, ip + 5 - off1, iend) + 4
+                ip += 1
+                ze_store_seq(z, ip - anchor, anchor, 1, mLength)
+                found = 1
+                break
+            }
+            hl1 = ze_hash(ip1, hBitsL, 8)
+            if idxl0 >= prefixLowestIndex && std::raw::load(matchl0) == std::raw::load(ip) {
+                mLength = ze_count(ip + 8, matchl0 + 8, iend) + 8
+                offset = ip - matchl0
+                while ip > anchor && matchl0 > prefixLowest && std::raw::load8(ip - 1) == std::raw::load8(matchl0 - 1) {
+                    ip -= 1
+                    matchl0 -= 1
+                    mLength += 1
+                }
+                found = 2
+                break
+            }
+            idxl1 = ze_t32(hashLong, hl1)
+            matchl1 = base + idxl1
+            if idxs0 >= prefixLowestIndex && ze_r32(matchs0) == ze_r32(ip) {
+                found = 3
+                break
+            }
+            if ip1 >= nextStep {
+                step += 1
+                nextStep += 256
+            }
+            ip = ip1
+            ip1 += step
+            hl0 = hl1
+            idxl0 = idxl1
+            matchl0 = matchl1
+            if ip1 > ilimit {
+                break
+            }
+        }
+        if found == 0 {
+            break
+        }
+        if found == 3 {
+            mLength = ze_count(ip + 4, matchs0 + 4, iend) + 4
+            offset = ip - matchs0
+            if idxl1 > prefixLowestIndex && std::raw::load(matchl1) == std::raw::load(ip1) {
+                let l1len = ze_count(ip1 + 8, matchl1 + 8, iend) + 8
+                if l1len > mLength {
+                    ip = ip1
+                    mLength = l1len
+                    offset = ip - matchl1
+                    matchs0 = matchl1
+                }
+            }
+            while ip > anchor && matchs0 > prefixLowest && std::raw::load8(ip - 1) == std::raw::load8(matchs0 - 1) {
+                ip -= 1
+                matchs0 -= 1
+                mLength += 1
+            }
+            found = 2
+        }
+        if found == 2 {
+            off2 = off1
+            off1 = offset
+            if step < 4 {
+                ze_p32(hashLong, hl1, ip1 - base)
+            }
+            ze_store_seq(z, ip - anchor, anchor, offset + 3, mLength)
+        }
+        ip += mLength
+        anchor = ip
+        if ip <= ilimit {
+            let ins = curr + 2
+            ze_p32(hashLong, ze_hash(base + ins, hBitsL, 8), ins)
+            ze_p32(hashLong, ze_hash(ip - 2, hBitsL, 8), ip - 2 - base)
+            ze_p32(hashSmall, ze_hash(base + ins, hBitsS, mls), ins)
+            ze_p32(hashSmall, ze_hash(ip - 1, hBitsS, mls), ip - 1 - base)
+            while ip <= ilimit && off2 > 0 && ze_r32(ip) == ze_r32(ip - off2) {
+                let rLength = ze_count(ip + 4, ip + 4 - off2, iend) + 4
+                let tmp = off2
+                off2 = off1
+                off1 = tmp
+                ze_p32(hashSmall, ze_hash(ip, hBitsS, mls), ip - base)
+                ze_p32(hashLong, ze_hash(ip, hBitsL, 8), ip - base)
+                ze_store_seq(z, 0, anchor, 1, rLength)
+                ip += rLength
+                anchor = ip
+            }
+        }
+    }
+    if saved1 != 0 && off1 != 0 {
+        saved2 = saved1
+    }
+    if off1 != 0 {
+        std::raw::store(rep, off1)
+    } else {
+        std::raw::store(rep, saved1)
+    }
+    if off2 != 0 {
+        std::raw::store(rep + 8, off2)
+    } else {
+        std::raw::store(rep + 8, saved2)
+    }
+    iend - anchor
+}
+
+fn ze_dfast_ext(z: int, rep: int, src: int, n: int) -> int {
+    let hashLong = std::raw::load(z + 272)
+    let hBitsL = std::raw::load(z + 24)
+    let hashSmall = std::raw::load(z + 280)
+    let hBitsS = std::raw::load(z + 16)
+    let mls = ze_mls(z)
+    let istart = src
+    let mut ip = istart
+    let mut anchor = istart
+    let iend = istart + n
+    let ilimit = iend - 8
+    let base = std::raw::load(z + 208)
+    let endIndex = istart - base + n
+    let lowLimit = ze_lowest_match(z, endIndex)
+    let dictStartIndex = lowLimit
+    let dictLimit = std::raw::load(z + 224)
+    let mut prefixStartIndex = lowLimit
+    if dictLimit > lowLimit {
+        prefixStartIndex = dictLimit
+    }
+    let prefixStart = base + prefixStartIndex
+    let dictBase = std::raw::load(z + 216)
+    let dictStart = dictBase + dictStartIndex
+    let dictEnd = dictBase + prefixStartIndex
+    let mut off1 = std::raw::load(rep)
+    let mut off2 = std::raw::load(rep + 8)
+    if prefixStartIndex == dictStartIndex {
+        return ze_dfast(z, rep, src, n)
+    }
+    while ip < ilimit {
+        let hSmall = ze_hash(ip, hBitsS, mls)
+        let matchIndex = ze_t32(hashSmall, hSmall)
+        let mut mt = base + matchIndex
+        if matchIndex < prefixStartIndex {
+            mt = dictBase + matchIndex
+        }
+        let hLong = ze_hash(ip, hBitsL, 8)
+        let matchLongIndex = ze_t32(hashLong, hLong)
+        let mut matchLong = base + matchLongIndex
+        if matchLongIndex < prefixStartIndex {
+            matchLong = dictBase + matchLongIndex
+        }
+        let curr = ip - base
+        let repIndex = (curr + 1 - off1) & 4294967295
+        let mut repMatch = base + repIndex
+        if repIndex < prefixStartIndex {
+            repMatch = dictBase + repIndex
+        }
+        let mut mLength = 0
+        ze_p32(hashSmall, hSmall, curr)
+        ze_p32(hashLong, hLong, curr)
+        if ((prefixStartIndex - 1 - repIndex) & 4294967295) >= 3 && off1 <= curr + 1 - dictStartIndex && ze_r32(repMatch) == ze_r32(ip + 1) {
+            let mut repMatchEnd = iend
+            if repIndex < prefixStartIndex {
+                repMatchEnd = dictEnd
+            }
+            mLength = ze_count2(ip + 5, repMatch + 4, iend, repMatchEnd, prefixStart) + 4
+            ip += 1
+            ze_store_seq(z, ip - anchor, anchor, 1, mLength)
+        } else if matchLongIndex > dictStartIndex && std::raw::load(matchLong) == std::raw::load(ip) {
+            let mut matchEnd = iend
+            let mut lowMatchPtr = prefixStart
+            if matchLongIndex < prefixStartIndex {
+                matchEnd = dictEnd
+                lowMatchPtr = dictStart
+            }
+            mLength = ze_count2(ip + 8, matchLong + 8, iend, matchEnd, prefixStart) + 8
+            let offset = curr - matchLongIndex
+            while ip > anchor && matchLong > lowMatchPtr && std::raw::load8(ip - 1) == std::raw::load8(matchLong - 1) {
+                ip -= 1
+                matchLong -= 1
+                mLength += 1
+            }
+            off2 = off1
+            off1 = offset
+            ze_store_seq(z, ip - anchor, anchor, offset + 3, mLength)
+        } else if matchIndex > dictStartIndex && ze_r32(mt) == ze_r32(ip) {
+            let h3 = ze_hash(ip + 1, hBitsL, 8)
+            let matchIndex3 = ze_t32(hashLong, h3)
+            let mut match3 = base + matchIndex3
+            if matchIndex3 < prefixStartIndex {
+                match3 = dictBase + matchIndex3
+            }
+            let mut offset = 0
+            ze_p32(hashLong, h3, curr + 1)
+            if matchIndex3 > dictStartIndex && std::raw::load(match3) == std::raw::load(ip + 1) {
+                let mut matchEnd = iend
+                let mut lowMatchPtr = prefixStart
+                if matchIndex3 < prefixStartIndex {
+                    matchEnd = dictEnd
+                    lowMatchPtr = dictStart
+                }
+                mLength = ze_count2(ip + 9, match3 + 8, iend, matchEnd, prefixStart) + 8
+                ip += 1
+                offset = curr + 1 - matchIndex3
+                while ip > anchor && match3 > lowMatchPtr && std::raw::load8(ip - 1) == std::raw::load8(match3 - 1) {
+                    ip -= 1
+                    match3 -= 1
+                    mLength += 1
+                }
+            } else {
+                let mut matchEnd = iend
+                let mut lowMatchPtr = prefixStart
+                if matchIndex < prefixStartIndex {
+                    matchEnd = dictEnd
+                    lowMatchPtr = dictStart
+                }
+                mLength = ze_count2(ip + 4, mt + 4, iend, matchEnd, prefixStart) + 4
+                offset = curr - matchIndex
+                while ip > anchor && mt > lowMatchPtr && std::raw::load8(ip - 1) == std::raw::load8(mt - 1) {
+                    ip -= 1
+                    mt -= 1
+                    mLength += 1
+                }
+            }
+            off2 = off1
+            off1 = offset
+            ze_store_seq(z, ip - anchor, anchor, offset + 3, mLength)
+        } else {
+            ip += std::raw::shr(ip - anchor, 8) + 1
+            continue
+        }
+        ip += mLength
+        anchor = ip
+        if ip <= ilimit {
+            let ins = curr + 2
+            ze_p32(hashLong, ze_hash(base + ins, hBitsL, 8), ins)
+            ze_p32(hashLong, ze_hash(ip - 2, hBitsL, 8), ip - 2 - base)
+            ze_p32(hashSmall, ze_hash(base + ins, hBitsS, mls), ins)
+            ze_p32(hashSmall, ze_hash(ip - 1, hBitsS, mls), ip - 1 - base)
+            while ip <= ilimit {
+                let current2 = ip - base
+                let repIndex2 = (current2 - off2) & 4294967295
+                let mut repMatch2 = base + repIndex2
+                if repIndex2 < prefixStartIndex {
+                    repMatch2 = dictBase + repIndex2
+                }
+                if ((prefixStartIndex - 1 - repIndex2) & 4294967295) >= 3 && off2 <= current2 - dictStartIndex && ze_r32(repMatch2) == ze_r32(ip) {
+                    let mut repEnd2 = iend
+                    if repIndex2 < prefixStartIndex {
+                        repEnd2 = dictEnd
+                    }
+                    let repLength2 = ze_count2(ip + 4, repMatch2 + 4, iend, repEnd2, prefixStart) + 4
+                    let tmp = off2
+                    off2 = off1
+                    off1 = tmp
+                    ze_store_seq(z, 0, anchor, 1, repLength2)
+                    ze_p32(hashSmall, ze_hash(ip, hBitsS, mls), current2)
+                    ze_p32(hashLong, ze_hash(ip, hBitsL, 8), current2)
+                    ip += repLength2
+                    anchor = ip
+                } else {
+                    break
+                }
+            }
+        }
+    }
+    std::raw::store(rep, off1)
+    std::raw::store(rep + 8, off2)
+    iend - anchor
+}

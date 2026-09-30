@@ -27,6 +27,9 @@ import std_router
 import std_compress
 import std_compress_enc
 import std_compress_zstd
+import std_compress_zstd_enc_tab
+import std_compress_zstd_enc
+import std_compress_zstd_mf
 import std_freestanding
 import std_freestanding_hw
 import std_rsa
@@ -167,7 +170,8 @@ fn rt_alloc(size: int) -> int {
 // std::router: globals + 2960 registro de routers (std_router).
 // + 3000..3016 montón y objetivo sin sistema; + 3024..3064 hardware sin
 // sistema (std_freestanding_hw); + 3072 tabla CRC-32 (std_compress); + 3080 tablas del
-// compresor (std_compress_enc). Libre hasta + 3584.
+// compresor (std_compress_enc); + 3088 tablas del
+// compresor zstd (std_compress_zstd_enc). Libre hasta + 3584.
 fn rt_big_head(k: int) -> int {
     std::raw::globals() + 2688 + 8 * (k - 13)
 }
