@@ -1,0 +1,18 @@
+// std::plot: SVG idéntico a la VM (plotters 0.3.7).
+fn crc_file(p: string) -> int {
+    std::checksum::crc32(std::encoding::utf8_encode(std::fs::read_text(p)))
+}
+
+fn main() {
+    std::plot::line("/tmp/t_line.svg", "y = x2", "x", "y", [0.0, 1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 4.0, 9.0, 16.0])
+    std::plot::scatter("/tmp/t_sc.svg", "Nube", "x", "y", [0.0, 1.0, 2.0], [1.0, 3.0, 2.0])
+    std::plot::bar("/tmp/t_bar.svg", "Ventas", "EUR", ["ene", "feb", "mar"], [100.0, 250.0, 175.0])
+    std::plot::histogram("/tmp/t_hist.svg", "Dist", "x", [1.0, 1.0, 2.0, 3.0, 3.0, 3.0, 4.0], 4)
+    std::plot::multi_line("/tmp/t_multi.svg", "dos", "x", "y", ["a", "b"], [[0.0, 1.0, 2.0], [0.0, 1.0, 2.0]], [[0.0, 1.0, 4.0], [0.0, 2.0, 1.0]])
+    println("line " + std::json::stringify(crc_file("/tmp/t_line.svg")))
+    println("sc " + std::json::stringify(crc_file("/tmp/t_sc.svg")))
+    println("bar " + std::json::stringify(crc_file("/tmp/t_bar.svg")))
+    println("hist " + std::json::stringify(crc_file("/tmp/t_hist.svg")))
+    println("multi " + std::json::stringify(crc_file("/tmp/t_multi.svg")))
+    println("head " + std::text::substring(std::fs::read_text("/tmp/t_line.svg"), 0, 80))
+}
