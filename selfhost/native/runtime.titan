@@ -54,6 +54,7 @@ import std_fswatch
 import std_ws
 import std_http
 import std_wifi
+import std_dns
 import std_tz_data
 import std_tz
 import std_crypto

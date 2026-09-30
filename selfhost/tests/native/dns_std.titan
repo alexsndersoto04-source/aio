@@ -1,0 +1,15 @@
+// std::dns: literales, /etc/hosts y respuestas estables. Idéntico a la VM.
+fn main() {
+    println("lit4 " + std::json::stringify(std::dns::resolve("127.0.0.1")))
+    println("lit6 " + std::json::stringify(std::dns::resolve("::1")))
+    println("lit11 " + std::json::stringify(std::dns::resolve("1.1.1.1")))
+    println("local " + std::json::stringify(std::dns::resolve("localhost")))
+    println("local4 " + std::json::stringify(std::dns::resolve_ipv4("localhost")))
+    println("local6 " + std::json::stringify(std::dns::resolve_ipv6("localhost")))
+    println("e2b " + std::json::stringify(std::dns::resolve("e2b.local")))
+    println("mxex " + std::json::stringify(std::dns::resolve_mx("example.com.")))
+    println("revloop " + std::json::stringify(std::dns::reverse("127.0.0.1")))
+    println("rev6 " + std::json::stringify(std::dns::reverse("::1")))
+    println("rev127b " + std::json::stringify(std::dns::reverse("127.0.0.2")))
+    println("fooloc " + std::json::stringify(std::dns::resolve("foo.localhost")))
+}

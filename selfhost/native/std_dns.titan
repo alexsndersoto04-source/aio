@@ -1,0 +1,1271 @@
+// std::dns (7 nativas). Reproduce crates/titan_stdlib/src/dns_mod.rs sobre
+// hickory-resolver 0.24.4 + hickory-proto 0.24.4 + resolv-conf 0.7.6:
+// /etc/resolv.conf, /etc/hosts, consultas DNS reales por UDP (RFC 1035).
+// Prefijo `dn_`. Nada fingido.
+fn dn_fail(function: string, message: any) {
+    rt_native_fail(function, message)
+}
+
+fn dn_lookup_msg(qname: any, qtype: any) -> any {
+    "DNS lookup error: no record found for Query { name: Name(\"" + qname + "\"), query_type: " + qtype + ", query_class: IN }"
+}
+
+fn dn_proto_msg(inner: any) -> any {
+    "DNS lookup error: proto error: " + inner
+}
+
+fn dn_qtype_name(t: int) -> any {
+    if t == 1 { return "A" }
+    if t == 28 { return "AAAA" }
+    if t == 5 { return "CNAME" }
+    if t == 15 { return "MX" }
+    if t == 16 { return "TXT" }
+    if t == 12 { return "PTR" }
+    "TYPE" + rt_int_to_str(t)
+}
+
+fn dn_be16(p: int, v: int) {
+    std::raw::store8(p, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 1, v & 255)
+}
+
+fn dn_ld16(p: int) -> int {
+    std::raw::load8(p) * 256 + std::raw::load8(p + 1)
+}
+
+fn dn_hex1(v: int) -> any {
+    let d = v & 15
+    if d < 10 {
+        return std__text__from_char_code(48 + d)
+    }
+    std__text__from_char_code(87 + d)
+}
+
+fn dn_hexu16(v: int) -> any {
+    let mut x = v & 65535
+    if x == 0 {
+        return "0"
+    }
+    let mut out = ""
+    let mut started = false
+    let mut sh = 12
+    while sh >= 0 {
+        let d = std::raw::shr(x, sh) & 15
+        if started || d != 0 || sh == 0 {
+            started = true
+            out = out + dn_hex1(d)
+        }
+        sh = sh - 4
+    }
+    out
+}
+
+fn dn_ipv4_str(p: int) -> any {
+    rt_int_to_str(std::raw::load8(p)) + "." + rt_int_to_str(std::raw::load8(p + 1)) + "." + rt_int_to_str(std::raw::load8(p + 2)) + "." + rt_int_to_str(std::raw::load8(p + 3))
+}
+
+fn dn_ipv6_mapped(p: int) -> int {
+    let mut i = 0
+    while i < 10 {
+        if std::raw::load8(p + i) != 0 {
+            return 0
+        }
+        i += 1
+    }
+    if std::raw::load8(p + 10) != 255 {
+        return 0
+    }
+    if std::raw::load8(p + 11) != 255 {
+        return 0
+    }
+    1
+}
+
+fn dn_ipv6_str(p: int) -> any {
+    if dn_ipv6_mapped(p) != 0 {
+        return "::ffff:" + dn_ipv4_str(p + 12)
+    }
+    let mut seg = rt_alloc(64)
+    let mut i = 0
+    while i < 8 {
+        std::raw::store(seg + 8 * i, std::raw::load8(p + 2 * i) * 256 + std::raw::load8(p + 2 * i + 1))
+        i += 1
+    }
+    let mut best_a = 0 - 1
+    let mut best_n = 0
+    let mut a = 0 - 1
+    let mut n = 0
+    i = 0
+    while i <= 8 {
+        let mut zero = false
+        if i < 8 {
+            if std::raw::load(seg + 8 * i) == 0 {
+                zero = true
+            }
+        }
+        if zero {
+            if a < 0 {
+                a = i
+                n = 1
+            } else {
+                n += 1
+            }
+        } else {
+            if a >= 0 {
+                if n > best_n && n >= 2 {
+                    best_a = a
+                    best_n = n
+                }
+                a = 0 - 1
+                n = 0
+            }
+        }
+        i += 1
+    }
+    let mut out = ""
+    i = 0
+    while i < 8 {
+        if best_a >= 0 && i == best_a {
+            out = out + "::"
+            i = i + best_n
+        } else {
+            if rt_slen(out) > 0 && !std__text__ends_with(out, ":") {
+                out = out + ":"
+            }
+            out = out + dn_hexu16(std::raw::load(seg + 8 * i))
+            i += 1
+        }
+    }
+    if rt_slen(out) == 0 {
+        out = "::"
+    }
+    rt_free_block(seg)
+    out
+}
+
+fn dn_parse_ip(s: any) -> any {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let a4 = rt_alloc_zero(4)
+    if nt_rust_v4(p, n, a4) {
+        let t = dn_ipv4_str(a4)
+        rt_free_block(a4)
+        return t
+    }
+    rt_free_block(a4)
+    let a6 = rt_alloc_zero(16)
+    if nt_rust_v6(p, n, a6) {
+        let t = dn_ipv6_str(a6)
+        rt_free_block(a6)
+        return t
+    }
+    rt_free_block(a6)
+    nil
+}
+
+fn dn_ip_kind(s: any) -> int {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let a4 = rt_alloc_zero(4)
+    if nt_rust_v4(p, n, a4) {
+        rt_free_block(a4)
+        return 4
+    }
+    rt_free_block(a4)
+    let a6 = rt_alloc_zero(16)
+    if nt_rust_v6(p, n, a6) {
+        rt_free_block(a6)
+        return 6
+    }
+    rt_free_block(a6)
+    0
+}
+
+fn dn_ascii_lower_byte(c: int) -> int {
+    if c >= 65 && c <= 90 {
+        return c + 32
+    }
+    c
+}
+
+fn dn_lower(s: any) -> any {
+    std__text__lowercase(s)
+}
+
+fn dn_ieq(a: any, b: any) -> int {
+    if dn_lower(a) == dn_lower(b) {
+        return 1
+    }
+    0
+}
+
+fn dn_is_ws(c: int) -> int {
+    if c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12 {
+        return 1
+    }
+    0
+}
+
+fn dn_is_ctrl(c: int) -> int {
+    if c < 32 || c == 127 {
+        return 1
+    }
+    0
+}
+
+fn dn_label_ascii_ok(s: any) -> int {
+    let n = rt_slen(s)
+    if n == 0 {
+        return 0
+    }
+    if n > 63 {
+        return 0
+    }
+    if s == "*" {
+        return 1
+    }
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        let mut ok = false
+        if c >= 48 && c <= 57 { ok = true }
+        if c >= 65 && c <= 90 { ok = true }
+        if c >= 97 && c <= 122 { ok = true }
+        if c == 45 { ok = true }
+        if c == 95 { ok = true }
+        if !ok {
+            return 0
+        }
+        i += 1
+    }
+    1
+}
+
+fn dn_label_fix(function: string, s: any) -> any {
+    let n = rt_slen(s)
+    if n == 0 {
+        dn_fail(function, dn_proto_msg("Label contains invalid characters: Err(Errors)"))
+    }
+    if n > 63 {
+        dn_fail(function, dn_proto_msg("Label contains invalid characters: Err(Errors)"))
+    }
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    let mut non_ascii = false
+    while i < n {
+        if std::raw::load8(p + i) >= 128 {
+            non_ascii = true
+        }
+        i += 1
+    }
+    if non_ascii {
+        let (ok, ascii) = id_domain_to_ascii_url(s)
+        if !ok {
+            dn_fail(function, dn_proto_msg("Label contains invalid characters: Err(Errors)"))
+        }
+        return dn_lower(ascii)
+    }
+    if dn_label_ascii_ok(s) != 0 {
+        return dn_lower(s)
+    }
+    dn_fail(function, dn_proto_msg("Label contains invalid characters: Err(Errors)"))
+    s
+}
+
+fn dn_parse_name(function: string, s: any) -> any {
+    if s == "." {
+        let mut m = rt_map_alloc(0, 4)
+        m = std__map__insert(m, "fqdn", 1)
+        return std__map__insert(m, "labels", [])
+    }
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut labels = []
+    let mut lab = ""
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 46 {
+            labels = std::array::push(labels, dn_label_fix(function, lab))
+            lab = ""
+        } else if c == 92 {
+            i += 1
+            if i >= n {
+                dn_fail(function, dn_proto_msg("unrecognized char: \\"))
+            }
+            lab = lab + std__text__from_char_code(std::raw::load8(p + i))
+        } else if dn_is_ws(c) != 0 || dn_is_ctrl(c) != 0 {
+            dn_fail(function, dn_proto_msg("unrecognized char: " + std__text__from_char_code(c)))
+        } else {
+            lab = lab + std__text__from_char_code(c)
+        }
+        i += 1
+    }
+    if rt_slen(lab) != 0 {
+        labels = std::array::push(labels, dn_label_fix(function, lab))
+    }
+    let mut fqdn = 0
+    if n > 0 && std::raw::load8(p + n - 1) == 46 {
+        fqdn = 1
+    }
+    let mut m = rt_map_alloc(0, 4)
+    m = std__map__insert(m, "fqdn", fqdn)
+    std__map__insert(m, "labels", labels)
+}
+
+fn dn_map_int(m: any, key: any) -> int {
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        return 0
+    }
+    let x = rt_map_value_at(m, pos)
+    if std::raw::tag(x) != 1 {
+        return 0
+    }
+    std::raw::bits(x)
+}
+
+fn dn_map_arr(m: any, key: any) -> any {
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        return []
+    }
+    rt_map_value_at(m, pos)
+}
+
+fn dn_num_labels(nm: any) -> int {
+    let labs = dn_map_arr(nm, "labels")
+    let n = len(labs)
+    if n == 0 {
+        return 0
+    }
+    if labs[0] == "*" {
+        return n - 1
+    }
+    n
+}
+
+fn dn_is_localhost(nm: any) -> int {
+    let labs = dn_map_arr(nm, "labels")
+    let n = len(labs)
+    if n == 0 {
+        return 0
+    }
+    if dn_ieq(labs[n - 1], "localhost") != 0 {
+        return 1
+    }
+    0
+}
+
+fn dn_name_text(nm: any, as_fqdn: int) -> any {
+    let labs = dn_map_arr(nm, "labels")
+    let n = len(labs)
+    if n == 0 {
+        return "."
+    }
+    let mut out = labs[0]
+    let mut i = 1
+    while i < n {
+        out = out + "." + labs[i]
+        i += 1
+    }
+    let fq = dn_map_int(nm, "fqdn")
+    if as_fqdn != 0 || fq != 0 {
+        out = out + "."
+    }
+    out
+}
+
+fn dn_name_eq(a: any, b: any) -> int {
+    if dn_map_int(a, "fqdn") != dn_map_int(b, "fqdn") {
+        return 0
+    }
+    let la = dn_map_arr(a, "labels")
+    let lb = dn_map_arr(b, "labels")
+    if len(la) != len(lb) {
+        return 0
+    }
+    let mut i = 0
+    while i < len(la) {
+        if dn_ieq(la[i], lb[i]) == 0 {
+            return 0
+        }
+        i += 1
+    }
+    1
+}
+
+fn dn_append_domain(nm: any, domain: any) -> any {
+    let la = dn_map_arr(nm, "labels")
+    let lb = dn_map_arr(domain, "labels")
+    let mut labs = []
+    let mut i = 0
+    while i < len(la) {
+        labs = std::array::push(labs, la[i])
+        i += 1
+    }
+    i = 0
+    while i < len(lb) {
+        labs = std::array::push(labs, lb[i])
+        i += 1
+    }
+    let mut m = rt_map_alloc(0, 4)
+    m = std__map__insert(m, "fqdn", 1)
+    std__map__insert(m, "labels", labs)
+}
+
+fn dn_name_dup(nm: any) -> any {
+    let mut m = rt_map_alloc(0, 4)
+    m = std__map__insert(m, "fqdn", dn_map_int(nm, "fqdn"))
+    std__map__insert(m, "labels", dn_map_arr(nm, "labels"))
+}
+
+fn dn_contains_name(names: any, nm: any) -> int {
+    let mut i = 0
+    while i < len(names) {
+        if dn_name_eq(names[i], nm) != 0 {
+            return 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn dn_read_file(path: any) -> any {
+    let c = rt_cstr(path)
+    let fd = std::raw::syscall(2, c, 524288, 0, 0, 0, 0)
+    rt_free_block(c)
+    if fd < 0 {
+        return nil
+    }
+    let buf = nt_read_fd(fd)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if std::raw::load(buf + 8) != 0 {
+        rt_free_block(buf)
+        return nil
+    }
+    let n = std::raw::load(buf)
+    let s = nt_str(buf + 16, n)
+    rt_free_block(buf)
+    s
+}
+
+fn dn_hostname() -> any {
+    let u = rt_alloc_zero(400)
+    let r = std::raw::syscall(63, u, 0, 0, 0, 0, 0)
+    if r != 0 {
+        rt_free_block(u)
+        return ""
+    }
+    let p = u + 65
+    let mut n = 0
+    while n < 64 && std::raw::load8(p + n) != 0 {
+        n += 1
+    }
+    let s = nt_str(p, n)
+    rt_free_block(u)
+    s
+}
+
+fn dn_system_domain() -> any {
+    let host = dn_hostname()
+    let n = rt_slen(host)
+    let p = std::raw::bits(host) + 16
+    let mut i = 0
+    let mut dot = 0 - 1
+    while i < n {
+        if std::raw::load8(p + i) == 46 {
+            if dot < 0 {
+                dot = i
+            }
+        }
+        i += 1
+    }
+    if dot < 0 {
+        return ""
+    }
+    if n - dot < 2 {
+        return ""
+    }
+    rt_substr_bytes(host, dot + 1, n)
+}
+
+fn dn_split_ws(line: any) -> any {
+    let n = rt_slen(line)
+    let p = std::raw::bits(line) + 16
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        while i < n && dn_is_ws(std::raw::load8(p + i)) != 0 {
+            i += 1
+        }
+        if i >= n {
+            break
+        }
+        let a = i
+        while i < n && dn_is_ws(std::raw::load8(p + i)) == 0 {
+            i += 1
+        }
+        out = std::array::push(out, rt_substr_bytes(line, a, i))
+    }
+    out
+}
+
+fn dn_strip_comment(line: any) -> any {
+    let n = rt_slen(line)
+    let p = std::raw::bits(line) + 16
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 35 || c == 59 {
+            return rt_substr_bytes(line, 0, i)
+        }
+        i += 1
+    }
+    line
+}
+
+fn dn_lines(s: any) -> any {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut out = []
+    let mut i = 0
+    let mut a = 0
+    while i <= n {
+        if i == n || std::raw::load8(p + i) == 10 {
+            out = std::array::push(out, rt_substr_bytes(s, a, i))
+            a = i + 1
+        }
+        i += 1
+    }
+    out
+}
+
+fn dn_parse_resolv(text: any) -> any {
+    let mut ns = []
+    let mut ndots = 1
+    let mut timeout = 5
+    let mut attempts = 2
+    let mut search = []
+    let mut last = 0
+    let ls = dn_lines(text)
+    let mut li = 0
+    while li < len(ls) {
+        let line = std__text__trim(dn_strip_comment(ls[li]))
+        let w = dn_split_ws(line)
+        if len(w) >= 2 && w[0] == "nameserver" {
+            ns = std::array::push(ns, w[1])
+        }
+        if len(w) >= 2 && w[0] == "domain" {
+            search = []
+            search = std::array::push(search, w[1])
+            last = 1
+        }
+        if len(w) >= 2 && w[0] == "search" {
+            search = []
+            let mut k = 1
+            while k < len(w) {
+                if !std__text__contains(w[k], ",") {
+                    search = std::array::push(search, w[k])
+                }
+                k += 1
+            }
+            last = 2
+        }
+        if len(w) >= 1 && w[0] == "options" {
+            let mut k = 1
+            while k < len(w) {
+                let opt = w[k]
+                if std__text__starts_with(opt, "ndots:") {
+                    ndots = ht_usize(rt_substr_bytes(opt, 6, rt_slen(opt)))
+                }
+                if std__text__starts_with(opt, "timeout:") {
+                    timeout = ht_usize(rt_substr_bytes(opt, 8, rt_slen(opt)))
+                }
+                if std__text__starts_with(opt, "attempts:") {
+                    attempts = ht_usize(rt_substr_bytes(opt, 9, rt_slen(opt)))
+                }
+                k += 1
+            }
+        }
+        li += 1
+    }
+    if last == 0 {
+        search = []
+    }
+    let mut m = rt_map_alloc(0, 8)
+    m = std__map__insert(m, "ns", ns)
+    m = std__map__insert(m, "ndots", ndots)
+    m = std__map__insert(m, "timeout", timeout)
+    m = std__map__insert(m, "attempts", attempts)
+    std__map__insert(m, "search", search)
+}
+
+fn dn_parse_hosts(text: any) -> any {
+    let mut out = []
+    let ls = dn_lines(text)
+    let mut li = 0
+    while li < len(ls) {
+        let line = std__text__trim(dn_strip_comment(ls[li]))
+        let w = dn_split_ws(line)
+        if len(w) >= 2 {
+            let ip = dn_parse_ip(w[0])
+            if std::raw::tag(ip) == 5 {
+                let kind = dn_ip_kind(w[0])
+                let mut k = 1
+                while k < len(w) {
+                    let host = dn_lower(w[k])
+                    let mut rec = rt_map_alloc(0, 4)
+                    rec = std__map__insert(rec, "name", host)
+                    rec = std__map__insert(rec, "ip", ip)
+                    rec = std__map__insert(rec, "kind", kind)
+                    rec = std__map__insert(rec, "fqdn", 0)
+                    out = std::array::push(out, rec)
+                    k += 1
+                }
+            }
+        }
+        li += 1
+    }
+    out
+}
+
+fn dn_st() -> any {
+    let text = dn_read_file("/etc/resolv.conf")
+    let mut conf = dn_parse_resolv("")
+    if std::raw::tag(text) == 5 {
+        conf = dn_parse_resolv(text)
+    }
+    let hosts_text = dn_read_file("/etc/hosts")
+    let mut hosts = []
+    if std::raw::tag(hosts_text) == 5 {
+        hosts = dn_parse_hosts(hosts_text)
+    }
+    let sys = dn_system_domain()
+    conf = std__map__insert(conf, "domain", sys)
+    std__map__insert(conf, "hosts", hosts)
+}
+
+fn dn_hosts_lookup(st: any, nm: any, qtype: int) -> any {
+    let hosts = dn_map_arr(st, "hosts")
+    let fq = dn_map_int(nm, "fqdn")
+    let labs = dn_map_arr(nm, "labels")
+    let mut key = ""
+    let mut i = 0
+    while i < len(labs) {
+        if i > 0 {
+            key = key + "."
+        }
+        key = key + labs[i]
+        i += 1
+    }
+    let mut out = []
+    i = 0
+    while i < len(hosts) {
+        let rec = hosts[i]
+        if dn_map_int(rec, "fqdn") == fq {
+            let pos = rt_map_find(rec, "name")
+            if pos >= 0 {
+                let hn = rt_map_value_at(rec, pos)
+                if dn_ieq(hn, key) != 0 {
+                    let kind = dn_map_int(rec, "kind")
+                    if qtype == 1 && kind == 4 {
+                        let ipos = rt_map_find(rec, "ip")
+                        out = std::array::push(out, rt_map_value_at(rec, ipos))
+                    }
+                    if qtype == 28 && kind == 6 {
+                        let ipos = rt_map_find(rec, "ip")
+                        out = std::array::push(out, rt_map_value_at(rec, ipos))
+                    }
+                }
+            }
+        }
+        i += 1
+    }
+    out
+}
+
+fn dn_build_names(function: string, st: any, nm: any) -> any {
+    if dn_map_int(nm, "fqdn") != 0 {
+        return std::array::push([], dn_name_dup(nm))
+    }
+    let ndots = dn_map_int(st, "ndots")
+    let mut raw_first = false
+    if dn_num_labels(nm) > ndots {
+        raw_first = true
+    }
+    if dn_is_localhost(nm) != 0 {
+        raw_first = true
+    }
+    let mut names = []
+    if !raw_first {
+        names = std::array::push(names, dn_name_dup(nm))
+    }
+    let search = dn_map_arr(st, "search")
+    let mut si = len(search) - 1
+    while si >= 0 {
+        let sname = dn_parse_name(function, search[si])
+        let joined = dn_append_domain(nm, sname)
+        if dn_contains_name(names, joined) == 0 {
+            names = std::array::push(names, joined)
+        }
+        si = si - 1
+    }
+    let mut domain = ""
+    let dpos = rt_map_find(st, "domain")
+    if dpos >= 0 {
+        let dv = rt_map_value_at(st, dpos)
+        if std::raw::tag(dv) == 5 {
+            domain = dv
+        }
+    }
+    if rt_slen(domain) > 0 {
+        let dname = dn_parse_name(function, domain)
+        let joined = dn_append_domain(nm, dname)
+        if dn_contains_name(names, joined) == 0 {
+            names = std::array::push(names, joined)
+        }
+    }
+    if raw_first {
+        names = std::array::push(names, dn_name_dup(nm))
+    }
+    names
+}
+
+fn dn_encode_name(buf: int, off: int, nm: any) -> int {
+    let labs = dn_map_arr(nm, "labels")
+    let mut o = off
+    let mut i = 0
+    while i < len(labs) {
+        let lab = labs[i]
+        let n = rt_slen(lab)
+        std::raw::store8(buf + o, n)
+        o += 1
+        rt_copy(buf + o, std::raw::bits(lab) + 16, n)
+        o += n
+        i += 1
+    }
+    std::raw::store8(buf + o, 0)
+    o + 1
+}
+
+fn dn_skip_name(msg: int, msglen: int, off: int) -> int {
+    let mut o = off
+    let mut jumps = 0
+    loop {
+        if o >= msglen {
+            return 0 - 1
+        }
+        let l = std::raw::load8(msg + o)
+        if l == 0 {
+            return o + 1
+        }
+        if l >= 192 {
+            if jumps == 0 {
+                return o + 2
+            }
+            return o + 2
+        }
+        o = o + 1 + l
+        jumps += 1
+        if jumps > 128 {
+            return 0 - 1
+        }
+    }
+    o
+}
+
+fn dn_read_name(msg: int, msglen: int, off: int) -> any {
+    let mut o = off
+    let mut labs = []
+    let mut jumps = 0
+    let mut end = 0 - 1
+    loop {
+        if o >= msglen {
+            return nil
+        }
+        let l = std::raw::load8(msg + o)
+        if l == 0 {
+            if end < 0 {
+                end = o + 1
+            }
+            break
+        }
+        if l >= 192 {
+            if o + 1 >= msglen {
+                return nil
+            }
+            if end < 0 {
+                end = o + 2
+            }
+            let ptr = (l & 63) * 256 + std::raw::load8(msg + o + 1)
+            o = ptr
+            jumps += 1
+            if jumps > 20 {
+                return nil
+            }
+        } else {
+            o += 1
+            if o + l > msglen {
+                return nil
+            }
+            labs = std::array::push(labs, nt_str(msg + o, l))
+            o += l
+        }
+    }
+    let mut m = rt_map_alloc(0, 4)
+    m = std__map__insert(m, "fqdn", 1)
+    m = std__map__insert(m, "labels", labs)
+    m = std__map__insert(m, "end", end)
+    m
+}
+
+fn dn_rand16() -> int {
+    let p = rt_alloc(2)
+    std::raw::syscall(318, p, 2, 0, 0, 0, 0)
+    let v = std::raw::load8(p) * 256 + std::raw::load8(p + 1)
+    rt_free_block(p)
+    v
+}
+
+fn dn_ns_ip(st: any) -> any {
+    let ns = dn_map_arr(st, "ns")
+    if len(ns) == 0 {
+        return "8.8.8.8"
+    }
+    ns[0]
+}
+
+fn dn_udp(st: any, nm: any, qtype: int) -> int {
+    let ns = dn_ns_ip(st)
+    let nsp = std::raw::bits(ns) + 16
+    let nsn = rt_slen(ns)
+    let a4 = rt_alloc_zero(4)
+    if !nt_rust_v4(nsp, nsn, a4) {
+        rt_free_block(a4)
+        return 0
+    }
+    let q = rt_alloc_zero(512)
+    let id = dn_rand16()
+    dn_be16(q, id)
+    dn_be16(q + 2, 256)
+    dn_be16(q + 4, 1)
+    dn_be16(q + 6, 0)
+    dn_be16(q + 8, 0)
+    dn_be16(q + 10, 0)
+    let o = dn_encode_name(q, 12, nm)
+    dn_be16(q + o, qtype)
+    dn_be16(q + o + 2, 1)
+    let qlen = o + 4
+    let sa = rt_alloc_zero(16)
+    nt_sin(sa, 53, a4)
+    rt_free_block(a4)
+    let mut timeout = dn_map_int(st, "timeout")
+    if timeout <= 0 {
+        timeout = 5
+    }
+    let mut attempts = dn_map_int(st, "attempts")
+    if attempts <= 0 {
+        attempts = 2
+    }
+    let mut tryc = 0
+    let mut ans = 0
+    while tryc <= attempts {
+        let fd = std::raw::syscall(41, 2, 524290, 0, 0, 0, 0)
+        if fd < 0 {
+            break
+        }
+        let cr = std::raw::syscall(42, fd, sa, 16, 0, 0, 0)
+        if cr < 0 && cr != 0 - 106 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        } else {
+            let w = std::raw::syscall(44, fd, q, qlen, 0, 0, 0)
+            if w != qlen {
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            } else {
+                let pfd = rt_alloc_zero(16)
+                sa_put8(pfd, fd, 4)
+                sa_put8(pfd + 4, 1, 2)
+                sa_put8(pfd + 6, 0, 2)
+                let pr = std::raw::syscall(7, pfd, 1, timeout * 1000, 0, 0, 0)
+                let rev = sa_get8(pfd + 6, 2)
+                rt_free_block(pfd)
+                if pr <= 0 || (rev & 1) == 0 {
+                    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                } else {
+                    let rbuf = rt_alloc(4112)
+                    let got = std::raw::syscall(45, fd, rbuf, 4096, 0, 0, 0)
+                    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                    if got < 12 {
+                        rt_free_block(rbuf)
+                    } else {
+                        if dn_ld16(rbuf) != id {
+                            rt_free_block(rbuf)
+                        } else {
+                            ans = rbuf
+                            std::raw::store(rbuf + 4096, got)
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        tryc += 1
+    }
+    rt_free_block(sa)
+    rt_free_block(q)
+    ans
+}
+
+fn dn_parse_txt(msg: int, start: int, rdlen: int) -> any {
+    let mut o = start
+    let end = start + rdlen
+    let mut out = ""
+    while o < end {
+        let l = std::raw::load8(msg + o)
+        o += 1
+        if o + l > end {
+            break
+        }
+        out = out + nt_str(msg + o, l)
+        o += l
+    }
+    out
+}
+
+fn dn_collect(msg: int, msglen: int, qtype: int) -> any {
+    if msglen < 12 {
+        return nil
+    }
+    let flags = dn_ld16(msg + 2)
+    let rcode = flags & 15
+    let qd = dn_ld16(msg + 4)
+    let an = dn_ld16(msg + 6)
+    let mut o = 12
+    let mut qi = 0
+    while qi < qd {
+        let sk = dn_skip_name(msg, msglen, o)
+        if sk < 0 {
+            return nil
+        }
+        o = sk + 4
+        qi += 1
+    }
+    let mut out = []
+    let mut ai = 0
+    while ai < an {
+        let nm = dn_read_name(msg, msglen, o)
+        if std::raw::tag(nm) != 9 {
+            return nil
+        }
+        o = dn_map_int(nm, "end")
+        if o + 10 > msglen {
+            return nil
+        }
+        let typ = dn_ld16(msg + o)
+        let cls = dn_ld16(msg + o + 2)
+        let rdlen = dn_ld16(msg + o + 8)
+        o = o + 10
+        if o + rdlen > msglen {
+            return nil
+        }
+        if cls == 1 && typ == qtype {
+            if qtype == 1 && rdlen == 4 {
+                out = std::array::push(out, dn_ipv4_str(msg + o))
+            }
+            if qtype == 28 && rdlen == 16 {
+                out = std::array::push(out, dn_ipv6_str(msg + o))
+            }
+            if qtype == 5 || qtype == 12 {
+                let cn = dn_read_name(msg, msglen, o)
+                if std::raw::tag(cn) == 9 {
+                    out = std::array::push(out, dn_name_text(cn, 1))
+                }
+            }
+            if qtype == 15 && rdlen >= 2 {
+                let pref = dn_ld16(msg + o)
+                let ex = dn_read_name(msg, msglen, o + 2)
+                if std::raw::tag(ex) == 9 {
+                    out = std::array::push(out, rt_int_to_str(pref) + " " + dn_name_text(ex, 1))
+                }
+            }
+            if qtype == 16 {
+                out = std::array::push(out, dn_parse_txt(msg, o, rdlen))
+            }
+        }
+        o = o + rdlen
+        ai += 1
+    }
+    let mut m = rt_map_alloc(0, 4)
+    m = std__map__insert(m, "rcode", rcode)
+    std__map__insert(m, "recs", out)
+}
+
+fn dn_zone_127(nm: any) -> int {
+    let labs = dn_map_arr(nm, "labels")
+    let n = len(labs)
+    if n < 3 {
+        return 0
+    }
+    if dn_ieq(labs[n - 1], "arpa") == 0 {
+        return 0
+    }
+    if dn_ieq(labs[n - 2], "in-addr") == 0 {
+        return 0
+    }
+    if dn_ieq(labs[n - 3], "127") == 0 {
+        return 0
+    }
+    1
+}
+
+fn dn_zone_ip6_1(nm: any) -> int {
+    let labs = dn_map_arr(nm, "labels")
+    let n = len(labs)
+    if n < 34 {
+        return 0
+    }
+    if dn_ieq(labs[n - 1], "arpa") == 0 {
+        return 0
+    }
+    if dn_ieq(labs[n - 2], "ip6") == 0 {
+        return 0
+    }
+    let mut i = 0
+    while i < 31 {
+        if labs[n - 3 - i] != "0" {
+            return 0
+        }
+        i += 1
+    }
+    if labs[n - 34] != "1" {
+        return 0
+    }
+    1
+}
+
+fn dn_last_is(nm: any, s: any) -> int {
+    let labs = dn_map_arr(nm, "labels")
+    let n = len(labs)
+    if n < 1 {
+        return 0
+    }
+    dn_ieq(labs[n - 1], s)
+}
+
+fn dn_special(nm: any, qtype: int) -> any {
+    if dn_is_localhost(nm) != 0 || dn_zone_127(nm) != 0 || dn_zone_ip6_1(nm) != 0 {
+        if qtype == 1 {
+            return std::array::push([], "127.0.0.1")
+        }
+        if qtype == 28 {
+            return std::array::push([], "::1")
+        }
+        if qtype == 12 {
+            return std::array::push([], "localhost.")
+        }
+        let mut z = []
+        return z
+    }
+    if dn_last_is(nm, "invalid") != 0 || dn_last_is(nm, "onion") != 0 {
+        let mut z = []
+        return z
+    }
+    nil
+}
+
+fn dn_query(function: string, st: any, nm: any, qtype: int, use_hosts: int) -> any {
+    if use_hosts != 0 {
+        if qtype == 1 || qtype == 28 {
+            let h = dn_hosts_lookup(st, nm, qtype)
+            if len(h) > 0 {
+                return h
+            }
+        }
+    }
+    let spec = dn_special(nm, qtype)
+    if std::raw::tag(spec) == 7 {
+        if len(spec) > 0 {
+            return spec
+        }
+        return nil
+    }
+    let pkt = dn_udp(st, nm, qtype)
+    if pkt == 0 {
+        dn_fail(function, "DNS lookup error: io error: timed out")
+    }
+    let msglen = std::raw::load(pkt + 4096)
+    let parsed = dn_collect(pkt, msglen, qtype)
+    rt_free_block(pkt)
+    if std::raw::tag(parsed) != 9 {
+        dn_fail(function, dn_lookup_msg(dn_name_text(nm, 1), dn_qtype_name(qtype)))
+    }
+    let recs = dn_map_arr(parsed, "recs")
+    if len(recs) == 0 {
+        return nil
+    }
+    recs
+}
+
+fn dn_then_swap(function: string, st: any, nm: any, first: int, second: int) -> any {
+    let a = dn_query(function, st, nm, first, 1)
+    if std::raw::tag(a) == 7 {
+        if len(a) > 0 {
+            return a
+        }
+    }
+    let b = dn_query(function, st, nm, second, 1)
+    if std::raw::tag(b) == 7 {
+        if len(b) > 0 {
+            return b
+        }
+    }
+    nil
+}
+
+fn dn_lookup_ip(function: string, host: any) -> any {
+    let ip = dn_parse_ip(host)
+    if std::raw::tag(ip) == 5 {
+        return std::array::push([], ip)
+    }
+    let st = dn_st()
+    let nm = dn_parse_name(function, host)
+    let names = dn_build_names(function, st, nm)
+    let mut last = nm
+    let mut i = len(names) - 1
+    while i >= 0 {
+        last = names[i]
+        let recs = dn_then_swap(function, st, last, 1, 28)
+        if std::raw::tag(recs) == 7 {
+            if len(recs) > 0 {
+                return recs
+            }
+        }
+        i = i - 1
+    }
+    dn_fail(function, dn_lookup_msg(dn_name_text(last, 1), "AAAA"))
+    nil
+}
+
+fn dn_lookup_type(function: string, host: any, qtype: int) -> any {
+    let st = dn_st()
+    let nm = dn_parse_name(function, host)
+    let names = dn_build_names(function, st, nm)
+    let mut last = nm
+    let mut i = len(names) - 1
+    while i >= 0 {
+        last = names[i]
+        let recs = dn_query(function, st, last, qtype, 0)
+        if std::raw::tag(recs) == 7 {
+            if len(recs) > 0 {
+                if qtype == 15 {
+                    return rt_sort_strings(recs)
+                }
+                return recs
+            }
+        }
+        i = i - 1
+    }
+    dn_fail(function, dn_lookup_msg(dn_name_text(last, 1), dn_qtype_name(qtype)))
+    nil
+}
+
+fn dn_ptr_name_v4(s: any) -> any {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let a = rt_alloc_zero(4)
+    nt_rust_v4(p, n, a)
+    let t = rt_int_to_str(std::raw::load8(a + 3)) + "." + rt_int_to_str(std::raw::load8(a + 2)) + "." + rt_int_to_str(std::raw::load8(a + 1)) + "." + rt_int_to_str(std::raw::load8(a)) + ".in-addr.arpa."
+    rt_free_block(a)
+    t
+}
+
+fn dn_ptr_name_v6(s: any) -> any {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let a = rt_alloc_zero(16)
+    nt_rust_v6(p, n, a)
+    let mut out = ""
+    let mut i = 15
+    while i >= 0 {
+        let b = std::raw::load8(a + i)
+        out = out + dn_hex1(b & 15) + "." + dn_hex1(std::raw::shr(b, 4))
+        if i > 0 {
+            out = out + "."
+        }
+        i = i - 1
+    }
+    rt_free_block(a)
+    out + ".ip6.arpa."
+}
+
+fn std__dns__resolve(host: any) -> any {
+    let function = "std::dns::resolve"
+    rt_expect_str(host, function)
+    dn_lookup_ip(function, host)
+}
+
+fn std__dns__resolve_ipv4(host: any) -> any {
+    let function = "std::dns::resolve_ipv4"
+    rt_expect_str(host, function)
+    let all = dn_lookup_ip(function, host)
+    let mut out = []
+    let mut i = 0
+    while i < len(all) {
+        if dn_ip_kind(all[i]) == 4 {
+            out = std::array::push(out, all[i])
+        }
+        i += 1
+    }
+    out
+}
+
+fn std__dns__resolve_ipv6(host: any) -> any {
+    let function = "std::dns::resolve_ipv6"
+    rt_expect_str(host, function)
+    let all = dn_lookup_ip(function, host)
+    let mut out = []
+    let mut i = 0
+    while i < len(all) {
+        if dn_ip_kind(all[i]) == 6 {
+            out = std::array::push(out, all[i])
+        }
+        i += 1
+    }
+    out
+}
+
+fn std__dns__resolve_mx(host: any) -> any {
+    let function = "std::dns::resolve_mx"
+    rt_expect_str(host, function)
+    dn_lookup_type(function, host, 15)
+}
+
+fn std__dns__resolve_txt(host: any) -> any {
+    let function = "std::dns::resolve_txt"
+    rt_expect_str(host, function)
+    dn_lookup_type(function, host, 16)
+}
+
+fn std__dns__resolve_cname(host: any) -> any {
+    let function = "std::dns::resolve_cname"
+    rt_expect_str(host, function)
+    dn_lookup_type(function, host, 5)
+}
+
+fn std__dns__reverse(ip: any) -> any {
+    let function = "std::dns::reverse"
+    rt_expect_str(ip, function)
+    let kind = dn_ip_kind(ip)
+    if kind == 0 {
+        dn_fail(function, "DNS lookup error: invalid IP: " + ip)
+    }
+    let mut name = ""
+    if kind == 4 {
+        name = dn_ptr_name_v4(ip)
+    } else {
+        name = dn_ptr_name_v6(ip)
+    }
+    dn_lookup_type(function, name, 12)
+}
