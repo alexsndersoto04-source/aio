@@ -184,6 +184,23 @@ index 87c9962..e9b9a38 100644
 -}
 \ No newline at end of file
 +}
+diff --git a/crates/titan_stdlib/src/archive_mod.rs b/crates/titan_stdlib/src/archive_mod.rs
+index 83c5182..989dba6 100644
+--- a/crates/titan_stdlib/src/archive_mod.rs
++++ b/crates/titan_stdlib/src/archive_mod.rs
+@@ -135,9 +135,9 @@ pub fn zip_unpack(data: &[u8]) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+             }
+             zip::CompressionMethod::Deflated => inflate_raw(&raw)?,
+             _ => {
+-                return Err(ArchiveError::Zip(zip::result::ZipError::UnsupportedArchive(
+-                    "Compression method not supported",
+-                )))
++                return Err(ArchiveError::Zip(
++                    zip::result::ZipError::UnsupportedArchive("Compression method not supported"),
++                ))
+             }
+         };
+         let mut sum = Crc::new();
 diff --git a/crates/titan_stdlib/src/audio_cloud.rs b/crates/titan_stdlib/src/audio_cloud.rs
 index ac2f01e..7f859ba 100644
 --- a/crates/titan_stdlib/src/audio_cloud.rs
