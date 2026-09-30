@@ -65,7 +65,7 @@ dirs_mod     = ["dep:dirs"]
 
 # Phase 2 — formats & compression
 compress_mod = ["dep:flate2", "dep:miniz_oxide", "dep:zstd"]
-archive_mod  = ["dep:tar", "dep:zip"]
+archive_mod  = ["dep:tar", "dep:zip", "dep:flate2", "dep:miniz_oxide"]
 yaml_mod     = ["dep:serde_yaml"]
 xml_mod      = ["dep:quick-xml"]
 

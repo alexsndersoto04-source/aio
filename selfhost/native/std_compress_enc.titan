@@ -98,13 +98,9 @@ fn ce_tables() -> int {
 }
 
 fn ce_new(level: int, zlib: bool, n: int) -> int {
-    let size = 1125120
-    let e = rt_alloc(size)
-    let mut i = 0
-    while i < size {
-        std::raw::store(e + i, 0)
-        i += 8
-    }
+    // Estado a cero sin recorrerlo entero (rt_alloc_zero devuelve las páginas
+    // al sistema): con entradas pequeñas solo se tocan unas pocas.
+    let e = rt_alloc_zero(1125120)
     let mut probes = 0
     if level == 1 {
         probes = 1

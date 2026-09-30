@@ -30,6 +30,7 @@ import std_compress_zstd
 import std_compress_zstd_enc_tab
 import std_compress_zstd_enc
 import std_compress_zstd_mf
+import std_archive
 import std_freestanding
 import std_freestanding_hw
 import std_rsa
