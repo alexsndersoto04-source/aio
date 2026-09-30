@@ -51,3 +51,6 @@ image 0.25.10
 png 0.18.1
 fdeflate 0.3.7
 simd-adler32 0.3.10
+plotters 0.3.7
+plotters-svg 0.3.7
+plotters-backend 0.3.7
