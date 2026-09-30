@@ -1,0 +1,1589 @@
+// std::qrcode (5 nativas). Reproduce crates/titan_stdlib/src/qrcode_mod.rs
+// sobre qrcode 0.14.1 (matriz, máscara, dibujo ASCII/Unicode/SVG) y, para
+// PNG, image 0.25.10 + png 0.18.1 con fdeflate 0.3.7 (compresión Fast y
+// filtro Adaptive). Prefijo `qr_`. Tablas en std_qrcode_tab.titan.
+
+// ------------------------------------------------------------ tablas
+
+fn qr_hexd(c: int) -> int {
+    if c >= 97 {
+        return c - 87
+    }
+    c - 48
+}
+
+fn qr_hexn(s: any, at: int, n: int) -> int {
+    let p = std::raw::bits(s) + 16 + at
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        v = v * 16 + qr_hexd(std::raw::load8(p + i))
+        i += 1
+    }
+    v
+}
+
+fn qr_u8tab(s: any, i: int) -> int {
+    qr_hexn(s, i * 2, 2)
+}
+
+fn qr_dlen(v: int, ec: int) -> int {
+    qr_hexn(qr_dlen_hex(), ((v - 1) * 4 + ec) * 4, 4)
+}
+
+fn qr_ecb(v: int, ec: int) -> int {
+    qr_u8tab(qr_ecb_hex(), (v - 1) * 4 + ec)
+}
+
+fn qr_dbb(v: int, ec: int, k: int) -> int {
+    qr_u8tab(qr_dbb_hex(), ((v - 1) * 4 + ec) * 4 + k)
+}
+
+fn qr_finfo(i: int) -> int {
+    qr_hexn(qr_finfo_hex(), i * 4, 4)
+}
+
+fn qr_vinfo(v: int) -> int {
+    qr_hexn(qr_vinfo_hex(), (v - 7) * 5, 5)
+}
+
+// Tablas de uso frecuente (exp/log de GF(256) y Huffman de fdeflate),
+// decodificadas una vez. Puntero en globals+3104 (8 bytes; 3096 es std::net).
+fn qr_tabs() -> int {
+    let g = std::raw::globals() + 3104
+    let have = std::raw::load(g)
+    if have != 0 {
+        return have
+    }
+    let t = rt_alloc(256 + 256 + 286 + 2288 + 256 + 256)
+    let mut i = 0
+    while i < 256 {
+        std::raw::store8(t + i, qr_u8tab(qr_exp_hex(), i))
+        std::raw::store8(t + 256 + i, qr_u8tab(qr_log_hex(), i))
+        i += 1
+    }
+    i = 0
+    while i < 286 {
+        std::raw::store8(t + 512 + i, qr_hexd(std::raw::load8(std::raw::bits(fd_hlen_hex()) + 16 + i)))
+        std::raw::store(t + 800 + 8 * i, qr_hexn(fd_hcode_hex(), i * 4, 4))
+        i += 1
+    }
+    i = 0
+    while i < 256 {
+        std::raw::store8(t + 3088 + i, qr_u8tab(fd_lsym_hex(), i))
+        std::raw::store8(t + 3344 + i, qr_hexd(std::raw::load8(std::raw::bits(fd_lext_hex()) + 16 + i)))
+        i += 1
+    }
+    std::raw::store(g, t)
+    t
+}
+
+fn qr_exp(i: int) -> int {
+    std::raw::load8(qr_tabs() + i)
+}
+
+fn qr_log(i: int) -> int {
+    std::raw::load8(qr_tabs() + 256 + i)
+}
+
+fn qr_hlen(i: int) -> int {
+    std::raw::load8(qr_tabs() + 512 + i)
+}
+
+fn qr_hcode(i: int) -> int {
+    std::raw::load(qr_tabs() + 800 + 8 * i)
+}
+
+fn qr_lsym(run3: int) -> int {
+    std::raw::load8(qr_tabs() + 3088 + run3) + 257
+}
+
+fn qr_lext(run3: int) -> int {
+    std::raw::load8(qr_tabs() + 3344 + run3)
+}
+
+fn qr_gen_at(n: int, i: int) -> int {
+    let off = qr_hexn(qr_gen_off_hex(), n * 4, 4)
+    qr_u8tab(qr_gen_hex(), off + i)
+}
+
+// ------------------------------------------------------------ bits (bits.rs)
+
+fn qr_bnew(ver: int) -> int {
+    let b = rt_alloc(40)
+    std::raw::store(b, rt_alloc(4096))
+    std::raw::store(b + 8, 0)
+    std::raw::store(b + 16, 4096)
+    std::raw::store(b + 24, 0)
+    std::raw::store(b + 32, ver)
+    b
+}
+
+fn qr_blen(b: int) -> int {
+    let n = std::raw::load(b + 8)
+    let off = std::raw::load(b + 24)
+    if off == 0 {
+        return n * 8
+    }
+    return (n - 1) * 8 + off
+}
+
+fn qr_bgrow(b: int, extra: int) {
+    let n = std::raw::load(b + 8)
+    let cap = std::raw::load(b + 16)
+    if n + extra <= cap {
+        return
+    }
+    let mut bigger = cap * 2
+    while bigger < n + extra {
+        bigger = bigger * 2
+    }
+    let p = rt_alloc(bigger)
+    rt_copy(p, std::raw::load(b), n)
+    rt_free_block(std::raw::load(b))
+    std::raw::store(b, p)
+    std::raw::store(b + 16, bigger)
+}
+
+fn qr_push(b: int, n: int, number: int) {
+    qr_bgrow(b, 4)
+    let data = std::raw::load(b)
+    let last = std::raw::load(b + 8)
+    let off = std::raw::load(b + 24)
+    let end = off + n
+    if off == 0 {
+        if end <= 8 {
+            std::raw::store8(data + last, std::raw::shl(number, 8 - end) & 255)
+            std::raw::store(b + 8, last + 1)
+        } else {
+            std::raw::store8(data + last, std::raw::shr(number, end - 8) & 255)
+            std::raw::store8(data + last + 1, std::raw::shl(number, 16 - end) & 255)
+            std::raw::store(b + 8, last + 2)
+        }
+    } else if end <= 8 {
+        std::raw::store8(data + last - 1, std::raw::load8(data + last - 1) | (std::raw::shl(number, 8 - end) & 255))
+    } else if end <= 16 {
+        std::raw::store8(data + last - 1, std::raw::load8(data + last - 1) | (std::raw::shr(number, end - 8) & 255))
+        std::raw::store8(data + last, std::raw::shl(number, 16 - end) & 255)
+        std::raw::store(b + 8, last + 1)
+    } else {
+        std::raw::store8(data + last - 1, std::raw::load8(data + last - 1) | (std::raw::shr(number, end - 8) & 255))
+        std::raw::store8(data + last, std::raw::shr(number, end - 16) & 255)
+        std::raw::store8(data + last + 1, std::raw::shl(number, 24 - end) & 255)
+        std::raw::store(b + 8, last + 2)
+    }
+    std::raw::store(b + 24, end & 7)
+}
+
+fn qr_push_ok(b: int, n: int, number: int) -> bool {
+    if n > 16 || number >= std::raw::shl(1, n) {
+        return false
+    }
+    qr_push(b, n, number)
+    true
+}
+
+fn qr_lenbits(mode: int, ver: int) -> int {
+    if ver <= 9 {
+        if mode == 0 {
+            return 10
+        }
+        if mode == 1 {
+            return 9
+        }
+        return 8
+    }
+    if ver <= 26 {
+        if mode == 0 {
+            return 12
+        }
+        if mode == 1 {
+            return 11
+        }
+        if mode == 2 {
+            return 16
+        }
+        return 10
+    }
+    if mode == 0 {
+        return 14
+    }
+    if mode == 1 {
+        return 13
+    }
+    if mode == 2 {
+        return 16
+    }
+    12
+}
+
+fn qr_databits(mode: int, raw: int) -> int {
+    if mode == 0 {
+        return (raw * 10 + 2) / 3
+    }
+    if mode == 1 {
+        return (raw * 11 + 1) / 2
+    }
+    if mode == 2 {
+        return raw * 8
+    }
+    raw * 13
+}
+
+fn qr_seglen(mode: int, begin: int, end: int, ver: int) -> int {
+    let mut chars = end - begin
+    if mode == 3 {
+        chars = chars / 2
+    }
+    4 + qr_lenbits(mode, ver) + qr_databits(mode, chars)
+}
+
+fn qr_mode_ind(b: int, mode: int) -> bool {
+    let mut number = 1
+    if mode == 1 {
+        number = 2
+    } else if mode == 2 {
+        number = 4
+    } else if mode == 3 {
+        number = 8
+    }
+    if !qr_push_ok(b, 4, number) {
+        return false
+    }
+    true
+}
+
+fn qr_header(b: int, mode: int, n: int) -> bool {
+    if !qr_mode_ind(b, mode) {
+        return false
+    }
+    qr_push_ok(b, qr_lenbits(mode, std::raw::load(b + 32)), n)
+}
+
+fn qr_push_num(b: int, p: int, n: int) -> bool {
+    if !qr_header(b, 0, n) {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        let mut take = 3
+        if i + take > n {
+            take = n - i
+        }
+        let mut number = 0
+        let mut k = 0
+        while k < take {
+            number = number * 10 + (std::raw::load8(p + i + k) - 48)
+            k += 1
+        }
+        qr_push(b, take * 3 + 1, number)
+        i += take
+    }
+    true
+}
+
+fn qr_alnum_d(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 65 && c <= 90 {
+        return c - 65 + 10
+    }
+    if c == 32 {
+        return 36
+    }
+    if c == 36 {
+        return 37
+    }
+    if c == 37 {
+        return 38
+    }
+    if c == 42 {
+        return 39
+    }
+    if c == 43 {
+        return 40
+    }
+    if c == 45 {
+        return 41
+    }
+    if c == 46 {
+        return 42
+    }
+    if c == 47 {
+        return 43
+    }
+    if c == 58 {
+        return 44
+    }
+    0
+}
+
+fn qr_push_alnum(b: int, p: int, n: int) -> bool {
+    if !qr_header(b, 1, n) {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        let mut take = 2
+        if i + take > n {
+            take = n - i
+        }
+        let mut number = 0
+        let mut k = 0
+        while k < take {
+            number = number * 45 + qr_alnum_d(std::raw::load8(p + i + k))
+            k += 1
+        }
+        qr_push(b, take * 5 + 1, number)
+        i += take
+    }
+    true
+}
+
+fn qr_push_byte(b: int, p: int, n: int) -> bool {
+    if !qr_header(b, 2, n) {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        qr_push(b, 8, std::raw::load8(p + i))
+        i += 1
+    }
+    true
+}
+
+fn qr_push_kanji(b: int, p: int, n: int) -> bool {
+    if !qr_header(b, 3, n / 2) {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        if i + 2 > n {
+            return false
+        }
+        let cp = std::raw::load8(p + i) * 256 + std::raw::load8(p + i + 1)
+        let mut bytes = cp - 33088
+        if cp >= 57408 {
+            bytes = cp - 49472
+        }
+        let number = std::raw::shr(bytes, 8) * 192 + (bytes & 255)
+        qr_push(b, 13, number)
+        i += 2
+    }
+    true
+}
+
+fn qr_push_seg(b: int, data: int, mode: int, begin: int, end: int) -> bool {
+    let p = data + begin
+    let n = end - begin
+    if mode == 0 {
+        return qr_push_num(b, p, n)
+    }
+    if mode == 1 {
+        return qr_push_alnum(b, p, n)
+    }
+    if mode == 2 {
+        return qr_push_byte(b, p, n)
+    }
+    qr_push_kanji(b, p, n)
+}
+
+fn qr_term(b: int, ec: int) -> bool {
+    let ver = std::raw::load(b + 32)
+    let cap = qr_dlen(ver, ec)
+    let cur = qr_blen(b)
+    if cur > cap {
+        return false
+    }
+    let mut tsz = 4
+    if tsz > cap - cur {
+        tsz = cap - cur
+    }
+    if tsz > 0 {
+        qr_push(b, tsz, 0)
+    }
+    if qr_blen(b) < cap {
+        std::raw::store(b + 24, 0)
+        let need = cap / 8
+        let have = std::raw::load(b + 8)
+        qr_bgrow(b, need - have + 1)
+        let data = std::raw::load(b)
+        let mut i = have
+        let mut k = 0
+        while i < need {
+            if k == 0 {
+                std::raw::store8(data + i, 236)
+            } else {
+                std::raw::store8(data + i, 17)
+            }
+            k = 1 - k
+            i += 1
+        }
+        std::raw::store(b + 8, need)
+    }
+    if qr_blen(b) < cap {
+        qr_bgrow(b, 1)
+        std::raw::store8(std::raw::load(b) + std::raw::load(b + 8), 0)
+        std::raw::store(b + 8, std::raw::load(b + 8) + 1)
+    }
+    true
+}
+
+fn qr_bfree(b: int) {
+    rt_free_block(std::raw::load(b))
+    rt_free_block(b)
+}
+
+// ------------------------------------------------------------ segmentos (optimize.rs)
+
+fn qr_ecs(c: int) -> int {
+    if c == 32 || c == 36 || c == 37 || c == 42 || c == 43 || (c >= 45 && c <= 47) || c == 58 {
+        return 1
+    }
+    if c >= 48 && c <= 57 {
+        return 2
+    }
+    if c >= 65 && c <= 90 {
+        return 3
+    }
+    if c >= 129 && c <= 159 {
+        return 4
+    }
+    if c >= 224 && c <= 234 {
+        return 5
+    }
+    if c == 235 {
+        return 6
+    }
+    if c == 64 || (c >= 91 && c <= 126) || c == 128 || (c >= 160 && c <= 191) {
+        return 7
+    }
+    if (c >= 192 && c <= 223) || (c >= 236 && c <= 252) {
+        return 8
+    }
+    9
+}
+
+fn qr_slist() -> int {
+    let s = rt_alloc(24)
+    std::raw::store(s, 0)
+    std::raw::store(s + 8, 0)
+    std::raw::store(s + 16, 0)
+    s
+}
+
+fn qr_spush(s: int, mode: int, begin: int, end: int) {
+    let n = std::raw::load(s + 8)
+    let cap = std::raw::load(s + 16)
+    if n == cap {
+        let mut ncap = cap * 2
+        if ncap < 8 {
+            ncap = 8
+        }
+        let p = rt_alloc(ncap * 24)
+        if cap > 0 {
+            rt_copy(p, std::raw::load(s), cap * 24)
+            rt_free_block(std::raw::load(s))
+        }
+        std::raw::store(s, p)
+        std::raw::store(s + 16, ncap)
+    }
+    let p = std::raw::load(s) + n * 24
+    std::raw::store(p, mode)
+    std::raw::store(p + 8, begin)
+    std::raw::store(p + 16, end)
+    std::raw::store(s + 8, n + 1)
+}
+
+fn qr_sfree(s: int) {
+    if std::raw::load(s) != 0 {
+        rt_free_block(std::raw::load(s))
+    }
+    rt_free_block(s)
+}
+
+fn qr_parse(data: int, n: int) -> int {
+    let s = qr_slist()
+    let mut state = 0
+    let mut begin = 0
+    let mut pending = false
+    let mut idx = 0
+    let mut ended = false
+    loop {
+        if pending {
+            pending = false
+            begin += 1
+            qr_spush(s, 2, begin - 1, begin)
+            continue
+        }
+        let mut i = 0
+        let mut ecs = 0
+        if ended {
+            break
+        }
+        if idx >= n {
+            ended = true
+            i = n
+            ecs = 0
+        } else {
+            i = idx
+            ecs = qr_ecs(std::raw::load8(data + idx))
+            idx += 1
+        }
+        let p = std::raw::bits(qr_trans_hex()) + 16 + (state + ecs) * 2
+        let ns = (std::raw::load8(p) - 48) * 10
+        let act = std::raw::load8(p + 1) - 48
+        state = ns
+        if act == 0 {
+            continue
+        }
+        let old = begin
+        let mut mode = act - 1
+        if act == 5 {
+            let next_begin = i - 1
+            if begin == next_begin {
+                mode = 2
+            } else {
+                pending = true
+                begin = next_begin
+                qr_spush(s, 3, old, next_begin)
+                continue
+            }
+        }
+        begin = i
+        qr_spush(s, mode, old, i)
+    }
+    s
+}
+
+fn qr_mode_max(a: int, b: int) -> int {
+    if a == b {
+        return a
+    }
+    if a == 2 || b == 2 {
+        return 2
+    }
+    if a == 0 && b == 1 {
+        return 1
+    }
+    if a == 1 && b == 0 {
+        return 1
+    }
+    2
+}
+
+fn qr_optimize(src: int, ver: int) -> int {
+    let out = qr_slist()
+    let n = std::raw::load(src + 8)
+    if n == 0 {
+        return out
+    }
+    let p0 = std::raw::load(src)
+    let mut lm = std::raw::load(p0)
+    let mut lb = std::raw::load(p0 + 8)
+    let mut le = std::raw::load(p0 + 16)
+    let mut ls = qr_seglen(lm, lb, le, ver)
+    let mut i = 1
+    while i < n {
+        let p = std::raw::load(src) + i * 24
+        let sm = std::raw::load(p)
+        let sb = std::raw::load(p + 8)
+        let se = std::raw::load(p + 16)
+        let ss = qr_seglen(sm, sb, se, ver)
+        let nm = qr_mode_max(lm, sm)
+        let ns = qr_seglen(nm, lb, se, ver)
+        if ls + ss >= ns {
+            lm = nm
+            le = se
+            ls = ns
+        } else {
+            qr_spush(out, lm, lb, le)
+            lm = sm
+            lb = sb
+            le = se
+            ls = ss
+        }
+        i += 1
+    }
+    qr_spush(out, lm, lb, le)
+    out
+}
+
+fn qr_total(s: int, ver: int) -> int {
+    let n = std::raw::load(s + 8)
+    let mut t = 0
+    let mut i = 0
+    while i < n {
+        let p = std::raw::load(s) + i * 24
+        t += qr_seglen(std::raw::load(p), std::raw::load(p + 8), std::raw::load(p + 16), ver)
+        i += 1
+    }
+    t
+}
+
+fn qr_minver(length: int, ec: int) -> int {
+    let mut base = 0
+    let mut size = 39
+    while size > 1 {
+        let half = size / 2
+        let mid = base + half
+        if qr_dlen(mid + 1, ec) > length {
+            base = base
+        } else {
+            base = mid
+        }
+        size -= half
+    }
+    if qr_dlen(base + 1, ec) >= length {
+        return base + 1
+    }
+    base + 2
+}
+
+fn qr_push_all(b: int, data: int, s: int) -> bool {
+    let n = std::raw::load(s + 8)
+    let mut i = 0
+    while i < n {
+        let p = std::raw::load(s) + i * 24
+        if !qr_push_seg(b, data, std::raw::load(p), std::raw::load(p + 8), std::raw::load(p + 16)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn qr_encode_bits(data: int, n: int, ec: int) -> int {
+    let segs = qr_parse(data, n)
+    let mut vers = 9
+    let mut round = 0
+    while round < 3 {
+        if round == 1 {
+            vers = 26
+        }
+        if round == 2 {
+            vers = 40
+        }
+        let opt = qr_optimize(segs, vers)
+        let tot = qr_total(opt, vers)
+        if tot <= qr_dlen(vers, ec) {
+            let minv = qr_minver(tot, ec)
+            let b = qr_bnew(minv)
+            if qr_push_all(b, data, opt) && qr_term(b, ec) {
+                qr_sfree(opt)
+                qr_sfree(segs)
+                return b
+            }
+            qr_bfree(b)
+        }
+        qr_sfree(opt)
+        round += 1
+    }
+    qr_sfree(segs)
+    0
+}
+
+// ------------------------------------------------------------ corrección (ec.rs)
+
+fn qr_rs(data: int, n: int, ecn: int, out: int) {
+    let mut i = 0
+    while i < n {
+        std::raw::store8(out + i, std::raw::load8(data + i))
+        i += 1
+    }
+    while i < n + ecn {
+        std::raw::store8(out + i, 0)
+        i += 1
+    }
+    i = 0
+    while i < n {
+        let lead = std::raw::load8(out + i)
+        if lead != 0 {
+            let ll = qr_log(lead)
+            let mut j = 0
+            while j < ecn {
+                let v = qr_gen_at(ecn, j)
+                let e = qr_exp((v + ll) % 255)
+                std::raw::store8(out + i + 1 + j, std::raw::load8(out + i + 1 + j) ^ e)
+                j += 1
+            }
+        }
+        i += 1
+    }
+}
+
+fn qr_interleave(blocks: int, nb: int, maxl: int, dst: int) -> int {
+    let mut w = 0
+    let mut i = 0
+    while i < maxl {
+        let mut t = 0
+        while t < nb {
+            let p = std::raw::load(blocks + 8 * t)
+            let ln = std::raw::load(blocks + 8 * (nb + t))
+            if i < ln {
+                std::raw::store8(dst + w, std::raw::load8(p + i))
+                w += 1
+            }
+            t += 1
+        }
+        i += 1
+    }
+    w
+}
+
+fn qr_codewords(raw: int, nraw: int, ver: int, ec: int, data_out: int, ec_out: int) -> int {
+    let s1 = qr_dbb(ver, ec, 0)
+    let c1 = qr_dbb(ver, ec, 1)
+    let s2 = qr_dbb(ver, ec, 2)
+    let c2 = qr_dbb(ver, ec, 3)
+    let nb = c1 + c2
+    let ecn = qr_ecb(ver, ec)
+    let blocks = rt_alloc(16 * nb)
+    let tmp = rt_alloc(s1 + s2 + ecn + 8)
+    let mut t = 0
+    let mut off = 0
+    while t < c1 {
+        let p = raw + off
+        std::raw::store(blocks + 8 * t, p)
+        std::raw::store(blocks + 8 * (nb + t), s1)
+        off += s1
+        t += 1
+    }
+    while t < nb {
+        let p = raw + off
+        std::raw::store(blocks + 8 * t, p)
+        std::raw::store(blocks + 8 * (nb + t), s2)
+        off += s2
+        t += 1
+    }
+    let mut maxd = s1
+    if s2 > maxd {
+        maxd = s2
+    }
+    let nd = qr_interleave(blocks, nb, maxd, data_out)
+    let ecb = rt_alloc(16 * nb)
+    let store = rt_alloc(nb * ecn)
+    t = 0
+    while t < nb {
+        let p = std::raw::load(blocks + 8 * t)
+        let ln = std::raw::load(blocks + 8 * (nb + t))
+        qr_rs(p, ln, ecn, tmp)
+        let dest = store + t * ecn
+        let mut i = 0
+        while i < ecn {
+            std::raw::store8(dest + i, std::raw::load8(tmp + ln + i))
+            i += 1
+        }
+        std::raw::store(ecb + 8 * t, dest)
+        std::raw::store(ecb + 8 * (nb + t), ecn)
+        t += 1
+    }
+    let ne = qr_interleave(ecb, nb, ecn, ec_out)
+    rt_free_block(store)
+    rt_free_block(ecb)
+    rt_free_block(tmp)
+    rt_free_block(blocks)
+    nd * 65536 + ne
+}
+
+// ------------------------------------------------------------ lienzo (canvas.rs)
+
+fn qr_can_new(ver: int, ec: int) -> int {
+    let w = ver * 4 + 17
+    let c = rt_alloc(32)
+    std::raw::store(c, w)
+    std::raw::store(c + 8, ver)
+    std::raw::store(c + 16, ec)
+    std::raw::store(c + 24, rt_alloc_zero(w * w))
+    c
+}
+
+fn qr_can_free(c: int) {
+    rt_free_block(std::raw::load(c + 24))
+    rt_free_block(c)
+}
+
+fn qr_idx(c: int, x0: int, y0: int) -> int {
+    let w = std::raw::load(c)
+    let mut x = x0
+    let mut y = y0
+    if x < 0 {
+        x += w
+    }
+    if y < 0 {
+        y += w
+    }
+    y * w + x
+}
+
+fn qr_get(c: int, x: int, y: int) -> int {
+    std::raw::load8(std::raw::load(c + 24) + qr_idx(c, x, y))
+}
+
+fn qr_putm(c: int, x: int, y: int, m: int) {
+    std::raw::store8(std::raw::load(c + 24) + qr_idx(c, x, y), m)
+}
+
+fn qr_put(c: int, x: int, y: int, dark: bool) {
+    let mut m = 3
+    if dark {
+        m = 4
+    }
+    qr_putm(c, x, y, m)
+}
+
+fn qr_finder_at(c: int, x: int, y: int) {
+    let mut dx0 = 0 - 3
+    let mut dx1 = 4
+    if x < 0 {
+        dx0 = 0 - 4
+        dx1 = 3
+    }
+    let mut dy0 = 0 - 3
+    let mut dy1 = 4
+    if y < 0 {
+        dy0 = 0 - 4
+        dy1 = 3
+    }
+    let mut j = dy0
+    while j <= dy1 {
+        let mut i = dx0
+        while i <= dx1 {
+            let mut dark = true
+            if i == 4 || i == 0 - 4 || j == 4 || j == 0 - 4 {
+                dark = false
+            } else if i == 3 || i == 0 - 3 || j == 3 || j == 0 - 3 {
+                dark = true
+            } else if i == 2 || i == 0 - 2 || j == 2 || j == 0 - 2 {
+                dark = false
+            } else {
+                dark = true
+            }
+            qr_put(c, x + i, y + j, dark)
+            i += 1
+        }
+        j += 1
+    }
+}
+
+fn qr_finders(c: int) {
+    qr_finder_at(c, 3, 3)
+    qr_finder_at(c, 0 - 4, 3)
+    qr_finder_at(c, 3, 0 - 4)
+}
+
+fn qr_align_at(c: int, x: int, y: int) {
+    if qr_get(c, x, y) != 0 {
+        return
+    }
+    let mut j = 0 - 2
+    while j <= 2 {
+        let mut i = 0 - 2
+        while i <= 2 {
+            let dark = i == 2 || i == 0 - 2 || j == 2 || j == 0 - 2 || (i == 0 && j == 0)
+            qr_put(c, x + i, y + j, dark)
+            i += 1
+        }
+        j += 1
+    }
+}
+
+fn qr_align_count(v: int) -> int {
+    let p = std::raw::bits(qr_align_hex()) + 16
+    let mut skip = v - 7
+    let mut at = 0
+    while skip > 0 {
+        let n = qr_hexn(qr_align_hex(), at, 2)
+        at += 2 + 2 * n
+        skip -= 1
+    }
+    qr_hexn(qr_align_hex(), at, 2)
+}
+
+fn qr_align_pos(v: int, i: int) -> int {
+    let mut skip = v - 7
+    let mut at = 0
+    while skip > 0 {
+        let n = qr_hexn(qr_align_hex(), at, 2)
+        at += 2 + 2 * n
+        skip -= 1
+    }
+    qr_hexn(qr_align_hex(), at + 2 + 2 * i, 2)
+}
+
+fn qr_aligns(c: int) {
+    let v = std::raw::load(c + 8)
+    if v == 1 {
+        return
+    }
+    if v <= 6 {
+        qr_align_at(c, 0 - 7, 0 - 7)
+        return
+    }
+    let n = qr_align_count(v)
+    let mut i = 0
+    while i < n {
+        let mut j = 0
+        while j < n {
+            qr_align_at(c, qr_align_pos(v, i), qr_align_pos(v, j))
+            j += 1
+        }
+        i += 1
+    }
+}
+
+fn qr_line_h(c: int, x1: int, x2: int, y: int) {
+    let mut x = x1
+    while x <= x2 {
+        qr_put(c, x, y, x % 2 == 0)
+        x += 1
+    }
+}
+
+fn qr_line_v(c: int, y1: int, y2: int, x: int) {
+    let mut y = y1
+    while y <= y2 {
+        qr_put(c, x, y, y % 2 == 0)
+        y += 1
+    }
+}
+
+fn qr_timing(c: int) {
+    let w = std::raw::load(c)
+    qr_line_h(c, 8, w - 9, 6)
+    qr_line_v(c, 8, w - 9, 6)
+}
+
+fn qr_draw_bits(c: int, number: int, bits: int, coords: any, n: int) {
+    let mut mask = std::raw::shl(1, bits - 1)
+    let mut i = 0
+    while i < n {
+        let x = qr_hexn(coords, i * 4, 2) - 16
+        let y = qr_hexn(coords, i * 4 + 2, 2) - 16
+        qr_put(c, x, y, (mask & number) != 0)
+        mask = std::raw::shr(mask, 1)
+        i += 1
+    }
+}
+
+fn qr_format_num(c: int, fmt: int) {
+    qr_draw_bits(c, fmt, 15, qr_format_info_coords_qr_main_hex(), 15)
+    qr_draw_bits(c, fmt, 15, qr_format_info_coords_qr_side_hex(), 15)
+    qr_put(c, 8, 0 - 8, true)
+}
+
+fn qr_reserved_fmt(c: int) {
+    qr_format_num(c, 0)
+}
+
+fn qr_version_pat(c: int) {
+    let v = std::raw::load(c + 8)
+    if v <= 6 {
+        return
+    }
+    let inf = qr_vinfo(v)
+    qr_draw_bits(c, inf, 18, qr_version_info_coords_bl_hex(), 18)
+    qr_draw_bits(c, inf, 18, qr_version_info_coords_tr_hex(), 18)
+}
+
+fn qr_functional(c: int) {
+    qr_finders(c)
+    qr_aligns(c)
+    qr_reserved_fmt(c)
+    qr_timing(c)
+    qr_version_pat(c)
+}
+
+fn qr_iter_new(c: int) -> int {
+    let it = rt_alloc(32)
+    let w = std::raw::load(c)
+    std::raw::store(it, w - 1)
+    std::raw::store(it + 8, w - 1)
+    std::raw::store(it + 16, w)
+    std::raw::store(it + 24, 6)
+    it
+}
+
+fn qr_iter_next(it: int) -> int {
+    let x = std::raw::load(it)
+    let y = std::raw::load(it + 8)
+    let w = std::raw::load(it + 16)
+    let tc = std::raw::load(it + 24)
+    let mut adj = x
+    if x <= tc {
+        adj = x + 1
+    }
+    if adj <= 0 {
+        return 0 - 1
+    }
+    let res = x * 65536 + (y & 65535)
+    let col = (w - adj) % 4
+    if col == 2 && y > 0 {
+        std::raw::store(it + 8, y - 1)
+        std::raw::store(it, x + 1)
+    } else if col == 0 && y < w - 1 {
+        std::raw::store(it + 8, y + 1)
+        std::raw::store(it, x + 1)
+    } else if (col == 0 || col == 2) && x == tc + 1 {
+        std::raw::store(it, x - 2)
+    } else {
+        std::raw::store(it, x - 1)
+    }
+    res
+}
+
+fn qr_draw_words(c: int, words: int, n: int, it: int) {
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(words + i)
+        let mut j = 7
+        while j >= 0 {
+            let dark = (b & std::raw::shl(1, j)) != 0
+            loop {
+                let xy = qr_iter_next(it)
+                if xy < 0 {
+                    return
+                }
+                let x = xy / 65536
+                let y = xy & 65535
+                if qr_get(c, x, y) == 0 {
+                    let mut m = 1
+                    if dark {
+                        m = 2
+                    }
+                    qr_putm(c, x, y, m)
+                    break
+                }
+            }
+            j -= 1
+        }
+        i += 1
+    }
+}
+
+fn qr_draw_data(c: int, data: int, nd: int, ecw: int, ne: int) {
+    let it = qr_iter_new(c)
+    qr_draw_words(c, data, nd, it)
+    qr_draw_words(c, ecw, ne, it)
+    rt_free_block(it)
+}
+
+fn qr_mask_on(p: int, x: int, y: int) -> bool {
+    if p == 0 {
+        return (x + y) % 2 == 0
+    }
+    if p == 1 {
+        return y % 2 == 0
+    }
+    if p == 2 {
+        return x % 3 == 0
+    }
+    if p == 3 {
+        return (x + y) % 3 == 0
+    }
+    if p == 4 {
+        return (y / 2 + x / 3) % 2 == 0
+    }
+    if p == 5 {
+        return (x * y) % 2 + (x * y) % 3 == 0
+    }
+    if p == 6 {
+        return ((x * y) % 2 + (x * y) % 3) % 2 == 0
+    }
+    return ((x + y) % 2 + (x * y) % 3) % 2 == 0
+}
+
+fn qr_mod_mask(m: int, inv: bool) -> int {
+    if m == 0 {
+        if inv {
+            return 4
+        }
+        return 3
+    }
+    if m == 1 || m == 2 {
+        let mut dark = m == 2
+        if inv {
+            dark = !dark
+        }
+        if dark {
+            return 4
+        }
+        return 3
+    }
+    m
+}
+
+fn qr_apply_mask(c: int, ptn: int) {
+    let w = std::raw::load(c)
+    let mut y = 0
+    while y < w {
+        let mut x = 0
+        while x < w {
+            let m = qr_get(c, x, y)
+            qr_putm(c, x, y, qr_mod_mask(m, qr_mask_on(ptn, x, y)))
+            x += 1
+        }
+        y += 1
+    }
+    let simple = std::raw::shl(std::raw::load(c + 16) ^ 1, 3) | ptn
+    qr_format_num(c, qr_finfo(simple))
+}
+
+fn qr_is_dark(c: int, x: int, y: int) -> bool {
+    let m = qr_get(c, x, y)
+    m == 2 || m == 4
+}
+
+fn qr_color(c: int, x: int, y: int) -> int {
+    if qr_is_dark(c, x, y) {
+        return 1
+    }
+    0
+}
+
+fn qr_pen_adj(c: int, horiz: bool) -> int {
+    let w = std::raw::load(c)
+    let mut total = 0
+    let mut i = 0
+    while i < w {
+        let mut last = 0 - 1
+        let mut run = 1
+        let mut j = 0
+        while j <= w {
+            let mut col = 0
+            if j == w {
+                col = 0 - 2
+            } else if horiz {
+                col = qr_get(c, j, i)
+            } else {
+                col = qr_get(c, i, j)
+            }
+            if col == last {
+                run += 1
+            } else {
+                if last != 0 - 1 && run >= 5 {
+                    total = (total + run - 2) & 65535
+                }
+                last = col
+                run = 1
+            }
+            j += 1
+        }
+        i += 1
+    }
+    total
+}
+
+fn qr_pen_block(c: int) -> int {
+    let w = std::raw::load(c)
+    let mut total = 0
+    let mut i = 0
+    while i < w - 1 {
+        let mut j = 0
+        while j < w - 1 {
+            let a = qr_get(c, i, j)
+            if a == qr_get(c, i + 1, j) && a == qr_get(c, i, j + 1) && a == qr_get(c, i + 1, j + 1) {
+                total = (total + 3) & 65535
+            }
+            j += 1
+        }
+        i += 1
+    }
+    total
+}
+
+fn qr_pen_finder(c: int, horiz: bool) -> int {
+    let w = std::raw::load(c)
+    let mut total = 0
+    let mut i = 0
+    while i < w {
+        let mut j = 0
+        while j < w - 6 {
+            let mut ok = true
+            let mut k = 0
+            while k < 7 {
+                let mut col = 0
+                if horiz {
+                    col = qr_color(c, j + k, i)
+                } else {
+                    col = qr_color(c, i, j + k)
+                }
+                let mut want = 0
+                if k == 0 || k == 2 || k == 3 || k == 4 || k == 6 {
+                    want = 1
+                }
+                if col != want {
+                    ok = false
+                }
+                k += 1
+            }
+            if ok {
+                let mut left = false
+                let mut t = j - 4
+                while t < j {
+                    if t >= 0 && t < w {
+                        let mut col = 0
+                        if horiz {
+                            col = qr_color(c, t, i)
+                        } else {
+                            col = qr_color(c, i, t)
+                        }
+                        if col != 0 {
+                            left = true
+                        }
+                    }
+                    t += 1
+                }
+                let mut right = false
+                t = j + 7
+                while t < j + 11 {
+                    if t >= 0 && t < w {
+                        let mut col = 0
+                        if horiz {
+                            col = qr_color(c, t, i)
+                        } else {
+                            col = qr_color(c, i, t)
+                        }
+                        if col != 0 {
+                            right = true
+                        }
+                    }
+                    t += 1
+                }
+                if !left || !right {
+                    total = (total + 40) & 65535
+                }
+            }
+            j += 1
+        }
+        i += 1
+    }
+    return (total + 65536 - 360) & 65535
+}
+
+fn qr_pen_bal(c: int) -> int {
+    let w = std::raw::load(c)
+    let tot = w * w
+    let p = std::raw::load(c + 24)
+    let mut dark = 0
+    let mut i = 0
+    while i < tot {
+        let m = std::raw::load8(p + i)
+        if m == 2 || m == 4 {
+            dark += 1
+        }
+        i += 1
+    }
+    let ratio = dark * 200 / tot
+    if ratio >= 100 {
+        return ratio - 100
+    }
+    100 - ratio
+}
+
+fn qr_penalty(c: int) -> int {
+    let s = qr_pen_adj(c, true) + qr_pen_adj(c, false) + qr_pen_block(c) + qr_pen_finder(c, true) + qr_pen_finder(c, false) + qr_pen_bal(c)
+    s & 65535
+}
+
+fn qr_clone(c: int) -> int {
+    let w = std::raw::load(c)
+    let n = qr_can_new(std::raw::load(c + 8), std::raw::load(c + 16))
+    rt_copy(std::raw::load(n + 24), std::raw::load(c + 24), w * w)
+    n
+}
+
+fn qr_best_mask(c: int) -> int {
+    let mut best = qr_clone(c)
+    qr_apply_mask(best, 0)
+    let mut best_s = qr_penalty(best)
+    let mut p = 1
+    while p < 8 {
+        let n = qr_clone(c)
+        qr_apply_mask(n, p)
+        let s = qr_penalty(n)
+        if s < best_s {
+            qr_can_free(best)
+            best = n
+            best_s = s
+        } else {
+            qr_can_free(n)
+        }
+        p += 1
+    }
+    qr_can_free(c)
+    best
+}
+
+fn qr_matrix(text: any, ec: int) -> int {
+    let p = std::raw::bits(text) + 16
+    let n = rt_slen(text)
+    let b = qr_encode_bits(p, n, ec)
+    if b == 0 {
+        return 0
+    }
+    let ver = std::raw::load(b + 32)
+    let raw = std::raw::load(b)
+    let nraw = std::raw::load(b + 8)
+    let data = rt_alloc(4096)
+    let ecw = rt_alloc(4096)
+    let both = qr_codewords(raw, nraw, ver, ec, data, ecw)
+    let nd = both / 65536
+    let ne = both % 65536
+    let c = qr_can_new(ver, ec)
+    qr_functional(c)
+    qr_draw_data(c, data, nd, ecw, ne)
+    rt_free_block(data)
+    rt_free_block(ecw)
+    qr_bfree(b)
+    qr_best_mask(c)
+}
+
+// ------------------------------------------------------------ dibujo
+
+fn qr_first_cp(s: any, def: int) -> int {
+    if rt_slen(s) == 0 {
+        return def
+    }
+    rt_char_at(s, 0)
+}
+
+fn qr_ascii(c: int, dark: int, light: int) -> any {
+    let w = std::raw::load(c)
+    let full = w + 8
+    let rw = full * 2
+    let rh = full
+    let b = sb_new(rw * rh + rh)
+    let mut y = 0
+    while y < rh {
+        if y > 0 {
+            sb_byte(b, 10)
+        }
+        let mut x = 0
+        while x < rw {
+            let mx = x / 2
+            let my = y
+            let mut cp = light
+            if mx >= 4 && mx < 4 + w && my >= 4 && my < 4 + w {
+                if qr_is_dark(c, mx - 4, my - 4) {
+                    cp = dark
+                }
+            }
+            sb_cp(b, cp)
+            x += 1
+        }
+        y += 1
+    }
+    sb_finish(b)
+}
+
+fn qr_unicode(c: int) -> any {
+    let w = std::raw::load(c)
+    let full = w + 8
+    let b = sb_new(full * ((full + 1) / 2) * 3 + full)
+    let mut y = 0
+    let mut first = true
+    while y < full {
+        if !first {
+            sb_byte(b, 10)
+        }
+        first = false
+        let mut x = 0
+        while x < full {
+            let mut top = 0
+            let mut bot = 0
+            if x >= 4 && x < 4 + w && y >= 4 && y < 4 + w {
+                if qr_is_dark(c, x - 4, y - 4) {
+                    top = 1
+                }
+            }
+            if y + 1 < full {
+                if x >= 4 && x < 4 + w && y + 1 >= 4 && y + 1 < 4 + w {
+                    if qr_is_dark(c, x - 4, y + 1 - 4) {
+                        bot = 1
+                    }
+                }
+            }
+            let sym = top * 2 + bot
+            if y + 1 >= full {
+                // fila suelta: solo el de arriba (top*2)
+            }
+            if sym == 0 {
+                sb_byte(b, 32)
+            } else if sym == 1 {
+                sb_cp(b, 9604)
+            } else if sym == 2 {
+                sb_cp(b, 9600)
+            } else {
+                sb_cp(b, 9608)
+            }
+            x += 1
+        }
+        y += 2
+    }
+    sb_finish(b)
+}
+
+fn qr_unit(need: int, modules: int) -> int {
+    let win = modules + 8
+    let mut unit = (need + win - 1) / win
+    if unit < 1 {
+        unit = 1
+    }
+    unit
+}
+
+fn qr_svg(c: int, need: int) -> any {
+    let w = std::raw::load(c)
+    let full = w + 8
+    let u = qr_unit(need, w)
+    let rw = full * u
+    let b = sb_new(256 + full * full * 24)
+    sb_str(b, "<?xml version=\"1.0\" standalone=\"yes\"?><svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"")
+    sb_str(b, rt_int_to_str(rw))
+    sb_str(b, "\" height=\"")
+    sb_str(b, rt_int_to_str(rw))
+    sb_str(b, "\" viewBox=\"0 0 ")
+    sb_str(b, rt_int_to_str(rw))
+    sb_byte(b, 32)
+    sb_str(b, rt_int_to_str(rw))
+    sb_str(b, "\" shape-rendering=\"crispEdges\"><rect x=\"0\" y=\"0\" width=\"")
+    sb_str(b, rt_int_to_str(rw))
+    sb_str(b, "\" height=\"")
+    sb_str(b, rt_int_to_str(rw))
+    sb_str(b, "\" fill=\"#ffffff\"/><path fill=\"#000000\" d=\"")
+    let mut y = 0
+    while y < full {
+        let mut x = 0
+        while x < full {
+            let mut dark = false
+            if x >= 4 && x < 4 + w && y >= 4 && y < 4 + w {
+                dark = qr_is_dark(c, x - 4, y - 4)
+            }
+            if dark {
+                let left = x * u
+                let top = y * u
+                sb_byte(b, 77)
+                sb_str(b, rt_int_to_str(left))
+                sb_byte(b, 32)
+                sb_str(b, rt_int_to_str(top))
+                sb_byte(b, 104)
+                sb_str(b, rt_int_to_str(u))
+                sb_byte(b, 118)
+                sb_str(b, rt_int_to_str(u))
+                sb_byte(b, 72)
+                sb_str(b, rt_int_to_str(left))
+                sb_byte(b, 86)
+                sb_str(b, rt_int_to_str(top))
+            }
+            x += 1
+        }
+        y += 1
+    }
+    sb_str(b, "\"/></svg>")
+    sb_finish_bytes(b)
+}
+
+// ------------------------------------------------------------ nivel y API
+
+fn qr_upper(s: any) -> any {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let b = sb_new(n)
+    let mut i = 0
+    while i < n {
+        let mut c = std::raw::load8(p + i)
+        if c >= 97 && c <= 122 {
+            c -= 32
+        }
+        sb_byte(b, c)
+        i += 1
+    }
+    sb_finish(b)
+}
+
+fn qr_ec_of(s: any) -> int {
+    let u = qr_upper(s)
+    let n = rt_slen(u)
+    if n != 1 {
+        return 0 - 1
+    }
+    let c = std::raw::load8(std::raw::bits(u) + 16)
+    if c == 76 {
+        return 0
+    }
+    if c == 77 {
+        return 1
+    }
+    if c == 81 {
+        return 2
+    }
+    if c == 72 {
+        return 3
+    }
+    0 - 1
+}
+
+fn qr_fail_level(function: string, s: any) {
+    let u = qr_upper(s)
+    rt_native_fail(function, rt_concat(rt_concat("unknown error-correction level '", u), "' (try L, M, Q, H)"))
+}
+
+fn qr_u32_ok(v: any, function: string, what: string) -> int {
+    rt_expect_int(v, function)
+    let n = std::raw::bits(v)
+    if n < 0 || n > 4294967295 {
+        rt_native_fail(function, rt_concat(what, " out of range"))
+    }
+    n
+}
+
+fn qr_build(text: any, level: any, function: string) -> int {
+    rt_expect_str(text, function)
+    rt_expect_str(level, function)
+    let ec = qr_ec_of(level)
+    if ec < 0 {
+        qr_fail_level(function, level)
+    }
+    let c = qr_matrix(text, ec)
+    if c == 0 {
+        rt_native_fail(function, "QR encode error: data too long")
+    }
+    c
+}
+
+fn std__qrcode__to_ascii(text: any, level: any, dark: any, light: any) -> any {
+    let f = "std::qrcode::to_ascii"
+    rt_expect_str(text, f)
+    rt_expect_str(level, f)
+    rt_expect_str(dark, f)
+    rt_expect_str(light, f)
+    let c = qr_build(text, level, f)
+    let d = qr_first_cp(dark, 35)
+    let l = qr_first_cp(light, 32)
+    let s = qr_ascii(c, d, l)
+    qr_can_free(c)
+    s
+}
+
+fn std__qrcode__to_unicode(text: any, level: any) -> any {
+    let f = "std::qrcode::to_unicode"
+    rt_expect_str(text, f)
+    rt_expect_str(level, f)
+    let c = qr_build(text, level, f)
+    let s = qr_unicode(c)
+    qr_can_free(c)
+    s
+}
+
+fn std__qrcode__to_svg(text: any, level: any, pixels: any) -> any {
+    let f = "std::qrcode::to_svg"
+    rt_expect_str(text, f)
+    rt_expect_str(level, f)
+    let n = qr_u32_ok(pixels, f, "module_pixels")
+    let c = qr_build(text, level, f)
+    let s = qr_svg(c, n)
+    qr_can_free(c)
+    s
+}

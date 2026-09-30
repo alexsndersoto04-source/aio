@@ -37,6 +37,9 @@ import std_yaml_emit
 import std_net
 import std_net_gai
 import std_net_dns
+import std_qrcode_tab
+import std_qrcode
+import std_qrcode_png
 import std_freestanding
 import std_freestanding_hw
 import std_rsa

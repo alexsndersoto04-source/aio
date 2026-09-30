@@ -1,0 +1,60 @@
+// std::qrcode: ASCII, Unicode, SVG y PNG, comparados con la VM.
+fn show_err(label: string, r: Result) {
+    match r {
+        Result::Ok(v) => println(label + " OK " + std::json::stringify(v)),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    let a = std::qrcode::to_ascii("hola titan", "M", "#", " ")
+    println("ascii lines " + std::json::stringify(std::text::contains(a, "#")))
+    println("ascii crc " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(a))))
+    println("---ascii---")
+    println(a)
+    println("---fin---")
+
+    let u = std::qrcode::to_unicode("hola", "M")
+    println("uni crc " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(u))))
+    println("---uni---")
+    println(u)
+    println("---fin---")
+
+    let s = std::qrcode::to_svg("https://arena.ai", "M", 200)
+    println("svg crc " + std::json::stringify(std::checksum::crc32(s)))
+    println("svg head " + std::encoding::utf8_decode(std::bytes::slice(s, 0, 40)))
+
+    let p = std::qrcode::to_png("hola", "L", 200)
+    println("png magic " + std::json::stringify(std::bytes::slice(p, 0, 8)))
+    println("png len " + std::json::stringify(std::bytes::length(p)))
+    println("png crc " + std::json::stringify(std::checksum::crc32(p)))
+
+    let a2 = std::qrcode::to_ascii("12345", "L", "X", ".")
+    println("num crc " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(a2))))
+
+    let a3 = std::qrcode::to_ascii("HOLA", "Q", "#", " ")
+    println("alnum crc " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(a3))))
+
+    let a4 = std::qrcode::to_ascii("", "H", "#", " ")
+    println("empty crc " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(a4))))
+
+    let a5 = std::qrcode::to_ascii("hola", "m", "", "")
+    println("def crc " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(a5))))
+
+    show_err("nivel", std::try::catch(|| { std::qrcode::to_ascii("hola", "Z", "#", " ") }))
+    show_err("pixels", std::try::catch(|| { std::qrcode::to_svg("hola", "M", 0 - 1) }))
+    let png = std::qrcode::to_png("save", "Q", 80)
+    std::qrcode::save_png("save", "Q", 80, "/tmp/qr_save.png")
+    let got = std::fs::read_bytes("/tmp/qr_save.png")
+    println("save " + std::json::stringify(std::checksum::crc32(png) == std::checksum::crc32(got)))
+
+    show_err("largo", std::try::catch(|| {
+        let mut t = ""
+        let mut i = 0
+        while i < 3000 {
+            t = t + "A"
+            i += 1
+        }
+        std::qrcode::to_ascii(t, "H", "#", " ")
+    }))
+}
