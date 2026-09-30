@@ -147,6 +147,12 @@ fn ze_blockc(z: int, rep: int, src: int, n: int, ext: bool) -> int {
         }
         return ze_lazy(z, rep, src, n, strat - 3, true)
     }
+    if strat == 6 {
+        if ext {
+            return ze_lazy_ext(z, rep, src, n, 2, false)
+        }
+        return ze_lazy(z, rep, src, n, 2, false)
+    }
     rt_die("zstd_encode: estrategia sin implementar")
     0
 }
@@ -1103,6 +1109,9 @@ fn ze_row_search(z: int, ip: int, iLimit: int, ext: bool) -> int {
 // Búsqueda según el método (filas; cadenas y árbol más abajo).
 fn ze_search(z: int, ip: int, iend: int, ext: bool) -> int {
     std::raw::store(z + 416, 999999999)
+    if std::raw::load(z + 56) == 6 {
+        return ze_bt_search(z, ip, iend, ext)
+    }
     ze_row_search(z, ip, iend, ext)
 }
 
@@ -1442,4 +1451,217 @@ fn ze_lazy_ext(z: int, rep: int, src: int, n: int, depth: int, row: bool) -> int
     std::raw::store(rep, off1)
     std::raw::store(rep + 8, off2)
     iend - anchor
+}
+
+// ------------------------------------------------------------ árbol binario (DUBT)
+// ZSTD_updateDUBT / ZSTD_insertDUBT1 / ZSTD_DUBT_findBestMatch. La tabla de
+// cadenas guarda 2 índices por posición (menor, mayor); la marca 1 =
+// "sin ordenar". z + 424: celda de descarte (dummy32).
+
+fn ze_bt_update(z: int, ip: int, mls: int) {
+    let ht = std::raw::load(z + 272)
+    let hashLog = std::raw::load(z + 24)
+    let bt = std::raw::load(z + 280)
+    let btMask = std::raw::shl(1, std::raw::load(z + 16) - 1) - 1
+    let base = std::raw::load(z + 208)
+    let target = ip - base
+    let mut idx = std::raw::load(z + 256)
+    while idx < target {
+        let h = ze_hash(base + idx, hashLog, mls)
+        let mi = ze_t32(ht, h)
+        let nc = 2 * (idx & btMask)
+        ze_p32(ht, h, idx)
+        ze_p32(bt, nc, mi)
+        ze_p32(bt, nc + 1, 1)
+        idx += 1
+    }
+    std::raw::store(z + 256, target)
+}
+
+fn ze_bt_insert1(z: int, curr: int, inputEnd: int, nbCompares0: int, btLow: int, ext: bool) {
+    let bt = std::raw::load(z + 280)
+    let btMask = std::raw::shl(1, std::raw::load(z + 16) - 1) - 1
+    let mut cls = 0
+    let mut cll = 0
+    let base = std::raw::load(z + 208)
+    let dictBase = std::raw::load(z + 216)
+    let dictLimit = std::raw::load(z + 224)
+    let mut ip = dictBase + curr
+    let mut iend = dictBase + dictLimit
+    if curr >= dictLimit {
+        ip = base + curr
+        iend = inputEnd
+    }
+    let dictEnd = dictBase + dictLimit
+    let prefixStart = base + dictLimit
+    let dummy = z + 424
+    let mut smallerPtr = bt + 8 * (curr & btMask)
+    let mut largerPtr = smallerPtr + 4
+    let mut matchIndex = ze_t32(smallerPtr, 0)
+    let windowValid = std::raw::load(z + 232)
+    let maxDistance = std::raw::shl(1, std::raw::load(z + 8))
+    let mut windowLow = windowValid
+    if curr - windowValid > maxDistance {
+        windowLow = curr - maxDistance
+    }
+    let mut nbCompares = nbCompares0
+    while nbCompares > 0 && matchIndex > windowLow {
+        let nextPtr = bt + 8 * (matchIndex & btMask)
+        let mut matchLength = ze_min(cls, cll)
+        let mut mt = 0
+        if !ext || matchIndex + matchLength >= dictLimit || curr < dictLimit {
+            let mut mBase = dictBase
+            if !ext || matchIndex + matchLength >= dictLimit {
+                mBase = base
+            }
+            mt = mBase + matchIndex
+            matchLength += ze_count(ip + matchLength, mt + matchLength, iend)
+        } else {
+            mt = dictBase + matchIndex
+            matchLength += ze_count2(ip + matchLength, mt + matchLength, iend, dictEnd, prefixStart)
+            if matchIndex + matchLength >= dictLimit {
+                mt = base + matchIndex
+            }
+        }
+        if ip + matchLength == iend {
+            break
+        }
+        if std::raw::load8(mt + matchLength) < std::raw::load8(ip + matchLength) {
+            ze_p32(smallerPtr, 0, matchIndex)
+            cls = matchLength
+            if matchIndex <= btLow {
+                smallerPtr = dummy
+                break
+            }
+            smallerPtr = nextPtr + 4
+            matchIndex = ze_t32(nextPtr, 1)
+        } else {
+            ze_p32(largerPtr, 0, matchIndex)
+            cll = matchLength
+            if matchIndex <= btLow {
+                largerPtr = dummy
+                break
+            }
+            largerPtr = nextPtr
+            matchIndex = ze_t32(nextPtr, 0)
+        }
+        nbCompares -= 1
+    }
+    ze_p32(smallerPtr, 0, 0)
+    ze_p32(largerPtr, 0, 0)
+}
+
+fn ze_bt_find(z: int, ip: int, iend: int, mls: int, ext: bool) -> int {
+    let ht = std::raw::load(z + 272)
+    let hashLog = std::raw::load(z + 24)
+    let h = ze_hash(ip, hashLog, mls)
+    let mut matchIndex = ze_t32(ht, h)
+    let base = std::raw::load(z + 208)
+    let curr = ip - base
+    let windowLow = ze_lowest_match(z, curr)
+    let bt = std::raw::load(z + 280)
+    let btMask = std::raw::shl(1, std::raw::load(z + 16) - 1) - 1
+    let mut btLow = 0
+    if btMask < curr {
+        btLow = curr - btMask
+    }
+    let unsortLimit = ze_max(btLow, windowLow)
+    let mut nextCandidate = bt + 8 * (matchIndex & btMask)
+    let mut unsortedMark = nextCandidate + 4
+    let mut nbCompares = std::raw::shl(1, std::raw::load(z + 32))
+    let mut nbCandidates = nbCompares
+    let mut previousCandidate = 0
+    while matchIndex > unsortLimit && ze_t32(unsortedMark, 0) == 1 && nbCandidates > 1 {
+        ze_p32(unsortedMark, 0, previousCandidate)
+        previousCandidate = matchIndex
+        matchIndex = ze_t32(nextCandidate, 0)
+        nextCandidate = bt + 8 * (matchIndex & btMask)
+        unsortedMark = nextCandidate + 4
+        nbCandidates -= 1
+    }
+    if matchIndex > unsortLimit && ze_t32(unsortedMark, 0) == 1 {
+        ze_p32(nextCandidate, 0, 0)
+        ze_p32(unsortedMark, 0, 0)
+    }
+    matchIndex = previousCandidate
+    while matchIndex != 0 {
+        let nci = ze_t32(bt + 8 * (matchIndex & btMask) + 4, 0)
+        ze_bt_insert1(z, matchIndex, iend, nbCandidates, unsortLimit, ext)
+        matchIndex = nci
+        nbCandidates += 1
+    }
+    let mut cls = 0
+    let mut cll = 0
+    let dictBase = std::raw::load(z + 216)
+    let dictLimit = std::raw::load(z + 224)
+    let dictEnd = dictBase + dictLimit
+    let prefixStart = base + dictLimit
+    let dummy = z + 424
+    let mut smallerPtr = bt + 8 * (curr & btMask)
+    let mut largerPtr = smallerPtr + 4
+    let mut matchEndIdx = curr + 9
+    let mut bestLength = 0
+    matchIndex = ze_t32(ht, h)
+    ze_p32(ht, h, curr)
+    while nbCompares > 0 && matchIndex > windowLow {
+        let nextPtr = bt + 8 * (matchIndex & btMask)
+        let mut matchLength = ze_min(cls, cll)
+        let mut mt = 0
+        if !ext || matchIndex + matchLength >= dictLimit {
+            mt = base + matchIndex
+            matchLength += ze_count(ip + matchLength, mt + matchLength, iend)
+        } else {
+            mt = dictBase + matchIndex
+            matchLength += ze_count2(ip + matchLength, mt + matchLength, iend, dictEnd, prefixStart)
+            if matchIndex + matchLength >= dictLimit {
+                mt = base + matchIndex
+            }
+        }
+        if matchLength > bestLength {
+            if matchLength > matchEndIdx - matchIndex {
+                matchEndIdx = matchIndex + matchLength
+            }
+            if 4 * (matchLength - bestLength) > ze_hb(curr - matchIndex + 1) - ze_hb(std::raw::load(z + 416) & 4294967295) {
+                bestLength = matchLength
+                std::raw::store(z + 416, curr - matchIndex + 3)
+            }
+            if ip + matchLength == iend {
+                break
+            }
+        }
+        if std::raw::load8(mt + matchLength) < std::raw::load8(ip + matchLength) {
+            ze_p32(smallerPtr, 0, matchIndex)
+            cls = matchLength
+            if matchIndex <= btLow {
+                smallerPtr = dummy
+                break
+            }
+            smallerPtr = nextPtr + 4
+            matchIndex = ze_t32(nextPtr, 1)
+        } else {
+            ze_p32(largerPtr, 0, matchIndex)
+            cll = matchLength
+            if matchIndex <= btLow {
+                largerPtr = dummy
+                break
+            }
+            largerPtr = nextPtr
+            matchIndex = ze_t32(nextPtr, 0)
+        }
+        nbCompares -= 1
+    }
+    ze_p32(smallerPtr, 0, 0)
+    ze_p32(largerPtr, 0, 0)
+    std::raw::store(z + 256, matchEndIdx - 8)
+    bestLength
+}
+
+// ZSTD_BtFindBestMatch.
+fn ze_bt_search(z: int, ip: int, iend: int, ext: bool) -> int {
+    if ip < std::raw::load(z + 208) + std::raw::load(z + 256) {
+        return 0
+    }
+    let mls = ze_row_mls(z)
+    ze_bt_update(z, ip, mls)
+    ze_bt_find(z, ip, iend, mls, ext)
 }
