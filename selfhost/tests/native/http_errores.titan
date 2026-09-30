@@ -1,0 +1,29 @@
+// Errores de std::http.
+fn show(label: string, r: Result) {
+    match r {
+        Result::Ok(_) => println(label + " OK"),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    show("len", std::try::catch(|| { std::http::parse_request(std::encoding::utf8_encode("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\na")) }))
+    show("te", std::try::catch(|| { std::http::parse_request(std::encoding::utf8_encode("GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")) }))
+    show("ver", std::try::catch(|| { std::http::parse_request(std::encoding::utf8_encode("GET / HTTP/2.0\r\nHost: x\r\n\r\n")) }))
+    show("host", std::try::catch(|| { std::http::parse_request(std::encoding::utf8_encode("GET / HTTP/1.1\r\n\r\n")) }))
+    let badh = std::map::insert(std::map::new(), "X-Test", "ok\r\nInjected: yes")
+    show("inj", std::try::catch(|| { std::http::build_response(200, badh, std::encoding::utf8_encode(""), false) }))
+    show("st", std::try::catch(|| { std::http::build_response(999, std::map::new(), std::encoding::utf8_encode(""), false) }))
+    show("stneg", std::try::catch(|| { std::http::reason_phrase(0 - 1) }))
+    show("pat", std::try::catch(|| { std::http::route_match("/files/*path/more", "/files/a/more") }))
+    show("qlim", std::try::catch(|| { std::http::parse_query("a=1&b=2", 1) }))
+    show("cors", std::try::catch(|| { std::http::cors(std::map::new(), "a\r\nb", "GET") }))
+    let m = std::map::insert(std::map::new(), "headers", 1)
+    show("hdrs", std::try::catch(|| { std::http::security_headers(m) }))
+    show("rlk", std::try::catch(|| { std::http::rate_limit("", 1, 10) }))
+    show("mpb", std::try::catch(|| { std::http::parse_multipart("text/plain", std::encoding::utf8_encode(""), 1, 1) }))
+    show("fn", std::try::catch(|| { std::http::parse_multipart("multipart/form-data; boundary=x", std::encoding::utf8_encode("--x\r\nContent-Disposition: form-data; name=\"f\"; filename=\"../bad\"\r\n\r\na\r\n--x--\r\n"), 2, 10) }))
+    show("t0", std::try::catch(|| { std::http::request("GET", "http://127.0.0.1:1/", std::map::new(), std::encoding::utf8_encode(""), 1024, 0, 0) }))
+    show("url", std::try::catch(|| { std::http::request("GET", "ftp://x/", std::map::new(), std::encoding::utf8_encode(""), 1024, 0, 1000) }))
+    show("meth", std::try::catch(|| { std::http::request("G ET", "http://127.0.0.1:1/", std::map::new(), std::encoding::utf8_encode(""), 1024, 0, 1000) }))
+}
