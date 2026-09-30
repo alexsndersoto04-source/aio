@@ -50,7 +50,9 @@ if [ "$CORRER" = qemu ]; then
   # -nographic además de -serial stdio, QEMU se niega: stdio dos veces.)
   run() { timeout 120 qemu-system-aarch64 -machine virt -cpu cortex-a57 -m 1G -display none -monitor none -nic none -serial stdio -kernel "$1" < /dev/null; }
 else
-  run() { timeout 300 python3 selfhost/native/bare/correr.py "$1"; }
+  # unicorn es mucho más lento que QEMU: los programas marcados con un
+  # archivo .lento (p. ej. archive_zip64, ~13 minutos) tienen 30 minutos.
+  run() { timeout "${LIMITE:-300}" python3 selfhost/native/bare/correr.py "$1"; }
 fi
 
 mkdir -p "$tmp/ll"
@@ -85,6 +87,8 @@ for f in "${FILES[@]}"; do
     # "::error title=RUNTIME ERROR::…" para GitHub, que no es del programa.
     timeout 60 env -u GITHUB_ACTIONS "$ZETT" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
   fi
+  LIMITE=300
+  if [ -f "${f%.titan}.lento" ]; then LIMITE=1800; fi
   run "$tmp/prog.elf" > "$tmp/bare.out" 2> "$tmp/bare.err"; bare=$?
   same_code=1
   if [ "$CORRER" != qemu ] && [ "$vm" != "$bare" ]; then same_code=0; fi
