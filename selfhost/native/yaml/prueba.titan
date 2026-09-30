@@ -1,6 +1,8 @@
 // Prueba diferencial de std::yaml: cada línea del archivo es
 //   p HEX  -> std::yaml::parse del texto (UTF-8 en hexadecimal)
 //   m HEX  -> std::yaml::parse_multi
+//   s HEX  -> std::yaml::stringify(std::json::parse(texto))
+//   r HEX  -> std::yaml::stringify(std::yaml::parse(texto)) (ida y vuelta)
 // Escribe "ok HEX(json del valor)" o "ERR HEX(mensaje)". Se ejecuta en la VM
 // (zett run) y compilado con el backend nativo; fuzz.py compara las salidas.
 fn hx(s: string) -> string {
@@ -10,6 +12,13 @@ fn hx(s: string) -> string {
 fn show(r: Result) -> string {
     match r {
         Result::Ok(v) => "ok " + hx(std::json::stringify(v)),
+        Result::Err(e) => "ERR " + hx(e),
+    }
+}
+
+fn show_s(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "ok " + hx(v),
         Result::Err(e) => "ERR " + hx(e),
     }
 }
@@ -28,6 +37,10 @@ fn main() {
         let text = std::encoding::utf8_decode(std::encoding::hex_decode(h))
         if mode == "p" {
             println(show(std::try::catch(|| { std::yaml::parse(text) })))
+        } else if mode == "s" {
+            println(show_s(std::try::catch(|| { std::yaml::stringify(std::json::parse(text)) })))
+        } else if mode == "r" {
+            println(show_s(std::try::catch(|| { std::yaml::stringify(std::yaml::parse(text)) })))
         } else {
             println(show(std::try::catch(|| { std::yaml::parse_multi(text) })))
         }

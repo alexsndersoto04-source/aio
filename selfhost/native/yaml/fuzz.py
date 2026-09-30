@@ -136,6 +136,41 @@ def big():
         s = s[:p] + R.choice(["\x01", "\x7f", "é", "日", "\ufeff", "\x00"]) + s[p:]
     return s
 
+STRS = ["", " ", "a", "a b", "a  b", " a", "a ", "a\n", "\n", "\na", "a\nb", "a\n\n", "a \nb", "a\n b", "\n\n",
+        "a\rb", "a\tb", "\u0085", "a\u2028b", "\u2029", "a\u2028", "\u2028\u2028", "\ufeff", "x\ufeff", "\u00a0",
+        "\x00", "\x01", "\x7f", "\x1b", "\x07\x08\x0b\x0c", "\"", "\\", "'", "''", "it's", "é", "日本", "\U0001F600",
+        "\ud7ff", "\ue000", "\ufffd", "\ufffe", "\uffff", "---", "...", "--- a", "-", "- a", "-a", "?", "? a", "?a", ":",
+        ": a", "a:", "a: b", "a:b", "#", "a #b", "a#b", ",", "a,b", "[", "]", "{", "}", "&a", "*a", "!a", "|", ">", "%", "@",
+        "`", "~", "null", "Null", "NULL", "true", "False", "yes", "0", "-0", "007", "+1", "0x1f", "0o7", "0b1", "1.5", ".5",
+        "1e3", "1e400", ".inf", "-.inf", ".nan", "inf", "nan", "1_000", "9223372036854775808", "1" * 40, "12:30"]
+
+def jstr():
+    k = R.random()
+    if k < 0.6:
+        return R.choice(STRS)
+    if k < 0.9:
+        return "".join(R.choice(STRS) for _ in range(R.randint(2, 4)))
+    return "k" * R.choice([127, 128, 129, 200])
+
+def jval(depth):
+    import json
+    k = R.random()
+    if depth <= 0 or k < 0.45:
+        c = R.random()
+        if c < 0.15:
+            return None
+        if c < 0.25:
+            return R.random() < 0.5
+        if c < 0.4:
+            return R.choice([0, 1, -1, 42, 2**63 - 1, -2**63, R.randint(-10**12, 10**12)])
+        if c < 0.55:
+            return R.choice([0.0, -0.0, 1.5, 0.1, 1e21, 1e-7, 1e16, 1e17, 123456789.125, 5e-324, 1.7976931348623157e308,
+                             R.uniform(-1e6, 1e6), R.random() * 10 ** R.randint(-30, 30)])
+        return jstr()
+    if k < 0.7:
+        return [jval(depth - 1) for _ in range(R.randint(0, 4))]
+    return {jstr(): jval(depth - 1) for _ in range(R.randint(0, 4))}
+
 def case():
     global CLEAN
     CLEAN = R.random() < 0.5
@@ -151,8 +186,12 @@ def case():
         sep = R.choice(["---\n", "--- ", "...\n---\n", "\n---\n"])
         t = docs[0] + "".join(sep + d for d in docs[1:])
     t = t.replace("\x00", "")
-    mode = R.choice("pm")
-    if CLEAN and "---" in t:
+    mode = R.choice("pmr")
+    if R.random() < 0.35:
+        import json
+        mode = "s"
+        t = json.dumps(jval(R.randint(0, 4)), ensure_ascii=False)
+    if CLEAN and "---" in t and mode != "s":
         mode = "m"
     return mode + " " + t.encode("utf-8", "surrogatepass").hex()
 

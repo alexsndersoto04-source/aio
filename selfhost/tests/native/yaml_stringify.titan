@@ -1,0 +1,66 @@
+// std::yaml::stringify: escalares, estilos de comillas, bloques literales,
+// listas y mapas anidados, claves complejas y errores.
+fn hexs(h: string) -> string {
+    std::encoding::utf8_decode(std::encoding::hex_decode(h))
+}
+
+fn show(label: string, v: any) {
+    let r = std::try::catch(|| { std::yaml::stringify(v) })
+    match r {
+        Result::Ok(s) => println(label + " <<" + s + ">>"),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    show("nil", nil)
+    show("int", 42)
+    show("neg", -7)
+    show("float", 1.5)
+    show("float2", 1e21)
+    show("float3", 0.0001)
+    show("float4", 1.0e-7)
+    show("float5", -0.0)
+    show("float6", 123456789012345680.0)
+    show("bool", true)
+    show("str", "hola")
+    show("empty", "")
+    show("numstr", "12")
+    show("boolstr", "true")
+    show("nullstr", "~")
+    show("zero", "007")
+    show("multi", "a\nb\n")
+    show("multi2", "a\nb")
+    show("multi3", "a\n\n")
+    show("multi4", "\n a")
+    show("colon", "a: b")
+    show("hash", "a #b")
+    show("dash", "- x")
+    show("quote", "it's")
+    show("tab", "a\tb")
+    show("uni", "ñandú 日本")
+    show("sep", "a" + hexs("e280a8") + "b")
+    show("nel", "a" + hexs("c285") + "b")
+    show("bom", hexs("efbbbf") + "x")
+    show("ctrl", hexs("01") + "x")
+    show("lead", " x")
+    show("trail", "x ")
+    show("inf", ".inf")
+    show("e400", "1e400")
+    show("arr", [1, "a", nil, [], [2, [3]]])
+    let m = std::map::insert(std::map::insert(std::map::new(), "b", [1, 2]), "a", std::map::insert(std::map::new(), "x", "y"))
+    show("map", m)
+    show("emptymap", std::map::new())
+    let m2 = std::map::insert(std::map::insert(std::map::new(), "multi\nkey", 1), "k", "v\nw")
+    show("mapml", m2)
+    show("seqmap", [std::map::insert(std::map::insert(std::map::new(), "a", 1), "b", [1, 2])])
+    show("bytes", std::encoding::utf8_encode("hi"))
+    show("tuple", (1, "x"))
+    show("mapa vacio en lista", [std::map::new(), [std::map::new()]])
+    show("clave larga", std::map::insert(std::map::new(), std::text::replace("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "x", "kk"), 1))
+    show("clave vacia", std::map::insert(std::map::new(), "", ""))
+    show("clave numero", std::map::insert(std::map::new(), "1", "0x10"))
+    show("nul", hexs("610062"))
+    show("ida y vuelta", std::yaml::parse(std::yaml::stringify(std::yaml::parse("a: [1, 2.5, 'x', ~]\nb: {c: \"d\\ne\"}\n"))))
+    show("no finito", 1.0e308 * 10.0)
+}

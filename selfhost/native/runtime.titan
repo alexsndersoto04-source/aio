@@ -33,6 +33,7 @@ import std_compress_zstd_mf
 import std_archive
 import std_yaml
 import std_yaml_parse
+import std_yaml_emit
 import std_freestanding
 import std_freestanding_hw
 import std_rsa
