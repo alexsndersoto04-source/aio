@@ -1,0 +1,52 @@
+// std::ws: handshake RFC 6455 y marcos, idéntico a la VM.
+fn show_opt(label: string, r: Option) {
+    match r {
+        Option::None => println(label + " none"),
+        Option::Some(m) => {
+            let fin = std::map::get(m, "fin")
+            let op = std::map::get(m, "opcode")
+            let cons = std::map::get(m, "consumed")
+            let pay = std::map::get(m, "payload")
+            println(label + " fin=" + std::json::stringify(fin) + " op=" + std::json::stringify(op) + " n=" + std::json::stringify(cons) + " pay=" + std::encoding::hex_encode(pay))
+        },
+    }
+}
+
+fn req(key: string, proto: string) -> map {
+    let mut h = std::map::insert(std::map::new(), "upgrade", "websocket")
+    h = std::map::insert(h, "connection", "Upgrade")
+    h = std::map::insert(h, "sec-websocket-version", "13")
+    h = std::map::insert(h, "sec-websocket-key", key)
+    if proto != "" {
+        h = std::map::insert(h, "sec-websocket-protocol", proto)
+    }
+    let mut m = std::map::insert(std::map::new(), "method", "GET")
+    m = std::map::insert(m, "version", "HTTP/1.1")
+    std::map::insert(m, "headers", h)
+}
+
+fn main() {
+    let key = "dGhlIHNhbXBsZSBub25jZQ=="
+    println("accept " + std::ws::accept_key(key))
+    println("up " + std::encoding::utf8_decode(std::ws::upgrade_response(key, "")))
+    println("upchat " + std::encoding::utf8_decode(std::ws::upgrade_response(key, "chat")))
+    let resp = std::ws::upgrade_response(key, "")
+    println("ok " + std::json::stringify(std::ws::validate_accept(resp, key)))
+    println("bad " + std::json::stringify(std::ws::validate_accept(std::encoding::utf8_encode("HTTP/1.1 200 OK\r\n\r\n"), key)))
+    println("short " + std::json::stringify(std::ws::validate_accept(std::encoding::utf8_encode("no"), key)))
+    println("vu " + std::encoding::utf8_decode(std::ws::validate_upgrade(req(key, ""), "")))
+    println("vuchat " + std::encoding::utf8_decode(std::ws::validate_upgrade(req(key, "chat, other"), "chat")))
+    let hello = std::encoding::utf8_encode("hello")
+    let fr = std::ws::encode(1, hello, false)
+    println("enc " + std::encoding::hex_encode(fr))
+    show_opt("full", std::ws::parse(fr, false, 1024))
+    show_opt("part", std::ws::parse(std::bytes::slice(fr, 0, 3), false, 1024))
+    let masked = std::ws::encode(1, hello, true)
+    match std::ws::parse(masked, true, 1024) {
+        Option::None => println("mask none"),
+        Option::Some(m) => println("mask pay=" + std::encoding::utf8_decode(std::map::get(m, "payload"))),
+    }
+    let ping = std::ws::encode(9, std::encoding::utf8_encode("p"), false)
+    println("ping " + std::encoding::hex_encode(ping))
+    show_opt("pingp", std::ws::parse(ping, false, 1024))
+}

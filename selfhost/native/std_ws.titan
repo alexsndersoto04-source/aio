@@ -1,0 +1,743 @@
+// std::ws (6 nativas). Reproduce crates/titan_stdlib/src/websocket.rs
+// (RFC 6455: clave de aceptación, handshake y marcos). Prefijo `wk_`.
+// Nada fingido: mismos bytes y mismos textos de error que la VM.
+
+fn wk_fail(function: string, message: string) {
+    rt_native_fail(function, message)
+}
+
+fn wk_some(v: any) -> any {
+    rt_enum_new(v, "Option", "Some")
+}
+
+fn wk_none() -> any {
+    let p = rt_alloc(48)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, std::raw::bits("Option"))
+    std::raw::store(p + 16, std::raw::bits("None"))
+    std::raw::store(p + 24, 0)
+    std::raw::store(p + 32, 0)
+    std::raw::store(p + 40, 0)
+    std::raw::adopt(11, p)
+}
+
+fn wk_bool(v: any, function: string) -> int {
+    if std::raw::tag(v) != 3 {
+        rt_native_fail(function, "expected bool")
+    }
+    if std::raw::bits(v) != 0 {
+        return 1
+    }
+    0
+}
+
+fn wk_u32(x: int) -> int {
+    x & 4294967295
+}
+
+fn wk_rotl(x: int, n: int) -> int {
+    let u = wk_u32(x)
+    wk_u32(std::raw::shl(u, n) | std::raw::shr(u, 32 - n))
+}
+
+fn wk_be32(p: int) -> int {
+    std::raw::shl(std::raw::load8(p), 24) | std::raw::shl(std::raw::load8(p + 1), 16) | std::raw::shl(std::raw::load8(p + 2), 8) | std::raw::load8(p + 3)
+}
+
+fn wk_put_be32(p: int, v: int) {
+    std::raw::store8(p, std::raw::shr(v, 24) & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 16) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 3, v & 255)
+}
+
+fn wk_put_be16(p: int, v: int) {
+    std::raw::store8(p, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 1, v & 255)
+}
+
+fn wk_put_be64(p: int, v: int) {
+    let mut i = 0
+    while i < 8 {
+        std::raw::store8(p + i, std::raw::shr(v, 8 * (7 - i)) & 255)
+        i += 1
+    }
+}
+
+fn wk_be16(p: int) -> int {
+    std::raw::shl(std::raw::load8(p), 8) | std::raw::load8(p + 1)
+}
+
+fn wk_sha1(src: int, n: int) -> any {
+    let pad = hs_md_pad(src, n, 64, 8)
+    let total = hs_md_len(n, 64, 8)
+    let mut h0 = 1732584193
+    let mut h1 = 4023233417
+    let mut h2 = 2562383102
+    let mut h3 = 271733878
+    let mut h4 = 3285377520
+    let w = rt_alloc(640)
+    let mut off = 0
+    while off < total {
+        let mut i = 0
+        while i < 16 {
+            std::raw::store(w + 8 * i, wk_be32(pad + off + 4 * i))
+            i += 1
+        }
+        while i < 80 {
+            let x = std::raw::load(w + 8 * (i - 3)) ^ std::raw::load(w + 8 * (i - 8)) ^ std::raw::load(w + 8 * (i - 14)) ^ std::raw::load(w + 8 * (i - 16))
+            std::raw::store(w + 8 * i, wk_rotl(x, 1))
+            i += 1
+        }
+        let mut a = h0
+        let mut b = h1
+        let mut c = h2
+        let mut d = h3
+        let mut e = h4
+        i = 0
+        while i < 80 {
+            let mut f = 0
+            let mut k = 0
+            if i < 20 {
+                f = (b & c) | ((b ^ 4294967295) & d)
+                k = 1518500249
+            } else if i < 40 {
+                f = b ^ c ^ d
+                k = 1859775393
+            } else if i < 60 {
+                f = (b & c) | (b & d) | (c & d)
+                k = 2400959708
+            } else {
+                f = b ^ c ^ d
+                k = 3395469782
+            }
+            let temp = wk_u32(wk_rotl(a, 5) + wk_u32(f) + e + k + std::raw::load(w + 8 * i))
+            e = d
+            d = c
+            c = wk_rotl(b, 30)
+            b = a
+            a = temp
+            i += 1
+        }
+        h0 = wk_u32(h0 + a)
+        h1 = wk_u32(h1 + b)
+        h2 = wk_u32(h2 + c)
+        h3 = wk_u32(h3 + d)
+        h4 = wk_u32(h4 + e)
+        off += 64
+    }
+    rt_free_block(w)
+    rt_free_block(pad)
+    let out = rt_alloc(20)
+    wk_put_be32(out, h0)
+    wk_put_be32(out + 4, h1)
+    wk_put_be32(out + 8, h2)
+    wk_put_be32(out + 12, h3)
+    wk_put_be32(out + 16, h4)
+    let b = rt_bytes_from(out, 20)
+    rt_free_block(out)
+    b
+}
+
+fn wk_b64_or_nil(s: any) -> any {
+    let n = rt_slen(s)
+    if n % 4 != 0 {
+        return nil
+    }
+    let src = rt_bdata(s)
+    let p = rt_str_alloc(n / 4 * 3)
+    let mut outn = 0
+    let blocks = n / 4
+    let mut block = 0
+    while block < blocks {
+        let c = src + 4 * block
+        let last = block + 1 == blocks
+        let mut pad = 0
+        if std::raw::load8(c + 3) == 61 {
+            pad += 1
+        }
+        if std::raw::load8(c + 2) == 61 {
+            pad += 1
+        }
+        if std::raw::load8(c) == 61 || std::raw::load8(c + 1) == 61 || (!last && pad > 0) || (std::raw::load8(c + 2) == 61 && std::raw::load8(c + 3) != 61) {
+            rt_free_block(p)
+            return nil
+        }
+        let mut bits = 0
+        let mut k = 0
+        let mut v1 = 0
+        let mut v2 = 0
+        while k < 4 {
+            let ch = std::raw::load8(c + k)
+            let mut v = 0
+            if ch != 61 {
+                v = rt_b64_value(ch)
+                if v < 0 {
+                    rt_free_block(p)
+                    return nil
+                }
+            }
+            if k == 1 {
+                v1 = v
+            }
+            if k == 2 {
+                v2 = v
+            }
+            bits = bits * 64 + v
+            k += 1
+        }
+        if (pad == 2 && (v1 & 15) != 0) || (pad == 1 && (v2 & 3) != 0) {
+            rt_free_block(p)
+            return nil
+        }
+        std::raw::store8(p + 16 + outn, (bits / 65536) & 255)
+        outn += 1
+        if pad < 2 {
+            std::raw::store8(p + 16 + outn, (bits / 256) & 255)
+            outn += 1
+        }
+        if pad == 0 {
+            std::raw::store8(p + 16 + outn, bits & 255)
+            outn += 1
+        }
+        block += 1
+    }
+    std::raw::store(p + 8, outn)
+    std::raw::adopt(6, p)
+}
+
+fn wk_accept_key(key: any, function: string) -> any {
+    let t = std__text__trim(key)
+    let d = wk_b64_or_nil(t)
+    if std::raw::tag(d) == 0 {
+        wk_fail(function, "invalid Sec-WebSocket-Key")
+    }
+    if rt_slen(d) != 16 {
+        wk_fail(function, "invalid Sec-WebSocket-Key")
+    }
+    let magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    let kn = rt_slen(t)
+    let mn = rt_slen(magic)
+    let buf = rt_alloc(kn + mn)
+    rt_copy(buf, std::raw::bits(t) + 16, kn)
+    rt_copy(buf + kn, std::raw::bits(magic) + 16, mn)
+    let dig = wk_sha1(buf, kn + mn)
+    rt_free_block(buf)
+    std__encoding__base64_encode(dig)
+}
+
+fn wk_token_ok(s: any) -> int {
+    let n = rt_slen(s)
+    if n == 0 {
+        return 0
+    }
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        let alnum = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+        let extra = b == 33 || b == 35 || b == 36 || b == 37 || b == 38 || b == 39 || b == 42 || b == 43 || b == 45 || b == 46 || b == 94 || b == 95 || b == 96 || b == 124 || b == 126
+        if !alnum && !extra {
+            return 0
+        }
+        i += 1
+    }
+    1
+}
+
+fn wk_upgrade_bytes(key: any, protocol: any, function: string) -> any {
+    let accept = wk_accept_key(key, function)
+    let b = sb_new(160)
+    sb_str(b, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ")
+    sb_str(b, accept)
+    sb_str(b, "\r\n")
+    if rt_slen(protocol) > 0 {
+        if wk_token_ok(protocol) == 0 {
+            wk_fail(function, "invalid Sec-WebSocket-Key")
+        }
+        sb_str(b, "Sec-WebSocket-Protocol: ")
+        sb_str(b, protocol)
+        sb_str(b, "\r\n")
+    }
+    sb_str(b, "\r\n")
+    sb_finish_bytes(b)
+}
+
+fn wk_ieq(a: any, b: any) -> int {
+    let na = rt_slen(a)
+    if na != rt_slen(b) {
+        return 0
+    }
+    let pa = std::raw::bits(a) + 16
+    let pb = std::raw::bits(b) + 16
+    let mut i = 0
+    while i < na {
+        let mut ca = std::raw::load8(pa + i)
+        let mut cb = std::raw::load8(pb + i)
+        if ca >= 65 && ca <= 90 {
+            ca += 32
+        }
+        if cb >= 65 && cb <= 90 {
+            cb += 32
+        }
+        if ca != cb {
+            return 0
+        }
+        i += 1
+    }
+    1
+}
+
+fn wk_has_token(s: any, want: any) -> int {
+    let n = rt_slen(s)
+    let mut start = 0
+    let mut i = 0
+    while i <= n {
+        if i == n || std::raw::load8(std::raw::bits(s) + 16 + i) == 44 {
+            let piece = std__text__trim(rt_substr_bytes(s, start, i))
+            if wk_ieq(piece, want) != 0 {
+                return 1
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn wk_map_str(m: any, key: any, err: string, function: string) -> any {
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        wk_fail(function, err)
+    }
+    let v = rt_map_value_at(m, pos)
+    if std::raw::tag(v) != 5 {
+        wk_fail(function, err)
+    }
+    v
+}
+
+fn wk_hdr_str(headers: any, name: any, function: string) -> any {
+    wk_map_str(headers, name, "missing WebSocket header " + name, function)
+}
+
+fn wk_find_crlf2(p: int, n: int) -> int {
+    let mut i = 0
+    while i + 3 < n {
+        if std::raw::load8(p + i) == 13 && std::raw::load8(p + i + 1) == 10 && std::raw::load8(p + i + 2) == 13 && std::raw::load8(p + i + 3) == 10 {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn wk_lower_copy(s: any) -> any {
+    let n = rt_slen(s)
+    let o = rt_str_alloc(n)
+    let src = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let mut c = std::raw::load8(src + i)
+        if c >= 65 && c <= 90 {
+            c += 32
+        }
+        std::raw::store8(o + 16 + i, c)
+        i += 1
+    }
+    rt_sval(o)
+}
+
+fn wk_utf8_err(p: int, n: int, function: string) {
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        if b < 128 {
+            i += 1
+            continue
+        }
+        wk_fail(function, "invalid utf-8 sequence of 1 bytes from index " + rt_int_to_str(i))
+    }
+    wk_fail(function, "incomplete utf-8 byte sequence from index " + rt_int_to_str(i))
+}
+
+fn wk_validate_opcode(fin: int, opcode: int, payload: any, function: string) {
+    if opcode >= 0 && opcode <= 2 {
+    } else if opcode >= 8 && opcode <= 10 {
+        if fin == 0 || rt_slen(payload) > 125 {
+            wk_fail(function, "WebSocket control frame is invalid")
+        }
+        if opcode == 8 && rt_slen(payload) == 1 {
+            wk_fail(function, "WebSocket control frame is invalid")
+        }
+    } else {
+        wk_fail(function, "unsupported WebSocket opcode " + rt_int_to_str(opcode))
+    }
+    if opcode == 1 && fin != 0 {
+        if !rt_valid_utf8(rt_bdata(payload), rt_slen(payload)) {
+            wk_fail(function, "WebSocket text payload is not UTF-8")
+        }
+    }
+}
+
+fn wk_rand4(function: string) -> int {
+    let p = rt_alloc(4)
+    let mut done = 0
+    while done < 4 {
+        let r = std::raw::syscall(318, p + done, 4 - done, 0, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            rt_free_block(p)
+            wk_fail(function, "secure random masking key generation failed")
+        }
+        done += r
+    }
+    p
+}
+
+fn wk_encode(fin: int, opcode: int, payload: any, maskp: int, function: string) -> any {
+    wk_validate_opcode(fin, opcode, payload, function)
+    let n = rt_slen(payload)
+    let mut hdr = 2
+    if n > 125 {
+        if n > 65535 {
+            hdr = 10
+        } else {
+            hdr = 4
+        }
+    }
+    if maskp != 0 {
+        hdr += 4
+    }
+    let p = rt_alloc(hdr + n)
+    let mut b0 = opcode
+    if fin != 0 {
+        b0 = b0 | 128
+    }
+    std::raw::store8(p, b0)
+    let mut b1 = 0
+    if maskp != 0 {
+        b1 = 128
+    }
+    let mut off = 2
+    if n <= 125 {
+        std::raw::store8(p + 1, b1 | n)
+    } else if n <= 65535 {
+        std::raw::store8(p + 1, b1 | 126)
+        wk_put_be16(p + 2, n)
+        off = 4
+    } else {
+        std::raw::store8(p + 1, b1 | 127)
+        wk_put_be64(p + 2, n)
+        off = 10
+    }
+    if maskp != 0 {
+        rt_copy(p + off, maskp, 4)
+        off += 4
+        let src = rt_bdata(payload)
+        let mut i = 0
+        while i < n {
+            std::raw::store8(p + off + i, std::raw::load8(src + i) ^ std::raw::load8(maskp + (i & 3)))
+            i += 1
+        }
+    } else {
+        rt_copy(p + off, rt_bdata(payload), n)
+    }
+    let out = rt_bytes_from(p, hdr + n)
+    rt_free_block(p)
+    out
+}
+
+fn std__ws__accept_key(key: any) -> any {
+    let function = "std::ws::accept_key"
+    rt_expect_str(key, function)
+    wk_accept_key(key, function)
+}
+
+fn std__ws__upgrade_response(key: any, protocol: any) -> any {
+    let function = "std::ws::upgrade_response"
+    rt_expect_str(key, function)
+    rt_expect_str(protocol, function)
+    wk_upgrade_bytes(key, protocol, function)
+}
+
+fn std__ws__validate_upgrade(request: any, protocol: any) -> any {
+    let function = "std::ws::validate_upgrade"
+    rt_expect_str(protocol, function)
+    if std::raw::tag(request) != 9 {
+        wk_fail(function, "WebSocket upgrade request must be map")
+    }
+    let method = wk_map_str(request, "method", "WebSocket upgrade requires method", function)
+    let version = wk_map_str(request, "version", "WebSocket upgrade requires version", function)
+    let hpos = rt_map_find(request, "headers")
+    if hpos < 0 {
+        wk_fail(function, "WebSocket upgrade requires headers")
+    }
+    let headers = rt_map_value_at(request, hpos)
+    if std::raw::tag(headers) != 9 {
+        wk_fail(function, "WebSocket upgrade requires headers")
+    }
+    if method != "GET" || version != "HTTP/1.1" {
+        wk_fail(function, "WebSocket upgrade requires GET HTTP/1.1")
+    }
+    let upgrade = wk_hdr_str(headers, "upgrade", function)
+    let connection = wk_hdr_str(headers, "connection", function)
+    let wsver = wk_hdr_str(headers, "sec-websocket-version", function)
+    let key = wk_hdr_str(headers, "sec-websocket-key", function)
+    if wk_ieq(upgrade, "websocket") == 0 || wk_has_token(connection, "upgrade") == 0 || wsver != "13" {
+        wk_fail(function, "invalid WebSocket upgrade headers")
+    }
+    if rt_slen(protocol) > 0 {
+        let offered = wk_hdr_str(headers, "sec-websocket-protocol", function)
+        let mut ok = 0
+        let n = rt_slen(offered)
+        let mut start = 0
+        let mut i = 0
+        while i <= n {
+            if i == n || std::raw::load8(std::raw::bits(offered) + 16 + i) == 44 {
+                let piece = std__text__trim(rt_substr_bytes(offered, start, i))
+                if piece == protocol {
+                    ok = 1
+                }
+                start = i + 1
+            }
+            i += 1
+        }
+        if ok == 0 {
+            wk_fail(function, "selected WebSocket protocol was not offered")
+        }
+    }
+    wk_upgrade_bytes(key, protocol, function)
+}
+
+fn std__ws__validate_accept(response: any, key: any) -> any {
+    let function = "std::ws::validate_accept"
+    rt_expect_bytes(response, function)
+    rt_expect_str(key, function)
+    let n = rt_slen(response)
+    let p = rt_bdata(response)
+    let end = wk_find_crlf2(p, n)
+    if end < 0 {
+        return false
+    }
+    if !rt_valid_utf8(p, end) {
+        wk_utf8_err(p, end, function)
+    }
+    let raw = rt_str_alloc(end)
+    rt_copy(raw + 16, p, end)
+    let text = rt_sval(raw)
+    let mut line0 = ""
+    let mut got0 = 0
+    let mut i = 0
+    let mut start = 0
+    let mut names = []
+    let mut values = []
+    while i <= end {
+        let mut crlf = 0
+        if i + 1 < end {
+            if std::raw::load8(p + i) == 13 && std::raw::load8(p + i + 1) == 10 {
+                crlf = 1
+            }
+        }
+        if i == end || crlf != 0 {
+            if got0 == 0 {
+                line0 = rt_substr_bytes(text, start, i)
+                got0 = 1
+            } else if i > start {
+                let line = rt_substr_bytes(text, start, i)
+                let ln = rt_slen(line)
+                let lp = std::raw::bits(line) + 16
+                let mut colon = -1
+                let mut k = 0
+                while k < ln {
+                    if std::raw::load8(lp + k) == 58 {
+                        colon = k
+                        break
+                    }
+                    k += 1
+                }
+                if colon < 0 {
+                    return false
+                }
+                names = std::array::push(names, wk_lower_copy(rt_substr_bytes(line, 0, colon)))
+                values = std::array::push(values, std__text__trim(rt_substr_bytes(line, colon + 1, ln)))
+            }
+            if i == end {
+                break
+            }
+            i += 2
+            start = i
+            continue
+        }
+        i += 1
+    }
+    if line0 != "HTTP/1.1 101 Switching Protocols" {
+        return false
+    }
+    let expected = wk_accept_key(key, function)
+    let mut n_up = 0
+    let mut n_conn = 0
+    let mut n_acc = 0
+    let mut up = ""
+    let mut conn = ""
+    let mut acc = ""
+    let nn = len(names)
+    let mut j = 0
+    while j < nn {
+        let name = names[j]
+        if name == "upgrade" {
+            n_up += 1
+            up = values[j]
+        }
+        if name == "connection" {
+            n_conn += 1
+            conn = values[j]
+        }
+        if name == "sec-websocket-accept" {
+            n_acc += 1
+            acc = values[j]
+        }
+        j += 1
+    }
+    if n_up != 1 || n_conn != 1 || n_acc != 1 {
+        return false
+    }
+    if wk_ieq(up, "websocket") == 0 {
+        return false
+    }
+    if wk_has_token(conn, "upgrade") == 0 {
+        return false
+    }
+    if acc != expected {
+        return false
+    }
+    true
+}
+
+fn std__ws__encode(opcode: any, payload: any, masked: any) -> any {
+    let function = "std::ws::encode"
+    rt_expect_int(opcode, function)
+    rt_expect_bytes(payload, function)
+    let op = std::raw::bits(opcode)
+    if op < 0 || op > 255 {
+        wk_fail(function, "WebSocket opcode out of range")
+    }
+    let m = wk_bool(masked, function)
+    let mut maskp = 0
+    if m != 0 {
+        maskp = wk_rand4(function)
+    }
+    let out = wk_encode(1, op, payload, maskp, function)
+    if maskp != 0 {
+        rt_free_block(maskp)
+    }
+    out
+}
+
+fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
+    let function = "std::ws::parse"
+    rt_expect_bytes(data, function)
+    let reqm = wk_bool(require_mask, function)
+    rt_expect_int(maximum, function)
+    let maxp = std::raw::bits(maximum)
+    if maxp < 0 {
+        wk_fail(function, "expected nonnegative integer")
+    }
+    let n = rt_slen(data)
+    let buf = rt_bdata(data)
+    if n < 2 {
+        return wk_none()
+    }
+    let first = std::raw::load8(buf)
+    let second = std::raw::load8(buf + 1)
+    if (first & 112) != 0 {
+        wk_fail(function, "reserved WebSocket bits are set")
+    }
+    let mut fin = 0
+    if (first & 128) != 0 {
+        fin = 1
+    }
+    let opcode = first & 15
+    let mut masked = 0
+    if (second & 128) != 0 {
+        masked = 1
+    }
+    if reqm != masked {
+        wk_fail(function, "WebSocket masking policy violation")
+    }
+    let marker = second & 127
+    let mut offset = 2
+    let mut length = 0
+    if marker <= 125 {
+        length = marker
+    } else if marker == 126 {
+        if n < 4 {
+            return wk_none()
+        }
+        offset = 4
+        length = wk_be16(buf + 2)
+        if length < 126 {
+            wk_fail(function, "WebSocket frame length is not minimally encoded")
+        }
+    } else {
+        if n < 10 {
+            return wk_none()
+        }
+        if std::raw::load8(buf + 2) >= 128 {
+            wk_fail(function, "WebSocket frame length is not minimally encoded")
+        }
+        let mut v = 0
+        let mut k = 0
+        while k < 8 {
+            v = std::raw::shl(v, 8) | std::raw::load8(buf + 2 + k)
+            k += 1
+        }
+        if v < 65536 {
+            wk_fail(function, "WebSocket frame length is not minimally encoded")
+        }
+        length = v
+        offset = 10
+    }
+    if length > maxp {
+        wk_fail(function, "WebSocket payload exceeds configured limit")
+    }
+    let mut maskp = 0
+    if masked != 0 {
+        if n < offset + 4 {
+            return wk_none()
+        }
+        maskp = buf + offset
+        offset += 4
+    }
+    if length > 9223372036854775807 - offset {
+        wk_fail(function, "WebSocket payload exceeds configured limit")
+    }
+    let end = offset + length
+    if n < end {
+        return wk_none()
+    }
+    let pay = rt_alloc(length + 1)
+    rt_copy(pay, buf + offset, length)
+    if masked != 0 {
+        let mut i = 0
+        while i < length {
+            std::raw::store8(pay + i, std::raw::load8(pay + i) ^ std::raw::load8(maskp + (i & 3)))
+            i += 1
+        }
+    }
+    let payload = rt_bytes_from(pay, length)
+    rt_free_block(pay)
+    wk_validate_opcode(fin, opcode, payload, function)
+    let mut m = rt_map_alloc(0, 4)
+    let mut finv: any = false
+    if fin != 0 {
+        finv = true
+    }
+    m = std__map__insert(m, "consumed", end)
+    m = std__map__insert(m, "fin", finv)
+    m = std__map__insert(m, "opcode", opcode)
+    m = std__map__insert(m, "payload", payload)
+    wk_some(m)
+}

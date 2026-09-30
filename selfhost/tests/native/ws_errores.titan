@@ -1,0 +1,26 @@
+// Errores de std::ws.
+fn show(label: string, r: Result) {
+    match r {
+        Result::Ok(_) => println(label + " OK"),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    show("clave", std::try::catch(|| { std::ws::accept_key("xxx") }))
+    show("op3", std::try::catch(|| { std::ws::encode(3, std::encoding::utf8_encode("x"), false) }))
+    show("op300", std::try::catch(|| { std::ws::encode(300, std::encoding::utf8_encode("x"), false) }))
+    show("utf8", std::try::catch(|| { std::ws::encode(1, std::encoding::hex_decode("ff"), false) }))
+    let mut xs = ""
+    while std::text::length(xs) < 126 {
+        xs = xs + "x"
+    }
+    show("ctrl", std::try::catch(|| { std::ws::encode(9, std::encoding::utf8_encode(xs), false) }))
+    show("proto", std::try::catch(|| { std::ws::upgrade_response("dGhlIHNhbXBsZSBub25jZQ==", "no space") }))
+    show("nomap", std::try::catch(|| { std::ws::validate_upgrade(std::map::new(), "") }))
+    let m = std::map::insert(std::map::new(), "method", "GET")
+    show("nohdr", std::try::catch(|| { std::ws::validate_upgrade(m, "") }))
+    show("neg", std::try::catch(|| { std::ws::parse(std::encoding::utf8_encode("ab"), false, 0 - 1) }))
+    show("rsv", std::try::catch(|| { std::ws::parse(std::encoding::hex_decode("c10500"), false, 1024) }))
+    show("mask", std::try::catch(|| { std::ws::parse(std::encoding::hex_decode("8180"), false, 1024) }))
+}
