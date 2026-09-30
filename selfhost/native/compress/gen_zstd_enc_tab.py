@@ -21,6 +21,11 @@ assert len(rows)==92,len(rows)
 clv=[]
 for r in rows: clv+= [int(x) for x in r[:6]]+[strat[r[6]]]
 lay.append(('clevels[4][23][W,C,H,S,L,TL,strat]',off,clv)); off+=8*len(clv)
+gt=open(L+'compress/zstd_ldm_geartab.h').read()
+gv=[int(x,16) for x in re.findall(r'0x([0-9a-fA-F]+)',gt.split('ZSTD_ldm_gearTab')[1])]
+assert len(gv)==256,len(gv)
+gv=[x-(1<<64) if x>=(1<<63) else x for x in gv]
+lay.append(('ldm_gearTab',off,gv)); off+=8*256
 out.append('//   '+'  '.join('%d %s'%(o,n) for n,o,a in lay))
 out.append('')
 out.append('fn ze_tables() -> int {')

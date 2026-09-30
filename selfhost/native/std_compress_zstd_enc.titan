@@ -1869,6 +1869,13 @@ fn ze_block(z: int, src: int, n: int, last: int) -> int {
         std::raw::store(next + 8, std::raw::load(prev + 8))
         std::raw::store(next + 16, std::raw::load(prev + 16))
         let ext = std::raw::load(z + 232) < std::raw::load(z + 224)
+        let l = std::raw::load(z + 1016)
+        if l != 0 {
+            let g = ze_ldm_generate(l, src, n)
+            if g < 0 {
+                return g
+            }
+        }
         let lastLL = ze_blockc(z, next, src, n, ext)
         let lp = std::raw::load(z + 536)
         ze_copy(lp, src + n - lastLL, lastLL)
@@ -2555,6 +2562,9 @@ fn ze_continue(z: int, src: int, n: int, last: int) -> int {
     }
     if n > 0 {
         ze_window_update(z, src, n)
+        if std::raw::load(z + 1016) != 0 {
+            ze_ldm_window_update(std::raw::load(z + 1016), src, n)
+        }
         let c = ze_chunk(z, src, n, last)
         if c < 0 {
             return c
@@ -2617,6 +2627,7 @@ fn ze_new(level: int, n: int) -> int {
     ze_s(z, 256, 2)
     ze_s(z, 264, 0)
     ze_mf_init(z)
+    ze_ldm_init(z)
     let maxSeq = 131072 / 3 + 4
     ze_s(z, 512, ze_alloc(24 * maxSeq))
     ze_s(z, 528, ze_alloc(131072 + 64))
@@ -2650,6 +2661,7 @@ fn ze_free(z: int) {
         i += 1
     }
     ze_mf_free(z)
+    ze_ldm_free(z)
     rt_free_block(z)
 }
 

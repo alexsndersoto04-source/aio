@@ -163,11 +163,10 @@ fn ze_blockc(z: int, rep: int, src: int, n: int, ext: bool) -> int {
     if strat == 8 || (strat == 9 && ext) {
         return ze_opt_block(z, rep, src, n, 2, ext)
     }
-    if strat == 9 {
-        return ze_opt_ultra2(z, rep, src, n)
-    }
-    rt_die("zstd_encode: estrategia sin implementar")
-    0
+    // Queda btultra2 (9). Las estrategias 3-5 siempre usan el buscador por
+    // filas: la tabla de niveles les da ventanas de 2^21 o más y el tamaño
+    // de la entrada es desconocido al comprimir por flujo.
+    ze_opt_ultra2(z, rep, src, n)
 }
 
 fn ze_mls(z: int) -> int {
@@ -2220,6 +2219,7 @@ fn ze_opt_block(z: int, rep: int, src: int, n: int, optLevel: int, ext: bool) ->
     // lastStretch: {price, off, mlen, litlen, rep0..2}; persiste entre vueltas.
     let ls = z + 776
     ze_zero(ls, 56)
+    ze_ldm_opt_start(z, ip - istart, iend - ip)
     ze_opt_rescale(z, src, n)
     if ip == prefixStart {
         ip += 1
@@ -2233,7 +2233,7 @@ fn ze_opt_block(z: int, rep: int, src: int, n: int, optLevel: int, ext: bool) ->
         if litlen == 0 {
             ll0 = 1
         }
-        let nbMatches = ze_opt_matches(z, ip, iend, ext, rep, ll0, minMatch, mls)
+        let nbMatches = ze_ldm_cand(z, matches, ze_opt_matches(z, ip, iend, ext, rep, ll0, minMatch, mls), ip - istart, iend - ip, minMatch)
         if nbMatches == 0 {
             ip += 1
             continue
@@ -2341,7 +2341,7 @@ fn ze_opt_block(z: int, rep: int, src: int, n: int, optLevel: int, ext: bool) ->
                     l0c = 1
                 }
                 let basePrice = std::raw::load(ec) + ze_opt_llprice(z, 0)
-                let nbm = ze_opt_matches(z, inr, iend, ext, ec + 32, l0c, minMatch, mls)
+                let nbm = ze_ldm_cand(z, matches, ze_opt_matches(z, inr, iend, ext, ec + 32, l0c, minMatch, mls), inr - istart, iend - inr, minMatch)
                 if nbm == 0 {
                     cur += 1
                     continue
@@ -2476,4 +2476,481 @@ fn ze_opt_ultra2(z: int, rep: int, src: int, n: int) -> int {
         std::raw::store(z + 256, std::raw::load(z + 224))
     }
     ze_opt_block(z, rep, src, n, 2, false)
+}
+
+// ------------------------------------------------------------ LDM (zstd_ldm.c)
+// Coincidencias a larga distancia (nivel 22: btultra2 con ventana 2^27).
+// Contexto L = z + 1016: +0 hashLog, +8 bucketSizeLog, +16 minMatchLength,
+// +24 hashRateLog, +32 windowLog; ventana propia: +40 base, +48 dictBase,
+// +56 dictLimit, +64 lowLimit, +72 nextSrc, +80 loadedDictEnd; +88 tabla
+// (entradas de 8 bytes: desplazamiento | suma << 32), +96 posiciones de
+// cubeta (bytes), +104 secuencias crudas (24 bytes: litLength, matchLength,
+// offset), +112 capacidad; almacén del bloque: +120 size, +128 pos,
+// +136 posInSequence; copia del analizador óptimo (ZSTD_optLdm_t): +144 size,
+// +152 pos, +160 posInSequence, +168 inicio, +176 fin, +184 offset;
+// +192 hash rodante, +200 máscara; +208 cortes [64]; +720 candidatos [64]
+// (split, hash, checksum, bucket); +2768 estado XXH64.
+
+fn ze_ldm_init(z: int) {
+    let strat = std::raw::load(z + 56)
+    let wlog = std::raw::load(z + 8)
+    if strat < 7 || wlog < 27 {
+        return
+    }
+    let l = ze_alloc(3000)
+    let hrl = 7 - strat / 3
+    let hashLog = ze_max(6, ze_min(wlog - hrl, 30))
+    let mut mm = 64
+    if strat >= 8 {
+        mm = 32
+    }
+    let bucketLog = ze_min(ze_max(4, ze_min(strat, 8)), hashLog)
+    std::raw::store(l, hashLog)
+    std::raw::store(l + 8, bucketLog)
+    std::raw::store(l + 16, mm)
+    std::raw::store(l + 24, hrl)
+    std::raw::store(l + 32, wlog)
+    let dummy = std::raw::load(z + 656)
+    std::raw::store(l + 40, dummy)
+    std::raw::store(l + 48, dummy)
+    std::raw::store(l + 56, 2)
+    std::raw::store(l + 64, 2)
+    std::raw::store(l + 72, dummy + 2)
+    std::raw::store(l + 80, 0)
+    std::raw::store(l + 88, ze_alloc(8 * std::raw::shl(1, hashLog)))
+    std::raw::store(l + 96, ze_alloc(std::raw::shl(1, hashLog - bucketLog)))
+    let cap = 131072 / mm
+    std::raw::store(l + 104, ze_alloc(24 * cap))
+    std::raw::store(l + 112, cap)
+    std::raw::store(z + 1016, l)
+}
+
+fn ze_ldm_free(z: int) {
+    let l = std::raw::load(z + 1016)
+    if l == 0 {
+        return
+    }
+    rt_free_block(std::raw::load(l + 88))
+    rt_free_block(std::raw::load(l + 96))
+    rt_free_block(std::raw::load(l + 104))
+    rt_free_block(l)
+    std::raw::store(z + 1016, 0)
+}
+
+// ZSTD_window_update sobre la ventana del LDM (sin forzar discontinuidad).
+fn ze_ldm_window_update(l: int, src: int, n: int) {
+    if n == 0 {
+        return
+    }
+    if src != std::raw::load(l + 72) {
+        let dist = std::raw::load(l + 72) - std::raw::load(l + 40)
+        std::raw::store(l + 64, std::raw::load(l + 56))
+        std::raw::store(l + 56, dist)
+        std::raw::store(l + 48, std::raw::load(l + 40))
+        std::raw::store(l + 40, src - dist)
+        if std::raw::load(l + 56) - std::raw::load(l + 64) < 8 {
+            std::raw::store(l + 64, std::raw::load(l + 56))
+        }
+    }
+    std::raw::store(l + 72, src + n)
+    let db = std::raw::load(l + 48)
+    if src + n > db + std::raw::load(l + 64) && src < db + std::raw::load(l + 56) {
+        std::raw::store(l + 64, ze_min(std::raw::load(l + 56), src + n - db))
+    }
+}
+
+fn ze_ldm_xxh(l: int, p: int, n: int) -> int {
+    let x = l + 2768
+    zd_xxh_reset(x)
+    zd_xxh_update(x, p, n)
+    zd_xxh_digest(x)
+}
+
+fn ze_ldm_gear_init(l: int) {
+    let maxBits = ze_min(std::raw::load(l + 16), 64)
+    let hrl = std::raw::load(l + 24)
+    std::raw::store(l + 192, 4294967295)
+    if hrl > 0 && hrl <= maxBits {
+        std::raw::store(l + 200, std::raw::shl(std::raw::shl(1, hrl) - 1, maxBits - hrl))
+    } else {
+        std::raw::store(l + 200, std::raw::shl(1, hrl) - 1)
+    }
+}
+
+// ZSTD_ldm_gear_reset de libzstd 1.5.7 calcula el hash de [data, data+n)
+// en una variable local y nunca lo guarda en el estado: en la práctica no
+// cambia nada. Se reproduce igual (el hash rodante sigue como estaba) para
+// que los cortes, y por tanto la salida, sean idénticos.
+fn ze_ldm_gear_reset(l: int, data: int, n: int) {
+}
+
+// ZSTD_ldm_gear_feed: guarda los cortes en l + 208 y su número en *ns.
+fn ze_ldm_gear_feed(l: int, data: int, size: int, ns: int) -> int {
+    let gear = ze_tab() + 10456
+    let mut h = std::raw::load(l + 192)
+    let mask = std::raw::load(l + 200)
+    let mut i = 0
+    let mut k = std::raw::load(ns)
+    while i < size {
+        h = std::raw::wadd(std::raw::shl(h, 1), std::raw::load(gear + 8 * std::raw::load8(data + i)))
+        i += 1
+        if (h & mask) == 0 {
+            std::raw::store(l + 208 + 8 * k, i)
+            k += 1
+            if k == 64 {
+                break
+            }
+        }
+    }
+    std::raw::store(ns, k)
+    std::raw::store(l + 192, h)
+    i
+}
+
+fn ze_ldm_insert(l: int, hash: int, entry: int) {
+    let bl = std::raw::load(l + 8)
+    let po = std::raw::load(l + 96) + hash
+    let off = std::raw::load8(po)
+    std::raw::store(std::raw::load(l + 88) + 8 * (std::raw::shl(hash, bl) + off), entry)
+    std::raw::store8(po, (off + 1) & (std::raw::shl(1, bl) - 1))
+}
+
+fn ze_ldm_back(pIn0: int, pAnchor: int, pMatch0: int, pBase: int) -> int {
+    let mut pIn = pIn0
+    let mut pMatch = pMatch0
+    let mut n = 0
+    while pIn > pAnchor && pMatch > pBase && std::raw::load8(pIn - 1) == std::raw::load8(pMatch - 1) {
+        pIn -= 1
+        pMatch -= 1
+        n += 1
+    }
+    n
+}
+
+// ZSTD_ldm_generateSequences_internal: devuelve los literales sobrantes o
+// un error negativo.
+fn ze_ldm_gen_internal(l: int, src: int, n: int) -> int {
+    let extDict = std::raw::load(l + 64) < std::raw::load(l + 56)
+    let mm = std::raw::load(l + 16)
+    let bl = std::raw::load(l + 8)
+    let ents = std::raw::shl(1, bl)
+    let hBits = std::raw::load(l) - bl
+    let dictLimit = std::raw::load(l + 56)
+    let mut lowest = dictLimit
+    if extDict {
+        lowest = std::raw::load(l + 64)
+    }
+    let base = std::raw::load(l + 40)
+    let dictBase = std::raw::load(l + 48)
+    let dictStart = dictBase + lowest
+    let dictEnd = dictBase + dictLimit
+    let lowPrefix = base + dictLimit
+    let table = std::raw::load(l + 88)
+    let istart = src
+    let iend = istart + n
+    let ilimit = iend - 8
+    let mut anchor = istart
+    let mut ip = istart
+    let cand = l + 720
+    let ns = l + 2760
+    if n < mm {
+        return iend - anchor
+    }
+    ze_ldm_gear_init(l)
+    ze_ldm_gear_reset(l, ip, mm)
+    ip += mm
+    while ip < ilimit {
+        std::raw::store(ns, 0)
+        let hashed = ze_ldm_gear_feed(l, ip, ilimit - ip, ns)
+        let numSplits = std::raw::load(ns)
+        let mut k = 0
+        while k < numSplits {
+            let split = ip + std::raw::load(l + 208 + 8 * k) - mm
+            let xx = ze_ldm_xxh(l, split, mm)
+            let hash = xx & (std::raw::shl(1, hBits) - 1)
+            let c = cand + 32 * k
+            std::raw::store(c, split)
+            std::raw::store(c + 8, hash)
+            std::raw::store(c + 16, std::raw::shr(xx, 32))
+            std::raw::store(c + 24, table + 8 * std::raw::shl(hash, bl))
+            k += 1
+        }
+        k = 0
+        while k < numSplits {
+            let c = cand + 32 * k
+            let split = std::raw::load(c)
+            let hash = std::raw::load(c + 8)
+            let checksum = std::raw::load(c + 16)
+            let bucket = std::raw::load(c + 24)
+            let newEntry = (split - base) | std::raw::shl(checksum, 32)
+            if split < anchor {
+                ze_ldm_insert(l, hash, newEntry)
+                k += 1
+                continue
+            }
+            let mut best = 0
+            let mut bestEntry = 0 - 1
+            let mut fwdBest = 0
+            let mut backBest = 0
+            let mut e = 0
+            while e < ents {
+                let ent = std::raw::load(bucket + 8 * e)
+                let eoff = ent & 4294967295
+                if std::raw::shr(ent, 32) == checksum && eoff > lowest {
+                    let mut fwd = 0
+                    let mut back = 0
+                    let mut ok = true
+                    if extDict {
+                        let mut mBase = base
+                        let mut mEnd = iend
+                        let mut lowM = lowPrefix
+                        if eoff < dictLimit {
+                            mBase = dictBase
+                            mEnd = dictEnd
+                            lowM = dictStart
+                        }
+                        let pMatch = mBase + eoff
+                        fwd = ze_count2(split, pMatch, iend, mEnd, lowPrefix)
+                        if fwd < mm {
+                            ok = false
+                        } else {
+                            back = ze_ldm_back(split, anchor, pMatch, lowM)
+                            if pMatch - back == lowM && lowM != dictStart {
+                                back += ze_ldm_back(split - back, anchor, dictEnd, dictStart)
+                            }
+                        }
+                    } else {
+                        let pMatch = base + eoff
+                        fwd = ze_count(split, pMatch, iend)
+                        if fwd < mm {
+                            ok = false
+                        } else {
+                            back = ze_ldm_back(split, anchor, pMatch, lowPrefix)
+                        }
+                    }
+                    if ok && fwd + back > best {
+                        best = fwd + back
+                        fwdBest = fwd
+                        backBest = back
+                        bestEntry = eoff
+                    }
+                }
+                e += 1
+            }
+            if bestEntry < 0 {
+                ze_ldm_insert(l, hash, newEntry)
+                k += 1
+                continue
+            }
+            let size = std::raw::load(l + 120)
+            if size == std::raw::load(l + 112) {
+                return 0 - 70
+            }
+            let sq = std::raw::load(l + 104) + 24 * size
+            std::raw::store(sq, split - backBest - anchor)
+            std::raw::store(sq + 8, fwdBest + backBest)
+            std::raw::store(sq + 16, (split - base) - bestEntry)
+            std::raw::store(l + 120, size + 1)
+            ze_ldm_insert(l, hash, newEntry)
+            anchor = split + fwdBest
+            if anchor > ip + hashed {
+                ze_ldm_gear_reset(l, anchor - mm, mm)
+                ip = anchor - hashed
+                break
+            }
+            k += 1
+        }
+        ip += hashed
+    }
+    iend - anchor
+}
+
+// ZSTD_ldm_generateSequences (almacén del bloque vacío al entrar).
+fn ze_ldm_generate(l: int, src: int, n: int) -> int {
+    std::raw::store(l + 120, 0)
+    std::raw::store(l + 128, 0)
+    std::raw::store(l + 136, 0)
+    let maxDist = std::raw::shl(1, std::raw::load(l + 32))
+    let iend = src + n
+    let kMax = 1048576
+    let mut nbChunks = n / kMax
+    if n % kMax != 0 {
+        nbChunks += 1
+    }
+    let mut leftover = 0
+    let mut chunk = 0
+    while chunk < nbChunks && std::raw::load(l + 120) < std::raw::load(l + 112) {
+        let cs = src + chunk * kMax
+        let mut ce = iend
+        if iend - cs >= kMax {
+            ce = cs + kMax
+        }
+        let chunkSize = ce - cs
+        let prevSize = std::raw::load(l + 120)
+        // 1. corrección de desbordamiento (cycleLog 0)
+        let base = std::raw::load(l + 40)
+        if ce - base > 3670016000 {
+            let curr = cs - base
+            let correction = curr - (2 + maxDist)
+            std::raw::store(l + 40, base + correction)
+            std::raw::store(l + 48, std::raw::load(l + 48) + correction)
+            let ll = std::raw::load(l + 64)
+            if ll < correction + 2 {
+                std::raw::store(l + 64, 2)
+            } else {
+                std::raw::store(l + 64, ll - correction)
+            }
+            let dl = std::raw::load(l + 56)
+            if dl < correction + 2 {
+                std::raw::store(l + 56, 2)
+            } else {
+                std::raw::store(l + 56, dl - correction)
+            }
+            let table = std::raw::load(l + 88)
+            let hsize = std::raw::shl(1, std::raw::load(l))
+            let mut u = 0
+            while u < hsize {
+                let ent = std::raw::load(table + 8 * u)
+                let off = ent & 4294967295
+                let hi = ent - off
+                if off < correction {
+                    std::raw::store(table + 8 * u, hi)
+                } else {
+                    std::raw::store(table + 8 * u, hi + off - correction)
+                }
+                u += 1
+            }
+            std::raw::store(l + 80, 0)
+        }
+        // 2. distancia máxima
+        let blockEndIdx = ce - std::raw::load(l + 40)
+        if blockEndIdx > maxDist + std::raw::load(l + 80) {
+            let nl = blockEndIdx - maxDist
+            if std::raw::load(l + 64) < nl {
+                std::raw::store(l + 64, nl)
+            }
+            if std::raw::load(l + 56) < std::raw::load(l + 64) {
+                std::raw::store(l + 56, std::raw::load(l + 64))
+            }
+            std::raw::store(l + 80, 0)
+        }
+        // 3. secuencias del trozo
+        let newLeft = ze_ldm_gen_internal(l, cs, chunkSize)
+        if newLeft < 0 {
+            return newLeft
+        }
+        // 4. literales sobrantes
+        if prevSize < std::raw::load(l + 120) {
+            let sq = std::raw::load(l + 104) + 24 * prevSize
+            std::raw::store(sq, std::raw::load(sq) + leftover)
+            leftover = newLeft
+        } else {
+            leftover += chunkSize
+        }
+        chunk += 1
+    }
+    0
+}
+
+// ZSTD_optLdm_skipRawSeqStoreBytes sobre la copia del analizador (l + 144).
+fn ze_ldm_skip(l: int, nb: int) {
+    let seqs = std::raw::load(l + 104)
+    let size = std::raw::load(l + 144)
+    let mut currPos = (std::raw::load(l + 160) + nb) & 4294967295
+    while currPos != 0 && std::raw::load(l + 152) < size {
+        let sq = seqs + 24 * std::raw::load(l + 152)
+        let len = std::raw::load(sq) + std::raw::load(sq + 8)
+        if currPos >= len {
+            currPos -= len
+            std::raw::store(l + 152, std::raw::load(l + 152) + 1)
+        } else {
+            std::raw::store(l + 160, currPos)
+            break
+        }
+    }
+    if currPos == 0 || std::raw::load(l + 152) == size {
+        std::raw::store(l + 160, 0)
+    }
+}
+
+// ZSTD_opt_getNextMatchAndUpdateSeqStore.
+fn ze_ldm_next(l: int, curr: int, remaining: int) {
+    if std::raw::load(l + 144) == 0 || std::raw::load(l + 152) >= std::raw::load(l + 144) {
+        std::raw::store(l + 168, 4294967295)
+        std::raw::store(l + 176, 4294967295)
+        return
+    }
+    let sq = std::raw::load(l + 104) + 24 * std::raw::load(l + 152)
+    let ll = std::raw::load(sq)
+    let ml = std::raw::load(sq + 8)
+    let pis = std::raw::load(l + 160)
+    let blockEnd = curr + remaining
+    let mut litRem = 0
+    if pis < ll {
+        litRem = ll - pis
+    }
+    let mut mRem = ml
+    if litRem == 0 {
+        mRem = ml - (pis - ll)
+    }
+    if litRem >= remaining {
+        std::raw::store(l + 168, 4294967295)
+        std::raw::store(l + 176, 4294967295)
+        ze_ldm_skip(l, remaining)
+        return
+    }
+    let start = curr + litRem
+    std::raw::store(l + 168, start)
+    std::raw::store(l + 176, start + mRem)
+    std::raw::store(l + 184, std::raw::load(sq + 16))
+    if start + mRem > blockEnd {
+        std::raw::store(l + 176, blockEnd)
+        ze_ldm_skip(l, blockEnd - curr)
+    } else {
+        ze_ldm_skip(l, litRem + mRem)
+    }
+}
+
+// Al empezar ZSTD_compressBlock_opt_generic: copia del almacén del bloque.
+fn ze_ldm_opt_start(z: int, curr: int, remaining: int) {
+    let l = std::raw::load(z + 1016)
+    if l == 0 {
+        return
+    }
+    std::raw::store(l + 144, std::raw::load(l + 120))
+    std::raw::store(l + 152, std::raw::load(l + 128))
+    std::raw::store(l + 160, std::raw::load(l + 136))
+    std::raw::store(l + 168, 0)
+    std::raw::store(l + 176, 0)
+    std::raw::store(l + 184, 0)
+    ze_ldm_next(l, curr, remaining)
+}
+
+// ZSTD_optLdm_processMatchCandidate: devuelve el nuevo número de coincidencias.
+fn ze_ldm_cand(z: int, matches: int, nb: int, curr: int, remaining: int, minMatch: int) -> int {
+    let l = std::raw::load(z + 1016)
+    if l == 0 {
+        return nb
+    }
+    if std::raw::load(l + 144) == 0 || std::raw::load(l + 152) >= std::raw::load(l + 144) {
+        return nb
+    }
+    if curr >= std::raw::load(l + 176) {
+        if curr > std::raw::load(l + 176) {
+            ze_ldm_skip(l, curr - std::raw::load(l + 176))
+        }
+        ze_ldm_next(l, curr, remaining)
+    }
+    let start = std::raw::load(l + 168)
+    let end = std::raw::load(l + 176)
+    if curr < start || curr >= end || end - curr < minMatch {
+        return nb
+    }
+    let cml = end - curr
+    if nb == 0 || (cml > std::raw::load(matches + 16 * (nb - 1) + 8) && nb < 4096) {
+        std::raw::store(matches + 16 * nb, std::raw::load(l + 184) + 3)
+        std::raw::store(matches + 16 * nb + 8, cml)
+        return nb + 1
+    }
+    nb
 }
