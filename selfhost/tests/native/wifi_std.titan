@@ -1,0 +1,12 @@
+// std::wifi: barras de señal (sin CLI) e idéntico a la VM.
+fn main() {
+    println("b30 " + std::json::stringify(std::wifi::signal_bars(0 - 30)))
+    println("b50 " + std::json::stringify(std::wifi::signal_bars(0 - 50)))
+    println("b55 " + std::json::stringify(std::wifi::signal_bars(0 - 55)))
+    println("b60 " + std::json::stringify(std::wifi::signal_bars(0 - 60)))
+    println("b65 " + std::json::stringify(std::wifi::signal_bars(0 - 65)))
+    println("b70 " + std::json::stringify(std::wifi::signal_bars(0 - 70)))
+    println("b75 " + std::json::stringify(std::wifi::signal_bars(0 - 75)))
+    println("b80 " + std::json::stringify(std::wifi::signal_bars(0 - 80)))
+    println("b90 " + std::json::stringify(std::wifi::signal_bars(0 - 90)))
+}
