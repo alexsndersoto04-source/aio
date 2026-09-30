@@ -128,9 +128,18 @@ def model_line(fr):
 
 
 def run(cmd, path):
-    r = subprocess.run(cmd + [path], capture_output=True, text=True,
-                       env={k: v for k, v in os.environ.items() if k != 'GITHUB_ACTIONS'})
-    return r.stdout.split('\n')
+    # Límite de tiempo: un cuelgue cuenta como fallo (las líneas que falten
+    # salen como diferencias) en vez de bloquear la prueba.
+    try:
+        r = subprocess.run(cmd + [path], capture_output=True, text=True, timeout=900,
+                           env={k: v for k, v in os.environ.items() if k != 'GITHUB_ACTIONS'})
+        return r.stdout.split('\n')
+    except subprocess.TimeoutExpired as e:
+        print('TIEMPO AGOTADO', cmd[0])
+        out = e.stdout or b''
+        if isinstance(out, bytes):
+            out = out.decode(errors='replace')
+        return out.split('\n')
 
 
 def main():

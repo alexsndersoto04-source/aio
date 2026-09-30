@@ -26,6 +26,7 @@ import std_regex_run
 import std_router
 import std_compress
 import std_compress_enc
+import std_compress_zstd
 import std_freestanding
 import std_freestanding_hw
 import std_rsa
