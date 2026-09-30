@@ -1,0 +1,6 @@
+// Error de std::yaml::parse sin capturar: el programa termina con el mensaje.
+fn main() {
+    println("antes")
+    let v = std::yaml::parse("a: [1, 2\nb: 3\n")
+    println(std::json::stringify(v))
+}

@@ -1,0 +1,36 @@
+// Prueba diferencial de std::yaml: cada línea del archivo es
+//   p HEX  -> std::yaml::parse del texto (UTF-8 en hexadecimal)
+//   m HEX  -> std::yaml::parse_multi
+// Escribe "ok HEX(json del valor)" o "ERR HEX(mensaje)". Se ejecuta en la VM
+// (zett run) y compilado con el backend nativo; fuzz.py compara las salidas.
+fn hx(s: string) -> string {
+    std::encoding::hex_encode(std::encoding::utf8_encode(s))
+}
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "ok " + hx(std::json::stringify(v)),
+        Result::Err(e) => "ERR " + hx(e),
+    }
+}
+
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i < len(ls) {
+        let parts = std::text::lines(std::text::replace(ls[i], " ", "\n"))
+        let mode = parts[0]
+        let mut h = ""
+        if len(parts) > 1 {
+            h = parts[1]
+        }
+        let text = std::encoding::utf8_decode(std::encoding::hex_decode(h))
+        if mode == "p" {
+            println(show(std::try::catch(|| { std::yaml::parse(text) })))
+        } else {
+            println(show(std::try::catch(|| { std::yaml::parse_multi(text) })))
+        }
+        i += 1
+    }
+}
