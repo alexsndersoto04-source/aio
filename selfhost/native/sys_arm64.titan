@@ -198,6 +198,9 @@ fn sa_same_args(n: int) -> int {
     if n == 289 { return 74 }
     if n == 291 { return 20 }
     if n == 293 { return 59 }
+    if n == 254 { return 27 }
+    if n == 255 { return 28 }
+    if n == 294 { return 26 }
     if n == 318 { return 278 }
     if n == 436 { return 436 }
     -1

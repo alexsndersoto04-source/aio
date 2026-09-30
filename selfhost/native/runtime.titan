@@ -50,6 +50,7 @@ import errno
 import float
 import float_table
 import std_plot
+import std_fswatch
 import std_tz_data
 import std_tz
 import std_crypto
