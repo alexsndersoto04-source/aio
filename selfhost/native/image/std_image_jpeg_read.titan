@@ -1,0 +1,275 @@
+// Núcleo de lectura JPEG sin dependencias externas.
+// Comparte bitstream, Huffman, IDCT, reinicios y ampliación de color.
+fn im_jpeg_error(function: string, detail: any) {
+    im_img_err(function, "DecodingError: JPEG " + detail)
+}
+
+fn im_jpeg_byte(function: string, p: int, n: int, at: int) -> int {
+    if at < 0 || at >= n { im_jpeg_error(function, "entrada incompleta") }
+    std::raw::load8(p + at)
+}
+
+fn im_jpeg_be16(function: string, p: int, n: int, at: int) -> int {
+    if at < 0 || at + 1 >= n { im_jpeg_error(function, "entrada incompleta") }
+    256 * std::raw::load8(p + at) + std::raw::load8(p + at + 1)
+}
+
+fn im_jpeg_wrap32(value: int) -> int {
+    let v = value & 4294967295
+    if v >= 2147483648 { return v - 4294967296 }
+    v
+}
+
+fn im_jpeg_add32(a: int, b: int) -> int { im_jpeg_wrap32(a + b) }
+fn im_jpeg_sub32(a: int, b: int) -> int { im_jpeg_wrap32(a - b) }
+fn im_jpeg_mul32(a: int, b: int) -> int { im_jpeg_wrap32(a * b) }
+fn im_jpeg_shl32(a: int, n: int) -> int { im_jpeg_wrap32(a * std::raw::shl(1, n)) }
+fn im_jpeg_sar32(a: int, n: int) -> int { std::raw::sar(im_jpeg_wrap32(a), n) }
+
+fn im_jpeg_clamp(value: int) -> int {
+    if value < 0 { return 0 }
+    if value > 255 { return 255 }
+    value
+}
+
+fn im_jpeg_idct(function: string, coeff: int, out: int, stride: int) {
+    let mut ac_nonzero = false
+    let mut k = 1
+    while k < 64 {
+        if std::raw::load(coeff + 8 * k) != 0 { ac_nonzero = true }
+        k += 1
+    }
+    if !ac_nonzero {
+        let dc = im_jpeg_add32(im_jpeg_add32(std::raw::load(coeff), 4), 1024)
+        let value = im_jpeg_clamp(im_jpeg_sar32(dc, 3))
+        let mut y = 0
+        while y < 8 {
+            let mut x = 0
+            while x < 8 {
+                std::raw::store8(out + y * stride + x, value)
+                x += 1
+            }
+            y += 1
+        }
+        return
+    }
+
+    let mut ptr = 0
+    while ptr < 8 {
+        let p2 = std::raw::load(coeff + 8 * (ptr + 16))
+        let p3 = std::raw::load(coeff + 8 * (ptr + 48))
+        let p1 = im_jpeg_mul32(im_jpeg_add32(p2, p3), 2217)
+        let t2 = im_jpeg_add32(p1, im_jpeg_mul32(p3, -7567))
+        let t3 = im_jpeg_add32(p1, im_jpeg_mul32(p2, 3135))
+        let p2a = std::raw::load(coeff + 8 * ptr)
+        let p3a = std::raw::load(coeff + 8 * (32 + ptr))
+        let t0 = im_jpeg_shl32(im_jpeg_add32(p2a, p3a), 12)
+        let t1 = im_jpeg_shl32(im_jpeg_sub32(p2a, p3a), 12)
+        let x0 = im_jpeg_add32(im_jpeg_add32(t0, t3), 512)
+        let x3 = im_jpeg_add32(im_jpeg_sub32(t0, t3), 512)
+        let x1 = im_jpeg_add32(im_jpeg_add32(t1, t2), 512)
+        let x2 = im_jpeg_add32(im_jpeg_sub32(t1, t2), 512)
+
+        let a0 = std::raw::load(coeff + 8 * (ptr + 56))
+        let a1 = std::raw::load(coeff + 8 * (ptr + 40))
+        let a2 = std::raw::load(coeff + 8 * (ptr + 24))
+        let a3 = std::raw::load(coeff + 8 * (ptr + 8))
+        let p3b = im_jpeg_add32(a0, a2)
+        let p4 = im_jpeg_add32(a1, a3)
+        let p1b = im_jpeg_add32(a0, a3)
+        let p2b = im_jpeg_add32(a1, a2)
+        let p5 = im_jpeg_mul32(im_jpeg_add32(p3b, p4), 4816)
+        let t0b = im_jpeg_mul32(a0, 1223)
+        let t1b = im_jpeg_mul32(a1, 8410)
+        let t2b = im_jpeg_mul32(a2, 12586)
+        let t3b = im_jpeg_mul32(a3, 6149)
+        let p1c = im_jpeg_add32(p5, im_jpeg_mul32(p1b, -3685))
+        let p2c = im_jpeg_add32(p5, im_jpeg_mul32(p2b, -10497))
+        let p3c = im_jpeg_mul32(p3b, -8034)
+        let p4c = im_jpeg_mul32(p4, -1597)
+        let t3c = im_jpeg_add32(t3b, im_jpeg_add32(p1c, p4c))
+        let t2c = im_jpeg_add32(t2b, im_jpeg_add32(p2c, p3c))
+        let t1c = im_jpeg_add32(t1b, im_jpeg_add32(p2c, p4c))
+        let t0c = im_jpeg_add32(t0b, im_jpeg_add32(p1c, p3c))
+
+        std::raw::store(coeff + 8 * ptr, im_jpeg_sar32(im_jpeg_add32(x0, t3c), 10))
+        std::raw::store(coeff + 8 * (ptr + 8), im_jpeg_sar32(im_jpeg_add32(x1, t2c), 10))
+        std::raw::store(coeff + 8 * (ptr + 16), im_jpeg_sar32(im_jpeg_add32(x2, t1c), 10))
+        std::raw::store(coeff + 8 * (ptr + 24), im_jpeg_sar32(im_jpeg_add32(x3, t0c), 10))
+        std::raw::store(coeff + 8 * (ptr + 32), im_jpeg_sar32(im_jpeg_sub32(x3, t0c), 10))
+        std::raw::store(coeff + 8 * (ptr + 40), im_jpeg_sar32(im_jpeg_sub32(x2, t1c), 10))
+        std::raw::store(coeff + 8 * (ptr + 48), im_jpeg_sar32(im_jpeg_sub32(x1, t2c), 10))
+        std::raw::store(coeff + 8 * (ptr + 56), im_jpeg_sar32(im_jpeg_sub32(x0, t3c), 10))
+        ptr += 1
+    }
+
+    let scale_bits = 16843264
+    let mut base = 0
+    while base < 64 {
+        let p2 = std::raw::load(coeff + 8 * (base + 2))
+        let p3 = std::raw::load(coeff + 8 * (base + 6))
+        let p1 = im_jpeg_mul32(im_jpeg_add32(p2, p3), 2217)
+        let t2 = im_jpeg_add32(p1, im_jpeg_mul32(p3, -7567))
+        let t3 = im_jpeg_add32(p1, im_jpeg_mul32(p2, 3135))
+        let p2a = std::raw::load(coeff + 8 * base)
+        let p3a = std::raw::load(coeff + 8 * (base + 4))
+        let t0 = im_jpeg_shl32(im_jpeg_add32(p2a, p3a), 12)
+        let t1 = im_jpeg_shl32(im_jpeg_sub32(p2a, p3a), 12)
+        let x0 = im_jpeg_add32(im_jpeg_add32(t0, t3), scale_bits)
+        let x3 = im_jpeg_add32(im_jpeg_sub32(t0, t3), scale_bits)
+        let x1 = im_jpeg_add32(im_jpeg_add32(t1, t2), scale_bits)
+        let x2 = im_jpeg_add32(im_jpeg_sub32(t1, t2), scale_bits)
+
+        let a0 = std::raw::load(coeff + 8 * (base + 7))
+        let a1 = std::raw::load(coeff + 8 * (base + 5))
+        let a2 = std::raw::load(coeff + 8 * (base + 3))
+        let a3 = std::raw::load(coeff + 8 * (base + 1))
+        let p3b = im_jpeg_add32(a0, a2)
+        let p4 = im_jpeg_add32(a1, a3)
+        let p1b = im_jpeg_add32(a0, a3)
+        let p2b = im_jpeg_add32(a1, a2)
+        let p5 = im_jpeg_mul32(im_jpeg_add32(p3b, p4), 4816)
+        let t0b = im_jpeg_mul32(a0, 1223)
+        let t1b = im_jpeg_mul32(a1, 8410)
+        let t2b = im_jpeg_mul32(a2, 12586)
+        let t3b = im_jpeg_mul32(a3, 6149)
+        let p1c = im_jpeg_add32(p5, im_jpeg_mul32(p1b, -3685))
+        let p2c = im_jpeg_add32(p5, im_jpeg_mul32(p2b, -10497))
+        let p3c = im_jpeg_mul32(p3b, -8034)
+        let p4c = im_jpeg_mul32(p4, -1597)
+        let t3c = im_jpeg_add32(t3b, im_jpeg_add32(p1c, p4c))
+        let t2c = im_jpeg_add32(t2b, im_jpeg_add32(p2c, p3c))
+        let t1c = im_jpeg_add32(t1b, im_jpeg_add32(p2c, p4c))
+        let t0c = im_jpeg_add32(t0b, im_jpeg_add32(p1c, p3c))
+
+        let values = [
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_add32(x0, t3c), 17)),
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_add32(x1, t2c), 17)),
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_add32(x2, t1c), 17)),
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_add32(x3, t0c), 17)),
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_sub32(x3, t0c), 17)),
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_sub32(x2, t1c), 17)),
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_sub32(x1, t2c), 17)),
+            im_jpeg_clamp(im_jpeg_sar32(im_jpeg_sub32(x0, t3c), 17)),
+        ]
+        let mut x = 0
+        while x < 8 {
+            std::raw::store8(out + (base / 8) * stride + x, values[x])
+            x += 1
+        }
+        base += 8
+    }
+}
+
+fn im_jpeg_read_bit(function: string, bs: int) -> int {
+    let mut left = std::raw::load(bs + 32)
+    if left == 0 {
+        let p = std::raw::load(bs)
+        let n = std::raw::load(bs + 8)
+        let pos = std::raw::load(bs + 16)
+        if pos >= n { im_jpeg_error(function, "datos de imagen truncados") }
+        let mut value = std::raw::load8(p + pos)
+        std::raw::store(bs + 16, pos + 1)
+        if value == 255 {
+            let next_pos = std::raw::load(bs + 16)
+            if next_pos >= n || std::raw::load8(p + next_pos) != 0 {
+                im_jpeg_error(function, "marcador inesperado dentro de los datos")
+            }
+            std::raw::store(bs + 16, next_pos + 1)
+        }
+        std::raw::store(bs + 24, value)
+        left = 8
+    }
+    left -= 1
+    std::raw::store(bs + 32, left)
+    std::raw::shr(std::raw::load(bs + 24), left) & 1
+}
+
+fn im_jpeg_read_bits(function: string, bs: int, count: int) -> int {
+    let mut value = 0
+    let mut i = 0
+    while i < count {
+        value = value * 2 + im_jpeg_read_bit(function, bs)
+        i += 1
+    }
+    value
+}
+
+fn im_jpeg_huffman(function: string, bs: int, table: int) -> int {
+    if std::raw::load(table) == 0 { im_jpeg_error(function, "falta una tabla Huffman") }
+    let mut code = 0
+    let mut first = 0
+    let mut index = 0
+    let mut length = 1
+    while length <= 16 {
+        code = code * 2 + im_jpeg_read_bit(function, bs)
+        let count = std::raw::load(table + 8 * length)
+        if code >= first && code < first + count {
+            let symbol_index = index + code - first
+            return std::raw::load(table + 136 + 8 * symbol_index)
+        }
+        index += count
+        first = (first + count) * 2
+        length += 1
+    }
+    im_jpeg_error(function, "código Huffman inválido")
+    0
+}
+
+fn im_jpeg_receive(function: string, bs: int, size: int) -> int {
+    if size == 0 { return 0 }
+    if size > 16 { im_jpeg_error(function, "coeficiente demasiado grande") }
+    let value = im_jpeg_read_bits(function, bs, size)
+    let threshold = std::raw::shl(1, size - 1)
+    if value < threshold { return value - (std::raw::shl(1, size) - 1) }
+    value
+}
+
+fn im_jpeg_restart(function: string, bs: int, expected: int) {
+    let p = std::raw::load(bs)
+    let n = std::raw::load(bs + 8)
+    let pos = std::raw::load(bs + 16)
+    if pos + 1 >= n || std::raw::load8(p + pos) != 255 || std::raw::load8(p + pos + 1) != 208 + expected {
+        im_jpeg_error(function, "marcador de reinicio ausente")
+    }
+    std::raw::store(bs + 16, pos + 2)
+    std::raw::store(bs + 32, 0)
+}
+
+fn im_jpeg_vertical_sample(plane: int, stride: int, height: int, x: int, y: int, ratio: int) -> int {
+    if ratio != 2 { return std::raw::load8(plane + (y / ratio) * stride + x) }
+    let sy = y / 2
+    let current = std::raw::load8(plane + sy * stride + x)
+    let adjacent_y = sy + 2 * (y & 1) - 1
+    let mut result = current
+    if adjacent_y >= 0 && adjacent_y < height {
+        let other = std::raw::load8(plane + adjacent_y * stride + x)
+        result = (3 * current + other + 2) / 4
+    }
+    result
+}
+
+fn im_jpeg_sample(plane: int, stride: int, plane_width: int, plane_height: int, x: int, y: int, ratio_x: int, ratio_y: int) -> int {
+    if ratio_x > 2 || ratio_y > 2 {
+        let sx = x / ratio_x
+        let sy = y / ratio_y
+        return std::raw::load8(plane + sy * stride + sx)
+    }
+    let mut sx = x
+    if ratio_x == 2 { sx = x / 2 }
+    let current = im_jpeg_vertical_sample(plane, stride, plane_height, sx, y, ratio_y)
+    let adjacent_x = sx + 2 * (x & 1) - 1
+    let mut result = current
+    if ratio_x == 2 && x != 0 && adjacent_x >= 0 && adjacent_x < plane_width {
+        let other = im_jpeg_vertical_sample(plane, stride, plane_height, adjacent_x, y, ratio_y)
+        result = (3 * current + other + 2) / 4
+    }
+    result
+}
+
+fn im_jpeg_decode(function: string, p: int, n: int) -> int {
+    if n < 4 || std::raw::load8(p) != 255 || std::raw::load8(p + 1) != 216 {
+        im_jpeg_error(function, "firma SOI no encontrada")
+    }
+    im_jpeg_decode_progressive(function, p, n)
+}

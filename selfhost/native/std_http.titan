@@ -1,5 +1,6 @@
 // std::http (13 nativas). Reproduce http.rs, multipart.rs, http_client.rs
-// y los ayudantes de native.rs. Prefijo `ht_`. Nada fingido.
+// y los ayudantes de native.rs. HTTP usa TCP; HTTPS usa OpenSSL real, con
+// validación de certificados y nombre. No baja a HTTP sin cifrar. Prefijo `ht_`.
 // Globales +3120: puntero al estado (id de petición y límites de ritmo).
 
 fn ht_g() -> int { std::raw::globals() + 3120 }
@@ -1280,6 +1281,74 @@ fn ht_resolve(base: any, location: any, function: string) -> any {
     scheme + "://" + auth + directory + "/" + location
 }
 
+fn ht_ipv4_literal(host: any) -> bool {
+    let p = std::raw::bits(host) + 16
+    let n = rt_slen(host)
+    let mut i = 0
+    let mut dots = 0
+    let mut digits = 0
+    let mut value = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 46 {
+            if digits == 0 || value > 255 { return false }
+            dots += 1
+            digits = 0
+            value = 0
+        } else if c >= 48 && c <= 57 {
+            if digits >= 3 { return false }
+            value = value * 10 + c - 48
+            digits += 1
+        } else {
+            return false
+        }
+        i += 1
+    }
+    dots == 3 && digits > 0 && value <= 255
+}
+
+// Abre una sesión TLS real con OpenSSL, verifica la cadena y el nombre del
+// servidor, envía la petición HTTP por stdin y devuelve los bytes recibidos.
+// OpenSSL hereda SSL_CERT_FILE/SSL_CERT_DIR, por lo que pueden usarse las
+// autoridades del sistema o una CA indicada explícitamente por el programa.
+fn ht_tls_exchange(host: any, port: int, request: any, timeout: int, maximum: int, function: string) -> any {
+    let address = host + ":" + rt_int_to_str(port)
+    let mut argv: any = ["openssl", "s_client", "-quiet", "-connect", address, "-verify", "10", "-verify_return_error", "-verify_quiet", "-alpn", "http/1.1"]
+    if ht_ipv4_literal(host) {
+        argv = std::array::push(argv, "-noservername")
+        argv = std::array::push(argv, "-verify_ip")
+        argv = std::array::push(argv, host)
+    } else {
+        argv = std::array::push(argv, "-servername")
+        argv = std::array::push(argv, host)
+        argv = std::array::push(argv, "-verify_hostname")
+        argv = std::array::push(argv, host)
+    }
+    let output_limit = maximum + 1048576
+    let result = ps_run_raw_timeout(function, argv, request, timeout, output_limit)
+    if std::map::get(result, "timed_out") {
+        ht_fail(function, "HTTP I/O error: timed out")
+    }
+    let code = std::map::get(result, "exit_code")
+    let error_bytes = std::map::get(result, "stderr")
+    if code != 0 {
+        let detail = std::text::trim(dr_lossy(error_bytes))
+        if detail == "" {
+            ht_fail(function, "TLS error: OpenSSL handshake failed")
+        }
+        let mut short_detail = detail
+        if std::text::length(short_detail) > 2048 {
+            short_detail = std::text::substring(short_detail, 0, 2048)
+        }
+        ht_fail(function, "TLS error: " + short_detail)
+    }
+    let input_error = std::map::get(result, "input_error")
+    if input_error != 0 {
+        ht_fail(function, "TLS error: failed to send the HTTP request")
+    }
+    std::map::get(result, "stdout")
+}
+
 fn ht_set_to(fd: int, ms: int, function: string) {
     let tv = rt_alloc(16)
     std::raw::store(tv, ms / 1000)
@@ -1392,13 +1461,14 @@ fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeo
         ht_fail(function, "invalid HTTP method or header")
     }
     let u = ht_parse_url(url, function)
-    if std::raw::bits(std__map__get(u, "secure")) != 0 {
-        ht_fail(function, "TLS error: HTTPS requires a TLS-enabled client")
-    }
+    let secure = std::raw::bits(std__map__get(u, "secure")) != 0
     let host = std__map__get(u, "host")
     let port = std::raw::bits(std__map__get(u, "port"))
-    let fd = nt_connect(function, std::raw::bits(host) + 16, rt_slen(host), port)
-    ht_set_to(fd, timeout, function)
+    let mut fd = -1
+    if !secure {
+        fd = nt_connect(function, std::raw::bits(host) + 16, rt_slen(host), port)
+        ht_set_to(fd, timeout, function)
+    }
     let b = sb_new(128 + rt_slen(body))
     sb_str(b, method)
     sb_byte(b, 32)
@@ -1432,27 +1502,38 @@ fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeo
         i += 1
     }
     sb_str(b, "\r\n")
+    sb_raw(b, rt_bdata(body), rt_slen(body))
     let req = sb_finish_bytes(b)
-    ht_send_all(fd, rt_bdata(req), rt_slen(req), function)
-    ht_send_all(fd, rt_bdata(body), rt_slen(body), function)
+    let mut tls_response: any = nil
+    if secure {
+        tls_response = ht_tls_exchange(host, port, req, timeout, maximum, function)
+    } else {
+        ht_send_all(fd, rt_bdata(req), rt_slen(req), function)
+    }
     let acc = sb_new(8192)
+    if secure {
+        sb_raw(acc, rt_bdata(tls_response), rt_slen(tls_response))
+    }
     let buf = rt_alloc(8192)
-    let mut header_end = -1
-    loop {
-        header_end = ht_find4(std::raw::load(acc + 16), sb_len(acc))
-        if header_end >= 0 { break }
+    let mut header_end = ht_find4(std::raw::load(acc + 16), sb_len(acc))
+    if secure && header_end < 0 {
+        rt_free_block(buf)
+        ht_fail(function, "malformed HTTP response")
+    }
+    while header_end < 0 {
         if sb_len(acc) > 65536 {
             rt_free_block(buf)
-            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            if fd >= 0 { std::raw::syscall(3, fd, 0, 0, 0, 0, 0) }
             ht_fail(function, "malformed HTTP response")
         }
         let got = ht_recv(fd, buf, 8192, function)
         if got == 0 {
             rt_free_block(buf)
-            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            if fd >= 0 { std::raw::syscall(3, fd, 0, 0, 0, 0, 0) }
             ht_fail(function, "malformed HTTP response")
         }
         sb_raw(acc, buf, got)
+        header_end = ht_find4(std::raw::load(acc + 16), sb_len(acc))
     }
     let alln = sb_len(acc)
     let allp = std::raw::load(acc + 16)
@@ -1469,6 +1550,7 @@ fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeo
     while e + 1 < hlen && !(std::raw::load8(allp + e) == 13 && std::raw::load8(allp + e + 1) == 10) {
         e += 1
     }
+    if e + 1 >= hlen { e = hlen }
     let status_line = rt_substr_bytes(htext, 0, e)
     let mut w1 = -1
     let mut w2 = -1
@@ -1503,6 +1585,7 @@ fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeo
         while t + 1 < hlen && !(std::raw::load8(allp + t) == 13 && std::raw::load8(allp + t + 1) == 10) {
             t += 1
         }
+        if t + 1 >= hlen { t = hlen }
         if t > s {
             let line = rt_substr_bytes(htext, s, t)
             let ln = rt_slen(line)
@@ -1569,6 +1652,10 @@ fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeo
     let mut bodyb = rt_bytes_from(allp + header_end + 4, alln - header_end - 4)
     if nt > 0 {
         while ht_chunked_done(rt_bdata(bodyb), rt_slen(bodyb)) == 0 {
+            if secure {
+                rt_free_block(buf)
+                ht_fail(function, "malformed HTTP response")
+            }
             let got = ht_recv(fd, buf, 8192, function)
             if got == 0 {
                 rt_free_block(buf)
@@ -1595,6 +1682,10 @@ fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeo
             ht_fail(function, "HTTP response body exceeds configured limit")
         }
         while rt_slen(bodyb) < need {
+            if secure {
+                rt_free_block(buf)
+                ht_fail(function, "malformed HTTP response")
+            }
             let got = ht_recv(fd, buf, 8192, function)
             if got == 0 {
                 rt_free_block(buf)
@@ -1613,7 +1704,7 @@ fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeo
             rt_free_block(nb)
         }
         bodyb = rt_bytes_from(rt_bdata(bodyb), need)
-    } else {
+    } else if !secure {
         loop {
             let got = ht_recv(fd, buf, 8192, function)
             if got == 0 { break }

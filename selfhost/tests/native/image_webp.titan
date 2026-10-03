@@ -1,0 +1,85 @@
+fn fingerprint(data: any) -> int {
+    let bytes = std::bytes::to_array(data)
+    let mut value = 0
+    let mut i = 0
+    while i < len(bytes) {
+        value = (value * 131 + bytes[i]) & 2147483647
+        i += 1
+    }
+    value
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn was_rejected(data: any) -> bool {
+    match std::try::catch(|| std::image::load_bytes(data)) {
+        Result::Ok(handle) => {
+            std::image::close(handle)
+            false
+        },
+        Result::Err(_) => true,
+    }
+}
+
+fn main() {
+    let args = std::env::args()
+    let output_base = args[len(args) - 1]
+    // La animación se comprueba en image_webp_unsupported.titan: el runtime
+    // nativo aún la rechaza explícitamente, aunque la VM lea el primer cuadro.
+    let files = ["webp-lossy.webp", "webp-lossless.webp", "webp-lossy-alpha.webp", "webp-lossless-alpha.webp"]
+    let mut i = 0
+    while i < len(files) {
+        let path = "selfhost/native/image/testdata/" + files[i]
+        let by_path = std::image::load(path)
+        show_image(by_path, "path " + files[i])
+        std::image::close(by_path)
+
+        let by_bytes = std::image::load_bytes(std::fs::read_bytes(path))
+        show_image(by_bytes, "bytes " + files[i])
+        std::image::close(by_bytes)
+        i += 1
+    }
+
+    let rgb = std::image::load("selfhost/native/image/testdata/color-baseline.jpg")
+    let rgb_webp = std::image::encode(rgb, "webp")
+    std::fs::write_bytes(output_base + ".rgb.webp", rgb_webp)
+    std::image::save(rgb, output_base + ".save-rgb.webp")
+    let rgb_decoded = std::image::load_bytes(rgb_webp)
+    show_image(rgb_decoded, "encode RGB8 then read WebP")
+    std::image::close(rgb_decoded)
+    std::image::close(rgb)
+
+    let rgba = std::image::load("selfhost/native/image/testdata/rgb8-trns.png")
+    let rgba_webp = std::image::encode(rgba, "WEBP")
+    std::fs::write_bytes(output_base + ".rgba.webp", rgba_webp)
+    let rgba_decoded = std::image::load_bytes(rgba_webp)
+    show_image(rgba_decoded, "encode RGBA8 then read WebP")
+    std::image::close(rgba_decoded)
+    std::image::close(rgba)
+
+    let gray = std::image::load("selfhost/native/image/testdata/gray-baseline.jpg")
+    let gray_webp = std::image::encode(gray, "webp")
+    std::fs::write_bytes(output_base + ".gray.webp", gray_webp)
+    let gray_decoded = std::image::load_bytes(gray_webp)
+    show_image(gray_decoded, "encode L8 then read WebP")
+    std::image::close(gray_decoded)
+    std::image::close(gray)
+
+    let rgba16 = std::image::load("selfhost/native/image/testdata/rgba16.png")
+    let rgba16_webp = std::image::encode(rgba16, "webp")
+    std::fs::write_bytes(output_base + ".rgba16.webp", rgba16_webp)
+    let rgba16_decoded = std::image::load_bytes(rgba16_webp)
+    show_image(rgba16_decoded, "encode RGBA16 then read WebP")
+    std::image::close(rgba16_decoded)
+    std::image::close(rgba16)
+
+    println("rejects truncated WebP")
+    println(was_rejected(std::bytes::from_array([82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80])))
+}

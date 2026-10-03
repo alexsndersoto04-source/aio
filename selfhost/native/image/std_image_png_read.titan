@@ -1,0 +1,492 @@
+// Lector PNG completo: paletas, tRNS, muestras empaquetadas, 16 bits,
+// filtros 0-4 y las siete pasadas Adam7. Las muestras guardadas en el registro
+// quedan en orden nativo; PNG, en cambio, transmite las de 16 bits en orden BE.
+
+fn im_png_be16(p: int) -> int {
+    256 * std::raw::load8(p) + std::raw::load8(p + 1)
+}
+
+fn im_png_be32(p: int) -> int {
+    16777216 * std::raw::load8(p) + 65536 * std::raw::load8(p + 1) + 256 * std::raw::load8(p + 2) + std::raw::load8(p + 3)
+}
+
+fn im_png_is_type(p: int, a: int, b: int, c: int, d: int) -> bool {
+    std::raw::load8(p) == a && std::raw::load8(p + 1) == b && std::raw::load8(p + 2) == c && std::raw::load8(p + 3) == d
+}
+
+fn im_png_error(function: string, detail: any) {
+    im_img_err(function, "Format error decoding Png: " + detail)
+}
+
+fn im_png_pass_dim(full: int, start: int, step: int) -> int {
+    if (full <= start) {
+        return 0
+    }
+    return (full - start + step - 1) / step
+}
+
+fn im_png_raw_size(w: int, h: int, channels: int, depth: int, interlace: int) -> int {
+    let passes = if interlace == 0 { 1 } else { 7 }
+    let mut total = 0
+    let mut pass = 0
+    while pass < passes {
+        let mut xs = 0
+        let mut ys = 0
+        let mut dx = 1
+        let mut dy = 1
+        if interlace == 1 {
+            if pass == 0 { xs = 0; ys = 0; dx = 8; dy = 8 }
+            if pass == 1 { xs = 4; ys = 0; dx = 8; dy = 8 }
+            if pass == 2 { xs = 0; ys = 4; dx = 4; dy = 8 }
+            if pass == 3 { xs = 2; ys = 0; dx = 4; dy = 4 }
+            if pass == 4 { xs = 0; ys = 2; dx = 2; dy = 4 }
+            if pass == 5 { xs = 1; ys = 0; dx = 2; dy = 2 }
+            if pass == 6 { xs = 0; ys = 1; dx = 1; dy = 2 }
+        }
+        let pw = im_png_pass_dim(w, xs, dx)
+        let ph = im_png_pass_dim(h, ys, dy)
+        if pw > 0 && ph > 0 {
+            let row_bytes = (pw * channels * depth + 7) / 8
+            total += (row_bytes + 1) * ph
+        }
+        pass += 1
+    }
+    total
+}
+
+fn im_png_paeth(a: int, b: int, c: int) -> int {
+    let p = a + b - c
+    let mut pa = p - a
+    let mut pb = p - b
+    let mut pc = p - c
+    if pa < 0 { pa = 0 - pa }
+    if pb < 0 { pb = 0 - pb }
+    if pc < 0 { pc = 0 - pc }
+    if pa <= pb && pa <= pc { return a }
+    if pb <= pc { return b }
+    c
+}
+
+fn im_png_unfilter(filter: int, prev: int, cur: int, n: int, bpp: int) -> bool {
+    if filter < 0 || filter > 4 { return false }
+    let mut i = 0
+    while i < n {
+        let raw = std::raw::load8(cur + i)
+        let mut left = 0
+        let mut up = std::raw::load8(prev + i)
+        let mut upper_left = 0
+        if i >= bpp {
+            left = std::raw::load8(cur + i - bpp)
+            upper_left = std::raw::load8(prev + i - bpp)
+        }
+        let mut add = 0
+        if filter == 1 { add = left }
+        if filter == 2 { add = up }
+        if filter == 3 { add = (left + up) / 2 }
+        if filter == 4 { add = im_png_paeth(left, up, upper_left) }
+        std::raw::store8(cur + i, (raw + add) & 255)
+        i += 1
+    }
+    true
+}
+
+fn im_png_sample(row: int, index: int, depth: int) -> int {
+    if depth == 16 { return im_png_be16(row + 2 * index) }
+    if depth == 8 { return std::raw::load8(row + index) }
+    let bit = index * depth
+    let shift_amount = 8 - depth - (bit & 7)
+    let packed = std::raw::load8(row + bit / 8)
+    return std::raw::shr(packed, shift_amount) & (std::raw::shl(1, depth) - 1)
+}
+
+fn im_png_sample_store(dst: int, sample_bytes: int, value: int) {
+    im_sample_put(dst, sample_bytes, value)
+}
+
+fn im_png_expand_pixel(row: int, pixel: int, dst: int, src_type: int, depth: int, src_channels: int, out_color: int, trans: int, trans_len: int, palette: int, palette_entries: int, alpha: int, alpha_len: int) -> bool {
+    let out_channels = im_channels(out_color)
+    let sample_bytes = im_sample_bytes(out_color)
+    let max_out = im_max_sample(out_color)
+    let base = pixel * src_channels
+    if src_type == 0 {
+        let raw_gray = im_png_sample(row, base, depth)
+        let gray = if depth < 8 { raw_gray * 255 / (std::raw::shl(1, depth) - 1) } else { raw_gray }
+        im_png_sample_store(dst, sample_bytes, gray)
+        if out_channels == 2 {
+            let key = if depth == 16 { im_png_be16(trans) } else { std::raw::load8(trans + 1) }
+            let a = if trans_len != 0 && raw_gray == key { 0 } else { max_out }
+            im_png_sample_store(dst + sample_bytes, sample_bytes, a)
+        }
+        return true
+    }
+    if src_type == 2 {
+        let r = im_png_sample(row, base, depth)
+        let g = im_png_sample(row, base + 1, depth)
+        let b = im_png_sample(row, base + 2, depth)
+        im_png_sample_store(dst, sample_bytes, r)
+        im_png_sample_store(dst + sample_bytes, sample_bytes, g)
+        im_png_sample_store(dst + 2 * sample_bytes, sample_bytes, b)
+        if out_channels == 4 {
+            let key_r = if depth == 16 { im_png_be16(trans) } else { std::raw::load8(trans + 1) }
+            let key_g = if depth == 16 { im_png_be16(trans + 2) } else { std::raw::load8(trans + 3) }
+            let key_b = if depth == 16 { im_png_be16(trans + 4) } else { std::raw::load8(trans + 5) }
+            let a = if trans_len != 0 && r == key_r && g == key_g && b == key_b { 0 } else { max_out }
+            im_png_sample_store(dst + 3 * sample_bytes, sample_bytes, a)
+        }
+        return true
+    }
+    if src_type == 3 {
+        let index = im_png_sample(row, pixel, depth)
+        if index < palette_entries {
+            let pp = palette + 3 * index
+            std::raw::store8(dst, std::raw::load8(pp))
+            std::raw::store8(dst + 1, std::raw::load8(pp + 1))
+            std::raw::store8(dst + 2, std::raw::load8(pp + 2))
+        } else {
+            // El expansor de PNG de referencia deja en negro los índices
+            // fuera de la paleta, y conserva alfa opaco.
+            std::raw::store8(dst, 0)
+            std::raw::store8(dst + 1, 0)
+            std::raw::store8(dst + 2, 0)
+        }
+        if out_channels == 4 {
+            let a = if index < alpha_len { std::raw::load8(alpha + index) } else { 255 }
+            std::raw::store8(dst + 3, a)
+        }
+        return true
+    }
+    if src_type == 4 {
+        im_png_sample_store(dst, sample_bytes, im_png_sample(row, base, depth))
+        im_png_sample_store(dst + sample_bytes, sample_bytes, im_png_sample(row, base + 1, depth))
+        return true
+    }
+    if src_type == 6 {
+        let mut ch = 0
+        while ch < 4 {
+            im_png_sample_store(dst + ch * sample_bytes, sample_bytes, im_png_sample(row, base + ch, depth))
+            ch += 1
+        }
+        return true
+    }
+    false
+}
+
+fn im_png_decode_pixels(function: string, raw: int, raw_len: int, out: int, w: int, h: int, src_type: int, depth: int, src_channels: int, out_color: int, interlace: int, trans: int, trans_len: int, palette: int, palette_entries: int, alpha: int, alpha_len: int) {
+    let max_row = (w * src_channels * depth + 7) / 8
+    let prev_mem = rt_alloc_zero(max_row)
+    let cur_mem = rt_alloc(max_row)
+    let mut prev = prev_mem
+    let mut cur = cur_mem
+    let mut filter_bpp = (src_channels * depth + 7) / 8
+    if filter_bpp < 1 { filter_bpp = 1 }
+    let out_bpp = im_bpp(out_color)
+    let passes = if interlace == 0 { 1 } else { 7 }
+    let mut offset = 0
+    let mut pass = 0
+    let mut bad_filter = false
+    let mut bad_palette = false
+    while pass < passes {
+        let mut xs = 0
+        let mut ys = 0
+        let mut dx = 1
+        let mut dy = 1
+        if interlace == 1 {
+            if pass == 0 { xs = 0; ys = 0; dx = 8; dy = 8 }
+            if pass == 1 { xs = 4; ys = 0; dx = 8; dy = 8 }
+            if pass == 2 { xs = 0; ys = 4; dx = 4; dy = 8 }
+            if pass == 3 { xs = 2; ys = 0; dx = 4; dy = 4 }
+            if pass == 4 { xs = 0; ys = 2; dx = 2; dy = 4 }
+            if pass == 5 { xs = 1; ys = 0; dx = 2; dy = 2 }
+            if pass == 6 { xs = 0; ys = 1; dx = 1; dy = 2 }
+        }
+        let pw = im_png_pass_dim(w, xs, dx)
+        let ph = im_png_pass_dim(h, ys, dy)
+        if pw > 0 && ph > 0 {
+            let row_bytes = (pw * src_channels * depth + 7) / 8
+            let mut i = 0
+            while i < max_row { std::raw::store8(prev + i, 0); i += 1 }
+            let mut row_index = 0
+            while row_index < ph {
+                let filter = std::raw::load8(raw + offset)
+                offset += 1
+                rt_copy(cur, raw + offset, row_bytes)
+                offset += row_bytes
+                if !im_png_unfilter(filter, prev, cur, row_bytes, filter_bpp) {
+                    bad_filter = true
+                    break
+                }
+                let mut px = 0
+                while px < pw {
+                    let dest_x = xs + px * dx
+                    let dest_y = ys + row_index * dy
+                    let dest = out + (dest_y * w + dest_x) * out_bpp
+                    if !im_png_expand_pixel(cur, px, dest, src_type, depth, src_channels, out_color, trans, trans_len, palette, palette_entries, alpha, alpha_len) {
+                        bad_palette = true
+                        break
+                    }
+                    px += 1
+                }
+                if bad_palette { break }
+                let swap = prev
+                prev = cur
+                cur = swap
+                row_index += 1
+            }
+        }
+        if bad_filter || bad_palette { break }
+        pass += 1
+    }
+    rt_free_block(prev_mem)
+    rt_free_block(cur_mem)
+    if bad_filter {
+        rt_free_block(out)
+        im_png_error(function, "invalid PNG row filter")
+    }
+    if bad_palette {
+        rt_free_block(out)
+        im_png_error(function, "palette index is outside the palette")
+    }
+    if offset > raw_len {
+        rt_free_block(out)
+        im_png_error(function, "decompressed image data is shorter than the image")
+    }
+}
+
+fn im_png_inflate(function: string, p: int, n: int, idat_len: int, idat_count: int, idat_first: int, expected: int, function_id: int) -> any {
+    let compressed = if idat_count == 1 { idat_first } else { rt_alloc(idat_len) }
+    if idat_count != 1 {
+        let mut pos = 8
+        let mut copied = 0
+        while pos + 12 <= n {
+            let chunk_len = im_png_be32(p + pos)
+            let typ = p + pos + 4
+            if im_png_is_type(typ, 73, 68, 65, 84) {
+                rt_copy(compressed + copied, p + pos + 8, chunk_len)
+                copied += chunk_len
+            }
+            pos += chunk_len + 12
+            if im_png_is_type(typ, 73, 69, 78, 68) { break }
+        }
+    }
+    let state = cz_new(compressed, idat_len, 0)
+    if expected > 67117056 {
+        rt_free_block(std::raw::load(state + 45256))
+        rt_free_block(state)
+        if idat_count != 1 { rt_free_block(compressed) }
+        im_lim(function, "decompressed PNG data", 67117056)
+    }
+    cz_bound(state, 67117056, function_id)
+    let status = cz_run(state, true)
+    if status < 0 {
+        rt_free_block(std::raw::load(state + 45256))
+        rt_free_block(state)
+        if idat_count != 1 { rt_free_block(compressed) }
+        im_img_err(function, cz_message(status))
+    }
+    let decoded = cz_finish(state)
+    if idat_count != 1 { rt_free_block(compressed) }
+    decoded
+}
+
+fn im_png_decode(function: string, p: int, n: int, function_id: int) -> int {
+    if n < 8 || std::raw::load8(p) != 137 || std::raw::load8(p + 1) != 80 || std::raw::load8(p + 2) != 78 || std::raw::load8(p + 3) != 71 || std::raw::load8(p + 4) != 13 || std::raw::load8(p + 5) != 10 || std::raw::load8(p + 6) != 26 || std::raw::load8(p + 7) != 10 {
+        im_png_error(function, "invalid PNG signature")
+    }
+    let mut width = 0
+    let mut height = 0
+    let mut depth = 0
+    let mut src_type = -1
+    let mut src_channels = 0
+    let mut interlace = 0
+    let mut ihdr = false
+    let mut palette_seen = false
+    let mut trans_seen = false
+    let mut idat_seen = false
+    let mut iend = false
+    let mut palette = 0
+    let mut palette_entries = 0
+    let mut trans = 0
+    let mut trans_len = 0
+    let mut alpha = 0
+    let mut alpha_len = 0
+    let mut idat_len = 0
+    let mut idat_count = 0
+    let mut idat_first = 0
+    let mut pos = 8
+    let mut chunk_index = 0
+    while pos + 12 <= n {
+        let chunk_len = im_png_be32(p + pos)
+        if chunk_len > n - pos - 12 {
+            im_png_error(function, "PNG chunk extends past the input")
+        }
+        let typ = p + pos + 4
+        let data = p + pos + 8
+        let stored_crc = im_png_be32(data + chunk_len)
+        let actual_crc = cz_crc(typ, chunk_len + 4)
+        if stored_crc != actual_crc {
+            im_png_error(function, "PNG chunk CRC mismatch")
+        }
+        if chunk_index == 0 && !im_png_is_type(typ, 73, 72, 68, 82) {
+            im_png_error(function, "IHDR must be the first PNG chunk")
+        }
+        if im_png_is_type(typ, 73, 72, 68, 82) {
+            if ihdr || chunk_index != 0 || chunk_len != 13 {
+                im_png_error(function, "invalid IHDR chunk")
+            }
+            width = im_png_be32(data)
+            height = im_png_be32(data + 4)
+            depth = std::raw::load8(data + 8)
+            src_type = std::raw::load8(data + 9)
+            let compression = std::raw::load8(data + 10)
+            let filtering = std::raw::load8(data + 11)
+            interlace = std::raw::load8(data + 12)
+            im_dims(function, width, height)
+            if compression != 0 || filtering != 0 || interlace > 1 {
+                im_png_error(function, "unsupported PNG compression, filter, or interlace method")
+            }
+            if src_type == 0 { src_channels = 1 }
+            if src_type == 2 { src_channels = 3 }
+            if src_type == 3 { src_channels = 1 }
+            if src_type == 4 { src_channels = 2 }
+            if src_type == 6 { src_channels = 4 }
+            if src_channels == 0 {
+                im_png_error(function, "invalid PNG color type")
+            }
+            let valid_depth = (depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16) && (src_type == 0 || src_type == 3) || (depth == 8 || depth == 16) && (src_type == 2 || src_type == 4 || src_type == 6)
+            if !valid_depth {
+                im_png_error(function, "invalid PNG bit depth for color type")
+            }
+            ihdr = true
+        } else {
+            if !ihdr {
+                im_png_error(function, "PNG chunk appears before IHDR")
+            }
+            if im_png_is_type(typ, 80, 76, 84, 69) {
+                if idat_seen || palette_seen || src_type == 0 || src_type == 4 || chunk_len == 0 || chunk_len > 768 || chunk_len % 3 != 0 {
+                    im_png_error(function, "invalid PLTE chunk")
+                }
+                palette = data
+                palette_entries = chunk_len / 3
+                if src_type == 3 && palette_entries > std::raw::shl(1, depth) {
+                    im_png_error(function, "palette has more entries than the bit depth permits")
+                }
+                palette_seen = true
+            } else if im_png_is_type(typ, 116, 82, 78, 83) {
+                if idat_seen || trans_seen || src_type == 4 || src_type == 6 || chunk_len == 0 || chunk_len > 256 {
+                    im_png_error(function, "invalid tRNS chunk")
+                }
+                if src_type == 0 && chunk_len >= 2 {
+                    trans = data
+                    trans_len = chunk_len
+                } else if src_type == 2 && chunk_len >= 6 {
+                    trans = data
+                    trans_len = chunk_len
+                } else if src_type == 3 && palette_seen {
+                    alpha = data
+                    alpha_len = if chunk_len <= palette_entries { chunk_len } else { 0 }
+                    trans_len = chunk_len
+                } else {
+                    im_png_error(function, "invalid tRNS chunk length or order")
+                }
+                trans_seen = true
+            } else if im_png_is_type(typ, 73, 68, 65, 84) {
+                if src_type == 3 && !palette_seen {
+                    im_png_error(function, "indexed PNG is missing PLTE")
+                }
+                if idat_count == 0 { idat_first = data }
+                idat_count += 1
+                idat_len += chunk_len
+                idat_seen = true
+            } else if im_png_is_type(typ, 73, 69, 78, 68) {
+                if chunk_len != 0 || !idat_seen {
+                    im_png_error(function, "invalid IEND chunk")
+                }
+                iend = true
+                break
+            } else {
+                let first = std::raw::load8(typ)
+                let reserved = std::raw::load8(typ + 2)
+                if (reserved & 32) != 0 {
+                    im_png_error(function, "PNG chunk uses the reserved bit")
+                }
+                if (first & 32) == 0 {
+                    im_png_error(function, "unknown critical PNG chunk")
+                }
+            }
+        }
+        pos += chunk_len + 12
+        chunk_index += 1
+    }
+    if !ihdr || !idat_seen || !iend {
+        im_png_error(function, "PNG is missing IHDR, IDAT, or IEND")
+    }
+    if src_type == 3 && !palette_seen {
+        im_png_error(function, "indexed PNG is missing PLTE")
+    }
+    let mut out_color = 0
+    if src_type == 0 {
+        if depth == 16 { out_color = 5 } else { out_color = 1 }
+        if trans_seen {
+            if depth == 16 { out_color = 6 } else { out_color = 2 }
+        }
+    } else if src_type == 2 {
+        if depth == 16 { out_color = 7 } else { out_color = 3 }
+        if trans_seen {
+            if depth == 16 { out_color = 8 } else { out_color = 4 }
+        }
+    } else if src_type == 3 {
+        if trans_seen { out_color = 4 } else { out_color = 3 }
+    } else if src_type == 4 {
+        if depth == 16 { out_color = 6 } else { out_color = 2 }
+    } else {
+        if depth == 16 { out_color = 8 } else { out_color = 4 }
+    }
+    let out_bytes = width * height * im_bpp(out_color)
+    if out_bytes > 67108864 {
+        im_lim(function, "decoded image bytes", 67108864)
+    }
+    let raw_expected = im_png_raw_size(width, height, src_channels, depth, interlace)
+    let decoded = im_png_inflate(function, p, n, idat_len, idat_count, idat_first, raw_expected, function_id)
+    let raw_len = rt_slen(decoded)
+    if raw_len < raw_expected {
+        im_png_error(function, "decompressed image data is shorter than the image")
+    }
+    let output = rt_alloc(out_bytes)
+    im_png_decode_pixels(function, std::raw::bits(decoded) + 16, raw_len, output, width, height, src_type, depth, src_channels, out_color, interlace, trans, trans_len, palette, palette_entries, alpha, alpha_len)
+    im_insert(function, width, height, out_color, output, out_bytes)
+}
+
+fn im_image_read_path(path: any) -> int {
+    let function = "std::image::load"
+    rt_expect_str(path, function)
+    if rt_slen(path) > 16384 { im_lim(function, "image path bytes", 16384) }
+    let fd = rt_open(path, 524288, 0)
+    if fd < 0 { im_io_err(function, 0 - fd) }
+    let builder = sb_new(65536)
+    let buffer = rt_alloc(65536)
+    loop {
+        let got = std::raw::syscall(0, fd, buffer, 65536, 0, 0, 0)
+        if got == -4 { continue }
+        if got < 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_free_block(buffer)
+            rt_free_block(std::raw::load(builder + 16))
+            rt_free_block(builder)
+            im_io_err(function, 0 - got)
+        }
+        if got == 0 { break }
+        let current = sb_len(builder)
+        if current + got > 33554432 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_free_block(buffer)
+            rt_free_block(std::raw::load(builder + 16))
+            rt_free_block(builder)
+            im_lim(function, "encoded image input bytes", 33554432)
+        }
+        sb_raw(builder, buffer, got)
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    rt_free_block(buffer)
+    let bytes = sb_finish_bytes(builder)
+    im_image_decode(function, std::raw::bits(bytes) + 16, rt_slen(bytes), 2)
+}

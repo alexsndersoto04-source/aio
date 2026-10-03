@@ -1,0 +1,274 @@
+// Lector GIF 87a/89a para el primer cuadro, con tablas globales/locales,
+// transparencia, subbloques, LZW de hasta 12 bits y filas entrelazadas.
+fn im_gif_error(function: string, detail: any) {
+    im_img_err(function, "DecodingError: GIF: " + detail)
+}
+
+fn im_gif_le16(function: string, p: int, n: int, pos: int) -> int {
+    if pos < 0 || pos + 2 > n { im_gif_error(function, "truncated GIF word") }
+    std::raw::load8(p + pos) + 256 * std::raw::load8(p + pos + 1)
+}
+
+fn im_gif_table(function: string, p: int, n: int, pos: int, entries: int, palette: int) -> int {
+    let bytes = entries * 3
+    if pos < 0 || pos + bytes > n { im_gif_error(function, "truncated color table") }
+    let mut i = 0
+    while i < entries {
+        let src = p + pos + 3 * i
+        let dst = palette + 3 * i
+        std::raw::store8(dst, std::raw::load8(src))
+        std::raw::store8(dst + 1, std::raw::load8(src + 1))
+        std::raw::store8(dst + 2, std::raw::load8(src + 2))
+        i += 1
+    }
+    pos + bytes
+}
+
+fn im_gif_skip_subblocks(function: string, p: int, n: int, start: int) -> int {
+    let mut pos = start
+    let mut done = false
+    while !done {
+        if pos >= n { im_gif_error(function, "truncated data sub-blocks") }
+        let size = std::raw::load8(p + pos)
+        pos += 1
+        if size == 0 {
+            done = true
+            0
+        } else {
+            if pos + size > n { im_gif_error(function, "truncated data sub-block") }
+            pos += size
+            0
+        }
+    }
+    pos
+}
+
+fn im_gif_collect_subblocks(function: string, p: int, n: int, start: int) -> (int, int) {
+    let mut pos = start
+    let mut total = 0
+    let mut done = false
+    while !done {
+        if pos >= n { im_gif_error(function, "truncated image data") }
+        let size = std::raw::load8(p + pos)
+        pos += 1
+        if size == 0 {
+            done = true
+            0
+        } else {
+            if pos + size > n { im_gif_error(function, "truncated image data block") }
+            total += size
+            if total > 33554432 { im_lim(function, "encoded image input bytes", 33554432) }
+            pos += size
+            0
+        }
+    }
+    let data = rt_alloc(total)
+    pos = start
+    let mut copied = 0
+    let mut block_size = std::raw::load8(p + pos)
+    while block_size != 0 {
+        pos += 1
+        rt_copy(data + copied, p + pos, block_size)
+        copied += block_size
+        pos += block_size
+        block_size = std::raw::load8(p + pos)
+    }
+    return (data, total)
+}
+
+fn im_gif_interlace_y(row: int, height: int) -> int {
+    let pass0 = (height + 7) / 8
+    if row < pass0 { return row * 8 }
+    let pass1 = if height <= 4 { 0 } else { (height - 4 + 7) / 8 }
+    let at1 = row - pass0
+    if at1 < pass1 { return 4 + at1 * 8 }
+    let pass2 = if height <= 2 { 0 } else { (height - 2 + 3) / 4 }
+    let at2 = at1 - pass1
+    if at2 < pass2 { return 2 + at2 * 4 }
+    let at3 = row - pass0 - pass1 - pass2
+    1 + at3 * 2
+}
+
+fn im_gif_lzw(function: string, data: int, data_len: int, min_code_size: int, output: int, screen_w: int, screen_h: int, left: int, top: int, frame_w: int, frame_h: int, interlaced: bool, palette: int, palette_entries: int, transparent: int) {
+    if min_code_size < 1 || min_code_size > 8 { im_gif_error(function, "invalid LZW minimum code size") }
+    let clear_code = std::raw::shl(1, min_code_size)
+    let end_code = clear_code + 1
+    let prefix = rt_alloc_zero(4096 * 8)
+    let suffix = rt_alloc_zero(4096)
+    let stack = rt_alloc_zero(4096)
+    let mut code_size = min_code_size + 1
+    let mut next_code = end_code + 1
+    let mut old_code = -1
+    let mut old_first = 0
+    let mut bit_buffer = 0
+    let mut bit_count = 0
+    let mut byte_pos = 0
+    let mut out_count = 0
+    let expected = frame_w * frame_h
+    let mut ended = false
+
+    while !ended && out_count < expected {
+        while bit_count < code_size && byte_pos < data_len {
+            bit_buffer += std::raw::shl(std::raw::load8(data + byte_pos), bit_count)
+            bit_count += 8
+            byte_pos += 1
+        }
+        if bit_count < code_size { im_gif_error(function, "LZW stream ended before its end code") }
+        let code = bit_buffer & (std::raw::shl(1, code_size) - 1)
+        bit_buffer = std::raw::shr(bit_buffer, code_size)
+        bit_count -= code_size
+
+        if code == clear_code {
+            code_size = min_code_size + 1
+            next_code = end_code + 1
+            old_code = -1
+            0
+        } else if code == end_code {
+            ended = true
+            0
+        } else {
+            if code > next_code || (code == next_code && old_code < 0) {
+                im_gif_error(function, "invalid LZW code")
+            }
+            let in_code = code
+            let mut current = code
+            let mut stack_len = 0
+            if current == next_code {
+                if old_code < 0 { im_gif_error(function, "invalid first LZW code") }
+                std::raw::store8(stack + stack_len, old_first)
+                stack_len += 1
+                current = old_code
+            }
+            while current >= clear_code {
+                if current >= next_code || stack_len >= 4095 {
+                    im_gif_error(function, "invalid LZW dictionary chain")
+                }
+                std::raw::store8(stack + stack_len, std::raw::load8(suffix + current))
+                stack_len += 1
+                current = std::raw::load(prefix + 8 * current)
+            }
+            if current < 0 || current >= clear_code || stack_len >= 4096 {
+                im_gif_error(function, "invalid LZW dictionary entry")
+            }
+            let first = current
+            std::raw::store8(stack + stack_len, first)
+            stack_len += 1
+
+            while stack_len > 0 && out_count < expected {
+                stack_len -= 1
+                let index = std::raw::load8(stack + stack_len)
+                let row_order = out_count / frame_w
+                let x = out_count - row_order * frame_w
+                let y = if interlaced { im_gif_interlace_y(row_order, frame_h) } else { row_order }
+                if index < palette_entries && left + x < screen_w && top + y < screen_h {
+                    let dst = output + ((top + y) * screen_w + left + x) * 4
+                    let color = palette + 3 * index
+                    std::raw::store8(dst, std::raw::load8(color))
+                    std::raw::store8(dst + 1, std::raw::load8(color + 1))
+                    std::raw::store8(dst + 2, std::raw::load8(color + 2))
+                    std::raw::store8(dst + 3, if index == transparent { 0 } else { 255 })
+                }
+                out_count += 1
+            }
+
+            if old_code >= 0 && next_code < 4096 {
+                std::raw::store(prefix + 8 * next_code, old_code)
+                std::raw::store8(suffix + next_code, first)
+                next_code += 1
+                if next_code == std::raw::shl(1, code_size) && code_size < 12 {
+                    code_size += 1
+                }
+            }
+            old_code = in_code
+            old_first = first
+            0
+        }
+    }
+
+    if out_count != expected { im_gif_error(function, "not enough decoded pixels") }
+    rt_free_block(prefix)
+    rt_free_block(suffix)
+    rt_free_block(stack)
+}
+
+fn im_gif_decode(function: string, p: int, n: int) -> int {
+    if n < 13 || std::raw::load8(p) != 71 || std::raw::load8(p + 1) != 73 || std::raw::load8(p + 2) != 70 || std::raw::load8(p + 3) != 56 || (std::raw::load8(p + 4) != 55 && std::raw::load8(p + 4) != 57) || std::raw::load8(p + 5) != 97 {
+        im_gif_error(function, "signature or logical screen descriptor is invalid")
+    }
+    let screen_w = im_gif_le16(function, p, n, 6)
+    let screen_h = im_gif_le16(function, p, n, 8)
+    im_dims(function, screen_w, screen_h)
+    let screen_bytes = screen_w * screen_h * 4
+    if screen_bytes > 67108864 { im_lim(function, "decoded image bytes", 67108864) }
+    let screen_packed = std::raw::load8(p + 10)
+    let global_present = (screen_packed & 128) != 0
+    let global_entries = if global_present { std::raw::shl(1, (screen_packed & 7) + 1) } else { 0 }
+    let palette = rt_alloc_zero(256 * 3)
+    let mut pos = 13
+    if global_present {
+        pos = im_gif_table(function, p, n, pos, global_entries, palette)
+    }
+    let mut transparent = -1
+    let output = rt_alloc_zero(screen_bytes)
+    let mut found_frame = false
+
+    while pos < n && !found_frame {
+        let marker = std::raw::load8(p + pos)
+        pos += 1
+        if marker == 59 {
+            pos = n
+            0
+        } else if marker == 33 {
+            if pos >= n { im_gif_error(function, "truncated extension") }
+            let label = std::raw::load8(p + pos)
+            pos += 1
+            if label == 249 {
+                if pos >= n || std::raw::load8(p + pos) != 4 || pos + 6 > n {
+                    im_gif_error(function, "invalid graphic control extension")
+                }
+                let flags = std::raw::load8(p + pos + 1)
+                transparent = if (flags & 1) != 0 { std::raw::load8(p + pos + 4) } else { -1 }
+                if std::raw::load8(p + pos + 5) != 0 {
+                    im_gif_error(function, "invalid graphic control terminator")
+                }
+                pos += 6
+            } else {
+                pos = im_gif_skip_subblocks(function, p, n, pos)
+            }
+            0
+        } else if marker == 44 {
+            if pos + 9 > n { im_gif_error(function, "truncated image descriptor") }
+            let left = im_gif_le16(function, p, n, pos)
+            let top = im_gif_le16(function, p, n, pos + 2)
+            let frame_w = im_gif_le16(function, p, n, pos + 4)
+            let frame_h = im_gif_le16(function, p, n, pos + 6)
+            let frame_packed = std::raw::load8(p + pos + 8)
+            pos += 9
+            if frame_w <= 0 || frame_h <= 0 { im_gif_error(function, "empty image frame") }
+            let frame_bytes = frame_w * frame_h
+            if frame_bytes > 67108864 { im_lim(function, "temporary GIF frame pixels", 67108864) }
+            let local_present = (frame_packed & 128) != 0
+            let palette_entries = if local_present { std::raw::shl(1, (frame_packed & 7) + 1) } else { global_entries }
+            if local_present {
+                pos = im_gif_table(function, p, n, pos, palette_entries, palette)
+            }
+            if palette_entries == 0 { im_gif_error(function, "image has no color table") }
+            if pos >= n { im_gif_error(function, "missing LZW minimum code size") }
+            let min_code_size = std::raw::load8(p + pos)
+            pos += 1
+            let (data, data_len) = im_gif_collect_subblocks(function, p, n, pos)
+            let interlaced = (frame_packed & 64) != 0
+            im_gif_lzw(function, data, data_len, min_code_size, output, screen_w, screen_h, left, top, frame_w, frame_h, interlaced, palette, palette_entries, transparent)
+            rt_free_block(data)
+            found_frame = true
+            0
+        } else {
+            im_gif_error(function, "unknown block marker")
+            0
+        }
+    }
+
+    if !found_frame { im_gif_error(function, "no image frame found") }
+    rt_free_block(palette)
+    im_insert(function, screen_w, screen_h, 4, output, screen_bytes)
+}

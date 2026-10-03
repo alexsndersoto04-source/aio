@@ -1,0 +1,361 @@
+// Lector BMP basado en BmpDecoder 0.25.10: paletas de 1/2/4/8 bits,
+// cabeceras core/info/V2/V3/V4/V5, orientación superior/inferior, RGB16/24/32,
+// máscaras de bits y compresión RLE4/RLE8.
+
+fn im_bmp_error(function: string, detail: any) {
+    im_img_err(function, "DecodingError: " + detail)
+}
+
+fn im_bmp_u32(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2) + 16777216 * std::raw::load8(p + 3)
+}
+
+fn im_bmp_i32(p: int) -> int {
+    let value = im_bmp_u32(p)
+    if value >= 2147483648 { return value - 4294967296 }
+    value
+}
+
+fn im_bmp_mask(mask: int, max_bits: int) -> (int, int, bool) {
+    if mask == 0 { return (0, 0, true) }
+    if max_bits == 16 && mask >= 65536 { return (0, 0, false) }
+    let mut shift = 0
+    while shift < max_bits && (std::raw::shr(mask, shift) & 1) == 0 { shift += 1 }
+    let mut field_len = 0
+    while shift + field_len < max_bits && (std::raw::shr(mask, shift + field_len) & 1) == 1 { field_len += 1 }
+    let mut ones = 0
+    let mut i = 0
+    while i < max_bits {
+        if (std::raw::shr(mask, i) & 1) == 1 { ones += 1 }
+        i += 1
+    }
+    if field_len != ones { return (0, 0, false) }
+    if (field_len > 8) {
+        shift += field_len - 8
+        field_len = 8
+    }
+    return (shift, field_len, true)
+}
+
+fn im_bmp_mask_value(value: int, shift: int, bits_len: int) -> int {
+    if (bits_len == 0) { return 0 }
+    let raw = std::raw::shr(value, shift) & (std::raw::shl(1, bits_len) - 1)
+    if (bits_len == 1) { return raw * 255 }
+    if (bits_len == 2) { return raw * 85 }
+    if (bits_len == 7) { return (std::raw::shl(raw, 1) | std::raw::shr(raw, 6)) & 255 }
+    if (bits_len == 8) { return raw }
+    let scale_max = std::raw::shl(1, bits_len) - 1
+    return (raw * 255 + scale_max / 2) / scale_max
+}
+
+fn im_bmp_palette_value(palette: int, index: int, channel: int) -> int {
+    std::raw::load8(palette + 3 * index + channel)
+}
+
+fn im_bmp_put_rgb(dst: int, color: int, r: int, g: int, b: int, a: int) {
+    std::raw::store8(dst, r)
+    std::raw::store8(dst + 1, g)
+    std::raw::store8(dst + 2, b)
+    if color == 4 { std::raw::store8(dst + 3, a) }
+}
+
+fn im_bmp_rle(function: string, p: int, n: int, data_offset: int, output: int, w: int, h: int, bit_count: int, palette: int, palette_entries: int) {
+    let mut pos = data_offset
+    let mut file_y = 0
+    let mut x = 0
+    let mut done = 0
+    while done == 0 {
+        if pos + 2 > n { im_bmp_error(function, "Corrupt RLE data") }
+        let count = std::raw::load8(p + pos)
+        let value = std::raw::load8(p + pos + 1)
+        pos += 2
+        if count != 0 {
+            let row_y = h - 1 - file_y
+            let row = output + row_y * w * 3
+            let mut j = 0
+            while j < count {
+                let mut index = value
+                if bit_count == 4 {
+                    index = if (j & 1) == 0 { std::raw::shr(value, 4) } else { value & 15 }
+                }
+                if bit_count == 4 && x + j >= w {
+                    im_bmp_error(function, "Corrupt RLE data")
+                }
+                if x + j < w {
+                    if index >= palette_entries { im_bmp_error(function, "Corrupt RLE data") }
+                    im_bmp_put_rgb(row + (x + j) * 3, 3, im_bmp_palette_value(palette, index, 0), im_bmp_palette_value(palette, index, 1), im_bmp_palette_value(palette, index, 2), 255)
+                }
+                j += 1
+            }
+            x += count
+        } else {
+            if (value == 0) {
+                file_y += 1
+                x = 0
+                if (file_y >= h) { done = 1 }
+            } else if (value == 1) {
+                done = 1
+            } else if (value == 2) {
+                if pos + 2 > n { im_bmp_error(function, "Corrupt RLE data") }
+                let dx = std::raw::load8(p + pos)
+                let dy = std::raw::load8(p + pos + 1)
+                pos += 2
+                if dy != 0 {
+                    file_y += dy
+                    if file_y >= h { im_bmp_error(function, "Corrupt RLE data") }
+                }
+                if x + dx > w { im_bmp_error(function, "Corrupt RLE data") }
+                x += dx
+            } else {
+                let pixels = value
+                let byte_count = if bit_count == 8 { pixels } else { (pixels + 1) / 2 }
+                let padded = byte_count + (byte_count & 1)
+                if pos + padded > n { im_bmp_error(function, "Corrupt RLE data") }
+                if x + pixels > w { im_bmp_error(function, "Corrupt RLE data") }
+                let row_y = h - 1 - file_y
+                let row = output + row_y * w * 3
+                let mut j = 0
+                while j < pixels {
+                    let mut index = 0
+                    if bit_count == 8 {
+                        index = std::raw::load8(p + pos + j)
+                    } else {
+                        let packed = std::raw::load8(p + pos + j / 2)
+                        index = if (j & 1) == 0 { std::raw::shr(packed, 4) } else { packed & 15 }
+                    }
+                    if index >= palette_entries { im_bmp_error(function, "Corrupt RLE data") }
+                    im_bmp_put_rgb(row + (x + j) * 3, 3, im_bmp_palette_value(palette, index, 0), im_bmp_palette_value(palette, index, 1), im_bmp_palette_value(palette, index, 2), 255)
+                    j += 1
+                }
+                pos += padded
+                x += pixels
+            }
+        }
+    }
+}
+
+fn im_bmp_decode(function: string, p: int, n: int) -> int {
+    if n < 26 || std::raw::load8(p) != 66 || std::raw::load8(p + 1) != 77 {
+        im_bmp_error(function, "BMP signature not found")
+    }
+    let data_offset = im_bmp_u32(p + 10)
+    let header_size = im_bmp_u32(p + 14)
+    if data_offset > n || header_size < 12 || 14 + header_size > n {
+        im_bmp_error(function, "bitmap header or pixel offset is outside the input")
+    }
+    let core = header_size == 12
+    if !core && header_size != 40 && header_size != 52 && header_size != 56 && header_size != 108 && header_size != 124 {
+        im_img_err(function, "UnsupportedError: unknown bitmap header type")
+    }
+    let mut width = 0
+    let mut height = 0
+    let mut top_down = false
+    let mut bit_count = 0
+    let mut compression = 0
+    let mut colors_used = 0
+    let mut alpha_mask = 0
+    let mut r_mask = 0
+    let mut g_mask = 0
+    let mut b_mask = 0
+    let mut planes = 0
+    if core {
+        width = im_ld16(p + 18)
+        height = im_ld16(p + 20)
+        planes = im_ld16(p + 22)
+        bit_count = im_ld16(p + 24)
+        if bit_count != 1 && bit_count != 4 && bit_count != 8 && bit_count != 24 {
+            im_bmp_error(function, "Invalid channel bit count for RGB")
+        }
+    } else {
+        width = im_bmp_i32(p + 18)
+        let signed_height = im_bmp_i32(p + 22)
+        if width < 0 { im_bmp_error(function, "Negative width") }
+        if signed_height == (0 - 2147483648) { im_bmp_error(function, "Invalid height") }
+        if signed_height < 0 {
+            top_down = true
+            height = 0 - signed_height
+        } else {
+            height = signed_height
+        }
+        planes = im_ld16(p + 26)
+        bit_count = im_ld16(p + 28)
+        compression = im_bmp_u32(p + 30)
+        colors_used = im_bmp_u32(p + 46)
+        if top_down && compression != 0 && compression != 3 {
+            im_bmp_error(function, "Invalid compressed image type for top-down bitmap")
+        }
+        if compression == 0 {
+            if bit_count != 1 && bit_count != 2 && bit_count != 4 && bit_count != 8 && bit_count != 16 && bit_count != 24 && bit_count != 32 {
+                im_bmp_error(function, "Invalid channel bit count for RGB")
+            }
+        } else if compression == 1 {
+            if bit_count != 8 { im_bmp_error(function, "Invalid channel bit count for RLE8") }
+        } else if compression == 2 {
+            if bit_count != 4 { im_bmp_error(function, "Invalid channel bit count for RLE4") }
+        } else if compression == 3 {
+            if bit_count != 16 && bit_count != 32 { im_bmp_error(function, "Invalid channel bit count for bitfields") }
+            let mask_pos = p + 54
+            if mask_pos + 12 > p + n { im_bmp_error(function, "Missing bitfield masks") }
+            r_mask = im_bmp_u32(mask_pos)
+            g_mask = im_bmp_u32(mask_pos + 4)
+            b_mask = im_bmp_u32(mask_pos + 8)
+            if header_size >= 56 { alpha_mask = im_bmp_u32(mask_pos + 12) }
+        } else if compression == 4 || compression == 5 {
+            im_img_err(function, "UnsupportedError: compressed JPEG or PNG bitmap")
+        } else if compression >= 11 && compression <= 13 {
+            im_img_err(function, "UnsupportedError: CMYK bitmap")
+        } else {
+            im_bmp_error(function, "Unknown image compression type")
+        }
+    }
+    if planes != 1 { im_bmp_error(function, "More than one plane") }
+    if width > 8192 || height > 8192 || width <= 0 || height <= 0 {
+        im_param(function, "width and height must be positive and within the dimension limit")
+    }
+    let rle = !core && (compression == 1 || compression == 2)
+    if rle && top_down { im_bmp_error(function, "Invalid compressed image type for top-down bitmap") }
+    let indexed = bit_count <= 8
+    if indexed && colors_used > std::raw::shl(1, bit_count) {
+        im_bmp_error(function, "Palette size exceeds maximum size for BMP bit count")
+    }
+    let mut color = 3
+    if !core && compression == 3 && alpha_mask != 0 { color = 4 }
+    let image_bytes = width * height * im_bpp(color)
+    if image_bytes > 67108864 { im_lim(function, "decoded image bytes", 67108864) }
+
+    let mut palette = 0
+    let mut palette_entries = 0
+    if indexed {
+        let mut palette_size = colors_used
+        if palette_size == 0 { palette_size = std::raw::shl(1, bit_count) }
+        if palette_size > 256 { im_bmp_error(function, "Palette size exceeds maximum size for BMP bit count") }
+        palette_entries = palette_size
+        palette = rt_alloc_zero(256 * 3)
+        let bytes_per_color = if core { 3 } else { 4 }
+        let mut palette_pos = 14 + header_size
+        if !core && compression == 3 && header_size == 40 { palette_pos += 12 }
+        if palette_pos + palette_size * bytes_per_color > n {
+            rt_free_block(palette)
+            im_bmp_error(function, "truncated BMP palette")
+        }
+        let mut i = 0
+        while i < palette_size {
+            let source = p + palette_pos + i * bytes_per_color
+            let target = palette + 3 * i
+            std::raw::store8(target, std::raw::load8(source + 2))
+            std::raw::store8(target + 1, std::raw::load8(source + 1))
+            std::raw::store8(target + 2, std::raw::load8(source))
+            i += 1
+        }
+    }
+
+    let mut r_shift = 10
+    let mut r_len = 5
+    let mut g_shift = 5
+    let mut g_len = 5
+    let mut b_shift = 0
+    let mut b_len = 5
+    let mut a_shift = 0
+    let mut a_len = 0
+    if !core && compression == 3 {
+        let max_bits = bit_count
+        let (rs, rl, rv) = im_bmp_mask(r_mask, max_bits)
+        let (gs, gl, gv) = im_bmp_mask(g_mask, max_bits)
+        let (bs, bl, bv) = im_bmp_mask(b_mask, max_bits)
+        let (as0, al, av) = im_bmp_mask(alpha_mask, max_bits)
+        if !rv || !gv || !bv || !av { im_bmp_error(function, "Invalid or non-contiguous bitfield mask") }
+        if rl == 0 || gl == 0 || bl == 0 { im_bmp_error(function, "Missing bitfield mask") }
+        r_shift = rs
+        r_len = rl
+        g_shift = gs
+        g_len = gl
+        b_shift = bs
+        b_len = bl
+        a_shift = as0
+        a_len = al
+    }
+
+    let output = rt_alloc_zero(image_bytes)
+    if rle {
+        im_bmp_rle(function, p, n, data_offset, output, width, height, bit_count, palette, palette_entries)
+    } else {
+        let mut row_bytes = 0
+        if indexed {
+            row_bytes = ((bit_count * width + 31) / 32) * 4
+        } else if bit_count == 16 {
+            row_bytes = ((width * 2 + 3) / 4) * 4
+        } else if bit_count == 24 {
+            row_bytes = ((width * 3 + 3) / 4) * 4
+        } else {
+            row_bytes = width * 4
+        }
+        if data_offset + row_bytes * height > n {
+            rt_free_block(output)
+            if palette != 0 { rt_free_block(palette) }
+            im_bmp_error(function, "truncated BMP pixel data")
+        }
+        let mut fy = 0
+        while fy < height {
+            let y = if top_down { fy } else { height - 1 - fy }
+            let row = p + data_offset + fy * row_bytes
+            let mut x = 0
+            while x < width {
+                let dst = output + (y * width + x) * im_bpp(color)
+                if indexed {
+                    let idx = if bit_count == 8 {
+                        std::raw::load8(row + x)
+                    } else if bit_count == 4 {
+                        let byte = std::raw::load8(row + x / 2)
+                        if (x & 1) == 0 { std::raw::shr(byte, 4) } else { byte & 15 }
+                    } else if bit_count == 2 {
+                        let byte = std::raw::load8(row + x / 4)
+                        std::raw::shr(byte, 6 - 2 * (x & 3)) & 3
+                    } else {
+                        let byte = std::raw::load8(row + x / 8)
+                        std::raw::shr(byte, 7 - (x & 7)) & 1
+                    }
+                    im_bmp_put_rgb(dst, color, im_bmp_palette_value(palette, idx, 0), im_bmp_palette_value(palette, idx, 1), im_bmp_palette_value(palette, idx, 2), 255)
+                } else if bit_count == 24 {
+                    let src = row + 3 * x
+                    im_bmp_put_rgb(dst, color, std::raw::load8(src + 2), std::raw::load8(src + 1), std::raw::load8(src), 255)
+                } else if bit_count == 32 && compression == 0 {
+                    let src = row + 4 * x
+                    im_bmp_put_rgb(dst, color, std::raw::load8(src + 2), std::raw::load8(src + 1), std::raw::load8(src), 255)
+                } else if bit_count == 16 && compression == 0 {
+                    let v = im_ld16(row + 2 * x)
+                    im_bmp_put_rgb(dst, color, im_bmp_mask_value(v, 10, 5), im_bmp_mask_value(v, 5, 5), im_bmp_mask_value(v, 0, 5), 255)
+                } else if bit_count == 16 || bit_count == 32 {
+                    let v = if bit_count == 16 { im_ld16(row + 2 * x) } else { im_bmp_u32(row + 4 * x) }
+                    let r = im_bmp_mask_value(v, r_shift, r_len)
+                    let g = im_bmp_mask_value(v, g_shift, g_len)
+                    let b = im_bmp_mask_value(v, b_shift, b_len)
+                    let a = if a_len == 0 { 255 } else { im_bmp_mask_value(v, a_shift, a_len) }
+                    im_bmp_put_rgb(dst, color, r, g, b, a)
+                }
+                x += 1
+            }
+            fy += 1
+        }
+    }
+    if palette != 0 { rt_free_block(palette) }
+    im_insert(function, width, height, color, output, image_bytes)
+}
+
+fn im_image_decode(function: string, p: int, n: int, function_id: int) -> int {
+    if n >= 8 && std::raw::load8(p) == 137 && std::raw::load8(p + 1) == 80 && std::raw::load8(p + 2) == 78 && std::raw::load8(p + 3) == 71 && std::raw::load8(p + 4) == 13 && std::raw::load8(p + 5) == 10 && std::raw::load8(p + 6) == 26 && std::raw::load8(p + 7) == 10 {
+        return im_png_decode(function, p, n, function_id)
+    }
+    if n >= 2 && std::raw::load8(p) == 66 && std::raw::load8(p + 1) == 77 {
+        return im_bmp_decode(function, p, n)
+    }
+    if n >= 3 && std::raw::load8(p) == 255 && std::raw::load8(p + 1) == 216 && std::raw::load8(p + 2) == 255 {
+        return im_jpeg_decode(function, p, n)
+    }
+    if n >= 6 && std::raw::load8(p) == 71 && std::raw::load8(p + 1) == 73 && std::raw::load8(p + 2) == 70 {
+        return im_gif_decode(function, p, n)
+    }
+    if n >= 12 && std::raw::load8(p) == 82 && std::raw::load8(p + 1) == 73 && std::raw::load8(p + 2) == 70 && std::raw::load8(p + 3) == 70 && std::raw::load8(p + 8) == 87 && std::raw::load8(p + 9) == 69 && std::raw::load8(p + 10) == 66 && std::raw::load8(p + 11) == 80 {
+        return im_webp_decode(function, p, n)
+    }
+    im_img_err(function, "The image format could not be determined")
+}

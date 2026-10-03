@@ -1,0 +1,412 @@
+// Lector WebP: RIFF, VP8L y árboles Huffman. El descodificador se mantiene
+// en Titan; no delega el trabajo en procesos ni bibliotecas externas.
+fn im_webp_read_bits(function: string, reader: int, count: int) -> int {
+    if count < 0 || count > 32 { im_img_err(function, "Corrupt WebP bitstream") }
+    let position = std::raw::load(reader + 16)
+    let total = std::raw::load(reader + 8) * 8
+    if position + count > total { im_img_err(function, "Corrupt WebP bitstream") }
+    let data = std::raw::load(reader)
+    let mut value = 0
+    let mut i = 0
+    while i < count {
+        let bit_position = position + i
+        let bit = std::raw::shr(std::raw::load8(data + bit_position / 8), bit_position & 7) & 1
+        value = value | std::raw::shl(bit, i)
+        i += 1
+    }
+    std::raw::store(reader + 16, position + count)
+    value
+}
+
+fn im_webp_peek_bits(reader: int, count: int) -> int {
+    let position = std::raw::load(reader + 16)
+    let total = std::raw::load(reader + 8) * 8
+    let data = std::raw::load(reader)
+    let mut value = 0
+    let mut i = 0
+    while i < count && position + i < total {
+        let bit_position = position + i
+        let bit = std::raw::shr(std::raw::load8(data + bit_position / 8), bit_position & 7) & 1
+        value = value | std::raw::shl(bit, i)
+        i += 1
+    }
+    value
+}
+
+fn im_webp_reverse_n(value: int, count: int) -> int {
+    let mut source = value
+    let mut result = 0
+    let mut i = 0
+    while i < count {
+        result = std::raw::shl(result, 1) | (source & 1)
+        source = std::raw::shr(source, 1)
+        i += 1
+    }
+    result
+}
+
+// Árbol: +0 tabla, +8 símbolo simple, +16 entradas, +24 bits de consulta y +32 indicador de tabla.
+fn im_webp_tree_single(symbol: int) -> int {
+    let tree = rt_alloc_zero(40)
+    std::raw::store(tree + 8, symbol)
+    std::raw::store(tree + 32, 0)
+    tree
+}
+
+fn im_webp_tree_two(first: int, second: int) -> int {
+    let tree = rt_alloc_zero(40)
+    let table = rt_alloc(2 * 8)
+    std::raw::store(tree, table)
+    std::raw::store(tree + 16, 2)
+    std::raw::store(tree + 24, 1)
+    std::raw::store(tree + 32, 1)
+    std::raw::store(table, 65536 + first)
+    std::raw::store(table + 8, 65536 + second)
+    tree
+}
+
+fn im_webp_tree_build(function: string, lengths: int, alphabet: int) -> int {
+    let counts = rt_alloc_zero(16 * 8)
+    let mut symbols = 0
+    let mut max_length = 0
+    let mut i = 0
+    while i < alphabet {
+        let length = std::raw::load(lengths + 8 * i)
+        if length > 15 { im_img_err(function, "Invalid WebP Huffman code") }
+        if length != 0 {
+            std::raw::store(counts + 8 * length, std::raw::load(counts + 8 * length) + 1)
+            symbols += 1
+            if length > max_length { max_length = length }
+        }
+        i += 1
+    }
+    if symbols == 0 { im_img_err(function, "Invalid WebP Huffman code") }
+    if symbols == 1 {
+        i = 0
+        while i < alphabet {
+            if std::raw::load(lengths + 8 * i) != 0 {
+                rt_free_block(counts)
+                return im_webp_tree_single(i)
+            }
+            i += 1
+        }
+    }
+
+    let next = rt_alloc_zero(16 * 8)
+    let mut code = 0
+    let mut length = 1
+    while length <= max_length {
+        std::raw::store(next + 8 * length, code)
+        code = (code + std::raw::load(counts + 8 * length)) * 2
+        length += 1
+    }
+    if code != std::raw::shl(2, max_length) {
+        rt_free_block(next)
+        rt_free_block(counts)
+        im_img_err(function, "Invalid WebP Huffman tree")
+    }
+
+    // Los bits por encima de max_length no afectan al símbolo; no hace falta replicar la tabla hasta 15 bits.
+    let table_size = std::raw::shl(1, max_length)
+    let table = rt_alloc_zero(table_size * 8)
+    i = 0
+    while i < alphabet {
+        length = std::raw::load(lengths + 8 * i)
+        if length != 0 {
+            code = std::raw::load(next + 8 * length)
+            std::raw::store(next + 8 * length, code + 1)
+            let reversed = im_webp_reverse_n(code, length)
+            let entry = std::raw::shl(length, 16) | i
+            let stride = std::raw::shl(1, length)
+            let mut slot = reversed
+            while slot < table_size {
+                std::raw::store(table + 8 * slot, entry)
+                slot += stride
+            }
+        }
+        i += 1
+    }
+    rt_free_block(next)
+    rt_free_block(counts)
+    let tree = rt_alloc_zero(40)
+    std::raw::store(tree, table)
+    std::raw::store(tree + 16, table_size)
+    std::raw::store(tree + 24, max_length)
+    std::raw::store(tree + 32, 1)
+    tree
+}
+
+fn im_webp_tree_free(tree: int) {
+    if tree == 0 { return }
+    let table = std::raw::load(tree)
+    if table != 0 { rt_free_block(table) }
+    rt_free_block(tree)
+}
+
+fn im_webp_tree_symbol(function: string, tree: int, reader: int) -> int {
+    if std::raw::load(tree + 32) == 0 { return std::raw::load(tree + 8) }
+    let table = std::raw::load(tree)
+    let entry = std::raw::load(table + 8 * im_webp_peek_bits(reader, std::raw::load(tree + 24)))
+    if entry == 0 { im_img_err(function, "Invalid WebP Huffman code") }
+    let length = std::raw::shr(entry, 16)
+    let symbol = entry & 65535
+    im_webp_read_bits(function, reader, length)
+    symbol
+}
+
+fn im_webp_read_code_lengths(function: string, reader: int, code_tree: int, alphabet: int) -> int {
+    let lengths = rt_alloc_zero(alphabet * 8)
+    let mut max_symbol = alphabet
+    if im_webp_read_bits(function, reader, 1) == 1 {
+        let nbits = 2 + 2 * im_webp_read_bits(function, reader, 3)
+        let max_minus_two = im_webp_read_bits(function, reader, nbits)
+        if max_minus_two > alphabet - 2 {
+            rt_free_block(lengths)
+            im_img_err(function, "Corrupt WebP Huffman lengths")
+        }
+        max_symbol = 2 + max_minus_two
+    }
+    let mut previous = 8
+    let mut symbol = 0
+    let mut symbols_to_read = max_symbol
+    while symbol < alphabet {
+        if symbols_to_read == 0 { break }
+        symbols_to_read -= 1
+        let code_length = im_webp_tree_symbol(function, code_tree, reader)
+        if code_length < 16 {
+            std::raw::store(lengths + 8 * symbol, code_length)
+            symbol += 1
+            if code_length != 0 { previous = code_length }
+        } else {
+            let mut extra = 0
+            let mut repeat_base = 0
+            let use_previous = code_length == 16
+            if code_length == 16 {
+                extra = 2
+                repeat_base = 3
+            } else if code_length == 17 {
+                extra = 3
+                repeat_base = 3
+            } else if code_length == 18 {
+                extra = 7
+                repeat_base = 11
+            } else {
+                rt_free_block(lengths)
+                im_img_err(function, "Corrupt WebP Huffman lengths")
+            }
+            let repeat = repeat_base + im_webp_read_bits(function, reader, extra)
+            if symbol + repeat > alphabet {
+                rt_free_block(lengths)
+                im_img_err(function, "Corrupt WebP Huffman lengths")
+            }
+            let value = if use_previous { previous } else { 0 }
+            let mut j = 0
+            while j < repeat {
+                std::raw::store(lengths + 8 * (symbol + j), value)
+                j += 1
+            }
+            symbol += repeat
+        }
+    }
+    lengths
+}
+
+fn im_webp_read_tree(function: string, reader: int, alphabet: int) -> int {
+    let simple = im_webp_read_bits(function, reader, 1)
+    if simple == 1 {
+        let count = 1 + im_webp_read_bits(function, reader, 1)
+        let is_wide = im_webp_read_bits(function, reader, 1)
+        let first = im_webp_read_bits(function, reader, 1 + 7 * is_wide)
+        if first >= alphabet { im_img_err(function, "Invalid WebP Huffman symbol") }
+        if count == 1 { return im_webp_tree_single(first) }
+        let second = im_webp_read_bits(function, reader, 8)
+        if second >= alphabet || first == second {
+            im_img_err(function, "Invalid WebP Huffman symbols")
+        }
+        return im_webp_tree_two(first, second)
+    }
+
+    let order = [17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    let code_lengths = rt_alloc_zero(19 * 8)
+    let count = 4 + im_webp_read_bits(function, reader, 4)
+    let mut i = 0
+    while i < count {
+        std::raw::store(code_lengths + 8 * order[i], im_webp_read_bits(function, reader, 3))
+        i += 1
+    }
+    let code_tree = im_webp_tree_build(function, code_lengths, 19)
+    rt_free_block(code_lengths)
+    let lengths = im_webp_read_code_lengths(function, reader, code_tree, alphabet)
+    im_webp_tree_free(code_tree)
+    let tree = im_webp_tree_build(function, lengths, alphabet)
+    rt_free_block(lengths)
+    tree
+}
+
+fn im_webp_lossless_decode(function: string, data: int, size: int) -> int {
+    if size < 5 { im_img_err(function, "Corrupt WebP lossless image") }
+    let reader = rt_alloc_zero(24)
+    std::raw::store(reader, data)
+    std::raw::store(reader + 8, size)
+    let signature = im_webp_read_bits(function, reader, 8)
+    if signature != 47 { im_img_err(function, "Invalid WebP lossless signature") }
+    let width = 1 + im_webp_read_bits(function, reader, 14)
+    let height = 1 + im_webp_read_bits(function, reader, 14)
+    let has_alpha = im_webp_read_bits(function, reader, 1) == 1
+    let version = im_webp_read_bits(function, reader, 3)
+    if version != 0 { im_img_err(function, "Invalid WebP lossless version") }
+    if width > 8192 || height > 8192 { im_lim(function, "image dimensions", 8192) }
+    if width * height * 4 > 67108864 { im_lim(function, "decoded image bytes", 67108864) }
+
+    let transforms = im_webp_transforms_read(function, reader, width, height)
+    let transformed_width = std::raw::load(transforms + 8)
+    let rgba = rt_alloc(width * height * 4)
+    im_webp_decode_stream(function, reader, transformed_width, height, rgba, true)
+    im_webp_transforms_apply(function, rgba, width, height, transforms)
+    im_webp_transforms_free(transforms)
+    rt_free_block(reader)
+
+    let info = rt_alloc(32)
+    std::raw::store(info, rgba)
+    std::raw::store(info + 8, width)
+    std::raw::store(info + 16, height)
+    std::raw::store(info + 24, if has_alpha { 1 } else { 0 })
+    info
+}
+
+fn im_webp_lossless_decode_alpha(function: string, data: int, size: int, width: int, height: int) -> int {
+    if size < 1 { im_img_err(function, "Corrupt compressed WebP alpha data") }
+    if width < 1 || height < 1 || width > 8192 || height > 8192 { im_lim(function, "image dimensions", 8192) }
+    if width * height * 4 > 67108864 { im_lim(function, "decoded image bytes", 67108864) }
+    let reader = rt_alloc_zero(24)
+    std::raw::store(reader, data)
+    std::raw::store(reader + 8, size)
+    let transforms = im_webp_transforms_read(function, reader, width, height)
+    let transformed_width = std::raw::load(transforms + 8)
+    let rgba = rt_alloc(width * height * 4)
+    im_webp_decode_stream(function, reader, transformed_width, height, rgba, true)
+    im_webp_transforms_apply(function, rgba, width, height, transforms)
+    im_webp_transforms_free(transforms)
+    rt_free_block(reader)
+    rgba
+}
+
+fn im_webp_fourcc(p: int, a: int, b: int, c: int, d: int) -> bool {
+    std::raw::load8(p) == a && std::raw::load8(p + 1) == b && std::raw::load8(p + 2) == c && std::raw::load8(p + 3) == d
+}
+
+fn im_webp_canvas_dimension(p: int) -> int {
+    1 + std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2)
+}
+
+fn im_webp_decode(function: string, p: int, n: int) -> int {
+    if n < 12 { im_img_err(function, "Corrupt WebP RIFF header") }
+    if !im_webp_fourcc(p, 82, 73, 70, 70) || !im_webp_fourcc(p + 8, 87, 69, 66, 80) {
+        im_img_err(function, "Invalid WebP RIFF signature")
+    }
+    let riff_size = im_ld32(p + 4)
+    if riff_size < 4 || riff_size > n - 8 { im_img_err(function, "Corrupt WebP RIFF size") }
+    let end = p + 8 + riff_size
+    let mut position = p + 12
+    let mut vp8l = 0
+    let mut vp8l_size = 0
+    let mut vp8 = 0
+    let mut vp8_size = 0
+    let mut canvas_width = 0
+    let mut canvas_height = 0
+    let mut extended_alpha = false
+    let mut alpha_chunk = false
+    let mut alpha_data = 0
+    let mut alpha_size = 0
+    let mut lossy = false
+    let mut animated = false
+    while position < end {
+        if end - position < 8 { im_img_err(function, "Corrupt WebP chunk header") }
+        let chunk_size = im_ld32(position + 4)
+        let data = position + 8
+        let available = end - data
+        if chunk_size > available { im_img_err(function, "Corrupt WebP chunk size") }
+        if chunk_size + (chunk_size & 1) > available {
+            im_img_err(function, "Corrupt WebP chunk padding")
+        }
+        if im_webp_fourcc(position, 86, 80, 56, 76) {
+            vp8l = data
+            vp8l_size = chunk_size
+        } else if im_webp_fourcc(position, 86, 80, 56, 88) {
+            if chunk_size < 10 { im_img_err(function, "Corrupt WebP extended header") }
+            let flags = std::raw::load8(data)
+            extended_alpha = (flags & 16) != 0
+            animated = (flags & 2) != 0
+            canvas_width = im_webp_canvas_dimension(data + 4)
+            canvas_height = im_webp_canvas_dimension(data + 7)
+        } else if im_webp_fourcc(position, 65, 76, 80, 72) {
+            alpha_chunk = true
+            alpha_data = data
+            alpha_size = chunk_size
+        } else if im_webp_fourcc(position, 86, 80, 56, 32) {
+            lossy = true
+            vp8 = data
+            vp8_size = chunk_size
+        } else if im_webp_fourcc(position, 65, 78, 73, 77) || im_webp_fourcc(position, 65, 78, 77, 70) {
+            animated = true
+        }
+        position = data + chunk_size + (chunk_size & 1)
+    }
+    if animated {
+        im_img_err(function, "UnsupportedError: animated WebP decoding is not implemented yet")
+    }
+    if vp8l == 0 {
+        if lossy {
+            if vp8 == 0 { im_img_err(function, "WebP VP8 image chunk is missing") }
+            if extended_alpha != alpha_chunk {
+                im_img_err(function, "Corrupt WebP: alpha flag and ALPH chunk do not match")
+            }
+            let info = im_webp_vp8_decode(function, vp8, vp8_size)
+            let width = std::raw::load(info + 8)
+            let height = std::raw::load(info + 16)
+            if canvas_width != 0 && canvas_width != width { im_img_err(function, "WebP image dimensions do not match its canvas") }
+            if canvas_height != 0 && canvas_height != height { im_img_err(function, "WebP image dimensions do not match its canvas") }
+            let rgb = std::raw::load(info)
+            if extended_alpha {
+                let rgba = rt_alloc(width * height * 4)
+                let mut i = 0
+                while i < width * height {
+                    std::raw::store8(rgba + 4 * i, std::raw::load8(rgb + 3 * i))
+                    std::raw::store8(rgba + 4 * i + 1, std::raw::load8(rgb + 3 * i + 1))
+                    std::raw::store8(rgba + 4 * i + 2, std::raw::load8(rgb + 3 * i + 2))
+                    std::raw::store8(rgba + 4 * i + 3, 0)
+                    i += 1
+                }
+                im_webp_vp8_apply_alpha(function, alpha_data, alpha_size, width, height, rgba)
+                rt_free_block(rgb)
+                rt_free_block(info)
+                return im_insert(function, width, height, 4, rgba, width * height * 4)
+            }
+            rt_free_block(info)
+            return im_insert(function, width, height, 3, rgb, width * height * 3)
+        }
+        im_img_err(function, "WebP image chunk is missing")
+    }
+    let info = im_webp_lossless_decode(function, vp8l, vp8l_size)
+    let width = std::raw::load(info + 8)
+    let height = std::raw::load(info + 16)
+    let has_alpha = std::raw::load(info + 24) != 0 || extended_alpha
+    if canvas_width != 0 && canvas_width != width { im_img_err(function, "WebP image dimensions do not match its canvas") }
+    if canvas_height != 0 && canvas_height != height { im_img_err(function, "WebP image dimensions do not match its canvas") }
+    let rgba = std::raw::load(info)
+    let color = if has_alpha { 4 } else { 3 }
+    let output = rt_alloc(width * height * color)
+    let mut i = 0
+    while i < width * height {
+        std::raw::store8(output + color * i, std::raw::load8(rgba + 4 * i))
+        std::raw::store8(output + color * i + 1, std::raw::load8(rgba + 4 * i + 1))
+        std::raw::store8(output + color * i + 2, std::raw::load8(rgba + 4 * i + 2))
+        if color == 4 {
+            std::raw::store8(output + color * i + 3, std::raw::load8(rgba + 4 * i + 3))
+        }
+        i += 1
+    }
+    rt_free_block(rgba)
+    rt_free_block(info)
+    im_insert(function, width, height, color, output, width * height * color)
+}

@@ -628,12 +628,16 @@ fn ps_argv_nul(argv: any) -> bool {
 
 // Cupo compartido de salida capturada (CaptureBudget de Rust):
 // +0 usado, +8 excedido, +16 límite.
-fn ps_budget() -> int {
+fn ps_budget_for(limit: int) -> int {
     let b = rt_alloc(24)
     std::raw::store(b, 0)
     std::raw::store(b + 8, 0)
-    std::raw::store(b + 16, 4194304)
+    std::raw::store(b + 16, limit)
     b
+}
+
+fn ps_budget() -> int {
+    ps_budget_for(4194304)
 }
 
 fn ps_budget_add(budget: int, sb: int, p: int, n: int) {
@@ -1012,6 +1016,145 @@ fn ps_execute(fname: string, argv: any, input: any) -> any {
         rt_native_fail(fname, "captured process output bytes exceeds limit 4194304")
     }
     ps_output(dr_lossy(out), dr_lossy(err), ps_exit_code(status), ps_ms_since(started))
+}
+
+// Ejecuta un proceso con entrada binaria, salida binaria y plazo total. Es un
+// apoyo interno para clientes de red nativos; no cambia las funciones públicas
+// de std::process. El plazo mata al hijo real con SIGKILL, igual que run_timeout.
+fn ps_run_raw_timeout(fname: string, argv: any, input: any, timeout_ms: int, max_output: int) -> any {
+    rt_expect_array(argv, fname)
+    rt_expect_bytes(input, fname)
+    if timeout_ms < 0 || max_output < 0 {
+        rt_native_fail(fname, "timeout and output limit must be nonnegative")
+    }
+    let ilen = rt_slen(input)
+    if ilen > 67108864 {
+        rt_native_fail(fname, "process input bytes exceeds limit 67108864")
+    }
+    ps_reserve(fname, 1, "process count exceeds limit 32")
+    let started = ps_now()
+    if ps_argv_nul(argv) {
+        ps_fail_unreserve(fname, 1, "spawn error: nul byte found in provided data")
+    }
+
+    let pi = ps_pipe()
+    if pi < 0 {
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pi)))
+    }
+    let in_r = tm_ld32(pi)
+    let in_w = tm_ld32(pi + 4)
+    rt_free_block(pi)
+    let po = ps_pipe()
+    if po < 0 {
+        ps_close(in_r)
+        ps_close(in_w)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - po)))
+    }
+    let pe = ps_pipe()
+    if pe < 0 {
+        ps_close(in_r)
+        ps_close(in_w)
+        tm_close_pair(po)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pe)))
+    }
+    let streams = ps_streams(2)
+    std::raw::store(streams, tm_ld32(po))
+    std::raw::store(streams + 32, tm_ld32(pe))
+    let out_w = tm_ld32(po + 4)
+    let err_w = tm_ld32(pe + 4)
+    rt_free_block(po)
+    rt_free_block(pe)
+    let pid = ps_spawn(argv, in_r, out_w, err_w)
+    ps_close(in_r)
+    ps_close(out_w)
+    ps_close(err_w)
+    if pid < 0 {
+        ps_close(in_w)
+        ps_close(std::raw::load(streams))
+        ps_close(std::raw::load(streams + 32))
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pid)))
+    }
+
+    let budget = ps_budget_for(max_output)
+    let input_state = rt_alloc(40)
+    std::raw::store(input_state, in_w)
+    std::raw::store(input_state + 8, std::raw::bits(input) + 16)
+    std::raw::store(input_state + 16, ilen)
+    std::raw::store(input_state + 24, 0)
+    std::raw::store(input_state + 32, 0)
+    let old_sigpipe = ps_sigpipe_ignore()
+    let flags = std::raw::syscall(72, in_w, 3, 0, 0, 0, 0)
+    std::raw::syscall(72, in_w, 4, flags | 2048, 0, 0, 0)
+    if ilen == 0 {
+        ps_close(in_w)
+        std::raw::store(input_state, -1)
+    }
+
+    let mut timeout_ns = 9223372036854775807
+    if timeout_ms <= 9223372036854 {
+        timeout_ns = timeout_ms * 1000000
+    }
+    let mut status = -1000000
+    let mut timed_out = false
+    loop {
+        let waited = ps_waitpid(pid, 1)
+        if waited != -1000000 {
+            status = waited
+            break
+        }
+        let now = ps_now()
+        let elapsed = now - started
+        if elapsed >= timeout_ns {
+            std::raw::syscall(62, pid, 9, 0, 0, 0, 0)
+            status = ps_waitpid(pid, 0)
+            timed_out = true
+            break
+        }
+        let remaining = timeout_ns - elapsed
+        let mut until = now + 5000000
+        if remaining < 5000000 {
+            until = now + remaining
+        }
+        ps_pump(streams, 2, input_state, budget, until)
+    }
+    ps_sigpipe_restore(old_sigpipe)
+    if std::raw::load(input_state) >= 0 {
+        ps_close(std::raw::load(input_state))
+        std::raw::store(input_state, -1)
+    }
+    let input_error = std::raw::load(input_state + 32)
+    rt_free_block(input_state)
+    ps_pump(streams, 2, 0, budget, -1)
+    ps_unreserve(1)
+
+    let out = sb_finish_bytes(std::raw::load(streams + 8))
+    let err = sb_finish_bytes(std::raw::load(streams + 40))
+    let out_error = std::raw::load(streams + 16)
+    let err_error = std::raw::load(streams + 48)
+    rt_free_block(streams)
+    let exceeded = std::raw::load(budget + 8)
+    rt_free_block(budget)
+    if status < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - status)))
+    }
+    if out_error != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(out_error)))
+    }
+    if err_error != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(err_error)))
+    }
+    if exceeded != 0 {
+        rt_native_fail(fname, "captured process output bytes exceed configured limit")
+    }
+
+    let mut result: any = std__map__new()
+    result = std__map__insert(result, "duration_ms", ps_ms_since(started))
+    result = std__map__insert(result, "exit_code", ps_exit_code(status))
+    result = std__map__insert(result, "input_error", input_error)
+    result = std__map__insert(result, "stderr", err)
+    result = std__map__insert(result, "stdout", out)
+    result = std__map__insert(result, "timed_out", timed_out)
+    result
 }
 
 fn std__process__run(cmd: any) -> any {

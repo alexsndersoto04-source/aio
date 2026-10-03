@@ -1,0 +1,241 @@
+// API nativa std::image::*: carga, guardado, codificación y operaciones de imagen.
+fn im_int(v: any, function: string) -> int {
+    rt_expect_int(v, function)
+    std::raw::bits(v)
+}
+
+fn std__image__load(path: any) -> any {
+    im_image_read_path(path)
+}
+
+fn std__image__load_bytes(data: any) -> any {
+    let f = "std::image::load_bytes"
+    rt_expect_bytes(data, f)
+    let n = rt_slen(data)
+    if n > 33554432 {
+        im_lim(f, "encoded image input bytes", 33554432)
+    }
+    im_image_decode(f, std::raw::bits(data) + 16, n, 1)
+}
+
+fn std__image__encode(handle: any, format: any) -> any {
+    let f = "std::image::encode"
+    rt_expect_str(format, f)
+    let id = im_int(handle, f)
+    let e = im_need(f, id)
+    im_encode_do(f, e, format)
+}
+
+fn im_write_encoded_file(function: string, path: any, encoded: any) {
+    let cpath = rt_cstr(path)
+    let fd = std::raw::syscall(2, cpath, 524865, 438, 0, 0, 0)
+    rt_free_block(cpath)
+    if fd < 0 {
+        std::raw::release(6, std::raw::bits(encoded))
+        im_io_err(function, 0 - fd)
+    }
+    let r = rt_write_all(fd, std::raw::bits(encoded) + 16, rt_slen(encoded))
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    std::raw::release(6, std::raw::bits(encoded))
+    if r < 0 {
+        im_io_err(function, 0 - r)
+    }
+}
+
+fn std__image__save(handle: any, path: any) -> any {
+    let f = "std::image::save"
+    let id = im_int(handle, f)
+    rt_expect_str(path, f)
+    if rt_slen(path) > 16384 {
+        im_lim(f, "image path bytes", 16384)
+    }
+    let e = im_need(f, id)
+    let ext = std__path__extension(path)
+    if ext == nil {
+        im_fail(f, "unknown format '' (try png, jpeg, webp, bmp, gif)")
+    }
+    let encoded = im_encode_do(f, e, ext)
+    im_write_encoded_file(f, path, encoded)
+    nil
+}
+
+fn std__image__from_rgba(width: any, height: any, rgba: any) -> any {
+    let f = "std::image::from_rgba"
+    let w = im_u32(f, im_int(width, f), "width")
+    let h = im_u32(f, im_int(height, f), "height")
+    rt_expect_bytes(rgba, f)
+    im_dims(f, w, h)
+    let need = w * h * 4
+    if need > 67108864 {
+        im_lim(f, "decoded image bytes", 67108864)
+    }
+    let got = rt_slen(rgba)
+    if got != need {
+        im_fail(f, "invalid RGBA buffer: " + rt_int_to_str(w) + "x" + rt_int_to_str(h) + " needs " + rt_int_to_str(need) + " bytes, got " + rt_int_to_str(got))
+    }
+    let pix = rt_alloc(need)
+    rt_copy(pix, std::raw::bits(rgba) + 16, need)
+    im_insert(f, w, h, 4, pix, need)
+}
+
+fn std__image__width(handle: any) -> any {
+    let f = "std::image::width"
+    let e = im_need(f, im_int(handle, f))
+    std::raw::load(e + 8)
+}
+
+fn std__image__height(handle: any) -> any {
+    let f = "std::image::height"
+    let e = im_need(f, im_int(handle, f))
+    std::raw::load(e + 16)
+}
+
+fn std__image__color_type(handle: any) -> any {
+    let f = "std::image::color_type"
+    let e = im_need(f, im_int(handle, f))
+    im_ct_name(std::raw::load(e + 24))
+}
+
+fn std__image__close(handle: any) -> any {
+    let f = "std::image::close"
+    let id = im_int(handle, f)
+    let r = im_reg()
+    let n = std::raw::load(r + 8)
+    let mut i = 0
+    while i < n {
+        let e = std::raw::load(r + 24 + 8 * i)
+        if std::raw::load(e) == id {
+            let nb = im_pix_len(std::raw::load(e + 8), std::raw::load(e + 16), std::raw::load(e + 24))
+            let used = std::raw::load(r + 16)
+            if used >= nb {
+                std::raw::store(r + 16, used - nb)
+            }
+            let mut k = i
+            while k + 1 < n {
+                std::raw::store(r + 24 + 8 * k, std::raw::load(r + 32 + 8 * k))
+                k += 1
+            }
+            std::raw::store(r + 8, n - 1)
+            im_free_entry(e)
+            return nil
+        }
+        i += 1
+    }
+    nil
+}
+
+fn std__image__grayscale(handle: any) -> any {
+    let f = "std::image::grayscale"
+    im_gray_of(f, im_need(f, im_int(handle, f)))
+}
+
+fn std__image__rotate90(handle: any) -> any {
+    let f = "std::image::rotate90"
+    im_rot90(f, im_need(f, im_int(handle, f)))
+}
+
+fn std__image__rotate180(handle: any) -> any {
+    let f = "std::image::rotate180"
+    im_rot180(f, im_need(f, im_int(handle, f)))
+}
+
+fn std__image__rotate270(handle: any) -> any {
+    let f = "std::image::rotate270"
+    im_rot270(f, im_need(f, im_int(handle, f)))
+}
+
+fn std__image__flip_horizontal(handle: any) -> any {
+    let f = "std::image::flip_horizontal"
+    im_fliph(f, im_need(f, im_int(handle, f)))
+}
+
+fn std__image__flip_vertical(handle: any) -> any {
+    let f = "std::image::flip_vertical"
+    im_flipv(f, im_need(f, im_int(handle, f)))
+}
+
+fn std__image__crop(handle: any, x0: any, y0: any, w0: any, h0: any) -> any {
+    let f = "std::image::crop"
+    let id = im_int(handle, f)
+    let x = im_u32(f, im_int(x0, f), "x")
+    let y = im_u32(f, im_int(y0, f), "y")
+    let w = im_u32(f, im_int(w0, f), "width")
+    let h = im_u32(f, im_int(h0, f), "height")
+    im_dims(f, w, h)
+    let e = im_need(f, id)
+    let right = x + w
+    let bottom = y + h
+    if right > 4294967295 || bottom > 4294967295 {
+        im_param(f, "crop coordinates overflow")
+    }
+    if right > std::raw::load(e + 8) || bottom > std::raw::load(e + 16) {
+        im_param(f, "crop is outside the source image")
+    }
+    im_crop_do(f, e, x, y, w, h)
+}
+
+fn std__image__brighten(handle: any, value: any) -> any {
+    let f = "std::image::brighten"
+    let id = im_int(handle, f)
+    let v = im_int(value, f)
+    if v < 0 - 2147483648 || v > 2147483647 {
+        im_fail(f, "brightness out of range")
+    }
+    im_bright(f, im_need(f, id), v)
+}
+
+fn std__image__resize(handle: any, width: any, height: any, filter: any) -> any {
+    let f = "std::image::resize"
+    let id = im_int(handle, f)
+    let w = im_u32(f, im_int(width, f), "width")
+    let h = im_u32(f, im_int(height, f), "height")
+    rt_expect_str(filter, f)
+    im_dims(f, w, h)
+    let kind = imop_filter_name(f, filter)
+    let e = im_need(f, id)
+    let (nw, nh) = imop_resize_dimensions(std::raw::load(e + 8), std::raw::load(e + 16), w, h)
+    imop_resize_exact_do(f, e, nw, nh, kind)
+}
+
+fn std__image__resize_exact(handle: any, width: any, height: any, filter: any) -> any {
+    let f = "std::image::resize_exact"
+    let id = im_int(handle, f)
+    let w = im_u32(f, im_int(width, f), "width")
+    let h = im_u32(f, im_int(height, f), "height")
+    rt_expect_str(filter, f)
+    im_dims(f, w, h)
+    let kind = imop_filter_name(f, filter)
+    imop_resize_exact_do(f, im_need(f, id), w, h, kind)
+}
+
+fn std__image__thumbnail(handle: any, width: any, height: any) -> any {
+    let f = "std::image::thumbnail"
+    let id = im_int(handle, f)
+    let w = im_u32(f, im_int(width, f), "width")
+    let h = im_u32(f, im_int(height, f), "height")
+    im_dims(f, w, h)
+    let e = im_need(f, id)
+    let (nw, nh) = imop_resize_dimensions(std::raw::load(e + 8), std::raw::load(e + 16), w, h)
+    imop_thumbnail_exact_do(f, e, nw, nh)
+}
+
+fn std__image__blur(handle: any, sigma0: any) -> any {
+    let f = "std::image::blur"
+    let id = im_int(handle, f)
+    let raw = rt_expect_number(sigma0, f)
+    if !rt_is_finite(raw) {
+        im_fail(f, "blur sigma out of range")
+    }
+    let sigma = vec_f32(raw)
+    if !rt_is_finite(sigma) {
+        im_fail(f, "blur sigma out of range")
+    }
+    if std::raw::fcmp(sigma, 0) < 0 || std::raw::fcmp(sigma, imop_c(100.0)) > 0 {
+        im_param(f, "blur sigma is outside the supported range")
+    }
+    if std::raw::fcmp(sigma, 0) > 0 && std::raw::fcmp(sigma, 4039728865751334912) < 0 {
+        im_param(f, "blur sigma is outside the supported range")
+    }
+    imop_blur_do(f, im_need(f, id), sigma)
+}
+

@@ -1,0 +1,61 @@
+fn rejected_path(path: string, expected: string) -> bool {
+    match std::try::catch(|| std::image::load(path)) {
+        Result::Ok(handle) => {
+            std::image::close(handle)
+            false
+        },
+        Result::Err(message) => std::text::contains(message, expected),
+    }
+}
+
+fn rejected_bytes(data: any, expected: string) -> bool {
+    match std::try::catch(|| std::image::load_bytes(data)) {
+        Result::Ok(handle) => {
+            std::image::close(handle)
+            false
+        },
+        Result::Err(message) => std::text::contains(message, expected),
+    }
+}
+
+fn le32(value: int) -> array {
+    [value % 256, (value / 256) % 256, (value / 65536) % 256, (value / 16777216) % 256]
+}
+
+fn webp_chunk(tag: array, data: array) -> any {
+    let size = len(data)
+    let riff_size = 12 + size + (size % 2)
+    let encoded = [82, 73, 70, 70, riff_size % 256, (riff_size / 256) % 256, (riff_size / 65536) % 256, (riff_size / 16777216) % 256, 87, 69, 66, 80]
+    let with_tag = std::array::concat(encoded, tag)
+    let with_size = std::array::concat(with_tag, le32(size))
+    let with_data = std::array::concat(with_size, data)
+    if size % 2 == 1 {
+        return std::bytes::from_array(std::array::concat(with_data, [0]))
+    }
+    std::bytes::from_array(with_data)
+}
+
+fn lossless_payload(width: int, height: int, version: int, stream: array) -> array {
+    let packed = (width - 1) + (height - 1) * 16384 + version * 536870912
+    let header = [47, packed % 256, (packed / 256) % 256, (packed / 65536) % 256, (packed / 16777216) % 256]
+    std::array::concat(header, stream)
+}
+
+fn main() {
+    println("animación: " + rejected_path("selfhost/native/image/testdata/webp-animation.webp", "UnsupportedError: animated WebP"))
+    println("WebP sin imagen: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80]), "WebP"))
+    println("tamaño RIFF fuera de entrada: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 255, 255, 255, 255, 87, 69, 66, 80]), "Corrupt WebP RIFF size"))
+    println("cabecera de fragmento incompleta: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 5, 0, 0, 0, 87, 69, 66, 80, 0]), "Corrupt WebP chunk header"))
+    println("tamaño de fragmento excesivo: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 12, 0, 0, 0, 87, 69, 66, 80, 84, 69, 83, 84, 255, 255, 255, 255]), "Corrupt WebP chunk size"))
+    println("relleno de fragmento ausente: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 13, 0, 0, 0, 87, 69, 66, 80, 74, 85, 78, 75, 1, 0, 0, 0, 0]), "Corrupt WebP chunk padding"))
+
+    println("fotograma VP8 intermedio: " + rejected_bytes(webp_chunk([86, 80, 56, 32], [1, 0, 0, 157, 1, 42, 1, 0, 1, 0]), "UnsupportedError: non-keyframe WebP VP8"))
+    println("versión VP8 no admitida: " + rejected_bytes(webp_chunk([86, 80, 56, 32], [8, 0, 0, 157, 1, 42, 1, 0, 1, 0]), "UnsupportedError: VP8 version"))
+    println("modo de recorte VP8 no admitido: " + rejected_bytes(webp_chunk([86, 80, 56, 32], [32, 0, 0, 157, 1, 42, 1, 0, 1, 0, 64]), "UnsupportedError: VP8 clamp mode"))
+
+    println("firma VP8L incorrecta: " + rejected_bytes(webp_chunk([86, 80, 56, 76], [0, 0, 0, 0, 0]), "Invalid WebP lossless signature"))
+    println("versión VP8L no admitida: " + rejected_bytes(webp_chunk([86, 80, 56, 76], lossless_payload(1, 1, 1, [])), "Invalid WebP lossless version"))
+    println("ancho sobre el límite: " + rejected_bytes(webp_chunk([86, 80, 56, 76], lossless_payload(8193, 1, 0, [])), "image dimensions exceeds limit"))
+    println("píxeles sobre el límite: " + rejected_bytes(webp_chunk([86, 80, 56, 76], lossless_payload(8192, 2049, 0, [])), "decoded image bytes exceeds limit"))
+    println("árbol Huffman incompleto: " + rejected_bytes(webp_chunk([86, 80, 56, 76], lossless_payload(1, 1, 0, [0, 18, 0])), "Invalid WebP Huffman tree"))
+}

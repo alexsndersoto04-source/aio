@@ -1,0 +1,524 @@
+// Redimensionado, miniaturas y desenfoque: port fiel de image 0.25.10.
+// Solo opera sobre los tipos de píxel que ya admite el registro (8 bits).
+
+fn imop_abs_f32(x: int) -> int {
+    x & 9223372036854775807
+}
+
+fn imop_from_int(x: int) -> int {
+    vec_f32(std::raw::ffromint(x))
+}
+
+fn imop_c(x: any) -> int {
+    vec_f32(std::raw::bits(x))
+}
+
+fn imop_add(a: int, b: int) -> int {
+    vec_f32(std::raw::fadd(a, b))
+}
+
+fn imop_sub(a: int, b: int) -> int {
+    vec_f32(std::raw::fsub(a, b))
+}
+
+fn imop_mul(a: int, b: int) -> int {
+    vec_f32(std::raw::fmul(a, b))
+}
+
+fn imop_div(a: int, b: int) -> int {
+    vec_f32(std::raw::fdiv(a, b))
+}
+
+fn imop_floor(x: int) -> int {
+    let t = std::raw::ftoint(x)
+    if std::raw::fcmp(x, 0) == -1 && rt_has_fraction(x) {
+        return t - 1
+    }
+    t
+}
+
+fn imop_ceil(x: int) -> int {
+    let t = std::raw::ftoint(x)
+    if std::raw::fcmp(x, 0) == 1 && rt_has_fraction(x) {
+        return t + 1
+    }
+    t
+}
+
+fn imop_round(x: int) -> int {
+    let t = std::raw::ftoint(x)
+    let frac = imop_abs_f32(imop_sub(x, std::raw::ffromint(t)))
+    if std::raw::fcmp(frac, 4602678819172646912) >= 0 {
+        if std::raw::fcmp(x, 0) < 0 {
+            return t - 1
+        }
+        return t + 1
+    }
+    t
+}
+
+fn imop_min_f32(a: int, b: int) -> int {
+    if std::raw::fcmp(a, b) < 0 { return a }
+    b
+}
+
+fn imop_max_f32(a: int, b: int) -> int {
+    if std::raw::fcmp(a, b) > 0 { return a }
+    b
+}
+
+fn imop_kernel(kind: int, x: int) -> int {
+    let one = 4607182418800017408
+    let two = 4611686018427387904
+    let three = 4613937818241073152
+    let ax = imop_abs_f32(x)
+    if kind == 0 {
+        return one
+    }
+    if kind == 1 {
+        if std::raw::fcmp(ax, one) < 0 {
+            return imop_sub(one, ax)
+        }
+        return 0
+    }
+    if kind == 2 {
+        let x2 = imop_mul(ax, ax)
+        let x3 = imop_mul(x2, ax)
+        if std::raw::fcmp(ax, one) < 0 {
+            let a = imop_mul(imop_c(9.0), x3)
+            let b = imop_mul(imop_c(-15.0), x2)
+            return imop_div(imop_add(imop_add(a, b), imop_c(6.0)), imop_c(6.0))
+        }
+        if std::raw::fcmp(ax, two) < 0 {
+            let a = imop_mul(imop_c(-3.0), x3)
+            let b = imop_mul(imop_c(15.0), x2)
+            let c = imop_mul(imop_c(-24.0), ax)
+            return imop_div(imop_add(imop_add(imop_add(a, b), c), imop_c(12.0)), imop_c(6.0))
+        }
+        return 0
+    }
+    if kind == 3 {
+        let pi = imop_c(3.141592653589793)
+        let sq = vec_f32(std::raw::fsqrt(imop_mul(imop_c(2.0), pi)))
+        let scale = imop_div(imop_c(1.0), imop_mul(sq, imop_c(0.5)))
+        let x2 = imop_mul(x, x)
+        let exponent = imop_mul(imop_c(-2.0), x2)
+        return imop_mul(vec_f32(lm_exp(exponent)), scale)
+    }
+    if std::raw::fcmp(ax, three) >= 0 {
+        return 0
+    }
+    let pi = imop_c(3.141592653589793)
+    let a = imop_mul(x, pi)
+    if std::raw::fcmp(a, 0) == 0 {
+        return imop_c(1.0)
+    }
+    let sinc_x = imop_div(vec_f32(lm_sin(a)), a)
+    let scaled = imop_div(x, three)
+    let b = imop_mul(scaled, pi)
+    let sinc_scaled = imop_div(vec_f32(lm_sin(b)), b)
+    imop_mul(sinc_x, sinc_scaled)
+}
+
+fn imop_filter_name(function: string, input: any) -> int {
+    rt_expect_str(input, function)
+    let n = rt_slen(input)
+    let p = rt_str_alloc(n)
+    let src = rt_bdata(input)
+    let mut i = 0
+    while i < n {
+        let mut ch = std::raw::load8(src + i)
+        if ch >= 65 && ch <= 90 {
+            ch += 32
+        }
+        std::raw::store8(p + 16 + i, ch)
+        i += 1
+    }
+    let name = rt_sval(p)
+    if rt_str_eq(name, "nearest") { return 0 }
+    if rt_str_eq(name, "triangle") { return 1 }
+    if rt_str_eq(name, "catmullrom") { return 2 }
+    if rt_str_eq(name, "gaussian") { return 3 }
+    if rt_str_eq(name, "lanczos3") { return 4 }
+    im_fail(function, "unknown filter '" + name + "' (try nearest, triangle, catmullrom, gaussian, lanczos3)")
+    0
+}
+
+fn imop_filter_support(kind: int) -> int {
+    if kind == 0 { return 0 }
+    if kind == 1 { return imop_c(1.0) }
+    if kind == 2 { return imop_c(2.0) }
+    imop_c(3.0)
+}
+
+fn imop_resize_dimensions(w: int, h: int, nw: int, nh: int) -> (int, int) {
+    let wr = std::raw::fdiv(std::raw::ffromint(nw), std::raw::ffromint(w))
+    let hr = std::raw::fdiv(std::raw::ffromint(nh), std::raw::ffromint(h))
+    let ratio = imop_min_f32(wr, hr)
+    let outw = imop_round(std::raw::fmul(std::raw::ffromint(w), ratio))
+    let outh = imop_round(std::raw::fmul(std::raw::ffromint(h), ratio))
+    let mut rw = outw
+    let mut rh = outh
+    if rw < 1 { rw = 1 }
+    if rh < 1 { rh = 1 }
+    return (rw, rh)
+}
+
+// Pesos de una pasada del muestreador de image::imageops::resize.
+fn imop_axis_weights(src: int, dst: int, pos: int, kind: int, weights: int) -> (int, int) {
+    let ratio = imop_div(imop_from_int(src), imop_from_int(dst))
+    let mut sratio = ratio
+    if std::raw::fcmp(sratio, imop_c(1.0)) < 0 {
+        sratio = imop_c(1.0)
+    }
+    let input = imop_mul(imop_add(imop_from_int(pos), imop_c(0.5)), ratio)
+    let support = imop_mul(imop_filter_support(kind), sratio)
+    let mut left = imop_floor(imop_sub(input, support))
+    if left < 0 { left = 0 }
+    if left >= src { left = src - 1 }
+    let mut right = imop_ceil(imop_add(input, support))
+    if right < left + 1 { right = left + 1 }
+    if right > src { right = src }
+    let center = imop_sub(input, imop_c(0.5))
+    let mut sum = 0
+    let mut i = left
+    while i < right {
+        let d = imop_div(imop_sub(imop_from_int(i), center), sratio)
+        let weight = imop_kernel(kind, d)
+        std::raw::store(weights + 8 * (i - left), weight)
+        sum = imop_add(sum, weight)
+        i += 1
+    }
+    let count = right - left
+    i = 0
+    while i < count {
+        std::raw::store(weights + 8 * i, imop_div(std::raw::load(weights + 8 * i), sum))
+        i += 1
+    }
+    return (left, count)
+}
+
+fn imop_check_output(function: string, w: int, h: int, color: int) -> int {
+    im_dims(function, w, h)
+    let n = im_pix_len(w, h, color)
+    if n > 67108864 {
+        im_lim(function, "decoded image bytes", 67108864)
+    }
+    n
+}
+
+fn imop_resize_exact_do(function: string, e: int, nw: int, nh: int, kind: int) -> int {
+    let sw = std::raw::load(e + 8)
+    let sh = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    let bpp = im_bpp(color)
+    let channels = im_channels(color)
+    let sample_bytes = im_sample_bytes(color)
+    let max_value = im_max_sample(color)
+    let n = imop_check_output(function, nw, nh, color)
+    let out = rt_alloc(n)
+    let source = std::raw::load(e + 32)
+    if nw == sw && nh == sh {
+        rt_copy(out, source, n)
+        return im_insert(function, nw, nh, color, out, n)
+    }
+    // Una sola fila intermedia de cuatro f32: evita reservar una imagen temporal
+    // completa, pero conserva el mismo orden vertical y horizontal de la crate.
+    let vertical = rt_alloc(sw * 32)
+    let wy = rt_alloc(sh * 8)
+    let wx = rt_alloc(sw * 8)
+    let mut y = 0
+    while y < nh {
+        let (top, ny) = imop_axis_weights(sh, nh, y, kind, wy)
+        let mut x = 0
+        while x < sw {
+            let mut ch = 0
+            while ch < channels {
+                let mut acc = 0
+                let mut k = 0
+                while k < ny {
+                    let pix = source + ((top + k) * sw + x) * bpp + ch * sample_bytes
+                    let value = imop_from_int(im_sample_get(pix, sample_bytes))
+                    acc = imop_add(acc, imop_mul(value, std::raw::load(wy + 8 * k)))
+                    k += 1
+                }
+                std::raw::store(vertical + 32 * x + 8 * ch, acc)
+                ch += 1
+            }
+            x += 1
+        }
+        let mut ox = 0
+        while ox < nw {
+            let (left, nx) = imop_axis_weights(sw, nw, ox, kind, wx)
+            let mut ch = 0
+            while ch < channels {
+                let mut acc = 0
+                let mut k = 0
+                while k < nx {
+                    let value = std::raw::load(vertical + 32 * (left + k) + 8 * ch)
+                    acc = imop_add(acc, imop_mul(value, std::raw::load(wx + 8 * k)))
+                    k += 1
+                }
+                let maximum = imop_from_int(max_value)
+                let v = imop_max_f32(0, imop_min_f32(maximum, acc))
+                let dst = out + (y * nw + ox) * bpp + ch * sample_bytes
+                im_sample_put(dst, sample_bytes, imop_round(v))
+                ch += 1
+            }
+            ox += 1
+        }
+        y += 1
+    }
+    rt_free_block(wx)
+    rt_free_block(wy)
+    rt_free_block(vertical)
+    im_insert(function, nw, nh, color, out, n)
+}
+
+fn imop_thumbnail_sample(function: string, source: int, sw: int, sh: int, color: int, out: int, nw: int, x: int, y: int, xratio: int, yratio: int) {
+    let bpp = im_bpp(color)
+    let channels = im_channels(color)
+    let sample_bytes = im_sample_bytes(color)
+    let max_value = im_max_sample(color)
+    let bottomf = imop_mul(imop_from_int(y), yratio)
+    let topf = imop_add(bottomf, yratio)
+    let mut bottom = imop_ceil(bottomf)
+    if bottom < 0 { bottom = 0 }
+    if bottom >= sh { bottom = sh - 1 }
+    let mut top = imop_ceil(topf)
+    if top < bottom { top = bottom }
+    if top > sh { top = sh }
+
+    let leftf = imop_mul(imop_from_int(x), xratio)
+    let rightf = imop_add(leftf, xratio)
+    let mut left = imop_ceil(leftf)
+    if left < 0 { left = 0 }
+    if left >= sw { left = sw - 1 }
+    let mut right = imop_ceil(rightf)
+    if right < left { right = left }
+    if right > sw { right = sw }
+
+    let dst = out + (y * nw + x) * bpp
+    let mut ch = 0
+    while ch < channels {
+        let mut value = 0
+        if bottom != top && left != right {
+            let mut sum = 0
+            let mut yy = bottom
+            while yy < top {
+                let mut xx = left
+                while xx < right {
+                    let pos = source + (yy * sw + xx) * bpp + ch * sample_bytes
+                    sum = (sum + im_sample_get(pos, sample_bytes)) & 4294967295
+                    xx += 1
+                }
+                yy += 1
+            }
+            let count = (right - left) * (top - bottom)
+            let rounded = (sum + count / 2) & 4294967295
+            value = rounded / count
+        } else if bottom != top {
+            let fract = imop_div(imop_add(imop_sub(leftf, imop_from_int(imop_floor(leftf))), imop_sub(rightf, imop_from_int(imop_floor(rightf)))), imop_c(2.0))
+            let mut sum_left = 0
+            let mut sum_right = 0
+            let mut yy = bottom
+            while yy < top {
+                let l = source + (yy * sw + right - 1) * bpp + ch * sample_bytes
+                let r = source + (yy * sw + right) * bpp + ch * sample_bytes
+                sum_left = (sum_left + im_sample_get(l, sample_bytes)) & 4294967295
+                sum_right = (sum_right + im_sample_get(r, sample_bytes)) & 4294967295
+                yy += 1
+            }
+            let fact_right = imop_div(fract, imop_from_int(top - bottom))
+            let fact_left = imop_div(imop_sub(imop_c(1.0), fract), imop_from_int(top - bottom))
+            let a = imop_mul(fact_left, vec_f32(std::raw::ffromint(sum_left)))
+            let b = imop_mul(fact_right, vec_f32(std::raw::ffromint(sum_right)))
+            value = std::raw::ftoint(imop_add(a, b))
+        } else if left != right {
+            let fract = imop_div(imop_add(imop_sub(topf, imop_from_int(imop_floor(topf))), imop_sub(bottomf, imop_from_int(imop_floor(bottomf)))), imop_c(2.0))
+            let mut sum_bottom = 0
+            let mut sum_top = 0
+            let mut xx = left
+            while xx < right {
+                let b = source + ((top - 1) * sw + xx) * bpp + ch * sample_bytes
+                let t = source + (top * sw + xx) * bpp + ch * sample_bytes
+                sum_bottom = (sum_bottom + im_sample_get(b, sample_bytes)) & 4294967295
+                sum_top = (sum_top + im_sample_get(t, sample_bytes)) & 4294967295
+                xx += 1
+            }
+            let fact_top = imop_div(fract, imop_from_int(right - left))
+            let fact_bottom = imop_div(imop_sub(imop_c(1.0), fract), imop_from_int(right - left))
+            let a = imop_mul(fact_bottom, vec_f32(std::raw::ffromint(sum_bottom)))
+            let b = imop_mul(fact_top, vec_f32(std::raw::ffromint(sum_top)))
+            value = std::raw::ftoint(imop_add(a, b))
+        } else {
+            let fx = imop_div(imop_add(imop_sub(topf, imop_from_int(imop_floor(topf))), imop_sub(bottomf, imop_from_int(imop_floor(bottomf)))), imop_c(2.0))
+            let fy = imop_div(imop_add(imop_sub(leftf, imop_from_int(imop_floor(leftf))), imop_sub(rightf, imop_from_int(imop_floor(rightf)))), imop_c(2.0))
+            let blp = source + ((top - 1) * sw + right - 1) * bpp + ch * sample_bytes
+            let tlp = source + (top * sw + right - 1) * bpp + ch * sample_bytes
+            let brp = source + ((top - 1) * sw + right) * bpp + ch * sample_bytes
+            let trp = source + (top * sw + right) * bpp + ch * sample_bytes
+            let bl = im_sample_get(blp, sample_bytes)
+            let tl = im_sample_get(tlp, sample_bytes)
+            let br = im_sample_get(brp, sample_bytes)
+            let tr = im_sample_get(trp, sample_bytes)
+            let one = imop_c(1.0)
+            let ftr = imop_mul(fx, fy)
+            let ftl = imop_mul(fy, imop_sub(one, fx))
+            let fbr = imop_mul(imop_sub(one, fy), fx)
+            let fbl = imop_mul(imop_sub(one, fx), imop_sub(one, fy))
+            let a = imop_mul(fbr, imop_from_int(br))
+            let b = imop_mul(ftr, imop_from_int(tr))
+            let c = imop_mul(fbl, imop_from_int(bl))
+            let d = imop_mul(ftl, imop_from_int(tl))
+            value = std::raw::ftoint(imop_add(imop_add(imop_add(a, b), c), d))
+        }
+        if value < 0 { value = 0 }
+        if value > max_value { value = max_value }
+        im_sample_put(dst + ch * sample_bytes, sample_bytes, value)
+        ch += 1
+    }
+}
+
+fn imop_thumbnail_exact_do(function: string, e: int, nw: int, nh: int) -> int {
+    let sw = std::raw::load(e + 8)
+    let sh = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    let n = imop_check_output(function, nw, nh, color)
+    let out = rt_alloc(n)
+    let source = std::raw::load(e + 32)
+    let xr = imop_div(imop_from_int(sw), imop_from_int(nw))
+    let yr = imop_div(imop_from_int(sh), imop_from_int(nh))
+    let mut y = 0
+    while y < nh {
+        let mut x = 0
+        while x < nw {
+            imop_thumbnail_sample(function, source, sw, sh, color, out, nw, x, y, xr, yr)
+            x += 1
+        }
+        y += 1
+    }
+    im_insert(function, nw, nh, color, out, n)
+}
+
+fn imop_blur_kernel(function: string, sigma0: int) -> (int, int, int) {
+    let sigma = if std::raw::fcmp(sigma0, 0) == 0 { imop_c(0.8) } else { sigma0 }
+    let one = imop_c(1.0)
+    let two = imop_c(2.0)
+    let three = imop_c(3.0)
+    let mut possible = imop_add(imop_mul(imop_add(imop_div(imop_sub(sigma, imop_c(0.8)), imop_c(0.3)), one), two), one)
+    possible = imop_max_f32(possible, three)
+    let mut size = std::raw::ftoint(possible)
+    if (size & 1) == 0 { size += 1 }
+    let kernel = rt_alloc(size * 8)
+    let scale = imop_div(one, imop_mul(vec_f32(std::raw::fsqrt(imop_mul(imop_c(2.0), imop_c(3.141592653589793)))), sigma))
+    let mean = imop_from_int(size / 2)
+    let mut sum = 0
+    let mut i = 0
+    while i < size {
+        let x = imop_div(imop_sub(imop_from_int(i), mean), sigma)
+        let exponent = imop_mul(imop_c(-0.5), imop_mul(x, x))
+        let weight = imop_mul(vec_f32(lm_exp(exponent)), scale)
+        std::raw::store(kernel + 8 * i, weight)
+        sum = imop_add(sum, weight)
+        i += 1
+    }
+    if std::raw::fcmp(sum, 0) != 0 {
+        let norm = imop_div(one, sum)
+        i = 0
+        while i < size {
+            std::raw::store(kernel + 8 * i, imop_mul(std::raw::load(kernel + 8 * i), norm))
+            i += 1
+        }
+    }
+    let q = rt_alloc(size * 8)
+    i = 0
+    while i < size {
+        let v = imop_mul(std::raw::load(kernel + 8 * i), imop_c(32768.0))
+        let clamped = imop_max_f32(0, imop_min_f32(imop_c(32767.0), v))
+        std::raw::store(q + 8 * i, std::raw::ftoint(clamped))
+        i += 1
+    }
+    rt_free_block(kernel)
+    let mut first = 0
+    let mut last = size - 1
+    while last - first + 1 > 2 && std::raw::load(q + 8 * first) == 0 && std::raw::load(q + 8 * last) == 0 {
+        first += 1
+        last -= 1
+    }
+    let middle = first + (last - first) / 2
+    return (q, first, middle)
+}
+
+fn imop_blur_pass(src: int, dst: int, w: int, h: int, color: int, kernel: int, first: int, middle: int, horizontal: bool) {
+    let bpp = im_bpp(color)
+    let channels = im_channels(color)
+    let sample_bytes = im_sample_bytes(color)
+    let max_value = im_max_sample(color)
+    let mut y = 0
+    while y < h {
+        let mut x = 0
+        while x < w {
+            let mut ch = 0
+            while ch < channels {
+                let center = std::raw::load(kernel + 8 * middle)
+                let center_ptr = src + (y * w + x) * bpp + ch * sample_bytes
+                let mut acc = im_sample_get(center_ptr, sample_bytes) * center
+                let radius = middle - first
+                let mut i = 0
+                while i < radius {
+                    let distance = radius - i
+                    let mut ax = x - distance
+                    let mut bx = x + distance
+                    let mut ay = y - distance
+                    let mut by = y + distance
+                    if horizontal {
+                        if ax < 0 { ax = 0 }
+                        if bx >= w { bx = w - 1 }
+                        ay = y
+                        by = y
+                    } else {
+                        if ay < 0 { ay = 0 }
+                        if by >= h { by = h - 1 }
+                        ax = x
+                        bx = x
+                    }
+                    let a_ptr = src + (ay * w + ax) * bpp + ch * sample_bytes
+                    let b_ptr = src + (by * w + bx) * bpp + ch * sample_bytes
+                    let a = im_sample_get(a_ptr, sample_bytes)
+                    let b = im_sample_get(b_ptr, sample_bytes)
+                    let coeff = std::raw::load(kernel + 8 * (first + i))
+                    acc += (a + b) * coeff
+                    i += 1
+                }
+                let value = std::raw::shr(acc + 16384, 15)
+                let clamped = if value > max_value { max_value } else { value }
+                let dst_ptr = dst + (y * w + x) * bpp + ch * sample_bytes
+                im_sample_put(dst_ptr, sample_bytes, clamped)
+                ch += 1
+            }
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn imop_blur_do(function: string, e: int, sigma: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    let n = imop_check_output(function, w, h, color)
+    // La pasada separable necesita dos imágenes transitorias de igual tamaño.
+    if n * 2 > 134217728 {
+        im_lim(function, "transient image operation bytes", 134217728)
+    }
+    let (kernel, first, middle) = imop_blur_kernel(function, sigma)
+    let tmp = rt_alloc(n)
+    let out = rt_alloc(n)
+    let src = std::raw::load(e + 32)
+    imop_blur_pass(src, tmp, w, h, color, kernel, first, middle, true)
+    imop_blur_pass(tmp, out, w, h, color, kernel, first, middle, false)
+    rt_free_block(tmp)
+    rt_free_block(kernel)
+    im_insert(function, w, h, color, out, n)
+}

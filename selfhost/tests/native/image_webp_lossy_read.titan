@@ -1,0 +1,42 @@
+fn fingerprint(data: any) -> int {
+    let bytes = std::bytes::to_array(data)
+    let mut value = 0
+    let mut i = 0
+    while i < len(bytes) {
+        value = (value * 131 + bytes[i]) & 2147483647
+        i += 1
+    }
+    value
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn check(path: string, label: string) {
+    let by_path = std::image::load(path)
+    show_image(by_path, label + " path")
+    std::image::close(by_path)
+    let by_bytes = std::image::load_bytes(std::fs::read_bytes(path))
+    show_image(by_bytes, label + " bytes")
+    std::image::close(by_bytes)
+}
+
+fn main() {
+    check("selfhost/native/image/testdata/webp-lossy-solid.webp", "solid")
+    check("selfhost/native/image/testdata/webp-lossy-red.webp", "red")
+    check("selfhost/native/image/testdata/webp-lossy-gradient.webp", "gradient")
+    check("selfhost/native/image/testdata/webp-lossy-blue-odd.webp", "odd edges")
+    check("selfhost/native/image/testdata/webp-lossy-filtered.webp", "filtered")
+    check("selfhost/native/image/testdata/webp-lossy.webp", "segmented filtered")
+    check("selfhost/native/image/testdata/webp-lossy-alpha.webp", "transparency raw")
+    check("selfhost/native/image/testdata/webp-lossy-alpha-compressed.webp", "transparency compressed")
+    check("selfhost/native/image/testdata/webp-lossy-multiparts.webp", "varias particiones")
+    check("selfhost/native/image/testdata/webp-lossy-gradient-17x13.webp", "multi-block horizontal")
+    check("selfhost/native/image/testdata/webp-lossy-gradient-17x17.webp", "multi-block vertical")
+}

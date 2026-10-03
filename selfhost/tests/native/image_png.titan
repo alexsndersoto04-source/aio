@@ -1,0 +1,83 @@
+fn fingerprint(b: any) -> int {
+    let a = std::bytes::to_array(b)
+    let mut v = 0
+    let mut i = 0
+    while i < len(a) {
+        v = (v * 131 + a[i]) & 2147483647
+        i += 1
+    }
+    v
+}
+
+fn show_image(h: int, source: string) {
+    println(source)
+    println(std::image::width(h))
+    println(std::image::height(h))
+    println(std::image::color_type(h))
+    println(fingerprint(std::image::encode(h, "png")))
+    println(fingerprint(std::image::encode(h, "bmp")))
+}
+
+fn expect_rejected(data: any, label: string) {
+    match std::try::catch(|| std::image::load_bytes(data)) {
+        Result::Ok(h) => {
+            std::image::close(h)
+            println("ERROR: accepted " + label)
+        },
+        Result::Err(_) => println("rejected " + label),
+    }
+}
+
+fn main() {
+    let files = ["rgba16.png", "gray16-trns.png", "gray2-trns.png", "palette2-adam7.png", "rgb16-trns.png", "graya16.png", "gray1.png", "gray4-trns-extra.png", "palette4.png", "palette-invalid-trns.png", "rgb8-trns.png"]
+    let mut i = 0
+    while i < len(files) {
+        let path = "selfhost/native/image/testdata/" + files[i]
+        let from_path = std::image::load(path)
+        show_image(from_path, "path")
+        std::image::close(from_path)
+
+        let bytes = std::fs::read_bytes(path)
+        let h = std::image::load_bytes(bytes)
+        show_image(h, "bytes")
+        let gray = std::image::grayscale(h)
+        show_image(gray, "grayscale")
+        std::image::close(gray)
+        let bright = std::image::brighten(h, 37)
+        show_image(bright, "brighten")
+        std::image::close(bright)
+        let bright_max = std::image::brighten(h, 2147483647)
+        show_image(bright_max, "brighten-max")
+        std::image::close(bright_max)
+        let bright_min = std::image::brighten(h, -2147483648)
+        show_image(bright_min, "brighten-min")
+        std::image::close(bright_min)
+        let resized = std::image::resize_exact(h, 3, 4, "lanczos3")
+        show_image(resized, "resize")
+        std::image::close(resized)
+        let thumb = std::image::thumbnail(h, 2, 2)
+        show_image(thumb, "thumbnail")
+        std::image::close(thumb)
+        let blurred = std::image::blur(h, 1.4)
+        show_image(blurred, "blur")
+        std::image::close(blurred)
+        std::image::close(h)
+        i += 1
+    }
+    let malformed = ["bad-crc.png", "bad-filter.png"]
+    i = 0
+    while i < len(malformed) {
+        let path = "selfhost/native/image/testdata/" + malformed[i]
+        expect_rejected(std::fs::read_bytes(path), malformed[i])
+        i += 1
+    }
+    let accepted = ["bad-data-size.png", "bad-palette-index.png", "bad-idat-order.png"]
+    i = 0
+    while i < len(accepted) {
+        let path = "selfhost/native/image/testdata/" + accepted[i]
+        let h = std::image::load_bytes(std::fs::read_bytes(path))
+        show_image(h, accepted[i])
+        std::image::close(h)
+        i += 1
+    }
+}

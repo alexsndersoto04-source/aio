@@ -34,6 +34,7 @@ concurrency:
 
 jobs:
   check:
+    if: ${{ !contains(github.event.head_commit.message, '[arm64-real-only]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

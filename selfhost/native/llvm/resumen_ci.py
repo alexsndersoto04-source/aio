@@ -13,7 +13,7 @@ def esc(s):
 lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
 blocks = []
 for l in lines:
-    if l.startswith("DIFERENCIA") or l.startswith("no admitido"):
+    if l.startswith(("DIFERENCIA", "TIEMPO AGOTADO", "no admitido")):
         blocks.append([l])
     elif l.startswith("programas:") or l.startswith("LLVM:"):
         print("::notice::[llvm] " + esc(l))

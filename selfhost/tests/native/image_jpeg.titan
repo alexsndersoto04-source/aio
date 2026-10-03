@@ -1,0 +1,55 @@
+fn fingerprint(b: any) -> int {
+    let a = std::bytes::to_array(b)
+    let mut value = 0
+    let mut i = 0
+    while i < len(a) {
+        value = (value * 131 + a[i]) & 2147483647
+        i += 1
+    }
+    value
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn was_rejected(path: string) -> bool {
+    let result = std::try::catch(|| {
+        let image = std::image::load(path)
+        std::image::close(image)
+    })
+    match result {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+}
+
+fn main() {
+    let files = ["color-baseline.jpg", "gray-baseline.jpg", "color-progressive.jpg", "gray-progressive.jpg", "color-extended.jpg", "gray-extended.jpg", "gray-extended-16bit-quant.jpg", "color-411.jpg", "color-422.jpg", "color-440.jpg", "color-cmyk.jpg", "color-cmyk-progressive.jpg", "two-component-sequential.jpg", "two-component-422.jpg", "gray-restart.jpg", "vertical-ratio3.jpg"]
+    let mut i = 0
+    while i < len(files) {
+        let path = "selfhost/native/image/testdata/" + files[i]
+        let by_path = std::image::load(path)
+        show_image(by_path, "path " + files[i])
+        std::image::close(by_path)
+
+        let by_bytes = std::image::load_bytes(std::fs::read_bytes(path))
+        show_image(by_bytes, "bytes " + files[i])
+        let gray = std::image::grayscale(by_bytes)
+        show_image(gray, "gray " + files[i])
+        std::image::close(gray)
+        std::image::close(by_bytes)
+        i += 1
+    }
+    println("rejects non-power-of-two horizontal sampling")
+    println(was_rejected("selfhost/native/image/testdata/non-power-of-two-horizontal-sampling.jpg"))
+    println("rejects non-integer vertical sampling ratio")
+    println(was_rejected("selfhost/native/image/testdata/non-integer-vertical-sampling.jpg"))
+    println("rejects unsupported JPEG coding process")
+    println(was_rejected("selfhost/native/image/testdata/unsupported-sof5.jpg"))
+}

@@ -40,7 +40,9 @@
 // inválida, -4 campo de cabecera gzip demasiado largo, -5 checksum gzip.
 
 fn cz_new(data: int, n: int, start: int) -> int {
-    let s = rt_alloc(45568)
+    let s = rt_alloc(45584)
+    std::raw::store(s + 45568, 0)
+    std::raw::store(s + 45576, 0)
     std::raw::store(s + 45216, data)
     std::raw::store(s + 45224, n)
     std::raw::store(s + 45232, start)
@@ -88,10 +90,52 @@ fn cz_finish(s: int) -> any {
     std::raw::adopt(6, p)
 }
 
+// Algunas lecturas (como PNG) conocen de antemano el máximo permitido.
+// El límite es opcional y no cambia el descompresor público.
+fn cz_bound(s: int, limit: int, function_id: int) {
+    std::raw::store(s + 45568, limit)
+    std::raw::store(s + 45576, function_id)
+    let cap = std::raw::load(s + 45272)
+    let target = if limit < 64 { 64 } else { limit }
+    if cap > target {
+        let old = std::raw::load(s + 45256)
+        let p = rt_str_alloc(target)
+        rt_free_block(old)
+        std::raw::store(s + 45256, p)
+        std::raw::store(s + 45272, target)
+    }
+}
+
+fn cz_bound_fail(s: int) {
+    let function_id = std::raw::load(s + 45576)
+    rt_free_block(std::raw::load(s + 45256))
+    rt_free_block(s)
+    if function_id == 1 {
+        rt_native_fail("std::image::load_bytes", "image error: decompressed PNG data exceeds the safety limit")
+    }
+    if function_id == 2 {
+        rt_native_fail("std::http_full::request", "HTTP response body exceeds configured limit")
+    }
+    if function_id == 3 {
+        rt_native_fail("std::http_full::get_json", "HTTP response body exceeds configured limit")
+    }
+    if function_id == 4 {
+        rt_native_fail("std::http_full::post_json", "HTTP response body exceeds configured limit")
+    }
+    if function_id == 5 {
+        rt_native_fail("std::http_full::post_form", "HTTP response body exceeds configured limit")
+    }
+    rt_native_fail("std::image::load", "image error: decompressed PNG data exceeds the safety limit")
+}
+
 // ------------------------------------------------------------ salida
 
 fn cz_room(s: int, k: int) {
     let olen = std::raw::load(s + 45264)
+    let limit = std::raw::load(s + 45568)
+    if limit > 0 && olen + k > limit {
+        cz_bound_fail(s)
+    }
     let cap = std::raw::load(s + 45272)
     if olen + k > cap {
         let mut nc = cap * 2
@@ -109,6 +153,10 @@ fn cz_room(s: int, k: int) {
 
 fn cz_put(s: int, byte: int) {
     let olen = std::raw::load(s + 45264)
+    let limit = std::raw::load(s + 45568)
+    if limit > 0 && olen >= limit {
+        cz_bound_fail(s)
+    }
     if olen >= std::raw::load(s + 45272) {
         cz_room(s, 1)
     }

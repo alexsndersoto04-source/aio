@@ -1,0 +1,36 @@
+fn fingerprint(b: any) -> int {
+    let a = std::bytes::to_array(b)
+    let mut v = 0
+    let mut i = 0
+    while i < len(a) {
+        v = (v * 131 + a[i]) & 2147483647
+        i += 1
+    }
+    v
+}
+fn main() {
+    let h = std::image::from_rgba(3, 2, std::bytes::from_array([255,0,0,255,0,255,0,127,0,0,255,0,12,34,56,78,90,123,145,167,189,210,231,255]))
+    println(h)
+    println(std::image::width(h))
+    println(std::image::height(h))
+    println(std::image::color_type(h))
+    let handles = [std::image::rotate90(h), std::image::rotate180(h), std::image::rotate270(h), std::image::flip_horizontal(h), std::image::flip_vertical(h), std::image::grayscale(h), std::image::brighten(h, 20), std::image::crop(h, 1, 0, 2, 1)]
+    let mut i = 0
+    while i < len(handles) {
+        let v = handles[i]
+        println(v)
+        println(std::image::width(v))
+        println(std::image::height(v))
+        println(std::image::color_type(v))
+        println(fingerprint(std::image::encode(v, "bmp")))
+        println(fingerprint(std::image::encode(v, "png")))
+        std::image::close(v)
+        i += 1
+    }
+    std::image::close(h)
+    std::image::close(h)
+    match std::try::catch(|| std::image::width(h)) {
+        Result::Ok(_) => println("ERROR: imagen cerrada accesible"),
+        Result::Err(e) => println(e),
+    }
+}

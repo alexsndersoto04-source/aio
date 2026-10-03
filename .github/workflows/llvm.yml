@@ -14,6 +14,9 @@ on:
 
 jobs:
   llvm:
+    # En una ejecución dedicada a ARM64 real, no lanzar la batería x86 que ya
+    # se valida localmente ni compilar la VM con Cargo.
+    if: ${{ !contains(github.event.head_commit.message, '[arm64-real-only]') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -101,12 +104,36 @@ jobs:
       - name: Dependencias
         run: sudo apt-get install -y --no-install-recommends libasound2-dev >/dev/null
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: VM de Rust para ARM64 (referencia)
+      - name: VM AArch64 precompilada (sin Cargo)
+        shell: bash
         run: |
-          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
-          ./target/release/titan --version || true
+          set -euo pipefail
+          archive="$RUNNER_TEMP/zett-linux-aarch64.tar.gz"
+          unpack="$RUNNER_TEMP/zett-aarch64"
+          mkdir -p "$unpack"
+          curl -fL --retry 3 --retry-all-errors \
+            https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.26/zett-linux-aarch64.tar.gz \
+            -o "$archive"
+          tar -xzf "$archive" -C "$unpack"
+          ZETT_AARCH64=""
+          while IFS= read -r -d '' candidate; do
+            header=$(readelf -h "$candidate" 2>/dev/null) || continue
+            grep -q 'Machine:.*AArch64' <<< "$header" || continue
+            kind=$(grep 'Type:' <<< "$header" | head -n 1)
+            if [[ "$kind" == *"EXEC"* || "$kind" == *"Position-Independent Executable"* ]]; then
+              ZETT_AARCH64="$candidate"
+              break
+            fi
+          done < <(find "$unpack" -type f -print0)
+          if [ -z "$ZETT_AARCH64" ]; then
+            echo "::error::No se encontró un ejecutable ELF AArch64 en el paquete"
+            find "$unpack" -type f -maxdepth 5 -print
+            exit 1
+          fi
+          chmod +x "$ZETT_AARCH64"
+          echo "VM AArch64 precompilada: $ZETT_AARCH64"
+          "$ZETT_AARCH64" --version
+          echo "ZETT_AARCH64=$ZETT_AARCH64" >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v4
         with:
@@ -116,7 +143,7 @@ jobs:
       - name: Batería ARM64
         run: |
           echo "::notice::máquina: $(uname -m) $(uname -r)"
-          ZETT="$GITHUB_WORKSPACE/target/release/titan" bash selfhost/native/llvm/arm64_comparar.sh /tmp/a64 2>&1 | tee /tmp/arm.txt
+          ZETT="$ZETT_AARCH64" bash selfhost/native/llvm/arm64_comparar.sh /tmp/a64 2>&1 | tee /tmp/arm.txt
           rc=${PIPESTATUS[0]}
           python3 selfhost/native/llvm/resumen_ci.py /tmp/arm.txt
           exit $rc
@@ -126,6 +153,8 @@ jobs:
   # por PSCI) y su salida se compara con la VM de Rust. Después, lo mismo en
   # unicorn (el motor de QEMU), que además da el código de salida.
   sin-so:
+    # No ejecutar emulación QEMU/Unicorn en la validación de ARM64 real.
+    if: ${{ !contains(github.event.head_commit.message, '[arm64-real-only]') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

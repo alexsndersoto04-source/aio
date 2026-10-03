@@ -1,0 +1,115 @@
+fn fingerprint(data: any) -> int {
+    let bytes = std::bytes::to_array(data)
+    let mut value = 0
+    let mut i = 0
+    while i < len(bytes) {
+        value = (value * 131 + bytes[i]) & 2147483647
+        i += 1
+    }
+    value
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn was_rejected(data: any) -> bool {
+    match std::try::catch(|| std::image::load_bytes(data)) {
+        Result::Ok(handle) => {
+            std::image::close(handle)
+            false
+        },
+        Result::Err(_) => true,
+    }
+}
+
+fn gif_encode_rejected(handle: int) -> bool {
+    match std::try::catch(|| std::image::encode(handle, "gif")) {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+}
+
+fn main() {
+    let args = std::env::args()
+    let output_base = args[len(args) - 1]
+    let files = ["gif-global.gif", "gif-noninterlaced.gif", "gif-high-color.gif", "gif-interlaced.gif", "gif-local.gif", "gif-transparent.gif", "gif-animation.gif", "gif-offset-frame.gif", "gif-min-code-size1.gif", "gif-without-eoi.gif", "gif-without-initial-clear.gif", "gif-extra-lzw-pixels.gif", "gif-palette-index-out-of-range.gif", "gif87a.gif"]
+    let mut i = 0
+    while i < len(files) {
+        let path = "selfhost/native/image/testdata/" + files[i]
+        let by_path = std::image::load(path)
+        show_image(by_path, "path " + files[i])
+        std::image::close(by_path)
+
+        let by_bytes = std::image::load_bytes(std::fs::read_bytes(path))
+        show_image(by_bytes, "bytes " + files[i])
+        std::image::close(by_bytes)
+        i += 1
+    }
+    println("rejects truncated GIF")
+    println(was_rejected(std::bytes::from_array([71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 0, 0, 0])))
+    println("rejects invalid GIF LZW code size")
+    println(was_rejected(std::fs::read_bytes("selfhost/native/image/testdata/gif-invalid-min-code-size.gif")))
+    println("rejects GIF with no image data")
+    println(was_rejected(std::fs::read_bytes("selfhost/native/image/testdata/gif-no-image-data.gif")))
+    println("rejects GIF without a color table")
+    println(was_rejected(std::fs::read_bytes("selfhost/native/image/testdata/gif-no-color-table.gif")))
+
+    let rgb = std::image::load("selfhost/native/image/testdata/color-baseline.jpg")
+    let rgb_gif = std::image::encode(rgb, "gif")
+    std::fs::write_bytes(output_base + ".rgb.gif", rgb_gif)
+    std::image::save(rgb, output_base + ".save-rgb.gif")
+    let rgb_decoded = std::image::load_bytes(rgb_gif)
+    show_image(rgb_decoded, "encode RGB8 then read GIF")
+    std::image::close(rgb_decoded)
+    std::image::close(rgb)
+
+    let rgba = std::image::load("selfhost/native/image/testdata/rgb8-trns.png")
+    let rgba_gif = std::image::encode(rgba, "GIF")
+    std::fs::write_bytes(output_base + ".rgba.gif", rgba_gif)
+    let rgba_decoded = std::image::load_bytes(rgba_gif)
+    show_image(rgba_decoded, "encode RGBA8 then read GIF")
+    std::image::close(rgba_decoded)
+    std::image::close(rgba)
+
+    let partial_alpha = std::image::from_rgba(4, 1, std::bytes::from_array([11, 22, 33, 0, 44, 55, 66, 1, 77, 88, 99, 127, 111, 122, 133, 255]))
+    let partial_gif = std::image::encode(partial_alpha, "gif")
+    std::fs::write_bytes(output_base + ".partial.gif", partial_gif)
+    let partial_decoded = std::image::load_bytes(partial_gif)
+    show_image(partial_decoded, "encode RGBA8 partial alpha then read GIF")
+    std::image::close(partial_decoded)
+    std::image::close(partial_alpha)
+
+    let exactly_256 = std::image::load("selfhost/native/image/testdata/gif-256-colors-source.png")
+    let exactly_256_gif = std::image::encode(exactly_256, "gif")
+    let exactly_256_decoded = std::image::load_bytes(exactly_256_gif)
+    show_image(exactly_256_decoded, "encode RGB8 with 256 colors then read GIF")
+    std::image::close(exactly_256_decoded)
+    std::image::close(exactly_256)
+
+    let high = std::image::load("selfhost/native/image/testdata/gif-high-color-source.png")
+    let high_gif = std::image::encode(high, "gif")
+    std::fs::write_bytes(output_base + ".high.gif", high_gif)
+    let high_decoded = std::image::load_bytes(high_gif)
+    show_image(high_decoded, "encode RGB8 high-color then read GIF")
+    std::image::close(high_decoded)
+    std::image::close(high)
+
+    let high_alpha = std::image::load("selfhost/native/image/testdata/gif-high-color-alpha-source.png")
+    let high_alpha_gif = std::image::encode(high_alpha, "gif")
+    std::fs::write_bytes(output_base + ".high-alpha.gif", high_alpha_gif)
+    let high_alpha_decoded = std::image::load_bytes(high_alpha_gif)
+    show_image(high_alpha_decoded, "encode RGBA8 high-color and alpha then read GIF")
+    std::image::close(high_alpha_decoded)
+    std::image::close(high_alpha)
+
+    let gray = std::image::load("selfhost/native/image/testdata/gray-baseline.jpg")
+    println("rejects GIF encoding from L8")
+    println(gif_encode_rejected(gray))
+    std::image::close(gray)
+}

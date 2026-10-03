@@ -1,0 +1,344 @@
+// std::http_full (4 funciones): cliente HTTP/HTTPS con transporte real.
+// HTTP usa std::http; HTTPS abre OpenSSL s_client como proceso real, valida
+// la cadena y el nombre del certificado y nunca baja a HTTP sin cifrar.
+// Dependencia para HTTPS: OpenSSL disponible en PATH. Prefijo `hf_`.
+
+fn hf_fail(function: string, message: string) {
+    rt_native_fail(function, message)
+}
+
+fn hf_header_value(headers: any, wanted: string) -> any {
+    let keys = std::map::keys(headers)
+    let target = std::text::lowercase(wanted)
+    let mut i = 0
+    while i < len(keys) {
+        let key = keys[i]
+        if std::text::lowercase(key) == target {
+            return std::map::get(headers, key)
+        }
+        i += 1
+    }
+    nil
+}
+
+fn hf_has_header(headers: any, wanted: string) -> bool {
+    std::raw::tag(hf_header_value(headers, wanted)) != 0
+}
+
+// HTTP compara los nombres de cabecera sin distinguir mayúsculas. Reemplaza
+// todas las variantes existentes, igual que Request::set de ureq.
+fn hf_set_header(headers: any, name: string, value: string) -> any {
+    let keys = std::map::keys(headers)
+    let target = std::text::lowercase(name)
+    let mut out: any = std::map::new()
+    let mut i = 0
+    while i < len(keys) {
+        let key = keys[i]
+        if std::text::lowercase(key) != target {
+            out = std::map::insert(out, key, std::map::get(headers, key))
+        }
+        i += 1
+    }
+    std::map::insert(out, name, value)
+}
+
+fn hf_ascii_upper(method: any) -> any {
+    let n = rt_slen(method)
+    let out = rt_str_alloc(n)
+    let src = std::raw::bits(method) + 16
+    let mut i = 0
+    while i < n {
+        let mut c = std::raw::load8(src + i)
+        if c >= 97 && c <= 122 { c -= 32 }
+        std::raw::store8(out + 16 + i, c)
+        i += 1
+    }
+    rt_sval(out)
+}
+
+fn hf_remove_header(headers: any, name: string) -> any {
+    let keys = std::map::keys(headers)
+    let target = std::text::lowercase(name)
+    let mut out: any = std::map::new()
+    let mut i = 0
+    while i < len(keys) {
+        let key = keys[i]
+        if std::text::lowercase(key) != target {
+            out = std::map::insert(out, key, std::map::get(headers, key))
+        }
+        i += 1
+    }
+    out
+}
+
+fn hf_prepare_headers(headers: any, options: any, function: string) -> any {
+    rt_expect_map(headers, function)
+    rt_expect_map(options, function)
+
+    // Rust recibe un BTreeMap<String, String>; valida todos sus valores antes
+    // de abrir la conexión.
+    let keys = std::map::keys(headers)
+    let mut i = 0
+    while i < len(keys) {
+        rt_expect_str(std::map::get(headers, keys[i]), function)
+        i += 1
+    }
+
+    let mut out: any = std::map::new()
+    i = 0
+    while i < len(keys) {
+        let key = keys[i]
+        out = std::map::insert(out, key, std::map::get(headers, key))
+        i += 1
+    }
+
+    // ureq anuncia gzip por defecto (este módulo también lo descomprime).
+    if !hf_has_header(out, "Accept-Encoding") {
+        out = hf_set_header(out, "Accept-Encoding", "gzip")
+    }
+
+    // El agente de usuario configurado en Options solo se aplica si el mapa
+    // de cabeceras no trae uno explícito.
+    if !hf_has_header(out, "User-Agent") {
+        if std::map::contains(options, "user_agent") {
+            let agent_name = std::map::get(options, "user_agent")
+            rt_expect_str(agent_name, function)
+            out = hf_set_header(out, "User-Agent", agent_name)
+        } else {
+            out = hf_set_header(out, "User-Agent", "titan-http/0.2")
+        }
+    } else if std::map::contains(options, "user_agent") {
+        rt_expect_str(std::map::get(options, "user_agent"), function)
+    }
+
+    // Mismo orden de ureq: las credenciales de opciones sustituyen cualquier
+    // Authorization recibido en `headers`; bearer gana si se dan ambas.
+    if std::map::contains(options, "basic_user") {
+        let user = std::map::get(options, "basic_user")
+        rt_expect_str(user, function)
+        let mut password = ""
+        if std::map::contains(options, "basic_pass") {
+            password = std::map::get(options, "basic_pass")
+            rt_expect_str(password, function)
+        }
+        let credentials = std::encoding::utf8_encode(user + ":" + password)
+        let token = std::encoding::base64_encode(credentials)
+        out = hf_set_header(out, "Authorization", "Basic " + token)
+    }
+    if std::map::contains(options, "bearer") {
+        let token = std::map::get(options, "bearer")
+        rt_expect_str(token, function)
+        out = hf_set_header(out, "Authorization", "Bearer " + token)
+    }
+    out
+}
+
+fn hf_gzip_fail(state: int, function: string, code: int) {
+    if state != 0 {
+        rt_free_block(std::raw::load(state + 45256))
+        rt_free_block(state)
+    }
+    if code == -1 {
+        hf_fail(function, "HTTP I/O error: unexpected end of file")
+    }
+    if code == -3 {
+        hf_fail(function, "HTTP I/O error: invalid gzip header")
+    }
+    if code == -4 {
+        hf_fail(function, "HTTP I/O error: gzip header field too long")
+    }
+    if code == -5 {
+        hf_fail(function, "HTTP I/O error: corrupt gzip stream does not have a matching checksum")
+    }
+    hf_fail(function, "HTTP I/O error: corrupt deflate stream")
+}
+
+fn hf_gzip_decode(body: any, function: string) -> any {
+    rt_expect_bytes(body, function)
+    let data = rt_bdata(body)
+    let size = rt_slen(body)
+    let header = cz_gz_header(data, size)
+    if header < 0 {
+        hf_gzip_fail(0, function, header)
+    }
+    let state = cz_new(data, size, header)
+    let mut bound_id = 2
+    if function == "std::http_full::get_json" { bound_id = 3 }
+    if function == "std::http_full::post_json" { bound_id = 4 }
+    if function == "std::http_full::post_form" { bound_id = 5 }
+    cz_bound(state, 67108864, bound_id)
+    let result = cz_run(state, false)
+    if result < 0 {
+        hf_gzip_fail(state, function, result)
+    }
+    let trailer = std::raw::load(state + 45232)
+    if size - trailer < 8 {
+        hf_gzip_fail(state, function, -1)
+    }
+    let output_size = std::raw::load(state + 45264)
+    let checksum = cz_crc(std::raw::load(state + 45256) + 16, output_size)
+    if cz_le32(data + trailer) != checksum || cz_le32(data + trailer + 4) != (output_size & 4294967295) {
+        hf_gzip_fail(state, function, -5)
+    }
+    cz_finish(state)
+}
+
+fn hf_timeout(options: any) -> int {
+    let default_timeout = 30000
+    if !std::map::contains(options, "timeout_ms") {
+        return default_timeout
+    }
+    let value = std::map::get(options, "timeout_ms")
+    if std::raw::tag(value) != 1 {
+        return default_timeout
+    }
+    let millis = std::raw::bits(value)
+    if millis < 0 {
+        return default_timeout
+    }
+    millis
+}
+
+fn hf_redirect_limit(options: any) -> int {
+    let default_limit = 5
+    if !std::map::contains(options, "max_redirects") {
+        return default_limit
+    }
+    let value = std::map::get(options, "max_redirects")
+    if std::raw::tag(value) != 1 {
+        return default_limit
+    }
+    let redirects = std::raw::bits(value)
+    if redirects < 0 || redirects > 4294967295 {
+        return default_limit
+    }
+    redirects
+}
+
+fn hf_request(method: any, url: any, headers: any, body: any, options: any, function: string) -> any {
+    rt_expect_str(method, function)
+    rt_expect_str(url, function)
+    rt_expect_bytes(body, function)
+    rt_expect_map(options, function)
+
+    let upper = hf_ascii_upper(method)
+    if upper != "GET" && upper != "HEAD" && upper != "DELETE" && upper != "POST" && upper != "PUT" && upper != "PATCH" {
+        hf_fail(function, "std::http_full::request unsupported method '" + upper + "'")
+    }
+
+    let mut current_method = upper
+    let mut current_url = url
+    let mut current_headers = hf_prepare_headers(headers, options, function)
+    let mut current_body = body
+    let redirect_limit = hf_redirect_limit(options)
+    let timeout = hf_timeout(options)
+    let mut followed = 0
+    let mut response: any = nil
+
+    loop {
+        // Cada salto se hace por el mismo socket HTTP real; se controla aquí
+        // para retirar Authorization después de una redirección, como ureq.
+        response = ht_single(
+            current_method,
+            current_url,
+            current_headers,
+            current_body,
+            67108864,
+            timeout,
+            function,
+        )
+        let status = std::map::get(response, "status")
+        let is_redirect = status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+        if !is_redirect {
+            break
+        }
+        let response_headers = std::map::get(response, "headers")
+        if !hf_has_header(response_headers, "Location") || followed >= redirect_limit {
+            break
+        }
+        let location = hf_header_value(response_headers, "Location")
+        rt_expect_str(location, function)
+        current_url = ht_resolve(current_url, location, function)
+        current_headers = hf_remove_header(current_headers, "Authorization")
+        if status == 301 || status == 302 || status == 303 {
+            current_method = "GET"
+            current_body = std::encoding::utf8_encode("")
+            current_headers = hf_remove_header(current_headers, "Content-Type")
+        }
+        followed += 1
+    }
+
+    let status = std::map::get(response, "status")
+    if status >= 400 {
+        let reason = std::http::reason_phrase(status)
+        let mut detail = "HTTP request error: HTTP " + rt_int_to_str(status)
+        if std::raw::tag(reason) == 5 {
+            detail = detail + ": " + reason
+        }
+        hf_fail(function, detail)
+    }
+
+    let response_headers = std::map::get(response, "headers")
+    let content_encoding = hf_header_value(response_headers, "Content-Encoding")
+    if std::raw::tag(content_encoding) == 5 && std::text::lowercase(content_encoding) == "gzip" {
+        let decoded = hf_gzip_decode(std::map::get(response, "body"), function)
+        return std::map::insert(response, "body", decoded)
+    }
+    response
+}
+
+fn std__http_full__request(method: any, url: any, headers: any, body: any, options: any) -> any {
+    hf_request(method, url, headers, body, options, "std::http_full::request")
+}
+
+fn std__http_full__get_json(url: any, headers: any, options: any) -> any {
+    let empty = std::encoding::utf8_encode("")
+    let mut request_headers = hf_prepare_headers(headers, options, "std::http_full::get_json")
+    if !hf_has_header(request_headers, "Accept") {
+        request_headers = hf_set_header(request_headers, "Accept", "application/json")
+    }
+    let response = hf_request("GET", url, request_headers, empty, options, "std::http_full::get_json")
+    let text = std::encoding::utf8_decode(std::map::get(response, "body"))
+    std::json::parse(text)
+}
+
+fn std__http_full__post_json(url: any, value: any, headers: any, options: any) -> any {
+    let mut request_headers = hf_prepare_headers(headers, options, "std::http_full::post_json")
+    if !hf_has_header(request_headers, "Content-Type") {
+        request_headers = hf_set_header(request_headers, "Content-Type", "application/json")
+    }
+    if !hf_has_header(request_headers, "Accept") {
+        request_headers = hf_set_header(request_headers, "Accept", "application/json")
+    }
+    let payload = std::encoding::utf8_encode(std::json::stringify(value))
+    let response = hf_request("POST", url, request_headers, payload, options, "std::http_full::post_json")
+    let text = std::encoding::utf8_decode(std::map::get(response, "body"))
+    std::json::parse(text)
+}
+
+fn std__http_full__post_form(url: any, form: any, headers: any, options: any) -> any {
+    rt_expect_array(form, "std::http_full::post_form")
+    let mut pairs: any = []
+    let mut i = 0
+    while i < len(form) {
+        let pair = form[i]
+        rt_expect_array(pair, "std::http_full::post_form")
+        if len(pair) != 2 {
+            hf_fail("std::http_full::post_form", "post_form pairs must be [key, value]")
+        }
+        let key = pair[0]
+        let value = pair[1]
+        if std::raw::tag(key) != 5 || std::raw::tag(value) != 5 {
+            hf_fail("std::http_full::post_form", "expected string")
+        }
+        pairs = std::array::push(pairs, [key, value])
+        i += 1
+    }
+
+    let mut request_headers = hf_prepare_headers(headers, options, "std::http_full::post_form")
+    if !hf_has_header(request_headers, "Content-Type") {
+        request_headers = hf_set_header(request_headers, "Content-Type", "application/x-www-form-urlencoded")
+    }
+    let payload = std::encoding::utf8_encode(std::url::build_query(pairs))
+    hf_request("POST", url, request_headers, payload, options, "std::http_full::post_form")
+}

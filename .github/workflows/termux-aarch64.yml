@@ -37,6 +37,7 @@ env:
 
 jobs:
   build-termux-aarch64:
+    if: ${{ !contains(github.event.head_commit.message, '[arm64-real-only]') }}
     name: Build and package native Termux AArch64 binary
     runs-on: ubuntu-latest
     steps:

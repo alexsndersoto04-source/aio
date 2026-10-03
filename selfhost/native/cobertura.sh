@@ -7,7 +7,7 @@
 set -u
 cd "$(dirname "$0")/.."
 all=$(grep -o '"std::[a-z_0-9]*::[a-z_0-9]*' natives.titan | tr -d '"' | sort -u)
-have=$(cat native/*.titan | grep -o '^fn std__[a-z0-9_]*' | sed 's/^fn //' | sort -u)
+have=$(grep -Rho --include='*.titan' '^fn std__[a-z0-9_]*' native | sed 's/^fn //' | sort -u)
 # Nativas que el compilador convierte en una instrucción propia (no en una
 # función del runtime): cuentan si los DOS backends traducen esa instrucción.
 for pair in std__try__catch:TryCall; do
