@@ -9,7 +9,9 @@ fn show(label: string, url: string) {
             let body = std::map::get(m, "body")
             println(label + " status " + std::json::stringify(std::map::get(m, "status")) + " body " + std::json::stringify(len(body) > 0))
         }
-        Result::Err(e) => println(label + " ERR " + e),
+        // El texto de DNS/socket depende de la red y del host de Actions;
+        // las pruebas de errores de formato verifican los mensajes exactos.
+        Result::Err(_) => println(label + " ERR"),
     }
 }
 

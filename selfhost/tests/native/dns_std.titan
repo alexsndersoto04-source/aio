@@ -6,7 +6,8 @@ fn main() {
     println("local " + std::json::stringify(std::dns::resolve("localhost")))
     println("local4 " + std::json::stringify(std::dns::resolve_ipv4("localhost")))
     println("local6 " + std::json::stringify(std::dns::resolve_ipv6("localhost")))
-    println("e2b " + std::json::stringify(std::dns::resolve("e2b.local")))
+    // FQDN: evita que el sufijo DNS privado del runner altere el resultado.
+    println("e2b " + std::json::stringify(std::dns::resolve("e2b.local.")))
     println("mxex " + std::json::stringify(std::dns::resolve_mx("example.com.")))
     println("revloop " + std::json::stringify(std::dns::reverse("127.0.0.1")))
     println("rev6 " + std::json::stringify(std::dns::reverse("::1")))

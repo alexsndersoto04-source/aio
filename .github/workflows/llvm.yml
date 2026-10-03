@@ -87,63 +87,43 @@ jobs:
           grep "^LLVM rechazó" /tmp/obj.txt | head -5 | while IFS= read -r l; do echo "::error::[arm64-objetos] $l"; done
           exit $rc
 
+      - name: Referencias de la VM precompilada x86-64
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          bash selfhost/native/llvm/arm64_referencias.sh /tmp/a64 2>&1 | tee /tmp/ref.txt
+          rc=${PIPESTATUS[0]}
+          tail -1 /tmp/ref.txt | while IFS= read -r l; do echo "::notice::[arm64-referencias] $l"; done
+          grep "^TIEMPO AGOTADO" /tmp/ref.txt | head -5 | while IFS= read -r l; do echo "::error::[arm64-referencias] $l"; done
+          exit $rc
+
       - uses: actions/upload-artifact@v4
         with:
           name: arm64-objetos
           path: /tmp/a64
           retention-days: 3
 
-  # ARM64, parte 2 (máquina ARM64 real): enlazar, ejecutar y comparar con la
-  # VM de Rust compilada aquí mismo para ARM64.
+  # ARM64, parte 2: el runner ARM64 real ejecuta los ELF AArch64 y compara
+  # con referencias generadas por el Zett x86-64 precompilado de este commit.
   arm64:
     needs: arm64-objetos
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
-      - name: Dependencias
-        run: sudo apt-get install -y --no-install-recommends libasound2-dev >/dev/null
-
-      - name: VM AArch64 precompilada (sin Cargo)
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/zett-linux-aarch64.tar.gz"
-          unpack="$RUNNER_TEMP/zett-aarch64"
-          mkdir -p "$unpack"
-          curl -fL --retry 3 --retry-all-errors \
-            https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.26/zett-linux-aarch64.tar.gz \
-            -o "$archive"
-          tar -xzf "$archive" -C "$unpack"
-          ZETT_AARCH64=""
-          while IFS= read -r -d '' candidate; do
-            header=$(readelf -h "$candidate" 2>/dev/null) || continue
-            grep -q 'Machine:.*AArch64' <<< "$header" || continue
-            kind=$(grep 'Type:' <<< "$header" | head -n 1)
-            if [[ "$kind" == *"EXEC"* || "$kind" == *"Position-Independent Executable"* ]]; then
-              ZETT_AARCH64="$candidate"
-              break
-            fi
-          done < <(find "$unpack" -type f -print0)
-          if [ -z "$ZETT_AARCH64" ]; then
-            echo "::error::No se encontró un ejecutable ELF AArch64 en el paquete"
-            find "$unpack" -type f -maxdepth 5 -print
-            exit 1
-          fi
-          chmod +x "$ZETT_AARCH64"
-          echo "VM AArch64 precompilada: $ZETT_AARCH64"
-          "$ZETT_AARCH64" --version
-          echo "ZETT_AARCH64=$ZETT_AARCH64" >> "$GITHUB_ENV"
-
       - uses: actions/download-artifact@v4
         with:
           name: arm64-objetos
           path: /tmp/a64
 
-      - name: Batería ARM64
+      - name: Batería ARM64 en hardware real
         run: |
-          echo "::notice::máquina: $(uname -m) $(uname -r)"
-          ZETT="$ZETT_AARCH64" bash selfhost/native/llvm/arm64_comparar.sh /tmp/a64 2>&1 | tee /tmp/arm.txt
+          machine=$(uname -m)
+          echo "::notice::máquina: $machine $(uname -r); referencia: VM x86-64 precompilada"
+          if [ "$machine" != aarch64 ]; then
+            echo "::error::el job requiere hardware AArch64 real; uname -m=$machine"
+            exit 1
+          fi
+          bash selfhost/native/llvm/arm64_comparar.sh /tmp/a64 2>&1 | tee /tmp/arm.txt
           rc=${PIPESTATUS[0]}
           python3 selfhost/native/llvm/resumen_ci.py /tmp/arm.txt
           exit $rc

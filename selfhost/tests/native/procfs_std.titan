@@ -55,7 +55,8 @@ fn main() {
     let r11 = keys_of(c0)
     println("cpu: {r11}")
     let n0 = c0["name"]
-    println("cpu0: {n0}")
+    let cpu_name_present = len(n0) > 0
+    println("cpu0 name present: {cpu_name_present}")
     let f0 = c0["frequency_mhz"]
     let r12 = f0 > 0
     println("frecuencia > 0: {r12}")

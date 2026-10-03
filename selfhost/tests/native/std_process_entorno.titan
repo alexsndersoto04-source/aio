@@ -36,7 +36,9 @@ fn main() {
     print(std::dirs::config())
     std::process::env_set("XDG_CONFIG_HOME", "/tmp/conf_titan")
     print(std::dirs::config())
-    print(std::process::hostname())
+    // El nombre real de la máquina cambia entre runners; comprueba la API
+    // sin hacer depender la salida de un hostname externo.
+    print(std::process::hostname() != "")
     print(std::process::username())
     std::process::env_set("USER", "alguien")
     print(std::process::username())
