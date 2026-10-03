@@ -1,0 +1,75 @@
+name: Self-host bootstrap and native runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "arena/**"]
+    paths:
+      - "selfhost/**"
+      - ".github/workflows/selfhost.yml"
+      - "scripts/sandbox-zett.sh"
+  pull_request:
+    paths:
+      - "selfhost/**"
+      - ".github/workflows/selfhost.yml"
+      - "scripts/sandbox-zett.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  selfhost:
+    name: Prebuilt seed → Titan bootstrap → differential tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Require genuine ALSA runtime library
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libasound\.so\.2'; then
+            sudo apt-get update
+            sudo apt-get install -y libasound2t64
+          fi
+          ldconfig -p | grep 'libasound\.so\.2'
+
+      - name: Download the precompiled Zett seed and verify its SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/binaries:refs/remotes/origin/binaries
+          seed="$RUNNER_TEMP/zett"
+          git show origin/binaries:zett-linux-x86_64 > "$seed"
+          chmod +x "$seed"
+          expected="$(git show origin/binaries:zett-linux-x86_64.sha256 | awk 'NR == 1 {print $1}')"
+          printf '%s  %s\n' "$expected" "$seed" | sha256sum --check
+          printf 'Seed source commit: '
+          git show origin/binaries:COMMIT 2>/dev/null || true
+          "$seed" version
+
+      - name: Audit native-function inventory
+        shell: bash
+        run: bash selfhost/native/cobertura.sh
+
+      - name: Bootstrap three generations without Rust or PATH
+        shell: bash
+        run: bash selfhost/verify_fixpoint.sh "$RUNNER_TEMP/zett"
+
+      - name: Compare Titan bytecode generator against the Rust seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -i PATH=/nonexistent \
+            ./selfhost/titanc1 selfhost/bytecode.titan "$RUNNER_TEMP/bytecode-native"
+          test -x "$RUNNER_TEMP/bytecode-native"
+          ZETT="$RUNNER_TEMP/zett" SELF="$RUNNER_TEMP/bytecode-native" \
+            bash selfhost/verify_codegen.sh "$RUNNER_TEMP/zett"
+
+      - name: Compare native programs with the VM
+        shell: bash
+        run: ZETT="$RUNNER_TEMP/zett" bash selfhost/native/verify_native.sh

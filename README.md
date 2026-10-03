@@ -7,7 +7,7 @@
 
 **TITAN** es un lenguaje de programación compilado y verificado estáticamente, implementado en Rust. Los programas usan la extensión **`.titan`**, se compilan a bytecode portable y se ejecutan en una máquina virtual de pila segura. **Zett** es el nombre de distribución del compilador, especialmente en Android/Termux; ambos nombres se refieren al mismo ecosistema.
 
-> **TITAN/Zett 1.0.0 — release estable.** Lenguaje compilado y verificado estáticamente: lexer, parser, typechecker, codegen, VM segura, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro reúne **797 funciones nativas únicas en 72 namespaces `std::*`** además de primitivas del runtime. Binarios oficiales en el release **[v1.0.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.0.0)** (Linux, macOS, Windows) y, en Android/Termux, instalación directa con `pkg install zett`.
+> **TITAN/Zett.** Lenguaje compilado y verificado estáticamente: lexer, parser, typechecker, codegen, VM segura, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. La versión declarada por el workspace fuente de Cargo es `1.0.0`; el último release oficial publicado es **[v1.0.26](https://github.com/alexsndersoto04-source/aio/releases/latest)**. Se distribuye para Linux, macOS, Windows y Android/Termux (`pkg install zett`). El registro contiene **816 firmas nativas en 72 namespaces `std::*`**; el inventario de self-host cuenta **518/816 con implementación fuente en Titan**. Esas cifras describen registros y presencia de código, no paridad de comportamiento completa; los detalles y pruebas están en [`selfhost/ESTADO.md`](selfhost/ESTADO.md).
 
 ```text
 TITAN source (.titan)
@@ -41,7 +41,7 @@ Los binarios precompilados se publican en [**Releases**](https://github.com/alex
 ### Linux x86-64
 
 ```bash
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-x86_64.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett-linux-x86_64.tar.gz | tar xz
 ./zett version
 ```
 
@@ -49,10 +49,10 @@ curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/z
 
 ```bash
 # ARM de 64 bits
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-aarch64.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett-linux-aarch64.tar.gz | tar xz
 
 # ARM de 32 bits hard-float; útil, por ejemplo, en proot Debian armhf + Termux:X11
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-armv7hf.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett-linux-armv7hf.tar.gz | tar xz
 
 ./zett version
 ```
@@ -60,7 +60,7 @@ curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/z
 ### macOS Apple Silicon
 
 ```bash
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-macos-arm64.tar.gz | tar xz
+curl -L https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett-macos-arm64.tar.gz | tar xz
 xattr -d com.apple.quarantine zett 2>/dev/null || true
 ./zett version
 ```
@@ -114,7 +114,7 @@ export PATH="$HOME/.local/bin:$PATH"
 zett version                     # también disponible como `titan`
 ```
 
-Si el sistema no tiene `libasound.so.2`, el script genera un stub de ALSA: todo funciona salvo la salida de audio real.
+El binario necesita la biblioteca ALSA real (`libasound.so.2`). El script intenta instalarla desde los paquetes del sistema y se detiene si no está disponible; no crea stubs ni reemplazos.
 
 ## Compilar desde el código fuente
 
@@ -209,7 +209,7 @@ El runtime también incluye `spawn`, `join`, `join_timeout`, `cancel`, `channel`
 
 ## Biblioteca estándar
 
-La biblioteca estándar ofrece **797 funciones nativas registradas en 72 namespaces**. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
+La biblioteca estándar registra 816 firmas nativas en 72 namespaces `std::*`, con capacidades para texto, formatos, seguridad, red, datos, sistema, multimedia, IA local, interfaces, dispositivos y WebAssembly. El inventario de self-host contiene implementaciones Titan para 518 firmas; eso no implica que el resto ni las pruebas de paridad estén terminados. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
 
 | Área | Incluye |
 |---|---|

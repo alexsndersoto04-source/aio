@@ -2,7 +2,7 @@
 
 The `titan_stdlib` crate provides memory-safe host capabilities for the compiler, VM embedders, and future native builtin bridge. APIs return `Result`/`Option` where operations can fail; malformed input is not silently accepted.
 
-> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry currently contains 694 functions; the type checker validates their arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors.
+> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry contains **816 native signatures across 72 `std::*` namespaces**; the names in `crates/titan_stdlib/src/native.rs` match the generated self-host inventory in `selfhost/natives.titan`. The Titan-native runtime currently has source implementations for 518 of those signatures according to `selfhost/native/cobertura.sh`; this static count is not a claim of complete behavioral parity. The type checker validates arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors. See [`selfhost/ESTADO.md`](../selfhost/ESTADO.md) for the current work and tests.
 
 ## Modules
 
