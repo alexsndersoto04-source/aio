@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "selfhost" / "natives.titan"
 NATIVE = ROOT / "selfhost" / "native"
 TESTS = ROOT / "selfhost" / "tests" / "native"
+SUPPLEMENTAL_TESTS = (NATIVE / "readline" / "prueba_readline.titan",)
 API_RE = re.compile(r"\bstd::[a-z_0-9]+::[a-z_0-9]+\b")
 DEFINITION_RE = re.compile(r"^fn (std__[a-z0-9_]+)\b", re.MULTILINE)
 
@@ -41,8 +42,9 @@ def main() -> int:
     test_files = sorted(TESTS.glob("*.titan"))
     if not test_files:
         raise SystemExit(f"no native test programs found in {TESTS}")
+    supplemental_files = [path for path in SUPPLEMENTAL_TESTS if path.is_file()]
     references: set[str] = set()
-    for path in test_files:
+    for path in (*test_files, *supplemental_files):
         references.update(API_RE.findall(path.read_text(encoding="utf-8")))
 
     cited_registered = references & registered
@@ -66,7 +68,8 @@ def main() -> int:
     print()
     print(f"- Firmas nativas registradas: **{len(registered)}**")
     print(f"- Firmas con función Titan o intrínseco en ambos backends: **{len(implemented)}**")
-    print(f"- Programas `.titan` en la suite nativa: **{len(test_files)}**")
+    print(f"- Programas `.titan` en la matriz nativa: **{len(test_files)}**")
+    print(f"- Programas Titan complementarios (por ejemplo, PTY de readline): **{len(supplemental_files)}**")
     print(f"- Nombres de API distintos citados por los archivos de prueba: **{len(cited_registered)}**")
     print(f"- De esos nombres, con definición Titan/intrínseco: **{len(cited_implemented)}**")
     print(f"- Nombres citados sin definición Titan/intrínseco: **{len(missing_definitions)}**")

@@ -213,3 +213,18 @@ jobs:
           fi
           COMPILER="$compiler" ZETT="$zett" \
             bash selfhost/native/verify_native.sh "${files[@]}"
+
+      - name: Verify std::readline with the prebuilt seed and a real PTY
+        if: matrix.shard == 0
+        shell: bash
+        env:
+          ZETT: ${{ runner.temp }}/selfhost-tools/zett
+          COMPILER: ${{ runner.temp }}/selfhost-tools/titanc1
+        run: |
+          set -euo pipefail
+          python3 selfhost/native/readline/verificar.py | tee "$RUNNER_TEMP/readline-pty.txt"
+          {
+            echo "### std::readline — PTY differential"
+            echo
+            cat "$RUNNER_TEMP/readline-pty.txt"
+          } >> "$GITHUB_STEP_SUMMARY"

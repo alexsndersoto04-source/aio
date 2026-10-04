@@ -270,10 +270,20 @@ def main() -> None:
     if not Path(zett).is_file() or not os.access(zett, os.X_OK):
         raise SystemExit("No encuentro el binario precompilado `zett`; instálalo antes de ejecutar esta prueba.")
 
+    compiler = os.environ.get("COMPILER", "")
+    if compiler and (not Path(compiler).is_file() or not os.access(compiler, os.X_OK)):
+        raise SystemExit(f"No encuentro el compilador Titan nativo ejecutable: {compiler}")
+
     with tempfile.TemporaryDirectory(prefix="titan-readline-") as temporary:
         exe = str(Path(temporary) / "readline_test")
+        if compiler:
+            build_command = [compiler, str(PROGRAM.relative_to(ROOT)), exe]
+            print("Compilador de la prueba: ejecutable nativo Titan del bootstrap.")
+        else:
+            build_command = [zett, "run", "selfhost/build.titan", str(PROGRAM.relative_to(ROOT)), exe]
+            print("Compilador de la prueba: selfhost/build.titan ejecutado por Zett precompilado.")
         built = subprocess.run(
-            [zett, "run", "selfhost/build.titan", str(PROGRAM.relative_to(ROOT)), exe],
+            build_command,
             cwd=ROOT,
             capture_output=True,
             timeout=600,

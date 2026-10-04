@@ -36,6 +36,7 @@ bash selfhost/native/verify_native.sh    # nativo vs `zett run` (stdout, stderr,
 bash selfhost/native/verify_json.sh      # std::json::parse nativo vs VM en 97 casos (errores con línea/columna)
 bash selfhost/native/cobertura.sh [-v]   # definiciones Titan frente al inventario registrado
 python3 selfhost/native/auditar_pruebas.py # cruce de firmas con nombres citados en la suite (no mide ramas)
+ZETT=/ruta/al/zett COMPILER=/ruta/titanc1 python3 selfhost/native/readline/verificar.py # PTY real
 # El compilador Titan convertido en ejecutable nativo, contra el de Rust:
 zett run selfhost/build.titan selfhost/bytecode.titan /tmp/bytecode_nativo
 SELF=/tmp/bytecode_nativo bash selfhost/verify_codegen.sh
