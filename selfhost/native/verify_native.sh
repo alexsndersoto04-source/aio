@@ -2,14 +2,14 @@
 # Verificación diferencial del compilador nativo (fase 4b del self-hosting).
 #
 # Para cada programa: lo compila a ejecutable con `selfhost/build.titan`
-# (todo en Titan), lo ejecuta y compara salida estándar, salida de errores y
-# código de salida con `zett run` (la VM de Rust).
-# Si el compilador nativo todavía no admite algo, lo dice ("no admitido") y
-# se cuenta aparte: nunca como acierto.
+# (todo en Titan), lo ejecuta y compara stdout, stderr, código de salida y
+# archivos creados con `zett run` (la VM de Rust). Las compilaciones no
+# admitidas y los timeouts se cuentan aparte; nunca como aciertos.
 #
 # Uso: bash selfhost/native/verify_native.sh [archivos...]
 #      (sin archivos: selfhost/tests/native/*.titan)
 #      ZETT=/ruta/al/zett COMPILER=/ruta/a/titanc1 bash ...
+#      TEST_TIMEOUT=60 BUILD_TIMEOUT=300 ajustan los límites en segundos.
 # COMPILER permite reutilizar el compilador nativo ya creado en el bootstrap,
 # evitando volver a interpretar build.titan con Rust para cada prueba.
 set -u
@@ -37,7 +37,9 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [ $# -gt 0 ]; then FILES=("$@"); else FILES=(selfhost/tests/native/*.titan); fi
-pass=0; fail=0; unsupported=0; current=0
+pass=0; fail=0; unsupported=0; build_timeouts=0; run_timeouts=0; current=0
+BUILD_TIMEOUT="${BUILD_TIMEOUT:-300}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-60}"
 total=${#FILES[@]}
 details="$tmp/native-details.txt"
 : > "$details"
@@ -56,26 +58,94 @@ report_error_annotation() {
   fi
 }
 
+# Marker distinguishes a command that naturally exits 124 from one that the
+# timeout program terminates. Never count two hung programs as a match.
+run_limited() {
+  local seconds="$1"
+  local marker="$2"
+  shift 2
+  rm -f "$marker"
+  timeout "$seconds" bash -c '
+    marker=$1
+    shift
+    "$@"
+    status=$?
+    : > "$marker"
+    exit "$status"
+  ' _ "$marker" "$@"
+  local status=$?
+  [ -e "$marker" ] || return 124
+  return "$status"
+}
+
 for f in "${FILES[@]}"; do
   current=$((current + 1))
   echo "[$current/$total] $f"
+  rm -f "$tmp/prog" "$tmp/build.done"
   if [ -n "$COMPILER" ]; then
-    "$COMPILER" "$f" "$tmp/prog" > "$tmp/build.txt" 2>&1
+    run_limited "$BUILD_TIMEOUT" "$tmp/build.done" "$COMPILER" "$f" "$tmp/prog" > "$tmp/build.txt" 2>&1
+    build_status=$?
   else
-    "$ZETT" run selfhost/build.titan "$f" "$tmp/prog" > "$tmp/build.txt" 2>&1
+    run_limited "$BUILD_TIMEOUT" "$tmp/build.done" "$ZETT" run selfhost/build.titan "$f" "$tmp/prog" > "$tmp/build.txt" 2>&1
+    build_status=$?
+  fi
+  if [ ! -e "$tmp/build.done" ]; then
+    build_timeouts=$((build_timeouts + 1))
+    message="tiempo agotado al compilar $f (límite ${BUILD_TIMEOUT}s)"
+    echo "$message"
+    printf '%s\n' "$message" >> "$details"
+    report_error_annotation "$f" "Native compilation timeout" "$message"
+    rm -f "$tmp/prog"
+    continue
   fi
   if [ ! -x "$tmp/prog" ]; then
     unsupported=$((unsupported + 1))
-    message="no admitido: $f: $(head -c 300 "$tmp/build.txt" | tr '\n' ' ')"
+    message="no admitido: $f (compilador=$build_status): $(head -c 300 "$tmp/build.txt" | tr '\n' ' ')"
     echo "$message"
     printf '%s\n' "$message" >> "$details"
     report_error_annotation "$f" "Native test unsupported" "$message"
     continue
   fi
-  timeout "${TEST_TIMEOUT:-60}" "$ZETT" run "$f" > "$tmp/vm.out" 2> "$tmp/vm.err"; vm=$?
-  timeout "${TEST_TIMEOUT:-60}" "$tmp/prog" > "$tmp/nat.out" 2> "$tmp/nat.err"; nat=$?
+  base="$(basename "$f" .titan)"
+  vm_args=(); nat_args=(); vm_files=""; nat_files=""
+  case "$base" in
+    image_gif|image_gif_validate|image_webp|image_webp_validate|image_webp_write|image_io)
+      vm_files="$tmp/file-output/$base/vm"
+      nat_files="$tmp/file-output/$base/native"
+      mkdir -p "$vm_files" "$nat_files"
+      vm_args=("$vm_files/output")
+      nat_args=("$nat_files/output")
+      ;;
+  esac
+  run_limited "$TEST_TIMEOUT" "$tmp/vm.done" "$ZETT" run "$f" "${vm_args[@]}" > "$tmp/vm.out" 2> "$tmp/vm.err"
+  vm=$?
+  run_limited "$TEST_TIMEOUT" "$tmp/nat.done" "$tmp/prog" "${nat_args[@]}" > "$tmp/nat.out" 2> "$tmp/nat.err"
+  nat=$?
+  vm_timed_out=0; [ -e "$tmp/vm.done" ] || vm_timed_out=1
+  nat_timed_out=0; [ -e "$tmp/nat.done" ] || nat_timed_out=1
   rm -f "$tmp/prog"
-  if cmp -s "$tmp/vm.out" "$tmp/nat.out" && cmp -s "$tmp/vm.err" "$tmp/nat.err" && [ "$vm" = "$nat" ]; then
+  if [ "$vm_timed_out" -ne 0 ] || [ "$nat_timed_out" -ne 0 ]; then
+    run_timeouts=$((run_timeouts + 1))
+    timed_out_sides=""
+    [ "$vm_timed_out" -eq 0 ] || timed_out_sides="VM"
+    if [ "$nat_timed_out" -ne 0 ]; then
+      [ -z "$timed_out_sides" ] || timed_out_sides="$timed_out_sides, "
+      timed_out_sides="${timed_out_sides}nativo"
+    fi
+    message="tiempo agotado al ejecutar $f (límite ${TEST_TIMEOUT}s; lado(s): $timed_out_sides)"
+    echo "$message"
+    printf '%s\n' "$message" >> "$details"
+    report_error_annotation "$f" "Native vs VM execution timeout" "$message"
+    continue
+  fi
+  side_effects_match=1
+  if [ -n "$vm_files" ] && ! diff -qr -- "$vm_files" "$nat_files" > "$tmp/files.diff"; then
+    side_effects_match=0
+  fi
+  if cmp -s "$tmp/vm.out" "$tmp/nat.out" \
+      && cmp -s "$tmp/vm.err" "$tmp/nat.err" \
+      && [ "$vm" = "$nat" ] \
+      && [ "$side_effects_match" -eq 1 ]; then
     pass=$((pass + 1))
   else
     fail=$((fail + 1))
@@ -83,15 +153,19 @@ for f in "${FILES[@]}"; do
       echo "DIFERENCIA en $f (salida VM=$vm nativo=$nat):"
       diff "$tmp/vm.out" "$tmp/nat.out" | head -8 || true
       diff "$tmp/vm.err" "$tmp/nat.err" | head -4 || true
+      if [ "$side_effects_match" -eq 0 ]; then
+        echo "Archivos creados distintos:"
+        head -8 "$tmp/files.diff"
+      fi
     } > "$tmp/one-failure.txt"
     cat "$tmp/one-failure.txt"
     cat "$tmp/one-failure.txt" >> "$details"
     report_error_annotation "$f" "Native vs VM mismatch" "$(head -c 4000 "$tmp/one-failure.txt")"
   fi
 done
-echo "programas: $total  idénticos: $pass  distintos: $fail  no admitidos: $unsupported"
+echo "programas: $total  idénticos: $pass  distintos: $fail  no admitidos: $unsupported  timeout-compilación: $build_timeouts  timeout-ejecución: $run_timeouts"
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
-  echo "::notice title=Native vs VM summary::programs=$total identical=$pass different=$fail unsupported=$unsupported"
+  echo "::notice title=Native vs VM summary::programs=$total identical=$pass different=$fail unsupported=$unsupported build_timeouts=$build_timeouts run_timeouts=$run_timeouts"
 fi
 
 # GitHub Actions check-run output remains available even when its log archive
@@ -100,12 +174,12 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "## Native vs VM"
     echo
-    echo "| Asignados | Idénticos | Distintos | No admitidos |"
-    echo "| ---: | ---: | ---: | ---: |"
-    echo "| $total | $pass | $fail | $unsupported |"
+    echo "| Asignados | Idénticos | Distintos | No admitidos | Timeout al compilar | Timeout al ejecutar |"
+    echo "| ---: | ---: | ---: | ---: | ---: | ---: |"
+    echo "| $total | $pass | $fail | $unsupported | $build_timeouts | $run_timeouts |"
     echo
     if [ -s "$details" ]; then
-      echo "### Diferencias y programas no admitidos"
+      echo "### Diferencias, timeouts y programas no admitidos"
       echo
       echo '```text'
       cat "$details"
@@ -115,4 +189,4 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     fi
   } >> "$GITHUB_STEP_SUMMARY"
 fi
-[ "$fail" -eq 0 ] && [ "$unsupported" -eq 0 ]
+[ "$fail" -eq 0 ] && [ "$unsupported" -eq 0 ] && [ "$build_timeouts" -eq 0 ] && [ "$run_timeouts" -eq 0 ]

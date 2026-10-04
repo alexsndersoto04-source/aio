@@ -32,7 +32,7 @@ bash selfhost/verify_parser.sh           # parser Titan vs parser Rust, byte a b
 bash selfhost/verify_typechecker.sh      # typechecker Titan vs Rust, byte a byte
 bash selfhost/verify_codegen.sh          # cargador + codegen Titan vs Rust, byte a byte
 bash selfhost/native/verify_x64.sh       # codificador x86-64 en Titan vs el ensamblador GNU
-bash selfhost/native/verify_native.sh    # ejecutables nativos vs `zett run` (salida, errores, código)
+bash selfhost/native/verify_native.sh    # nativo vs `zett run` (stdout, stderr, código y archivos de imagen)
 bash selfhost/native/verify_json.sh      # std::json::parse nativo vs VM en 97 casos (errores con línea/columna)
 bash selfhost/native/cobertura.sh [-v]   # cuántas nativas de la biblioteca ya están en Titan
 # El compilador Titan convertido en ejecutable nativo, contra el de Rust:
