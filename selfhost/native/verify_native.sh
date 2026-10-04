@@ -24,6 +24,21 @@ pass=0; fail=0; unsupported=0; current=0
 total=${#FILES[@]}
 details="$tmp/native-details.txt"
 : > "$details"
+
+# Workflow annotations remain queryable through the Checks API, unlike the
+# runner's raw log archive in this environment.
+report_error_annotation() {
+  local file="$1"
+  local title="$2"
+  local message="$3"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    message=${message//'%'/'%25'}
+    message=${message//$'\r'/'%0D'}
+    message=${message//$'\n'/'%0A'}
+    printf '::error file=%s,title=%s::%s\n' "$file" "$title" "$message"
+  fi
+}
+
 for f in "${FILES[@]}"; do
   current=$((current + 1))
   echo "[$current/$total] $f"
@@ -37,6 +52,7 @@ for f in "${FILES[@]}"; do
     message="no admitido: $f: $(head -c 300 "$tmp/build.txt" | tr '\n' ' ')"
     echo "$message"
     printf '%s\n' "$message" >> "$details"
+    report_error_annotation "$f" "Native test unsupported" "$message"
     continue
   fi
   timeout "${TEST_TIMEOUT:-60}" "$ZETT" run "$f" > "$tmp/vm.out" 2> "$tmp/vm.err"; vm=$?
@@ -53,9 +69,13 @@ for f in "${FILES[@]}"; do
     } > "$tmp/one-failure.txt"
     cat "$tmp/one-failure.txt"
     cat "$tmp/one-failure.txt" >> "$details"
+    report_error_annotation "$f" "Native vs VM mismatch" "$(head -c 4000 "$tmp/one-failure.txt")"
   fi
 done
 echo "programas: $total  idénticos: $pass  distintos: $fail  no admitidos: $unsupported"
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  echo "::notice title=Native vs VM summary::programs=$total identical=$pass different=$fail unsupported=$unsupported"
+fi
 
 # GitHub Actions check-run output remains available even when its log archive
 # cannot be downloaded. Keep failures and unsupported cases in the summary.
