@@ -211,7 +211,7 @@ El runtime también incluye `spawn`, `join`, `join_timeout`, `cancel`, `channel`
 
 ## Biblioteca estándar
 
-La biblioteca estándar registra 816 firmas nativas en 72 namespaces `std::*`, con capacidades para texto, formatos, seguridad, red, datos, sistema, multimedia, IA local, interfaces, dispositivos y WebAssembly. El inventario de self-host contiene implementaciones Titan para 518 firmas; eso no implica que el resto ni las pruebas de paridad estén terminados. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
+La biblioteca estándar registra 816 firmas nativas en 72 namespaces `std::*`, con capacidades para texto, formatos, seguridad, red, datos, sistema, multimedia, IA local, interfaces, dispositivos y WebAssembly. El inventario estático de self-host encuentra fuente Titan para 521 firmas; esa cifra no demuestra paridad de comportamiento ni que el resto esté terminado. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
 
 | Área | Incluye |
 |---|---|
