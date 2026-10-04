@@ -53,9 +53,11 @@ jobs:
           git show origin/binaries:COMMIT 2>/dev/null || true
           "$seed" version
 
-      - name: Audit native-function inventory
+      - name: Audit native-function inventory and test-source references
         shell: bash
-        run: bash selfhost/native/cobertura.sh
+        run: |
+          bash selfhost/native/cobertura.sh
+          python3 selfhost/native/auditar_pruebas.py | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Bootstrap three generations without Rust or PATH
         shell: bash
@@ -192,10 +194,18 @@ jobs:
             printf -- '- Titan runtime entry: `%s`\n' "$runtime"
             printf -- '- Titan runtime source files: %s\n' "$runtime_sources"
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          # Keep image producer/validator pairs in one process and one shard:
+          # image_gif -> image_gif_validate, image_webp -> image_webp_validate.
           mapfile -t files < <(
             find selfhost/tests/native -maxdepth 1 -type f -name '*.titan' -print \
               | sort \
-              | awk -v shard="$SHARD" -v count=4 '((NR - 1) % count) == shard'
+              | awk -v shard="$SHARD" -v count=4 '
+                  {
+                    if ($0 ~ /\/image_gif(_validate)?\.titan$/) assigned = 0
+                    else if ($0 ~ /\/image_webp(_validate)?\.titan$/) assigned = 1
+                    else assigned = (NR - 1) % count
+                    if (assigned == shard) print
+                  }'
           )
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No native tests assigned to shard $SHARD" >&2

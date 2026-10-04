@@ -34,7 +34,8 @@ bash selfhost/verify_codegen.sh          # cargador + codegen Titan vs Rust, byt
 bash selfhost/native/verify_x64.sh       # codificador x86-64 en Titan vs el ensamblador GNU
 bash selfhost/native/verify_native.sh    # nativo vs `zett run` (stdout, stderr, código y archivos de imagen)
 bash selfhost/native/verify_json.sh      # std::json::parse nativo vs VM en 97 casos (errores con línea/columna)
-bash selfhost/native/cobertura.sh [-v]   # cuántas nativas de la biblioteca ya están en Titan
+bash selfhost/native/cobertura.sh [-v]   # definiciones Titan frente al inventario registrado
+python3 selfhost/native/auditar_pruebas.py # cruce de firmas con nombres citados en la suite (no mide ramas)
 # El compilador Titan convertido en ejecutable nativo, contra el de Rust:
 zett run selfhost/build.titan selfhost/bytecode.titan /tmp/bytecode_nativo
 SELF=/tmp/bytecode_nativo bash selfhost/verify_codegen.sh

@@ -2,9 +2,10 @@
 # Verificación diferencial del compilador nativo (fase 4b del self-hosting).
 #
 # Para cada programa: lo compila a ejecutable con `selfhost/build.titan`
-# (todo en Titan), lo ejecuta y compara stdout, stderr, código de salida y
-# archivos creados con `zett run` (la VM de Rust). Las compilaciones no
-# admitidas y los timeouts se cuentan aparte; nunca como aciertos.
+# (todo en Titan) y compara stdout, stderr y código de salida con `zett run`
+# (la VM de Rust). En las pruebas de imagen también compara los archivos
+# generados; sus casos productor/validador deben estar en el mismo shard.
+# Las compilaciones no admitidas y los timeouts se cuentan aparte; nunca como aciertos.
 #
 # Uso: bash selfhost/native/verify_native.sh [archivos...]
 #      (sin archivos: selfhost/tests/native/*.titan)
@@ -98,7 +99,7 @@ for f in "${FILES[@]}"; do
     rm -f "$tmp/prog"
     continue
   fi
-  if [ ! -x "$tmp/prog" ]; then
+  if [ "$build_status" -ne 0 ] || [ ! -x "$tmp/prog" ]; then
     unsupported=$((unsupported + 1))
     message="no admitido: $f (compilador=$build_status): $(head -c 300 "$tmp/build.txt" | tr '\n' ' ')"
     echo "$message"
@@ -107,16 +108,20 @@ for f in "${FILES[@]}"; do
     continue
   fi
   base="$(basename "$f" .titan)"
-  vm_args=(); nat_args=(); vm_files=""; nat_files=""
+  vm_args=(); nat_args=(); vm_files=""; nat_files=""; output_group=""
   case "$base" in
-    image_gif|image_gif_validate|image_webp|image_webp_validate|image_webp_write|image_io)
-      vm_files="$tmp/file-output/$base/vm"
-      nat_files="$tmp/file-output/$base/native"
-      mkdir -p "$vm_files" "$nat_files"
-      vm_args=("$vm_files/output")
-      nat_args=("$nat_files/output")
-      ;;
+    image_gif|image_gif_validate) output_group="gif" ;;
+    image_webp|image_webp_validate) output_group="webp" ;;
+    image_webp_write) output_group="webp-write" ;;
+    image_io) output_group="io" ;;
   esac
+  if [ -n "$output_group" ]; then
+    vm_files="$tmp/file-output/$output_group/vm"
+    nat_files="$tmp/file-output/$output_group/native"
+    mkdir -p "$vm_files" "$nat_files"
+    vm_args=("$vm_files/output")
+    nat_args=("$nat_files/output")
+  fi
   run_limited "$TEST_TIMEOUT" "$tmp/vm.done" "$ZETT" run "$f" "${vm_args[@]}" > "$tmp/vm.out" 2> "$tmp/vm.err"
   vm=$?
   run_limited "$TEST_TIMEOUT" "$tmp/nat.done" "$tmp/prog" "${nat_args[@]}" > "$tmp/nat.out" 2> "$tmp/nat.err"
@@ -185,7 +190,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       cat "$details"
       echo '```'
     else
-      echo "Todos los programas asignados coincidieron en stdout, stderr y código de salida."
+      echo "Todos los programas asignados coincidieron en stdout, stderr y código de salida; también coinciden los archivos de salida de las pruebas de imagen."
     fi
   } >> "$GITHUB_STEP_SUMMARY"
 fi
