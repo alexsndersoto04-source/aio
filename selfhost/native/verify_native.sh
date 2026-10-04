@@ -22,6 +22,8 @@ trap 'rm -rf "$tmp"' EXIT
 if [ $# -gt 0 ]; then FILES=("$@"); else FILES=(selfhost/tests/native/*.titan); fi
 pass=0; fail=0; unsupported=0; current=0
 total=${#FILES[@]}
+details="$tmp/native-details.txt"
+: > "$details"
 for f in "${FILES[@]}"; do
   current=$((current + 1))
   echo "[$current/$total] $f"
@@ -32,7 +34,9 @@ for f in "${FILES[@]}"; do
   fi
   if [ ! -x "$tmp/prog" ]; then
     unsupported=$((unsupported + 1))
-    echo "no admitido: $f: $(head -c 300 "$tmp/build.txt" | tr '\n' ' ')"
+    message="no admitido: $f: $(head -c 300 "$tmp/build.txt" | tr '\n' ' ')"
+    echo "$message"
+    printf '%s\n' "$message" >> "$details"
     continue
   fi
   timeout "${TEST_TIMEOUT:-60}" "$ZETT" run "$f" > "$tmp/vm.out" 2> "$tmp/vm.err"; vm=$?
@@ -42,10 +46,36 @@ for f in "${FILES[@]}"; do
     pass=$((pass + 1))
   else
     fail=$((fail + 1))
-    echo "DIFERENCIA en $f (salida VM=$vm nativo=$nat):"
-    diff "$tmp/vm.out" "$tmp/nat.out" | head -8
-    diff "$tmp/vm.err" "$tmp/nat.err" | head -4
+    {
+      echo "DIFERENCIA en $f (salida VM=$vm nativo=$nat):"
+      diff "$tmp/vm.out" "$tmp/nat.out" | head -8 || true
+      diff "$tmp/vm.err" "$tmp/nat.err" | head -4 || true
+    } > "$tmp/one-failure.txt"
+    cat "$tmp/one-failure.txt"
+    cat "$tmp/one-failure.txt" >> "$details"
   fi
 done
 echo "programas: $total  idénticos: $pass  distintos: $fail  no admitidos: $unsupported"
+
+# GitHub Actions check-run output remains available even when its log archive
+# cannot be downloaded. Keep failures and unsupported cases in the summary.
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  {
+    echo "## Native vs VM"
+    echo
+    echo "| Asignados | Idénticos | Distintos | No admitidos |"
+    echo "| ---: | ---: | ---: | ---: |"
+    echo "| $total | $pass | $fail | $unsupported |"
+    echo
+    if [ -s "$details" ]; then
+      echo "### Diferencias y programas no admitidos"
+      echo
+      echo '```text'
+      cat "$details"
+      echo '```'
+    else
+      echo "Todos los programas asignados coincidieron en stdout, stderr y código de salida."
+    fi
+  } >> "$GITHUB_STEP_SUMMARY"
+fi
 [ "$fail" -eq 0 ] && [ "$unsupported" -eq 0 ]

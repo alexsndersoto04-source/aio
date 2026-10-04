@@ -58,17 +58,53 @@ jobs:
 
       - name: Bootstrap three generations without Rust or PATH
         shell: bash
-        run: bash selfhost/verify_fixpoint.sh "$RUNNER_TEMP/zett"
+        run: |
+          set -euo pipefail
+          bash selfhost/verify_fixpoint.sh "$RUNNER_TEMP/zett" 2>&1 \
+            | tee "$RUNNER_TEMP/bootstrap.log"
+
+      - name: Summarize bootstrap diagnostics
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/bootstrap.log"
+          if [ -s "$log" ]; then
+            {
+              echo "## Three-generation bootstrap — log tail"
+              echo
+              echo '```text'
+              tail -n 160 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Compare Titan bytecode generator against the Rust seed
         shell: bash
         run: |
           set -euo pipefail
+          log="$RUNNER_TEMP/codegen.log"
           env -i PATH=/nonexistent \
-            ./selfhost/titanc1 selfhost/bytecode.titan "$RUNNER_TEMP/bytecode-native"
+            ./selfhost/titanc1 selfhost/bytecode.titan "$RUNNER_TEMP/bytecode-native" \
+            2>&1 | tee "$log"
           test -x "$RUNNER_TEMP/bytecode-native"
           ZETT="$RUNNER_TEMP/zett" SELF="$RUNNER_TEMP/bytecode-native" \
-            bash selfhost/verify_codegen.sh "$RUNNER_TEMP/zett"
+            bash selfhost/verify_codegen.sh "$RUNNER_TEMP/zett" 2>&1 \
+            | tee -a "$log"
+
+      - name: Summarize codegen diagnostics
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/codegen.log"
+          if [ -s "$log" ]; then
+            {
+              echo "## Bytecode codegen differential — log tail"
+              echo
+              echo '```text'
+              tail -n 160 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Package the verified seed and native compiler for runtime shards
         shell: bash
@@ -124,8 +160,10 @@ jobs:
         run: |
           set -euo pipefail
           tools="$RUNNER_TEMP/selfhost-tools"
-          echo "Downloaded test tools:"
-          find "$tools" -maxdepth 4 -type f -print | sort
+          {
+            echo "### Verified tools — shard $SHARD"
+            find "$tools" -maxdepth 4 -type f -print | sort
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           zett="$(find "$tools" -type f -name zett -print -quit)"
           compiler="$(find "$tools" -type f -name titanc1 -print -quit)"
           if [ -z "$zett" ] || [ -z "$compiler" ]; then
