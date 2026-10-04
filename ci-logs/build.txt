@@ -1,3 +1,5 @@
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
     |
 372 -                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
 372 +                 .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
@@ -39,6 +41,7 @@ help: replace the use of the deprecated method
 490 +     let _ = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
     |
 
+   Compiling titan_wasm v1.0.0 (/home/runner/work/aio/aio/crates/titan_wasm)
 warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
     --> crates/titan_vm/src/lib.rs:2666:26
      |
@@ -51,10 +54,7 @@ help: replace the use of the deprecated method
 2666 +                         .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
      |
 
-   Compiling clap v4.6.1
-   Compiling titan_pkg v1.0.0 (/home/runner/work/aio/aio/crates/titan_pkg)
-   Compiling titan_wasm v1.0.0 (/home/runner/work/aio/aio/crates/titan_wasm)
-warning: `titan_stdlib` (lib) generated 7 warnings (run `cargo fix --lib -p titan_stdlib` to apply 7 suggestions)
 warning: `titan_vm` (lib) generated 5 warnings (run `cargo fix --lib -p titan_vm` to apply 5 suggestions)
+warning: `titan_stdlib` (lib) generated 7 warnings (run `cargo fix --lib -p titan_stdlib` to apply 7 suggestions)
    Compiling titan_cli v1.0.0 (/home/runner/work/aio/aio/crates/titan_cli)
-    Finished `release` profile [optimized] target(s) in 7m 09s
+    Finished `release` profile [optimized] target(s) in 1m 04s
