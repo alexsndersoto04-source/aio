@@ -3,7 +3,8 @@ name: LLVM backend (Titan -> LLVM IR -> clang)
 # Backend LLVM del compilador escrito en Titan (selfhost/native/llvm.titan).
 # El sandbox de desarrollo no tiene LLVM; aquí sí (LLVM real de Ubuntu).
 # Cada prueba: el compilador en Titan genera LLVM IR (.ll), clang lo convierte
-# en ejecutable, y la salida se compara byte a byte con la VM de Rust.
+# en ejecutable, y la salida se compara byte a byte con el Zett precompilado
+# verificado (VM de Rust). No se compila Titan con Cargo para esta prueba.
 
 on:
   push:
@@ -35,28 +36,43 @@ jobs:
           ls /usr/lib/llvm-*/bin 2>/dev/null | head -50
           clang -print-targets 2>/dev/null | grep -Ei "x86-64|aarch64" | head
 
-      - name: Dependencias
-        run: sudo apt-get install -y --no-install-recommends libasound2-dev >/dev/null
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      # La referencia es la VM de Rust de ESTE commit (con sus arreglos), no
-      # el binario publicado, que puede ir por detrás.
-      - name: VM de Rust (referencia, compilada aquí)
+      - name: Require genuine ALSA runtime library
+        shell: bash
         run: |
-          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
-          mkdir -p "$HOME/bin"
-          ln -sf "$GITHUB_WORKSPACE/target/release/titan" "$HOME/bin/zett"
-          "$HOME/bin/zett" --version || true
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libasound\.so\.2'; then
+            sudo apt-get update
+            sudo apt-get install -y libasound2t64
+          fi
+          ldconfig -p | grep 'libasound\.so\.2'
 
-      - name: Batería LLVM
+      - name: Download the precompiled Zett seed and verify its SHA-256
+        shell: bash
         run: |
-          export PATH="$HOME/bin:$PATH"
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/binaries:refs/remotes/origin/binaries
+          seed="$RUNNER_TEMP/zett"
+          git show origin/binaries:zett-linux-x86_64 > "$seed"
+          chmod +x "$seed"
+          expected="$(git show origin/binaries:zett-linux-x86_64.sha256 | awk 'NR == 1 {print $1}')"
+          printf '%s  %s\n' "$expected" "$seed" | sha256sum --check
+          printf '%s\n' "$expected" > "$RUNNER_TEMP/zett.sha256"
+          printf 'Seed source commit: '
+          git show origin/binaries:COMMIT 2>/dev/null || true
+          "$seed" version
+
+      - name: Batería LLVM contra el Zett verificado
+        shell: bash
+        run: |
+          set -euo pipefail
           if [ -f selfhost/native/llvm/verificar.sh ]; then
-            bash selfhost/native/llvm/verificar.sh 2>&1 | tee /tmp/llvm.txt
-            rc=${PIPESTATUS[0]}
+            if ZETT="$RUNNER_TEMP/zett" bash selfhost/native/llvm/verificar.sh 2>&1 | tee /tmp/llvm.txt; then
+              rc=0
+            else
+              rc=${PIPESTATUS[0]}
+            fi
             python3 selfhost/native/llvm/resumen_ci.py /tmp/llvm.txt
-            exit $rc
+            exit "$rc"
           else
             echo "todavía no hay selfhost/native/llvm/verificar.sh"
           fi
@@ -68,15 +84,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Obtener zett (para compilar el compilador en Titan)
+      - name: Require genuine ALSA and download verified Zett
+        shell: bash
         run: |
-          git fetch -q origin +refs/heads/binaries:refs/remotes/origin/binaries
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libasound\.so\.2'; then
+            sudo apt-get update
+            sudo apt-get install -y libasound2t64
+          fi
+          ldconfig -p | grep 'libasound\.so\.2'
+          git fetch --no-tags origin +refs/heads/binaries:refs/remotes/origin/binaries
+          seed="$RUNNER_TEMP/zett"
+          git show origin/binaries:zett-linux-x86_64 > "$seed"
+          chmod +x "$seed"
+          expected="$(git show origin/binaries:zett-linux-x86_64.sha256 | awk 'NR == 1 {print $1}')"
+          printf '%s  %s\n' "$expected" "$seed" | sha256sum --check
+          printf 'Seed source commit: '
+          git show origin/binaries:COMMIT 2>/dev/null || true
+          "$seed" version
           mkdir -p "$HOME/bin"
-          git show origin/binaries:zett-linux-x86_64 > "$HOME/bin/zett-real"
-          chmod +x "$HOME/bin/zett-real"
-          sudo apt-get install -y --no-install-recommends libasound2t64 >/dev/null 2>&1 || true
-          printf '#!/bin/sh\nexec "%s/bin/zett-real" "$@"\n' "$HOME" > "$HOME/bin/zett"
-          chmod +x "$HOME/bin/zett"
+          ln -sf "$seed" "$HOME/bin/zett"
 
       - name: Objetos ARM64 (Titan -> LLVM IR -> clang --target=aarch64)
         run: |
@@ -140,19 +167,33 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Dependencias
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update >/dev/null
-          sudo apt-get install -y --no-install-recommends libasound2-dev qemu-system-arm lld >/dev/null
+          if ! ldconfig -p | grep -q 'libasound\.so\.2'; then
+            sudo apt-get install -y libasound2t64 >/dev/null
+          fi
+          ldconfig -p | grep 'libasound\.so\.2'
+          sudo apt-get install -y --no-install-recommends qemu-system-arm lld >/dev/null
           pip install --user --break-system-packages unicorn >/dev/null
           echo "::notice::$(qemu-system-aarch64 --version | head -1); $(clang --version | head -1); $(ld.lld --version)"
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: VM de Rust (referencia, compilada aquí)
+      - name: Download the precompiled Zett seed and verify its SHA-256
+        shell: bash
         run: |
-          cargo build --locked --release -p titan_cli > /tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/binaries:refs/remotes/origin/binaries
+          seed="$RUNNER_TEMP/zett"
+          git show origin/binaries:zett-linux-x86_64 > "$seed"
+          chmod +x "$seed"
+          expected="$(git show origin/binaries:zett-linux-x86_64.sha256 | awk 'NR == 1 {print $1}')"
+          printf '%s  %s\n' "$expected" "$seed" | sha256sum --check
+          printf 'Seed source commit: '
+          git show origin/binaries:COMMIT 2>/dev/null || true
+          "$seed" version
           mkdir -p "$HOME/bin"
-          ln -sf "$GITHUB_WORKSPACE/target/release/titan" "$HOME/bin/zett"
+          ln -sf "$seed" "$HOME/bin/zett"
 
       - name: Programas sin sistema operativo en QEMU
         run: |
