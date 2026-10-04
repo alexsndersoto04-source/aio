@@ -109,7 +109,7 @@ pub fn create(title: &str, width: u32, height: u32) -> Result<u64, String> {
         ));
     }
     let id = NEXT_WINDOW_ID
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |id| {
             (id <= i64::MAX as u64).then(|| id + 1)
         })
         .map_err(|_| "window handle space exhausted".to_string())?;

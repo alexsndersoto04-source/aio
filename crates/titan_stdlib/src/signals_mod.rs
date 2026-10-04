@@ -61,7 +61,7 @@ fn subscribers() -> &'static Mutex<HashMap<i32, SignalSubscribers>> {
 }
 
 fn increment_pending(counter: &AtomicUsize) {
-    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+    let _ = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
         pending.checked_add(1)
     });
 }
@@ -126,7 +126,7 @@ pub fn wait_any(timeout_ms: u64) -> Result<String, SignalError> {
             for (signal, entry) in registry.iter() {
                 if let Some(counter) = entry.runtimes.get(&runtime_id) {
                     if counter
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
                             count.checked_sub(1)
                         })
                         .is_ok()

@@ -289,7 +289,7 @@ fn registry() -> &'static Mutex<HashMap<(u64, u64), BackgroundEntry>> {
 
 fn next_handle() -> Result<u64, ProcessError> {
     NEXT_HANDLE
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |handle| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |handle| {
             (handle <= i64::MAX as u64).then(|| handle + 1)
         })
         .map_err(|_| ProcessError::HandleSpaceExhausted)

@@ -415,7 +415,7 @@ impl ResourceQuota {
     fn release(&self) {
         let released = self
             .active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 active.checked_sub(1)
             })
             .is_ok();
@@ -475,7 +475,7 @@ static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_runtime_resource_id(counter: &AtomicU64) -> Result<u64, VmError> {
     counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
         .map_err(|_| VmError::Overflow)
 }
 
@@ -487,7 +487,7 @@ fn next_root_runtime_id() -> u64 {
 }
 
 fn increment_saturating(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    let _ = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
         Some(value.saturating_add(1))
     });
 }
@@ -2663,7 +2663,7 @@ impl Vm {
                     let control = server_control(&self.runtime, pop(&mut stack, &function.name)?)?;
                     let released = control
                         .active
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                             (active > 0).then_some(active - 1)
                         })
                         .is_ok();

@@ -369,7 +369,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value, 
         "std::http::request_id" => {
             let mut request = expect_map(take!())?;
             let id = REQUEST_IDS
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
                 .map_err(|_| "HTTP request identifier space exhausted")?;
             request.insert("request_id".into(), Value::Str(format!("titan-{id:016x}")));
             Value::map(request)

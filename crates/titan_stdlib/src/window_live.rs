@@ -216,7 +216,7 @@ pub fn live_open(title: &str, width: u32, height: u32) -> i64 {
         Err(_) => return -1,
     };
     window.set_target_fps(60);
-    let id = match NEXT_LIVE_ID.fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| {
+    let id = match NEXT_LIVE_ID.try_update(Ordering::AcqRel, Ordering::Acquire, |id| {
         (id <= i64::MAX as u64).then(|| id + 1)
     }) {
         Ok(id) => id,
