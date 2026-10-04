@@ -124,7 +124,15 @@ jobs:
         run: |
           set -euo pipefail
           tools="$RUNNER_TEMP/selfhost-tools"
-          chmod +x "$tools/zett" "$tools/titanc1"
+          echo "Downloaded test tools:"
+          find "$tools" -maxdepth 4 -type f -print | sort
+          zett="$(find "$tools" -type f -name zett -print -quit)"
+          compiler="$(find "$tools" -type f -name titanc1 -print -quit)"
+          if [ -z "$zett" ] || [ -z "$compiler" ]; then
+            echo "Missing verified Zett seed or native compiler in artifact" >&2
+            exit 1
+          fi
+          chmod +x "$zett" "$compiler"
           mapfile -t files < <(
             find selfhost/tests/native -maxdepth 1 -type f -name '*.titan' -print \
               | sort \
@@ -134,5 +142,5 @@ jobs:
             echo "No native tests assigned to shard $SHARD" >&2
             exit 1
           fi
-          COMPILER="$tools/titanc1" ZETT="$tools/zett" \
+          COMPILER="$compiler" ZETT="$zett" \
             bash selfhost/native/verify_native.sh "${files[@]}"
