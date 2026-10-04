@@ -17,7 +17,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [ $# -gt 0 ]; then FILES=("$@"); else FILES=(selfhost/tests/native/*.titan); fi
 echo "máquina: $(uname -m)"
-pass=0; fail=0; unsupported=0; native_only=0; timed_out=0
+pass=0; fail=0; unsupported=0; timed_out=0
 
 run_limited() {
   local marker="$1"
@@ -77,19 +77,6 @@ for f in "${FILES[@]}"; do
     echo "TIEMPO AGOTADO en $f (ARM64; límite ${TIMEOUT}s)"
     continue
   fi
-  if [ "$base" = image_webp_unsupported ]; then
-    # La VM acepta animaciones y lee el primer cuadro; el runtime nativo
-    # rechaza esa característica. Comprueba el contrato nativo explícito.
-    if [ "$nat" = 0 ] && [ ! -s "$tmp/nat.stderr" ] && cmp -s selfhost/native/image/webp_unsupported.expected "$tmp/nat.stdout"; then
-      native_only=$((native_only + 1))
-    else
-      fail=$((fail + 1))
-      echo "DIFERENCIA en $f: salida nativa distinta del rechazo esperado"
-      diff -u selfhost/native/image/webp_unsupported.expected "$tmp/nat.stdout" | head -8
-      head -4 "$tmp/nat.stderr"
-    fi
-    continue
-  fi
   prefix="$objs/expected/$base"
   if [ ! -f "$prefix.stdout" ] || [ ! -f "$prefix.stderr" ] || [ ! -f "$prefix.status" ]; then
     fail=$((fail + 1)); echo "DIFERENCIA en $f: falta la referencia VM x86-64"; continue
@@ -106,5 +93,5 @@ for f in "${FILES[@]}"; do
     diff -u "$prefix.stderr" "$tmp/nat.stderr" | head -4
   fi
 done
-echo "programas: ${#FILES[@]}  idénticos: $pass  rechazos nativos esperados: $native_only  distintos: $fail  tiempos agotados: $timed_out  no admitidos: $unsupported  referencia: VM x86-64 precompilada"
+echo "programas: ${#FILES[@]}  idénticos: $pass  distintos: $fail  tiempos agotados: $timed_out  no admitidos: $unsupported  referencia: VM x86-64 precompilada"
 [ "$fail" -eq 0 ] && [ "$timed_out" -eq 0 ] && [ "$unsupported" -eq 0 ]

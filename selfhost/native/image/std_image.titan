@@ -1,4 +1,4 @@
-// Base de imágenes EN DESARROLLO, no integrada ni contada.
+// Núcleo de imágenes del runtime Titan selfhost.
 fn im_fail(function: string, message: any) {
     rt_native_fail(function, message)
 }

@@ -8,9 +8,9 @@ independiente y se usa como referencia para comparar las imágenes válidas.
 ## Implementado y probado
 
 Las pruebas están en `selfhost/native/image/verificar.sh`. Cada caso compila un
-ejecutable nativo con el `zett` precompilado. Las salidas válidas se comparan
-con la VM; los rechazos intencionales se comprueban contra los mensajes
-esperados. No se usa Cargo.
+ejecutable nativo con el `zett` precompilado y compara su salida con la VM. Las
+pruebas de entradas malformadas comprueban explícitamente los errores esperados.
+No se usa Cargo.
 
 - `image_base`: registro de imágenes, metadatos, cierre repetido y rechazo de
   identificadores cerrados.
@@ -51,10 +51,13 @@ esperados. No se usa Cargo.
   La lectura VP8 con pérdida admite cuadros clave estáticos, segmentación,
   filtro simple y normal, varias particiones de datos y alfa sin comprimir o
   comprimida. Once archivos cubren estos casos, bloques y bordes impares; los
-  resultados y las cargas por ruta y por bytes se comparan con la VM. Las pruebas
-  de rechazo cubren WebP animado, fragmentos RIFF dañados, cuadros VP8 y modos
-  que no se admiten, árboles Huffman incompletos y límites de dimensiones y
-  memoria; confirman que el error sea claro.
+  resultados y las cargas por ruta y por bytes se comparan con la VM. La prueba
+  de WebP animado decodifica el primer cuadro por ruta y por bytes; además
+  construye cuadros VP8L/VP8 con alfa y desplazamiento para contrastar la
+  composición con la VM. Esta nueva comparación está pendiente de ejecución en
+  CI. Las pruebas de rechazo cubren fragmentos RIFF dañados, cuadros VP8 y
+  modos que no se admiten, árboles Huffman incompletos y límites de dimensiones
+  y memoria; confirman que el error sea claro.
 - `image_io`: `encode` y `save` para PNG, BMP y JPEG. El escritor JPEG coincide
   con la VM en imágenes grises, RGB, con transparencia y de 16 bits convertidas
   al formato que acepta JPEG; también se vuelve a leer la salida escrita. `GIF`

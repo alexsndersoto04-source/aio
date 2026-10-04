@@ -37,10 +37,10 @@ una de esas cadenas de herramientas.
 Verificación: `bash selfhost/native/llvm/verificar.sh [archivos]` compila cada
 programa por LLVM y compara salida, errores y código de salida con `zett run`.
 Los casos que escriben archivos reciben bases temporales separadas para VM y
-LLVM. `image_webp_unsupported` se valida contra
-`selfhost/native/image/webp_unsupported.expected`, porque el rechazo nativo de
-animaciones difiere de la VM, que lee el primer cuadro. La CI
-(`.github/workflows/llvm.yml`) hace la misma comparación con clang.
+LLVM. `image_webp_unsupported` decodifica el primer cuadro animado por ruta y
+por bytes, y compara su salida directamente con la VM; también mantiene las
+pruebas de rechazo de entradas dañadas. La CI (`.github/workflows/llvm.yml`)
+hace la misma comparación con clang.
 
 ## Modelo (el mismo que el backend propio)
 
@@ -75,16 +75,18 @@ Operaciones de bajo nivel (`std::raw::`):
 
 ## Estado
 
-- x86-64: los 301 archivos `.titan` actuales pasaron con `-O2` usando
+- Validación histórica x86-64, anterior a la lectura de WebP animado: los 301
+  archivos `.titan` de aquella revisión pasaron con `-O2` usando
   `python3 -m ziglang cc` (clang 21.1.0) y el binario precompilado de Zett.
   La batería terminó en una sola invocación antes de añadir el control explícito
   de timeout (28 min 28 s), y se volvió a completar en 7 lotes con el control
   nuevo: 300 coincidieron con la VM en salida, errores y código de salida;
   `image_webp_unsupported` coincidió con el rechazo nativo esperado. Hubo 0
-  diferencias, 0 tiempos agotados y 0 programas no admitidos. El intento
-  monolítico con el control nuevo excedió el límite local de 30 minutos; la
-  repetición en lotes sí terminó. El intento monolítico anterior con llvmlite
-  también había agotado ese límite.
+  diferencias, 0 tiempos agotados y 0 programas no admitidos. Esos resultados
+  no validan la lectura animada que ahora se prueba directamente contra la VM.
+  El intento monolítico con el control nuevo excedió el límite local de 30
+  minutos; la repetición en lotes sí terminó. El intento monolítico anterior
+  con llvmlite también había agotado ese límite.
 - El verificador usa `TIMEOUT` (60 s por defecto) y separa los timeouts de las
   diferencias. Una prueba real `loop {}` con `TIMEOUT=1` quedó reportada como
   tiempo agotado (no como coincidencia); otra prueba que termina normalmente
@@ -99,10 +101,12 @@ Operaciones de bajo nivel (`std::raw::`):
   `d8aca45f0d96d3c3cea1ae1acf1c5200073a7adab43d5d0d7d35bb9fac1c5b8a`. De
   paso: el compilador hecho por LLVM tarda 8 s en compilarse a sí mismo, frente
   a 45 s el del backend propio.
-- Optimizaciones adicionales: 16 pruebas representativas pasaron con `-O0` y
-  con `-O3` usando el mismo clang; en cada nivel, 15 coincidieron con la VM y
+- Optimizaciones adicionales, validación histórica anterior a la lectura de
+  WebP animado: 16 pruebas representativas pasaron con `-O0` y con `-O3` usando
+  el mismo clang; en cada nivel, 15 coincidieron con la VM y
   `image_webp_unsupported` coincidió con el rechazo nativo esperado. En ambos
-  niveles hubo 0 diferencias y 0 programas no admitidos.
+  niveles hubo 0 diferencias y 0 programas no admitidos. La prueba de animación
+  añadida después aún requiere una ejecución nueva en ambos niveles.
 - ARM64/AArch64 en Linux: `sys_arm64.titan` traduce cada llamada al sistema
   del runtime (escrito con los números y estructuras de x86-64) a la de ARM64:
   números distintos, llamadas que ARM64 no tiene (open→openat, stat→newfstatat,

@@ -63,7 +63,7 @@ run_limited() {
 mkdir -p "$tmp/ll"
 ./selfhost/build_llvm --lote "$tmp/ll" "${FILES[@]}"
 
-pass=0; fail=0; unsupported=0; native_only=0; timed_out=0
+pass=0; fail=0; unsupported=0; timed_out=0
 for f in "${FILES[@]}"; do
   base="$(basename "$f" .titan)"
   if [ ! -f "$tmp/ll/$base.ll" ]; then
@@ -117,19 +117,6 @@ for f in "${FILES[@]}"; do
     echo "TIEMPO AGOTADO en $f (VM=$vm LLVM=$nat; límite ${TIMEOUT}s)"
     continue
   fi
-  if [ "$base" = "image_webp_unsupported" ]; then
-    # La VM acepta animaciones y lee el primer cuadro; el runtime nativo
-    # rechaza esa característica. Comprueba el contrato nativo explícito.
-    if [ "$nat" = 0 ] && [ ! -s "$tmp/nat.err" ] && cmp -s selfhost/native/image/webp_unsupported.expected "$tmp/nat.out"; then
-      native_only=$((native_only + 1))
-    else
-      fail=$((fail + 1))
-      echo "DIFERENCIA en $f: salida nativa distinta del rechazo esperado"
-      diff -u selfhost/native/image/webp_unsupported.expected "$tmp/nat.out" | head -8
-      cat "$tmp/nat.err" | head -4
-    fi
-    continue
-  fi
   if cmp -s "$tmp/vm.out" "$tmp/nat.out" && cmp -s "$tmp/vm.err" "$tmp/nat.err" && [ "$vm" = "$nat" ]; then
     pass=$((pass + 1))
   else
@@ -139,5 +126,5 @@ for f in "${FILES[@]}"; do
     diff "$tmp/vm.err" "$tmp/nat.err" | head -4
   fi
 done
-echo "programas: ${#FILES[@]}  idénticos: $pass  rechazos nativos esperados: $native_only  distintos: $fail  tiempos agotados: $timed_out  no admitidos: $unsupported"
+echo "programas: ${#FILES[@]}  idénticos: $pass  distintos: $fail  tiempos agotados: $timed_out  no admitidos: $unsupported"
 [ "$fail" -eq 0 ] && [ "$timed_out" -eq 0 ] && [ "$unsupported" -eq 0 ]

@@ -299,6 +299,175 @@ fn im_webp_canvas_dimension(p: int) -> int {
     1 + std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2)
 }
 
+fn im_webp_u24(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2)
+}
+
+fn im_webp_div255(value: int) -> int {
+    (std::raw::shr(value + 128, 8) + value + 128) / 256
+}
+
+fn im_webp_blend_first_frame_pixel(canvas: int, source: int) {
+    let source_alpha = std::raw::load8(source + 3)
+    if source_alpha == 0 { return }
+    let canvas_alpha = std::raw::load8(canvas + 3)
+    let canvas_factor = im_webp_div255(canvas_alpha * (255 - source_alpha))
+    let output_alpha = source_alpha + canvas_factor
+    let scale = 16777216 / output_alpha
+    let red = ((std::raw::load8(source) * source_alpha + std::raw::load8(canvas) * canvas_factor) * scale) / 16777216
+    let green = ((std::raw::load8(source + 1) * source_alpha + std::raw::load8(canvas + 1) * canvas_factor) * scale) / 16777216
+    let blue = ((std::raw::load8(source + 2) * source_alpha + std::raw::load8(canvas + 2) * canvas_factor) * scale) / 16777216
+    std::raw::store8(canvas, red)
+    std::raw::store8(canvas + 1, green)
+    std::raw::store8(canvas + 2, blue)
+    std::raw::store8(canvas + 3, output_alpha)
+}
+
+// std::image::load devuelve el primer cuadro de un WebP animado. El lector de
+// la VM compone ese cuadro sobre un lienzo transparente, como hace esta ruta.
+fn im_webp_decode_first_animation_frame(function: string, frame: int, frame_size: int, canvas_width: int, canvas_height: int, canvas_alpha: bool) -> int {
+    if frame_size < 32 { im_img_err(function, "Corrupt WebP animation frame") }
+    if canvas_width < 1 || canvas_height < 1 || canvas_width > 8192 || canvas_height > 8192 {
+        im_lim(function, "image dimensions", 8192)
+    }
+    let canvas_pixels = canvas_width * canvas_height
+    if canvas_pixels * 4 > 67108864 { im_lim(function, "decoded image bytes", 67108864) }
+
+    let frame_x = 2 * im_webp_u24(frame)
+    let frame_y = 2 * im_webp_u24(frame + 3)
+    let frame_width = im_webp_canvas_dimension(frame + 6)
+    let frame_height = im_webp_canvas_dimension(frame + 9)
+    if frame_width > 8192 || frame_height > 8192 { im_lim(function, "image dimensions", 8192) }
+    if frame_x + frame_width > canvas_width || frame_y + frame_height > canvas_height {
+        im_img_err(function, "WebP frame lies outside its canvas")
+    }
+    if frame_width * frame_height * 4 > 67108864 { im_lim(function, "decoded image bytes", 67108864) }
+    let flags = std::raw::load8(frame + 15)
+    let blend = (flags & 2) == 0
+    let frame_end = frame + frame_size
+    let mut chunk = frame + 16
+    if frame_end - chunk < 8 { im_img_err(function, "Corrupt WebP animation frame data") }
+    let mut chunk_size = im_ld32(chunk + 4)
+    let mut chunk_data = chunk + 8
+    let mut available = frame_end - chunk_data
+    if chunk_size > available || chunk_size + (chunk_size & 1) > available {
+        im_img_err(function, "Corrupt WebP animation frame chunk")
+    }
+    let mut alpha_data = 0
+    let mut alpha_size = 0
+    if im_webp_fourcc(chunk, 65, 76, 80, 72) {
+        alpha_data = chunk_data
+        alpha_size = chunk_size
+        chunk = chunk_data + chunk_size + (chunk_size & 1)
+        if frame_end - chunk < 8 { im_img_err(function, "Corrupt WebP animation alpha frame") }
+        chunk_size = im_ld32(chunk + 4)
+        chunk_data = chunk + 8
+        available = frame_end - chunk_data
+        if chunk_size > available || chunk_size + (chunk_size & 1) > available {
+            im_img_err(function, "Corrupt WebP animation frame chunk")
+        }
+    }
+
+    let mut frame_pixels = 0
+    let mut frame_channels = 0
+    if im_webp_fourcc(chunk, 86, 80, 56, 32) {
+        if alpha_data != 0 && alpha_size < 1 { im_img_err(function, "Corrupt WebP ALPH chunk") }
+        let info = im_webp_vp8_decode(function, chunk_data, chunk_size)
+        let width = std::raw::load(info + 8)
+        let height = std::raw::load(info + 16)
+        if width != frame_width || height != frame_height {
+            rt_free_block(std::raw::load(info))
+            rt_free_block(info)
+            im_img_err(function, "WebP animation frame dimensions do not match its header")
+        }
+        let rgb = std::raw::load(info)
+        if alpha_data != 0 {
+            frame_pixels = rt_alloc(frame_width * frame_height * 4)
+            let mut i = 0
+            while i < frame_width * frame_height {
+                std::raw::store8(frame_pixels + 4 * i, std::raw::load8(rgb + 3 * i))
+                std::raw::store8(frame_pixels + 4 * i + 1, std::raw::load8(rgb + 3 * i + 1))
+                std::raw::store8(frame_pixels + 4 * i + 2, std::raw::load8(rgb + 3 * i + 2))
+                std::raw::store8(frame_pixels + 4 * i + 3, 0)
+                i += 1
+            }
+            im_webp_vp8_apply_alpha(function, alpha_data, alpha_size, frame_width, frame_height, frame_pixels)
+            frame_channels = 4
+            rt_free_block(rgb)
+        } else {
+            frame_pixels = rgb
+            frame_channels = 3
+        }
+        rt_free_block(info)
+    } else if im_webp_fourcc(chunk, 86, 80, 56, 76) {
+        if alpha_data != 0 { im_img_err(function, "Corrupt WebP animation ALPH/VP8L frame") }
+        let info = im_webp_lossless_decode(function, chunk_data, chunk_size)
+        let width = std::raw::load(info + 8)
+        let height = std::raw::load(info + 16)
+        if width != frame_width || height != frame_height {
+            rt_free_block(std::raw::load(info))
+            rt_free_block(info)
+            im_img_err(function, "WebP animation frame dimensions do not match its header")
+        }
+        frame_pixels = std::raw::load(info)
+        frame_channels = 4
+        rt_free_block(info)
+    } else {
+        im_img_err(function, "WebP animation frame has no VP8 or VP8L image")
+    }
+
+    // La VM inicia el lienzo en transparente; solo se decodifica el primer
+    // cuadro porque std::image::load expone una imagen fija, no una secuencia.
+    let canvas = rt_alloc_zero(canvas_pixels * 4)
+    let mut y = 0
+    while y < frame_height {
+        let mut x = 0
+        while x < frame_width {
+            let frame_index = y * frame_width + x
+            let canvas_index = ((frame_y + y) * canvas_width + frame_x + x) * 4
+            if frame_channels == 4 {
+                if blend {
+                    im_webp_blend_first_frame_pixel(canvas + canvas_index, frame_pixels + frame_index * 4)
+                } else {
+                    std::raw::store8(canvas + canvas_index, std::raw::load8(frame_pixels + frame_index * 4))
+                    std::raw::store8(canvas + canvas_index + 1, std::raw::load8(frame_pixels + frame_index * 4 + 1))
+                    std::raw::store8(canvas + canvas_index + 2, std::raw::load8(frame_pixels + frame_index * 4 + 2))
+                    std::raw::store8(canvas + canvas_index + 3, std::raw::load8(frame_pixels + frame_index * 4 + 3))
+                }
+            } else {
+                std::raw::store8(canvas + canvas_index, std::raw::load8(frame_pixels + frame_index * 3))
+                std::raw::store8(canvas + canvas_index + 1, std::raw::load8(frame_pixels + frame_index * 3 + 1))
+                std::raw::store8(canvas + canvas_index + 2, std::raw::load8(frame_pixels + frame_index * 3 + 2))
+                std::raw::store8(canvas + canvas_index + 3, 255)
+            }
+            x += 1
+        }
+        y += 1
+    }
+
+    let color = if canvas_alpha { 4 } else { 3 }
+    let output_size = canvas_pixels * color
+    if output_size > 67108864 {
+        rt_free_block(frame_pixels)
+        rt_free_block(canvas)
+        im_lim(function, "decoded image bytes", 67108864)
+    }
+    let output = rt_alloc(output_size)
+    let mut i = 0
+    while i < canvas_pixels {
+        std::raw::store8(output + color * i, std::raw::load8(canvas + 4 * i))
+        std::raw::store8(output + color * i + 1, std::raw::load8(canvas + 4 * i + 1))
+        std::raw::store8(output + color * i + 2, std::raw::load8(canvas + 4 * i + 2))
+        if color == 4 {
+            std::raw::store8(output + color * i + 3, std::raw::load8(canvas + 4 * i + 3))
+        }
+        i += 1
+    }
+    rt_free_block(frame_pixels)
+    rt_free_block(canvas)
+    im_insert(function, canvas_width, canvas_height, color, output, output_size)
+}
+
 fn im_webp_decode(function: string, p: int, n: int) -> int {
     if n < 12 { im_img_err(function, "Corrupt WebP RIFF header") }
     if !im_webp_fourcc(p, 82, 73, 70, 70) || !im_webp_fourcc(p + 8, 87, 69, 66, 80) {
@@ -320,6 +489,9 @@ fn im_webp_decode(function: string, p: int, n: int) -> int {
     let mut alpha_size = 0
     let mut lossy = false
     let mut animated = false
+    let mut animation_header = false
+    let mut first_animation_frame = 0
+    let mut first_animation_frame_size = 0
     while position < end {
         if end - position < 8 { im_img_err(function, "Corrupt WebP chunk header") }
         let chunk_size = im_ld32(position + 4)
@@ -347,13 +519,25 @@ fn im_webp_decode(function: string, p: int, n: int) -> int {
             lossy = true
             vp8 = data
             vp8_size = chunk_size
-        } else if im_webp_fourcc(position, 65, 78, 73, 77) || im_webp_fourcc(position, 65, 78, 77, 70) {
+        } else if im_webp_fourcc(position, 65, 78, 73, 77) {
+            if chunk_size != 6 { im_img_err(function, "Corrupt WebP animation header") }
+            animation_header = true
+            animated = true
+        } else if im_webp_fourcc(position, 65, 78, 77, 70) {
+            if chunk_size < 32 { im_img_err(function, "Corrupt WebP animation frame") }
+            if first_animation_frame == 0 {
+                first_animation_frame = data
+                first_animation_frame_size = chunk_size
+            }
             animated = true
         }
         position = data + chunk_size + (chunk_size & 1)
     }
     if animated {
-        im_img_err(function, "UnsupportedError: animated WebP decoding is not implemented yet")
+        if !animation_header || first_animation_frame == 0 {
+            im_img_err(function, "Corrupt WebP animation: ANIM or ANMF chunk is missing")
+        }
+        return im_webp_decode_first_animation_frame(function, first_animation_frame, first_animation_frame_size, canvas_width, canvas_height, extended_alpha)
     }
     if vp8l == 0 {
         if lossy {

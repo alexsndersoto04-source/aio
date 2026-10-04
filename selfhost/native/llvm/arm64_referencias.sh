@@ -43,15 +43,9 @@ run_limited() {
   return "$rc"
 }
 
-made=0; timed_out=0; native_only=0
+made=0; timed_out=0
 for f in "${FILES[@]}"; do
   base="$(basename "$f" .titan)"
-  if [ "$base" = image_webp_unsupported ]; then
-    # Este caso contrasta deliberadamente el soporte del backend nativo con la
-    # VM; su salida de referencia es el fixture del rechazo nativo.
-    native_only=$((native_only + 1))
-    continue
-  fi
   case_dir="/tmp/aio-arm64-case/$base"
   rm -rf "$case_dir"
   mkdir -p "$case_dir"
@@ -75,6 +69,6 @@ for f in "${FILES[@]}"; do
   printf '%s\n' "$rc" > "$prefix.status"
   made=$((made + 1))
 done
-expected_count=$((${#FILES[@]} - native_only))
-echo "referencias VM x86-64: $made  casos nativos especiales: $native_only  tiempos agotados: $timed_out"
+expected_count=${#FILES[@]}
+echo "referencias VM x86-64: $made  tiempos agotados: $timed_out"
 [ "$timed_out" -eq 0 ] && [ "$made" -eq "$expected_count" ]

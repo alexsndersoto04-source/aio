@@ -23,12 +23,7 @@ if [ -n "${IMAGE_TESTS:-}" ]; then
     read -r -a tests <<< "$IMAGE_TESTS"
 fi
 for test in "${tests[@]}"; do
-    if [ "$test" = image_webp_unsupported ]; then
-        zett run "$driver" "selfhost/tests/native/$test.titan" "$work/$test"
-        test -x "$work/$test"
-        "$work/$test" > "$work/$test.native"
-        cp selfhost/native/image/webp_unsupported.expected "$work/$test.expected"
-    elif [ "$test" = image_io ]; then
+    if [ "$test" = image_io ]; then
         zett run "selfhost/tests/native/$test.titan" "$work/image-output" > "$work/$test.vm"
         zett run "$driver" "selfhost/tests/native/$test.titan" "$work/$test"
         test -x "$work/$test"
@@ -62,11 +57,10 @@ for test in "${tests[@]}"; do
         test -x "$work/$test"
         "$work/$test" > "$work/$test.native"
     fi
+    diff -u "$work/$test.vm" "$work/$test.native"
     if [ "$test" = image_webp_unsupported ]; then
-        diff -u "$work/$test.expected" "$work/$test.native"
-        echo "$test: rechazos claros y límites verificados"
+        echo "$test: primer cuadro y rechazos de entrada dañada idénticos a la VM"
     else
-        diff -u "$work/$test.vm" "$work/$test.native"
         echo "$test: idéntico a la VM"
     fi
 done

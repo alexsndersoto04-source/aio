@@ -1,11 +1,30 @@
-fn rejected_path(path: string, expected: string) -> bool {
-    match std::try::catch(|| std::image::load(path)) {
-        Result::Ok(handle) => {
-            std::image::close(handle)
-            false
-        },
-        Result::Err(message) => std::text::contains(message, expected),
+fn fingerprint(data: any) -> int {
+    let bytes = std::bytes::to_array(data)
+    let mut value = 0
+    let mut i = 0
+    while i < len(bytes) {
+        value = (value * 131 + bytes[i]) & 2147483647
+        i += 1
     }
+    value
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn check_animation(path: string) {
+    let by_path = std::image::load(path)
+    show_image(by_path, "animación WebP path")
+    std::image::close(by_path)
+    let by_bytes = std::image::load_bytes(std::fs::read_bytes(path))
+    show_image(by_bytes, "animación WebP bytes")
+    std::image::close(by_bytes)
 }
 
 fn rejected_bytes(data: any, expected: string) -> bool {
@@ -20,6 +39,33 @@ fn rejected_bytes(data: any, expected: string) -> bool {
 
 fn le32(value: int) -> array {
     [value % 256, (value / 256) % 256, (value / 65536) % 256, (value / 16777216) % 256]
+}
+
+fn le24(value: int) -> array {
+    [value % 256, (value / 256) % 256, (value / 65536) % 256]
+}
+
+fn riff_chunk(tag: array, data: array) -> array {
+    let size = len(data)
+    let with_header = std::array::concat(tag, le32(size))
+    let with_data = std::array::concat(with_header, data)
+    if size % 2 == 1 {
+        return std::array::concat(with_data, [0])
+    }
+    with_data
+}
+
+fn animated_frame(canvas_width: int, canvas_height: int, frame_x: int, frame_y: int, frame_width: int, frame_height: int, has_alpha: bool, frame_chunks: array) -> any {
+    let flags = if has_alpha { 18 } else { 2 }
+    let vp8x_data = std::array::concat([flags, 0, 0, 0], std::array::concat(le24(canvas_width - 1), le24(canvas_height - 1)))
+    let vp8x = riff_chunk([86, 80, 56, 88], vp8x_data)
+    let anim = riff_chunk([65, 78, 73, 77], [0, 0, 0, 0, 0, 0])
+    let frame_header = std::array::concat(le24(frame_x / 2), std::array::concat(le24(frame_y / 2), std::array::concat(le24(frame_width - 1), std::array::concat(le24(frame_height - 1), [100, 0, 0, 0])))))
+    let frame_data = std::array::concat(frame_header, frame_chunks)
+    let anmf = riff_chunk([65, 78, 77, 70], frame_data)
+    let body = std::array::concat(vp8x, std::array::concat(anim, anmf))
+    let header = std::array::concat([82, 73, 70, 70], le32(4 + len(body)))
+    std::bytes::from_array(std::array::concat(std::array::concat(header, [87, 69, 66, 80]), body))
 }
 
 fn webp_chunk(tag: array, data: array) -> any {
@@ -41,8 +87,27 @@ fn lossless_payload(width: int, height: int, version: int, stream: array) -> arr
     std::array::concat(header, stream)
 }
 
+fn check_composited_animation() {
+    let lossless = std::bytes::to_array(std::fs::read_bytes("selfhost/native/image/testdata/webp-lossless-alpha.webp"))
+    let lossless_frame = riff_chunk([86, 80, 56, 76], std::array::slice(lossless, 20, len(lossless)))
+    let lossless_animation = animated_frame(5, 4, 2, 2, 3, 2, true, lossless_frame)
+    let lossless_handle = std::image::load_bytes(lossless_animation)
+    show_image(lossless_handle, "animación VP8L alfa desplazada")
+    std::image::close(lossless_handle)
+
+    let lossy = std::bytes::to_array(std::fs::read_bytes("selfhost/native/image/testdata/webp-lossy-alpha.webp"))
+    let alpha = riff_chunk([65, 76, 80, 72], std::array::slice(lossy, 38, 45))
+    let vp8 = riff_chunk([86, 80, 56, 32], std::array::slice(lossy, 54, len(lossy)))
+    let lossy_frame = std::array::concat(alpha, vp8)
+    let lossy_animation = animated_frame(5, 4, 2, 2, 3, 2, true, lossy_frame)
+    let lossy_handle = std::image::load_bytes(lossy_animation)
+    show_image(lossy_handle, "animación VP8 alfa desplazada")
+    std::image::close(lossy_handle)
+}
+
 fn main() {
-    println("animación: " + rejected_path("selfhost/native/image/testdata/webp-animation.webp", "UnsupportedError: animated WebP"))
+    check_animation("selfhost/native/image/testdata/webp-animation.webp")
+    check_composited_animation()
     println("WebP sin imagen: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80]), "WebP"))
     println("tamaño RIFF fuera de entrada: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 255, 255, 255, 255, 87, 69, 66, 80]), "Corrupt WebP RIFF size"))
     println("cabecera de fragmento incompleta: " + rejected_bytes(std::bytes::from_array([82, 73, 70, 70, 5, 0, 0, 0, 87, 69, 66, 80, 0]), "Corrupt WebP chunk header"))

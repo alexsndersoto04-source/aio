@@ -31,8 +31,8 @@ fn was_rejected(data: any) -> bool {
 fn main() {
     let args = std::env::args()
     let output_base = args[len(args) - 1]
-    // La animación se comprueba en image_webp_unsupported.titan: el runtime
-    // nativo aún la rechaza explícitamente, aunque la VM lea el primer cuadro.
+    // image_webp_unsupported.titan comprueba que ambos lectores devuelvan el
+    // primer cuadro de la animación, como exige std::image::load.
     let files = ["webp-lossy.webp", "webp-lossless.webp", "webp-lossy-alpha.webp", "webp-lossless-alpha.webp"]
     let mut i = 0
     while i < len(files) {
