@@ -72,6 +72,7 @@ import std_term_keys
 import std_readline
 import std_process
 import std_game
+import std_mobile
 import image::std_image
 import image::std_image_png_read
 import image::std_image_bmp_read
@@ -247,7 +248,8 @@ fn rt_alloc_zero(size: int) -> int {
 // compresor (std_compress_enc); + 3088 tablas del compresor zstd
 // (std_compress_zstd_enc); + 3096 estado de red (std_net); + 3104 tablas de QR;
 // + 3112 vigilantes de archivos; + 3120 estado HTTP; + 3128 motor de juego;
-// + 3136 registro de imágenes; + 3144 historial en memoria de readline.
+// + 3136 registro de imágenes; + 3144 historial en memoria de readline;
+// + 3152 estado y cola de eventos explícitos de std::mobile.
 // Libre hasta +3584 (ARM64 reserva +3584..+4096).
 fn rt_big_head(k: int) -> int {
     std::raw::globals() + 2688 + 8 * (k - 13)
