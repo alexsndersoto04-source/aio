@@ -141,11 +141,30 @@ def main() -> int:
             errors.append(f"required site file is missing: {path.relative_to(ROOT)}")
 
     js = js_path.read_text(encoding="utf-8") if js_path.is_file() else ""
-    translation_keys = set(re.findall(r'^\s*"([A-Za-z][A-Za-z0-9_.-]*)"\s*:', js, flags=re.MULTILINE))
-    translation_keys.update(re.findall(r'^\s*([A-Za-z][A-Za-z0-9_.-]*)\s*:', js, flags=re.MULTILINE))
-    missing = sorted((parser.i18n_keys | parser.i18n_aria_keys) - translation_keys)
-    if missing:
-        errors.append("missing ES/EN translation keys: " + ", ".join(missing))
+    used_translation_keys = parser.i18n_keys | parser.i18n_aria_keys | {"title", "description"}
+    key_pattern = re.compile(
+        r'^\s*(?:"([A-Za-z][A-Za-z0-9_.-]*)"|([A-Za-z][A-Za-z0-9_.-]*))\s*:',
+        flags=re.MULTILINE,
+    )
+    translation_blocks = {
+        "ES": re.search(r"(?ms)^\s*es\s*:\s*\{(.*?)(?=^\s*en\s*:\s*\{)", js),
+        "EN": re.search(r"(?ms)^\s*en\s*:\s*\{(.*?)(?=^\s*\}\s*;)", js),
+    }
+    translation_maps: dict[str, set[str]] = {}
+    for language, match in translation_blocks.items():
+        if not match:
+            errors.append(f"could not find the {language} translation map in site/assets/site.js")
+            continue
+        keys = {quoted or plain for quoted, plain in key_pattern.findall(match.group(1))}
+        translation_maps[language] = keys
+        missing = sorted(used_translation_keys - keys)
+        if missing:
+            errors.append(f"missing {language} translation keys: " + ", ".join(missing))
+    if set(translation_maps) == {"ES", "EN"}:
+        if translation_maps["ES"] != translation_maps["EN"]:
+            only_es = sorted(translation_maps["ES"] - translation_maps["EN"])
+            only_en = sorted(translation_maps["EN"] - translation_maps["ES"])
+            errors.append(f"ES/EN translation maps differ: only ES={only_es}; only EN={only_en}")
 
     for url, line, _attrs in parser.external:
         if url.startswith(REPO_FILE_PREFIX):
@@ -165,7 +184,7 @@ def main() -> int:
     print(f"OK: {parser.title.strip()}")
     print(f"Checked {len(parser.ids)} unique IDs, {len(parser.fragments)} internal anchors, "
           f"{len(parser.local_files)} local assets, {len(parser.external)} HTTPS links, "
-          f"and {len(parser.i18n_keys)} translatable labels.")
+          f"and {len(parser.i18n_keys | parser.i18n_aria_keys)} translatable labels/attributes.")
     return 0
 
 
