@@ -17,6 +17,23 @@ ZETT="${ZETT:-zett}"
 COMPILER="${COMPILER:-}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+if ! command -v "$ZETT" >/dev/null 2>&1; then
+  echo "error: no se encuentra el Zett precompilado: $ZETT" >&2
+  exit 2
+fi
+if [ -n "$COMPILER" ]; then
+  compiler_path="$(command -v "$COMPILER")"
+  if [ -z "$compiler_path" ] || [ ! -x "$compiler_path" ]; then
+    echo "error: no se encuentra el compilador nativo ejecutable: $COMPILER" >&2
+    exit 2
+  fi
+  compiler_dir="$(dirname "$(readlink -f "$compiler_path")")"
+  if [ ! -f "$compiler_dir/native/runtime.titan" ]; then
+    echo "error: falta native/runtime.titan junto al compilador: $compiler_dir/native/runtime.titan" >&2
+    exit 2
+  fi
+  COMPILER="$compiler_path"
+fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [ $# -gt 0 ]; then FILES=("$@"); else FILES=(selfhost/tests/native/*.titan); fi

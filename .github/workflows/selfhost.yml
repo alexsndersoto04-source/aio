@@ -48,6 +48,7 @@ jobs:
           chmod +x "$seed"
           expected="$(git show origin/binaries:zett-linux-x86_64.sha256 | awk 'NR == 1 {print $1}')"
           printf '%s  %s\n' "$expected" "$seed" | sha256sum --check
+          printf '%s\n' "$expected" > "$RUNNER_TEMP/zett.sha256"
           printf 'Seed source commit: '
           git show origin/binaries:COMMIT 2>/dev/null || true
           "$seed" version
@@ -106,19 +107,22 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Package the verified seed and native compiler for runtime shards
+      - name: Package the verified seed, native compiler, and Titan runtime for runtime shards
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/selfhost-tools"
           cp "$RUNNER_TEMP/zett" "$RUNNER_TEMP/selfhost-tools/zett"
+          cp "$RUNNER_TEMP/zett.sha256" "$RUNNER_TEMP/selfhost-tools/zett.sha256"
           cp selfhost/titanc1 "$RUNNER_TEMP/selfhost-tools/titanc1"
+          # build.titan resolves native/runtime.titan beside the compiler binary.
+          cp -a selfhost/native "$RUNNER_TEMP/selfhost-tools/native"
 
       - name: Upload verified test tools
         uses: actions/upload-artifact@v4
         with:
           name: selfhost-test-tools
-          path: ${{ runner.temp }}/selfhost-tools/*
+          path: ${{ runner.temp }}/selfhost-tools
           if-no-files-found: error
           retention-days: 1
 
@@ -147,7 +151,7 @@ jobs:
           fi
           ldconfig -p | grep 'libasound\.so\.2'
 
-      - name: Download the verified seed and native compiler
+      - name: Download verified seed, native compiler, and Titan runtime
         uses: actions/download-artifact@v4
         with:
           name: selfhost-test-tools
@@ -160,17 +164,34 @@ jobs:
         run: |
           set -euo pipefail
           tools="$RUNNER_TEMP/selfhost-tools"
-          {
-            echo "### Verified tools — shard $SHARD"
-            find "$tools" -maxdepth 4 -type f -print | sort
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          zett="$(find "$tools" -type f -name zett -print -quit)"
-          compiler="$(find "$tools" -type f -name titanc1 -print -quit)"
-          if [ -z "$zett" ] || [ -z "$compiler" ]; then
-            echo "Missing verified Zett seed or native compiler in artifact" >&2
+          zett="$tools/zett"
+          compiler="$tools/titanc1"
+          checksum="$tools/zett.sha256"
+          runtime="$tools/native/runtime.titan"
+          if [ ! -f "$zett" ] || [ ! -f "$compiler" ] || [ ! -f "$checksum" ]; then
+            echo "Missing verified Zett seed, checksum, or native compiler in artifact" >&2
+            exit 1
+          fi
+          read -r expected < "$checksum"
+          if [[ ! "$expected" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "Invalid SHA-256 sidecar for the prebuilt Zett seed" >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "$expected" "$zett" | sha256sum --check
+          if [ ! -f "$runtime" ]; then
+            echo "Missing Titan native runtime beside the compiler: $runtime" >&2
             exit 1
           fi
           chmod +x "$zett" "$compiler"
+          runtime_sources="$(find "$tools/native" -type f -name '*.titan' | wc -l | tr -d '[:space:]')"
+          {
+            echo "### Verified tools — shard $SHARD"
+            echo
+            printf -- '- Seed SHA-256: `%s`\n' "$(sha256sum "$zett" | awk '{print $1}')"
+            printf -- '- Native compiler: `%s`\n' "$compiler"
+            printf -- '- Titan runtime entry: `%s`\n' "$runtime"
+            printf -- '- Titan runtime source files: %s\n' "$runtime_sources"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           mapfile -t files < <(
             find selfhost/tests/native -maxdepth 1 -type f -name '*.titan' -print \
               | sort \
