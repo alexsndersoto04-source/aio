@@ -18,10 +18,10 @@ permissions:
   contents: read
 
 jobs:
-  selfhost:
-    name: Prebuilt seed → Titan bootstrap → differential tests
+  bootstrap:
+    name: Prebuilt seed → Titan bootstrap → codegen differential
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -70,6 +70,69 @@ jobs:
           ZETT="$RUNNER_TEMP/zett" SELF="$RUNNER_TEMP/bytecode-native" \
             bash selfhost/verify_codegen.sh "$RUNNER_TEMP/zett"
 
-      - name: Compare native programs with the VM
+      - name: Package the verified seed and native compiler for runtime shards
         shell: bash
-        run: ZETT="$RUNNER_TEMP/zett" bash selfhost/native/verify_native.sh
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/selfhost-tools"
+          cp "$RUNNER_TEMP/zett" "$RUNNER_TEMP/selfhost-tools/zett"
+          cp selfhost/titanc1 "$RUNNER_TEMP/selfhost-tools/titanc1"
+
+      - name: Upload verified test tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-test-tools
+          path: ${{ runner.temp }}/selfhost-tools/*
+          if-no-files-found: error
+          retention-days: 1
+
+  native-runtime:
+    name: Native vs VM — shard ${{ matrix.shard }}
+    needs: bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Require genuine ALSA runtime library
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libasound\.so\.2'; then
+            sudo apt-get update
+            sudo apt-get install -y libasound2t64
+          fi
+          ldconfig -p | grep 'libasound\.so\.2'
+
+      - name: Download the verified seed and native compiler
+        uses: actions/download-artifact@v4
+        with:
+          name: selfhost-test-tools
+          path: ${{ runner.temp }}/selfhost-tools
+
+      - name: Compare this shard against the VM
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/selfhost-tools"
+          chmod +x "$tools/zett" "$tools/titanc1"
+          mapfile -t files < <(
+            find selfhost/tests/native -maxdepth 1 -type f -name '*.titan' -print \
+              | sort \
+              | awk -v shard="$SHARD" -v count=4 '((NR - 1) % count) == shard'
+          )
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No native tests assigned to shard $SHARD" >&2
+            exit 1
+          fi
+          COMPILER="$tools/titanc1" ZETT="$tools/zett" \
+            bash selfhost/native/verify_native.sh "${files[@]}"
