@@ -24,7 +24,7 @@ fn has_sequence(bytes: array, needle: array) -> bool {
 
 fn has_valid_xref(data: any) -> bool {
     let bytes = std::bytes::to_array(data)
-    if !has_sequence(bytes, [37, 80, 68, 70, 45]) { return false }
+    if len(bytes) < 8 || bytes[0] != 37 || bytes[1] != 80 || bytes[2] != 68 || bytes[3] != 70 || bytes[4] != 45 { return false }
     if !has_sequence(bytes, [47, 67, 111, 117, 110, 116, 32, 50]) { return false }
     if !has_sequence(bytes, [37, 37, 69, 79, 70]) { return false }
     let marker = find_sequence(bytes, [115, 116, 97, 114, 116, 120, 114, 101, 102])
