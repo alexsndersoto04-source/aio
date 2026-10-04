@@ -147,10 +147,18 @@ for f in "${FILES[@]}"; do
   if [ -n "$vm_files" ] && ! diff -qr -- "$vm_files" "$nat_files" > "$tmp/files.diff"; then
     side_effects_match=0
   fi
+  # This smoke test makes positive PDF assertions (header, page tree, xref and
+  # EOF). Differential equality alone would incorrectly accept the same
+  # assertion failure from both runtimes, so this one must also exit 0.
+  success_required=0
+  if [ "$base" = "pdf_smoke" ] && { [ "$vm" -ne 0 ] || [ "$nat" -ne 0 ]; }; then
+    success_required=1
+  fi
   if cmp -s "$tmp/vm.out" "$tmp/nat.out" \
       && cmp -s "$tmp/vm.err" "$tmp/nat.err" \
       && [ "$vm" = "$nat" ] \
-      && [ "$side_effects_match" -eq 1 ]; then
+      && [ "$side_effects_match" -eq 1 ] \
+      && [ "$success_required" -eq 0 ]; then
     pass=$((pass + 1))
   else
     fail=$((fail + 1))
@@ -161,6 +169,9 @@ for f in "${FILES[@]}"; do
       if [ "$side_effects_match" -eq 0 ]; then
         echo "Archivos creados distintos:"
         head -8 "$tmp/files.diff"
+      fi
+      if [ "$success_required" -eq 1 ]; then
+        echo "pdf_smoke debe terminar con código 0 (VM=$vm, nativo=$nat)."
       fi
     } > "$tmp/one-failure.txt"
     cat "$tmp/one-failure.txt"

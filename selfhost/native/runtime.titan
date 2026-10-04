@@ -4,6 +4,7 @@ import unicode_case
 import unicode_debug
 import std_text
 import std_core
+import pdf::std_pdf
 import std_hash
 import std_random
 import std_json

@@ -1,0 +1,65 @@
+fn find_sequence(bytes: array, needle: array) -> int {
+    if len(needle) == 0 { return 0 }
+    if len(needle) > len(bytes) { return -1 }
+    let mut start = 0
+    while start + len(needle) <= len(bytes) {
+        let mut matched = true
+        let mut i = 0
+        while i < len(needle) {
+            if bytes[start + i] != needle[i] {
+                matched = false
+                break
+            }
+            i += 1
+        }
+        if matched { return start }
+        start += 1
+    }
+    -1
+}
+
+fn has_sequence(bytes: array, needle: array) -> bool {
+    find_sequence(bytes, needle) >= 0
+}
+
+fn has_valid_xref(data: any) -> bool {
+    let bytes = std::bytes::to_array(data)
+    if !has_sequence(bytes, [37, 80, 68, 70, 45]) { return false }
+    if !has_sequence(bytes, [47, 67, 111, 117, 110, 116, 32, 50]) { return false }
+    if !has_sequence(bytes, [37, 37, 69, 79, 70]) { return false }
+    let marker = find_sequence(bytes, [115, 116, 97, 114, 116, 120, 114, 101, 102])
+    if marker < 0 { return false }
+    let mut position = marker + 9
+    while position < len(bytes) && (bytes[position] == 10 || bytes[position] == 13) {
+        position += 1
+    }
+    let mut offset = 0
+    let mut digits = 0
+    while position < len(bytes) && bytes[position] >= 48 && bytes[position] <= 57 {
+        if offset > 100000000 { return false }
+        offset = 10 * offset + bytes[position] - 48
+        digits += 1
+        position += 1
+    }
+    if digits == 0 || offset < 0 || offset + 4 > len(bytes) { return false }
+    bytes[offset] == 120 && bytes[offset + 1] == 114 && bytes[offset + 2] == 101 && bytes[offset + 3] == 102
+}
+
+fn main() {
+    let path = "selfhost/native/pdf-smoke.pdf"
+    let document = std::pdf::new("Titan PDF", 210.0, 297.0)
+    std::pdf::set_color(document, 0, 0, 0.2, 0.6, 0.8)
+    std::pdf::add_text(document, 0, 0, "Hola desde Titan", 18.0, 20.0, 270.0)
+    std::pdf::add_line(document, 0, 0, 20.0, 260.0, 190.0, 260.0, 0.5)
+    std::pdf::add_rect(document, 0, 0, 20.0, 200.0, 50.0, 30.0)
+    let second_page = std::pdf::add_page(document, 210.0, 297.0, "Detalles")
+    std::testing::assert(second_page == 1, "PDF devuelve el índice de página basado en cero")
+    std::pdf::add_text(document, second_page, 0, "Página dos", 14.0, 20.0, 270.0)
+    std::testing::assert(std::pdf::page_count(document) == 2, "PDF conserva ambas páginas")
+    std::pdf::save(document, path)
+    let bytes = std::fs::read_bytes(path)
+    std::testing::assert(has_valid_xref(bytes), "PDF tiene cabecera, árbol de páginas, xref real y EOF")
+    println("PDF multipágina válido")
+    std::pdf::close(document)
+    std::fs::remove_file(path)
+}
