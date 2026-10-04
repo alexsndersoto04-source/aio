@@ -1,15 +1,60 @@
-   Compiling titan_tls v1.0.0 (/home/runner/work/aio/aio/crates/titan_tls)
-   Compiling titan_lexer v1.0.0 (/home/runner/work/aio/aio/crates/titan_lexer)
-   Compiling titan_sqlite v1.0.0 (/home/runner/work/aio/aio/crates/titan_sqlite)
-   Compiling titan_mysql v1.0.0 (/home/runner/work/aio/aio/crates/titan_mysql)
-   Compiling titan_ast v1.0.0 (/home/runner/work/aio/aio/crates/titan_ast)
-   Compiling titan_stdlib v1.0.0 (/home/runner/work/aio/aio/crates/titan_stdlib)
-   Compiling titan_parser v1.0.0 (/home/runner/work/aio/aio/crates/titan_parser)
-   Compiling titan_postgres v1.0.0 (/home/runner/work/aio/aio/crates/titan_postgres)
-   Compiling titan_typechecker v1.0.0 (/home/runner/work/aio/aio/crates/titan_typechecker)
+    |
+372 -                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+372 +                 .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+    |
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/titan_vm/src/lib.rs:418:14
+    |
+418 |             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+    |              ^^^^^^^^^^^^
+    |
+help: replace the use of the deprecated method
+    |
+418 -             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+418 +             .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+    |
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/titan_vm/src/lib.rs:478:10
+    |
+478 |         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+    |          ^^^^^^^^^^^^
+    |
+help: replace the use of the deprecated method
+    |
+478 -         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+478 +         .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+    |
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/titan_vm/src/lib.rs:490:21
+    |
+490 |     let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    |                     ^^^^^^^^^^^^
+    |
+help: replace the use of the deprecated method
+    |
+490 -     let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+490 +     let _ = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    |
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+    --> crates/titan_vm/src/lib.rs:2666:26
+     |
+2666 |                         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+     |                          ^^^^^^^^^^^^
+     |
+help: replace the use of the deprecated method
+     |
+2666 -                         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+2666 +                         .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+     |
+
+   Compiling clap v4.6.1
    Compiling titan_pkg v1.0.0 (/home/runner/work/aio/aio/crates/titan_pkg)
-   Compiling titan_codegen v1.0.0 (/home/runner/work/aio/aio/crates/titan_codegen)
    Compiling titan_wasm v1.0.0 (/home/runner/work/aio/aio/crates/titan_wasm)
-   Compiling titan_vm v1.0.0 (/home/runner/work/aio/aio/crates/titan_vm)
+warning: `titan_stdlib` (lib) generated 7 warnings (run `cargo fix --lib -p titan_stdlib` to apply 7 suggestions)
+warning: `titan_vm` (lib) generated 5 warnings (run `cargo fix --lib -p titan_vm` to apply 5 suggestions)
    Compiling titan_cli v1.0.0 (/home/runner/work/aio/aio/crates/titan_cli)
-    Finished `release` profile [optimized] target(s) in 1m 04s
+    Finished `release` profile [optimized] target(s) in 7m 09s
