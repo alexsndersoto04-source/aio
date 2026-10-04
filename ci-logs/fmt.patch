@@ -1334,7 +1334,7 @@ index 2b0b7ae..a3ea3dc 100644
      native!("std::kv::tree_keys", [Int], Array, Filesystem),
      // --- Phase 10: Redis client ---
 diff --git a/crates/titan_stdlib/src/pdf_mod.rs b/crates/titan_stdlib/src/pdf_mod.rs
-index e2ed389..e11e51b 100644
+index b44b558..052821c 100644
 --- a/crates/titan_stdlib/src/pdf_mod.rs
 +++ b/crates/titan_stdlib/src/pdf_mod.rs
 @@ -281,10 +281,13 @@ fn check_runtime_growth(
@@ -1526,7 +1526,7 @@ index e2ed389..e11e51b 100644
                  .parent()
                  .unwrap()
 diff --git a/crates/titan_stdlib/src/process_mod.rs b/crates/titan_stdlib/src/process_mod.rs
-index c563452..4783731 100644
+index 611a5a1..97d1921 100644
 --- a/crates/titan_stdlib/src/process_mod.rs
 +++ b/crates/titan_stdlib/src/process_mod.rs
 @@ -559,9 +559,7 @@ pub fn spawn_wait(handle: u64) -> Result<ProcessOutput, ProcessError> {
@@ -2131,7 +2131,7 @@ index a55cf46..8157181 100644
      }
  
 diff --git a/crates/titan_vm/src/lib.rs b/crates/titan_vm/src/lib.rs
-index d27ca43..1d508fd 100644
+index b24ddba..b0b352d 100644
 --- a/crates/titan_vm/src/lib.rs
 +++ b/crates/titan_vm/src/lib.rs
 @@ -759,9 +759,7 @@ impl Vm {
@@ -2226,7 +2226,7 @@ index d27ca43..1d508fd 100644
          );
      }
 diff --git a/crates/titan_vm/src/native.rs b/crates/titan_vm/src/native.rs
-index 4bd761b..d9de665 100644
+index a69d7c7..98e3329 100644
 --- a/crates/titan_vm/src/native.rs
 +++ b/crates/titan_vm/src/native.rs
 @@ -718,9 +718,7 @@ fn dispatch(name: &str, mut args: Vec<Value>, runtime_id: u64) -> Result<Value,
